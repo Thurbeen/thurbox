@@ -105,7 +105,7 @@ pub(crate) fn render(
             render_compose_inline(frame, diff_area, anchor_y, comp);
         }
     }
-    let buttons = render_footer(frame, footer, composing, state.side_by_side);
+    let buttons = render_footer(frame, footer, composing, state.side_by_side, state.wrap);
 
     CodeReviewHits {
         rows: hits.0,
@@ -151,6 +151,14 @@ fn render_target_picker(frame: &mut Frame, area: Rect, state: &CodeReviewState) 
 
 /// Render the windowed diff/comment rows + scrollbar. Returns row hitboxes
 /// (index in `state.rows`) and the scrollbar geometry.
+///
+/// Selection, hitboxes, and the scrollbar are all defined over **logical** rows
+/// (`state.rows`): the scrollbar thumb tracks `state.selected` over
+/// `total = state.rows.len()`, and its drag mapping (`position_for_y` →
+/// `cr_select_row`) feeds a logical index. When `wrap` is on, a logical row
+/// expands into several **visual** rows; only the vertical windowing here
+/// becomes visual — every visual sub-row carries its parent's logical index, so
+/// clicks and the scrollbar stay correct.
 fn render_rows(
     frame: &mut Frame,
     area: Rect,
@@ -162,24 +170,38 @@ fn render_rows(
         return (Vec::new(), None);
     }
 
-    // Clamp scroll so the selection stays visible (the nav layer set a lower
-    // bound; here we enforce the upper edge given the known height).
-    if state.selected >= state.scroll + height {
-        state.scroll = state.selected + 1 - height;
+    let (content, track) = scrollbar::reserve_track(area, total, height);
+    let width = content.width as usize;
+
+    // Line-number column width from the largest number on screen.
+    let num_w = line_number_width(state);
+    let gutter_w = num_w * 2 + 4; // "{old} {new} {sign} " — mirrors the gutter.
+    let avail = width.saturating_sub(gutter_w).max(1);
+
+    // Final horizontal clamp: the app layer bounds `h_scroll` by the longest
+    // line, but the exact body width is only known now — never scroll past what
+    // the widest line can reveal. Wrapped/side-by-side layouts pin it to 0.
+    if state.wrap || state.side_by_side {
+        state.h_scroll = 0;
+    } else {
+        let max_h = state.max_line_width().saturating_sub(avail);
+        state.h_scroll = state.h_scroll.min(max_h);
     }
-    if state.scroll + height > total {
-        state.scroll = total.saturating_sub(height);
+
+    // Clamp scroll so the selection stays visible (the nav layer set a lower
+    // bound; here we enforce the upper edge given the known height). With wrap
+    // off, one logical row = one visual row, so the original math holds.
+    if !state.wrap {
+        if state.selected >= state.scroll + height {
+            state.scroll = state.selected + 1 - height;
+        }
+        if state.scroll + height > total {
+            state.scroll = total.saturating_sub(height);
+        }
     }
     if state.selected < state.scroll {
         state.scroll = state.selected;
     }
-    let start = state.scroll;
-    let end = (start + height).min(total);
-
-    let (content, track) = scrollbar::reserve_track(area, total, height);
-
-    // Line-number column width from the largest number on screen.
-    let num_w = line_number_width(state);
 
     // The active search query (lowercased) drives the in-row match highlight.
     let query = state
@@ -188,17 +210,49 @@ fn render_rows(
         .map(|s| s.query.to_lowercase())
         .filter(|q| !q.trim().is_empty());
 
-    let mut lines: Vec<Line> = Vec::with_capacity(end - start);
-    for i in start..end {
-        lines.push(row_line(
-            state,
-            i,
-            content.width as usize,
-            num_w,
-            query.as_deref(),
-        ));
-    }
-    frame.render_widget(Paragraph::new(lines), content);
+    // Build the windowed visual lines. When wrapping, the selected logical row's
+    // first visual line must stay on screen: expand from `scroll` and, if the
+    // selection would fall past `height`, advance `scroll` and retry (bounded by
+    // `total`). Each visual line remembers its logical row for the hitboxes.
+    let (visual, logical_of): (Vec<Line>, Vec<usize>) = loop {
+        let mut lines: Vec<Line> = Vec::with_capacity(height);
+        let mut logical: Vec<usize> = Vec::with_capacity(height);
+        let mut selected_first: Option<usize> = None;
+        for i in state.scroll..total {
+            if lines.len() >= height {
+                break;
+            }
+            if i == state.selected {
+                selected_first = Some(lines.len());
+            }
+            for line in row_visual_lines(
+                state,
+                i,
+                width,
+                num_w,
+                query.as_deref(),
+                state.h_scroll,
+                state.wrap,
+            ) {
+                lines.push(line);
+                logical.push(i);
+            }
+        }
+        // Selection off the bottom (only possible when wrapping inflates rows):
+        // scroll down one logical row and rebuild.
+        let overflows = state.wrap
+            && selected_first.map_or(true, |f| f >= height)
+            && state.scroll < state.selected;
+        if overflows {
+            state.scroll += 1;
+            continue;
+        }
+        lines.truncate(height);
+        logical.truncate(height);
+        break (lines, logical);
+    };
+
+    frame.render_widget(Paragraph::new(visual), content);
 
     // The view is selection-primary: the thumb tracks `selected` (which reaches
     // the last row, `total - 1`), not `scroll` (which caps at `total - height`,
@@ -207,7 +261,8 @@ fn render_rows(
     // index that `apply_scrollbar_position` feeds straight to `cr_select_row`.
     let geom = track.and_then(|t| scrollbar::render_into(frame, t, total, height, state.selected));
 
-    let hitboxes = (start..end)
+    let hitboxes = logical_of
+        .into_iter()
         .enumerate()
         .map(|(row, index)| RowHitbox {
             rect: Rect::new(content.x, content.y + row as u16, content.width, 1),
@@ -229,15 +284,20 @@ fn line_number_width(state: &CodeReviewState) -> usize {
     max.to_string().len().max(2)
 }
 
-/// Build the styled `Line` for row `i`. `query` (lowercased, non-empty) is the
-/// active find-in-diff search, used to highlight literal match runs in the row.
-fn row_line<'a>(
+/// Build the visual sub-rows for logical row `i`. `query` (lowercased,
+/// non-empty) is the active find-in-diff search. `h_scroll` slides the body
+/// horizontally (unified, non-wrap). With `wrap` on, a long unified diff line
+/// expands into several `Line`s (continuation rows carry a blank gutter); every
+/// other row kind, and side-by-side, always yields exactly one line.
+fn row_visual_lines<'a>(
     state: &CodeReviewState,
     i: usize,
     width: usize,
     num_w: usize,
     query: Option<&str>,
-) -> Line<'a> {
+    h_scroll: usize,
+    wrap: bool,
+) -> Vec<Line<'a>> {
     let selected = i == state.selected;
     let sel_style = |base: Style| {
         if selected {
@@ -248,34 +308,40 @@ fn row_line<'a>(
     };
 
     match &state.rows[i] {
-        ReviewRow::FileHeader(fi) => file_header_line(state, *fi, width, query, &sel_style),
+        ReviewRow::FileHeader(fi) => {
+            vec![file_header_line(state, *fi, width, query, &sel_style)]
+        }
         ReviewRow::HunkHeader(fi, hi) => {
-            hunk_header_line(state, *fi, *hi, width, query, &sel_style)
+            vec![hunk_header_line(state, *fi, *hi, width, query, &sel_style)]
         }
         ReviewRow::Line(fi, hi, li) => {
             let f = &state.files[*fi];
             let l = &f.hunks[*hi].lines[*li];
             if state.side_by_side {
-                side_by_side_line(l, width, num_w, &sel_style)
+                vec![side_by_side_line(l, width, num_w, &sel_style)]
+            } else if wrap {
+                unified_diff_line_wrapped(f, l, width, num_w, selected, query, &sel_style)
             } else {
-                unified_diff_line(f, l, width, num_w, selected, query, &sel_style)
+                vec![unified_diff_line(
+                    f, l, width, num_w, selected, h_scroll, query, &sel_style,
+                )]
             }
         }
         ReviewRow::Comment(id) | ReviewRow::Summary(id) => {
-            comment_line(state, *id, width, query, sel_style)
+            vec![comment_line(state, *id, width, query, sel_style)]
         }
-        ReviewRow::SummaryHeader => Line::from(Span::styled(
+        ReviewRow::SummaryHeader => vec![Line::from(Span::styled(
             truncate("── Review summary (s to add) ──", width),
             sel_style(
                 Style::default()
                     .fg(Theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
-        )),
-        ReviewRow::Info(text) => Line::from(Span::styled(
+        ))],
+        ReviewRow::Info(text) => vec![Line::from(Span::styled(
             truncate(text, width),
             Style::default().fg(Theme::text_muted()),
-        )),
+        ))],
     }
 }
 
@@ -381,8 +447,41 @@ fn hunk_header_line<'a>(
 
 /// A unified-diff line: a `old new ±` gutter plus the syntax-highlighted body,
 /// with the add/remove row tint (the gutter sign + tint carry the +/-, leaving
-/// the text free for syntax colour). Truncated/padded to `width`.
+/// the text free for syntax colour). The gutter stays pinned; the body is
+/// windowed to `[h_scroll, h_scroll + avail)` (horizontal scroll) and padded to
+/// `width`.
+#[allow(clippy::too_many_arguments)]
 fn unified_diff_line<'a>(
+    f: &DiffFile,
+    l: &DiffLine,
+    width: usize,
+    num_w: usize,
+    selected: bool,
+    h_scroll: usize,
+    query: Option<&str>,
+    sel_style: &impl Fn(Style) -> Style,
+) -> Line<'a> {
+    let (sign, row_bg) = diff_row_bg(l.kind);
+    let bg = row_bg_fn(row_bg, selected);
+    let gutter = diff_gutter(l, num_w, sign);
+    let avail = width.saturating_sub(gutter.chars().count());
+
+    let mut spans = vec![Span::styled(
+        gutter,
+        sel_style(bg(Style::default().fg(Theme::text_muted()))),
+    )];
+    spans.extend(diff_body_spans(
+        f, &l.text, h_scroll, avail, query, sel_style, &bg,
+    ));
+    Line::from(spans)
+}
+
+/// A unified-diff line soft-wrapped onto as many rows as its body needs. The
+/// first row carries the real gutter; continuation rows carry a blank
+/// gutter-width prefix so the body stays left-aligned. The row tint + selection
+/// highlight cover every wrapped row (so a selected wrapped line reads as one
+/// block). Empty bodies still emit one row (matching the non-wrap path).
+fn unified_diff_line_wrapped<'a>(
     f: &DiffFile,
     l: &DiffLine,
     width: usize,
@@ -390,62 +489,131 @@ fn unified_diff_line<'a>(
     selected: bool,
     query: Option<&str>,
     sel_style: &impl Fn(Style) -> Style,
-) -> Line<'a> {
-    let (sign, row_bg) = match l.kind {
+) -> Vec<Line<'a>> {
+    let (sign, row_bg) = diff_row_bg(l.kind);
+    let bg = row_bg_fn(row_bg, selected);
+    let gutter = diff_gutter(l, num_w, sign);
+    let gutter_w = gutter.chars().count();
+    let avail = width.saturating_sub(gutter_w).max(1);
+
+    let body_len = l.text.chars().count();
+    let chunks = body_len.div_ceil(avail).max(1);
+    let mut lines = Vec::with_capacity(chunks);
+    for c in 0..chunks {
+        let prefix = if c == 0 {
+            Span::styled(
+                gutter.clone(),
+                sel_style(bg(Style::default().fg(Theme::text_muted()))),
+            )
+        } else {
+            // Blank gutter so continuation text lines up under the first row.
+            Span::styled(" ".repeat(gutter_w), sel_style(bg(Style::default())))
+        };
+        let mut spans = vec![prefix];
+        spans.extend(diff_body_spans(
+            f,
+            &l.text,
+            c * avail,
+            avail,
+            query,
+            sel_style,
+            &bg,
+        ));
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// The `('sign', row-tint)` for a diff line kind.
+fn diff_row_bg(kind: DiffLineKind) -> (char, Option<Color>) {
+    match kind {
         DiffLineKind::Add => ('+', Some(Theme::diff_added_bg())),
         DiffLineKind::Del => ('-', Some(Theme::diff_removed_bg())),
         DiffLineKind::Context => (' ', None),
-    };
-    // Row tint under everything (selection wins on the cursor row).
-    let bg = |s: Style| match row_bg {
+    }
+}
+
+/// A closure that applies the row tint under a style — unless the row is
+/// selected, where the selection background wins.
+fn row_bg_fn(row_bg: Option<Color>, selected: bool) -> impl Fn(Style) -> Style {
+    move |s: Style| match row_bg {
         Some(c) if !selected => s.bg(c),
         _ => s,
-    };
+    }
+}
+
+/// The `{old} {new} {sign} ` line-number gutter for a unified diff line.
+fn diff_gutter(l: &DiffLine, num_w: usize, sign: char) -> String {
     let old = l.old_no.map(|n| n.to_string()).unwrap_or_default();
     let new = l.new_no.map(|n| n.to_string()).unwrap_or_default();
-    let gutter = format!("{old:>num_w$} {new:>num_w$} {sign} ");
-    let avail = width.saturating_sub(gutter.chars().count());
+    format!("{old:>num_w$} {new:>num_w$} {sign} ")
+}
 
-    let mut spans = vec![Span::styled(
-        gutter,
-        sel_style(bg(Style::default().fg(Theme::text_muted()))),
-    )];
-    // When a search query hits this line, highlight the literal matches over the
-    // plain text (search clarity wins over syntax colour on the matched line);
-    // otherwise render the syntax-highlighted tokens as usual.
-    let truncated: String = l.text.chars().take(avail).collect();
+/// Styled spans for a diff body windowed to `[start, start + avail)` chars,
+/// padded to `avail`. When the active search query hits the visible window the
+/// literal matches are highlighted over plain text (search clarity wins);
+/// otherwise the syntax-highlighted token stream is sliced to the window (the
+/// full line is tokenized for correctness, then windowed). Shared by the
+/// horizontal-scroll and wrap paths.
+fn diff_body_spans<'a>(
+    f: &DiffFile,
+    text: &str,
+    start: usize,
+    avail: usize,
+    query: Option<&str>,
+    sel_style: &impl Fn(Style) -> Style,
+    bg: &impl Fn(Style) -> Style,
+) -> Vec<Span<'a>> {
+    let windowed: String = text.chars().skip(start).take(avail).collect();
     let positions = query
-        .map(|q| match_positions(&truncated, q))
+        .map(|q| match_positions(&windowed, q))
         .unwrap_or_default();
-    let mut used = 0usize;
+
+    let mut spans = Vec::new();
+    let mut used;
     if !positions.is_empty() {
-        used = truncated.chars().count();
+        used = windowed.chars().count();
         let base = sel_style(bg(Style::default().fg(Theme::text_primary())));
         spans.extend(crate::ui::highlight::highlighted_spans_owned(
-            &truncated, &positions, base,
+            &windowed, &positions, base,
         ));
     } else {
         let lang = crate::ui::syntax::lang_for(&f.path);
-        for (tok, tcolor) in crate::ui::syntax::highlight(&l.text, &lang) {
+        // Walk the full token stream, tracking the running char position so each
+        // token can be sliced to the visible window `[start, start + avail)`.
+        used = 0;
+        let mut pos = 0usize;
+        for (tok, tcolor) in crate::ui::syntax::highlight(text, &lang) {
+            let tok_len = tok.chars().count();
+            let tok_start = pos;
+            pos += tok_len;
             if used >= avail {
                 break;
             }
-            let tok: String = tok.chars().take(avail - used).collect();
-            used += tok.chars().count();
+            // Intersect this token's char span with the visible window.
+            if pos <= start {
+                continue; // entirely left of the window
+            }
+            let skip = start.saturating_sub(tok_start);
+            let piece: String = tok.chars().skip(skip).take(avail - used).collect();
+            if piece.is_empty() {
+                continue;
+            }
+            used += piece.chars().count();
             spans.push(Span::styled(
-                tok,
+                piece,
                 sel_style(bg(Style::default().fg(tcolor))),
             ));
         }
     }
-    // Pad so the row tint fills the full width.
+    // Pad so the row tint fills the available width.
     if used < avail {
         spans.push(Span::styled(
             " ".repeat(avail - used),
             sel_style(bg(Style::default())),
         ));
     }
-    Line::from(spans)
+    spans
 }
 
 fn comment_line<'a>(
@@ -809,12 +977,14 @@ fn render_footer(
     area: Rect,
     composing: bool,
     side_by_side: bool,
+    wrap: bool,
 ) -> Vec<(crate::ui::ButtonHit, ReviewButton)> {
     // Each button carries its keyboard shortcut as a dimmed hint (`label·key`)
     // so it stays discoverable. The non-composing bar leads with the essential
     // actions (Comment, Send→Agent, Close) so they survive a narrow footer —
     // `render_button_bar` drops overflow from the right and marks it with `…`.
     let view_label = if side_by_side { "Unified" } else { "Split" };
+    let wrap_label = if wrap { "NoWrap" } else { "Wrap" };
     let (specs, actions): (Vec<ButtonSpec>, Vec<ReviewButton>) = if composing {
         (
             vec![
@@ -840,6 +1010,7 @@ fn render_footer(
                 ButtonSpec::secondary("Reviewed").with_hint("·r"),
                 ButtonSpec::secondary("Target").with_hint("·t"),
                 ButtonSpec::secondary(view_label).with_hint("·v"),
+                ButtonSpec::secondary(wrap_label).with_hint("·w"),
                 ButtonSpec::secondary("Copy").with_hint("·y"),
             ],
             vec![
@@ -852,6 +1023,7 @@ fn render_footer(
                 ReviewButton::MarkReviewed,
                 ReviewButton::Target,
                 ReviewButton::ToggleView,
+                ReviewButton::ToggleWrap,
                 ReviewButton::Copy,
             ],
         )
@@ -1008,6 +1180,8 @@ mod tests {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            h_scroll: 0,
+            wrap: false,
             target: crate::app::code_review::ReviewTarget::Branch,
             commits: Vec::new(),
             host: None,
@@ -1018,20 +1192,102 @@ mod tests {
         s
     }
 
+    /// Like `demo_state` but the single hunk's first line is very long, so
+    /// horizontal-scroll and wrap have something to act on.
+    fn demo_state_long() -> CodeReviewState {
+        let mut s = demo_state();
+        s.files[0].hunks[0].lines[0].text = "z".repeat(300);
+        s.rebuild_rows();
+        s
+    }
+
     #[test]
     fn renders_unified_and_side_by_side_without_panic() {
         for sxs in [false, true] {
-            let mut state = demo_state();
-            state.side_by_side = sxs;
-            let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
-            term.draw(|f| {
-                let area = Rect::new(0, 0, 100, 20);
-                let hits = render(f, area, &mut state, FocusLevel::Focused);
-                assert!(!hits.rows.is_empty(), "diff rows are clickable");
-                assert!(!hits.buttons.is_empty(), "footer buttons render");
-            })
-            .unwrap();
+            for wrap in [false, true] {
+                let mut state = demo_state();
+                state.side_by_side = sxs;
+                state.wrap = wrap;
+                let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+                term.draw(|f| {
+                    let area = Rect::new(0, 0, 100, 20);
+                    let hits = render(f, area, &mut state, FocusLevel::Focused);
+                    assert!(!hits.rows.is_empty(), "diff rows are clickable");
+                    assert!(!hits.buttons.is_empty(), "footer buttons render");
+                })
+                .unwrap();
+            }
         }
+    }
+
+    /// Wrap expands a long line onto extra visual rows: several hitboxes share
+    /// the same logical `index` (so a click on any wrapped row selects the whole
+    /// line), and the tail of the line appears on a lower row.
+    #[test]
+    fn wrap_expands_long_line_into_multiple_visual_rows() {
+        let mut state = demo_state_long();
+        state.wrap = true;
+        // Select the long line (row 2: FileHeader, HunkHeader, then first line).
+        state.selected = 2;
+        let mut term = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        let mut hits: Vec<RowHitbox> = Vec::new();
+        term.draw(|f| {
+            hits = render(f, Rect::new(0, 0, 40, 20), &mut state, FocusLevel::Focused).rows;
+        })
+        .unwrap();
+        let dup = hits.iter().filter(|h| h.index == 2).count();
+        assert!(
+            dup >= 2,
+            "the long line wraps onto ≥2 visual rows sharing its logical index (got {dup})"
+        );
+        // The wrapped continuation (the second visual row of logical line 2)
+        // still shows body text — with a blank gutter under the first row.
+        let cont_y = hits.iter().filter(|h| h.index == 2).nth(1).unwrap().rect.y;
+        let buf = term.backend().buffer();
+        let cont: String = (0..40).map(|x| buf[(x, cont_y)].symbol()).collect();
+        assert!(
+            cont.contains('z'),
+            "wrapped continuation shows body text: {cont:?}"
+        );
+    }
+
+    /// With wrap off, a long line stays one visual row per logical row (the
+    /// selection/anchor invariant), and horizontal scroll reveals its tail with
+    /// the line-number gutter still pinned at column 0.
+    #[test]
+    fn h_scroll_reveals_tail_with_pinned_gutter() {
+        let mut state = demo_state_long();
+        state.wrap = false;
+        state.h_scroll = 100;
+        let mut term = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        let mut hits: Vec<RowHitbox> = Vec::new();
+        term.draw(|f| {
+            hits = render(f, Rect::new(0, 0, 40, 20), &mut state, FocusLevel::Focused).rows;
+        })
+        .unwrap();
+        // One hitbox per logical row — no visual expansion when wrap is off.
+        assert_eq!(
+            hits.iter().filter(|h| h.index == 2).count(),
+            1,
+            "wrap off → one visual row per logical line"
+        );
+        // Locate the diff-line row (logical index 2) on screen via its hitbox;
+        // read from the hitbox's x (past the block border) so we see the gutter.
+        let hb = hits.iter().find(|h| h.index == 2).unwrap();
+        let (x0, y) = (hb.rect.x, hb.rect.y);
+        let buf = term.backend().buffer();
+        let row: String = (x0..x0 + hb.rect.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect();
+        // The gutter (old/new line numbers "1 1") is still pinned at the left.
+        assert!(
+            row.trim_start().starts_with('1'),
+            "line-number gutter stays pinned at the body's left edge: {row:?}"
+        );
+        assert!(
+            row.contains('z'),
+            "the scrolled-in body is visible: {row:?}"
+        );
     }
 
     #[test]
@@ -1041,7 +1297,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(40, 1)).unwrap();
         let mut actions = Vec::new();
         term.draw(|f| {
-            actions = render_footer(f, Rect::new(0, 0, 40, 1), false, false)
+            actions = render_footer(f, Rect::new(0, 0, 40, 1), false, false, false)
                 .into_iter()
                 .map(|(_, a)| a)
                 .collect();

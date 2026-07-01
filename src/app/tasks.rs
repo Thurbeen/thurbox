@@ -259,11 +259,9 @@ impl App {
         let count = self.task_ui.filtered_task_indices.len();
         match action {
             Action::TasksNew => self.new_task_in_pane(),
-            Action::TasksNext => {
-                if count > 0 && self.task_ui.task_panel_index + 1 < count {
-                    self.task_ui.task_panel_index += 1;
-                    self.refresh_task_view();
-                }
+            Action::TasksNext if count > 0 && self.task_ui.task_panel_index + 1 < count => {
+                self.task_ui.task_panel_index += 1;
+                self.refresh_task_view();
             }
             Action::TasksPrev => {
                 self.task_ui.task_panel_index = self.task_ui.task_panel_index.saturating_sub(1);

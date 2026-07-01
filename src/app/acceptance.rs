@@ -1640,6 +1640,8 @@ fn open_minimal_review(h: &mut Harness) {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            h_scroll: 0,
+            wrap: false,
             target: crate::app::code_review::ReviewTarget::Working,
             commits: Vec::new(),
             host: None,
@@ -1747,6 +1749,100 @@ fn review_search_flow_finds_navigates_and_clears() {
     assert!(h.app.active_review().unwrap().search.is_none());
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.app.active_review().is_none());
+}
+
+/// Insert a review whose first diff line is `width` chars wide, so horizontal
+/// scroll / wrap have something to act on. Returns the session id.
+#[cfg(test)]
+fn open_review_with_long_line(h: &mut Harness, width: usize) -> crate::session::SessionId {
+    let sid = h.app.sessions[0].info.id;
+    let mut cr = crate::app::code_review::CodeReviewState::for_test(sid, 1);
+    cr.files[0].hunks[0].lines[0].text = "a".repeat(width);
+    cr.rebuild_rows();
+    h.app.code_reviews.insert(sid, cr);
+    h.app.focus = InputFocus::CodeReview;
+    sid
+}
+
+/// `Left`/`Right` (and `h`/`l`) scroll the diff body horizontally, clamped to
+/// the longest line; `w` toggles wrap and resets the offset; scroll is a no-op
+/// while wrapped.
+#[test]
+fn review_horizontal_scroll_and_wrap_toggle() {
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
+    open_review_with_long_line(&mut h, 300);
+
+    // Right scrolls the body (step 8); Left scrolls back and clamps at 0.
+    h.key(KeyCode::Right, KeyModifiers::NONE);
+    assert_eq!(h.app.active_review().unwrap().h_scroll, 8);
+    h.key(KeyCode::Char('l'), KeyModifiers::NONE);
+    assert_eq!(
+        h.app.active_review().unwrap().h_scroll,
+        16,
+        "`l` also scrolls right"
+    );
+    for _ in 0..10 {
+        h.key(KeyCode::Left, KeyModifiers::NONE);
+    }
+    assert_eq!(
+        h.app.active_review().unwrap().h_scroll,
+        0,
+        "Left clamps at 0"
+    );
+
+    // A big jump clamps to the longest line (max_line_width - 1 = 299).
+    for _ in 0..100 {
+        h.key(KeyCode::Right, KeyModifiers::NONE);
+    }
+    assert_eq!(
+        h.app.active_review().unwrap().h_scroll,
+        299,
+        "scroll clamps to the widest line"
+    );
+
+    // `w` turns on wrap and resets the horizontal offset; while wrapped, scroll
+    // is a no-op.
+    h.key(KeyCode::Char('w'), KeyModifiers::NONE);
+    {
+        let cr = h.app.active_review().unwrap();
+        assert!(cr.wrap, "`w` enables wrap");
+        assert_eq!(cr.h_scroll, 0, "enabling wrap resets h_scroll");
+    }
+    h.key(KeyCode::Right, KeyModifiers::NONE);
+    assert_eq!(
+        h.app.active_review().unwrap().h_scroll,
+        0,
+        "horizontal scroll is a no-op while wrapped"
+    );
+
+    // `w` again turns wrap off.
+    h.key(KeyCode::Char('w'), KeyModifiers::NONE);
+    assert!(!h.app.active_review().unwrap().wrap);
+}
+
+/// Entering side-by-side pins the horizontal offset to 0 (h-scroll is
+/// unified-only) and scroll stays a no-op there.
+#[test]
+fn review_side_by_side_disables_horizontal_scroll() {
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
+    open_review_with_long_line(&mut h, 300);
+
+    h.key(KeyCode::Right, KeyModifiers::NONE);
+    assert_eq!(h.app.active_review().unwrap().h_scroll, 8);
+
+    // `v` → side-by-side resets the offset.
+    h.key(KeyCode::Char('v'), KeyModifiers::NONE);
+    {
+        let cr = h.app.active_review().unwrap();
+        assert!(cr.side_by_side);
+        assert_eq!(cr.h_scroll, 0, "side-by-side resets h_scroll");
+    }
+    h.key(KeyCode::Right, KeyModifiers::NONE);
+    assert_eq!(
+        h.app.active_review().unwrap().h_scroll,
+        0,
+        "no horizontal scroll in side-by-side"
+    );
 }
 
 /// A review is per-session like the shell view: switching to another session

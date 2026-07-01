@@ -69,6 +69,8 @@ pub(crate) enum ReviewButton {
     CycleClass,
     /// Toggle unified ↔ side-by-side.
     ToggleView,
+    /// Toggle soft-wrap of long diff lines (unified layout).
+    ToggleWrap,
     /// Open the review-target picker (branch / working / per-commit).
     Target,
     /// Open the find-in-diff search.
@@ -152,6 +154,13 @@ pub(crate) struct CodeReviewState {
     pub compose: Option<ComposeState>,
     /// Side-by-side (old | new) vs unified diff layout. Toggled with `v`.
     pub side_by_side: bool,
+    /// Horizontal column offset of the diff body (the line-number gutter stays
+    /// pinned). Slides long lines into view; toggled with `Left`/`Right`.
+    /// Ignored while `wrap` is on and in the side-by-side layout.
+    pub h_scroll: usize,
+    /// Soft-wrap long diff lines onto extra screen rows instead of truncating
+    /// (unified layout only). Toggled with `w`; forces `h_scroll = 0` when on.
+    pub wrap: bool,
     /// What the diff currently shows (branch / working / a commit).
     pub target: ReviewTarget,
     /// Commits for the target picker as `(repo_index, short-sha, subject)`.
@@ -486,6 +495,8 @@ impl App {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            h_scroll: 0,
+            wrap: false,
             target,
             commits,
             host,
@@ -658,7 +669,40 @@ impl App {
     pub(crate) fn cr_toggle_side_by_side(&mut self) {
         if let Some(cr) = self.active_review_mut() {
             cr.side_by_side = !cr.side_by_side;
+            // Horizontal scroll is unified-only; leaving it set would strand the
+            // side-by-side cells at a nonzero offset once you switch back.
+            if cr.side_by_side {
+                cr.h_scroll = 0;
+            }
         }
+    }
+
+    /// Toggle soft-wrap of long diff lines (unified layout). Wrapping and
+    /// horizontal scroll are mutually exclusive, so turning wrap on resets the
+    /// column offset.
+    pub(crate) fn cr_toggle_wrap(&mut self) {
+        if let Some(cr) = self.active_review_mut() {
+            cr.wrap = !cr.wrap;
+            if cr.wrap {
+                cr.h_scroll = 0;
+            }
+        }
+    }
+
+    /// Scroll the diff body horizontally by `delta` columns (positive = right).
+    /// No-op while wrapped or in side-by-side; otherwise clamped so you can't
+    /// scroll past the longest line (the exact body width isn't known here, so
+    /// `render_rows` applies a final clamp against the drawn `avail`).
+    pub(crate) fn cr_scroll_h(&mut self, delta: isize) {
+        let Some(cr) = self.active_review_mut() else {
+            return;
+        };
+        if cr.wrap || cr.side_by_side {
+            return;
+        }
+        let max = cr.max_line_width().saturating_sub(1);
+        let next = (cr.h_scroll as isize + delta).clamp(0, max as isize);
+        cr.h_scroll = next as usize;
     }
 
     /// Open the review-target picker (branch / working / per-commit).
@@ -1146,6 +1190,7 @@ impl App {
             ReviewButton::Cancel => self.cr_compose_cancel(),
             ReviewButton::CycleClass => self.cr_compose_cycle_class(true),
             ReviewButton::ToggleView => self.cr_toggle_side_by_side(),
+            ReviewButton::ToggleWrap => self.cr_toggle_wrap(),
             ReviewButton::Target => self.cr_open_target_picker(),
             ReviewButton::Find => self.cr_start_search(),
         }
@@ -1253,7 +1298,12 @@ impl App {
             KeyCode::BackTab | KeyCode::Char('{') => self.cr_jump_file(false),
             KeyCode::Char(']') => self.cr_jump_hunk(true),
             KeyCode::Char('[') => self.cr_jump_hunk(false),
+            // Horizontal scroll of the body (gutter stays pinned). `h`/`l` are
+            // free in the diff pane (they mean "open" only in the files pane).
+            KeyCode::Left | KeyCode::Char('h') => self.cr_scroll_h(-8),
+            KeyCode::Right | KeyCode::Char('l') => self.cr_scroll_h(8),
             KeyCode::Char('v') => self.cr_toggle_side_by_side(),
+            KeyCode::Char('w') => self.cr_toggle_wrap(),
             KeyCode::Char('t') => self.cr_open_target_picker(),
             KeyCode::Char('c') => self.cr_start_comment(false),
             KeyCode::Char('f') => self.cr_start_comment(true),
@@ -1513,6 +1563,19 @@ fn apply_textarea_key(ta: &mut TextArea, code: KeyCode, mods: KeyModifiers) {
 }
 
 impl CodeReviewState {
+    /// Longest diff-line body width (in chars) across every hunk of every file.
+    /// Bounds the horizontal scroll offset; computed on a keypress (not per
+    /// frame), so the O(total chars) scan is cheap.
+    pub(crate) fn max_line_width(&self) -> usize {
+        self.files
+            .iter()
+            .flat_map(|f| f.hunks.iter())
+            .flat_map(|h| h.lines.iter())
+            .map(|l| l.text.chars().count())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Keep the selected row within the scroll window. The viewport height is
     /// applied by the renderer; here we only keep `scroll <= selected`.
     fn ensure_visible(&mut self) {
@@ -1567,6 +1630,8 @@ impl CodeReviewState {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            h_scroll: 0,
+            wrap: false,
             target: ReviewTarget::Branch,
             commits: Vec::new(),
             host: None,
@@ -1632,6 +1697,8 @@ mod tests {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            h_scroll: 0,
+            wrap: false,
             target: ReviewTarget::Branch,
             commits: Vec::new(),
             host: None,

@@ -1411,6 +1411,21 @@ code_review`.
   `g`/`G`, `{`/`}` (or Tab) next/prev file, `[`/`]` next/prev hunk. Every footer
   button is labelled with its key (`Comment·c`, `Send→Agent·e`, `Find·/`, …) so
   the shortcuts are discoverable; the changed-files column shows a nav-key legend.
+- **Long lines: horizontal scroll + wrap toggle.** A diff line wider than the
+  pane doesn't get lost. By default the body scrolls horizontally with
+  `Left`/`Right` (or `h`/`l`) while the line-number gutter stays pinned
+  (`CodeReviewState::h_scroll`, stepped by `App::cr_scroll_h`, clamped to the
+  longest line). A **wrap toggle** (`w` / the `Wrap`/`NoWrap` footer pill,
+  `CodeReviewState::wrap`, `App::cr_toggle_wrap`) soft-wraps long lines onto
+  extra screen rows instead. Both are transient (unified layout only; no-ops in
+  side-by-side, which resets `h_scroll`). The core invariant — **1 logical diff
+  row = 1 selectable unit** — is preserved: selection, comment anchoring, click
+  hitboxes, and the `selected`-primary scrollbar stay logical; wrapping only
+  expands the *visual* rows in `render_rows`, and every visual sub-row carries
+  its parent's logical index (so a click on a wrapped continuation selects the
+  whole line, and compose anchors to the line's first visual row). Rendering:
+  `unified_diff_line` (h-scroll) / `unified_diff_line_wrapped` (wrap) both build
+  the windowed body via the shared `diff_body_spans`.
 - **Find in diff (`/`).** A `/`-triggered find sub-mode (also the `Find·/` footer
   button, and `/` from the changed-files pane) searches every visible row's text
   — file paths, hunk headings, diff line bodies, comment bodies (case-insensitive
@@ -1482,8 +1497,11 @@ code_review`.
 - **v1 follow-ups** (named, not silently dropped): range/multi-line comments,
   *true* paired side-by-side (v1's side-by-side is split-column — one source line
   per row, context on both sides, add/del on their own side), async diff build for
-  huge repos (v1 builds synchronously on toggle), and grammar-aware syntax
-  highlighting (v1's lexer is heuristic + language-agnostic).
+  huge repos (v1 builds synchronously on toggle), grammar-aware syntax
+  highlighting (v1's lexer is heuristic + language-agnostic), horizontal
+  scroll + wrap in the **side-by-side** layout (v1 supports them in unified
+  only), auto-revealing a horizontally-scrolled-off search match, and
+  search-match highlight across a wrap-boundary seam.
 
 ## Demo Video
 
