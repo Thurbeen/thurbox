@@ -52,11 +52,14 @@ fn build_restart_plan(session: &SharedSession) -> Result<RestartPlan, String> {
     // workspace, gathering every member dir; a single-repo session keeps the
     // primary repo. Only resolve when there is a primary cwd to anchor on.
     if let Some(primary) = session.cwd.clone() {
+        // The headless restart path is local-only (`spawn_window`), so the
+        // workspace is built locally; remote restart isn't wired here.
         config.cwd = Some(super::spawn::resolve_launch_cwd(
             &agent_session_id,
             &primary,
             &session.worktrees,
             &session.additional_dirs,
+            None,
         ));
     }
 
@@ -85,6 +88,17 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
+
+    // The kill/spawn below drive the *local* tmux only. Silently "restarting"
+    // a remote session would leave its real window running on the host and
+    // spawn a stray local one (with a locally-built workspace), so refuse.
+    if crate::session::is_remote_backend(&session.backend_type) {
+        return Err(format!(
+            "Session '{}' runs on remote backend '{}'; headless restart is \
+             local-only — restart it from the TUI instead",
+            session.name, session.backend_type
+        ));
+    }
 
     let plan = build_restart_plan(&session)?;
 

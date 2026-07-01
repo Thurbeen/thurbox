@@ -682,9 +682,17 @@ impl TmuxBackend {
     }
 
     /// The shell tmux should use for `default-command`. Local uses the user's
-    /// `$SHELL`; a remote backend uses a POSIX shell that is guaranteed to exist
-    /// on the remote host. Not used on Windows (psmux keeps its native default
-    /// shell — see [`apply_session_config`](Self::apply_session_config)).
+    /// `$SHELL`; a remote backend uses a POSIX shell guaranteed to exist on the
+    /// remote host. Not used on Windows (psmux keeps its native default shell —
+    /// see [`apply_session_config`](Self::apply_session_config)).
+    ///
+    /// The value must be a single, space-free token: it round-trips through the
+    /// remote transport's per-argument shell-quoting (`ssh`/`wsl.exe`), where a
+    /// space would be re-split by the remote shell into extra `set-option` args.
+    /// The login-shell `PATH` fix for remote agents (e.g. `claude` under
+    /// `~/.local/bin`) is applied at the *window command* instead — see
+    /// [`build_shell_command`](Self::build_shell_command) /
+    /// [`login_wrap_for_remote`](Self::login_wrap_for_remote).
     #[cfg(not(windows))]
     fn config_shell(&self) -> String {
         if self.transport.is_remote() {
@@ -708,6 +716,30 @@ impl TmuxBackend {
             parts.push(control_mode::shell_escape(arg));
         }
         parts.join(" ")
+    }
+
+    /// Wrap a window command in a **login** shell for a remote/WSL backend so the
+    /// user's profile `PATH` is present. Agents are commonly installed under
+    /// `~/.local/bin` (e.g. `claude`), which the login profile adds to `PATH`; a
+    /// non-login shell skips those files, so the agent binary isn't found, the
+    /// window command exits 1, and the pane dies instantly — the remote session
+    /// appears to "not launch". `exec` replaces the wrapper so no extra process
+    /// lingers. Local backends already inherit the user's interactive `PATH`, so
+    /// they pass through unchanged — and so does a **psmux** remote (a Windows
+    /// SSH host), which has no `/bin/sh` to wrap with.
+    ///
+    /// Done here — not via tmux `default-command` — because that value round-trips
+    /// through the remote transport's per-arg shell-quoting, where a `-l` flag's
+    /// space would be re-split into a stray `set-option` argument.
+    fn login_wrap_for_remote(&self, shell_cmd: &str) -> String {
+        if self.transport.is_remote() && !self.transport.uses_psmux() {
+            // `exec` replaces the login shell with the agent (after the profile
+            // has set PATH), so no wrapper process lingers under the pane.
+            let inner = control_mode::shell_escape(&format!("exec {shell_cmd}"));
+            format!("/bin/sh -lc {inner}")
+        } else {
+            shell_cmd.to_string()
+        }
     }
 
     /// Run a closure with a reference to the active control mode, or bail if
@@ -951,7 +983,7 @@ impl SessionBackend for TmuxBackend {
         rows: u16,
         cols: u16,
     ) -> Result<SpawnedSession> {
-        let shell_cmd = Self::build_shell_command(command, args);
+        let shell_cmd = self.login_wrap_for_remote(&Self::build_shell_command(command, args));
 
         let cwd_part = match cwd {
             Some(dir) => format!(" -c {}", control_mode::shell_escape(&dir.to_string_lossy())),
@@ -1677,6 +1709,37 @@ mod tests {
         ));
         assert_eq!(backend.socket, TMUX_SOCKET);
         assert_eq!(backend.session, TMUX_SESSION);
+    }
+
+    #[test]
+    fn login_wrap_wraps_remote_command_in_login_shell() {
+        // Remote/WSL: the window command runs under a login shell so the user's
+        // profile PATH (e.g. `~/.local/bin/claude`) is present, or the agent
+        // binary isn't found and the pane dies instantly.
+        let backend = TmuxBackend::from_host(&crate::session::HostDef::wsl("Ubuntu"));
+        let wrapped = backend.login_wrap_for_remote("claude --resume x");
+        assert_eq!(wrapped, "/bin/sh -lc 'exec claude --resume x'");
+    }
+
+    #[test]
+    fn login_wrap_is_noop_for_local() {
+        // Local backends inherit the user's interactive PATH — no wrap needed.
+        let backend = TmuxBackend::local();
+        assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
+    }
+
+    #[test]
+    fn login_wrap_is_noop_for_psmux_remote() {
+        // A Windows SSH host (multiplexer = "psmux") has no `/bin/sh`; wrapping
+        // would replace the agent command with one that can't start at all.
+        let host = crate::session::HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        };
+        let backend = TmuxBackend::from_host(&host);
+        assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
     }
 
     #[test]

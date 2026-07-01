@@ -64,6 +64,15 @@ pub fn ensure_workspace(id: &str, members: &[(String, PathBuf)]) -> io::Result<P
     Ok(dir)
 }
 
+/// The workspace directory path for `id` **without building or touching it** —
+/// for callers that need where an existing workspace lives while an agent is
+/// still running in it (e.g. the companion shell pane): the destructive
+/// rebuild in [`ensure_workspace`] would delete the running agent's cwd inode
+/// out from under it.
+pub fn workspace_path(id: &str) -> io::Result<PathBuf> {
+    workspace_dir(id)
+}
+
 /// Remove the workspace directory for `id`, if present. Only the symlinks are
 /// removed; the directories they point at are untouched. A missing workspace is
 /// not an error.

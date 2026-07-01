@@ -219,6 +219,10 @@ mod tests {
                 "thurbox",
             ]
         );
+        // A Unix caller pins the child cwd to `/` (see `shell::wsl_command`)
+        // so wsl.exe doesn't inherit a caller cwd missing from the distro.
+        #[cfg(unix)]
+        assert_eq!(cmd.get_current_dir(), Some(std::path::Path::new("/")));
     }
 
     #[test]

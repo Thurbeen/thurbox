@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -102,7 +102,7 @@ fn remote_home_cache() -> &'static Mutex<HashMap<String, String>> {
 
 /// Resolve the `$HOME` directory on a host (over SSH or inside a WSL distro),
 /// caching the result.
-fn remote_home(host: &HostDef) -> Result<String> {
+pub(crate) fn remote_home(host: &HostDef) -> Result<String> {
     let key = host.backend_name();
     if let Ok(guard) = remote_home_cache().lock() {
         if let Some(home) = guard.get(&key) {
@@ -151,6 +151,272 @@ fn worktree_path_for(host: Option<&HostDef>, repo_path: &Path, branch: &str) -> 
             )))
         }
     }
+}
+
+/// Sanitize a workspace directory segment (the session id). Mirrors
+/// `workspace::sanitize_segment` so the remote workspace path matches the local
+/// one; `git` can't depend on `workspace`, so it is duplicated by construction.
+fn sanitize_workspace_segment(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '-',
+            c if c.is_whitespace() => '-',
+            c => c,
+        })
+        .collect();
+    cleaned.trim_matches(['.', '-']).to_string()
+}
+
+/// A unique, sanitized symlink name for a workspace member. Mirrors
+/// `workspace::unique_link_name`: collisions get a `-2`, `-3`, … suffix and an
+/// empty label falls back to `repo`.
+fn unique_link_name(name: &str, used: &mut HashSet<String>) -> String {
+    let base = {
+        let s = sanitize_workspace_segment(name);
+        if s.is_empty() {
+            "repo".to_string()
+        } else {
+            s
+        }
+    };
+    if used.insert(base.clone()) {
+        return base;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Build a per-session **remote** symlink workspace on `host`: a directory
+/// holding one symlink per member (`<label> -> <remote member path>`), so a
+/// multi-repo remote session launches somewhere every repo is a visible subdir.
+///
+/// This is the remote analogue of [`crate::workspace::ensure_workspace`], run
+/// over the host launcher (`ssh`/`wsl.exe`). All paths are POSIX (`/`-joined)
+/// because the host is always Linux, even when thurbox runs on Windows. Returns
+/// the remote workspace directory path.
+pub fn ensure_remote_workspace(
+    host: &HostDef,
+    id: &str,
+    members: &[(String, PathBuf)],
+) -> Result<PathBuf> {
+    let ws = remote_workspace_dir(host, id)?;
+
+    // Fresh dir, then one symlink per member, de-duplicating names with a `-2`,
+    // `-3`, … suffix (matching the local builder).
+    let mut script = format!("rm -rf {ws} && mkdir -p {ws}", ws = posix_quote(&ws));
+    let mut used: HashSet<String> = HashSet::new();
+    for (label, target) in members {
+        let name = unique_link_name(label, &mut used);
+        let link = format!("{ws}/{name}");
+        script.push_str(&format!(
+            " && ln -s {target} {link}",
+            target = posix_quote(&target.to_string_lossy()),
+            link = posix_quote(&link),
+        ));
+    }
+
+    let output = host_shell_c(host, &script)
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to build remote multi-repo workspace")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("remote workspace build failed: {}", stderr.trim());
+    }
+    Ok(PathBuf::from(ws))
+}
+
+/// The remote workspace directory for a session id on `host`, mirroring the
+/// local layout (`<thurbox data root>/workspaces/<sanitized id>`). Base:
+/// `<worktrees_dir>/..`, or `$HOME/.local/share/thurbox`. Sanitizes the id
+/// exactly like the local builder (`workspace::workspace_dir`) — `git` can't
+/// depend on `workspace`, so the scheme is mirrored here by construction (kept
+/// in sync via tests) — including its empty-id rejection: an empty segment
+/// would make the `rm -rf` in ensure/remove target the workspaces *root*,
+/// wiping every session's workspace on the host.
+pub(crate) fn remote_workspace_dir(host: &HostDef, id: &str) -> Result<String> {
+    let base = match &host.worktrees_dir {
+        Some(dir) => Path::new(dir)
+            .parent()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| dir.clone()),
+        None => format!("{}/.local/share/thurbox", remote_home(host)?),
+    };
+    let segment = sanitize_workspace_segment(id);
+    anyhow::ensure!(!segment.is_empty(), "empty workspace id");
+    Ok(format!("{base}/workspaces/{segment}"))
+}
+
+/// Remove the remote symlink workspace for a session id on `host` — the
+/// teardown counterpart of [`ensure_remote_workspace`], the remote analogue of
+/// [`crate::workspace::remove_workspace`]. Only the workspace dir (symlinks) is
+/// removed; the repos the links point at are untouched, and a missing
+/// workspace is not an error (`rm -rf` on a missing path succeeds).
+pub fn remove_remote_workspace(host: &HostDef, id: &str) -> Result<()> {
+    let ws = remote_workspace_dir(host, id)?;
+    let output = host_shell_c(host, &format!("rm -rf {}", posix_quote(&ws)))
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to remove remote workspace")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("remote workspace removal failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+/// Build a `<launcher> sh -c <script>` [`Command`] for a host, correct for each
+/// transport's argument handling.
+///
+/// The two launchers disagree on how trailing args reach the in-host shell:
+/// - **`wsl.exe`** gets `--exec` (`-e`), which bypasses `wsl.exe`'s own
+///   command-line processing entirely: argv reaches the in-distro process
+///   verbatim, so the multi-statement `script` travels as one **unquoted** arg
+///   and `sh -c` parses the `posix_quote`d paths inside it exactly like the
+///   ssh path. Without `-e`, `wsl.exe` mangles the script — it substitutes
+///   `$…` even inside a preserved argument (single quotes don't protect it),
+///   and pre-quoting the script makes the in-distro shell treat the quoted
+///   blob as one command word ("not found").
+/// - **`ssh`** space-joins its trailing args into one string the remote login
+///   shell re-splits, so the `script` must be POSIX-quoted to survive as a
+///   single `sh -c` argument (mirroring [`git_command`]).
+fn host_shell_c(host: &HostDef, script: &str) -> Command {
+    let mut cmd = host_launcher(host);
+    if host.is_wsl() {
+        cmd.arg("-e").arg("sh").arg("-c").arg(script);
+    } else {
+        cmd.arg(posix_quote("sh"))
+            .arg(posix_quote("-c"))
+            .arg(posix_quote(script));
+    }
+    cmd
+}
+
+/// Copy a local file to the **same** absolute path on a remote `host`, creating
+/// the parent directory. Streams the file's bytes over the host launcher's
+/// stdin into `cat > <path>`, so it is transport-neutral (ssh/wsl) and needs no
+/// `scp`/`\\wsl$` share. Used to materialize thurbox-managed agent config (e.g.
+/// the hooks `--settings claude.json`) on the remote so the agent — launched
+/// with a `--settings <path>` that thurbox generated against the *local* config
+/// dir — finds the file at that path on the remote too.
+pub fn copy_file_to_remote(host: &HostDef, local: &Path, remote_path: &str) -> Result<()> {
+    use std::io::Write;
+
+    let bytes = std::fs::read(local)
+        .with_context(|| format!("failed to read local file {}", local.display()))?;
+
+    let parent = Path::new(remote_path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/".to_string());
+    // `mkdir -p <dir> && cat > <file>`: stdin is the file body. Both transports
+    // pass stdin straight through to the in-host shell.
+    let script = format!(
+        "mkdir -p {dir} && cat > {file}",
+        dir = posix_quote(&parent),
+        file = posix_quote(remote_path),
+    );
+
+    let mut child = host_shell_c(host, &script)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn remote file-copy")?;
+    child
+        .stdin
+        .take()
+        .context("remote file-copy stdin unavailable")?
+        .write_all(&bytes)
+        .context("failed to stream file to remote")?;
+    let output = child
+        .wait_with_output()
+        .context("failed to wait on remote file-copy")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("remote file-copy failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+/// Expand a leading `~` in a remote path against the host's `$HOME`. Remote
+/// paths are never expanded against the *local* home (they're different
+/// filesystems), so this is the only `~` handling a remote path gets. A path
+/// with no `~` prefix passes through unchanged.
+pub fn expand_remote_tilde(host: &HostDef, path: &str) -> Result<String> {
+    if path == "~" {
+        return remote_home(host);
+    }
+    match path.strip_prefix("~/") {
+        Some(rest) => Ok(format!("{}/{}", remote_home(host)?, rest)),
+        None => Ok(path.to_string()),
+    }
+}
+
+/// List immediate sub-directory **names** of `dir` on `host` over the host
+/// launcher, sorted. Hidden (`.`-prefixed) entries are *included* — the caller
+/// filters by the prefix it is completing (mirroring the local completer,
+/// which offers hidden dirs only to a `.`-prefix). A leading `~` is expanded
+/// against the host's `$HOME`. Used by the repo picker's remote path
+/// completion.
+///
+/// Runs `ls -1p <dir>` — a **variable-free** command on purpose, and over WSL
+/// with `--exec` so argv reaches `ls` verbatim (no `wsl.exe` `$`-substitution
+/// or shell re-splitting; over ssh each token is `posix_quote`d instead). `-p`
+/// appends a trailing `/` to directories, which is how they're identified
+/// without a shell loop.
+///
+/// This runs synchronously on the caller's (UI) thread, so the ssh variant
+/// adds `BatchMode=yes` + `ConnectTimeout=5` **after** the host's own
+/// `ssh_opts` (ssh honors the first occurrence of an option, so a user
+/// setting wins): completion fails fast on an unreachable or
+/// password-prompting host instead of freezing the TUI indefinitely.
+pub fn list_dir_on(host: &HostDef, dir: &str) -> Result<Vec<String>> {
+    let dir = expand_remote_tilde(host, dir)?;
+    let mut cmd = if host.is_wsl() {
+        let mut cmd = host_launcher(host);
+        cmd.arg("-e");
+        for tok in ["ls", "-1p", &dir] {
+            cmd.arg(tok);
+        }
+        cmd
+    } else {
+        let mut opts = host.ssh_opts.clone();
+        opts.extend(
+            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        let mut cmd = crate::shell::ssh_command(&host.destination, &opts);
+        for tok in ["ls", "-1p", &dir] {
+            cmd.arg(posix_quote(tok));
+        }
+        cmd
+    };
+    let output = cmd
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to list remote directory")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("remote dir listing failed: {}", stderr.trim());
+    }
+    let mut names: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        // Only directories (trailing `/`).
+        .filter_map(|line| line.strip_suffix('/'))
+        .filter(|name| !name.is_empty())
+        .map(String::from)
+        .collect();
+    names.sort();
+    Ok(names)
 }
 
 /// Global cache for repo display names (path → name).
@@ -1492,7 +1758,137 @@ mod tests {
                 "x",
             ]
         );
+        // A Unix caller pins the child cwd to `/` so wsl.exe doesn't inherit
+        // (and fail to chdir to) a caller cwd missing from the target distro.
+        #[cfg(unix)]
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/")));
+        #[cfg(windows)]
         assert_eq!(cmd.get_current_dir(), None);
+    }
+
+    #[test]
+    fn host_shell_c_wsl_passes_script_unquoted_via_exec() {
+        // WSL: `--exec` hands argv to the in-distro process verbatim, so the
+        // multi-statement script travels as a single *unquoted* arg. Without
+        // it, wsl.exe substitutes `$…` inside the script and a pre-quoted
+        // script arrives as one literal command word ("not found").
+        let h = HostDef::wsl("Ubuntu");
+        let cmd = host_shell_c(&h, "mkdir -p /a && ln -s /b /a/b");
+        let (prog, args) = program_and_args(&cmd);
+        assert_eq!(prog, "wsl.exe");
+        assert_eq!(
+            args,
+            [
+                "-d",
+                "Ubuntu",
+                "-e",
+                "sh",
+                "-c",
+                "mkdir -p /a && ln -s /b /a/b"
+            ]
+        );
+    }
+
+    #[test]
+    fn host_shell_c_ssh_posix_quotes_script() {
+        // SSH space-joins its trailing args, so the script must be POSIX-quoted
+        // to survive as a single `sh -c` argument.
+        let h = host("me@box", None);
+        let cmd = host_shell_c(&h, "mkdir -p /a && ln -s /b /a/b");
+        let (prog, args) = program_and_args(&cmd);
+        assert_eq!(prog, "ssh");
+        // The script arg is single-quoted as a whole.
+        assert!(
+            args.iter().any(|a| a == "'mkdir -p /a && ln -s /b /a/b'"),
+            "script should be posix-quoted for ssh; got {args:?}"
+        );
+    }
+
+    #[test]
+    fn list_dir_on_wsl_uses_variable_free_exec_ls() {
+        // Must be `--exec ls -1p <dir>` as separate argv tokens — NOT an
+        // `sh -c` script — so no wsl.exe `$`-substitution or shell
+        // re-interpretation can touch the user-typed dir.
+        let h = HostDef::wsl("Ubuntu");
+        let mut cmd = host_launcher(&h);
+        cmd.arg("-e");
+        for tok in ["ls", "-1p", "/home/me/repos"] {
+            cmd.arg(tok);
+        }
+        let (prog, args) = program_and_args(&cmd);
+        assert_eq!(prog, "wsl.exe");
+        assert_eq!(args, ["-d", "Ubuntu", "-e", "ls", "-1p", "/home/me/repos"]);
+        // No `sh -c` (the broken form) anywhere.
+        assert!(
+            !args.iter().any(|a| a == "-c"),
+            "must not use sh -c: {args:?}"
+        );
+    }
+
+    #[test]
+    fn list_dir_on_ssh_adds_noninteractive_opts_after_user_opts() {
+        // Completion runs synchronously on the UI thread: BatchMode +
+        // ConnectTimeout make an unreachable/password host fail fast instead
+        // of freezing the TUI. They come AFTER the host's own ssh_opts — ssh
+        // honors the first occurrence, so a user setting wins.
+        let h = HostDef {
+            name: "box".into(),
+            destination: "me@box".into(),
+            ssh_opts: vec!["-o".into(), "ConnectTimeout=30".into()],
+            ..Default::default()
+        };
+        // Reconstruct the launcher exactly as list_dir_on's ssh branch does.
+        let mut opts = h.ssh_opts.clone();
+        opts.extend(
+            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        let cmd = crate::shell::ssh_command(&h.destination, &opts);
+        let (prog, args) = program_and_args(&cmd);
+        assert_eq!(prog, "ssh");
+        let user_pos = args.iter().position(|a| a == "ConnectTimeout=30");
+        let ours_pos = args.iter().position(|a| a == "ConnectTimeout=5");
+        assert!(user_pos.unwrap() < ours_pos.unwrap());
+        assert!(args.iter().any(|a| a == "BatchMode=yes"));
+    }
+
+    #[test]
+    fn expand_remote_tilde_passes_plain_paths_through() {
+        // No `~` prefix → no remote round-trip, byte-identical passthrough
+        // (including a mid-path `~`, which is not a home reference).
+        let h = HostDef::wsl("Ubuntu");
+        assert_eq!(
+            expand_remote_tilde(&h, "/home/me/repos").unwrap(),
+            "/home/me/repos"
+        );
+        assert_eq!(expand_remote_tilde(&h, "/data/~x").unwrap(), "/data/~x");
+    }
+
+    #[test]
+    fn sanitize_workspace_segment_matches_local_scheme() {
+        // Mirrors `workspace::sanitize_segment`: slashes/backslashes/colons and
+        // whitespace → `-`; leading/trailing `.`/`-` trimmed.
+        assert_eq!(sanitize_workspace_segment("feat/x"), "feat-x");
+        assert_eq!(sanitize_workspace_segment("a b:c\\d"), "a-b-c-d");
+        assert_eq!(sanitize_workspace_segment("--.hidden.--"), "hidden");
+        // A UUID (the real input) is unchanged.
+        assert_eq!(
+            sanitize_workspace_segment("d5715d35-9599-4507-9901-ef33b9476358"),
+            "d5715d35-9599-4507-9901-ef33b9476358"
+        );
+    }
+
+    #[test]
+    fn unique_link_name_dedups_with_dash_two_suffix() {
+        // Must match the local builder: first collision is `-2`, then `-3`, and
+        // an empty label falls back to `repo`.
+        let mut used = HashSet::new();
+        assert_eq!(unique_link_name("webapp", &mut used), "webapp");
+        assert_eq!(unique_link_name("webapp", &mut used), "webapp-2");
+        assert_eq!(unique_link_name("webapp", &mut used), "webapp-3");
+        assert_eq!(unique_link_name("", &mut used), "repo");
+        assert_eq!(unique_link_name("", &mut used), "repo-2");
     }
 
     #[test]
