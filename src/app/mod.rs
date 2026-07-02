@@ -1158,8 +1158,28 @@ impl App {
     /// config by looking its agent up in the registry. Falls back to the
     /// registry default, then to the built-in default, so a stale/unknown agent
     /// name never breaks spawning.
+    ///
+    /// For **adoption** (attaching to an already-running window). Paths that
+    /// launch a new process use `launch_provider_for`, which also adapts the
+    /// def's args for a remote host.
     pub fn provider_for(&self, config: &SessionConfig) -> Arc<dyn crate::agent::AgentProvider> {
         Arc::new(GenericProvider::new(self.agent_def_for(&config.agent)))
+    }
+
+    /// [`Self::provider_for`], plus remote arg adaptation: when `config` targets
+    /// a remote (SSH/WSL) backend, the def's args that reference thurbox-managed
+    /// config files by *local* path (claude's hooks `--settings …`) are rewritten
+    /// for the host — materialized at a home-translated remote path, or stripped
+    /// when no remote path can work — because an unresolvable path kills the
+    /// agent on launch ("Settings file not found"). Shares the headless spawn's
+    /// implementation; used by every path that launches a new agent process
+    /// (spawn, restore, respawn-on-restore).
+    fn launch_provider_for(&self, config: &SessionConfig) -> Arc<dyn crate::agent::AgentProvider> {
+        let mut def = self.agent_def_for(&config.agent);
+        if let Some(h) = self.host_for_backend(config.backend.as_deref()) {
+            def.args = crate::session_ops::spawn::adapt_agent_args_for_remote(h, def.args);
+        }
+        Arc::new(GenericProvider::new(def))
     }
 
     /// Resolve the [`AgentDef`] for an agent name via the same fallback chain as
@@ -1411,6 +1431,10 @@ impl App {
         // Keep the same thurbox identity across a restart so injected env stays
         // stable (`THURBOX_SESSION`).
         let session_id = session.info.id;
+        // Preserve a remote backend on the config — set *before* env injection
+        // (which skips the local-path dir vars for remote sessions) and used to
+        // adapt the relaunch args for the host.
+        let backend_type = session.backend_name().to_string();
         // Rebuild the process cwd: the primary repo for a single-repo session,
         // or the (idempotently rebuilt) symlink workspace for a multi-repo one.
         let cwd = self.session_process_cwd(&session.info);
@@ -1422,6 +1446,7 @@ impl App {
             cwd,
             agent,
             fork_session_id: None,
+            backend: crate::session::is_remote_backend(&backend_type).then_some(backend_type),
             ..SessionConfig::default()
         };
         // `Session::restart` replaces the session env wholesale, so re-inject the
@@ -1439,12 +1464,17 @@ impl App {
     /// Execute the actual restart with the finalized config.
     fn do_restart(&mut self, config: SessionConfig) {
         let (rows, cols) = self.content_area_size();
+        // Resolve the relaunch provider from the *current* registry (and adapt
+        // its args for a remote backend) before restarting — the provider the
+        // session stored at spawn/adopt time may predate both.
+        let provider = self.launch_provider_for(&config);
         let Some(session) = self.active_session_mut() else {
             // The active session vanished (e.g. deleted by a concurrent CLI
             // command) before the restart fired — degrade to a no-op.
             self.new_session.restart = false;
             return;
         };
+        session.set_provider(provider);
         let session_id = session.info.id;
         match session.restart(&config, rows, cols) {
             Ok(()) => {
@@ -1923,18 +1953,13 @@ impl App {
             deleted.agent_session_id.clone(),
             deleted.agent,
             cwd,
+            &deleted.backend_type,
         );
         config.resume_session_id = deleted.agent_session_id;
-        // Preserve the persisted backend so a restored off-local
-        // (`ssh:<host>` / `wsl:<distro>`) session keeps its backend name on the
-        // config; local sessions stay `None`.
-        if crate::session::is_remote_backend(&deleted.backend_type) {
-            config.backend = Some(deleted.backend_type.clone());
-        }
 
         let session_name = deleted.name.clone();
         let (rows, cols) = self.content_area_size();
-        let provider = self.provider_for(&config);
+        let provider = self.launch_provider_for(&config);
 
         match Session::spawn(
             session_name.clone(),
@@ -3334,17 +3359,7 @@ impl App {
             }
         };
 
-        let provider = self.provider_for(&config);
-
-        // On a remote host, materialize any thurbox-managed config file the
-        // agent args reference by its *local* path (e.g. claude's hooks
-        // `--settings <config>/hooks/claude.json`) at the same path on the
-        // remote, so the agent doesn't fail to launch ("Settings file not
-        // found"). Best-effort; shares the headless spawn's implementation.
-        if let Some(h) = spawn_host.as_ref() {
-            let args = crate::agent::AgentProvider::build_args(provider.as_ref(), &config);
-            crate::session_ops::spawn::materialize_agent_config_on_remote(h, &args);
-        }
+        let provider = self.launch_provider_for(&config);
 
         Some(SpawnInputs {
             config,
@@ -4604,12 +4619,18 @@ impl App {
         agent_session_id: Option<String>,
         agent: String,
         cwd: Option<PathBuf>,
+        backend_type: &str,
     ) -> SessionConfig {
         let mut config = SessionConfig {
             agent_session_id: agent_session_id.clone(),
             session_id: Some(id),
             cwd,
             agent,
+            // Preserve a persisted off-local (`ssh:<host>` / `wsl:<distro>`)
+            // backend — set *before* env injection, which skips the local-path
+            // dir vars for remote sessions. Local stays `None`.
+            backend: crate::session::is_remote_backend(backend_type)
+                .then(|| backend_type.to_string()),
             ..SessionConfig::default()
         };
         // `THURBOX_SESSION` (derived from `session_id`) is the identity that
@@ -4650,11 +4671,12 @@ impl App {
             Some(agent_sid.clone()),
             shared_session.agent.clone(),
             cwd,
+            &shared_session.backend_type,
         );
         let def = self.agent_def_for(&config.agent);
         config.resume_session_id =
             crate::session_ops::resume_trigger_for(&def, agent_sid, &config.env);
-        let provider = self.provider_for(&config);
+        let provider = self.launch_provider_for(&config);
 
         if let Ok(mut spawned) = Session::spawn(
             shared_session.name.clone(),
@@ -5032,6 +5054,11 @@ impl App {
         // restarts: `do_spawn_session` upserts in place (no soft-delete + new-row
         // churn), and `THURBOX_SESSION` is re-injected with the same id. Any
         // cached id / queued message addressed to this session stays valid.
+        // Preserving a remote `backend` keeps the respawn on its own host —
+        // without it `do_spawn_session` would silently relaunch the session on
+        // the local tmux, pointed at worktree paths that only exist remotely.
+        let backend = crate::session::is_remote_backend(&shared.backend_type)
+            .then(|| shared.backend_type.clone());
         let mut config = SessionConfig {
             session_id: Some(shared.id),
             resume_session_id: None,
@@ -5039,6 +5066,7 @@ impl App {
             cwd: shared.cwd,
             agent,
             fork_session_id: None,
+            backend,
             ..SessionConfig::default()
         };
         let def = self.agent_def_for(&config.agent);
@@ -5758,9 +5786,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _guard = crate::paths::TestPathGuard::new(tmp.path());
         let id = crate::session::SessionId::default();
-        let config =
-            App::restored_session_config(id, Some("agent-conv-uuid".into()), "claude".into(), None);
+        let config = App::restored_session_config(
+            id,
+            Some("agent-conv-uuid".into()),
+            "claude".into(),
+            None,
+            "local-tmux",
+        );
         assert_eq!(config.session_id, Some(id));
+        assert_eq!(config.backend, None, "local backend stays None");
         assert_eq!(
             config.env.get("THURBOX_SESSION"),
             Some(&id.to_string()),
@@ -5784,8 +5818,31 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _guard = crate::paths::TestPathGuard::new(tmp.path());
         let id = crate::session::SessionId::default();
-        let config = App::restored_session_config(id, None, "codex".into(), None);
+        let config = App::restored_session_config(id, None, "codex".into(), None, "local-tmux");
         assert_eq!(config.env.get("THURBOX_SESSION"), Some(&id.to_string()));
+    }
+
+    #[test]
+    fn restored_session_config_remote_backend_carries_and_skips_local_dirs() {
+        // A restored off-local session must set `backend` *before* env injection
+        // so the local-path dir vars are skipped (they don't exist on the host)
+        // — and so the relaunch provider adapts the def's args for the host.
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let id = crate::session::SessionId::default();
+        let config = App::restored_session_config(
+            id,
+            Some("agent-conv-uuid".into()),
+            "claude".into(),
+            None,
+            "ssh:devbox",
+        );
+        assert_eq!(config.backend.as_deref(), Some("ssh:devbox"));
+        assert!(config.env.contains_key("THURBOX_SESSION"));
+        assert!(!config
+            .env
+            .contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
+        assert!(!config.env.contains_key(crate::paths::DATA_DIR_OVERRIDE_ENV));
     }
 
     #[test]

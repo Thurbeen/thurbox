@@ -189,6 +189,12 @@ fn build_agent_invocation(
 ///   so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI
 ///   reads regardless of XDG / PATH / a stale tmux-server env.
 ///
+/// The three *path* vars are **local-only**: a remote (SSH/WSL) session skips
+/// them — the local dirs don't exist on the host, and a remote `thurbox-cli`
+/// pinned to them would resolve garbage instead of its own defaults. The
+/// identity vars (`THURBOX_SESSION`/`THURBOX_SESSION_ID`/`THURBOX_TASK`) are
+/// opaque and travel everywhere.
+///
 /// Kept in sync with `App::build_spawn_inputs` so headless and TUI sessions look
 /// identical to the spawned process (modulo `THURBOX_TASK` as noted above).
 ///
@@ -210,6 +216,13 @@ pub(crate) fn inject_thurbox_env(
         config
             .env
             .insert("THURBOX_TASK".into(), task_id.to_string());
+    }
+    if config
+        .backend
+        .as_deref()
+        .is_some_and(crate::session::is_remote_backend)
+    {
+        return;
     }
     if let Some(dir) = crate::paths::metrics_directory() {
         config
@@ -308,6 +321,28 @@ mod tests {
                 .as_deref()
                 .and_then(|p| p.parent())
         );
+    }
+
+    #[test]
+    fn inject_env_skips_local_path_dirs_for_remote_backend() {
+        // The metrics/config/data dirs are *local* paths — meaningless on an
+        // SSH/WSL host, and a remote `thurbox-cli` pinned to them would resolve
+        // garbage. Identity vars still travel.
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let mut config = SessionConfig {
+            session_id: Some(SessionId::default()),
+            backend: Some("ssh:devbox".into()),
+            ..SessionConfig::default()
+        };
+        inject_thurbox_env(&mut config, "agent-conv-uuid", None);
+        assert!(config.env.contains_key("THURBOX_SESSION"));
+        assert!(config.env.contains_key("THURBOX_SESSION_ID"));
+        assert!(!config.env.contains_key("THURBOX_METRICS_DIR"));
+        assert!(!config
+            .env
+            .contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
+        assert!(!config.env.contains_key(crate::paths::DATA_DIR_OVERRIDE_ENV));
     }
 
     #[test]

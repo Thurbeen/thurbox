@@ -531,15 +531,29 @@ clone (ConPTY, no WSL) speaking the **same control-mode wire protocol** and
 pane-id (`%N`) / `-L` socket model, so the whole backend is parameterized by
 binary name rather than forked (a remote SSH host can also pin
 `multiplexer = "psmux"`); a WSL distro runs `tmux` inside the distro. The
-control-mode protocol is byte-identical over either transport/binary, with one
-keystroke-encoding exception: psmux does **not** implement tmux's `send-keys
--H` hex flag (given `-H 62` it injects the literal text "62", so typing `b`,
-Enter, Backspace, … were all broken on Windows). So `send_keys_commands`
-branches on `TmuxTransport::uses_psmux()` — tmux (incl. a WSL distro's tmux)
-keeps the byte-exact `-H` hex path; psmux gets an equivalent encoding built from
-the primitives it *does* support (`send-keys -l` literal runs +
-`Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names), reconstructing the same
-byte stream the pane's PTY receives. Each host registers a backend named
+control-mode protocol is byte-identical over either transport/binary, with
+**psmux divergences** (all verified against psmux 3.3.6, each branched on
+`TmuxTransport::uses_psmux()`):
+
+- **`send-keys -H`** is not implemented (given `-H 62` it injects the literal
+  text "62", so typing `b`, Enter, Backspace, … were all broken on Windows).
+  `send_keys_commands` gives psmux an equivalent encoding built from the
+  primitives it *does* support (`send-keys -l` literal runs +
+  `Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names), reconstructing the
+  same byte stream the pane's PTY receives; tmux (incl. a WSL distro's tmux)
+  keeps the byte-exact `-H` hex path.
+- **`new-window` trailing tokens are not joined** — tmux joins them into one
+  shell command; psmux keeps only the *first* token and silently drops the
+  rest, so the agent launched with **no args**. And **`new-window -e` is
+  ignored** — env vars never reached the window's process (no
+  `THURBOX_SESSION` identity). `TmuxBackend::psmux_window_command` therefore
+  folds env + command into **one double-quoted token** of PowerShell
+  (`Set-Item Env:K 'v'; & 'claude' '--session-id' …` — psmux runs the token
+  via `powershell -NoLogo -Command`, whose Win32 command line strips unescaped
+  double quotes, hence single-quote inner / double-quote outer; backslash is
+  literal everywhere in psmux's parser, so `C:\` paths survive).
+
+Each host registers a backend named
 `ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`, registered lazily in
 `main.rs` from `host_config::load_all_with_warnings`: discovery/down hosts must
 not block startup, so `check_available`/`ensure_ready` are deferred to first use
@@ -563,6 +577,21 @@ via `App::backend_for`).
   own host.
 - **Headless**: `thurbox-cli session create --host <name>` spawns on the host
   (an SSH name or an auto-discovered WSL distro name).
+- **Agent config on the host**: agent args referencing thurbox-managed config
+  by *local* path (the hooks extension's `--settings <config>/hooks/
+  claude.json`) would kill the remote agent on launch ("Settings file not
+  found"). `session_ops::spawn::adapt_agent_args_for_remote` (shared by
+  headless spawn and the TUI) rewrites them per host: on a POSIX remote the
+  home-anchored path is **translated to the remote home**, the file copied
+  there, and the arg substituted; on a psmux host / non-POSIX config root /
+  failed copy the **flag+path pair is stripped** so the agent launches clean.
+  Remote hooks can't signal either way (no `thurbox-cli` on the host, and it
+  would write the host's own DB, not the one the TUI reads) — remote sessions
+  stay `Idle` and rely on the output-quiescence fallbacks; a remote status
+  path is a named follow-up. The local-path env hints
+  (`THURBOX_METRICS_DIR`/`THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR`) are likewise
+  skipped for remote spawns (`inject_thurbox_env`); only the opaque identity
+  vars travel.
 - **Caveats** (WSL inherits the SSH path): the headless `session delete --force`
   teardown (`kill_window`/`git::remove_worktree`) is local-only — a `--force`
   delete won't kill the in-distro window or remove the in-distro worktree (the

@@ -69,12 +69,23 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
 
     // Resolve the agent definition once; `agent_name` is derived from it so the
     // persisted name always matches the def that's actually launched.
-    let agent_def = super::resolve_agent_def(req.agent.as_deref());
+    let mut agent_def = super::resolve_agent_def(req.agent.as_deref());
     let agent_name = agent_def.name.clone();
 
     // Resolve the optional remote host. `backend_type` is `local-tmux` or
     // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
     let (backend_type, host) = resolve_host(req.host.as_deref())?;
+
+    // The def's `args` may reference thurbox-managed config files by their
+    // *local* absolute path (e.g. claude's hooks `--settings <config>/hooks/
+    // claude.json`), which the agent errors on when the path doesn't exist on
+    // the host ("Settings file not found" → the pane dies instantly). Rewrite
+    // them for the host: materialize the file remotely (translating a
+    // home-anchored path to the remote home) or, when that's impossible, strip
+    // the flag so the agent at least launches.
+    if let Some(h) = host.as_ref() {
+        agent_def.args = adapt_agent_args_for_remote(h, agent_def.args);
+    }
     let (primary_cwd, worktrees, additional_dirs) = resolve_dirs(&req, host.as_ref())?;
 
     let agent_session_id = req
@@ -110,15 +121,6 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
     super::inject_thurbox_env(&mut config, &agent_session_id, req.task_id);
 
     let (command, args) = super::build_agent_invocation(&agent_def, &config);
-
-    // The agent's args may reference thurbox-managed config files by their
-    // *local* absolute path (e.g. claude's hooks `--settings <config>/hooks/
-    // claude.json`). On a remote host that path doesn't exist, so the agent
-    // errors on launch ("Settings file not found"). Materialize each such file
-    // at the same path on the remote before launching.
-    if let Some(h) = host.as_ref() {
-        materialize_agent_config_on_remote(h, &args);
-    }
 
     // Remote spawns drive the SSH backend's control mode to learn the real pane
     // id; local spawns leave `backend_id` empty for the TUI to resolve by name.
@@ -344,89 +346,134 @@ pub(crate) fn resolve_launch_cwd(
     }
 }
 
-/// Copy any thurbox-managed config files referenced in the agent `args` (by
-/// their *local* absolute path) to the same path on the remote `host`, so an
-/// agent launched with e.g. `--settings <config>/hooks/claude.json` finds the
-/// file there. Best-effort: a copy failure is logged, not fatal — the agent
-/// still launches (the hooks just won't fire), and we never block a spawn on it.
+/// Adapt agent `args` that reference thurbox-managed config files (by their
+/// *local* absolute path) for a spawn on the remote `host`, returning the args
+/// to actually launch with. An agent handed a path that doesn't exist on the
+/// host errors out and the pane dies instantly (claude: "Settings file not
+/// found"), so an unresolvable path must never reach the remote launch:
 ///
-/// Scope is deliberately narrow: only existing local **files under the thurbox
-/// config dir** are copied, so we never ship an arbitrary path an agent's own
-/// args happen to contain (a repo path, a user file, …). And the mirror is
-/// only attempted when the remote would resolve the *same absolute path* — the
-/// agent's arg is not rewritten (args are rebuilt from the `AgentDef` at every
-/// spawn), so a path the remote can't reproduce byte-for-byte is skipped with
-/// a warning rather than materialized somewhere the agent won't look:
-/// - a non-POSIX (Windows `C:\…`) local config root can never resolve on the
-///   POSIX remote;
-/// - a `psmux` host is native Windows — no POSIX shell to copy with, and no
-///   local-POSIX path to resolve;
-/// - a home-anchored config root only matches when local and remote `$HOME`
-///   agree (the common same-user WSL/devbox case).
+/// - **Translate + materialize** (POSIX remotes): rewrite a home-anchored
+///   config path onto the *remote* home (identity when the homes agree), copy
+///   the local file to that remote path, and substitute the rewritten arg.
+/// - **Strip as fallback**: on a `psmux` host (native Windows — no POSIX side
+///   to copy to and hook commands are `sh` syntax anyway), a non-POSIX local
+///   config root, a config path outside the local home that a home-translation
+///   can't map, or a failed remote copy/home lookup, drop the path **and its
+///   preceding flag** (e.g. the whole `--settings <path>` pair) with a warning
+///   so the agent launches clean instead of dead.
 ///
-/// Shared by the headless spawn and the TUI (`App::build_spawn_inputs`) so both
-/// paths give a remote session the same agent config.
-pub(crate) fn materialize_agent_config_on_remote(host: &HostDef, args: &[String]) {
+/// Scope is deliberately narrow: only paths under the **thurbox config dir**
+/// are touched (and only existing local files are copied), so an arbitrary
+/// path in the agent's own args — a repo path, a user file — is never
+/// rewritten or shipped. Remote hooks still can't *signal* (no `thurbox-cli`
+/// on the host, and it would write to the host's own DB); they fail soft.
+///
+/// Shared by the headless spawn and the TUI (`App::build_spawn_inputs`) so
+/// both paths launch a remote session with the same args.
+pub(crate) fn adapt_agent_args_for_remote(host: &HostDef, args: Vec<String>) -> Vec<String> {
     let Some(config_root) = crate::paths::config_file()
         .and_then(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
     else {
-        return;
+        return args;
     };
-    if !config_root.starts_with('/') || host.mux() == "psmux" {
-        return;
-    }
-    if !remote_resolves_local_path(host, &config_root) {
-        return;
-    }
-    for arg in args {
-        // Only absolute paths under the thurbox config dir that exist as local
-        // files are candidates.
-        if !arg.starts_with(&config_root) {
-            continue;
-        }
-        let local = std::path::Path::new(arg);
+    // Resolve the translation target lazily (one ssh round-trip) and at most
+    // once; `None` = strip mode.
+    let mut remote_root: Option<Option<String>> = None;
+    rewrite_config_path_args(args, &config_root, |local_path| {
+        let root = remote_root
+            .get_or_insert_with(|| remote_config_root(host, &config_root))
+            .clone()?;
+        let remote_path = format!("{root}{}", &local_path[config_root.len()..]);
+        let local = std::path::Path::new(local_path);
         if !local.is_file() {
-            continue;
+            return None;
         }
-        if let Err(e) = crate::git::copy_file_to_remote(host, local, arg) {
+        match crate::git::copy_file_to_remote(host, local, &remote_path) {
+            Ok(()) => Some(remote_path),
+            Err(e) => {
+                tracing::warn!(
+                    "failed to materialize agent config {local_path} on host '{}': {e:#}",
+                    host.name
+                );
+                None
+            }
+        }
+    })
+}
+
+/// Where the local thurbox config root lands on `host`, or `None` when no
+/// remote location can hold it (→ strip the args instead):
+/// - a non-POSIX (Windows `C:\…`) local root or a `psmux` host can't take a
+///   POSIX copy at all;
+/// - a home-anchored root translates onto the **remote** home (identity when
+///   local and remote `$HOME` agree — the common same-user WSL/devbox case);
+/// - a root outside the local home is mirrored at the same absolute path.
+fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
+    if !config_root.starts_with('/') || host.mux() == "psmux" {
+        tracing::warn!(
+            "stripping local agent-config args for host '{}': no POSIX path for the \
+             thurbox config dir there",
+            host.name
+        );
+        return None;
+    }
+    let Some(local_home) = crate::paths::home_dir() else {
+        return Some(config_root.to_string());
+    };
+    let local_home = local_home.to_string_lossy().into_owned();
+    let Some(suffix) = config_root.strip_prefix(&local_home) else {
+        return Some(config_root.to_string());
+    };
+    match crate::git::remote_home(host) {
+        Ok(remote_home) => Some(format!("{remote_home}{suffix}")),
+        Err(e) => {
             tracing::warn!(
-                "failed to materialize agent config {arg} on host '{}': {e:#}",
+                "stripping local agent-config args for host '{}': cannot resolve remote \
+                 home: {e:#}",
                 host.name
             );
+            None
         }
     }
 }
 
-/// Whether `host` would resolve `path` at the same absolute location as the
-/// local machine. Only home-anchored paths can differ: they match exactly when
-/// the local and remote `$HOME` agree (the common same-user WSL/devbox case).
-/// A mismatch (or an unresolvable remote home) is logged and returns `false`.
-fn remote_resolves_local_path(host: &HostDef, path: &str) -> bool {
-    let Some(local_home) = crate::paths::home_dir() else {
-        return true;
-    };
-    let local_home = local_home.to_string_lossy().into_owned();
-    if !path.starts_with(&local_home) {
-        return true;
-    }
-    match crate::git::remote_home(host) {
-        Ok(remote_home) if remote_home == local_home => true,
-        Ok(remote_home) => {
-            tracing::warn!(
-                "not materializing agent config on host '{}': local home {local_home} != \
-                 remote home {remote_home}, so the agent's local-path args can't resolve there",
-                host.name
-            );
-            false
+/// Pure arg-rewriting core of [`adapt_agent_args_for_remote`]: every arg (or
+/// `--flag=value` value) under `config_root` is passed to `map`; `Some(new)`
+/// substitutes the path, `None` drops the arg **and** its preceding token when
+/// that token is a flag (so a `--settings <path>` pair vanishes together).
+fn rewrite_config_path_args(
+    args: Vec<String>,
+    config_root: &str,
+    mut map: impl FnMut(&str) -> Option<String>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg.starts_with(config_root) {
+            match map(&arg) {
+                Some(new) => out.push(new),
+                None => {
+                    tracing::warn!("dropping agent arg for remote spawn: {arg}");
+                    if out.last().is_some_and(|prev| prev.starts_with('-')) {
+                        out.pop();
+                    }
+                }
+            }
+            continue;
         }
-        Err(e) => {
-            tracing::warn!(
-                "not materializing agent config on host '{}': cannot resolve remote home: {e:#}",
-                host.name
-            );
-            false
+        // `--flag=<path>` form: rewrite the value in place, or drop the whole
+        // token (it is self-contained — nothing precedes it to pop).
+        if let Some((flag, value)) = arg.split_once('=') {
+            if flag.starts_with('-') && value.starts_with(config_root) {
+                match map(value) {
+                    Some(new) => out.push(format!("{flag}={new}")),
+                    None => tracing::warn!("dropping agent arg for remote spawn: {arg}"),
+                }
+                continue;
+            }
         }
+        out.push(arg);
     }
+    out
 }
 
 /// A human-friendly label for a member directory in the symlink workspace:
@@ -534,6 +581,83 @@ mod tests {
         };
         db.upsert_session(&parent).unwrap();
         assert!(validate_parent_session(&db, Some(parent.id)).is_ok());
+    }
+
+    #[test]
+    fn adapt_agent_args_is_identity_without_config_paths() {
+        // No arg references the thurbox config dir → args pass through
+        // untouched and, because the remote root is resolved lazily, no ssh
+        // round-trip is attempted (the host here doesn't exist).
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let host = HostDef {
+            name: "nonexistent-host".into(),
+            destination: "user@nonexistent-host".into(),
+            ..Default::default()
+        };
+        let args: Vec<String> = ["--session-id", "abc", "--model", "opus"]
+            .map(String::from)
+            .into();
+        assert_eq!(adapt_agent_args_for_remote(&host, args.clone()), args);
+    }
+
+    #[test]
+    fn rewrite_config_args_substitutes_translated_path() {
+        let args: Vec<String> = ["--settings", "/home/a/.config/thurbox/hooks/claude.json"]
+            .map(String::from)
+            .into();
+        let out = rewrite_config_path_args(args, "/home/a/.config/thurbox", |p| {
+            Some(p.replace("/home/a/", "/home/b/"))
+        });
+        assert_eq!(
+            out,
+            ["--settings", "/home/b/.config/thurbox/hooks/claude.json"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn rewrite_config_args_strips_flag_and_path_pair() {
+        // When no remote path can work, the path AND its `--settings` flag must
+        // both vanish — leaving a dangling flag would eat the next arg.
+        let args: Vec<String> = [
+            "--verbose",
+            "--settings",
+            "/home/a/.config/thurbox/hooks/claude.json",
+            "--session-id",
+            "x",
+        ]
+        .map(String::from)
+        .into();
+        let out = rewrite_config_path_args(args, "/home/a/.config/thurbox", |_| None);
+        assert_eq!(out, ["--verbose", "--session-id", "x"].map(String::from));
+    }
+
+    #[test]
+    fn rewrite_config_args_handles_equals_form_and_positional() {
+        // `--flag=<path>` rewrites in place / drops as one token; a positional
+        // config path (no preceding flag) drops alone.
+        let args: Vec<String> = ["--settings=/cfg/hooks/x.json", "/cfg/seed.toml"]
+            .map(String::from)
+            .into();
+        let rewritten =
+            rewrite_config_path_args(args.clone(), "/cfg", |p| Some(format!("/rem{p}")));
+        assert_eq!(
+            rewritten,
+            ["--settings=/rem/cfg/hooks/x.json", "/rem/cfg/seed.toml"].map(String::from)
+        );
+        let stripped = rewrite_config_path_args(args, "/cfg", |_| None);
+        assert!(stripped.is_empty());
+    }
+
+    #[test]
+    fn rewrite_config_args_leaves_unrelated_args_untouched() {
+        let args: Vec<String> = ["--model", "opus", "--add-dir", "/home/a/repo"]
+            .map(String::from)
+            .into();
+        let out = rewrite_config_path_args(args.clone(), "/home/a/.config/thurbox", |_| {
+            panic!("map must not be called for non-config args")
+        });
+        assert_eq!(out, args);
     }
 
     #[test]

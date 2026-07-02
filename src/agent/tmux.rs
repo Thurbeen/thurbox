@@ -726,7 +726,8 @@ impl TmuxBackend {
     /// appears to "not launch". `exec` replaces the wrapper so no extra process
     /// lingers. Local backends already inherit the user's interactive `PATH`, so
     /// they pass through unchanged — and so does a **psmux** remote (a Windows
-    /// SSH host), which has no `/bin/sh` to wrap with.
+    /// SSH host), which has no `/bin/sh` to wrap with (psmux windows are built by
+    /// [`psmux_window_command`] instead).
     ///
     /// Done here — not via tmux `default-command` — because that value round-trips
     /// through the remote transport's per-arg shell-quoting, where a `-l` flag's
@@ -738,6 +739,56 @@ impl TmuxBackend {
         } else {
             shell_cmd.to_string()
         }
+    }
+
+    /// Build the psmux `new-window` command token: one **double-quoted** string
+    /// holding a PowerShell command that sets the env vars and launches the
+    /// agent.
+    ///
+    /// psmux's control-mode parser diverges from tmux in three ways that this
+    /// encoding routes around (all verified against psmux 3.3.6):
+    /// - **Trailing tokens are not joined**: tmux joins multiple trailing
+    ///   `new-window` args into one shell command; psmux keeps only the first
+    ///   token and silently drops the rest — the agent launched with no args.
+    ///   So the whole command must be a single token.
+    /// - **`-e` is ignored**: env vars never reach the window's process. They
+    ///   are folded into the command itself (`Set-Item Env:K 'v'; …` — chosen
+    ///   over `$env:K` so the string stays `$`-free).
+    /// - **Quoting**: psmux runs the token via `powershell -NoLogo -Command
+    ///   <token>`, whose Win32 command line strips unescaped double quotes — so
+    ///   the *inner* PowerShell quoting must use single quotes (which Win32
+    ///   tokenization passes through). psmux's own tokenizer concatenates
+    ///   adjacent `'…'` segments (there is no escape that survives as a literal
+    ///   `'` inside them; backslash is literal everywhere, so `C:\` paths are
+    ///   safe) but passes `'` through **double-quoted** tokens untouched —
+    ///   hence single quotes inside, double quotes outside.
+    fn psmux_window_command(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> String {
+        // PowerShell single-quoting: '' is a literal ' inside '…'. That inner
+        // escape survives both outer layers (psmux passes ' through "…" tokens;
+        // Win32 tokenization ignores single quotes).
+        fn ps_quote(s: &str) -> String {
+            format!("'{}'", s.replace('\'', "''"))
+        }
+        let mut ps = String::new();
+        // Sort for a deterministic command (HashMap iteration order isn't).
+        let mut pairs: Vec<_> = env.iter().collect();
+        pairs.sort();
+        for (k, v) in pairs {
+            ps.push_str(&format!("Set-Item Env:{k} {}; ", ps_quote(v)));
+        }
+        ps.push_str(&format!("& {}", ps_quote(command)));
+        for a in args {
+            ps.push(' ');
+            ps.push_str(&ps_quote(a));
+        }
+        // The outer double quotes make this one psmux token. A raw `"` or
+        // newline inside would terminate the token / split the control-mode
+        // line early — there is no known escape, so neutralize them.
+        format!("\"{}\"", ps.replace(['"', '\n'], " "))
     }
 
     /// Run a closure with a reference to the active control mode, or bail if
@@ -981,16 +1032,27 @@ impl SessionBackend for TmuxBackend {
         rows: u16,
         cols: u16,
     ) -> Result<SpawnedSession> {
-        let shell_cmd = self.login_wrap_for_remote(&Self::build_shell_command(command, args));
+        // psmux can't take the command as joined trailing tokens nor env via
+        // `-e` (see `psmux_window_command`); everything is folded into one
+        // token there. tmux keeps the byte-identical multi-token + `-e` path.
+        let psmux = self.transport.uses_psmux();
+        let shell_cmd = if psmux {
+            Self::psmux_window_command(command, args, env)
+        } else {
+            self.login_wrap_for_remote(&Self::build_shell_command(command, args))
+        };
 
         let cwd_part = match cwd {
             Some(dir) => format!(" -c {}", control_mode::shell_escape(&dir.to_string_lossy())),
             None => String::new(),
         };
-        let env_part: String = env
-            .iter()
-            .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
-            .collect();
+        let env_part: String = if psmux {
+            String::new()
+        } else {
+            env.iter()
+                .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
+                .collect()
+        };
         let escaped_window_name = shell_escape(window_name);
         let session = &self.session;
         let cmd = format!(
@@ -1724,6 +1786,44 @@ mod tests {
         // Local backends inherit the user's interactive PATH — no wrap needed.
         let backend = TmuxBackend::local();
         assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
+    }
+
+    // --- psmux_window_command tests ---
+    // psmux keeps only the FIRST trailing new-window token (tmux joins them) and
+    // ignores `-e` entirely, so the whole launch — env included — must be one
+    // double-quoted token of PowerShell (verified against psmux 3.3.6).
+
+    #[test]
+    fn psmux_window_command_is_one_double_quoted_token() {
+        let args = vec!["--session-id".to_string(), "abc-123".to_string()];
+        let cmd = TmuxBackend::psmux_window_command("claude", &args, &HashMap::new());
+        assert_eq!(cmd, "\"& 'claude' '--session-id' 'abc-123'\"");
+    }
+
+    #[test]
+    fn psmux_window_command_folds_env_as_set_item() {
+        // `Set-Item Env:K 'v'` (not `$env:K`) keeps the string `$`-free; sorted
+        // for determinism. Values with spaces survive the PS single quotes.
+        let mut env = HashMap::new();
+        env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
+        env.insert("B".to_string(), "x y".to_string());
+        let cmd = TmuxBackend::psmux_window_command("claude", &[], &env);
+        assert_eq!(
+            cmd,
+            "\"Set-Item Env:B 'x y'; Set-Item Env:THURBOX_SESSION 'id-1'; & 'claude'\""
+        );
+    }
+
+    #[test]
+    fn psmux_window_command_escapes_and_sanitizes() {
+        // A literal ' doubles (PowerShell escaping); a raw " or newline would
+        // terminate the outer token / split the control-mode line, so both are
+        // neutralized to spaces. Backslash paths pass through untouched (psmux
+        // treats backslash literally everywhere).
+        let args = vec!["it's".to_string(), "say \"hi\"\nnow".to_string()];
+        let cmd =
+            TmuxBackend::psmux_window_command("C:\\Tools\\claude.exe", &args, &HashMap::new());
+        assert_eq!(cmd, "\"& 'C:\\Tools\\claude.exe' 'it''s' 'say  hi  now'\"");
     }
 
     #[test]

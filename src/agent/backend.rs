@@ -697,6 +697,16 @@ impl Session {
         (Arc::clone(&self.backend), self.backend_id.clone())
     }
 
+    /// Replace the provider [`Self::restart`] rebuilds its launch args from.
+    ///
+    /// A session adopted at startup stores a provider built from the plain
+    /// registry def; a later restart must use a def resolved (and, for a remote
+    /// backend, arg-adapted) *now* — otherwise the relaunch would resurrect
+    /// local config paths the host can't see.
+    pub fn set_provider(&mut self, provider: Arc<dyn AgentProvider>) {
+        self.provider = provider;
+    }
+
     /// Restart the session: kill the old pane, spawn a fresh one with new config.
     ///
     /// Uses the agent's resume args (when defined) so it picks up the
