@@ -365,8 +365,12 @@ pub(crate) fn resolve_launch_cwd(
 /// Scope is deliberately narrow: only paths under the **thurbox config dir**
 /// are touched (and only existing local files are copied), so an arbitrary
 /// path in the agent's own args — a repo path, a user file — is never
-/// rewritten or shipped. Remote hooks still can't *signal* (no `thurbox-cli`
-/// on the host, and it would write to the host's own DB); they fail soft.
+/// rewritten or shipped. Each shipped file also has its thurbox-managed hook
+/// commands rewritten for the host
+/// ([`super::builtin_hooks::rewrite_hook_signals_for_remote`]): the local
+/// `thurbox-cli session signal` can't work there, but a tmux pane user option
+/// can — the local TUI receives it over its control-mode subscription, so
+/// remote sessions get live hooks-driven status.
 ///
 /// Shared by the headless spawn and the TUI (`App::build_spawn_inputs`) so
 /// both paths launch a remote session with the same args.
@@ -384,11 +388,10 @@ pub(crate) fn adapt_agent_args_for_remote(host: &HostDef, args: Vec<String>) -> 
             .get_or_insert_with(|| remote_config_root(host, &config_root))
             .clone()?;
         let remote_path = format!("{root}{}", &local_path[config_root.len()..]);
-        let local = std::path::Path::new(local_path);
-        if !local.is_file() {
-            return None;
-        }
-        match crate::git::copy_file_to_remote(host, local, &remote_path) {
+        // Read failure (missing/unreadable/non-file) → strip, as before.
+        let contents = std::fs::read_to_string(local_path).ok()?;
+        let contents = super::builtin_hooks::rewrite_hook_signals_for_remote(&contents);
+        match crate::git::copy_bytes_to_remote(host, contents.as_bytes(), &remote_path) {
             Ok(()) => Some(remote_path),
             Err(e) => {
                 tracing::warn!(

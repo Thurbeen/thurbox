@@ -26,11 +26,24 @@ pub struct CommandResponse {
 /// Parsed notification from the tmux control mode protocol.
 #[derive(Debug, PartialEq)]
 pub enum Notification {
-    Output { pane_id: String, data: Vec<u8> },
+    Output {
+        pane_id: String,
+        data: Vec<u8>,
+    },
     Begin,
     End,
     Error,
-    Pause { pane_id: String },
+    Pause {
+        pane_id: String,
+    },
+    /// A `refresh-client -B` format subscription reported a changed value
+    /// (tmux >= 3.2). Carries the remote hook state for
+    /// [`crate::session::REMOTE_HOOK_SUBSCRIPTION`].
+    SubscriptionChanged {
+        name: String,
+        pane_id: String,
+        value: String,
+    },
     Other(String),
 }
 
@@ -310,7 +323,55 @@ pub fn parse_notification(line: &str) -> Notification {
         };
     }
 
+    if let Some(n) = parse_subscription_changed(line) {
+        return n;
+    }
+
     Notification::Other(line.to_string())
+}
+
+/// Parse a `%subscription-changed` notification (tmux >= 3.2 format
+/// subscriptions, armed via `refresh-client -B`).
+///
+/// Wire format (tmux man page): `%subscription-changed name session-id
+/// window-id window-index pane-id ... : value` — "any arguments after pane-id
+/// up until a single ':' are for future use and should be ignored". Parsed
+/// positionally (name = token 0, pane id = token 4, validated) with the value
+/// being everything after the first ` : ` separator past the pane token,
+/// verbatim — it may legally be empty or contain spaces/colons. Any shape
+/// violation returns `None` (→ `Notification::Other`); wire data never
+/// panics.
+fn parse_subscription_changed(line: &str) -> Option<Notification> {
+    let rest = line.strip_prefix("%subscription-changed ")?;
+    let mut tokens = rest.splitn(6, ' ');
+    let name = tokens.next()?.to_string();
+    // session-id, window-id, window-index — positional, unused.
+    for _ in 0..3 {
+        tokens.next()?;
+    }
+    let pane_id = tokens.next()?.to_string();
+    if !is_valid_pane_id(&pane_id) {
+        return None;
+    }
+    // Whatever follows the pane id: `[future-use tokens ]: value`.
+    let tail = tokens.next().unwrap_or("");
+    let value = if let Some(v) = tail.strip_prefix(": ") {
+        v.to_string()
+    } else if tail == ":" {
+        String::new()
+    } else if let Some(idx) = tail.find(" : ") {
+        tail[idx + 3..].to_string()
+    } else if tail.ends_with(" :") {
+        // Future-use tokens then an empty value ("a b :").
+        String::new()
+    } else {
+        return None;
+    };
+    Some(Notification::SubscriptionChanged {
+        name,
+        pane_id,
+        value,
+    })
 }
 
 /// A tmux pane id is `%<digits>`. Pane ids are interpolated unquoted into
@@ -608,6 +669,83 @@ mod tests {
             parse_notification("%extended-output %2 : data"),
             Notification::Other("%extended-output %2 : data".to_string())
         );
+    }
+
+    // --- %subscription-changed parsing tests ---
+    // Wire shape (tmux man page): `%subscription-changed name session-id
+    // window-id window-index pane-id ... : value` — args between pane-id and
+    // the ':' are documented future-use; the value may be empty or contain
+    // spaces/colons.
+
+    #[test]
+    fn subscription_changed_parses_canonical_line() {
+        assert_eq!(
+            parse_notification("%subscription-changed thurbox-status $1 @5 2 %7 : done"),
+            Notification::SubscriptionChanged {
+                name: "thurbox-status".into(),
+                pane_id: "%7".into(),
+                value: "done".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn subscription_changed_ignores_future_use_args() {
+        assert_eq!(
+            parse_notification(
+                "%subscription-changed thurbox-status $1 @5 2 %7 extra stuff : working"
+            ),
+            Notification::SubscriptionChanged {
+                name: "thurbox-status".into(),
+                pane_id: "%7".into(),
+                value: "working".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn subscription_changed_empty_value_variants() {
+        for line in [
+            "%subscription-changed s $1 @5 2 %7 :",
+            "%subscription-changed s $1 @5 2 %7 : ",
+            "%subscription-changed s $1 @5 2 %7 future :",
+        ] {
+            match parse_notification(line) {
+                Notification::SubscriptionChanged { value, .. } => {
+                    assert_eq!(value, "", "line: {line}")
+                }
+                other => panic!("expected SubscriptionChanged for {line}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn subscription_changed_value_keeps_spaces_and_colons() {
+        assert_eq!(
+            parse_notification("%subscription-changed s $1 @5 2 %7 : a b : c"),
+            Notification::SubscriptionChanged {
+                name: "s".into(),
+                pane_id: "%7".into(),
+                value: "a b : c".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn subscription_changed_malformed_falls_to_other() {
+        // Invalid pane token / missing separator / truncated — wire data must
+        // never panic, it degrades to Other.
+        for line in [
+            "%subscription-changed s $1 @5 2 pane7 : done",
+            "%subscription-changed s $1 @5 2 %7 done",
+            "%subscription-changed s $1 @5",
+            "%subscription-changed",
+        ] {
+            assert!(
+                matches!(parse_notification(line), Notification::Other(_)),
+                "line: {line}"
+            );
+        }
     }
 
     // --- format_send_keys tests ---

@@ -308,18 +308,23 @@ fn host_shell_c(host: &HostDef, script: &str) -> Command {
     cmd
 }
 
-/// Copy a local file to the **same** absolute path on a remote `host`, creating
-/// the parent directory. Streams the file's bytes over the host launcher's
-/// stdin into `cat > <path>`, so it is transport-neutral (ssh/wsl) and needs no
-/// `scp`/`\\wsl$` share. Used to materialize thurbox-managed agent config (e.g.
-/// the hooks `--settings claude.json`) on the remote so the agent — launched
-/// with a `--settings <path>` that thurbox generated against the *local* config
-/// dir — finds the file at that path on the remote too.
+/// Copy a local file to the **same** absolute path on a remote `host`.
+/// See [`copy_bytes_to_remote`], which this reads the file into.
 pub fn copy_file_to_remote(host: &HostDef, local: &Path, remote_path: &str) -> Result<()> {
-    use std::io::Write;
-
     let bytes = std::fs::read(local)
         .with_context(|| format!("failed to read local file {}", local.display()))?;
+    copy_bytes_to_remote(host, &bytes, remote_path)
+}
+
+/// Write `bytes` to `remote_path` on `host`, creating the parent directory.
+/// Streams the bytes over the host launcher's stdin into `cat > <path>`, so it
+/// is transport-neutral (ssh/wsl) and needs no `scp`/`\\wsl$` share. Used to
+/// materialize thurbox-managed agent config (e.g. the hooks `--settings
+/// claude.json`, with its commands rewritten for the host) on the remote so
+/// the agent — launched with a `--settings <path>` that thurbox generated
+/// against the *local* config dir — finds the file at that path there too.
+pub fn copy_bytes_to_remote(host: &HostDef, bytes: &[u8], remote_path: &str) -> Result<()> {
+    use std::io::Write;
 
     let parent = Path::new(remote_path)
         .parent()
@@ -342,7 +347,7 @@ pub fn copy_file_to_remote(host: &HostDef, local: &Path, remote_path: &str) -> R
         .stdin
         .take()
         .context("remote file-copy stdin unavailable")?
-        .write_all(&bytes)
+        .write_all(bytes)
         .context("failed to stream file to remote")?;
     let output = child
         .wait_with_output()

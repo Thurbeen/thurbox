@@ -1,6 +1,9 @@
 //! The built-in **hooks** extension: wires each coding agent's lifecycle hooks
 //! to `thurbox-cli session signal` so sessions report `working`/`blocked`/`done`
-//! back to thurbox (see the hooks-driven `SessionStatus`).
+//! back to thurbox (see the hooks-driven `SessionStatus`). For **remote**
+//! sessions the same hook file is shipped with its commands rewritten to a tmux
+//! pane user option (`rewrite_hook_signals_for_remote`) — the local TUI
+//! receives those over its control-mode subscription.
 //!
 //! Unlike user extensions (which are fetched from a source on demand, ADR-20),
 //! this one ships **embedded** in the binary and is **auto-activated by default**
@@ -28,6 +31,35 @@ const ANTIGRAVITY_HOOKS: &str = include_str!("../../extensions/hooks/antigravity
 const CODEX_HOOKS: &str = include_str!("../../extensions/hooks/codex-hooks.json");
 const VIBE_HOOKS: &str = include_str!("../../extensions/hooks/vibe-hooks.toml");
 const COPILOT_HOOKS: &str = include_str!("../../extensions/hooks/copilot-hooks.json");
+
+/// Marker prefix of every thurbox-managed hook command; the state word
+/// (`working`/`blocked`/`done`/`idle`) follows it directly.
+const SIGNAL_MARKER: &str = "thurbox-cli session signal --state ";
+
+/// Rewrite thurbox-managed hook commands for a **remote (real-tmux) host**:
+/// `thurbox-cli session signal --state <s>` →
+/// `tmux set-option -p @thurbox_state <s>`.
+///
+/// `thurbox-cli` can't signal from a remote host (it isn't installed there,
+/// and it would write the host's own DB — never the one the local TUI reads).
+/// A tmux **pane user option** can: inside a pane `set-option -p` needs no
+/// socket, pane id, or identity (`$TMUX`/`$TMUX_PANE` are in the pane env),
+/// and the local TUI's control-mode connection receives changes through its
+/// [`crate::session::REMOTE_HOOK_SUBSCRIPTION`] format subscription. Applied
+/// by the spawn-time materialization (`adapt_agent_args_for_remote`) to every
+/// config file it ships. Prefix-replace keeps the state word and whatever
+/// trails it (`|| true`, `;; esac; true`) intact; the replacement contains no
+/// `"`/`\`, so a byte-level replace on JSON text is safe. Idempotent, and a
+/// no-op for marker-free content.
+pub(crate) fn rewrite_hook_signals_for_remote(contents: &str) -> String {
+    contents.replace(
+        SIGNAL_MARKER,
+        &format!(
+            "tmux set-option -p {} ",
+            crate::session::REMOTE_HOOK_STATE_OPTION
+        ),
+    )
+}
 
 /// The hooks extension's home, under this build's resolved config dir
 /// (`~/.config/thurbox/hooks` for a release build, `~/.config/thurbox-dev/hooks`
@@ -122,6 +154,63 @@ pub fn ensure_builtin_hooks_extension(db: &Database) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- rewrite_hook_signals_for_remote tests ---
+
+    #[test]
+    fn remote_rewrite_replaces_every_signal_command() {
+        let rewritten = rewrite_hook_signals_for_remote(CLAUDE_SETTINGS);
+        // No local CLI reference survives, every state maps to the pane option.
+        assert!(!rewritten.contains("thurbox-cli"));
+        for state in ["idle", "working", "blocked", "done"] {
+            assert!(
+                rewritten.contains(&format!("tmux set-option -p @thurbox_state {state}")),
+                "missing rewritten {state} command"
+            );
+        }
+        // The surrounding hook shape (`|| true`, the blocked `case`) survives
+        // the prefix replace, and the result is still valid JSON with all five
+        // hook events.
+        assert!(rewritten.contains("tmux set-option -p @thurbox_state idle || true"));
+        assert!(rewritten.contains("tmux set-option -p @thurbox_state blocked ;;"));
+        let json: serde_json::Value = serde_json::from_str(&rewritten).expect("still valid JSON");
+        let hooks = json.get("hooks").and_then(|h| h.as_object()).unwrap();
+        for event in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "Notification",
+            "Stop",
+        ] {
+            assert!(hooks.contains_key(event), "missing hook event {event}");
+        }
+    }
+
+    #[test]
+    fn remote_rewrite_is_idempotent_and_passes_through() {
+        let once = rewrite_hook_signals_for_remote(CLAUDE_SETTINGS);
+        assert_eq!(rewrite_hook_signals_for_remote(&once), once);
+        let unrelated = "default = \"claude\"\n[[agents]]\nname = \"claude\"\n";
+        assert_eq!(rewrite_hook_signals_for_remote(unrelated), unrelated);
+    }
+
+    #[test]
+    fn signal_marker_matches_shipped_hook_commands() {
+        // Guard: a future edit to the hook asset that drifts from the marker
+        // (e.g. reordering flags) would silently break the remote rewrite.
+        // Every `session signal` occurrence in the claude asset must carry the
+        // exact marker prefix.
+        let occurrences = CLAUDE_SETTINGS.matches("session signal").count();
+        assert_eq!(
+            CLAUDE_SETTINGS.matches(SIGNAL_MARKER).count(),
+            occurrences,
+            "a `session signal` command in claude.json doesn't match SIGNAL_MARKER"
+        );
+        assert_eq!(
+            occurrences, 5,
+            "claude.json hook count changed — review the rewrite"
+        );
+    }
 
     #[test]
     fn embedded_assets_are_present() {

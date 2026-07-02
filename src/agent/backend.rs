@@ -226,6 +226,18 @@ pub trait SessionBackend: Send + Sync {
 
     /// Return the PID of the process running in a backend pane.
     fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>>;
+
+    /// Drain queued `(backend_id, hook-state)` events reported by a remote
+    /// agent's hooks (a tmux pane user option pushed over the control-mode
+    /// subscription — see [`crate::session::REMOTE_HOOK_STATE_OPTION`]).
+    ///
+    /// Poll-style shared state (like the `TermSignals` atomics): the app tick
+    /// drains this and persists each state exactly as a local
+    /// `thurbox-cli session signal` would have. Default: no events — only the
+    /// tmux backend produces them.
+    fn take_hook_state_events(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// Internal bundle of I/O handles before wiring.

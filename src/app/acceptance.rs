@@ -75,17 +75,35 @@ fn init_git_repo(dir: &Path, dirty: bool) {
 /// tests must be `#[tokio::test]`.
 struct FakeBackend {
     spawnable: bool,
+    /// Pushable remote-hook status events, drained by
+    /// [`SessionBackend::take_hook_state_events`] — lets a test drive the
+    /// remote-session status path without a control-mode connection.
+    hook_events: std::sync::Mutex<Vec<(String, String)>>,
 }
 
 impl FakeBackend {
     /// Inert: spawning/adopting fails.
     fn stub() -> Self {
-        Self { spawnable: false }
+        Self {
+            spawnable: false,
+            hook_events: std::sync::Mutex::new(Vec::new()),
+        }
     }
 
     /// Spawnable: `spawn`/`adopt` succeed with no-op I/O.
     fn spawnable() -> Self {
-        Self { spawnable: true }
+        Self {
+            spawnable: true,
+            hook_events: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Queue a `(pane_id, state)` event for the next drain.
+    fn push_hook_event(&self, pane_id: &str, state: &str) {
+        self.hook_events
+            .lock()
+            .unwrap()
+            .push((pane_id.to_string(), state.to_string()));
     }
 }
 
@@ -145,6 +163,9 @@ impl SessionBackend for FakeBackend {
     }
     fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
         Ok(None)
+    }
+    fn take_hook_state_events(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.hook_events.lock().unwrap())
     }
 }
 
@@ -1965,5 +1986,90 @@ fn info_panel_toggles_while_review_is_open() {
     assert!(
         h.app.active_review().is_some(),
         "toggling the info panel leaves the review open"
+    );
+}
+
+// ── Remote-hook status events (control-mode subscription → hook columns) ──────
+
+/// The backend queued a remote-hook event for a session's pane: one refresh
+/// drains it into the hook columns and the derived status reflects it — the
+/// remote analogue of a local `thurbox-cli session signal`.
+#[test]
+fn remote_hook_event_drives_session_status() {
+    let backend = Arc::new(FakeBackend::stub());
+    let mut h = Harness::with_backend(STD_COLS, STD_ROWS, 2, backend.clone());
+    h.app.sessions[0].info.backend_id = Some("%5".into());
+    h.app.sessions[1].info.backend_id = Some("%9".into());
+    h.app.save_state(); // hook columns update persisted rows
+
+    backend.push_hook_event("%5", "working");
+    h.app.refresh_session_statuses();
+
+    // Stub sessions have fresh output, so `working` isn't quiescence-demoted.
+    assert_eq!(h.app.sessions[0].info.status, SessionStatus::Working);
+    assert_eq!(
+        h.app.sessions[1].info.status,
+        SessionStatus::Idle,
+        "the other session is untouched"
+    );
+    let rows = h.app.db.load_hook_states().unwrap();
+    assert_eq!(
+        rows.get(&h.app.sessions[0].info.id)
+            .and_then(|r| r.state.as_deref()),
+        Some("working"),
+        "the event is persisted through set_hook_state"
+    );
+}
+
+/// Events that don't resolve to a session (unknown pane — a shell/heartbeat
+/// window) or carry a non-allow-listed state (the value is remote-controlled
+/// free text) are dropped without touching the DB.
+#[test]
+fn remote_hook_event_ignores_unmatched_and_invalid() {
+    let backend = Arc::new(FakeBackend::stub());
+    let mut h = Harness::with_backend(STD_COLS, STD_ROWS, 1, backend.clone());
+    h.app.sessions[0].info.backend_id = Some("%5".into());
+    h.app.save_state();
+
+    backend.push_hook_event("%99", "working"); // no such pane
+    backend.push_hook_event("%5", "rm -rf /"); // not an allowed state
+    h.app.refresh_session_statuses();
+
+    assert_eq!(h.app.sessions[0].info.status, SessionStatus::Idle);
+    assert!(
+        h.app
+            .db
+            .load_hook_states()
+            .unwrap()
+            .values()
+            .all(|r| r.state.is_none()),
+        "neither event may reach the hook columns"
+    );
+}
+
+/// A re-report of the current state (the subscription re-sends the pane
+/// option's value on reconnect/TUI restart) must not re-stamp `state_at` —
+/// otherwise an already-acknowledged `done` resurrects as unseen and re-fires
+/// its OS notification on every restart.
+#[test]
+fn remote_hook_event_dedupes_repeated_state() {
+    let backend = Arc::new(FakeBackend::stub());
+    let mut h = Harness::with_backend(STD_COLS, STD_ROWS, 1, backend.clone());
+    h.app.sessions[0].info.backend_id = Some("%5".into());
+    h.app.save_state();
+    let id = h.app.sessions[0].info.id;
+
+    backend.push_hook_event("%5", "done");
+    h.app.refresh_session_statuses();
+    let first_at = h.app.db.load_hook_states().unwrap()[&id].state_at;
+    assert!(first_at.is_some());
+
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    backend.push_hook_event("%5", "done");
+    h.app.refresh_session_statuses();
+    let second_at = h.app.db.load_hook_states().unwrap()[&id].state_at;
+    assert_eq!(
+        first_at, second_at,
+        "an identical re-report must not re-stamp state_at"
     );
 }

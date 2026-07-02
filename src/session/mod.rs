@@ -51,6 +51,22 @@ pub const DEFAULT_AGENT_NAME: &str = "claude";
 /// without crossing module boundaries.
 pub const PENDING_FOCUS_SESSION_ID_KEY: &str = "pending_focus_session_id";
 
+/// tmux **pane user option** a remote agent's hooks set to report status
+/// (`tmux set-option -p @thurbox_state <working|blocked|done|idle>`). The
+/// remote-side replacement for `thurbox-cli session signal`, which can't work
+/// off-local (no CLI on the host, and it would write the host's own DB). The
+/// local TUI receives changes over its control-mode connection via a format
+/// subscription (see [`REMOTE_HOOK_SUBSCRIPTION`]). Defined in the pure-data
+/// layer so `agent` (subscription) and `session_ops` (hook-command rewrite)
+/// share one source of truth.
+pub const REMOTE_HOOK_STATE_OPTION: &str = "@thurbox_state";
+
+/// Name of the control-mode format subscription
+/// (`refresh-client -B <name>:%*:#{@thurbox_state}`) that pushes
+/// [`REMOTE_HOOK_STATE_OPTION`] changes as `%subscription-changed`
+/// notifications for every pane of the attached session.
+pub const REMOTE_HOOK_SUBSCRIPTION: &str = "thurbox-status";
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub repo_path: PathBuf,

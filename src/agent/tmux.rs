@@ -220,9 +220,20 @@ struct ControlMode {
     pane_senders: PaneSendersMapShared,
     /// FIFO queue of response channels — one per `send_command()` call, in order.
     response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
+    /// `(pane_id, state)` pairs from `%subscription-changed` notifications
+    /// (remote hook status — see [`crate::session::REMOTE_HOOK_STATE_OPTION`]),
+    /// pushed by the reader thread and drained by the app tick via
+    /// [`Self::take_sub_events`]. Bounded (drop-oldest): a short-lived
+    /// connection (e.g. a headless spawn's) has no drainer.
+    sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
     reader_handle: Mutex<Option<JoinHandle<()>>>,
     child: Mutex<Child>,
 }
+
+/// Cap on queued subscription events. Status transitions are rare and the
+/// queue is drained every TUI tick — the cap only guards an undrained
+/// connection against unbounded growth.
+const SUB_EVENTS_CAP: usize = 256;
 
 impl ControlMode {
     /// Start a control mode connection to the thurbox tmux session over the
@@ -252,15 +263,24 @@ impl ControlMode {
             Arc::new(Mutex::new(std::collections::HashMap::new()));
         let response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>> =
             Arc::new(Mutex::new(VecDeque::new()));
+        let sub_events: Arc<Mutex<VecDeque<(String, String)>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
 
         let reader_stdin = Arc::clone(&stdin);
         let reader_pane_senders = Arc::clone(&pane_senders);
         let reader_queue = Arc::clone(&response_queue);
+        let reader_sub_events = Arc::clone(&sub_events);
 
         let reader_handle = std::thread::Builder::new()
             .name("tmux-control-reader".into())
             .spawn(move || {
-                Self::reader_thread(stdout, reader_stdin, reader_pane_senders, reader_queue);
+                Self::reader_thread(
+                    stdout,
+                    reader_stdin,
+                    reader_pane_senders,
+                    reader_queue,
+                    reader_sub_events,
+                );
             })
             .context("Failed to spawn control reader thread")?;
 
@@ -268,6 +288,7 @@ impl ControlMode {
             stdin,
             pane_senders,
             response_queue,
+            sub_events,
             reader_handle: Mutex::new(Some(reader_handle)),
             child: Mutex::new(child),
         };
@@ -280,6 +301,24 @@ impl ControlMode {
 
         // Enable flow control (pause-after=5 seconds of buffered output).
         control.send_command("refresh-client -f pause-after=5")?;
+
+        // Subscribe to the remote-hook status option of every pane of the
+        // attached session (tmux pushes `%subscription-changed` on change) —
+        // how an off-local agent's hooks reach the local status derivation.
+        // tmux-only (psmux has no format subscriptions) and best-effort: a
+        // refusal must not brick the whole backend, status just stays dark.
+        // Armed here — not per pane — so `reconnect_control` re-arms for free
+        // and panes created later are covered (`%*` is session-scoped).
+        if !transport.uses_psmux() {
+            let arm = format!(
+                "refresh-client -B '{}:%*:#{{{}}}'",
+                crate::session::REMOTE_HOOK_SUBSCRIPTION,
+                crate::session::REMOTE_HOOK_STATE_OPTION,
+            );
+            if let Err(e) = control.send_command(&arm) {
+                warn!("failed to arm the remote-hook status subscription: {e:#}");
+            }
+        }
 
         Ok(control)
     }
@@ -297,6 +336,7 @@ impl ControlMode {
         stdin: Arc<Mutex<ChildStdin>>,
         pane_senders: PaneSendersMapShared,
         response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
+        sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
     ) {
         let mut reader = BufReader::new(stdout);
         // Accumulates response lines for the current in-flight command.
@@ -336,6 +376,23 @@ impl ControlMode {
                 }
                 Notification::Pause { pane_id } => {
                     Self::resume_pane(&stdin, &pane_id);
+                }
+                // Consumed even mid-%begin block: tmux never interleaves
+                // notifications inside response bodies, so this can't eat a
+                // response line. Empty value = the pane option is unset.
+                Notification::SubscriptionChanged {
+                    name,
+                    pane_id,
+                    value,
+                } => {
+                    if name == crate::session::REMOTE_HOOK_SUBSCRIPTION && !value.is_empty() {
+                        if let Ok(mut events) = sub_events.lock() {
+                            if events.len() >= SUB_EVENTS_CAP {
+                                events.pop_front();
+                            }
+                            events.push_back((pane_id, value));
+                        }
+                    }
                 }
                 Notification::Other(text) => {
                     if let Some(ref mut lines) = collecting {
@@ -396,6 +453,14 @@ impl ControlMode {
                 let _ = tx.send(CommandResponse { lines, is_error });
             }
         }
+    }
+
+    /// Drain the queued `(pane_id, state)` remote-hook status events.
+    fn take_sub_events(&self) -> Vec<(String, String)> {
+        self.sub_events
+            .lock()
+            .map(|mut events| events.drain(..).collect())
+            .unwrap_or_default()
     }
 
     /// Respond to a `%pause` by asking tmux to resume output for the pane.
@@ -1246,6 +1311,16 @@ impl SessionBackend for TmuxBackend {
             "display-message -t {backend_id} -p '#{{pane_pid}}'"
         ))?;
         Ok(result.trim().parse().ok())
+    }
+
+    fn take_hook_state_events(&self) -> Vec<(String, String)> {
+        // Lock `control` directly — `with_control` errors before the control
+        // connection starts, and "no connection yet" is simply "no events".
+        self.control
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(ControlMode::take_sub_events))
+            .unwrap_or_default()
     }
 }
 

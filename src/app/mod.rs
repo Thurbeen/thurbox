@@ -3906,12 +3906,17 @@ impl App {
     /// Recompute each session's status/activity/notification for this tick.
     ///
     /// Status is **hooks-driven**: agents report `working`/`blocked`/`done` via
-    /// `thurbox-cli session signal`, persisted in `sessions` and read here in one
-    /// batch (see [`derive_session_status`]). A `done` session stays `Done` until
-    /// the user moves focus *off* it (acknowledged → `Idle`). The OSC terminal
-    /// title is still captured for the live activity line, but no longer drives
-    /// status.
+    /// `thurbox-cli session signal` (local sessions) or a tmux pane user option
+    /// pushed over the control-mode subscription (remote sessions — drained
+    /// below into the same hook columns), persisted in `sessions` and read here
+    /// in one batch (see [`derive_session_status`]). A `done` session stays
+    /// `Done` until the user moves focus *off* it (acknowledged → `Idle`). The
+    /// OSC terminal title is still captured for the live activity line, but no
+    /// longer drives status.
     fn refresh_session_statuses(&mut self) {
+        // Before the data_version gate, so a persisted remote event reloads the
+        // cache in this same tick.
+        self.drain_remote_hook_events();
         self.metrics.bump(|p| &mut p.status_refreshes);
         let active_index = self.active_index;
         // Reload the persisted hook columns only when the DB actually changed —
@@ -3982,6 +3987,68 @@ impl App {
     /// `data_version`, so the version gate wouldn't otherwise notice them.
     fn invalidate_hook_state_cache(&mut self) {
         self.hook_states_version = None;
+    }
+
+    /// Drain remote-hook status events from every backend and persist them,
+    /// exactly as `thurbox-cli session signal` would have done locally.
+    ///
+    /// A remote agent's hooks set a tmux pane user option; the backend's
+    /// control-mode subscription queues `(pane_id, state)` pairs (see
+    /// [`crate::agent::backend::SessionBackend::take_hook_state_events`]).
+    /// Each is resolved to a session by **backend name + pane id** — pane ids
+    /// collide across hosts — and written through [`set_hook_state`]
+    /// (`crate::storage`), so the whole derivation downstream (Done→seen
+    /// acknowledgment, OS notifications, rollups, the stuck-working fallback)
+    /// is shared with local sessions.
+    fn drain_remote_hook_events(&mut self) {
+        // The value is remote-host-controlled free text: allow-list it (the
+        // same states `session signal` accepts) and never interpolate it.
+        const VALID_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
+        // Collect first: the registry borrow must end before &mut self below.
+        let batches: Vec<(String, Vec<(String, String)>)> = self
+            .backends
+            .all_backends()
+            .map(|b| (b.name().to_string(), b.take_hook_state_events()))
+            .filter(|(_, events)| !events.is_empty())
+            .collect();
+        for (backend_name, events) in batches {
+            for (pane_id, state) in events {
+                if !VALID_STATES.contains(&state.as_str()) {
+                    continue;
+                }
+                let Some(id) = self
+                    .sessions
+                    .iter()
+                    .find(|s| {
+                        s.backend_name() == backend_name
+                            && s.info.backend_id.as_deref() == Some(pane_id.as_str())
+                    })
+                    .map(|s| s.info.id)
+                else {
+                    // Not an agent pane (shell/heartbeat window) or a session
+                    // this instance doesn't hold — skip.
+                    continue;
+                };
+                // Dedupe against the cache: the subscription re-reports the
+                // current value on (re)connect, and re-stamping an already-
+                // acknowledged `done` would resurrect it as unseen and re-fire
+                // its OS notification on every TUI restart. Safe because
+                // done→done without an intervening `working` can't happen.
+                if self
+                    .cached_hook_states
+                    .get(&id)
+                    .and_then(|h| h.state.as_deref())
+                    == Some(state.as_str())
+                {
+                    continue;
+                }
+                if self.db.set_hook_state(id, &state).is_ok() {
+                    // Own-connection write: data_version won't move, force the
+                    // reload so this tick's derivation sees the exact row.
+                    self.invalidate_hook_state_cache();
+                }
+            }
+        }
     }
 
     /// If the just-left session (`last_active_session_id`) is an unseen `done`,
