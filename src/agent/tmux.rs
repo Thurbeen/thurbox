@@ -1288,12 +1288,10 @@ pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
 
 /// Window name for the headless automation heartbeat keeper. Deliberately NOT
 /// `tb-` prefixed so [`LocalTmuxBackend::discover`] ignores it — it is
-/// infrastructure, not a session. (Windows has no keeper window in v1.)
-#[cfg(not(windows))]
+/// infrastructure, not a session.
 const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
 
 /// How often the heartbeat keeper invokes `automation tick`.
-#[cfg(not(windows))]
 const HEARTBEAT_INTERVAL_SECS: u64 = 60;
 
 /// List the window names in the thurbox tmux session (empty if the server is
@@ -1388,20 +1386,12 @@ fn ps_single_quote(s: &str) -> String {
 /// automations work with no other sessions. Idempotent — a no-op when the
 /// keeper already exists. `cli_path` is the absolute path to `thurbox-cli`.
 ///
-/// On Windows this is currently a no-op: the keeper's loop relies on a POSIX
-/// shell that psmux's `run-shell` does not provide, so headless automation
-/// firing degrades to TUI-only on Windows in v1 (see the Windows parity notes).
-#[cfg(not(windows))]
 pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
     TmuxBackend::local().ensure_session_configured()?;
     if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
         return Ok(());
     }
-    // The loop body runs via the server's shell, so escape the CLI path.
-    let cli = shell_escape(&cli_path.display().to_string());
-    let loop_cmd = format!(
-        "while true; do {cli} automation tick >/dev/null 2>&1; sleep {HEARTBEAT_INTERVAL_SECS}; done"
-    );
+    let loop_cmd = heartbeat_loop_command(cli_path);
     let status = local_mux_command(&[
         "new-window",
         "-d",
@@ -1420,13 +1410,28 @@ pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Windows: the headless heartbeat keeper is not available in v1 (no POSIX
-/// shell for the keeper loop under psmux). Automations still fire from the TUI;
-/// this is a no-op so callers don't treat the absence as an error.
+/// The keeper's loop, as the window command. It runs via the server's shell,
+/// so the CLI path is escaped for it.
+#[cfg(not(windows))]
+fn heartbeat_loop_command(cli_path: &Path) -> String {
+    let cli = shell_escape(&cli_path.display().to_string());
+    format!(
+        "while true; do {cli} automation tick >/dev/null 2>&1; sleep {HEARTBEAT_INTERVAL_SECS}; done"
+    )
+}
+
+/// Windows: psmux runs a window command via `powershell -NoLogo -Command`, so
+/// the keeper loop is PowerShell — handed over as **one argv token**, dodging
+/// psmux's trailing-token handling entirely (same delivery as
+/// `psmux_window_powershell`, whose quoting rules the `ps_single_quote` here
+/// shares). This used to be a no-op ("no POSIX shell for the keeper loop"),
+/// which silently degraded headless automation firing to TUI-only on Windows.
 #[cfg(windows)]
-pub fn ensure_automation_heartbeat(_cli_path: &Path) -> Result<()> {
-    debug!("Automation heartbeat keeper is not supported on Windows (TUI-only firing)");
-    Ok(())
+fn heartbeat_loop_command(cli_path: &Path) -> String {
+    let cli = ps_single_quote(&cli_path.display().to_string());
+    format!(
+        "while ($true) {{ & {cli} automation tick *> $null; Start-Sleep {HEARTBEAT_INTERVAL_SECS} }}"
+    )
 }
 
 /// Resolve the path to the `thurbox-cli` binary that sits next to the currently

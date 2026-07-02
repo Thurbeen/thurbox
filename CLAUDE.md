@@ -546,7 +546,12 @@ control-mode protocol is byte-identical over either transport/binary, with
   primitives it *does* support (`send-keys -l` literal runs +
   `Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names), reconstructing the
   same byte stream the pane's PTY receives; tmux (incl. a WSL distro's tmux)
-  keeps the byte-exact `-H` hex path.
+  keeps the byte-exact `-H` hex path. Literal runs go out as `-l -N 1 "…"`
+  (double-quoted, `\"`/`\\` escaped): psmux's send-coalescing pass re-quotes
+  literals with a POSIX `'\''` escape its own parser can't read back, so any
+  `'` typed arrived in the pane as `\` (`it's` → `it\s`) — the `-N` flag makes
+  psmux's coalescing decoder bail, and its direct handler reads the
+  double-quote framing correctly (`flush_psmux_literal` / `psmux_quote`).
 - **`new-window` trailing tokens are not joined** — tmux joins them into one
   shell command; psmux keeps only the *first* token and silently drops the
   rest, so the agent launched with **no args**. And **`new-window -e` is

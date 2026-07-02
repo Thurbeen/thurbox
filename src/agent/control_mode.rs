@@ -149,9 +149,19 @@ fn psmux_key_name(b: u8) -> Option<String> {
     })
 }
 
-/// Emit the pending printable run as one or more `send-keys -l` commands and
-/// clear it. Long runs are split at `SEND_KEYS_CHUNK_BYTES` (on char boundaries)
-/// so no control-mode line gets over-long.
+/// Emit the pending printable run as one or more `send-keys -l -N 1` commands
+/// and clear it. Long runs are split at `SEND_KEYS_CHUNK_BYTES` (on char
+/// boundaries) so no control-mode line gets over-long.
+///
+/// The `-N 1` is load-bearing, not a stray repeat count. psmux's control-mode
+/// reader runs every line through a send-coalescing pass
+/// (`coalesce_send_commands` in psmux) that decodes each send's bytes and
+/// re-emits them re-quoted with the POSIX `'\''` escape — which psmux's own
+/// tokenizer cannot read back, so any `'` in the text arrived in the pane as
+/// `\` (`it's` was typed as `it\s`), regardless of how the client framed it.
+/// The decoder bails on a `-N` flag, letting the original line reach the
+/// direct send-keys handler, whose single parse handles the double-quote
+/// framing of [`psmux_quote`] correctly. Verified against psmux 3.3.6.
 fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<String>) {
     if literal.is_empty() {
         return;
@@ -159,7 +169,7 @@ fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<Stri
     let text = String::from_utf8_lossy(literal).into_owned();
     let emit = |chunk: &str, cmds: &mut Vec<String>| {
         cmds.push(format!(
-            "send-keys -t {pane_id} -l {}\n",
+            "send-keys -t {pane_id} -l -N 1 {}\n",
             psmux_quote(chunk)
         ));
     };
@@ -177,13 +187,21 @@ fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<Stri
     literal.clear();
 }
 
-/// Single-quote `s` for a psmux `send-keys -l` argument. Always quotes (even a
-/// bare word) so a leading `-` is never read as a flag; embedded single quotes
-/// use the POSIX `'\''` break. A literal run never contains a newline (both LF
-/// and CR map to key-names, not literal text), but the control-mode line is
-/// `\n`-delimited, so newlines are replaced with spaces defensively.
+/// Double-quote `s` for a psmux `send-keys -l` argument. Always quotes (even a
+/// bare word) so a leading `-` is never read as a flag. Double quotes — not
+/// POSIX single quotes — because psmux's tokenizer has no working escape for a
+/// `'` inside `'…'`, but inside `"…"` it passes `'` through untouched and
+/// reads exactly two escapes: `\"` (literal quote) and `\\` (literal
+/// backslash); any other backslash stays literal, so both are escaped here. A
+/// literal run never contains a newline (LF and CR map to key-names), but the
+/// control-mode line is `\n`-delimited, so newlines are replaced defensively.
 fn psmux_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\n', " ").replace('\'', "'\\''"))
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
+    )
 }
 
 /// Per-pane writer that sends input via control-mode `send-keys` through the
@@ -686,7 +704,7 @@ mod tests {
         // Typing `b` must inject `b`, not the literal text "62".
         assert_eq!(
             send_keys_commands("%1", b"b", true),
-            vec!["send-keys -t %1 -l 'b'\n".to_string()]
+            vec!["send-keys -t %1 -l -N 1 \"b\"\n".to_string()]
         );
     }
 
@@ -694,7 +712,7 @@ mod tests {
     fn psmux_printable_run_is_one_literal_command() {
         assert_eq!(
             send_keys_commands("%1", b"hello world", true),
-            vec!["send-keys -t %1 -l 'hello world'\n".to_string()]
+            vec!["send-keys -t %1 -l -N 1 \"hello world\"\n".to_string()]
         );
     }
 
@@ -746,16 +764,30 @@ mod tests {
             send_keys_commands("%1", b"\x1b[A", true),
             vec![
                 "send-keys -t %1 Escape\n".to_string(),
-                "send-keys -t %1 -l '[A'\n".to_string(),
+                "send-keys -t %1 -l -N 1 \"[A\"\n".to_string(),
             ]
         );
     }
 
     #[test]
-    fn psmux_literal_single_quote_is_escaped() {
+    fn psmux_literal_single_quote_survives() {
+        // Regression: psmux's send-coalescing re-quoted literals with the
+        // POSIX `'\''` escape its own parser can't read back, so `it's` was
+        // typed into the pane as `it\s`. The `-N 1` opts out of coalescing and
+        // the double-quote framing passes `'` through untouched.
         assert_eq!(
             send_keys_commands("%1", b"it's", true),
-            vec!["send-keys -t %1 -l 'it'\\''s'\n".to_string()]
+            vec!["send-keys -t %1 -l -N 1 \"it's\"\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_literal_escapes_backslash_and_double_quote() {
+        // psmux's double-quote tokenizer reads exactly `\"` and `\\`; both
+        // must be escaped so Windows paths and quoted text round-trip.
+        assert_eq!(
+            send_keys_commands("%1", br#"say "hi" C:\p"#, true),
+            vec!["send-keys -t %1 -l -N 1 \"say \\\"hi\\\" C:\\\\p\"\n".to_string()]
         );
     }
 
@@ -765,7 +797,7 @@ mod tests {
         assert_eq!(
             send_keys_commands("%1", b"ls\r", true),
             vec![
-                "send-keys -t %1 -l 'ls'\n".to_string(),
+                "send-keys -t %1 -l -N 1 \"ls\"\n".to_string(),
                 "send-keys -t %1 Enter\n".to_string(),
             ]
         );
@@ -779,9 +811,9 @@ mod tests {
             send_keys_commands("%1", b"\x1b[200~hi\x1b[201~", true),
             vec![
                 "send-keys -t %1 Escape\n".to_string(),
-                "send-keys -t %1 -l '[200~hi'\n".to_string(),
+                "send-keys -t %1 -l -N 1 \"[200~hi\"\n".to_string(),
                 "send-keys -t %1 Escape\n".to_string(),
-                "send-keys -t %1 -l '[201~'\n".to_string(),
+                "send-keys -t %1 -l -N 1 \"[201~\"\n".to_string(),
             ]
         );
     }
@@ -790,7 +822,7 @@ mod tests {
     fn psmux_utf8_char_goes_to_literal() {
         assert_eq!(
             send_keys_commands("%1", "é".as_bytes(), true),
-            vec!["send-keys -t %1 -l 'é'\n".to_string()]
+            vec!["send-keys -t %1 -l -N 1 \"é\"\n".to_string()]
         );
     }
 
@@ -804,8 +836,8 @@ mod tests {
         for cmd in &cmds {
             let inner = cmd
                 .trim_end()
-                .strip_prefix("send-keys -t %1 -l '")
-                .and_then(|s| s.strip_suffix('\''))
+                .strip_prefix("send-keys -t %1 -l -N 1 \"")
+                .and_then(|s| s.strip_suffix('"'))
                 .expect("literal command shape");
             text.push_str(inner);
         }
