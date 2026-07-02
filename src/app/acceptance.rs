@@ -1968,6 +1968,50 @@ fn clicking_review_row_focuses_the_pane() {
     );
 }
 
+/// The review-target picker is mouse-driven too: clicking one of its entries
+/// switches the diff to that target, mirroring the keyboard Enter path.
+#[test]
+fn clicking_review_target_entry_switches_target() {
+    use crate::app::code_review::ReviewTarget;
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
+    let sid = h.app.sessions[0].info.id;
+    h.app.code_reviews.insert(
+        sid,
+        crate::app::code_review::CodeReviewState::for_test(sid, 2),
+    );
+    h.app.focus = InputFocus::CodeReview;
+    // The picker opens on Branch (the for_test default); it offers Working +
+    // Branch entries.
+    h.app.cr_open_target_picker();
+    assert_eq!(h.app.active_review().unwrap().target, ReviewTarget::Branch);
+    h.render();
+
+    // Find the "Working" entry's hitbox (index 0) and click it.
+    let r = h
+        .app
+        .click_targets
+        .iter()
+        .find(|t| matches!(t.action, ClickAction::ReviewTarget(0)))
+        .map(|t| t.rect)
+        .expect("target-picker entries recorded as click targets");
+    h.app.update(AppMessage::MouseClick {
+        x: r.x,
+        y: r.y,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    let cr = h.app.active_review().unwrap();
+    assert_eq!(
+        cr.target,
+        ReviewTarget::Working,
+        "clicking a target-picker entry switches the diff to that target"
+    );
+    assert!(
+        cr.target_picker.is_none(),
+        "selecting a target closes the picker"
+    );
+}
+
 /// Global overlay/panel toggles fall through the review's key capture so they
 /// stay reachable while a review is open (regression: the capture handler
 /// swallowed them). The review itself stays open.

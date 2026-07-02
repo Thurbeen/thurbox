@@ -1544,10 +1544,12 @@ code_review`.
   whole branch (`<base>..HEAD`, the default), the **uncommitted working changes**
   (`git diff HEAD`), or a **single commit** (`git show`) — mirroring tuicr's
   `-r`/`-w`/commit targets. An in-view picker lists Working, Branch, and each
-  commit in `<base>..HEAD` (`git log`); selecting one recomputes the diff
-  (`ReviewTarget`, `build_target_diff`, `git::{diff_working_on,show_commit_on,
-  list_commits_on}`). A session with no resolvable base defaults to the
-  working-changes target.
+  commit in `<base>..HEAD` (`git log`); selecting one (keyboard ↑/↓/Enter **or a
+  mouse click** on the entry — `render_target_picker` returns a `RowHitbox` per
+  entry, recorded as `ClickAction::ReviewTarget(i)` → `App::cr_select_target`)
+  recomputes the diff (`ReviewTarget`, `build_target_diff`,
+  `git::{diff_working_on,show_commit_on, list_commits_on}`). A session with no
+  resolvable base defaults to the working-changes target.
 - **Multi-repo sessions.** A multi-repo session reviews **all** its worktrees at
   once: the diff is built per repo and concatenated, with each file path
   namespaced `"<repo>/<path>"` so files, comments, and "reviewed" marks stay

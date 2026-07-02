@@ -121,6 +121,7 @@ impl App {
                         | ClickAction::SelectFileRow(_)
                         | ClickAction::Global(_)
                         | ClickAction::ReviewButton(_)
+                        | ClickAction::ReviewTarget(_)
                         | ClickAction::CentralTab(_)
                         | ClickAction::PaneField { .. }
                 )
@@ -611,6 +612,9 @@ impl App {
         // focus fallback.
         for h in hits.rows {
             self.record_click(h.rect, ClickAction::ReviewRow(h.index));
+        }
+        for h in hits.targets {
+            self.record_click(h.rect, ClickAction::ReviewTarget(h.index));
         }
         for (h, action) in hits.buttons {
             self.record_click(h.rect, ClickAction::ReviewButton(action));

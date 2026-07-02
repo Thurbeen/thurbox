@@ -471,6 +471,9 @@ pub(crate) enum ClickAction {
     /// Jump the diff to the changed-file at this diff-file index (clicked in the
     /// changed-files list).
     ReviewFile(usize),
+    /// Select the review-target-picker entry at this index (clicked while the
+    /// picker is open).
+    ReviewTarget(usize),
     /// Select a central-pane view from the tab strip in the pane's top border
     /// (Agent / Shell / Review). Dispatched by `activate_click_target`.
     CentralTab(CentralTab),
@@ -2594,6 +2597,11 @@ impl App {
             ClickAction::ReviewFile(fi) => {
                 self.focus = InputFocus::ReviewFiles;
                 self.cr_jump_to_file(fi);
+                true
+            }
+            ClickAction::ReviewTarget(i) => {
+                self.focus = InputFocus::CodeReview;
+                self.cr_select_target(i);
                 true
             }
             ClickAction::CentralTab(tab) => {

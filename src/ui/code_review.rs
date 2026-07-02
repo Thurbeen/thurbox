@@ -19,6 +19,9 @@ use crate::ui::{focus_block, render_button_bar, ButtonSpec, FocusLevel, RowHitbo
 pub(crate) struct CodeReviewHits {
     /// One hitbox per visible diff/comment row (index = row in `state.rows`).
     pub rows: Vec<RowHitbox>,
+    /// One hitbox per visible target-picker entry (index = entry in the
+    /// picker); empty unless the target picker is open.
+    pub targets: Vec<RowHitbox>,
     /// Footer buttons paired with the action each triggers.
     pub buttons: Vec<(crate::ui::ButtonHit, ReviewButton)>,
     pub scrollbar: Option<ScrollbarGeom>,
@@ -65,6 +68,7 @@ pub(crate) fn render(
     if inner.height == 0 || inner.width == 0 {
         return CodeReviewHits {
             rows: Vec::new(),
+            targets: Vec::new(),
             buttons: Vec::new(),
             scrollbar: None,
         };
@@ -86,9 +90,11 @@ pub(crate) fn render(
     }
 
     let composing = state.compose.is_some();
-    // The target picker, when open, replaces the diff body (keyboard-driven).
+    // The target picker, when open, replaces the diff body. Its entries are
+    // clickable (`targets`), on top of the keyboard-driven ↑/↓/Enter path.
+    let mut targets = Vec::new();
     let hits = if state.target_picker.is_some() {
-        render_target_picker(frame, diff_area, state);
+        targets = render_target_picker(frame, diff_area, state);
         (Vec::new(), None)
     } else {
         render_rows(frame, diff_area, state)
@@ -109,20 +115,26 @@ pub(crate) fn render(
 
     CodeReviewHits {
         rows: hits.0,
+        targets,
         buttons,
         scrollbar: hits.1,
     }
 }
 
 /// Render the review-target picker (branch / working / per-commit) into `area`.
-fn render_target_picker(frame: &mut Frame, area: Rect, state: &CodeReviewState) {
+///
+/// Returns one [`RowHitbox`] per rendered entry (`index` = entry position in
+/// `picker.entries`) so a click selects that target, matching the keyboard
+/// ↑/↓/Enter path.
+fn render_target_picker(frame: &mut Frame, area: Rect, state: &CodeReviewState) -> Vec<RowHitbox> {
     let Some(picker) = state.target_picker.as_ref() else {
-        return;
+        return Vec::new();
     };
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        " Review target  (↑/↓ select · Enter · Esc)",
+        " Review target  (↑/↓ select · Enter · Esc · or click)",
         Style::default().fg(Theme::text_muted()),
     ))];
+    let mut hits = Vec::new();
     let height = area.height as usize;
     for (i, target) in picker
         .entries
@@ -141,12 +153,18 @@ fn render_target_picker(frame: &mut Frame, area: Rect, state: &CodeReviewState) 
         } else {
             Style::default().fg(Theme::text_primary())
         };
+        // Row 0 is the header line; entry `i` renders on the next row down.
+        hits.push(RowHitbox {
+            rect: Rect::new(area.x, area.y + 1 + i as u16, area.width, 1),
+            index: i,
+        });
         lines.push(Line::from(Span::styled(
             truncate(&format!("{marker}{label}"), area.width as usize),
             style,
         )));
     }
     frame.render_widget(Paragraph::new(lines), area);
+    hits
 }
 
 /// Render the windowed diff/comment rows + scrollbar. Returns row hitboxes

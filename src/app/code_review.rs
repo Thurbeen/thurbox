@@ -743,6 +743,18 @@ impl App {
         }
     }
 
+    /// Apply the target-picker entry at `idx` (a click), mirroring the keyboard
+    /// Enter path. Out-of-range indices are ignored.
+    pub(crate) fn cr_select_target(&mut self, idx: usize) {
+        let chosen = self
+            .active_review()
+            .and_then(|cr| cr.target_picker.as_ref())
+            .and_then(|picker| picker.entries.get(idx).cloned());
+        if let Some(target) = chosen {
+            self.cr_set_target(target);
+        }
+    }
+
     /// Key handling while the target picker is open.
     fn handle_target_picker_key(&mut self, code: KeyCode) {
         let chosen = {
