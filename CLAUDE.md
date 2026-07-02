@@ -590,7 +590,10 @@ via `App::backend_for`).
   cached per backend name — a WSL distro has no `destination`).
 - **Persistence/restore**: `backend_type` round-trips in SQLite; restore
   discovers windows **per backend** so off-local sessions re-adopt against their
-  own host.
+  own host. Remote backends are readied + discovered **in the background** (one
+  thread per host, drained by `App::poll_remote_restore` each tick) so an
+  unreachable or slow host never blocks the first frame — only local sessions
+  restore synchronously at startup (ADR-P7, `docs/PERFORMANCE.md`).
 - **Headless**: `thurbox-cli session create --host <name>` spawns on the host
   (an SSH name or an auto-discovered WSL distro name).
 - **Agent config on the host**: agent args referencing thurbox-managed config

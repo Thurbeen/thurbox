@@ -397,7 +397,8 @@ struct StartupTimings {
     db_open_ms: u128,
     /// Extension self-heal + built-in hooks wiring + agents.toml reload.
     extension_heal_ms: u128,
-    /// `load_persisted_state_from_db` + `restore_sessions` (sequential adopt).
+    /// `load_persisted_state_from_db` + `restore_sessions` (sequential local
+    /// adopt; remote backends restore on background threads, off this phase).
     restore_ms: u128,
 }
 

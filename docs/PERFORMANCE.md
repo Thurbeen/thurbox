@@ -171,9 +171,12 @@ won't pay off.
   breakdown** that sums to roughly `first_frame_ms` —
   `config_init_ms` (config-file loads + local backend ready), `db_open_ms`,
   `extension_heal_ms` (self-heal + built-in hooks wiring + agents reload),
-  `restore_ms` (session restore), and `first_frame_ms` (total to first paint).
+  `restore_ms` (the synchronous local-session restore — remote backends restore
+  on background threads, off this phase; see ADR-P7), and `first_frame_ms`
+  (total to first paint).
   When restore is the long pole, the same flag also emits per-backend
-  `restore_discover` lines (`discover_ms`) and per-session `restore_adopt` lines
+  `restore_discover` lines (`discover_ms`; for a remote backend the line comes
+  from its background thread) and per-session `restore_adopt` lines
   (`adopt_ms`) so the *sequential* restore can be attributed. Note `restore_adopt`
   covers both restore paths — **adopt** (a live tmux pane is re-attached) and
   **respawn** (no live pane matched, so a fresh agent is launched); on a cold
@@ -256,6 +259,44 @@ are few and explicitly handled.
   shared `last_data_version` used by the sync poll; reusing it would make the
   two consumers steal each other's change edges. A read-only `data_version()`
   avoids the coupling.
+
+---
+
+## ADR-P7: Restore remote-backed sessions in the background
+
+**Choice**: `App::restore_sessions` (`src/app/mod.rs`) partitions the resumable
+sessions by `is_remote_backend(backend_type)`. Local sessions keep the
+synchronous discover + adopt path (sub-second). Each **remote** (`ssh:<host>` /
+`wsl:<distro>`) backend is readied + discovered on its **own thread** — all
+hosts in parallel — via `App::start_remote_restore`; its sessions wait in
+`App::remote_restore` and are adopted on the main thread by
+`App::poll_remote_restore` (a `tick` step) once the host reports. A
+late-arriving adoption restores the user's prior selection instead of stealing
+focus, and a session already adopted meanwhile (e.g. by the DB sync) is
+skipped. An unknown-host backend still leaves its sessions un-adopted, exactly
+like before. The per-backend `restore_discover` perf line is emitted from the
+background thread; `restore_ms` in the `startup` line now covers only the
+local, synchronous part.
+
+**Why**: readying a remote backend means an ssh connect + remote tmux server
+bring-up — observed at 15–30 s per host on real hardware, unbounded when a host
+is powered off. With sessions persisted on two lab hosts, the first frame took
+~50 s (the hosts were probed **serially**, before `run_loop` ever painted).
+The expensive part needs no `&mut App` — only `ensure_ready()` + `discover()`
+on an `Arc<dyn SessionBackend>` (`Send + Sync`) — so it moves off-thread
+wholesale; adoption itself reuses the control-mode connection the thread
+already brought up and is cheap on the main thread.
+
+**Rejected**:
+
+- *Parallelizing the synchronous restore across hosts* — turns 50 s into
+  max-per-host (still 15–30 s, still unbounded for a down host) and keeps the
+  first frame hostage to the slowest machine.
+- *An ssh `ConnectTimeout` default* — caps the down-host case but does nothing
+  for a reachable-but-slow host, and silently changes user ssh behavior.
+- *Adopting on the background thread too* — `restore_single_session` mutates
+  `App` (session list, wizard state on the respawn path); shipping a built
+  `Session` across the channel would split that invariant for no measured win.
 
 ---
 

@@ -123,6 +123,23 @@ struct PendingSessionSpawn {
     base_branch: Option<String>,
 }
 
+/// One remote backend's discovery result: its `backend_type` plus the windows
+/// its host reported. Sent once per backend by the restore threads.
+type RemoteDiscovery = (String, Vec<crate::agent::backend::DiscoveredSession>);
+
+/// In-flight background restore of remote-backed sessions. Startup readies +
+/// discovers only *local* backends synchronously; each remote (`ssh:`/`wsl:`)
+/// backend is readied on its own thread, because a single ssh connect can take
+/// tens of seconds (or minutes for a down host) and must never block the first
+/// frame. Each thread sends one [`RemoteDiscovery`] message; the backend's
+/// sessions wait in `pending` and are adopted on the main thread once it
+/// reports (in [`App::poll_remote_restore`]).
+struct RemoteRestore {
+    rx: mpsc::Receiver<RemoteDiscovery>,
+    /// Sessions awaiting their backend's discovery, keyed by `backend_type`.
+    pending: HashMap<String, Vec<sync::SharedSession>>,
+}
+
 /// Continuation for a backgrounded worktree-creation: the wizard inputs needed
 /// to resume the spawn flow once the worktrees exist (in
 /// [`App::poll_worktree_create`]).
@@ -619,6 +636,11 @@ pub struct App {
     /// Continuation for a completed background spawn: the metadata + follow-up
     /// (task prompt) to apply once the session is live.
     pending_session_spawn: Option<PendingSessionSpawn>,
+    /// Remote-backed sessions still being restored in the background (one
+    /// discovery thread per host), drained each tick by
+    /// [`Self::poll_remote_restore`]. `None` once every remote backend has
+    /// reported (or when there was nothing remote to restore).
+    remote_restore: Option<RemoteRestore>,
     /// Deferred inputs: `(session_id, data, tick_at_which_to_send)`.
     /// Used to introduce a small delay between pasting text and pressing Enter.
     deferred_inputs: Vec<(SessionId, Vec<u8>, u64)>,
@@ -904,6 +926,7 @@ impl App {
             pending_worktree_create: None,
             session_spawn: background::BackgroundTask::default(),
             pending_session_spawn: None,
+            remote_restore: None,
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
             pending_delete: None,
@@ -3734,6 +3757,10 @@ impl App {
         self.poll_worktree_create();
         self.poll_session_spawn();
 
+        // Adopt remote-backed sessions whose host discovery (started at
+        // restore) has since completed.
+        self.poll_remote_restore();
+
         // Send deferred inputs whose delay has elapsed
         self.drain_deferred_inputs();
 
@@ -4884,19 +4911,20 @@ impl App {
 
     /// Restore sessions from the database on startup.
     ///
-    /// Sessions are restored synchronously by querying each session's backend
+    /// Local sessions are restored synchronously by querying the local backend
     /// for its existing tmux windows. Sessions persisted with a remote
-    /// (`ssh:<host>`) `backend_type` are matched against that host's tmux, not
-    /// the local one; a remote backend whose host is unreachable degrades to
-    /// "no discovered windows" so its sessions are skipped rather than blocking
-    /// startup.
+    /// (`ssh:<host>` / `wsl:<distro>`) `backend_type` are restored in the
+    /// background instead — one discovery thread per host, drained by
+    /// `poll_remote_restore` each tick — because readying a remote backend
+    /// means an ssh connect that can take tens of seconds (or minutes for a
+    /// down host) and must never block the first frame.
     pub fn restore_sessions(&mut self, sessions: Vec<sync::SharedSession>, session_counter: usize) {
         self.session_counter = session_counter;
-        // Opt-in startup-restore breakdown (THURBOX_PERF_LOG). Restore is
-        // sequential — backends are discovered one by one and each session is
-        // adopted with a blocking `capture_pane_text` — so per-backend
-        // discover and per-session adopt timings show whether (and how much)
-        // parallelizing this would pay off. Read once here, never per tick.
+        // Opt-in startup-restore breakdown (THURBOX_PERF_LOG). Local restore is
+        // sequential — each session is adopted with a blocking
+        // `capture_pane_text` — so per-backend discover and per-session adopt
+        // timings show where the remaining time goes. Read once here, never
+        // per tick.
         let perf_log = std::env::var_os("THURBOX_PERF_LOG").is_some();
 
         // Only sessions with an agent_session_id are resumable.
@@ -4905,9 +4933,13 @@ impl App {
             .filter(|s| s.agent_session_id.is_some())
             .collect();
 
-        let discovered_by_backend = self.discover_windows_by_backend(&resumable, perf_log);
+        let (remote, local): (Vec<_>, Vec<_>) = resumable
+            .into_iter()
+            .partition(|s| crate::session::is_remote_backend(&s.backend_type));
 
-        for shared in resumable {
+        let discovered_by_backend = self.discover_windows_by_backend(&local, perf_log);
+
+        for shared in local {
             let discovered = discovered_by_backend
                 .get(&shared.backend_type)
                 .cloned()
@@ -4924,16 +4956,154 @@ impl App {
             }
         }
 
+        self.start_remote_restore(remote, perf_log);
+
         // Claim ownership of restored sessions in the shared state
         self.save_state();
     }
 
+    /// Kick off one discovery thread per distinct remote backend and queue its
+    /// sessions for adoption in [`Self::poll_remote_restore`]. Sessions on a
+    /// backend this instance can't manage (an unknown host) are left
+    /// un-adopted, exactly like the synchronous path.
+    fn start_remote_restore(&mut self, remote: Vec<sync::SharedSession>, perf_log: bool) {
+        if remote.is_empty() {
+            return;
+        }
+        let mut grouped: HashMap<String, Vec<sync::SharedSession>> = HashMap::new();
+        for shared in remote {
+            grouped
+                .entry(shared.backend_type.clone())
+                .or_default()
+                .push(shared);
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let mut pending: HashMap<String, Vec<sync::SharedSession>> = HashMap::new();
+        for (backend_type, sessions) in grouped {
+            let Some(backend) = self.resolve_persisted_backend(&backend_type) else {
+                continue;
+            };
+            Self::spawn_remote_discovery(backend, backend_type.clone(), perf_log, tx.clone());
+            pending.insert(backend_type, sessions);
+        }
+        if !pending.is_empty() {
+            self.remote_restore = Some(RemoteRestore { rx, pending });
+        }
+    }
+
+    /// Ready + discover one remote backend on its own thread, reporting the
+    /// result over `tx` (a dropped receiver — app shut down — is fine).
+    fn spawn_remote_discovery(
+        backend: Arc<dyn SessionBackend>,
+        backend_type: String,
+        perf_log: bool,
+        tx: mpsc::Sender<RemoteDiscovery>,
+    ) {
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let discovered = Self::ready_and_discover(&backend);
+            if perf_log {
+                tracing::info!(
+                    backend = %backend_type,
+                    windows = discovered.len() as u64,
+                    discover_ms = start.elapsed().as_millis() as u64,
+                    "restore_discover"
+                );
+            }
+            let _ = tx.send((backend_type, discovered));
+        });
+    }
+
+    /// Drain finished remote-backend discoveries and adopt their sessions.
+    /// Adoption runs on the main thread but talks to the control-mode
+    /// connection the background thread already brought up, so the expensive
+    /// part (ssh connect + remote tmux ready) never blocks a frame.
+    fn poll_remote_restore(&mut self) {
+        let Some(state) = &mut self.remote_restore else {
+            return;
+        };
+        let mut ready: Vec<RemoteDiscovery> = Vec::new();
+        let mut disconnected = false;
+        loop {
+            match state.rx.try_recv() {
+                Ok(msg) => ready.push(msg),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        self.adopt_remote_discoveries(ready);
+
+        let finished = disconnected
+            || self
+                .remote_restore
+                .as_ref()
+                .is_some_and(|s| s.pending.is_empty());
+        if finished {
+            if let Some(state) = self.remote_restore.take() {
+                for backend_type in state.pending.keys() {
+                    warn!(
+                        backend = %backend_type,
+                        "Remote restore ended without a discovery result"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Adopt every pending session whose backend just reported its windows.
+    fn adopt_remote_discoveries(&mut self, ready: Vec<RemoteDiscovery>) {
+        // Adopting makes each restored session active; a late-arriving host
+        // must not steal the user's current selection, so snapshot + restore it.
+        let prior_active = self.sessions.get(self.active_index).map(|s| s.info.id);
+        let prior_focus = self.focus;
+        let before = self.sessions.len();
+        for (backend_type, discovered) in ready {
+            let Some(sessions) = self
+                .remote_restore
+                .as_mut()
+                .and_then(|s| s.pending.remove(&backend_type))
+            else {
+                continue;
+            };
+            for shared in sessions {
+                // Another path (e.g. the DB sync) may have adopted it meanwhile.
+                if self.sessions.iter().any(|s| s.info.id == shared.id) {
+                    continue;
+                }
+                self.restore_single_session(shared, &discovered);
+            }
+        }
+        // Count sessions actually added — an adopt/respawn that failed inside
+        // `restore_single_session` must not inflate the toast.
+        let adopted = self.sessions.len() - before;
+        if adopted == 0 {
+            return;
+        }
+        if let Some(id) = prior_active {
+            if let Some(idx) = self.sessions.iter().position(|s| s.info.id == id) {
+                self.active_index = idx;
+                self.focus = prior_focus;
+            }
+        }
+        self.save_state();
+        self.set_status(
+            StatusLevel::Info,
+            format!("Restored {adopted} remote session(s)"),
+        );
+        self.request_redraw();
+    }
+
     /// Discover existing backend windows once per distinct `backend_type`.
     ///
-    /// Each backend is readied + discovered at most once (a remote backend
-    /// needs its control-mode connection up before `adopt()`). Backends this
-    /// instance can't manage (unknown remote hosts) map to an empty list so
-    /// their sessions are left un-adopted rather than misadopted on local.
+    /// Each backend is readied + discovered at most once. Only local backends
+    /// reach this at startup (remote ones go through
+    /// [`Self::start_remote_restore`]); unknown backend types map to an empty
+    /// list so their sessions are left un-adopted rather than misadopted.
     fn discover_windows_by_backend(
         &self,
         resumable: &[sync::SharedSession],
@@ -4973,7 +5143,15 @@ impl App {
         let Some(backend) = self.resolve_persisted_backend(backend_type) else {
             return Vec::new();
         };
+        Self::ready_and_discover(&backend)
+    }
 
+    /// Ready a backend and list its windows, degrading to an empty list on
+    /// error (logged, never fatal). Associated (no `&self`) so the remote
+    /// restore threads can run it off the UI thread.
+    fn ready_and_discover(
+        backend: &Arc<dyn SessionBackend>,
+    ) -> Vec<crate::agent::backend::DiscoveredSession> {
         if let Err(e) = backend.ensure_ready() {
             warn!(
                 backend = backend.name(),
@@ -10852,6 +11030,164 @@ mod tests {
         let shared = make_shared_session("thurbox:@0", "1");
         let result = App::find_matching_discovered(&shared, &[]);
         assert!(result.is_none());
+    }
+
+    // --- Background remote restore tests ---
+
+    /// Stub remote backend for the background remote-restore tests: reports
+    /// one live window (`%9`) and adopts it with inert I/O streams.
+    struct RemoteStubBackend;
+    impl SessionBackend for RemoteStubBackend {
+        fn name(&self) -> &str {
+            "ssh:test-host"
+        }
+        fn check_available(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_ready(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&Path>,
+            _: &std::collections::HashMap<String, String>,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+            anyhow::bail!("remote stub does not spawn")
+        }
+        fn adopt(
+            &self,
+            _: &str,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+            Ok(crate::agent::backend::AdoptedSession {
+                output: Box::new(std::io::empty()),
+                input: Box::new(std::io::sink()),
+            })
+        }
+        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+            Ok(vec![make_discovered("%9", "tb-remote-sess", true)])
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn kill(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn detach(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_sessions_restore_in_background() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let mut app = app_with_sessions(0);
+        app.backends.register(Arc::new(RemoteStubBackend));
+
+        let mut shared = make_shared_session("%9", "remote-sess");
+        shared.backend_type = "ssh:test-host".to_string();
+        let id = shared.id;
+
+        app.restore_sessions(vec![shared], 1);
+
+        // The first frame must not wait on the remote host: nothing is adopted
+        // synchronously; discovery runs on a background thread.
+        assert!(app.sessions.is_empty());
+        assert!(app.remote_restore.is_some());
+
+        // Drain like tick() would until the discovery thread reports.
+        drain_remote_restore(&mut app);
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.sessions[0].info.id, id);
+        assert_eq!(app.sessions[0].backend_name(), "ssh:test-host");
+    }
+
+    #[test]
+    fn remote_session_on_unknown_host_is_left_unadopted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let mut app = app_with_sessions(0);
+
+        let mut shared = make_shared_session("%9", "remote-sess");
+        shared.backend_type = "ssh:unknown-host".to_string();
+
+        app.restore_sessions(vec![shared], 1);
+
+        // Same contract as the old synchronous path: an unmanageable backend's
+        // sessions are left un-adopted, and nothing stays pending.
+        assert!(app.sessions.is_empty());
+        assert!(app.remote_restore.is_none());
+    }
+
+    /// Drive [`App::poll_remote_restore`] until the background discovery
+    /// thread reports and the pending state clears.
+    fn drain_remote_restore(app: &mut App) {
+        for _ in 0..500 {
+            app.poll_remote_restore();
+            if app.remote_restore.is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("discovery result never drained");
+    }
+
+    #[tokio::test]
+    async fn remote_restore_preserves_active_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let mut app = app_with_sessions(1);
+        app.backends.register(Arc::new(RemoteStubBackend));
+        let prior_id = app.sessions[0].info.id;
+
+        let mut shared = make_shared_session("%9", "remote-sess");
+        shared.backend_type = "ssh:test-host".to_string();
+        app.restore_sessions(vec![shared], 1);
+        drain_remote_restore(&mut app);
+
+        // The late-arriving host's session lands in the list without stealing
+        // the user's current selection.
+        assert_eq!(app.sessions.len(), 2);
+        assert_eq!(app.sessions[app.active_index].info.id, prior_id);
+    }
+
+    #[test]
+    fn remote_restore_skips_session_adopted_meanwhile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let mut app = app_with_sessions(0);
+        app.backends.register(Arc::new(RemoteStubBackend));
+
+        let mut shared = make_shared_session("%9", "remote-sess");
+        shared.backend_type = "ssh:test-host".to_string();
+        let id = shared.id;
+        app.restore_sessions(vec![shared], 1);
+
+        // Another path (e.g. the DB sync) adopts the session while discovery
+        // is still in flight.
+        let backend_arc = stub_backend_arc();
+        let mut session = Session::stub("remote-sess", &backend_arc, &stub_provider());
+        session.info.id = id;
+        app.sessions.push(session);
+
+        drain_remote_restore(&mut app);
+
+        // The drain must not create a duplicate for the already-present id.
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.sessions[0].info.id, id);
     }
 
     // --- Modal flow tests ---
