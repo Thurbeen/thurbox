@@ -156,6 +156,26 @@ cross-built test archive, and the VM disk image. Needs `/dev/kvm` +
 default, so the script sets `USER_PORTS=22` to push the published SSH port
 through qemu's host-forward into the VM.
 
+### Lab (real-host) test environment
+
+`scripts/dev/lab-test.sh <host> <verb>` (or `just lab <host> <verb>`) drives
+the same checks against **any real machine over SSH** — a `~/.ssh/config`
+alias or `user@address`. Linux/Windows is auto-detected. Because lab machines
+may also run *regular* thurbox sessions, the
+e2e test is fully scoped: a private `-L thurbox-lab-test` socket + session, all
+remote state under one `thurbox-lab-test` directory (repo + `worktrees_dir`),
+and an isolated local `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` — the release
+socket (`thurbox`), the dev socket (`thurbox-dev`), and real config/DB are
+never touched. Verbs: `check` (readiness probe), `hosts` (print the
+`hosts.toml` block), `test` (headless ssh-backend e2e, mirrors
+`remote-ssh-test.sh test`), `tui` (wire the host into the persistent `lab`
+sandbox profile + launch for manual testing), `ssh` (interactive shell or a
+one-off command), `clean`; Windows-only: `deploy`
+(cross-build + install to `C:\Tools\thurbox`), `run` (the deployed TUI over
+`ssh -t`), `test-suite` (nextest archive, mirrors `windows-test.sh`),
+`wsl-setup` / `wsl-check` (provision + verify a WSL distro as a thurbox
+target). Local state: `target/lab-test/` (gitignored).
+
 ## Installation Script
 
 **Linux / macOS** — `scripts/install.sh`:
