@@ -14,9 +14,11 @@ use rusqlite::Connection;
 /// v37 adds `force_deleted` to `sessions` (a hard delete tore down its
 /// worktrees/tmux, so it can't be restored — the restore list tags + blocks it);
 /// v38 adds `base_branch` to `sessions` plus the `review_comments` /
-/// `review_marks` tables (the native code-review view).
+/// `review_marks` tables (the native code-review view); v39 scopes
+/// `repo_bookmarks` to a `host` (`''` = local), giving remote targets the
+/// same bookmark memory as local ones.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 38;
+pub const SCHEMA_VERSION: u32 = 39;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -168,11 +170,13 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             ON automation_runs(automation_id, started_at);
 
         CREATE TABLE IF NOT EXISTS repo_bookmarks (
-            repo_path    TEXT PRIMARY KEY,
+            host         TEXT NOT NULL DEFAULT '',
+            repo_path    TEXT NOT NULL,
             label        TEXT,
             last_used_at INTEGER NOT NULL,
             use_count    INTEGER NOT NULL DEFAULT 1,
-            is_parent    INTEGER NOT NULL DEFAULT 0
+            is_parent    INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (host, repo_path)
         );
 
         CREATE TABLE IF NOT EXISTS tasks (
@@ -281,6 +285,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (36, migrate_v36_action_command),
         (37, migrate_v37_force_deleted),
         (38, migrate_v38_code_review),
+        (39, migrate_v39_bookmark_host),
     ];
 
     for &(target, step) in steps {
@@ -1116,6 +1121,36 @@ fn migrate_v38_code_review(conn: &Connection) -> rusqlite::Result<()> {
         );",
     )?;
     Ok(())
+}
+
+/// v38 → v39: scope repo bookmarks to the **host** they live on. A remote
+/// (SSH/WSL) target previously had no bookmark memory at all — the picker
+/// opened empty — because a bookmark row couldn't say whose filesystem its
+/// path belongs to. The primary key becomes `(host, repo_path)` (`''` =
+/// local, else the backend name `ssh:<name>` / `wsl:<name>`), which needs a
+/// table rebuild (SQLite can't alter a primary key). Existing rows migrate as
+/// local. Guarded on the `host` column so a re-run is a no-op.
+fn migrate_v39_bookmark_host(conn: &Connection) -> rusqlite::Result<()> {
+    if !table_exists(conn, "repo_bookmarks")? || column_exists(conn, "repo_bookmarks", "host")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE repo_bookmarks_v39 (
+            host         TEXT NOT NULL DEFAULT '',
+            repo_path    TEXT NOT NULL,
+            label        TEXT,
+            last_used_at INTEGER NOT NULL,
+            use_count    INTEGER NOT NULL DEFAULT 1,
+            is_parent    INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (host, repo_path)
+        );
+        INSERT INTO repo_bookmarks_v39
+            (host, repo_path, label, last_used_at, use_count, is_parent)
+            SELECT '', repo_path, label, last_used_at, use_count, is_parent
+            FROM repo_bookmarks;
+        DROP TABLE repo_bookmarks;
+        ALTER TABLE repo_bookmarks_v39 RENAME TO repo_bookmarks;",
+    )
 }
 
 #[cfg(test)]

@@ -33,6 +33,10 @@ pub struct RepoPickerState<'a> {
     pub search_cursor: usize,
     pub search_active: bool,
     pub filtered_indices: &'a [usize],
+    /// The target host's name for an off-local session (`None` = local).
+    /// Shown in the list title so it's unambiguous whose filesystem the
+    /// repos (and the typed path) belong to.
+    pub host: Option<&'a str>,
 }
 
 /// The clickable sub-areas of the repo picker that focus an editable field:
@@ -151,7 +155,10 @@ fn render_bookmark_list(
         Theme::border_unfocused()
     };
 
-    let title = format!(" Repos ({}) ", state.bookmarks.len());
+    let title = match state.host {
+        Some(host) => format!(" Repos on {host} ({}) ", state.bookmarks.len()),
+        None => format!(" Repos ({}) ", state.bookmarks.len()),
+    };
 
     let list_block = Block::default()
         .title(title)
@@ -443,6 +450,7 @@ mod tests {
             search_cursor: 0,
             search_active: false,
             filtered_indices: EMPTY_IDX,
+            host: None,
         }
     }
 

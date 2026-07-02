@@ -6,7 +6,9 @@ use crate::sync::current_time_millis;
 
 use super::Database;
 
-/// A bookmarked/recently-used repo path.
+/// A bookmarked/recently-used repo path, scoped to the host whose filesystem
+/// it lives on (`""` = local, else the backend name `ssh:<name>` /
+/// `wsl:<name>`) so a remote target gets its own bookmark memory.
 #[derive(Debug, Clone)]
 pub struct RepoBookmark {
     pub repo_path: PathBuf,
@@ -20,15 +22,16 @@ pub struct RepoBookmark {
 }
 
 impl Database {
-    /// List all repo bookmarks, sorted by last_used_at descending (most recent first).
-    pub fn list_repo_bookmarks(&self) -> rusqlite::Result<Vec<RepoBookmark>> {
+    /// List a host's repo bookmarks (`""` = local), sorted by last_used_at
+    /// descending (most recent first).
+    pub fn list_repo_bookmarks(&self, host: &str) -> rusqlite::Result<Vec<RepoBookmark>> {
         let mut stmt = self.conn.prepare(
             "SELECT repo_path, label, last_used_at, use_count, is_parent \
-             FROM repo_bookmarks ORDER BY last_used_at DESC",
+             FROM repo_bookmarks WHERE host = ?1 ORDER BY last_used_at DESC",
         )?;
 
         let bookmarks = stmt
-            .query_map([], |row| {
+            .query_map([host], |row| {
                 let path: String = row.get(0)?;
                 Ok(RepoBookmark {
                     repo_path: PathBuf::from(path),
@@ -43,50 +46,54 @@ impl Database {
         Ok(bookmarks)
     }
 
-    /// Add or update a repo bookmark. Increments use_count and updates last_used_at.
-    pub fn upsert_repo_bookmark(&self, repo_path: &Path) -> rusqlite::Result<()> {
-        self.upsert_repo_bookmark_kind(repo_path, false)
+    /// Add or update a host's repo bookmark (`""` = local). Increments
+    /// use_count and updates last_used_at.
+    pub fn upsert_repo_bookmark(&self, host: &str, repo_path: &Path) -> rusqlite::Result<()> {
+        self.upsert_repo_bookmark_kind(host, repo_path, false)
     }
 
-    /// Add or update a repo bookmark, setting whether it is a parent folder.
-    /// Increments use_count and updates last_used_at; `is_parent` is set on both
-    /// insert and conflict so the kind can be flipped by re-importing a path.
+    /// Add or update a host's repo bookmark, setting whether it is a parent
+    /// folder. Increments use_count and updates last_used_at; `is_parent` is
+    /// set on both insert and conflict so the kind can be flipped by
+    /// re-importing a path.
     pub fn upsert_repo_bookmark_kind(
         &self,
+        host: &str,
         repo_path: &Path,
         is_parent: bool,
     ) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let path_str = repo_path.to_string_lossy().to_string();
         self.conn.execute(
-            "INSERT INTO repo_bookmarks (repo_path, last_used_at, use_count, is_parent) \
-             VALUES (?1, ?2, 1, ?3) \
-             ON CONFLICT(repo_path) DO UPDATE SET \
+            "INSERT INTO repo_bookmarks (host, repo_path, last_used_at, use_count, is_parent) \
+             VALUES (?1, ?2, ?3, 1, ?4) \
+             ON CONFLICT(host, repo_path) DO UPDATE SET \
                  last_used_at = excluded.last_used_at, \
                  use_count = use_count + 1, \
                  is_parent = excluded.is_parent",
-            params![path_str, now, is_parent as i64],
+            params![host, path_str, now, is_parent as i64],
         )?;
         Ok(())
     }
 
-    /// Touch a bookmark (update last_used_at) without incrementing use_count.
-    pub fn touch_repo_bookmark(&self, repo_path: &Path) -> rusqlite::Result<bool> {
+    /// Touch a host's bookmark (update last_used_at) without incrementing
+    /// use_count.
+    pub fn touch_repo_bookmark(&self, host: &str, repo_path: &Path) -> rusqlite::Result<bool> {
         let now = current_time_millis() as i64;
         let path_str = repo_path.to_string_lossy().to_string();
         let count = self.conn.execute(
-            "UPDATE repo_bookmarks SET last_used_at = ?1 WHERE repo_path = ?2",
-            params![now, path_str],
+            "UPDATE repo_bookmarks SET last_used_at = ?1 WHERE host = ?2 AND repo_path = ?3",
+            params![now, host, path_str],
         )?;
         Ok(count > 0)
     }
 
-    /// Delete a repo bookmark. Returns true if it existed.
-    pub fn delete_repo_bookmark(&self, repo_path: &Path) -> rusqlite::Result<bool> {
+    /// Delete a host's repo bookmark. Returns true if it existed.
+    pub fn delete_repo_bookmark(&self, host: &str, repo_path: &Path) -> rusqlite::Result<bool> {
         let path_str = repo_path.to_string_lossy().to_string();
         let count = self.conn.execute(
-            "DELETE FROM repo_bookmarks WHERE repo_path = ?1",
-            params![path_str],
+            "DELETE FROM repo_bookmarks WHERE host = ?1 AND repo_path = ?2",
+            params![host, path_str],
         )?;
         Ok(count > 0)
     }
@@ -99,7 +106,7 @@ mod tests {
     #[test]
     fn list_repo_bookmarks_empty() {
         let db = Database::open_in_memory().unwrap();
-        let bookmarks = db.list_repo_bookmarks().unwrap();
+        let bookmarks = db.list_repo_bookmarks("").unwrap();
         assert!(bookmarks.is_empty());
     }
 
@@ -107,10 +114,10 @@ mod tests {
     fn upsert_and_list_repo_bookmarks() {
         let db = Database::open_in_memory().unwrap();
 
-        db.upsert_repo_bookmark(Path::new("/repo/a")).unwrap();
-        db.upsert_repo_bookmark(Path::new("/repo/b")).unwrap();
+        db.upsert_repo_bookmark("", Path::new("/repo/a")).unwrap();
+        db.upsert_repo_bookmark("", Path::new("/repo/b")).unwrap();
 
-        let bookmarks = db.list_repo_bookmarks().unwrap();
+        let bookmarks = db.list_repo_bookmarks("").unwrap();
         assert_eq!(bookmarks.len(), 2);
         let paths: Vec<&Path> = bookmarks.iter().map(|b| b.repo_path.as_path()).collect();
         assert!(paths.contains(&Path::new("/repo/a")));
@@ -119,14 +126,39 @@ mod tests {
     }
 
     #[test]
+    fn bookmarks_are_scoped_per_host() {
+        // The same path on two hosts is two independent bookmarks, and each
+        // host's list only shows its own — the point of the (host, repo_path)
+        // key: a remote target gets its own memory, never local paths.
+        let db = Database::open_in_memory().unwrap();
+
+        db.upsert_repo_bookmark("", Path::new("/repo/a")).unwrap();
+        db.upsert_repo_bookmark("ssh:devbox", Path::new("/repo/a"))
+            .unwrap();
+        db.upsert_repo_bookmark("ssh:devbox", Path::new("/srv/remote"))
+            .unwrap();
+
+        let local = db.list_repo_bookmarks("").unwrap();
+        assert_eq!(local.len(), 1);
+        let remote = db.list_repo_bookmarks("ssh:devbox").unwrap();
+        assert_eq!(remote.len(), 2);
+
+        // Deleting on one host leaves the other host's row alone.
+        assert!(db
+            .delete_repo_bookmark("ssh:devbox", Path::new("/repo/a"))
+            .unwrap());
+        assert_eq!(db.list_repo_bookmarks("").unwrap().len(), 1);
+    }
+
+    #[test]
     fn parent_bookmark_round_trips() {
         let db = Database::open_in_memory().unwrap();
 
-        db.upsert_repo_bookmark(Path::new("/repo/a")).unwrap();
-        db.upsert_repo_bookmark_kind(Path::new("/parent/x"), true)
+        db.upsert_repo_bookmark("", Path::new("/repo/a")).unwrap();
+        db.upsert_repo_bookmark_kind("", Path::new("/parent/x"), true)
             .unwrap();
 
-        let bookmarks = db.list_repo_bookmarks().unwrap();
+        let bookmarks = db.list_repo_bookmarks("").unwrap();
         let parent = bookmarks
             .iter()
             .find(|b| b.repo_path == Path::new("/parent/x"))
@@ -143,11 +175,11 @@ mod tests {
     fn upsert_increments_use_count() {
         let db = Database::open_in_memory().unwrap();
 
-        db.upsert_repo_bookmark(Path::new("/repo/a")).unwrap();
-        db.upsert_repo_bookmark(Path::new("/repo/a")).unwrap();
-        db.upsert_repo_bookmark(Path::new("/repo/a")).unwrap();
+        db.upsert_repo_bookmark("", Path::new("/repo/a")).unwrap();
+        db.upsert_repo_bookmark("", Path::new("/repo/a")).unwrap();
+        db.upsert_repo_bookmark("", Path::new("/repo/a")).unwrap();
 
-        let bookmarks = db.list_repo_bookmarks().unwrap();
+        let bookmarks = db.list_repo_bookmarks("").unwrap();
         assert_eq!(bookmarks.len(), 1);
         assert_eq!(bookmarks[0].use_count, 3);
     }
@@ -156,26 +188,26 @@ mod tests {
     fn delete_repo_bookmark() {
         let db = Database::open_in_memory().unwrap();
 
-        db.upsert_repo_bookmark(Path::new("/repo/a")).unwrap();
-        assert!(db.delete_repo_bookmark(Path::new("/repo/a")).unwrap());
-        assert!(!db.delete_repo_bookmark(Path::new("/repo/a")).unwrap());
-        assert!(db.list_repo_bookmarks().unwrap().is_empty());
+        db.upsert_repo_bookmark("", Path::new("/repo/a")).unwrap();
+        assert!(db.delete_repo_bookmark("", Path::new("/repo/a")).unwrap());
+        assert!(!db.delete_repo_bookmark("", Path::new("/repo/a")).unwrap());
+        assert!(db.list_repo_bookmarks("").unwrap().is_empty());
     }
 
     #[test]
     fn touch_updates_last_used_at() {
         let db = Database::open_in_memory().unwrap();
 
-        db.upsert_repo_bookmark(Path::new("/repo/a")).unwrap();
-        let before = db.list_repo_bookmarks().unwrap()[0].use_count;
-        assert!(db.touch_repo_bookmark(Path::new("/repo/a")).unwrap());
-        let after = db.list_repo_bookmarks().unwrap()[0].use_count;
+        db.upsert_repo_bookmark("", Path::new("/repo/a")).unwrap();
+        let before = db.list_repo_bookmarks("").unwrap()[0].use_count;
+        assert!(db.touch_repo_bookmark("", Path::new("/repo/a")).unwrap());
+        let after = db.list_repo_bookmarks("").unwrap()[0].use_count;
         assert_eq!(before, after);
     }
 
     #[test]
     fn touch_nonexistent_returns_false() {
         let db = Database::open_in_memory().unwrap();
-        assert!(!db.touch_repo_bookmark(Path::new("/nope")).unwrap());
+        assert!(!db.touch_repo_bookmark("", Path::new("/nope")).unwrap());
     }
 }

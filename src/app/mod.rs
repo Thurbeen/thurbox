@@ -150,7 +150,30 @@ fn create_worktrees(
 ) -> Result<Vec<WorktreeInfo>, String> {
     let mut worktree_infos: Vec<WorktreeInfo> = Vec::new();
     for repo_path in repo_paths {
-        match git::create_worktree_on(host, repo_path, new_branch, base_branch) {
+        // Multi-repo spawn: the chosen base comes from the *primary* repo's
+        // branch list and may not exist in an extra repo. Fall back to that
+        // repo's own default branch — mirroring the headless `--add-repo
+        // PATH[@BASE]` model where each repo resolves its own base — instead
+        // of failing (and rolling back) the whole spawn.
+        let repo_base = if git::branch_exists_on(host, repo_path, base_branch) {
+            base_branch.to_string()
+        } else {
+            let branches = git::list_branches_on(host, repo_path).unwrap_or_default();
+            match git::default_branch_on(host, repo_path, &branches) {
+                Some(fallback) => {
+                    tracing::info!(
+                        "base '{base_branch}' not found in {}; forking its worktree \
+                         from the repo's default branch '{fallback}'",
+                        repo_path.display()
+                    );
+                    fallback
+                }
+                // No resolvable default: keep the original base so the error
+                // below names the branch the user actually picked.
+                None => base_branch.to_string(),
+            }
+        };
+        match git::create_worktree_on(host, repo_path, new_branch, &repo_base) {
             Ok(worktree_path) => worktree_infos.push(WorktreeInfo {
                 repo_path: repo_path.clone(),
                 worktree_path,
@@ -1188,30 +1211,29 @@ impl App {
 
     /// Open the repo picker modal for creating a new session.
     ///
-    /// Loads bookmarks from the database, pre-selects repos from the active
-    /// project (if any), and shows the repo picker modal. For a remote target
-    /// (`new_session.backend` set) local bookmarks don't apply, so the picker opens
-    /// empty with the path input focused for a typed remote path.
+    /// Loads the target host's bookmarks from the database (bookmarks are
+    /// host-scoped — a remote target shows the repos previously used *on that
+    /// host*, never local paths) and shows the repo picker modal. A remote
+    /// target with no bookmarks yet opens with the path input focused for a
+    /// typed remote path; once it has history it opens on the list like a
+    /// local target.
     pub(crate) fn open_repo_picker(&mut self) {
-        // Local bookmarks point at local paths, so they're meaningless for a
-        // remote target: open the picker empty with the path input focused.
         let remote = self.new_session.backend.is_some();
-        let bookmarks = if remote {
-            Vec::new()
-        } else {
-            self.load_repo_bookmarks()
-        };
+        let bookmarks = self.load_repo_bookmarks();
+        let empty = bookmarks.is_empty();
         let mut rp = modals::RepoPickerModal::default();
         Self::rebuild_repo_picker_rows(&mut rp, bookmarks);
-        if remote {
+        if remote && empty {
             rp.focus = modals::RepoPickerFocus::Input;
         }
         self.modal = modals::Modal::RepoPicker(rp);
     }
 
-    /// Load persisted repo bookmarks, logging (and swallowing) any DB error.
+    /// Load persisted repo bookmarks for the new-session wizard's current
+    /// target host (`""` = local), logging (and swallowing) any DB error.
     fn load_repo_bookmarks(&self) -> Vec<crate::storage::repo_bookmarks::RepoBookmark> {
-        match self.db.list_repo_bookmarks() {
+        let host_key = self.new_session.backend.as_deref().unwrap_or_default();
+        match self.db.list_repo_bookmarks(host_key) {
             Ok(b) => b,
             Err(e) => {
                 tracing::error!("Failed to load repo bookmarks: {e}");

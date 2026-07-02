@@ -171,8 +171,11 @@ not applicable.
 1. **Host picker** — choose where the session runs: `local`, or any
    remote SSH host defined in `hosts.toml`. Skipped entirely when no
    remote hosts are configured (preserving the local-only flow). For
-   a remote host the repo picker opens to a typed remote path and the
-   worktree + tmux window are created on that host over SSH.
+   a remote host the repo picker shows the repos previously used *on
+   that host* (bookmarks are host-scoped, schema v39); new paths are
+   typed (with `Tab` completing against the remote filesystem, `~`
+   resolving to the remote home, and existence verified on Enter) and
+   the worktree + tmux window are created on that host over SSH.
 2. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` toggles selection, `w` marks the selected repo
    as a worktree base, `d` deletes the bookmark, and a path-input
@@ -328,9 +331,11 @@ For **SSH**, thurbox shells out to the system `ssh` binary, so
 authentication, keys, and connection multiplexing come from your
 `~/.ssh/config` — thurbox never handles credentials. A **WSL distro**
 is reached with `wsl.exe -d <distro>` (no credentials, no network);
-since `wsl.exe` joins + shell-interprets its trailing tokens just like
-`ssh`, the *same* tmux control-mode protocol, POSIX quoting, and
-worktree layout apply — only the launch prefix differs. So off-local
+`wsl.exe` forwards whitespace-free tokens to the in-distro shell like
+`ssh` does, so the *same* tmux control-mode protocol, POSIX quoting,
+and worktree layout apply — only the launch prefix differs (multi-word
+`sh -c` scripts go through `wsl.exe --exec`, which hands argv over
+verbatim; see `shell::wsl_command`). So off-local
 sessions get identical persistence, multi-instance sharing, and
 restore-on-startup as local ones; the worktree and agent process live
 on the remote host / inside the distro (a WSL distro's worktrees stay

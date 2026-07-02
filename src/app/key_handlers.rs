@@ -1628,7 +1628,8 @@ impl App {
             return;
         }
 
-        if let Err(e) = self.db.delete_repo_bookmark(&path) {
+        let host_key = self.new_session.backend.clone().unwrap_or_default();
+        if let Err(e) = self.db.delete_repo_bookmark(&host_key, &path) {
             error!("Failed to delete repo bookmark: {e}");
         }
 
@@ -1712,11 +1713,16 @@ impl App {
     }
 
     /// Commit the typed path in the repo-picker input: add or re-select the
-    /// bookmark, persist it, clear the input, and refresh the filter.
+    /// bookmark, persist it (scoped to the target host), clear the input, and
+    /// refresh the filter.
     fn repo_picker_commit_path_input(&mut self) {
-        // For a remote target the path is a remote path: don't expand `~`
-        // against the local home, and don't persist it as a local bookmark.
-        let remote = self.new_session.backend.is_some();
+        // A remote path expands `~` against the *remote* home (never the local
+        // one) and is verified to exist on the host before it's accepted —
+        // catching a typo here beats failing minutes later at branch listing
+        // or worktree creation. One ssh/wsl round-trip, on explicit Enter only.
+        let remote_host = self
+            .host_for_backend(self.new_session.backend.as_deref())
+            .cloned();
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
@@ -1725,14 +1731,30 @@ impl App {
             self.recompute_repo_filter();
             return;
         }
-        let expanded = if remote {
-            std::path::PathBuf::from(&path)
-        } else {
-            paths::expand_tilde(&path)
+        let expanded = match &remote_host {
+            Some(host) => {
+                let expanded = match crate::git::expand_remote_tilde(host, &path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.set_error(format!("Cannot resolve ~ on '{}': {e:#}", host.name));
+                        return;
+                    }
+                };
+                if crate::git::list_dir_on(host, &expanded).is_err() {
+                    self.set_error(format!("Path not found on '{}': {expanded}", host.name));
+                    return;
+                }
+                std::path::PathBuf::from(expanded)
+            }
+            None => paths::expand_tilde(&path),
+        };
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
         };
         let persist = Self::repo_picker_select_or_add_row(rp, &expanded);
-        if persist && !remote {
-            if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
+        if persist {
+            let host_key = self.new_session.backend.clone().unwrap_or_default();
+            if let Err(e) = self.db.upsert_repo_bookmark(&host_key, &expanded) {
                 error!("Failed to save repo bookmark: {e}");
                 self.set_error(format!("Failed to save repo bookmark: {e}"));
             }
@@ -1769,7 +1791,16 @@ impl App {
     /// Import the typed path as a *parent* folder: persist it as a parent
     /// bookmark, then rebuild the list (re-scanning its git sub-directories).
     /// The parent itself is not added as a selectable repo — its children are.
+    /// Local targets only: the child scan walks the local filesystem, so a
+    /// remote parent would import the wrong machine's repos.
     fn repo_picker_import_parent(&mut self) {
+        if self.new_session.backend.is_some() {
+            self.set_status(
+                super::StatusLevel::Info,
+                "Parent import scans the local filesystem — add remote repos by path instead",
+            );
+            return;
+        }
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
@@ -1782,7 +1813,7 @@ impl App {
             return;
         }
         let expanded = paths::expand_tilde(&path);
-        if let Err(e) = self.db.upsert_repo_bookmark_kind(&expanded, true) {
+        if let Err(e) = self.db.upsert_repo_bookmark_kind("", &expanded, true) {
             error!("Failed to save parent bookmark: {e}");
             self.set_error(format!("Failed to save parent bookmark: {e}"));
         }
@@ -1868,8 +1899,9 @@ impl App {
         let (worktree_repos, normal_repos) = Self::partition_selected_repos(rp);
 
         // Touch all selected bookmarks so they stay sorted by recency.
+        let host_key = self.new_session.backend.clone().unwrap_or_default();
         for repo in worktree_repos.iter().chain(normal_repos.iter()) {
-            if let Err(e) = self.db.upsert_repo_bookmark(repo) {
+            if let Err(e) = self.db.upsert_repo_bookmark(&host_key, repo) {
                 error!("Failed to touch repo bookmark: {e}");
             }
         }

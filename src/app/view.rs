@@ -1089,6 +1089,9 @@ impl App {
                 search_active: rp.focus == super::modals::RepoPickerFocus::Search
                     || !rp.search_input.value().is_empty(),
                 filtered_indices: &rp.filtered_indices,
+                host: self
+                    .host_for_backend(self.new_session.backend.as_deref())
+                    .map(|h| h.name.as_str()),
             },
         )
     }

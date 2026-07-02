@@ -519,10 +519,13 @@ How it works: `TmuxBackend` is transport-neutral
 (`agent::transport::TmuxTransport`). The local backend launches
 `<mux> -L thurbox …`; an SSH backend launches `ssh <dest> <mux> -L thurbox …`;
 a **WSL backend launches `wsl.exe -d <distro> tmux -L thurbox …`**
-(`TmuxTransport::Wsl`). `wsl.exe` joins + shell-interprets the trailing tokens
-exactly like `ssh`, so the same POSIX quoting (`shell::posix_quote`) and the
-byte-identical control-mode protocol (`control_mode.rs`) apply — only the
-one-time process launch differs. The local `DEFAULT_MUX` is **`tmux` on
+(`TmuxTransport::Wsl`). `wsl.exe` forwards whitespace-free tokens to the
+in-distro shell like `ssh` does, so the same POSIX quoting
+(`shell::posix_quote`) and the byte-identical control-mode protocol
+(`control_mode.rs`) apply — only the one-time process launch differs. (An arg
+*containing whitespace* is preserved as one word, so multi-word `sh -c` scripts
+go through `wsl.exe --exec` instead — see `shell::wsl_command` /
+`git::host_shell_c`.) The local `DEFAULT_MUX` is **`tmux` on
 Linux/macOS and `psmux` on Windows** — psmux is a native-Windows, drop-in tmux
 clone (ConPTY, no WSL) speaking the **same control-mode wire protocol** and
 pane-id (`%N`) / `-L` socket model, so the whole backend is parameterized by
