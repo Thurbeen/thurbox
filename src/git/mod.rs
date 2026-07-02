@@ -173,13 +173,11 @@ fn sanitize_workspace_segment(name: &str) -> String {
 /// `workspace::unique_link_name`: collisions get a `-2`, `-3`, … suffix and an
 /// empty label falls back to `repo`.
 fn unique_link_name(name: &str, used: &mut HashSet<String>) -> String {
-    let base = {
-        let s = sanitize_workspace_segment(name);
-        if s.is_empty() {
-            "repo".to_string()
-        } else {
-            s
-        }
+    let sanitized = sanitize_workspace_segment(name);
+    let base = if sanitized.is_empty() {
+        "repo".to_string()
+    } else {
+        sanitized
     };
     if used.insert(base.clone()) {
         return base;
@@ -223,14 +221,7 @@ pub fn ensure_remote_workspace(
         ));
     }
 
-    let output = host_shell_c(host, &script)
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to build remote multi-repo workspace")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("remote workspace build failed: {}", stderr.trim());
-    }
+    run_host_script(host, &script, "workspace build")?;
     Ok(PathBuf::from(ws))
 }
 
@@ -262,15 +253,32 @@ pub(crate) fn remote_workspace_dir(host: &HostDef, id: &str) -> Result<String> {
 /// workspace is not an error (`rm -rf` on a missing path succeeds).
 pub fn remove_remote_workspace(host: &HostDef, id: &str) -> Result<()> {
     let ws = remote_workspace_dir(host, id)?;
-    let output = host_shell_c(host, &format!("rm -rf {}", posix_quote(&ws)))
+    run_host_script(
+        host,
+        &format!("rm -rf {}", posix_quote(&ws)),
+        "workspace removal",
+    )
+}
+
+/// Map a finished remote command to `Ok(stdout)`, or an error carrying the
+/// trimmed remote stderr when it exited non-zero. Shared by every remote
+/// helper below so their failures read uniformly.
+fn remote_output_or_stderr(output: std::process::Output, action: &str) -> Result<Vec<u8>> {
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    anyhow::bail!("remote {action} failed: {}", stderr.trim())
+}
+
+/// Run `script` on `host` via [`host_shell_c`], discarding stdout. See
+/// [`remote_output_or_stderr`] for the failure shape.
+fn run_host_script(host: &HostDef, script: &str, action: &str) -> Result<()> {
+    let output = host_shell_c(host, script)
         .stderr(Stdio::piped())
         .output()
-        .context("failed to remove remote workspace")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("remote workspace removal failed: {}", stderr.trim());
-    }
-    Ok(())
+        .with_context(|| format!("failed to run remote {action}"))?;
+    remote_output_or_stderr(output, action).map(|_| ())
 }
 
 /// Build a `<launcher> sh -c <script>` [`Command`] for a host, correct for each
@@ -339,11 +347,7 @@ pub fn copy_file_to_remote(host: &HostDef, local: &Path, remote_path: &str) -> R
     let output = child
         .wait_with_output()
         .context("failed to wait on remote file-copy")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("remote file-copy failed: {}", stderr.trim());
-    }
-    Ok(())
+    remote_output_or_stderr(output, "file-copy").map(|_| ())
 }
 
 /// Expand a leading `~` in a remote path against the host's `$HOME`. Remote
@@ -361,11 +365,11 @@ pub fn expand_remote_tilde(host: &HostDef, path: &str) -> Result<String> {
 }
 
 /// List immediate sub-directory **names** of `dir` on `host` over the host
-/// launcher, sorted. Hidden (`.`-prefixed) entries are *included* — the caller
-/// filters by the prefix it is completing (mirroring the local completer,
-/// which offers hidden dirs only to a `.`-prefix). A leading `~` is expanded
-/// against the host's `$HOME`. Used by the repo picker's remote path
-/// completion.
+/// launcher, sorted. Hidden (`.`-prefixed) entries are *included* — the
+/// completion layer decides their visibility (`dir_completion_suffix` offers
+/// them only to a `.`-prefix, mirroring the local completer). A leading `~`
+/// is expanded against the host's `$HOME`. Used by the repo picker's remote
+/// path completion.
 ///
 /// Runs `ls -1p <dir>` — a **variable-free** command on purpose, and over WSL
 /// with `--exec` so argv reaches `ls` verbatim (no `wsl.exe` `$`-substitution
@@ -380,10 +384,29 @@ pub fn expand_remote_tilde(host: &HostDef, path: &str) -> Result<String> {
 /// password-prompting host instead of freezing the TUI indefinitely.
 pub fn list_dir_on(host: &HostDef, dir: &str) -> Result<Vec<String>> {
     let dir = expand_remote_tilde(host, dir)?;
-    let mut cmd = if host.is_wsl() {
+    let output = list_dir_command(host, &dir)
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to list remote directory")?;
+    let stdout = remote_output_or_stderr(output, "dir listing")?;
+    let mut names: Vec<String> = String::from_utf8_lossy(&stdout)
+        .lines()
+        .filter_map(|line| line.strip_suffix('/'))
+        .filter(|name| !name.is_empty())
+        .map(String::from)
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// The `ls -1p <dir>` launcher [`list_dir_on`] runs (`dir` already
+/// tilde-expanded). Split out so the per-transport construction is testable
+/// without a live host.
+fn list_dir_command(host: &HostDef, dir: &str) -> Command {
+    if host.is_wsl() {
         let mut cmd = host_launcher(host);
         cmd.arg("-e");
-        for tok in ["ls", "-1p", &dir] {
+        for tok in ["ls", "-1p", dir] {
             cmd.arg(tok);
         }
         cmd
@@ -395,28 +418,11 @@ pub fn list_dir_on(host: &HostDef, dir: &str) -> Result<Vec<String>> {
                 .map(|s| s.to_string()),
         );
         let mut cmd = crate::shell::ssh_command(&host.destination, &opts);
-        for tok in ["ls", "-1p", &dir] {
+        for tok in ["ls", "-1p", dir] {
             cmd.arg(posix_quote(tok));
         }
         cmd
-    };
-    let output = cmd
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to list remote directory")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("remote dir listing failed: {}", stderr.trim());
     }
-    let mut names: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        // Only directories (trailing `/`).
-        .filter_map(|line| line.strip_suffix('/'))
-        .filter(|name| !name.is_empty())
-        .map(String::from)
-        .collect();
-    names.sort();
-    Ok(names)
 }
 
 /// Global cache for repo display names (path → name).
@@ -1805,16 +1811,12 @@ mod tests {
     }
 
     #[test]
-    fn list_dir_on_wsl_uses_variable_free_exec_ls() {
+    fn list_dir_command_wsl_uses_variable_free_exec_ls() {
         // Must be `--exec ls -1p <dir>` as separate argv tokens — NOT an
         // `sh -c` script — so no wsl.exe `$`-substitution or shell
         // re-interpretation can touch the user-typed dir.
         let h = HostDef::wsl("Ubuntu");
-        let mut cmd = host_launcher(&h);
-        cmd.arg("-e");
-        for tok in ["ls", "-1p", "/home/me/repos"] {
-            cmd.arg(tok);
-        }
+        let cmd = list_dir_command(&h, "/home/me/repos");
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "wsl.exe");
         assert_eq!(args, ["-d", "Ubuntu", "-e", "ls", "-1p", "/home/me/repos"]);
@@ -1826,7 +1828,7 @@ mod tests {
     }
 
     #[test]
-    fn list_dir_on_ssh_adds_noninteractive_opts_after_user_opts() {
+    fn list_dir_command_ssh_adds_noninteractive_opts_after_user_opts() {
         // Completion runs synchronously on the UI thread: BatchMode +
         // ConnectTimeout make an unreachable/password host fail fast instead
         // of freezing the TUI. They come AFTER the host's own ssh_opts — ssh
@@ -1837,20 +1839,17 @@ mod tests {
             ssh_opts: vec!["-o".into(), "ConnectTimeout=30".into()],
             ..Default::default()
         };
-        // Reconstruct the launcher exactly as list_dir_on's ssh branch does.
-        let mut opts = h.ssh_opts.clone();
-        opts.extend(
-            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
-                .iter()
-                .map(|s| s.to_string()),
-        );
-        let cmd = crate::shell::ssh_command(&h.destination, &opts);
+        let cmd = list_dir_command(&h, "/srv/repos");
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "ssh");
         let user_pos = args.iter().position(|a| a == "ConnectTimeout=30");
         let ours_pos = args.iter().position(|a| a == "ConnectTimeout=5");
         assert!(user_pos.unwrap() < ours_pos.unwrap());
         assert!(args.iter().any(|a| a == "BatchMode=yes"));
+        // The listing itself follows the destination, each token quoted for
+        // the remote shell's re-split (no-ops for these safe tokens).
+        let dest = args.iter().position(|a| a == "me@box").unwrap();
+        assert_eq!(&args[dest + 1..], ["ls", "-1p", "/srv/repos"]);
     }
 
     #[test]
@@ -1863,6 +1862,24 @@ mod tests {
             "/home/me/repos"
         );
         assert_eq!(expand_remote_tilde(&h, "/data/~x").unwrap(), "/data/~x");
+    }
+
+    #[test]
+    fn remote_workspace_dir_derives_base_from_worktrees_dir() {
+        // With a configured worktrees_dir the path is pure (no host round-trip):
+        // base = its parent, mirroring the local `<data root>/workspaces` layout.
+        let h = host("me@box", Some("/data/wt"));
+        let ws = remote_workspace_dir(&h, "abc-123").unwrap();
+        assert_eq!(ws, "/data/workspaces/abc-123");
+    }
+
+    #[test]
+    fn remote_workspace_dir_rejects_empty_id() {
+        // An empty sanitized segment would make ensure/remove `rm -rf` the
+        // workspaces *root* — must error like the local builder.
+        let h = host("me@box", Some("/data/wt"));
+        assert!(remote_workspace_dir(&h, "").is_err());
+        assert!(remote_workspace_dir(&h, " .- ").is_err());
     }
 
     #[test]

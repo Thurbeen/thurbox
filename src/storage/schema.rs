@@ -1352,6 +1352,59 @@ mod tests {
     }
 
     #[test]
+    fn migrate_from_v38_rebuilds_repo_bookmarks_with_host_key() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v38 state: the pre-v39 repo_bookmarks shape with one row.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '38');
+             CREATE TABLE repo_bookmarks (
+                repo_path    TEXT PRIMARY KEY,
+                label        TEXT,
+                last_used_at INTEGER NOT NULL,
+                use_count    INTEGER NOT NULL DEFAULT 1,
+                is_parent    INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO repo_bookmarks (repo_path, last_used_at, use_count, is_parent)
+             VALUES ('/repo/a', 1, 3, 1);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        // The existing row migrated as local ('') with its fields intact.
+        let (host, count, is_parent): (String, i64, i64) = conn
+            .query_row(
+                "SELECT host, use_count, is_parent FROM repo_bookmarks \
+                 WHERE repo_path = '/repo/a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(host, "");
+        assert_eq!(count, 3);
+        assert_eq!(is_parent, 1);
+
+        // The rebuilt (host, repo_path) key allows the same path on another
+        // host — the whole point of the rebuild.
+        conn.execute(
+            "INSERT INTO repo_bookmarks (host, repo_path, last_used_at) \
+             VALUES ('ssh:devbox', '/repo/a', 2)",
+            [],
+        )
+        .unwrap();
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
     fn migrate_from_v26_adds_is_parent_column() {
         let conn = Connection::open_in_memory().unwrap();
         // Minimal v26 state: a repo_bookmarks table without the is_parent column.

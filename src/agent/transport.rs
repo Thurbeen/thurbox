@@ -34,10 +34,11 @@ pub enum TmuxTransport {
         mux: String,
     },
     /// Run the multiplexer inside a local WSL distro via `wsl.exe -d <distro>`.
-    /// This is the SSH variant minus the network: `wsl.exe` joins and
-    /// shell-interprets the trailing tokens exactly like `ssh`, so the same
-    /// control-mode protocol and POSIX quoting apply. `mux` is the in-distro
-    /// multiplexer binary (`tmux`).
+    /// This is the SSH variant minus the network: `wsl.exe` forwards the
+    /// whitespace-free tokens used here to the in-distro shell like `ssh` does
+    /// (see [`crate::shell::wsl_command`] for the exact forwarding model), so
+    /// the same control-mode protocol and POSIX quoting apply. `mux` is the
+    /// in-distro multiplexer binary (`tmux`).
     Wsl { distro: String, mux: String },
 }
 

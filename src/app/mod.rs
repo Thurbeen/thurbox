@@ -1229,11 +1229,17 @@ impl App {
         self.modal = modals::Modal::RepoPicker(rp);
     }
 
+    /// The host-scope key for repo bookmarks: the new-session wizard's target
+    /// backend name (`ssh:<name>` / `wsl:<name>`), or `""` for local — the
+    /// `repo_bookmarks.host` column (schema v39).
+    pub(super) fn bookmark_host_key(&self) -> &str {
+        self.new_session.backend.as_deref().unwrap_or_default()
+    }
+
     /// Load persisted repo bookmarks for the new-session wizard's current
-    /// target host (`""` = local), logging (and swallowing) any DB error.
+    /// target host, logging (and swallowing) any DB error.
     fn load_repo_bookmarks(&self) -> Vec<crate::storage::repo_bookmarks::RepoBookmark> {
-        let host_key = self.new_session.backend.as_deref().unwrap_or_default();
-        match self.db.list_repo_bookmarks(host_key) {
+        match self.db.list_repo_bookmarks(self.bookmark_host_key()) {
             Ok(b) => b,
             Err(e) => {
                 tracing::error!("Failed to load repo bookmarks: {e}");
@@ -9642,6 +9648,63 @@ mod tests {
         assert_eq!(members.len(), 2);
         assert_eq!(members[0].1, PathBuf::from("/src/primary"));
         assert_eq!(members[1].1, PathBuf::from("/src/other"));
+    }
+
+    /// Init a real git repo at `dir` on branch `main` with one commit.
+    fn init_repo(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        let git = |args: &[&str]| {
+            let ok = crate::git::git_program()
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("run git")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed in {}", dir.display());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("file.txt"), "hi").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+    }
+
+    #[test]
+    fn create_worktrees_falls_back_to_extra_repos_default_branch() {
+        // The chosen base exists only in the primary repo; the extra repo must
+        // fork from its own default branch instead of failing the whole spawn.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path().join("data"));
+        let primary = tmp.path().join("primary");
+        let extra = tmp.path().join("extra");
+        init_repo(&primary);
+        init_repo(&extra);
+        let ok = crate::git::git_program()
+            .args(["branch", "feat-base"])
+            .current_dir(&primary)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "creating feat-base in primary failed");
+
+        let infos = create_worktrees(
+            None,
+            &[primary.clone(), extra.clone()],
+            "wt-branch",
+            "feat-base",
+        )
+        .expect("both worktrees created");
+
+        assert_eq!(infos.len(), 2);
+        for info in &infos {
+            assert!(info.worktree_path.exists());
+            assert_eq!(info.branch, "wt-branch");
+        }
+        assert_eq!(infos[0].repo_path, primary);
+        assert_eq!(infos[1].repo_path, extra);
     }
 
     #[test]

@@ -375,32 +375,8 @@ pub(crate) fn materialize_agent_config_on_remote(host: &HostDef, args: &[String]
     if !config_root.starts_with('/') || host.mux() == "psmux" {
         return;
     }
-    // A config root under the local home requires the remote home to match,
-    // or the mirrored path (and the agent's arg) can't resolve there.
-    if let Some(local_home) = crate::paths::home_dir() {
-        let local_home = local_home.to_string_lossy().into_owned();
-        if config_root.starts_with(&local_home) {
-            match crate::git::remote_home(host) {
-                Ok(remote_home) if remote_home != local_home => {
-                    tracing::warn!(
-                        "not materializing agent config on host '{}': local home \
-                         {local_home} != remote home {remote_home}, so the agent's \
-                         local-path args can't resolve there",
-                        host.name
-                    );
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "not materializing agent config on host '{}': cannot resolve \
-                         remote home: {e:#}",
-                        host.name
-                    );
-                    return;
-                }
-                Ok(_) => {}
-            }
-        }
+    if !remote_resolves_local_path(host, &config_root) {
+        return;
     }
     for arg in args {
         // Only absolute paths under the thurbox config dir that exist as local
@@ -417,6 +393,38 @@ pub(crate) fn materialize_agent_config_on_remote(host: &HostDef, args: &[String]
                 "failed to materialize agent config {arg} on host '{}': {e:#}",
                 host.name
             );
+        }
+    }
+}
+
+/// Whether `host` would resolve `path` at the same absolute location as the
+/// local machine. Only home-anchored paths can differ: they match exactly when
+/// the local and remote `$HOME` agree (the common same-user WSL/devbox case).
+/// A mismatch (or an unresolvable remote home) is logged and returns `false`.
+fn remote_resolves_local_path(host: &HostDef, path: &str) -> bool {
+    let Some(local_home) = crate::paths::home_dir() else {
+        return true;
+    };
+    let local_home = local_home.to_string_lossy().into_owned();
+    if !path.starts_with(&local_home) {
+        return true;
+    }
+    match crate::git::remote_home(host) {
+        Ok(remote_home) if remote_home == local_home => true,
+        Ok(remote_home) => {
+            tracing::warn!(
+                "not materializing agent config on host '{}': local home {local_home} != \
+                 remote home {remote_home}, so the agent's local-path args can't resolve there",
+                host.name
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(
+                "not materializing agent config on host '{}': cannot resolve remote home: {e:#}",
+                host.name
+            );
+            false
         }
     }
 }

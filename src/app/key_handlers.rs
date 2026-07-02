@@ -1628,8 +1628,10 @@ impl App {
             return;
         }
 
-        let host_key = self.new_session.backend.clone().unwrap_or_default();
-        if let Err(e) = self.db.delete_repo_bookmark(&host_key, &path) {
+        if let Err(e) = self
+            .db
+            .delete_repo_bookmark(self.bookmark_host_key(), &path)
+        {
             error!("Failed to delete repo bookmark: {e}");
         }
 
@@ -1753,8 +1755,10 @@ impl App {
         };
         let persist = Self::repo_picker_select_or_add_row(rp, &expanded);
         if persist {
-            let host_key = self.new_session.backend.clone().unwrap_or_default();
-            if let Err(e) = self.db.upsert_repo_bookmark(&host_key, &expanded) {
+            if let Err(e) = self
+                .db
+                .upsert_repo_bookmark(self.bookmark_host_key(), &expanded)
+            {
                 error!("Failed to save repo bookmark: {e}");
                 self.set_error(format!("Failed to save repo bookmark: {e}"));
             }
@@ -1899,9 +1903,8 @@ impl App {
         let (worktree_repos, normal_repos) = Self::partition_selected_repos(rp);
 
         // Touch all selected bookmarks so they stay sorted by recency.
-        let host_key = self.new_session.backend.clone().unwrap_or_default();
         for repo in worktree_repos.iter().chain(normal_repos.iter()) {
-            if let Err(e) = self.db.upsert_repo_bookmark(&host_key, repo) {
+            if let Err(e) = self.db.upsert_repo_bookmark(self.bookmark_host_key(), repo) {
                 error!("Failed to touch repo bookmark: {e}");
             }
         }
@@ -2041,8 +2044,8 @@ mod tests {
         // LCP lands mid-char and must be floored, not sliced (panic) or
         // dropped (no completion for a valid shared prefix).
         let dirs = names(&["répo-a", "rêpo-b"]);
-        assert_eq!(dir_completion_suffix(&dirs, "r"), None); // nothing whole shared
-                                                             // Diverging *after* a multibyte char keeps the full shared run.
+        assert_eq!(dir_completion_suffix(&dirs, "r"), None);
+        // Diverging *after* a multibyte char keeps the full shared run.
         let dirs = names(&["été-x", "été-y"]);
         assert_eq!(dir_completion_suffix(&dirs, "é"), Some("té-".to_string()));
     }

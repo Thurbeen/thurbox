@@ -733,8 +733,6 @@ impl TmuxBackend {
     /// space would be re-split into a stray `set-option` argument.
     fn login_wrap_for_remote(&self, shell_cmd: &str) -> String {
         if self.transport.is_remote() && !self.transport.uses_psmux() {
-            // `exec` replaces the login shell with the agent (after the profile
-            // has set PATH), so no wrapper process lingers under the pane.
             let inner = control_mode::shell_escape(&format!("exec {shell_cmd}"));
             format!("/bin/sh -lc {inner}")
         } else {
