@@ -32,6 +32,11 @@
 #   run             run the deployed thurbox.exe interactively over `ssh -t`
 #                   (native-Windows manual testing; WSL distros appear in its
 #                   host picker)
+#   native-test [agent]  headless e2e of the DEPLOYED binaries on the host:
+#                   thurbox-cli.exe creates a local psmux session (agent argv +
+#                   THURBOX_* env asserted intact) and thurbox.exe boots to a
+#                   frame that shows it. Scoped via THURBOX_SOCKET (needs a
+#                   deploy of a build that supports it). Default agent: claude
 #   test-suite      run the full nextest suite on the host (cross-built
 #                   archive; installs cargo-nextest.exe there if missing)
 #   wsl-setup [distro]   install WSL + <distro> (default Debian) and provision
@@ -427,6 +432,83 @@ cmd_run() {
   exec ssh -t "$DEST" "C:/Tools/thurbox/thurbox.exe"
 }
 
+# Native e2e of the DEPLOYED binaries, entirely on the host: thurbox-cli.exe
+# creates a local (psmux) session whose agent must come up with its argv and
+# THURBOX_* env intact, then thurbox.exe boots inside a scoped psmux pane and
+# must adopt that session. Fully isolated via THURBOX_SOCKET (the deployed
+# build must support it) + THURBOX_CONFIG_DIR/THURBOX_DATA_DIR under LAB_DIR —
+# psmux has no TMUX_TMPDIR-style socket-dir isolation, so the env override is
+# the only thing keeping this off the machine's real thurbox/thurbox-dev
+# servers.
+cmd_native_test() {
+  require_windows
+  ssh_host 'powershell -NoProfile -Command "Test-Path C:/Tools/thurbox/thurbox-cli.exe"' 2> /dev/null \
+    | grep -qi true || die "thurbox-cli.exe not deployed — run '$0 $DEST deploy' first"
+  local agent="${1:-claude}"
+  log "native e2e on $DEST: agent '$agent', scoped socket $LAB_SOCKET, state $LAB_DIR/native"
+  run_ps "$LAB_DIR" "$LAB_SOCKET" "$agent" <<'EOF'
+param([string]$LabDir, [string]$Socket, [string]$Agent)
+$ErrorActionPreference = 'Stop'
+$cli = 'C:/Tools/thurbox/thurbox-cli.exe'
+$tui = 'C:/Tools/thurbox/thurbox.exe'
+$name = 'lab-native'
+$fails = 0
+function Assert([bool]$ok, [string]$what) {
+  if ($ok) { Write-Output "  ok   $what" } else { Write-Output "  FAIL $what"; $script:fails++ }
+}
+
+# Scoped env for every thurbox child below. THURBOX_SOCKET keeps the whole run
+# off the machine's real psmux servers.
+$env:THURBOX_SOCKET = $Socket
+$env:THURBOX_CONFIG_DIR = "$LabDir/native/config"
+$env:THURBOX_DATA_DIR = "$LabDir/native/data"
+
+psmux -L $Socket kill-server 2>$null
+Remove-Item -Recurse -Force "$LabDir/native" -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path "$LabDir/native/repo" | Out-Null
+git -C "$LabDir/native/repo" init -qb main
+git -C "$LabDir/native/repo" config user.email test@thurbox
+git -C "$LabDir/native/repo" config user.name thurbox-lab
+git -C "$LabDir/native/repo" commit -qm init --allow-empty
+
+Write-Output "== thurbox-cli session create (local psmux backend) =="
+$out = & $cli --json session create --name $name --repo-path "$LabDir/native/repo" --agent $Agent 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { Write-Output $out; Write-Output "FAIL session create exited $LASTEXITCODE"; exit 1 }
+$json = $out | ConvertFrom-Json
+Assert ($json.name -eq $name) "session created (id $($json.id))"
+Start-Sleep 8
+
+# The scoped server (NOT thurbox-dev) must own the agent window, alive.
+$panes = (psmux -L $Socket list-panes -a -F '#{window_name} #{pane_dead}') -join "`n"
+Assert ($panes -match "tb-$name 0") "agent window alive on scoped socket ($Socket)"
+
+# The window process must carry the folded env + argv (psmux drops -e and
+# joined tokens; the deployed build must route around both).
+$procs = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'Set-Item Env:THURBOX_SESSION' }).CommandLine -join "`n"
+Assert ($procs -match [regex]::Escape($json.id)) "THURBOX_SESSION env folded into the window command"
+Assert ($procs -match "'$Agent'") "agent argv delivered ($Agent)"
+
+$list = & $cli --json session list | Out-String | ConvertFrom-Json
+Assert (@($list | Where-Object { $_.name -eq $name }).Count -eq 1) "thurbox-cli session list sees the session"
+
+Write-Output "== thurbox.exe TUI boot (inside a scoped psmux pane) =="
+# psmux targets are session-qualified; the session name is the deployed
+# build's compile-time default, so discover it instead of hardcoding.
+$sess = (psmux -L $Socket list-sessions -F '#{session_name}' | Select-Object -First 1)
+# Window command is one argv token: env + exec. The pane gives the TUI a ConPTY.
+$boot = "Set-Item Env:THURBOX_SOCKET '$Socket'; Set-Item Env:THURBOX_CONFIG_DIR '$LabDir/native/config'; Set-Item Env:THURBOX_DATA_DIR '$LabDir/native/data'; & '$tui'"
+psmux -L $Socket new-window -d -t "${sess}:" -n lab-tui $boot
+Start-Sleep 8
+$frame = (psmux -L $Socket capture-pane -p -t "${sess}:lab-tui") -join "`n"
+Assert ($frame -match 'lab-native') "TUI booted and shows/adopted the session"
+
+psmux -L $Socket kill-server 2>$null
+if ($fails -gt 0) { Write-Output "NATIVE-TEST FAILURES: $fails"; exit 1 }
+Write-Output "NATIVE-TEST OK"
+EOF
+  printf '\033[1;32mPASS\033[0m native thurbox (dev) runs correctly on %s\n' "$DEST"
+}
+
 cmd_test_suite() {
   require_windows
   require_win_target
@@ -591,6 +673,7 @@ case "$VERB" in
   clean)      cmd_clean ;;
   deploy)     cmd_deploy ;;
   run)        cmd_run ;;
+  native-test) cmd_native_test "$@" ;;
   test-suite) cmd_test_suite ;;
   wsl-setup)  cmd_wsl_setup "$@" ;;
   wsl-check)  cmd_wsl_check "$@" ;;

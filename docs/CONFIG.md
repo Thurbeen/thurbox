@@ -627,6 +627,7 @@ User-set (read by thurbox):
 | `VISUAL`, then `EDITOR` | `Ctrl+O` editor when `editor_command` is unset |
 | `SHELL` | the `Ctrl+T` companion shell pane (fallback `/bin/sh`) |
 | `RUST_LOG` | log filter for `thurbox.log` |
+| `THURBOX_SOCKET` | overrides the **local** multiplexer socket name (default `thurbox`; dev builds `thurbox-dev`). For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
 
 Set **by** thurbox into every spawned agent process (not user-set;
 `session_ops::inject_thurbox_env` / `App::build_spawn_inputs`). An

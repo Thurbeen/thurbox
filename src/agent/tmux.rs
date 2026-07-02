@@ -24,6 +24,25 @@ const TMUX_SOCKET: &str = if cfg!(dev_build) {
     "thurbox"
 };
 
+/// Env var overriding the **local** multiplexer socket name.
+///
+/// Unix test/sandbox tooling scopes the socket by pointing `TMUX_TMPDIR` at a
+/// private directory, but psmux (native Windows) has no socket-directory
+/// concept — every `-L <name>` resolves machine-wide, so without this override
+/// a scoped test on Windows would share (and could tear down) the user's real
+/// `thurbox`/`thurbox-dev` server. Remote hosts are unaffected (their socket
+/// comes from `hosts.toml`).
+pub const SOCKET_OVERRIDE_ENV: &str = "THURBOX_SOCKET";
+
+/// The local multiplexer socket name: [`SOCKET_OVERRIDE_ENV`] when set and
+/// non-empty, else the compile-time default.
+fn local_socket() -> String {
+    std::env::var(SOCKET_OVERRIDE_ENV)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| TMUX_SOCKET.to_string())
+}
+
 /// tmux session name used to group all thurbox windows.
 /// Dev builds use "thurbox-dev" to avoid interfering with an installed release binary.
 const TMUX_SESSION: &str = if cfg!(dev_build) {
@@ -39,7 +58,7 @@ const TMUX_SESSION: &str = if cfg!(dev_build) {
 /// Windows) and socket instead of hardcoding `tmux` at each call site.
 fn local_mux_command(args: &[&str]) -> Command {
     let mut cmd = Command::new(DEFAULT_MUX);
-    cmd.arg("-L").arg(TMUX_SOCKET).args(args);
+    cmd.arg("-L").arg(local_socket()).args(args);
     // Strip nesting env so these one-shots target thurbox's own socket even when
     // thurbox is launched inside a tmux/psmux pane (see `strip_mux_nesting_env`).
     crate::agent::transport::strip_mux_nesting_env(&mut cmd);
@@ -504,7 +523,7 @@ impl TmuxBackend {
     pub fn local() -> Self {
         Self {
             transport: TmuxTransport::Local,
-            socket: TMUX_SOCKET.to_string(),
+            socket: local_socket(),
             session: TMUX_SESSION.to_string(),
             name: "local-tmux".to_string(),
             control: Mutex::new(None),
@@ -741,35 +760,35 @@ impl TmuxBackend {
         }
     }
 
-    /// Build the psmux `new-window` command token: one **double-quoted** string
-    /// holding a PowerShell command that sets the env vars and launches the
-    /// agent.
+    /// Build the PowerShell command a psmux window runs: set the env vars, then
+    /// launch the agent.
     ///
-    /// psmux's control-mode parser diverges from tmux in three ways that this
-    /// encoding routes around (all verified against psmux 3.3.6):
-    /// - **Trailing tokens are not joined**: tmux joins multiple trailing
-    ///   `new-window` args into one shell command; psmux keeps only the first
-    ///   token and silently drops the rest — the agent launched with no args.
-    ///   So the whole command must be a single token.
-    /// - **`-e` is ignored**: env vars never reach the window's process. They
-    ///   are folded into the command itself (`Set-Item Env:K 'v'; …` — chosen
-    ///   over `$env:K` so the string stays `$`-free).
-    /// - **Quoting**: psmux runs the token via `powershell -NoLogo -Command
-    ///   <token>`, whose Win32 command line strips unescaped double quotes — so
-    ///   the *inner* PowerShell quoting must use single quotes (which Win32
-    ///   tokenization passes through). psmux's own tokenizer concatenates
-    ///   adjacent `'…'` segments (there is no escape that survives as a literal
-    ///   `'` inside them; backslash is literal everywhere, so `C:\` paths are
-    ///   safe) but passes `'` through **double-quoted** tokens untouched —
-    ///   hence single quotes inside, double quotes outside.
-    fn psmux_window_command(
+    /// psmux ignores `new-window -e` — env vars never reach the window's
+    /// process — so they are folded into the command itself (`Set-Item Env:K
+    /// 'v'; …`, chosen over `$env:K` so the string stays `$`-free). psmux runs
+    /// the window command via `powershell -NoLogo -Command <string>`, whose
+    /// Win32 command line strips unescaped double quotes — so all quoting is
+    /// PowerShell **single** quotes (`''` = literal `'`), which Win32
+    /// tokenization passes through. A raw `"` or newline would break the outer
+    /// framing on either delivery path (below) with no escape that survives,
+    /// so both are neutralized to spaces.
+    ///
+    /// Two callers deliver this string as **one unit** (verified against psmux
+    /// 3.3.6; both needed because psmux drops what tmux would keep):
+    /// - [`psmux_window_command`](Self::psmux_window_command) wraps it in
+    ///   double quotes for a control-mode `new-window` line, whose parser keeps
+    ///   only the *first* trailing token (tmux joins them) — the agent launched
+    ///   with no args. psmux's tokenizer concatenates adjacent `'…'` segments
+    ///   but passes `'` through `"…"` tokens untouched (backslash is literal
+    ///   everywhere, so `C:\` paths are safe) — hence single quotes inside,
+    ///   double quotes outside.
+    /// - [`spawn_window`] passes it verbatim as a single argv token (the argv
+    ///   path joins trailing tokens fine, but still ignores `-e`).
+    fn psmux_window_powershell(
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
     ) -> String {
-        // PowerShell single-quoting: '' is a literal ' inside '…'. That inner
-        // escape survives both outer layers (psmux passes ' through "…" tokens;
-        // Win32 tokenization ignores single quotes).
         fn ps_quote(s: &str) -> String {
             format!("'{}'", s.replace('\'', "''"))
         }
@@ -785,10 +804,17 @@ impl TmuxBackend {
             ps.push(' ');
             ps.push_str(&ps_quote(a));
         }
-        // The outer double quotes make this one psmux token. A raw `"` or
-        // newline inside would terminate the token / split the control-mode
-        // line early — there is no known escape, so neutralize them.
-        format!("\"{}\"", ps.replace(['"', '\n'], " "))
+        ps.replace(['"', '\n'], " ")
+    }
+
+    /// [`psmux_window_powershell`](Self::psmux_window_powershell) framed as one
+    /// **double-quoted** control-mode token for a `new-window` line.
+    fn psmux_window_command(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> String {
+        format!("\"{}\"", Self::psmux_window_powershell(command, args, env))
     }
 
     /// Run a closure with a reference to the active control mode, or bail if
@@ -1322,13 +1348,14 @@ pub fn send_prompt_after_delay(session_name: &str, text: &str, delay_secs: u64) 
 #[cfg(not(windows))]
 fn deferred_prompt_script(target: &str, text: &str) -> String {
     let escaped_target = shell_escape(target);
+    let socket = local_socket();
     // Bracketed-paste wrap (see `bracketed_paste`) so multi-line prompts don't
     // submit early; `-l` makes the multiplexer deliver the bytes literally.
     let escaped_text = shell_escape(&bracketed_paste(text));
     format!(
-        "{DEFAULT_MUX} -L {TMUX_SOCKET} send-keys -t {escaped_target} -l {escaped_text}; \
+        "{DEFAULT_MUX} -L {socket} send-keys -t {escaped_target} -l {escaped_text}; \
          sleep 0.2; \
-         {DEFAULT_MUX} -L {TMUX_SOCKET} send-keys -t {escaped_target} Enter"
+         {DEFAULT_MUX} -L {socket} send-keys -t {escaped_target} Enter"
     )
 }
 
@@ -1338,11 +1365,12 @@ fn deferred_prompt_script(target: &str, text: &str) -> String {
 #[cfg(windows)]
 fn deferred_prompt_script(target: &str, text: &str) -> String {
     let t = ps_single_quote(target);
+    let socket = local_socket();
     let body = ps_single_quote(&bracketed_paste(text));
     format!(
-        "powershell -NoProfile -Command \"{DEFAULT_MUX} -L {TMUX_SOCKET} send-keys -t {t} -l {body}; \
+        "powershell -NoProfile -Command \"{DEFAULT_MUX} -L {socket} send-keys -t {t} -l {body}; \
          Start-Sleep -Milliseconds 200; \
-         {DEFAULT_MUX} -L {TMUX_SOCKET} send-keys -t {t} Enter\""
+         {DEFAULT_MUX} -L {socket} send-keys -t {t} Enter\""
     )
 }
 
@@ -1506,14 +1534,21 @@ pub fn spawn_window(
     if let Some(dir) = cwd {
         tmux.args(["-c", &dir.to_string_lossy()]);
     }
-    for (k, v) in env {
-        tmux.args(["-e", &format!("{k}={v}")]);
-    }
-    // Pass the command + args as a single argv list. tmux treats trailing args
-    // as the command to run inside the window.
-    tmux.arg(command);
-    for a in args {
-        tmux.arg(a);
+    if cfg!(windows) {
+        // psmux (the local mux on Windows) ignores `-e`, so the env must be
+        // folded into the window command itself; delivered as a single argv
+        // token (see `psmux_window_powershell`).
+        tmux.arg(TmuxBackend::psmux_window_powershell(command, args, env));
+    } else {
+        for (k, v) in env {
+            tmux.args(["-e", &format!("{k}={v}")]);
+        }
+        // Pass the command + args as a single argv list. tmux treats trailing
+        // args as the command to run inside the window.
+        tmux.arg(command);
+        for a in args {
+            tmux.arg(a);
+        }
     }
 
     let output = tmux
@@ -1769,6 +1804,21 @@ mod tests {
         ));
         assert_eq!(backend.socket, TMUX_SOCKET);
         assert_eq!(backend.session, TMUX_SESSION);
+    }
+
+    #[test]
+    fn local_socket_honors_env_override() {
+        // nextest runs one process per test, so env mutation can't race other
+        // tests reading `local_socket()`.
+        std::env::set_var(SOCKET_OVERRIDE_ENV, "thurbox-lab-test");
+        assert_eq!(local_socket(), "thurbox-lab-test");
+        assert_eq!(TmuxBackend::local().socket, "thurbox-lab-test");
+        // Empty counts as unset — a sandbox script exporting `THURBOX_SOCKET=`
+        // must not produce `-L ''`.
+        std::env::set_var(SOCKET_OVERRIDE_ENV, "");
+        assert_eq!(local_socket(), TMUX_SOCKET);
+        std::env::remove_var(SOCKET_OVERRIDE_ENV);
+        assert_eq!(local_socket(), TMUX_SOCKET);
     }
 
     #[test]

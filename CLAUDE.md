@@ -174,7 +174,12 @@ one-off command), `clean`; Windows-only: `deploy`
 (cross-build + install to `C:\Tools\thurbox`), `run` (the deployed TUI over
 `ssh -t`), `test-suite` (nextest archive, mirrors `windows-test.sh`),
 `wsl-setup` / `wsl-check` (provision + verify a WSL distro as a thurbox
-target). Local state: `target/lab-test/` (gitignored).
+target), `native-test [agent]` (headless e2e of the **deployed** binaries
+natively on the host: `thurbox-cli.exe` creates a local psmux session —
+agent argv + `THURBOX_*` env asserted intact — and `thurbox.exe` boots
+inside a scoped psmux pane and must show/adopt it; isolated via the
+`THURBOX_SOCKET` env override, since psmux has no `TMUX_TMPDIR`-style
+socket-dir isolation). Local state: `target/lab-test/` (gitignored).
 
 ## Installation Script
 
@@ -545,13 +550,19 @@ control-mode protocol is byte-identical over either transport/binary, with
 - **`new-window` trailing tokens are not joined** — tmux joins them into one
   shell command; psmux keeps only the *first* token and silently drops the
   rest, so the agent launched with **no args**. And **`new-window -e` is
-  ignored** — env vars never reached the window's process (no
-  `THURBOX_SESSION` identity). `TmuxBackend::psmux_window_command` therefore
-  folds env + command into **one double-quoted token** of PowerShell
+  ignored** (on the argv path too) — env vars never reached the window's
+  process (no `THURBOX_SESSION` identity). `TmuxBackend::psmux_window_powershell`
+  therefore folds env + command into **one token** of PowerShell
   (`Set-Item Env:K 'v'; & 'claude' '--session-id' …` — psmux runs the token
   via `powershell -NoLogo -Command`, whose Win32 command line strips unescaped
-  double quotes, hence single-quote inner / double-quote outer; backslash is
-  literal everywhere in psmux's parser, so `C:\` paths survive).
+  double quotes, hence PowerShell single-quoting throughout; backslash is
+  literal everywhere in psmux's parser, so `C:\` paths survive). Control-mode
+  spawns (`psmux_window_command`) frame it in double quotes — psmux's
+  tokenizer concatenates adjacent `'…'` segments but passes `'` through `"…"`
+  tokens — and the headless local `spawn_window` passes it as a single argv
+  arg. The local socket honors the `THURBOX_SOCKET` env override
+  (`local_socket()`) so test/sandbox tooling can scope an instance on Windows,
+  where every `-L <name>` resolves machine-wide (no `TMUX_TMPDIR`).
 
 Each host registers a backend named
 `ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`, registered lazily in
