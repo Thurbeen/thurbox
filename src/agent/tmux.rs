@@ -1322,6 +1322,33 @@ impl SessionBackend for TmuxBackend {
             .and_then(|guard| guard.as_ref().map(ControlMode::take_sub_events))
             .unwrap_or_default()
     }
+
+    /// The shell-pane command must match the **host's** OS, not the local
+    /// binary's — the trait default reads the local `$SHELL`/`%COMSPEC%`,
+    /// which shipped e.g. `/bin/zsh` to a remote Windows pane
+    /// ("CommandNotFoundException"). Remote hosts get a shell that exists
+    /// there by construction: `powershell` on a psmux (Windows) host — the
+    /// same interpreter psmux wraps every window command in — and `/bin/sh`
+    /// on a Unix/WSL host (the local `$SHELL` may not be installed there; the
+    /// login wrap gives it the profile `PATH`). Local backends keep the trait
+    /// default's behavior.
+    fn default_shell(&self) -> String {
+        if !self.transport.is_remote() {
+            #[cfg(windows)]
+            {
+                return std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+            }
+            #[cfg(not(windows))]
+            {
+                return std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            }
+        }
+        if self.transport.uses_psmux() {
+            "powershell".to_string()
+        } else {
+            "/bin/sh".to_string()
+        }
+    }
 }
 
 /// Wrap `text` in the bracketed-paste escape sequences (`ESC[200~ … ESC[201~`)
@@ -1899,6 +1926,43 @@ mod tests {
         assert_eq!(local_socket(), TMUX_SOCKET);
         std::env::remove_var(SOCKET_OVERRIDE_ENV);
         assert_eq!(local_socket(), TMUX_SOCKET);
+    }
+
+    #[test]
+    fn default_shell_matches_host_os_not_local() {
+        // The local $SHELL (e.g. /bin/zsh) may not exist on the host: a remote
+        // Windows pane got "CommandNotFoundException", a zsh-less Linux host a
+        // dead pane. Remote backends pick by transport.
+        let winbox = TmuxBackend::from_host(&crate::session::HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        });
+        assert_eq!(winbox.default_shell(), "powershell");
+
+        let devbox = TmuxBackend::from_host(&crate::session::HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            ..Default::default()
+        });
+        assert_eq!(devbox.default_shell(), "/bin/sh");
+
+        let wsl = TmuxBackend::from_host(&crate::session::HostDef::wsl("Ubuntu"));
+        assert_eq!(wsl.default_shell(), "/bin/sh");
+
+        // Local keeps the platform default ($SHELL / %COMSPEC%).
+        let local = TmuxBackend::local();
+        #[cfg(not(windows))]
+        assert_eq!(
+            local.default_shell(),
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            local.default_shell(),
+            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+        );
     }
 
     #[test]
