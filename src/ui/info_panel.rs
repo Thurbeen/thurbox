@@ -119,12 +119,12 @@ fn append_session_section<'a>(
             ),
         ]));
     }
-    // Remote host (ssh:<host>); omitted entirely for local sessions.
+    // Remote host (ssh:/wsl:); omitted entirely for local sessions.
     if let Some(host) = info.remote_host.as_deref() {
         lines.push(Line::from(vec![
             Span::styled("Host:  ", Theme::label()),
             Span::styled(
-                format!("\u{2601} {host}"),
+                format!("\u{21c5} {host}"),
                 Style::default().fg(Theme::accent()),
             ),
         ]));

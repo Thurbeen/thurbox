@@ -878,11 +878,12 @@ fn push_prefix_marks(
         spans.push(Span::styled("\u{21b3} ", tree_style));
     }
 
-    // Remote (ssh:<host>) sessions get a cloud mark so it's clear at a glance
-    // the agent runs on another machine. Sits right after the status dot.
+    // Remote (ssh:/wsl:) sessions get a remote-link mark so it's clear at a
+    // glance the agent runs on another machine. Sits right after the status
+    // dot; two trailing spaces keep it off the session name.
     if info.remote_host.is_some() {
         spans.push(Span::styled(
-            "\u{2601} ",
+            "\u{21c5}  ",
             mark_style(is_dimmed, Theme::accent),
         ));
     }
@@ -1323,14 +1324,14 @@ mod tests {
         let mut s = info("remote");
         s.remote_host = Some("devbox".to_string());
         let line = build_session_line(&s, None, false, false, 0, false, WIDE, "◐");
-        assert!(line_text(&line).contains('\u{2601}'));
+        assert!(line_text(&line).contains('\u{21c5}'));
     }
 
     #[test]
     fn line_no_remote_glyph_for_local_session() {
         let s = info("local");
         let line = build_session_line(&s, None, false, false, 0, false, WIDE, "◐");
-        assert!(!line_text(&line).contains('\u{2601}'));
+        assert!(!line_text(&line).contains('\u{21c5}'));
     }
 
     #[test]
