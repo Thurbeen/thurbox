@@ -1712,25 +1712,20 @@ mod tests {
         );
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "wsl.exe");
-        assert_eq!(
-            args,
-            [
-                "-d",
-                "Ubuntu",
-                "git",
-                "-C",
-                "/home/me/repo",
-                "worktree",
-                "add",
-                "-b",
-                "x",
-            ]
-        );
-        // A Unix caller pins the child cwd to `/` so wsl.exe doesn't inherit
-        // (and fail to chdir to) a caller cwd missing from the target distro.
+        // A Unix caller passes `--cd /` so wsl.exe doesn't inherit (or mangle,
+        // via a prefix-sibling distro name) a caller cwd missing from the
+        // target distro — see `shell::wsl_command`.
         #[cfg(unix)]
-        assert_eq!(cmd.get_current_dir(), Some(Path::new("/")));
-        #[cfg(windows)]
+        let prefix: &[&str] = &["-d", "Ubuntu", "--cd", "/"];
+        #[cfg(not(unix))]
+        let prefix: &[&str] = &["-d", "Ubuntu"];
+        let expected: Vec<&str> = prefix
+            .iter()
+            .copied()
+            .chain(["git", "-C", "/home/me/repo", "worktree", "add", "-b", "x"])
+            .collect();
+        assert_eq!(args, expected);
+        // The child cwd is left to the OS default; `--cd` is the control.
         assert_eq!(cmd.get_current_dir(), None);
     }
 
@@ -1744,17 +1739,16 @@ mod tests {
         let cmd = host_shell_c(&h, "mkdir -p /a && ln -s /b /a/b");
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "wsl.exe");
-        assert_eq!(
-            args,
-            [
-                "-d",
-                "Ubuntu",
-                "-e",
-                "sh",
-                "-c",
-                "mkdir -p /a && ln -s /b /a/b"
-            ]
-        );
+        #[cfg(unix)]
+        let prefix: &[&str] = &["-d", "Ubuntu", "--cd", "/"];
+        #[cfg(not(unix))]
+        let prefix: &[&str] = &["-d", "Ubuntu"];
+        let expected: Vec<&str> = prefix
+            .iter()
+            .copied()
+            .chain(["-e", "sh", "-c", "mkdir -p /a && ln -s /b /a/b"])
+            .collect();
+        assert_eq!(args, expected);
     }
 
     #[test]
@@ -1781,7 +1775,16 @@ mod tests {
         let cmd = list_dir_command(&h, "/home/me/repos");
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "wsl.exe");
-        assert_eq!(args, ["-d", "Ubuntu", "-e", "ls", "-1p", "/home/me/repos"]);
+        #[cfg(unix)]
+        let prefix: &[&str] = &["-d", "Ubuntu", "--cd", "/"];
+        #[cfg(not(unix))]
+        let prefix: &[&str] = &["-d", "Ubuntu"];
+        let expected: Vec<&str> = prefix
+            .iter()
+            .copied()
+            .chain(["-e", "ls", "-1p", "/home/me/repos"])
+            .collect();
+        assert_eq!(args, expected);
         // No `sh -c` (the broken form) anywhere.
         assert!(
             !args.iter().any(|a| a == "-c"),

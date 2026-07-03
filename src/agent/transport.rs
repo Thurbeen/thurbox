@@ -207,23 +207,19 @@ mod tests {
         let cmd = t.tmux_command("thurbox", &["has-session", "-t", "thurbox"]);
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "wsl.exe");
-        assert_eq!(
-            args,
-            [
-                "-d",
-                "Ubuntu",
-                "tmux",
-                "-L",
-                "thurbox",
-                "has-session",
-                "-t",
-                "thurbox",
-            ]
-        );
-        // A Unix caller pins the child cwd to `/` (see `shell::wsl_command`)
-        // so wsl.exe doesn't inherit a caller cwd missing from the distro.
+        // A Unix caller passes `--cd /` (see `shell::wsl_command`) so wsl.exe
+        // doesn't inherit a caller cwd missing from — or mangled into — the
+        // target distro.
         #[cfg(unix)]
-        assert_eq!(cmd.get_current_dir(), Some(std::path::Path::new("/")));
+        let prefix: &[&str] = &["-d", "Ubuntu", "--cd", "/"];
+        #[cfg(not(unix))]
+        let prefix: &[&str] = &["-d", "Ubuntu"];
+        let expected: Vec<&str> = prefix
+            .iter()
+            .copied()
+            .chain(["tmux", "-L", "thurbox", "has-session", "-t", "thurbox"])
+            .collect();
+        assert_eq!(args, expected);
     }
 
     #[test]

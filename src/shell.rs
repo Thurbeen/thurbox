@@ -62,12 +62,19 @@ pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
 /// runs inside *another* WSL distro (the caller's cwd, e.g. `/home/me/repo`,
 /// doesn't exist on the target). That failure prints a `WSL Relay ERROR:
 /// CreateProcessCommon chdir(...) failed` on stderr and corrupts the tmux
-/// control-mode handshake, so the agent window never launches. So on a Unix
-/// caller the child's cwd is pinned to `/` — a landing dir every distro has —
+/// control-mode handshake, so the agent window never launches.
+///
+/// A Unix caller therefore passes `--cd /` (a landing dir every distro has),
 /// which is safe because every caller overrides the real working dir anyway
-/// (`git -C <path>`, tmux `new-window -c <path>`). Pinning the *caller* cwd
-/// (rather than passing `--cd /`) works on every `wsl.exe`; `--cd` is absent
-/// from the Windows 10 inbox build, which aborts on unknown flags. A native
+/// (`git -C <path>`, tmux `new-window -c <path>`). We use `--cd /` rather than
+/// only pinning the child's `current_dir("/")`: when the caller distro's name
+/// is a **prefix of a sibling distro** (e.g. calling into `MagicDebian` from a
+/// host that also has `MagicDebianPerso`), `wsl.exe`'s cwd back-translation
+/// mangles the pinned path into `<sibling-suffix>` + cwd — producing
+/// `chdir(Perso/home/…)` — so `current_dir("/")` alone does *not* suppress the
+/// error. `--cd /` bypasses that translation entirely. `--cd` is a Store/WSL2
+/// flag; the Unix-caller case is always WSL2 (thurbox is running inside a
+/// distro), so the legacy Windows-10-inbox concern doesn't apply here. A native
 /// Windows caller keeps the inherit behavior (its `C:\…` cwd maps to
 /// `/mnt/c/…` under default automount; there is no universally-valid Windows
 /// pin, and `--cd` would trade this edge case for a hard legacy failure).
@@ -75,7 +82,7 @@ pub fn wsl_command(distro: &str) -> Command {
     let mut cmd = Command::new("wsl.exe");
     cmd.arg("-d").arg(distro);
     #[cfg(unix)]
-    cmd.current_dir("/");
+    cmd.arg("--cd").arg("/");
     cmd
 }
 
@@ -116,14 +123,17 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(args, ["-d", "Ubuntu"]);
-        // A Unix caller pins its cwd to `/` so wsl.exe doesn't inherit (and
-        // fail to chdir to) a caller cwd that doesn't exist in the target
-        // distro. Done via the child cwd — not `--cd`, which legacy wsl.exe
-        // rejects.
+        // A Unix caller passes `--cd /` so wsl.exe doesn't inherit (and fail to
+        // chdir to) a caller cwd that doesn't exist in the target distro.
+        // Pinning only the child cwd is insufficient — wsl.exe back-translates
+        // it through the caller-distro name and, with a prefix-sibling distro,
+        // yields a mangled `chdir(<suffix>/…)`; `--cd /` bypasses that.
         #[cfg(unix)]
-        assert_eq!(cmd.get_current_dir(), Some(std::path::Path::new("/")));
+        assert_eq!(args, ["-d", "Ubuntu", "--cd", "/"]);
         #[cfg(windows)]
+        assert_eq!(args, ["-d", "Ubuntu"]);
+        // The child cwd is left to the OS default; the translation control is
+        // the `--cd` flag, not the caller's process cwd.
         assert_eq!(cmd.get_current_dir(), None);
     }
 }
