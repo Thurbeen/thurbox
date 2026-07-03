@@ -1164,6 +1164,67 @@ fn global_search_returns_results_for_a_session_query() {
     );
 }
 
+#[test]
+fn ctrl_c_in_a_focused_terminal_preserves_sigint_over_status_copy() {
+    // Ctrl+C copies the status message only in non-PTY panes. In a focused
+    // terminal it must still fall through to SIGINT — so the status-copy path is
+    // skipped and the shown message is left untouched (deterministic: no
+    // clipboard call). The status row stays reachable by mouse click there.
+    let mut h = Harness::standard(1);
+    h.app.focus = InputFocus::Terminal;
+    h.app.set_error("boom");
+
+    h.ctrl('c'); // Copy — no selection, terminal-focused → SIGINT, not a copy
+
+    let msg = h.app.status_message.as_ref().expect("message still shown");
+    assert_eq!(
+        msg.text, "boom",
+        "terminal Ctrl+C leaves the status message intact (SIGINT, no copy)"
+    );
+}
+
+#[test]
+fn ctrl_c_outside_a_terminal_copies_the_status_message() {
+    // In a non-PTY pane Ctrl+C (no selection) runs the status-copy path. Every
+    // branch of `copy_status_to_clipboard` overwrites the toast (copied /
+    // unavailable / write-error), so the original message no longer stands —
+    // deterministic regardless of whether a clipboard exists on the runner.
+    let mut h = Harness::standard(1);
+    h.app.focus = InputFocus::SessionList;
+    h.app.set_error("boom");
+
+    h.ctrl('c'); // Copy — no selection, non-terminal → copy the status message
+
+    let msg = h
+        .app
+        .status_message
+        .as_ref()
+        .expect("a toast is still shown");
+    assert_ne!(
+        msg.text, "boom",
+        "the copy path fired and replaced the original message with its result"
+    );
+}
+
+#[test]
+fn status_message_row_records_a_click_to_copy_target() {
+    // The status row is click-to-copy: whenever a message is shown, its rect is
+    // registered as a `CopyStatus` hitbox so a mouse click pulls the text out.
+    let mut h = Harness::standard(1);
+    h.app.set_info("something worth copying");
+    h.render();
+
+    let has_target = h
+        .app
+        .click_targets
+        .iter()
+        .any(|t| matches!(t.action, ClickAction::CopyStatus));
+    assert!(
+        has_target,
+        "a shown status message registers a CopyStatus click target"
+    );
+}
+
 // ── Spawn-dependent flows (fake backend, real Tokio I/O wiring) ───────────────
 
 #[tokio::test]

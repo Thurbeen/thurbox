@@ -91,6 +91,12 @@ impl App {
         }
         if let Some(status_area) = areas.status_message {
             status_bar::render_status_message_row(frame, status_area, &self.footer_state());
+            // Click the status row to copy its message (the row is only carved
+            // when there's something to show). Recorded only when a real message
+            // is present, not the transient sync spinner.
+            if self.status_message.is_some() {
+                self.record_click(status_area, ClickAction::CopyStatus);
+            }
         }
         self.render_footer(frame, areas.footer);
         self.render_modals(frame);
@@ -139,6 +145,7 @@ impl App {
                         | ClickAction::ReviewTarget(_)
                         | ClickAction::CentralTab(_)
                         | ClickAction::PaneField { .. }
+                        | ClickAction::CopyStatus
                 )
             };
             reachable && t.rect.contains(pos)

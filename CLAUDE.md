@@ -1840,7 +1840,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 |-----|--------|----------|
 | `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
 | `Ctrl+N` | New session (opens repo picker) | **N**ew |
-| `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
+| `Ctrl+C` | Copy selection, else status message; SIGINT in a focused terminal | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
 | `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
 | `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | Work items |

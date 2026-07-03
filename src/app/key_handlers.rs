@@ -1139,11 +1139,13 @@ impl App {
         Some(consumed)
     }
 
-    /// Clipboard actions (Copy/Paste). Copy only consumes the key when there's a
-    /// selection; otherwise it yields (false) so the terminal can send SIGINT.
-    /// Paste is normally intercepted earlier (so it reaches modal text inputs);
-    /// this path covers the plain-terminal case. Returns `Some(consumed)` when
-    /// `action` is one of these, else `None`.
+    /// Clipboard actions (Copy/Paste). Copy prefers the active selection; with no
+    /// selection it copies the current status-bar message — except in a focused
+    /// terminal (agent or shell), where it yields (false) so the PTY still gets
+    /// SIGINT and the status row stays click-to-copy. Paste is normally
+    /// intercepted earlier (so it reaches modal text inputs); this path covers
+    /// the plain-terminal case. Returns `Some(consumed)` when `action` is one of
+    /// these, else `None`.
     fn dispatch_clipboard_action(&mut self, action: crate::session::Action) -> Option<bool> {
         use crate::session::Action;
         let consumed = match action {
@@ -1151,8 +1153,16 @@ impl App {
                 if self.text_selection.is_some() {
                     self.copy_selection_to_clipboard();
                     true
+                } else if !matches!(self.focus, InputFocus::Terminal)
+                    && self.status_message.is_some()
+                {
+                    // A non-PTY pane: Ctrl+C has no other meaning, so copy the
+                    // status message. In a focused terminal we fall through to
+                    // SIGINT (below) instead.
+                    self.copy_status_to_clipboard();
+                    true
                 } else {
-                    false // no selection → let the terminal send SIGINT
+                    false // terminal → SIGINT; elsewhere with no status → no-op
                 }
             }
             Action::Paste => {

@@ -53,8 +53,9 @@ pub enum Action {
     GlobalSearch,
     /// Open the Settings panel (view/edit settings.toml in the TUI).
     OpenSettings,
-    /// Copy the active mouse selection (falls through to terminal SIGINT when
-    /// there is no selection).
+    /// Copy the active mouse selection. With no selection it copies the current
+    /// status-bar message instead — except in a focused terminal, where it falls
+    /// through to SIGINT (the status row stays click-to-copy there).
     Copy,
     /// Paste the clipboard into the focused text input / terminal.
     Paste,
@@ -216,7 +217,7 @@ impl Action {
             Action::FocusTasks => "Tasks",
             Action::GlobalSearch => "Global search",
             Action::OpenSettings => "Settings",
-            Action::Copy => "Copy selection",
+            Action::Copy => "Copy selection / status",
             Action::Paste => "Paste",
             Action::SessionListNext => "Next item",
             Action::SessionListPrev => "Previous item",

@@ -477,6 +477,9 @@ pub(crate) enum ClickAction {
     /// Select a central-pane view from the tab strip in the pane's top border
     /// (Agent / Shell / Review). Dispatched by `activate_click_target`.
     CentralTab(CentralTab),
+    /// Copy the current status-bar message to the clipboard (click the status
+    /// row). Dispatched by `activate_click_target`.
+    CopyStatus,
 }
 
 /// One clickable region rendered this frame: its rect plus what a click on it
@@ -2616,6 +2619,10 @@ impl App {
                 self.select_central_tab(tab);
                 true
             }
+            ClickAction::CopyStatus => {
+                self.copy_status_to_clipboard();
+                true
+            }
         }
     }
 
@@ -2998,6 +3005,33 @@ impl App {
         self.text_selection = None;
         self.selected_text_cache = None;
         self.set_status(StatusLevel::Info, "Copied to clipboard");
+    }
+
+    /// Copy the current status-bar message (info / error / …) to the clipboard.
+    /// Reachable via `Copy` (Ctrl+C, outside a focused terminal) or by clicking
+    /// the status row — so a stray error/path can be pulled out of the TUI to
+    /// paste elsewhere. A no-op (no toast) when nothing is shown.
+    fn copy_status_to_clipboard(&mut self) {
+        let Some(text) = self
+            .status_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .filter(|t| !t.is_empty())
+        else {
+            return; // nothing shown → no-op (no "copied" toast to overwrite it)
+        };
+
+        let Some(clipboard) = &mut self.clipboard else {
+            self.set_error("Clipboard not available");
+            return;
+        };
+
+        if let Err(e) = clipboard.set_text(&text) {
+            self.set_error(format!("Clipboard write failed: {e}"));
+            return;
+        }
+
+        self.set_status(StatusLevel::Info, "Status message copied to clipboard");
     }
 
     /// Wrap text in bracketed paste escape sequences and send it to the
