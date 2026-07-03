@@ -2065,9 +2065,11 @@ fn remote_hook_event_drives_session_status() {
     );
 }
 
-/// Events that don't resolve to a session (unknown pane — a shell/heartbeat
-/// window) or carry a non-allow-listed state (the value is remote-controlled
-/// free text) are dropped without touching the DB.
+/// Events that don't resolve to a session never touch the DB (an unknown pane
+/// is *parked* for the adoption retry — see
+/// `remote_hook_event_parked_until_session_adopted` — not applied), and a
+/// non-allow-listed state (the value is remote-controlled free text) is
+/// dropped outright.
 #[test]
 fn remote_hook_event_ignores_unmatched_and_invalid() {
     let backend = Arc::new(FakeBackend::stub());
@@ -2088,6 +2090,59 @@ fn remote_hook_event_ignores_unmatched_and_invalid() {
             .values()
             .all(|r| r.state.is_none()),
         "neither event may reach the hook columns"
+    );
+}
+
+/// An event for a pane no session claims *yet* is parked and re-applied once
+/// the session appears: the subscription's initial catch-up report lands while
+/// the background restore is still adopting that host's windows, and dropping
+/// it would lose e.g. a `done` set while the TUI was closed.
+#[test]
+fn remote_hook_event_parked_until_session_adopted() {
+    let backend = Arc::new(FakeBackend::stub());
+    let mut h = Harness::with_backend(STD_COLS, STD_ROWS, 1, backend.clone());
+    let id = h.app.sessions[0].info.id;
+
+    backend.push_hook_event("%5", "working");
+    h.app.refresh_session_statuses(); // no session owns %5 yet → parked
+
+    h.app.sessions[0].info.backend_id = Some("%5".into());
+    h.app.save_state();
+    h.app.refresh_session_statuses(); // nothing new pushed — the parked event applies
+
+    let rows = h.app.db.load_hook_states().unwrap();
+    assert_eq!(
+        rows.get(&id).and_then(|r| r.state.as_deref()),
+        Some("working"),
+        "the pre-adoption event must survive to the adopting tick"
+    );
+}
+
+/// Two transitions for one pane in a single drained batch (`working` then
+/// `done`, e.g. queued while the main thread stalled) must both land: deduping
+/// the second against the stale pre-batch cache would swallow the `done` and
+/// leave the session spinning on `working`.
+#[test]
+fn remote_hook_batch_applies_both_transitions() {
+    let backend = Arc::new(FakeBackend::stub());
+    let mut h = Harness::with_backend(STD_COLS, STD_ROWS, 1, backend.clone());
+    h.app.sessions[0].info.backend_id = Some("%5".into());
+    h.app.save_state();
+    let id = h.app.sessions[0].info.id;
+
+    // A previous turn ended `done`, absorbed into the cache.
+    backend.push_hook_event("%5", "done");
+    h.app.refresh_session_statuses();
+
+    backend.push_hook_event("%5", "working");
+    backend.push_hook_event("%5", "done");
+    h.app.refresh_session_statuses();
+
+    let rows = h.app.db.load_hook_states().unwrap();
+    assert_eq!(
+        rows.get(&id).and_then(|r| r.state.as_deref()),
+        Some("done"),
+        "the batch's final transition must not be swallowed by the stale cache"
     );
 }
 

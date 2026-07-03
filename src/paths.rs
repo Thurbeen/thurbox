@@ -530,6 +530,46 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
     }
 }
 
+/// Reduce a display name / session id to a safe single path segment for a
+/// symlink-workspace link or directory name. Shared by the local
+/// (`workspace`) and remote (`git`) workspace builders so their layouts match
+/// by construction — neither may depend on the other.
+pub(crate) fn sanitize_workspace_segment(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '-',
+            c if c.is_whitespace() => '-',
+            c => c,
+        })
+        .collect();
+    cleaned.trim_matches(['.', '-']).to_string()
+}
+
+/// Sanitize `name` and make it unique within `used` by appending `-2`, `-3`,
+/// …; an empty sanitized name falls back to `repo`. Same sharing rationale as
+/// [`sanitize_workspace_segment`].
+pub(crate) fn unique_link_name(name: &str, used: &mut std::collections::HashSet<String>) -> String {
+    let sanitized = sanitize_workspace_segment(name);
+    let base = if sanitized.is_empty() {
+        "repo".to_string()
+    } else {
+        sanitized
+    };
+    if used.insert(base.clone()) {
+        return base;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1052,5 +1092,32 @@ mod tests {
         if let Some(s) = complete_directory_path("~/") {
             assert!(!s.starts_with('/'));
         }
+    }
+
+    #[test]
+    fn sanitize_workspace_segment_strips_separators_and_dots() {
+        // Slashes/backslashes/colons and whitespace → `-`; leading/trailing
+        // `.`/`-` trimmed.
+        assert_eq!(sanitize_workspace_segment("a/b\\c:d"), "a-b-c-d");
+        assert_eq!(sanitize_workspace_segment("  .git  "), "git");
+        assert_eq!(sanitize_workspace_segment("my repo"), "my-repo");
+        assert_eq!(sanitize_workspace_segment("--.hidden.--"), "hidden");
+        // A session-id UUID (the real workspace-dir input) is unchanged.
+        assert_eq!(
+            sanitize_workspace_segment("d5715d35-9599-4507-9901-ef33b9476358"),
+            "d5715d35-9599-4507-9901-ef33b9476358"
+        );
+    }
+
+    #[test]
+    fn unique_link_name_dedups_with_dash_two_suffix() {
+        // First collision is `-2`, then `-3`; an empty label falls back to
+        // `repo`.
+        let mut used = std::collections::HashSet::new();
+        assert_eq!(unique_link_name("webapp", &mut used), "webapp");
+        assert_eq!(unique_link_name("webapp", &mut used), "webapp-2");
+        assert_eq!(unique_link_name("webapp", &mut used), "webapp-3");
+        assert_eq!(unique_link_name("", &mut used), "repo");
+        assert_eq!(unique_link_name("", &mut used), "repo-2");
     }
 }

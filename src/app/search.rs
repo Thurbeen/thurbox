@@ -154,6 +154,11 @@ impl App {
         self.global_search.active = false;
         self.global_search.results.clear();
         self.global_search.query.clear();
+        // The snapshot predates any feature flag flipped while the strip was
+        // open (settings live-reload): re-enforce so the restore can't
+        // resurrect a panel/focus whose feature was just disabled. Runs after
+        // `active = false`, so its own close-search branch is a no-op.
+        self.enforce_feature_visibility();
         self.resize_sessions_to_content_area();
     }
 

@@ -193,15 +193,16 @@ fn render_rows(
 
     // Line-number column width from the largest number on screen.
     let num_w = line_number_width(state);
-    let gutter_w = num_w * 2 + 4; // "{old} {new} {sign} " — mirrors the gutter.
-    let avail = width.saturating_sub(gutter_w).max(1);
 
     // Final horizontal clamp: the app layer bounds `h_scroll` by the longest
     // line, but the exact body width is only known now — never scroll past what
     // the widest line can reveal. Wrapped/side-by-side layouts pin it to 0.
+    // Gated on an active scroll: `max_line_width` is an O(total chars) scan,
+    // so the default `h_scroll == 0` frame must not pay it on every repaint.
     if state.wrap || state.side_by_side {
         state.h_scroll = 0;
-    } else {
+    } else if state.h_scroll > 0 {
+        let avail = width.saturating_sub(gutter_width(num_w)).max(1);
         let max_h = state.max_line_width().saturating_sub(avail);
         state.h_scroll = state.h_scroll.min(max_h);
     }
@@ -221,12 +222,16 @@ fn render_rows(
         state.scroll = state.selected;
     }
 
-    // The active search query (lowercased) drives the in-row match highlight.
+    // The active search query drives the in-row match highlight — trimmed +
+    // lowercased exactly like `search_matches`, so a row the matcher counted
+    // never renders without its highlight (e.g. a query with a trailing space).
     let query = state
         .search
         .as_ref()
-        .map(|s| s.query.to_lowercase())
-        .filter(|q| !q.trim().is_empty());
+        .map(|s| s.query.trim().to_lowercase())
+        .filter(|q| !q.is_empty());
+
+    converge_wrap_scroll(state, width, num_w, height);
 
     // Build the windowed visual lines. When wrapping, the selected logical row's
     // first visual line must stay on screen: expand from `scroll` and, if the
@@ -482,7 +487,7 @@ fn unified_diff_line<'a>(
     let (sign, row_bg) = diff_row_bg(l.kind);
     let bg = row_bg_fn(row_bg, selected);
     let gutter = diff_gutter(l, num_w, sign);
-    let avail = width.saturating_sub(gutter.chars().count());
+    let avail = width.saturating_sub(gutter_width(num_w));
 
     let mut spans = vec![Span::styled(
         gutter,
@@ -511,7 +516,7 @@ fn unified_diff_line_wrapped<'a>(
     let (sign, row_bg) = diff_row_bg(l.kind);
     let bg = row_bg_fn(row_bg, selected);
     let gutter = diff_gutter(l, num_w, sign);
-    let gutter_w = gutter.chars().count();
+    let gutter_w = gutter_width(num_w);
     let avail = width.saturating_sub(gutter_w).max(1);
 
     let body_len = l.text.chars().count();
@@ -565,6 +570,60 @@ fn diff_gutter(l: &DiffLine, num_w: usize, sign: char) -> String {
     let old = l.old_no.map(|n| n.to_string()).unwrap_or_default();
     let new = l.new_no.map(|n| n.to_string()).unwrap_or_default();
     format!("{old:>num_w$} {new:>num_w$} {sign} ")
+}
+
+/// Cell width of [`diff_gutter`]'s output (two right-aligned numbers + three
+/// single-space/sign separators). The single encoding of the gutter layout —
+/// every consumer (h-scroll clamp, wrap chunking, continuation padding) derives
+/// from it, so a format change can't desync them from what is painted.
+fn gutter_width(num_w: usize) -> usize {
+    num_w * 2 + 4
+}
+
+/// With wrap on, a far jump (`G`, a scrollbar drag, a search step) can leave
+/// `scroll` many rows above the selection. Converge directly with a backward
+/// walk over visual-row counts — O(height) count-only passes — instead of
+/// letting `render_rows`' build loop advance one row per full-window rebuild
+/// (quadratic in the jump distance, a visible stall on a large diff). Lands
+/// on the smallest scroll ≥ the current one that keeps the selection's first
+/// visual row within `height`.
+fn converge_wrap_scroll(state: &mut CodeReviewState, width: usize, num_w: usize, height: usize) {
+    if !state.wrap || state.selected <= state.scroll {
+        return;
+    }
+    // Rows above the selection may fill at most height-1 visual rows, leaving
+    // one for the selection's first line (saturating: height 0 → selection).
+    let budget = height.saturating_sub(1);
+    let mut acc = 0usize;
+    let mut first = state.selected;
+    while first > state.scroll {
+        let c = visual_line_count(state, first - 1, width, num_w);
+        if acc + c > budget {
+            break;
+        }
+        acc += c;
+        first -= 1;
+    }
+    state.scroll = first;
+}
+
+/// How many visual rows logical row `i` occupies — the count-only mirror of
+/// [`row_visual_lines`] (wrap inflates only unified diff lines; every other
+/// row kind, and side-by-side, is exactly one). Must stay in lockstep with
+/// [`unified_diff_line_wrapped`]'s chunking so the wrap scroll walk in
+/// `render_rows` lands exactly where the build does.
+fn visual_line_count(state: &CodeReviewState, i: usize, width: usize, num_w: usize) -> usize {
+    if !state.wrap || state.side_by_side {
+        return 1;
+    }
+    match &state.rows[i] {
+        ReviewRow::Line(fi, hi, li) => {
+            let l = &state.files[*fi].hunks[*hi].lines[*li];
+            let avail = width.saturating_sub(gutter_width(num_w)).max(1);
+            l.text.chars().count().div_ceil(avail).max(1)
+        }
+        _ => 1,
+    }
 }
 
 /// Styled spans for a diff body windowed to `[start, start + avail)` chars,
@@ -1050,28 +1109,38 @@ fn render_footer(
     hits.into_iter().map(|h| (h, actions[h.index])).collect()
 }
 
-/// Byte offsets of every char inside a case-insensitive occurrence of `query`
-/// (already lowercased) within `text`. Non-overlapping, left-to-right. Feeds
-/// [`crate::ui::highlight::highlighted_spans_owned`] so search hits get the same
-/// accent+bold+underline emphasis as the fuzzy lists elsewhere in the app.
+/// Byte offsets of every source char inside a case-insensitive occurrence of
+/// `query` (already trimmed + lowercased) within `text`. Non-overlapping,
+/// left-to-right. The text is lowered char-by-char *including multi-char
+/// expansions* (`İ` → `i̇`), matching `search_matches`' `str::to_lowercase`
+/// row filter — a per-char equality would leave such matcher hits rendering
+/// with no highlight. Feeds
+/// [`crate::ui::highlight::highlighted_spans_owned`] so search hits get the
+/// same accent+bold+underline emphasis as the fuzzy lists elsewhere in the app.
 fn match_positions(text: &str, query: &str) -> Vec<usize> {
     if query.is_empty() {
         return Vec::new();
     }
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    // (source byte offset, lowered char) — an expansion repeats its offset, so
+    // a window landing anywhere inside it still highlights the source char.
+    let lowered: Vec<(usize, char)> = text
+        .char_indices()
+        .flat_map(|(o, c)| c.to_lowercase().map(move |lc| (o, lc)))
+        .collect();
     let q: Vec<char> = query.chars().collect();
-    let (n, m) = (chars.len(), q.len());
+    let (n, m) = (lowered.len(), q.len());
     let mut positions = Vec::new();
     let mut i = 0;
     while i + m <= n {
-        let hit = (0..m).all(|k| chars[i + k].1.to_lowercase().eq(q[k].to_lowercase()));
-        if hit {
-            positions.extend((0..m).map(|k| chars[i + k].0));
+        if (0..m).all(|k| lowered[i + k].1 == q[k]) {
+            positions.extend((0..m).map(|k| lowered[i + k].0));
             i += m;
         } else {
             i += 1;
         }
     }
+    // Offsets are non-decreasing; expansions produce adjacent duplicates.
+    positions.dedup();
     positions
 }
 
@@ -1238,6 +1307,33 @@ mod tests {
         }
     }
 
+    /// A far jump under wrap (`G`-style: selection moved, scroll untouched)
+    /// converges in one pass: `converge_wrap_scroll` walks visual-row counts
+    /// backward from the selection instead of the build loop's
+    /// one-row-per-rebuild retry, and lands on the same invariant — the
+    /// selection's first visual row fits within the viewport height.
+    #[test]
+    fn converge_wrap_scroll_jumps_directly_to_the_selection() {
+        let mut state = demo_state_long();
+        state.wrap = true;
+        // Rows: FileHeader, HunkHeader, the 300-char line (row 2), then two
+        // short lines. At width 40 / num_w 2 the long line wraps to 10 visual
+        // rows, so with height 5 a selection on the last row (4) must scroll
+        // past it: rows 3+4 fill 2 of the 4 non-selection slots, row 2's 10
+        // don't fit → scroll = 3.
+        state.selected = state.rows.len() - 1;
+        state.scroll = 0;
+        converge_wrap_scroll(&mut state, 40, 2, 5);
+        assert_eq!(state.scroll, 3);
+
+        // A selection already in reach leaves scroll alone.
+        let mut near = demo_state_long();
+        near.wrap = true;
+        near.selected = 1;
+        converge_wrap_scroll(&mut near, 40, 2, 5);
+        assert_eq!(near.scroll, 0);
+    }
+
     /// Wrap expands a long line onto extra visual rows: several hitboxes share
     /// the same logical `index` (so a click on any wrapped row selects the whole
     /// line), and the tail of the line appears on a lower row.
@@ -1396,6 +1492,17 @@ mod tests {
         // No match → empty; empty query → empty.
         assert!(match_positions("abc", "z").is_empty());
         assert!(match_positions("abc", "").is_empty());
+    }
+
+    #[test]
+    fn match_positions_handles_multichar_lowercase_expansion() {
+        // `İ` (U+0130) lowers to two chars (`i` + U+0307). `search_matches`
+        // lowers rows with `str::to_lowercase`, so it counts this row as a hit
+        // for the lowered query — the highlighter must agree and mark the
+        // source char (one deduped offset, since both lowered chars share it).
+        let lowered = "\u{130}".to_lowercase(); // "i\u{307}"
+        let pos = match_positions("a\u{130}b", &lowered);
+        assert_eq!(pos, vec![1], "the single source char is highlighted once");
     }
 
     #[test]

@@ -738,6 +738,13 @@ pub struct App {
     /// `data_version` observed at the last [`Self::cached_hook_states`] reload
     /// (`None` = never loaded, which forces the first load).
     hook_states_version: Option<i64>,
+    /// Remote hook events whose pane didn't match a session yet, kept for
+    /// retry: the subscription's initial catch-up report arrives while the
+    /// background restore is still discovering/adopting that host's windows,
+    /// so dropping unmatched events would lose e.g. a `done` set while the TUI
+    /// was closed. Entries carry their arrival time and expire (another
+    /// instance's panes never match). See [`Self::drain_remote_hook_events`].
+    pending_remote_hook_events: Vec<(String, String, String, std::time::Instant)>,
     /// When the last frame was painted, for the forced-redraw floor.
     last_draw_at: std::time::Instant,
     /// Cheap rolling signature of agent output across all sessions (sum of each
@@ -961,6 +968,7 @@ impl App {
             spinner_frame: 0,
             last_active_session_id: None,
             cached_hook_states: HashMap::new(),
+            pending_remote_hook_events: Vec::new(),
             hook_states_version: None,
             last_draw_at: std::time::Instant::now(),
             last_output_gen: 0,
@@ -4039,6 +4047,11 @@ impl App {
         // The value is remote-host-controlled free text: allow-list it (the
         // same states `session signal` accepts) and never interpolate it.
         const VALID_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
+        // Unmatched events are retried this long — comfortably past a slow
+        // host's background restore — then dropped (bounded below, so another
+        // instance's panes can't accumulate).
+        const PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+        const PENDING_CAP: usize = 256;
         // Collect first: the registry borrow must end before &mut self below.
         let batches: Vec<(String, Vec<(String, String)>)> = self
             .backends
@@ -4046,42 +4059,60 @@ impl App {
             .map(|b| (b.name().to_string(), b.take_hook_state_events()))
             .filter(|(_, events)| !events.is_empty())
             .collect();
+        // Older pending retries first, so per-pane event order is preserved.
+        let now = std::time::Instant::now();
+        let mut queue = std::mem::take(&mut self.pending_remote_hook_events);
         for (backend_name, events) in batches {
             for (pane_id, state) in events {
-                if !VALID_STATES.contains(&state.as_str()) {
-                    continue;
+                queue.push((backend_name.clone(), pane_id, state, now));
+            }
+        }
+        // States applied *this drain*: the dedupe below must compare against
+        // the latest write, not `cached_hook_states` (only invalidated, not
+        // reloaded, mid-loop) — else the second event of a `working`→`done`
+        // batch that matches the stale cached value is swallowed.
+        let mut applied: HashMap<crate::session::SessionId, String> = HashMap::new();
+        for (backend_name, pane_id, state, arrived) in queue {
+            if !VALID_STATES.contains(&state.as_str()) {
+                continue;
+            }
+            let Some(id) = self
+                .sessions
+                .iter()
+                .find(|s| {
+                    s.backend_name() == backend_name
+                        && s.info.backend_id.as_deref() == Some(pane_id.as_str())
+                })
+                .map(|s| s.info.id)
+            else {
+                // No matching session *yet*: the subscription's initial report
+                // often lands before the background restore adopts the pane,
+                // so park the event for a later tick instead of losing it.
+                if now.duration_since(arrived) < PENDING_TTL
+                    && self.pending_remote_hook_events.len() < PENDING_CAP
+                {
+                    self.pending_remote_hook_events
+                        .push((backend_name, pane_id, state, arrived));
                 }
-                let Some(id) = self
-                    .sessions
-                    .iter()
-                    .find(|s| {
-                        s.backend_name() == backend_name
-                            && s.info.backend_id.as_deref() == Some(pane_id.as_str())
-                    })
-                    .map(|s| s.info.id)
-                else {
-                    // Not an agent pane (shell/heartbeat window) or a session
-                    // this instance doesn't hold — skip.
-                    continue;
-                };
-                // Dedupe against the cache: the subscription re-reports the
-                // current value on (re)connect, and re-stamping an already-
-                // acknowledged `done` would resurrect it as unseen and re-fire
-                // its OS notification on every TUI restart. Safe because
-                // done→done without an intervening `working` can't happen.
-                if self
-                    .cached_hook_states
+                continue;
+            };
+            // Dedupe against the current value: the subscription re-reports it
+            // on (re)connect, and re-stamping an already-acknowledged `done`
+            // would resurrect it as unseen and re-fire its OS notification on
+            // every TUI restart.
+            let current = applied.get(&id).map(String::as_str).or_else(|| {
+                self.cached_hook_states
                     .get(&id)
                     .and_then(|h| h.state.as_deref())
-                    == Some(state.as_str())
-                {
-                    continue;
-                }
-                if self.db.set_hook_state(id, &state).is_ok() {
-                    // Own-connection write: data_version won't move, force the
-                    // reload so this tick's derivation sees the exact row.
-                    self.invalidate_hook_state_cache();
-                }
+            });
+            if current == Some(state.as_str()) {
+                continue;
+            }
+            if self.db.set_hook_state(id, &state).is_ok() {
+                // Own-connection write: data_version won't move, force the
+                // reload so this tick's derivation sees the exact row.
+                self.invalidate_hook_state_cache();
+                applied.insert(id, state);
             }
         }
     }
@@ -5677,20 +5708,7 @@ fn resolve_process_cwd(
         })
         .collect();
 
-    // A remote session's symlink workspace is built on the *remote* host — a
-    // local workspace dir wouldn't exist there. Local sessions use the local
-    // builder as before.
-    let built = match host {
-        Some(h) => crate::git::ensure_remote_workspace(h, id, &pairs),
-        None => crate::workspace::ensure_workspace(id, &pairs).map_err(anyhow::Error::from),
-    };
-    match built {
-        Ok(ws) => Some(ws),
-        Err(e) => {
-            error!("Failed to build multi-repo workspace: {e}");
-            primary_cwd
-        }
-    }
+    crate::session_ops::spawn::build_multi_repo_workspace(host, id, &pairs).or(primary_cwd)
 }
 
 #[cfg(test)]

@@ -1576,8 +1576,9 @@ fn apply_textarea_key(ta: &mut TextArea, code: KeyCode, mods: KeyModifiers) {
 
 impl CodeReviewState {
     /// Longest diff-line body width (in chars) across every hunk of every file.
-    /// Bounds the horizontal scroll offset; computed on a keypress (not per
-    /// frame), so the O(total chars) scan is cheap.
+    /// Bounds the horizontal scroll offset. O(total chars), so callers keep it
+    /// off the hot path: it runs on an h-scroll keypress and in the renderer's
+    /// clamp only while `h_scroll > 0` — never on the default unscrolled frame.
     pub(crate) fn max_line_width(&self) -> usize {
         self.files
             .iter()

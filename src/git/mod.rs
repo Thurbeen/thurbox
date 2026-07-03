@@ -153,53 +153,16 @@ fn worktree_path_for(host: Option<&HostDef>, repo_path: &Path, branch: &str) -> 
     }
 }
 
-/// Sanitize a workspace directory segment (the session id). Mirrors
-/// `workspace::sanitize_segment` so the remote workspace path matches the local
-/// one; `git` can't depend on `workspace`, so it is duplicated by construction.
-fn sanitize_workspace_segment(name: &str) -> String {
-    let cleaned: String = name
-        .trim()
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' => '-',
-            c if c.is_whitespace() => '-',
-            c => c,
-        })
-        .collect();
-    cleaned.trim_matches(['.', '-']).to_string()
-}
-
-/// A unique, sanitized symlink name for a workspace member. Mirrors
-/// `workspace::unique_link_name`: collisions get a `-2`, `-3`, … suffix and an
-/// empty label falls back to `repo`.
-fn unique_link_name(name: &str, used: &mut HashSet<String>) -> String {
-    let sanitized = sanitize_workspace_segment(name);
-    let base = if sanitized.is_empty() {
-        "repo".to_string()
-    } else {
-        sanitized
-    };
-    if used.insert(base.clone()) {
-        return base;
-    }
-    let mut n = 2;
-    loop {
-        let candidate = format!("{base}-{n}");
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-        n += 1;
-    }
-}
-
 /// Build a per-session **remote** symlink workspace on `host`: a directory
 /// holding one symlink per member (`<label> -> <remote member path>`), so a
 /// multi-repo remote session launches somewhere every repo is a visible subdir.
 ///
 /// This is the remote analogue of [`crate::workspace::ensure_workspace`], run
-/// over the host launcher (`ssh`/`wsl.exe`). All paths are POSIX (`/`-joined)
-/// because the host is always Linux, even when thurbox runs on Windows. Returns
-/// the remote workspace directory path.
+/// over the host launcher (`ssh`/`wsl.exe`). All paths are POSIX (`/`-joined):
+/// the `sh -c` script assumes a POSIX host, so on a Windows (`psmux`) SSH host
+/// it fails and callers fall back to the primary cwd (a multi-repo session
+/// there loses its workspace, with a logged error). Returns the remote
+/// workspace directory path.
 pub fn ensure_remote_workspace(
     host: &HostDef,
     id: &str,
@@ -212,7 +175,7 @@ pub fn ensure_remote_workspace(
     let mut script = format!("rm -rf {ws} && mkdir -p {ws}", ws = posix_quote(&ws));
     let mut used: HashSet<String> = HashSet::new();
     for (label, target) in members {
-        let name = unique_link_name(label, &mut used);
+        let name = crate::paths::unique_link_name(label, &mut used);
         let link = format!("{ws}/{name}");
         script.push_str(&format!(
             " && ln -s {target} {link}",
@@ -228,11 +191,10 @@ pub fn ensure_remote_workspace(
 /// The remote workspace directory for a session id on `host`, mirroring the
 /// local layout (`<thurbox data root>/workspaces/<sanitized id>`). Base:
 /// `<worktrees_dir>/..`, or `$HOME/.local/share/thurbox`. Sanitizes the id
-/// exactly like the local builder (`workspace::workspace_dir`) — `git` can't
-/// depend on `workspace`, so the scheme is mirrored here by construction (kept
-/// in sync via tests) — including its empty-id rejection: an empty segment
-/// would make the `rm -rf` in ensure/remove target the workspaces *root*,
-/// wiping every session's workspace on the host.
+/// with the same shared helper as the local builder
+/// (`workspace::workspace_dir`) — including its empty-id rejection: an empty
+/// segment would make the `rm -rf` in ensure/remove target the workspaces
+/// *root*, wiping every session's workspace on the host.
 pub(crate) fn remote_workspace_dir(host: &HostDef, id: &str) -> Result<String> {
     let base = match &host.worktrees_dir {
         Some(dir) => Path::new(dir)
@@ -241,7 +203,7 @@ pub(crate) fn remote_workspace_dir(host: &HostDef, id: &str) -> Result<String> {
             .unwrap_or_else(|| dir.clone()),
         None => format!("{}/.local/share/thurbox", remote_home(host)?),
     };
-    let segment = sanitize_workspace_segment(id);
+    let segment = crate::paths::sanitize_workspace_segment(id);
     anyhow::ensure!(!segment.is_empty(), "empty workspace id");
     Ok(format!("{base}/workspaces/{segment}"))
 }
@@ -308,14 +270,6 @@ fn host_shell_c(host: &HostDef, script: &str) -> Command {
     cmd
 }
 
-/// Copy a local file to the **same** absolute path on a remote `host`.
-/// See [`copy_bytes_to_remote`], which this reads the file into.
-pub fn copy_file_to_remote(host: &HostDef, local: &Path, remote_path: &str) -> Result<()> {
-    let bytes = std::fs::read(local)
-        .with_context(|| format!("failed to read local file {}", local.display()))?;
-    copy_bytes_to_remote(host, &bytes, remote_path)
-}
-
 /// Write `bytes` to `remote_path` on `host`, creating the parent directory.
 /// Streams the bytes over the host launcher's stdin into `cat > <path>`, so it
 /// is transport-neutral (ssh/wsl) and needs no `scp`/`\\wsl$` share. Used to
@@ -380,7 +334,10 @@ pub fn expand_remote_tilde(host: &HostDef, path: &str) -> Result<String> {
 /// with `--exec` so argv reaches `ls` verbatim (no `wsl.exe` `$`-substitution
 /// or shell re-splitting; over ssh each token is `posix_quote`d instead). `-p`
 /// appends a trailing `/` to directories, which is how they're identified
-/// without a shell loop.
+/// without a shell loop. Known gap: `-p` slashes only *real* directories, so
+/// a symlink to a directory is omitted — accepted, because the alternatives
+/// re-interpret the user-typed dir through a shell (`sh -c` loop; see the
+/// wsl list_dir test) or fail wholesale on a broken symlink (`ls -L`).
 ///
 /// This runs synchronously on the caller's (UI) thread, so the ssh variant
 /// adds `BatchMode=yes` + `ConnectTimeout=5` **after** the host's own
@@ -1885,32 +1842,6 @@ mod tests {
         let h = host("me@box", Some("/data/wt"));
         assert!(remote_workspace_dir(&h, "").is_err());
         assert!(remote_workspace_dir(&h, " .- ").is_err());
-    }
-
-    #[test]
-    fn sanitize_workspace_segment_matches_local_scheme() {
-        // Mirrors `workspace::sanitize_segment`: slashes/backslashes/colons and
-        // whitespace → `-`; leading/trailing `.`/`-` trimmed.
-        assert_eq!(sanitize_workspace_segment("feat/x"), "feat-x");
-        assert_eq!(sanitize_workspace_segment("a b:c\\d"), "a-b-c-d");
-        assert_eq!(sanitize_workspace_segment("--.hidden.--"), "hidden");
-        // A UUID (the real input) is unchanged.
-        assert_eq!(
-            sanitize_workspace_segment("d5715d35-9599-4507-9901-ef33b9476358"),
-            "d5715d35-9599-4507-9901-ef33b9476358"
-        );
-    }
-
-    #[test]
-    fn unique_link_name_dedups_with_dash_two_suffix() {
-        // Must match the local builder: first collision is `-2`, then `-3`, and
-        // an empty label falls back to `repo`.
-        let mut used = HashSet::new();
-        assert_eq!(unique_link_name("webapp", &mut used), "webapp");
-        assert_eq!(unique_link_name("webapp", &mut used), "webapp-2");
-        assert_eq!(unique_link_name("webapp", &mut used), "webapp-3");
-        assert_eq!(unique_link_name("", &mut used), "repo");
-        assert_eq!(unique_link_name("", &mut used), "repo-2");
     }
 
     #[test]

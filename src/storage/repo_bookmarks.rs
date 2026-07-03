@@ -76,18 +76,6 @@ impl Database {
         Ok(())
     }
 
-    /// Touch a host's bookmark (update last_used_at) without incrementing
-    /// use_count.
-    pub fn touch_repo_bookmark(&self, host: &str, repo_path: &Path) -> rusqlite::Result<bool> {
-        let now = current_time_millis() as i64;
-        let path_str = repo_path.to_string_lossy().to_string();
-        let count = self.conn.execute(
-            "UPDATE repo_bookmarks SET last_used_at = ?1 WHERE host = ?2 AND repo_path = ?3",
-            params![now, host, path_str],
-        )?;
-        Ok(count > 0)
-    }
-
     /// Delete a host's repo bookmark. Returns true if it existed.
     pub fn delete_repo_bookmark(&self, host: &str, repo_path: &Path) -> rusqlite::Result<bool> {
         let path_str = repo_path.to_string_lossy().to_string();
@@ -192,22 +180,5 @@ mod tests {
         assert!(db.delete_repo_bookmark("", Path::new("/repo/a")).unwrap());
         assert!(!db.delete_repo_bookmark("", Path::new("/repo/a")).unwrap());
         assert!(db.list_repo_bookmarks("").unwrap().is_empty());
-    }
-
-    #[test]
-    fn touch_updates_last_used_at() {
-        let db = Database::open_in_memory().unwrap();
-
-        db.upsert_repo_bookmark("", Path::new("/repo/a")).unwrap();
-        let before = db.list_repo_bookmarks("").unwrap()[0].use_count;
-        assert!(db.touch_repo_bookmark("", Path::new("/repo/a")).unwrap());
-        let after = db.list_repo_bookmarks("").unwrap()[0].use_count;
-        assert_eq!(before, after);
-    }
-
-    #[test]
-    fn touch_nonexistent_returns_false() {
-        let db = Database::open_in_memory().unwrap();
-        assert!(!db.touch_repo_bookmark("", Path::new("/nope")).unwrap());
     }
 }

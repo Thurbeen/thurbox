@@ -854,20 +854,17 @@ impl TmuxBackend {
         args: &[String],
         env: &HashMap<String, String>,
     ) -> String {
-        fn ps_quote(s: &str) -> String {
-            format!("'{}'", s.replace('\'', "''"))
-        }
         let mut ps = String::new();
         // Sort for a deterministic command (HashMap iteration order isn't).
         let mut pairs: Vec<_> = env.iter().collect();
         pairs.sort();
         for (k, v) in pairs {
-            ps.push_str(&format!("Set-Item Env:{k} {}; ", ps_quote(v)));
+            ps.push_str(&format!("Set-Item Env:{k} {}; ", ps_single_quote(v)));
         }
-        ps.push_str(&format!("& {}", ps_quote(command)));
+        ps.push_str(&format!("& {}", ps_single_quote(command)));
         for a in args {
             ps.push(' ');
-            ps.push_str(&ps_quote(a));
+            ps.push_str(&ps_single_quote(a));
         }
         ps.replace(['"', '\n'], " ")
     }
@@ -1133,8 +1130,18 @@ impl SessionBackend for TmuxBackend {
             self.login_wrap_for_remote(&Self::build_shell_command(command, args))
         };
 
+        // psmux's tokenizer can't read POSIX `'\''` escapes (see
+        // `psmux_quote`), so its `-c`/`-n` values get the double-quote framing
+        // it does parse; tmux keeps the byte-identical single-quote path.
+        let quote_arg = |s: &str| {
+            if psmux {
+                control_mode::psmux_quote(s)
+            } else {
+                control_mode::shell_escape(s)
+            }
+        };
         let cwd_part = match cwd {
-            Some(dir) => format!(" -c {}", control_mode::shell_escape(&dir.to_string_lossy())),
+            Some(dir) => format!(" -c {}", quote_arg(&dir.to_string_lossy())),
             None => String::new(),
         };
         let env_part: String = if psmux {
@@ -1144,7 +1151,7 @@ impl SessionBackend for TmuxBackend {
                 .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
                 .collect()
         };
-        let escaped_window_name = shell_escape(window_name);
+        let escaped_window_name = quote_arg(window_name);
         let session = &self.session;
         let cmd = format!(
             "new-window -t {session} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}"
@@ -1314,10 +1321,14 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn take_hook_state_events(&self) -> Vec<(String, String)> {
-        // Lock `control` directly — `with_control` errors before the control
-        // connection starts, and "no connection yet" is simply "no events".
+        // `try_lock`, not `lock`: this runs on the UI thread every tick, and a
+        // background restore thread holds `control` across `ControlMode::start`
+        // (an ssh connect + waited commands, up to tens of seconds on a slow
+        // host) — blocking here would stall the first frame ADR-P7 protects.
+        // A contended lock means no connection is serving events yet, and a
+        // skipped drain only defers queued events to the next tick.
         self.control
-            .lock()
+            .try_lock()
             .ok()
             .and_then(|guard| guard.as_ref().map(ControlMode::take_sub_events))
             .unwrap_or_default()
@@ -1475,7 +1486,8 @@ fn deferred_prompt_script(target: &str, text: &str) -> String {
 }
 
 /// Wrap `s` in a PowerShell single-quoted literal, doubling embedded quotes.
-#[cfg(windows)]
+/// Not `#[cfg(windows)]`: `psmux_window_powershell` quotes for a psmux *host*
+/// from any local OS.
 fn ps_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
@@ -1524,9 +1536,9 @@ fn heartbeat_loop_command(cli_path: &Path) -> String {
 
 /// Windows: psmux runs a window command via `powershell -NoLogo -Command`, so
 /// the keeper loop is PowerShell — handed over as **one argv token**, dodging
-/// psmux's trailing-token handling entirely (same delivery as
-/// `psmux_window_powershell`, whose quoting rules the `ps_single_quote` here
-/// shares). This used to be a no-op ("no POSIX shell for the keeper loop"),
+/// psmux's trailing-token handling entirely (same delivery and
+/// `ps_single_quote` quoting as `psmux_window_powershell`). This used to be a
+/// no-op ("no POSIX shell for the keeper loop"),
 /// which silently degraded headless automation firing to TUI-only on Windows.
 #[cfg(windows)]
 fn heartbeat_loop_command(cli_path: &Path) -> String {

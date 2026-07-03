@@ -1134,8 +1134,15 @@ fn migrate_v39_bookmark_host(conn: &Connection) -> rusqlite::Result<()> {
     if !table_exists(conn, "repo_bookmarks")? || column_exists(conn, "repo_bookmarks", "host")? {
         return Ok(());
     }
+    // Transactional (unlike the PRAGMA-toggling rebuilds above, nothing here
+    // forbids it): the version is only bumped after all steps, so a crash
+    // mid-rebuild would otherwise strand a `repo_bookmarks_v39` orphan that
+    // makes every re-run — and thus every DB open — fail. The DROP prefix
+    // additionally repairs an orphan left by a pre-fix binary.
     conn.execute_batch(
-        "CREATE TABLE repo_bookmarks_v39 (
+        "BEGIN;
+        DROP TABLE IF EXISTS repo_bookmarks_v39;
+        CREATE TABLE repo_bookmarks_v39 (
             host         TEXT NOT NULL DEFAULT '',
             repo_path    TEXT NOT NULL,
             label        TEXT,
@@ -1149,7 +1156,8 @@ fn migrate_v39_bookmark_host(conn: &Connection) -> rusqlite::Result<()> {
             SELECT '', repo_path, label, last_used_at, use_count, is_parent
             FROM repo_bookmarks;
         DROP TABLE repo_bookmarks;
-        ALTER TABLE repo_bookmarks_v39 RENAME TO repo_bookmarks;",
+        ALTER TABLE repo_bookmarks_v39 RENAME TO repo_bookmarks;
+        COMMIT;",
     )
 }
 
@@ -1402,6 +1410,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_v39_recovers_from_a_crashed_prior_run() {
+        let conn = Connection::open_in_memory().unwrap();
+        // v38 state plus the orphan `repo_bookmarks_v39` a pre-fix binary could
+        // strand by crashing between its CREATE and the version bump. The
+        // re-run must repair it (DROP prefix), not fail with "table
+        // repo_bookmarks_v39 already exists" — which made the DB unopenable.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '38');
+             CREATE TABLE repo_bookmarks (
+                repo_path    TEXT PRIMARY KEY,
+                label        TEXT,
+                last_used_at INTEGER NOT NULL,
+                use_count    INTEGER NOT NULL DEFAULT 1,
+                is_parent    INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO repo_bookmarks (repo_path, last_used_at) VALUES ('/repo/a', 1);
+             CREATE TABLE repo_bookmarks_v39 (leftover TEXT);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let (host, path): (String, String) = conn
+            .query_row("SELECT host, repo_path FROM repo_bookmarks", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((host.as_str(), path.as_str()), ("", "/repo/a"));
     }
 
     #[test]

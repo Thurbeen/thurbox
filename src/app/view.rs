@@ -680,8 +680,9 @@ impl App {
     /// in), and whether it's the active view. Packing mirrors `render_button_bar`
     /// (` label ` chip = label+2 wide, one-space gaps) so the recorded hitboxes
     /// match the pills `draw_central_tabs` paints. Shell/Review are gated by
-    /// their feature flags; cells stop before the right edge so they never run
-    /// into the right-aligned session-info title.
+    /// their feature flags; cells stop before the pane's right edge (they can
+    /// still paint over the right-aligned session-info title on a pane barely
+    /// wide enough for the pills — the tabs win, they're the interactive part).
     fn central_tab_cells(&self, area: Rect) -> Vec<CentralTabCell> {
         // No tabs on the empty "No Session" screen, or when the pane is too
         // narrow to hold even one.

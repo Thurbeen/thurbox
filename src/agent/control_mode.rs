@@ -208,7 +208,10 @@ fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<Stri
 /// backslash); any other backslash stays literal, so both are escaped here. A
 /// literal run never contains a newline (LF and CR map to key-names), but the
 /// control-mode line is `\n`-delimited, so newlines are replaced defensively.
-fn psmux_quote(s: &str) -> String {
+/// Also the argument encoding for any other psmux control-mode line (e.g.
+/// `new-window -c/-n` in [`super::tmux`]) — same tokenizer, so
+/// [`shell_escape`]'s POSIX `'\''` idiom would arrive mangled there too.
+pub(crate) fn psmux_quote(s: &str) -> String {
     format!(
         "\"{}\"",
         s.replace('\\', "\\\\")

@@ -190,17 +190,6 @@ fn button_style(primary: bool) -> Style {
     }
 }
 
-/// Render a row of filled "pill" buttons (` label `, padded, on a solid accent
-/// or neutral selection fill) into the single-row `area`, returning one
-/// [`ButtonHit`] per *placed* button (index = position in `specs`). Buttons are
-/// separated by one space. When `right_align` is set the row is packed against
-/// the right edge of `area` (the convention for modal Save/Cancel and the global
-/// footer); otherwise it starts at the left edge.
-///
-/// Responsive by design: a button that would overflow `area` is dropped rather
-/// than wrapped or clipped mid-glyph, so a narrow footer simply shows fewer
-/// buttons. The solid fill (not brackets) is what marks each label as a
-/// clickable button.
 /// Paint a single filled pill button (` label `, padded, on the solid
 /// primary/secondary fill) into `rect` — the standalone form of the chips
 /// [`render_button_bar`] packs, for callers that own their own layout (e.g. the
@@ -220,6 +209,17 @@ pub fn render_pill(frame: &mut Frame, rect: Rect, label: &str, primary: bool) {
     );
 }
 
+/// Render a row of filled "pill" buttons (` label `, padded, on a solid accent
+/// or neutral selection fill) into the single-row `area`, returning one
+/// [`ButtonHit`] per *placed* button (index = position in `specs`). Buttons are
+/// separated by one space. When `right_align` is set the row is packed against
+/// the right edge of `area` (the convention for modal Save/Cancel and the global
+/// footer); otherwise it starts at the left edge.
+///
+/// Responsive by design: a button that would overflow `area` is dropped rather
+/// than wrapped or clipped mid-glyph, so a narrow footer simply shows fewer
+/// buttons. The solid fill (not brackets) is what marks each label as a
+/// clickable button.
 pub fn render_button_bar(
     frame: &mut Frame,
     area: Rect,
@@ -561,11 +561,6 @@ pub enum FocusLevel {
     Inactive,
 }
 
-/// Build a [`Block`] with tri-state focus styling.
-///
-/// Focus is communicated by colour (bright accent vs plain accent vs gray)
-/// rather than border weight — every level uses rounded borders for a
-/// softer, opencode-style chrome.
 /// The title text style for a pane at the given focus level — shared by
 /// [`focus_block`] and callers that render a pane title themselves (e.g. a
 /// right-aligned session-info title alongside the central-pane tab strip).
@@ -586,6 +581,11 @@ fn border_style_for(level: FocusLevel) -> Style {
     }
 }
 
+/// Build a [`Block`] with tri-state focus styling.
+///
+/// Focus is communicated by colour (bright accent vs plain accent vs gray)
+/// rather than border weight — every level uses rounded borders for a
+/// softer, opencode-style chrome.
 pub fn focus_block(title_text: &str, level: FocusLevel) -> Block<'_> {
     Block::default()
         .title(Line::from(Span::styled(title_text, title_style(level))))

@@ -33,7 +33,7 @@ fn workspace_dir(id: &str) -> io::Result<PathBuf> {
             "could not resolve workspaces directory",
         )
     })?;
-    let segment = sanitize_segment(id);
+    let segment = paths::sanitize_workspace_segment(id);
     if segment.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -56,7 +56,7 @@ pub fn ensure_workspace(id: &str, members: &[(String, PathBuf)]) -> io::Result<P
 
     let mut used: HashSet<String> = HashSet::new();
     for (name, target) in members {
-        let link_name = unique_link_name(name, &mut used);
+        let link_name = paths::unique_link_name(name, &mut used);
         let link_path = dir.join(&link_name);
         symlink(target, &link_path)?;
     }
@@ -135,43 +135,6 @@ fn symlink(target: &Path, link: &Path) -> io::Result<()> {
                 )))
             }
         }
-    }
-}
-
-/// Reduce a repo display name to a safe single path segment for a link name.
-fn sanitize_segment(name: &str) -> String {
-    let cleaned: String = name
-        .trim()
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' => '-',
-            c if c.is_whitespace() => '-',
-            c => c,
-        })
-        .collect();
-    cleaned.trim_matches(['.', '-']).to_string()
-}
-
-/// Sanitize `name` and make it unique within `used` by appending `-2`, `-3`, …
-fn unique_link_name(name: &str, used: &mut HashSet<String>) -> String {
-    let base = {
-        let s = sanitize_segment(name);
-        if s.is_empty() {
-            "repo".to_string()
-        } else {
-            s
-        }
-    };
-    if used.insert(base.clone()) {
-        return base;
-    }
-    let mut n = 2;
-    loop {
-        let candidate = format!("{base}-{n}");
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-        n += 1;
     }
 }
 
@@ -270,12 +233,5 @@ mod tests {
         let base = temp_base();
         let _g = TestPathGuard::new(&base);
         assert!(remove_workspace("never-made").is_ok());
-    }
-
-    #[test]
-    fn sanitize_strips_separators_and_dots() {
-        assert_eq!(sanitize_segment("a/b\\c:d"), "a-b-c-d");
-        assert_eq!(sanitize_segment("  .git  "), "git");
-        assert_eq!(sanitize_segment("my repo"), "my-repo");
     }
 }

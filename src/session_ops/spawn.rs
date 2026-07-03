@@ -330,18 +330,30 @@ pub(crate) fn resolve_launch_cwd(
     if members.len() < 2 {
         return primary_cwd.to_path_buf();
     }
-    // A remote session's workspace must be built on the *remote* host — a local
-    // symlink dir wouldn't exist there. Local sessions use the local builder.
+    build_multi_repo_workspace(host, agent_session_id, &members)
+        .unwrap_or_else(|| primary_cwd.to_path_buf())
+}
+
+/// Build the per-session multi-repo symlink workspace — on the *remote* host
+/// when one is given (a local symlink dir wouldn't exist there), else with the
+/// local builder. `None` (error already logged) tells the caller to fall back
+/// to its primary cwd. Single home for the host branching + fallback policy,
+/// shared by [`resolve_launch_cwd`] and the TUI's `App::resolve_process_cwd`.
+pub(crate) fn build_multi_repo_workspace(
+    host: Option<&HostDef>,
+    agent_session_id: &str,
+    members: &[(String, PathBuf)],
+) -> Option<PathBuf> {
     let built = match host {
-        Some(h) => crate::git::ensure_remote_workspace(h, agent_session_id, &members),
-        None => crate::workspace::ensure_workspace(agent_session_id, &members)
+        Some(h) => crate::git::ensure_remote_workspace(h, agent_session_id, members),
+        None => crate::workspace::ensure_workspace(agent_session_id, members)
             .map_err(anyhow::Error::from),
     };
     match built {
-        Ok(ws) => ws,
+        Ok(ws) => Some(ws),
         Err(e) => {
             tracing::error!("Failed to build multi-repo workspace: {e}");
-            primary_cwd.to_path_buf()
+            None
         }
     }
 }
@@ -424,7 +436,13 @@ fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
         return Some(config_root.to_string());
     };
     let local_home = local_home.to_string_lossy().into_owned();
-    let Some(suffix) = config_root.strip_prefix(&local_home) else {
+    // Boundary-checked: home `/home/a` must not claim `/home/abc/…` (the
+    // stripped suffix would splice a garbage sibling path onto the remote
+    // home). Such a root is mirrored at its absolute path instead.
+    let Some(suffix) = config_root
+        .strip_prefix(&local_home)
+        .filter(|s| s.starts_with('/'))
+    else {
         return Some(config_root.to_string());
     };
     match crate::git::remote_home(host) {
@@ -440,6 +458,14 @@ fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
     }
 }
 
+/// True when `path` is `root` itself or a descendant — a plain
+/// `starts_with` would also claim sibling dirs sharing the prefix
+/// (`…/thurbox-backup` under root `…/thurbox`).
+fn path_under_root(path: &str, root: &str) -> bool {
+    path.strip_prefix(root)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
 /// Pure arg-rewriting core of [`adapt_agent_args_for_remote`]: every arg (or
 /// `--flag=value` value) under `config_root` is passed to `map`; `Some(new)`
 /// substitutes the path, `None` drops the arg **and** its preceding token when
@@ -451,12 +477,18 @@ fn rewrite_config_path_args(
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(args.len());
     for arg in args {
-        if arg.starts_with(config_root) {
+        if path_under_root(&arg, config_root) {
             match map(&arg) {
                 Some(new) => out.push(new),
                 None => {
                     tracing::warn!("dropping agent arg for remote spawn: {arg}");
-                    if out.last().is_some_and(|prev| prev.starts_with('-')) {
+                    // A `--flag=value` token is self-contained — never a
+                    // dangling flag for the dropped path — so popping it would
+                    // eat an unrelated (possibly already-rewritten) arg.
+                    if out
+                        .last()
+                        .is_some_and(|prev| prev.starts_with('-') && !prev.contains('='))
+                    {
                         out.pop();
                     }
                 }
@@ -466,7 +498,7 @@ fn rewrite_config_path_args(
         // `--flag=<path>` form: rewrite the value in place, or drop the whole
         // token (it is self-contained — nothing precedes it to pop).
         if let Some((flag, value)) = arg.split_once('=') {
-            if flag.starts_with('-') && value.starts_with(config_root) {
+            if flag.starts_with('-') && path_under_root(value, config_root) {
                 match map(value) {
                     Some(new) => out.push(format!("{flag}={new}")),
                     None => tracing::warn!("dropping agent arg for remote spawn: {arg}"),
@@ -650,6 +682,33 @@ mod tests {
         );
         let stripped = rewrite_config_path_args(args, "/cfg", |_| None);
         assert!(stripped.is_empty());
+    }
+
+    #[test]
+    fn rewrite_config_args_never_pops_a_self_contained_equals_token() {
+        // A `--flag=value` token before a stripped positional path is complete
+        // on its own — even when it was itself just rewritten — and must
+        // survive the pop that removes a dangling value-taking flag.
+        let args: Vec<String> = ["--settings=/cfg/a.json", "/cfg/b.json"]
+            .map(String::from)
+            .into();
+        let out = rewrite_config_path_args(args, "/cfg", |p| {
+            (p == "/cfg/a.json").then(|| format!("/rem{p}"))
+        });
+        assert_eq!(out, ["--settings=/rem/cfg/a.json"].map(String::from));
+    }
+
+    #[test]
+    fn rewrite_config_args_ignores_sibling_prefixed_paths() {
+        // `/cfg-backup` shares the `/cfg` string prefix but is not under the
+        // config root — it must pass through untouched, not be shipped/stripped.
+        let args: Vec<String> = ["--settings", "/cfg-backup/notes.md"]
+            .map(String::from)
+            .into();
+        let out = rewrite_config_path_args(args.clone(), "/cfg", |_| {
+            panic!("map must not be called for a sibling-prefixed path")
+        });
+        assert_eq!(out, args);
     }
 
     #[test]

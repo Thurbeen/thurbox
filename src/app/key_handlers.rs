@@ -1817,7 +1817,11 @@ impl App {
             return;
         }
         let expanded = paths::expand_tilde(&path);
-        if let Err(e) = self.db.upsert_repo_bookmark_kind("", &expanded, true) {
+        // Equivalent to a literal "" (the remote guard above means the wizard
+        // is local here), but keeps the `"" = local` encoding owned by
+        // `bookmark_host_key` alone.
+        let host = self.bookmark_host_key().to_string();
+        if let Err(e) = self.db.upsert_repo_bookmark_kind(&host, &expanded, true) {
             error!("Failed to save parent bookmark: {e}");
             self.set_error(format!("Failed to save parent bookmark: {e}"));
         }
