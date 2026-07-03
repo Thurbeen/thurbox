@@ -1,6 +1,3 @@
-use std::sync::OnceLock;
-
-use regex::Regex;
 use unicode_width::UnicodeWidthStr;
 
 pub struct DetectedLink {
@@ -10,9 +7,38 @@ pub struct DetectedLink {
     pub url: String,
 }
 
-fn url_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"(?:https?|file)://[^\s<>"'\x60)\]]+"#).unwrap())
+/// URL schemes we linkify, matching the old `(?:https?|file)://` prefix.
+const SCHEMES: [&str; 3] = ["https://", "http://", "file://"];
+
+/// A URL run stops at whitespace or any of these terminators (the old
+/// character class `[^\s<>"'\x60)\]]`).
+fn is_url_terminator(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`' | ')' | ']')
+}
+
+/// Leftmost, non-overlapping scan for `scheme://…` runs — the hand-rolled
+/// equivalent of the former URL regex. Returns each match's byte offset in
+/// `row` and the matched slice, so callers keep using byte-based slicing for
+/// display-width column math.
+fn find_url_runs(row: &str) -> Vec<(usize, &str)> {
+    let bytes = row.as_bytes();
+    let mut matches = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &row[i..];
+        if let Some(scheme) = SCHEMES.iter().find(|s| rest.starts_with(**s)) {
+            let run_len = rest[scheme.len()..]
+                .find(is_url_terminator)
+                .map(|end| scheme.len() + end)
+                .unwrap_or(rest.len());
+            matches.push((i, &row[i..i + run_len]));
+            i += run_len;
+        } else {
+            // Advance one full char so byte offsets stay UTF-8 aligned.
+            i += rest.chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    matches
 }
 
 /// Extract visible rows from a vt100 screen, one string per row.
@@ -45,19 +71,18 @@ pub fn extract_screen_rows(screen: &vt100::Screen) -> Vec<String> {
 /// directly to vt100 screen cell columns even on rows containing wide
 /// (CJK/emoji) glyphs, which each span two cells.
 pub fn detect_urls(screen_rows: &[String]) -> Vec<DetectedLink> {
-    let re = url_regex();
     let mut links = Vec::new();
     for (row_idx, row) in screen_rows.iter().enumerate() {
-        for m in re.find_iter(row) {
-            let mut url = m.as_str();
+        for (start, matched) in find_url_runs(row) {
+            let mut url = matched;
             while url.ends_with(['.', ',', ';', ':', ')', ']']) {
                 url = &url[..url.len() - 1];
             }
             // Skip bare scheme-only matches like "http://" with no host
             if url.len() > "https://".len() {
-                // Convert the regex's byte offsets to cell columns using display
+                // Convert the match's byte offset to cell columns using display
                 // width: a wide glyph before the URL shifts it two cells, not one.
-                let start_col = UnicodeWidthStr::width(&row[..m.start()]);
+                let start_col = UnicodeWidthStr::width(&row[..start]);
                 let end_col = start_col + UnicodeWidthStr::width(url);
                 links.push(DetectedLink {
                     row: row_idx,
