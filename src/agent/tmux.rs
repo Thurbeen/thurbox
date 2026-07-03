@@ -840,13 +840,24 @@ impl TmuxBackend {
     /// (which login-sources the profile and thus exports `$SHELL`), then `exec`
     /// `"$SHELL"` as a **login** shell — tmux gives it a PTY, so it's
     /// interactive and sources the interactive rc chain too. If `$SHELL` is
-    /// somehow unset/broken the `||` falls back to a plain `/bin/sh -l` so the
-    /// pane still opens.
+    /// unset/broken the guard falls back to a plain `/bin/sh -l` so the pane
+    /// still opens.
+    ///
+    /// The fallback is a `command -v` **guard**, never `exec "$SHELL" -l
+    /// 2>/dev/null || …`: bash (and zsh) decide interactivity from
+    /// `isatty(stdin) && isatty(stderr)`, and an `exec … 2>/dev/null`
+    /// redirection **persists** into the exec'd shell — with stderr no longer a
+    /// TTY the shell starts **non-interactive** (no prompt, no rc files, no
+    /// readline), which reads as a blank "not loading" pane. So we probe
+    /// `$SHELL` with `command -v` (whose own `2>/dev/null` is harmless) and only
+    /// then `exec` it with all three std streams still on the PTY.
     ///
     /// psmux (Windows) hosts keep [`default_shell`]'s `powershell` (no
     /// `/bin/sh`); local backends use the platform default directly.
     fn remote_shell_pane_command(&self) -> String {
-        let inner = control_mode::shell_escape("exec \"$SHELL\" -l 2>/dev/null || exec /bin/sh -l");
+        let inner = control_mode::shell_escape(
+            "command -v \"$SHELL\" >/dev/null 2>&1 && exec \"$SHELL\" -l; exec /bin/sh -l",
+        );
         format!("/bin/sh -lc {inner}")
     }
 
@@ -2022,21 +2033,26 @@ mod tests {
         // files, prompt, aliases, PATH) — not the bare `/bin/sh` the generic
         // login-wrap would produce. Bootstrap through the always-present
         // `/bin/sh -l` (exports `$SHELL`), then `exec "$SHELL" -l`.
+        //
+        // Crucially the `$SHELL` probe is a `command -v` guard, NOT
+        // `exec "$SHELL" -l 2>/dev/null`: an `exec … 2>/dev/null` redirection
+        // persists into the exec'd shell, drops stderr off the TTY, and bash/zsh
+        // then start non-interactive (no prompt) — a blank pane.
+        const EXPECT: &str =
+            "/bin/sh -lc 'command -v \"$SHELL\" >/dev/null 2>&1 && exec \"$SHELL\" -l; exec /bin/sh -l'";
         let ssh = TmuxBackend::from_host(&crate::session::HostDef {
             name: "devbox".into(),
             destination: "me@devbox".into(),
             ..Default::default()
         });
-        assert_eq!(
-            ssh.remote_shell_pane_command(),
-            "/bin/sh -lc 'exec \"$SHELL\" -l 2>/dev/null || exec /bin/sh -l'"
-        );
+        assert_eq!(ssh.remote_shell_pane_command(), EXPECT);
 
         let wsl = TmuxBackend::from_host(&crate::session::HostDef::wsl("Ubuntu"));
-        assert_eq!(
-            wsl.remote_shell_pane_command(),
-            "/bin/sh -lc 'exec \"$SHELL\" -l 2>/dev/null || exec /bin/sh -l'"
-        );
+        assert_eq!(wsl.remote_shell_pane_command(), EXPECT);
+
+        // The interactive shell must keep stderr on the PTY — a stray
+        // `exec … 2>` would make it non-interactive.
+        assert!(!EXPECT.contains("-l 2>"));
     }
 
     #[test]
