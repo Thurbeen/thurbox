@@ -8718,12 +8718,23 @@ mod tests {
         app.update(AppMessage::MouseMove { x: row.x, y: row.y });
         terminal.draw(|f| app.view(f)).unwrap();
 
+        // The first session's hitbox spans its prepended repo-group header plus
+        // the session line; the tint must land on the session line (the bottom
+        // row) and spare the header. `row.y` is the header row for a group's
+        // first session.
+        let session_y = row.y + row.height - 1;
         let band = crate::ui::theme::Theme::selection_bg();
         let buffer = terminal.backend().buffer();
         assert_eq!(
+            buffer[(row.x, session_y)].bg,
+            band,
+            "hovered session line must get the selection_bg band"
+        );
+        // The repo-group header above the session line is never tinted.
+        assert_ne!(
             buffer[(row.x, row.y)].bg,
             band,
-            "hovered row cell must get the selection_bg band"
+            "repo-group header must not get the hover band"
         );
         // A cell outside any clickable row keeps its non-band background.
         assert_ne!(buffer[(0, 0)].bg, band);

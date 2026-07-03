@@ -637,12 +637,9 @@ fn render_session_section(
     // Available width inside the block (subtract 2 for borders)
     let inner_width = area.width.saturating_sub(2) as usize;
 
-    // Header row that each row belongs to, so a group's header highlights
-    // whenever *any* of its members is the active row — not just the first.
+    // The header row each row belongs to, used to roll each group's members up
+    // to a single status dot on the header below.
     let group_of = header_group_of(headers);
-    let active_group = show_selection
-        .then(|| group_of.get(active_index).copied())
-        .flatten();
 
     // Roll each repo group up to its most-urgent member status, keyed by the
     // group's header row index, so the header shows a single dot you can scan.
@@ -690,15 +687,11 @@ fn render_session_section(
             )];
 
             // Prepend a subtle repo-group header above the first session of
-            // each group. The header is highlighted when the active row lives
-            // anywhere in its group.
+            // each group. The header carries the group's rolled-up status dot
+            // but never reflects selection (that stays on the session rows).
             if let Some(Some(label)) = headers.get(i) {
-                let selected = active_group == Some(i);
                 let rollup = group_rollup.get(&i).copied().unwrap_or(info.status);
-                item_lines.insert(
-                    0,
-                    group_header_line(label, rollup, inner_width, selected, spinner),
-                );
+                item_lines.insert(0, group_header_line(label, rollup, inner_width, spinner));
             }
 
             item_heights.push(item_lines.len() as u16);
@@ -711,7 +704,7 @@ fn render_session_section(
     // because `highlight_style` patches the whole item area, which for a row
     // that carries a prepended repo-group header would bleed the background up
     // onto that header. Painting it in the row keeps the highlight to the
-    // session line only; the header gets a text-colour change instead.
+    // session line only; the header stays muted regardless of selection.
     let list = List::new(items).block(block);
 
     list_state.select(show_selection.then_some(active_index));
@@ -765,9 +758,8 @@ fn render_empty_sessions(frame: &mut Frame, area: Rect, block: ratatui::widgets:
 }
 
 /// For each row, the index of the group header row it belongs to. Lets a group's
-/// header highlight whenever *any* member row is the active one, not just the
-/// group's first row. Rows before the first header map to row 0, which is
-/// harmless since those rows carry no header.
+/// members roll up to a single status dot on their header. Rows before the first
+/// header map to row 0, which is harmless since those rows carry no header.
 fn header_group_of(headers: &[Option<String>]) -> Vec<usize> {
     let mut out = Vec::with_capacity(headers.len());
     let mut current = 0;
@@ -781,23 +773,16 @@ fn header_group_of(headers: &[Option<String>]) -> Vec<usize> {
 }
 
 /// A full-width repo-group header: `● ── label ──────────`. The leading dot is
-/// the group's rolled-up most-urgent status; the label is muted by default and
-/// switches to an accent text colour (no background) when the active row is in
-/// its group, so the selection background stays on the session row alone.
+/// the group's rolled-up most-urgent status; the label is always muted. The
+/// header never reflects selection — highlighting belongs to the session rows
+/// alone, so selecting a group's first row must not light up its header.
 fn group_header_line(
     label: &str,
     rollup: SessionStatus,
     inner_width: usize,
-    selected: bool,
     spinner: &str,
 ) -> Line<'static> {
-    // Active group: a text-colour change only (accent + bold), never the full
-    // selection background — that belongs to the session row, not its header.
-    let style = if selected {
-        Theme::selected_item()
-    } else {
-        Style::default().fg(Theme::text_muted())
-    };
+    let style = Style::default().fg(Theme::text_muted());
     let dot = format!("{} ", super::status_glyph(rollup, spinner));
     let mut text = format!("\u{2500}\u{2500} {label} ");
     let used = dot.chars().count() + text.chars().count();
@@ -1419,20 +1404,13 @@ mod tests {
     }
 
     #[test]
-    fn selected_group_header_changes_text_colour_without_background() {
-        let line = group_header_line("repo", SessionStatus::Idle, WIDE, true, "◐");
-        // No background tint anywhere — only a text-colour change on the label.
-        assert!(line.spans.iter().all(|sp| sp.style.bg.is_none()));
-        let label = &line.spans[1];
-        assert_eq!(label.style.fg, Some(Theme::accent()));
-        assert!(label.style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn unselected_group_header_is_muted_without_background() {
-        let line = group_header_line("repo", SessionStatus::Idle, WIDE, false, "◐");
+    fn group_header_is_always_muted_without_background() {
+        // The header never reflects selection: selecting a group's first row
+        // must not light up its header. Always muted, never a background tint.
+        let line = group_header_line("repo", SessionStatus::Idle, WIDE, "◐");
         assert!(line.spans.iter().all(|sp| sp.style.bg.is_none()));
         assert_eq!(line.spans[1].style.fg, Some(Theme::text_muted()));
+        assert!(!line.spans[1].style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]

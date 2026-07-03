@@ -39,6 +39,21 @@ struct CentralTabCell {
     active: bool,
 }
 
+/// The rect to paint a hover tint over, given a click target's hitbox.
+///
+/// A session row's hitbox spans a prepended repo-group header line plus the
+/// session line itself (2 rows for a group's first session), so tinting the
+/// whole rect would bleed onto the header. The header is always first and the
+/// session line always last, so a multi-line session hitbox tints only its last
+/// row. Every other target (single-line rows, buttons) tints its full rect.
+fn hover_tint_rect(hitbox: Rect, is_session: bool) -> Rect {
+    if is_session && hitbox.height > 1 {
+        Rect::new(hitbox.x, hitbox.y + hitbox.height - 1, hitbox.width, 1)
+    } else {
+        hitbox
+    }
+}
+
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
         self.metrics.bump(|p| &mut p.frames_rendered);
@@ -152,7 +167,8 @@ impl App {
             Theme::selection_bg()
         };
         let buf = frame.buffer_mut();
-        let rect = target.rect;
+        let is_session = matches!(target.action, ClickAction::SelectSession(_));
+        let rect = hover_tint_rect(target.rect, is_session);
         for y in rect.y..rect.y + rect.height {
             for x in rect.x..rect.x + rect.width {
                 if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
@@ -1851,5 +1867,28 @@ mod tests {
     #[test]
     fn truncate_str_empty() {
         assert_eq!(truncate_str("", 5), "");
+    }
+
+    // --- hover_tint_rect (repo-group header must never be tinted) ---
+
+    #[test]
+    fn hover_tint_skips_group_header_on_multiline_session() {
+        // A group's first session is a 2-row hitbox (header + session line);
+        // the tint must land on the bottom row only, sparing the header.
+        let hitbox = Rect::new(1, 5, 28, 2);
+        assert_eq!(hover_tint_rect(hitbox, true), Rect::new(1, 6, 28, 1));
+    }
+
+    #[test]
+    fn hover_tint_covers_single_line_session() {
+        let hitbox = Rect::new(1, 7, 28, 1);
+        assert_eq!(hover_tint_rect(hitbox, true), hitbox);
+    }
+
+    #[test]
+    fn hover_tint_covers_full_rect_for_non_session_targets() {
+        // Buttons / other rows keep their whole rect even when multi-line.
+        let hitbox = Rect::new(1, 5, 28, 2);
+        assert_eq!(hover_tint_rect(hitbox, false), hitbox);
     }
 }
