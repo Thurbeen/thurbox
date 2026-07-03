@@ -1793,6 +1793,12 @@ other panel toggles' F-keys.
 - **Per-session state**: Each session tracks its own `TerminalView`
   (Agent or Shell) independently.
 - Input is forwarded to whichever pane is currently active.
+- **Remote/WSL sessions**: the shell pane opens the host user's own
+  interactive **login shell** — the same environment an `ssh <host>` login
+  gives you (rc files, prompt, aliases, `PATH`), not a bare `/bin/sh`. It
+  bootstraps through the always-present `/bin/sh -l` (which exports `$SHELL`)
+  and then `exec "$SHELL" -l`, falling back to `/bin/sh -l` if `$SHELL` is
+  unset. A psmux (Windows SSH) host keeps its native `powershell` pane.
 
 ---
 

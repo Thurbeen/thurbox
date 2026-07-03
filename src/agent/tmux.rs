@@ -825,6 +825,31 @@ impl TmuxBackend {
         }
     }
 
+    /// The window command for a **remote/WSL** companion shell pane: the user's
+    /// own login shell, interactively — the same environment an `ssh <host>`
+    /// login gives you, not a bare `/bin/sh`.
+    ///
+    /// [`default_shell`](Self::default_shell) returns `/bin/sh` for a remote
+    /// Unix host (guaranteed to exist), and the generic
+    /// [`login_wrap_for_remote`] would run it as `/bin/sh -lc 'exec /bin/sh'` —
+    /// a login-sourced but then bare POSIX shell. That drops everything a real
+    /// SSH login loads from the account's shell: its rc files (`~/.bashrc` /
+    /// `~/.zshrc`), prompt, aliases, functions, and `PATH` additions. SSH runs
+    /// the shell recorded in the user's passwd entry (which `$SHELL` reflects),
+    /// so we do the same: bootstrap through the always-present `/bin/sh -l`
+    /// (which login-sources the profile and thus exports `$SHELL`), then `exec`
+    /// `"$SHELL"` as a **login** shell — tmux gives it a PTY, so it's
+    /// interactive and sources the interactive rc chain too. If `$SHELL` is
+    /// somehow unset/broken the `||` falls back to a plain `/bin/sh -l` so the
+    /// pane still opens.
+    ///
+    /// psmux (Windows) hosts keep [`default_shell`]'s `powershell` (no
+    /// `/bin/sh`); local backends use the platform default directly.
+    fn remote_shell_pane_command(&self) -> String {
+        let inner = control_mode::shell_escape("exec \"$SHELL\" -l 2>/dev/null || exec /bin/sh -l");
+        format!("/bin/sh -lc {inner}")
+    }
+
     /// Build the PowerShell command a psmux window runs: set the env vars, then
     /// launch the agent.
     ///
@@ -1124,8 +1149,17 @@ impl SessionBackend for TmuxBackend {
         // `-e` (see `psmux_window_command`); everything is folded into one
         // token there. tmux keeps the byte-identical multi-token + `-e` path.
         let psmux = self.transport.uses_psmux();
+        // A remote/WSL companion shell pane (`tbs-` window) opens the user's own
+        // interactive login shell — the SSH-login environment — instead of the
+        // bare `/bin/sh` the generic login-wrap would produce (see
+        // `remote_shell_pane_command`). Agent windows (`tb-`) and psmux hosts
+        // keep the standard path.
+        let is_remote_shell_pane =
+            self.transport.is_remote() && !psmux && window_name.starts_with(SHELL_WINDOW_PREFIX);
         let shell_cmd = if psmux {
             Self::psmux_window_command(command, args, env)
+        } else if is_remote_shell_pane {
+            self.remote_shell_pane_command()
         } else {
             self.login_wrap_for_remote(&Self::build_shell_command(command, args))
         };
@@ -1340,9 +1374,13 @@ impl SessionBackend for TmuxBackend {
     /// ("CommandNotFoundException"). Remote hosts get a shell that exists
     /// there by construction: `powershell` on a psmux (Windows) host — the
     /// same interpreter psmux wraps every window command in — and `/bin/sh`
-    /// on a Unix/WSL host (the local `$SHELL` may not be installed there; the
-    /// login wrap gives it the profile `PATH`). Local backends keep the trait
-    /// default's behavior.
+    /// on a Unix/WSL host (the local `$SHELL` may not be installed there).
+    /// Local backends keep the trait default's behavior.
+    ///
+    /// This is only the *bootstrap* for a remote Unix pane: `spawn` upgrades
+    /// it to the user's own interactive login shell via
+    /// `remote_shell_pane_command` so the pane matches an `ssh <host>` login
+    /// (rc files, prompt, aliases, `PATH`).
     fn default_shell(&self) -> String {
         if !self.transport.is_remote() {
             #[cfg(windows)]
@@ -1974,6 +2012,30 @@ mod tests {
         assert_eq!(
             local.default_shell(),
             std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+        );
+    }
+
+    #[test]
+    fn remote_shell_pane_opens_users_login_shell() {
+        // The companion shell pane on a remote/WSL host should give the user
+        // their own interactive login shell (the SSH-login environment: rc
+        // files, prompt, aliases, PATH) — not the bare `/bin/sh` the generic
+        // login-wrap would produce. Bootstrap through the always-present
+        // `/bin/sh -l` (exports `$SHELL`), then `exec "$SHELL" -l`.
+        let ssh = TmuxBackend::from_host(&crate::session::HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            ssh.remote_shell_pane_command(),
+            "/bin/sh -lc 'exec \"$SHELL\" -l 2>/dev/null || exec /bin/sh -l'"
+        );
+
+        let wsl = TmuxBackend::from_host(&crate::session::HostDef::wsl("Ubuntu"));
+        assert_eq!(
+            wsl.remote_shell_pane_command(),
+            "/bin/sh -lc 'exec \"$SHELL\" -l 2>/dev/null || exec /bin/sh -l'"
         );
     }
 
