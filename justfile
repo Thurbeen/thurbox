@@ -69,8 +69,8 @@ sandbox-clean PROFILE="default":
 
 # Black-box TUI smoke test (real binary in a throwaway tmux pane).
 smoke:
-    scripts/dev/tui-smoke-test.sh
+    scripts/dev/smoke/tui-smoke.sh
 
 # Drive tests against a real SSH host: `just lab <host> <verb>`.
 lab HOST *ARGS:
-    scripts/dev/lab-test.sh {{HOST}} {{ARGS}}
+    scripts/dev/e2e/real-host.sh {{HOST}} {{ARGS}}

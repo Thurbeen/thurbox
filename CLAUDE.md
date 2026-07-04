@@ -56,7 +56,7 @@ scripts/dev/sandbox.sh --clean       # wipe the persistent profile
 The isolation lives in one helper, `scripts/dev/lib/sandbox-env.sh`
 (`tbx_sandbox_init` = thurbox-only, `tbx_sandbox_init_full` = full HOME/XDG),
 sourced by the sandbox entrypoint plus `scripts/demo/record.sh` and
-`scripts/dev/tui-smoke-test.sh` (which use the full flavor). Single source of
+`scripts/dev/smoke/tui-smoke.sh` (which use the full flavor). Single source of
 truth for the `thurbox-dev` sandbox pattern.
 
 ## Testing
@@ -83,7 +83,7 @@ The TUI has two layers of end-to-end coverage:
   quit) assert on `App` state instead, so live metrics/clock never make them
   flaky. Runs in the normal `cargo nextest --all` — no tmux/TTY needed. Update
   snapshots with `INSTA_UPDATE=always cargo test` (or `cargo insta review`).
-- **Black-box smoke test** (`scripts/dev/tui-smoke-test.sh`). Launches the real
+- **Black-box smoke test** (`scripts/dev/smoke/tui-smoke.sh`). Launches the real
   `thurbox` binary inside a throwaway tmux pane (isolated `HOME`/XDG/
   `TMUX_TMPDIR`, mirroring `scripts/demo/record.sh`), drives it with
   `tmux send-keys`, and asserts on captured frames (boot → F1 → theme → quit).
@@ -94,6 +94,20 @@ The TUI has two layers of end-to-end coverage:
   without flaky timing: e.g. idle iterations skip the paint, the session order
   is rebuilt only when its inputs change. Run with `cargo nextest run -E
   'test(perf_)'`. See `docs/PERFORMANCE.md`.
+
+### Dev harness layout (`scripts/dev/`)
+
+The session-backend e2e harnesses form one family under `scripts/dev/e2e/`
+(`linux-container.sh` = ephemeral Podman, `windows-vm.sh` = ephemeral dockur
+Windows VM, `real-host.sh` = a machine you own) sharing one sourced library,
+`e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL result contract (`pass`/
+`fail`, `E2E_JSON=1` for a machine-readable line), an in-shell `json_field`
+extractor (**no `python3`**), the `hosts_block` `[[hosts]]` emitter, and the
+`session create → get → assert` core (`e2e_create_and_get`/`e2e_assert`). The TUI
+smoke test lives at `scripts/dev/smoke/tui-smoke.sh`. `scripts/dev/README.md` is
+the newcomer index (which script for which job). Thin compatibility shims remain
+at the old flat paths (`remote-ssh-test.sh`/`windows-test.sh`/`lab-test.sh`/
+`tui-smoke-test.sh`) and forward to the new locations.
 
 ## Performance (render loop)
 
@@ -116,11 +130,11 @@ with `THURBOX_PERF_LOG=1` to log a `startup` line (phase breakdown +
 
 ### Windows test environment (VM)
 
-`scripts/dev/windows-test.sh` provisions a throwaway **Windows VM** to exercise
+`scripts/dev/e2e/windows-vm.sh` provisions a throwaway **Windows VM** to exercise
 thurbox's Windows support, where the session backend is
 [psmux](https://github.com/psmux/psmux) (a native-Windows tmux clone — same
 command language, `-L` sockets, and `-C`/`-CC` control mode that `TmuxBackend`
-drives, so it installs a `tmux.exe`). Mirroring `remote-ssh-test.sh`, it runs a
+drives, so it installs a `tmux.exe`). Mirroring `e2e/linux-container.sh`, it runs a
 real KVM-accelerated Windows VM inside a single Podman container via
 [`dockur/windows`](https://github.com/dockur/windows), with an unattended
 first-boot `/oem` payload that installs psmux + OpenSSH + `cargo-nextest.exe` so
@@ -129,12 +143,12 @@ the harness drives the VM **headlessly over SSH**. Default edition is **Windows
 `THURBOX_WIN_VERSION` only with values dockur recognizes (`11`, `10`, `2025`, …).
 
 ```bash
-scripts/dev/windows-test.sh up         # build /oem payload + boot the VM (first run installs Windows, ~10-20 min)
-scripts/dev/windows-test.sh wait       # block until the VM's SSH is reachable
-scripts/dev/windows-test.sh test       # headless smoke test (psmux/tmux + a -L control session round-trip)
-scripts/dev/windows-test.sh test-suite # run the FULL nextest suite inside the VM (see below)
-scripts/dev/windows-test.sh deploy     # cross-build thurbox for x86_64-pc-windows-gnu + copy the .exe in
-scripts/dev/windows-test.sh ssh        # PowerShell shell in the VM; `web`/`rdp` for eyes-on; `down`/`clean` to tear down
+scripts/dev/e2e/windows-vm.sh up         # build /oem payload + boot the VM (first run installs Windows, ~10-20 min)
+scripts/dev/e2e/windows-vm.sh wait       # block until the VM's SSH is reachable
+scripts/dev/e2e/windows-vm.sh test       # headless smoke test (psmux/tmux + a -L control session round-trip)
+scripts/dev/e2e/windows-vm.sh test-suite # run the FULL nextest suite inside the VM (see below)
+scripts/dev/e2e/windows-vm.sh deploy     # cross-build thurbox for x86_64-pc-windows-gnu + copy the .exe in
+scripts/dev/e2e/windows-vm.sh ssh        # PowerShell shell in the VM; `web`/`rdp` for eyes-on; `down`/`clean` to tear down
 ```
 
 `test-suite` runs the **entire `cargo nextest` suite** inside the VM. The VM has
@@ -158,7 +172,7 @@ through qemu's host-forward into the VM.
 
 ### Lab (real-host) test environment
 
-`scripts/dev/lab-test.sh <host> <verb>` (or `just lab <host> <verb>`) drives
+`scripts/dev/e2e/real-host.sh <host> <verb>` (or `just lab <host> <verb>`) drives
 the same checks against **any real machine over SSH** — a `~/.ssh/config`
 alias or `user@address`. Linux/Windows is auto-detected. Because lab machines
 may also run *regular* thurbox sessions, the
@@ -168,11 +182,11 @@ and an isolated local `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` — the release
 socket (`thurbox`), the dev socket (`thurbox-dev`), and real config/DB are
 never touched. Verbs: `check` (readiness probe), `hosts` (print the
 `hosts.toml` block), `test` (headless ssh-backend e2e, mirrors
-`remote-ssh-test.sh test`), `tui` (wire the host into the persistent `lab`
+`e2e/linux-container.sh test`), `tui` (wire the host into the persistent `lab`
 sandbox profile + launch for manual testing), `ssh` (interactive shell or a
 one-off command), `clean`; Windows-only: `deploy`
 (cross-build + install to `C:\Tools\thurbox`), `run` (the deployed TUI over
-`ssh -t`), `test-suite` (nextest archive, mirrors `windows-test.sh`),
+`ssh -t`), `test-suite` (nextest archive, mirrors `e2e/windows-vm.sh`),
 `wsl-setup` / `wsl-check` (provision + verify a WSL distro as a thurbox
 target), `native-test [agent]` (headless e2e of the **deployed** binaries
 natively on the host: `thurbox-cli.exe` creates a local psmux session —
@@ -632,7 +646,7 @@ via `App::backend_for`).
   TUI's own teardown is backend-aware). `wsl.exe`'s exact arg-passing isn't
   verified in CI (no WSL runner); the construction is unit-tested
   (`transport::tests::wsl_*`, `git_command_wsl_*`).
-- **Local e2e**: `scripts/dev/remote-ssh-test.sh up` spins a throwaway Podman
+- **Local e2e**: `scripts/dev/e2e/linux-container.sh up` spins a throwaway Podman
   container (sshd + tmux + git) and `… test` asserts a session lands on the
   `ssh:podman` backend (state under `target/`, never touches your real
   `~/.ssh`/`~/.config`).

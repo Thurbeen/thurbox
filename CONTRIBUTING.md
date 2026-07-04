@@ -74,7 +74,7 @@ cargo nextest run -E 'test(name)'    # run a single test by name
 
 The TUI has in-process acceptance tests with `insta` snapshots
 (`src/app/acceptance.rs`) and a black-box smoke test
-(`scripts/dev/tui-smoke-test.sh`). Update snapshots with
+(`scripts/dev/smoke/tui-smoke.sh`). Update snapshots with
 `INSTA_UPDATE=always cargo test` (or `cargo insta review`). See the Testing
 section of [`CLAUDE.md`](CLAUDE.md) for the full picture.
 

@@ -80,7 +80,7 @@ Or via `just`: `just sandbox`, `just sandbox-fresh`, `just sandbox-shell`,
   your real, logged-in agents without polluting your real thurbox state.
 - **full (`--isolate-home`)** — also overrides `HOME` + `XDG_*`, so the env is
   hermetic and agents boot with no credentials. This is what `scripts/demo/
-  record.sh` and `scripts/dev/tui-smoke-test.sh` use (via
+  record.sh` and `scripts/dev/smoke/tui-smoke.sh` use (via
   `tbx_sandbox_init_full`).
 
 **Profile lifetimes:**
@@ -94,7 +94,7 @@ Or via `just`: `just sandbox`, `just sandbox-fresh`, `just sandbox-shell`,
 
 The isolation logic is one helper, `scripts/dev/lib/sandbox-env.sh`, sourced by
 `scripts/dev/sandbox.sh`, `scripts/demo/record.sh`, and
-`scripts/dev/tui-smoke-test.sh` (one source of truth).
+`scripts/dev/smoke/tui-smoke.sh` (one source of truth).
 
 ### Example: watch a session's status hook end-to-end
 

@@ -143,7 +143,7 @@ jobs:
   # type-checks, so it covers the compile gate. Each job excludes the build dirs
   # from Defender real-time scanning, the dominant Windows-runner overhead (it
   # scans every .rlib/.exe cargo writes). The local dockur VM
-  # (scripts/dev/windows-test.sh test-suite) runs the same suite from a
+  # (scripts/dev/e2e/windows-vm.sh test-suite) runs the same suite from a
   # cross-built nextest archive; these jobs are the automated mirror.
   windows-clippy:
     name: Windows (clippy)
@@ -209,7 +209,7 @@ jobs:
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       - name: Black-box TUI smoke test
-        run: scripts/dev/tui-smoke-test.sh
+        run: scripts/dev/smoke/tui-smoke.sh
 
   acceptance:
     name: Acceptance Tests

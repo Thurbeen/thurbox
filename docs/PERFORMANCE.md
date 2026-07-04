@@ -55,7 +55,7 @@ unchanged and idle CPU drops by ~25×.
 **Correctness net**: dirtiness is deliberately over-approximated (any input, any
 status change → repaint) and the 250 ms floor guarantees nothing time-driven
 stays stale longer than a blink. The black-box smoke test
-(`scripts/dev/tui-smoke-test.sh`) still asserts the first frame and every
+(`scripts/dev/smoke/tui-smoke.sh`) still asserts the first frame and every
 post-keystroke frame paint.
 
 ---
