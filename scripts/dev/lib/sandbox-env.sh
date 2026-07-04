@@ -16,7 +16,7 @@
 #                           Used by the demo recorder + TUI smoke test.
 #
 # Source it (don't execute) AFTER setting REPO_ROOT (or TBX_REPO_ROOT). Written
-# in POSIX sh so both bash callers (sandbox.sh, tui-smoke-test.sh) and the
+# in POSIX sh so both bash callers (sandbox.sh, smoke/tui-smoke.sh) and the
 # /usr/bin/env sh caller (record.sh) can source it. Both flavors prepend the
 # repo's target/debug to PATH so an agent hook's `thurbox-cli` resolves to *this*
 # dev binary (and writes to the sandbox DB the dev TUI reads).

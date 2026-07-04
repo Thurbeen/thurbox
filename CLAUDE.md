@@ -105,9 +105,9 @@ Windows VM, `real-host.sh` = a machine you own) sharing one sourced library,
 extractor (**no `python3`**), the `hosts_block` `[[hosts]]` emitter, and the
 `session create → get → assert` core (`e2e_create_and_get`/`e2e_assert`). The TUI
 smoke test lives at `scripts/dev/smoke/tui-smoke.sh`. `scripts/dev/README.md` is
-the newcomer index (which script for which job). Thin compatibility shims remain
-at the old flat paths (`remote-ssh-test.sh`/`windows-test.sh`/`lab-test.sh`/
-`tui-smoke-test.sh`) and forward to the new locations.
+the newcomer index (which script for which job) and carries the old→new path
+map (the flat `remote-ssh-test.sh`/`windows-test.sh`/`lab-test.sh`/
+`tui-smoke-test.sh` names were renamed, not kept as shims).
 
 ## Performance (render loop)
 

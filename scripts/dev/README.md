@@ -52,8 +52,8 @@ Every e2e harness ends on a single line: `PASS <message>` (green, exit 0) or
 
 ## Moved paths
 
-These entrypoints were renamed; thin shims at the old paths still forward (and
-print a note). Update references to the new paths:
+These entrypoints were renamed (the old flat paths no longer exist). Update any
+references:
 
 | Old | New |
 |---|---|
