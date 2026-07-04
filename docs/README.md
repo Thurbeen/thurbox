@@ -12,7 +12,6 @@ event loop), see [`CLAUDE.md`](../CLAUDE.md).
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Architecture decisions | Changing a technology or structural pattern |
 | [FEATURES.md](FEATURES.md) | Feature-level design | Altering keybindings, lifecycle, layout, or UX |
 | [CONFIG.md](CONFIG.md) | Every config file / env var / DB setting in one place | Adding/changing a config file, env var, or DB setting |
-| [NOTIFICATIONS_TEST_PLAN.md](NOTIFICATIONS_TEST_PLAN.md) | Manual test plan for OS desktop notifications | Changing notification delivery or backends |
 
 ## Keeping Docs Current
 
