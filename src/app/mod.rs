@@ -2326,12 +2326,19 @@ impl App {
         // consumed click stops here; session-list and terminal clicks fall
         // through so the same press still arms text selection.
         let pos = Position::new(x, y);
-        if let Some(action) = self
+        if let Some((action, rect)) = self
             .click_targets
             .iter()
             .find(|t| t.rect.contains(pos))
-            .map(|t| t.action)
+            .map(|t| (t.action, t.rect))
         {
+            // A diff-row click carries its column so a paired side-by-side row
+            // can steer a follow-up comment to the old/new side it hit.
+            if let ClickAction::ReviewRow(i) = action {
+                self.focus = InputFocus::CodeReview;
+                self.cr_click_row(i, x.saturating_sub(rect.x), rect.width);
+                return;
+            }
             if self.activate_click_target(action) {
                 return;
             }

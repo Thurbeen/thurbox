@@ -15,7 +15,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::{Path, PathBuf};
 
 use crate::session::review::{
-    parse_unified_diff, Classification, CommentAnchor, DiffFile, ReviewComment, Side,
+    pair_hunk, parse_unified_diff, Classification, CommentAnchor, DiffFile, ReviewComment, Side,
 };
 use crate::session::{HostDef, SessionId};
 
@@ -152,8 +152,17 @@ pub(crate) struct CodeReviewState {
     pub selected: usize,
     pub scroll: usize,
     pub compose: Option<ComposeState>,
-    /// Side-by-side (old | new) vs unified diff layout. Toggled with `v`.
+    /// Side-by-side (old | new) vs unified diff layout. Toggled with `v`. In
+    /// this layout a deletion and its aligned addition share one selectable row
+    /// (see [`crate::session::review::pair_hunk`]); comments still anchor to a
+    /// single side.
     pub side_by_side: bool,
+    /// The side a mouse click landed on, scoped to the row it selected
+    /// (`(row, side)`). Lets a click on the old/new column of a paired
+    /// side-by-side row steer a subsequent comment to that side; any keyboard
+    /// move changes `selected` so the stale entry no longer matches and the
+    /// anchor falls back to its default (New). `None` = keyboard-driven.
+    pub click_side: Option<(usize, Side)>,
     /// Horizontal column offset of the diff body (the line-number gutter stays
     /// pinned). Slides long lines into view; toggled with `Left`/`Right`.
     /// Ignored while `wrap` is on and in the side-by-side layout.
@@ -267,6 +276,76 @@ impl CodeReviewState {
         }
     }
 
+    /// The comment anchor for the selected row, if it can carry one (a diff line
+    /// or a file/hunk header). `file_level` forces a file anchor even on a line.
+    ///
+    /// On a line row the side is resolved so a paired side-by-side row (a
+    /// deletion aligned with an addition) anchors sensibly: a mouse click that
+    /// hit a specific column ([`Self::click_side`], scoped to this row) wins when
+    /// that side exists; otherwise it defaults to New (the addition), falling
+    /// back to Old for a pure deletion — matching the unified layout's
+    /// prefer-new rule. Pure so the side logic is unit-testable without an
+    /// [`App`].
+    pub(crate) fn selected_anchor(&self, file_level: bool) -> Option<CommentAnchor> {
+        match self.rows.get(self.selected)? {
+            ReviewRow::Line(fi, hi, li) => {
+                let file = self.files.get(*fi)?;
+                if file_level {
+                    return Some(CommentAnchor::File {
+                        file: file.path.clone(),
+                    });
+                }
+                let hunk = file.hunks.get(*hi)?;
+                // Resolve the old-side / new-side DiffLines this row stands for.
+                // Unified: a single line, treated as whichever side it carries.
+                // Paired side-by-side: the whole SidePair (a deletion aligned
+                // with an addition), so both sides may be present.
+                let (old_line, new_line) = if self.side_by_side {
+                    let pair = pair_hunk(hunk)
+                        .into_iter()
+                        .find(|p| p.old == Some(*li) || p.new == Some(*li))?;
+                    (
+                        pair.old.and_then(|i| hunk.lines.get(i)),
+                        pair.new.and_then(|i| hunk.lines.get(i)),
+                    )
+                } else {
+                    let line = hunk.lines.get(*li)?;
+                    (
+                        line.old_no.is_some().then_some(line),
+                        line.new_no.is_some().then_some(line),
+                    )
+                };
+                let want = self
+                    .click_side
+                    .filter(|(row, _)| *row == self.selected)
+                    .map(|(_, s)| s);
+                let (side, line) = match want {
+                    Some(Side::Old) if old_line.is_some() => (Side::Old, old_line),
+                    Some(Side::New) if new_line.is_some() => (Side::New, new_line),
+                    _ if new_line.is_some() => (Side::New, new_line),
+                    _ => (Side::Old, old_line),
+                };
+                let line = line?;
+                let ln = match side {
+                    Side::New => line.new_no?,
+                    Side::Old => line.old_no?,
+                };
+                Some(CommentAnchor::Line {
+                    file: file.path.clone(),
+                    side,
+                    line: ln,
+                })
+            }
+            ReviewRow::FileHeader(fi) | ReviewRow::HunkHeader(fi, _) => {
+                let file = self.files.get(*fi)?;
+                Some(CommentAnchor::File {
+                    file: file.path.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Whether `path`'s diff is folded (collapsed to just its header). A file
     /// folds once reviewed; [`Self::fold_override`] flips that per file so the
     /// user can peek at a reviewed file (or collapse an unreviewed one) without
@@ -321,12 +400,38 @@ impl CodeReviewState {
         }
         for (hi, hunk) in file.hunks.iter().enumerate() {
             rows.push(ReviewRow::HunkHeader(fi, hi));
-            for (li, line) in hunk.lines.iter().enumerate() {
-                rows.push(ReviewRow::Line(fi, hi, li));
-                // Line comments anchored to this line (either side).
-                for c in &self.comments {
-                    if c.anchor.anchors_line(&file.path, line.old_no, line.new_no) {
-                        rows.push(ReviewRow::Comment(c.id));
+            if self.side_by_side {
+                // Paired layout: a deletion and its aligned addition share one
+                // selectable row, keyed by the old (or, if absent, the new) line
+                // — the renderer re-derives the pair from the same `pair_hunk`.
+                // Comments for either side interleave after the shared row.
+                for pair in pair_hunk(hunk) {
+                    let rep = pair.old.or(pair.new).expect("a pair has ≥1 side");
+                    rows.push(ReviewRow::Line(fi, hi, rep));
+                    let mut prev = None;
+                    for li in [pair.old, pair.new].into_iter().flatten() {
+                        // A context pair points both sides at the same line;
+                        // don't interleave its comments twice.
+                        if Some(li) == prev {
+                            continue;
+                        }
+                        prev = Some(li);
+                        let line = &hunk.lines[li];
+                        for c in &self.comments {
+                            if c.anchor.anchors_line(&file.path, line.old_no, line.new_no) {
+                                rows.push(ReviewRow::Comment(c.id));
+                            }
+                        }
+                    }
+                }
+            } else {
+                for (li, line) in hunk.lines.iter().enumerate() {
+                    rows.push(ReviewRow::Line(fi, hi, li));
+                    // Line comments anchored to this line (either side).
+                    for c in &self.comments {
+                        if c.anchor.anchors_line(&file.path, line.old_no, line.new_no) {
+                            rows.push(ReviewRow::Comment(c.id));
+                        }
                     }
                 }
             }
@@ -495,6 +600,7 @@ impl App {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            click_side: None,
             h_scroll: 0,
             wrap: false,
             target,
@@ -665,7 +771,10 @@ impl App {
         }
     }
 
-    /// Toggle the unified ↔ side-by-side diff layout (tuicr's `diff_view`).
+    /// Toggle the unified ↔ paired side-by-side diff layout (tuicr's
+    /// `diff_view`). The two layouts have different row sets — side-by-side
+    /// merges each aligned deletion+addition into one row — so the rows are
+    /// rebuilt; `rebuild_rows` clamps the selection if it fell off the end.
     pub(crate) fn cr_toggle_side_by_side(&mut self) {
         if let Some(cr) = self.active_review_mut() {
             cr.side_by_side = !cr.side_by_side;
@@ -674,6 +783,9 @@ impl App {
             if cr.side_by_side {
                 cr.h_scroll = 0;
             }
+            cr.click_side = None;
+            cr.rebuild_rows();
+            cr.ensure_visible();
         }
     }
 
@@ -789,11 +901,35 @@ impl App {
         }
     }
 
-    /// Set the selection directly (a click), if the row is selectable.
+    /// Set the selection directly (a column-less click / scrollbar drag), if the
+    /// row is selectable. Clears any recorded click side (no column context).
     pub(crate) fn cr_select_row(&mut self, idx: usize) {
         if let Some(cr) = self.active_review_mut() {
             if cr.rows.get(idx).is_some_and(ReviewRow::is_selectable) {
                 cr.selected = idx;
+                cr.click_side = None;
+                cr.ensure_visible();
+            }
+        }
+    }
+
+    /// Select a row from a mouse click, recording which column (old | new) the
+    /// click hit so a follow-up comment on a paired side-by-side row attaches to
+    /// that side. `rel_x` is the click offset within the `width`-wide row; the
+    /// paired layout splits at its center separator. In the unified layout the
+    /// column carries no side, so nothing is recorded.
+    pub(crate) fn cr_click_row(&mut self, idx: usize, rel_x: u16, width: u16) {
+        if let Some(cr) = self.active_review_mut() {
+            if cr.rows.get(idx).is_some_and(ReviewRow::is_selectable) {
+                cr.selected = idx;
+                cr.click_side = cr.side_by_side.then(|| {
+                    let side = if rel_x < width / 2 {
+                        Side::Old
+                    } else {
+                        Side::New
+                    };
+                    (idx, side)
+                });
                 cr.ensure_visible();
             }
         }
@@ -928,36 +1064,7 @@ impl App {
 
     /// The anchor for a line/file comment on the current selection, if any.
     fn cr_selected_anchor(&self, file_level: bool) -> Option<CommentAnchor> {
-        let cr = self.active_review()?;
-        match cr.rows.get(cr.selected)? {
-            ReviewRow::Line(fi, hi, li) => {
-                let file = cr.files.get(*fi)?;
-                if file_level {
-                    return Some(CommentAnchor::File {
-                        file: file.path.clone(),
-                    });
-                }
-                let line = file.hunks.get(*hi)?.lines.get(*li)?;
-                // Prefer the new side; fall back to the old side for deletions.
-                let (side, ln) = match (line.new_no, line.old_no) {
-                    (Some(n), _) => (Side::New, n),
-                    (None, Some(o)) => (Side::Old, o),
-                    _ => return None,
-                };
-                Some(CommentAnchor::Line {
-                    file: file.path.clone(),
-                    side,
-                    line: ln,
-                })
-            }
-            ReviewRow::FileHeader(fi) | ReviewRow::HunkHeader(fi, _) => {
-                let file = cr.files.get(*fi)?;
-                Some(CommentAnchor::File {
-                    file: file.path.clone(),
-                })
-            }
-            _ => None,
-        }
+        self.active_review()?.selected_anchor(file_level)
     }
 
     /// Begin composing a comment at the selected line (or the file).
@@ -1643,6 +1750,7 @@ impl CodeReviewState {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            click_side: None,
             h_scroll: 0,
             wrap: false,
             target: ReviewTarget::Branch,
@@ -1710,6 +1818,7 @@ mod tests {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            click_side: None,
             h_scroll: 0,
             wrap: false,
             target: ReviewTarget::Branch,
@@ -1720,6 +1829,53 @@ mod tests {
         };
         s.rebuild_rows();
         s
+    }
+
+    /// A file with one change block: 1 context, 2 deletions, 2 additions —
+    /// enough to exercise the paired side-by-side pairing (del[k] ↔ add[k]).
+    fn change_block_file() -> DiffFile {
+        DiffFile {
+            path: "src/foo.rs".into(),
+            old_path: None,
+            status: FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                new_start: 1,
+                header: String::new(),
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        old_no: Some(1),
+                        new_no: Some(1),
+                        text: "ctx".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Del,
+                        old_no: Some(2),
+                        new_no: None,
+                        text: "old a".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Del,
+                        old_no: Some(3),
+                        new_no: None,
+                        text: "old b".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Add,
+                        old_no: None,
+                        new_no: Some(2),
+                        text: "new a".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Add,
+                        old_no: None,
+                        new_no: Some(3),
+                        text: "new b".into(),
+                    },
+                ],
+            }],
+        }
     }
 
     #[test]
@@ -1800,6 +1956,154 @@ mod tests {
             .position(|r| matches!(r, ReviewRow::Line(0, 0, 1)))
             .unwrap();
         assert!(matches!(s.rows[line_pos + 1], ReviewRow::Comment(7)));
+    }
+
+    /// The paired side-by-side layout collapses an aligned deletion+addition
+    /// into ONE selectable row, so a change block of 2 del + 2 add (+1 context)
+    /// yields 3 `Line` rows, not 5 — while the enum stays row-granular.
+    #[test]
+    fn side_by_side_merges_aligned_del_add_into_one_row() {
+        let mut s = state_with(vec![change_block_file()], vec![]);
+        let unified_lines = s
+            .rows
+            .iter()
+            .filter(|r| matches!(r, ReviewRow::Line(..)))
+            .count();
+        assert_eq!(unified_lines, 5, "unified: one row per diff line");
+
+        s.side_by_side = true;
+        s.rebuild_rows();
+        let paired: Vec<_> = s
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                ReviewRow::Line(_, _, li) => Some(*li),
+                _ => None,
+            })
+            .collect();
+        // Context (li 0), then del[0]↔add[0] (rep = del li 1), del[1]↔add[1]
+        // (rep = del li 2). The addition lines (3, 4) fold into their pair.
+        assert_eq!(paired, vec![0, 1, 2]);
+    }
+
+    /// A comment on either side of a paired row interleaves right after the
+    /// shared row — the addition (New) folds into its deletion's row, so its
+    /// comment still appears there.
+    #[test]
+    fn side_by_side_interleaves_comment_on_folded_addition() {
+        // Comment anchored to the New side, new line 2 (the first addition,
+        // which pairs with the first deletion).
+        let comment = ReviewComment {
+            id: 9,
+            session_id: SessionId::default(),
+            anchor: CommentAnchor::Line {
+                file: "src/foo.rs".into(),
+                side: Side::New,
+                line: 2,
+            },
+            classification: Classification::Note,
+            body: "look here".into(),
+            created_at: 0,
+            updated_at: 0,
+        };
+        let mut s = state_with(vec![change_block_file()], vec![comment]);
+        s.side_by_side = true;
+        s.rebuild_rows();
+        // The paired row's representative is the deletion (li 1); the comment
+        // sits on the very next row even though its anchor is the addition.
+        let pos = s
+            .rows
+            .iter()
+            .position(|r| matches!(r, ReviewRow::Line(0, 0, 1)))
+            .unwrap();
+        assert!(matches!(s.rows[pos + 1], ReviewRow::Comment(9)));
+    }
+
+    /// A paired change row (a deletion aligned with an addition) anchors a
+    /// keyboard comment to the New side by default, and to the clicked column
+    /// when a mouse click recorded one for that exact row.
+    #[test]
+    fn paired_row_anchor_defaults_new_and_honors_click_side() {
+        let mut s = state_with(vec![change_block_file()], vec![]);
+        s.side_by_side = true;
+        s.rebuild_rows();
+        // Select the first paired change row (rep = deletion li 1).
+        s.selected = s
+            .rows
+            .iter()
+            .position(|r| matches!(r, ReviewRow::Line(0, 0, 1)))
+            .unwrap();
+
+        // Keyboard default: the New (addition) side, new line 2.
+        assert_eq!(
+            s.selected_anchor(false),
+            Some(CommentAnchor::Line {
+                file: "src/foo.rs".into(),
+                side: Side::New,
+                line: 2,
+            })
+        );
+
+        // A left-column click on this row steers it to the Old (deletion) side.
+        s.click_side = Some((s.selected, Side::Old));
+        assert_eq!(
+            s.selected_anchor(false),
+            Some(CommentAnchor::Line {
+                file: "src/foo.rs".into(),
+                side: Side::Old,
+                line: 2,
+            })
+        );
+
+        // A stale click side for a *different* row is ignored (falls back to
+        // the New default).
+        s.click_side = Some((s.selected + 999, Side::Old));
+        assert!(matches!(
+            s.selected_anchor(false),
+            Some(CommentAnchor::Line {
+                side: Side::New,
+                ..
+            })
+        ));
+    }
+
+    /// A pure-deletion row (no aligned addition) still anchors to the Old side
+    /// in the paired layout, even if a click asked for New.
+    #[test]
+    fn paired_deletion_only_row_anchors_old() {
+        let file = DiffFile {
+            path: "src/foo.rs".into(),
+            old_path: None,
+            status: FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                new_start: 1,
+                header: String::new(),
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Del,
+                    old_no: Some(1),
+                    new_no: None,
+                    text: "gone".into(),
+                }],
+            }],
+        };
+        let mut s = state_with(vec![file], vec![]);
+        s.side_by_side = true;
+        s.rebuild_rows();
+        s.selected = s
+            .rows
+            .iter()
+            .position(|r| matches!(r, ReviewRow::Line(..)))
+            .unwrap();
+        s.click_side = Some((s.selected, Side::New));
+        assert_eq!(
+            s.selected_anchor(false),
+            Some(CommentAnchor::Line {
+                file: "src/foo.rs".into(),
+                side: Side::Old,
+                line: 1,
+            })
+        );
     }
 
     fn repo(label: &str, base: &str) -> ReviewRepo {

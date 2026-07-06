@@ -9,7 +9,9 @@ use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::code_review::{CodeReviewState, ComposeState, ReviewButton, ReviewRow};
-use crate::session::review::{Classification, CommentAnchor, DiffFile, DiffLine, DiffLineKind};
+use crate::session::review::{
+    pair_hunk, Classification, CommentAnchor, DiffFile, DiffHunk, DiffLine, DiffLineKind, SidePair,
+};
 use crate::ui::scrollbar::{self, ScrollbarGeom};
 use crate::ui::theme::Theme;
 use crate::ui::{focus_block, render_button_bar, ButtonSpec, FocusLevel, RowHitbox};
@@ -194,6 +196,12 @@ fn render_rows(
     // Line-number column width from the largest number on screen.
     let num_w = line_number_width(state);
 
+    // Wrapping is a unified-only concern: the paired side-by-side layout is
+    // always one screen row per logical row (its horizontal-scroll/wrap parity
+    // is a named follow-up). Collapse the two flags into one local so the scroll
+    // math below treats side-by-side exactly like unwrapped unified.
+    let wrap = state.wrap && !state.side_by_side;
+
     // Final horizontal clamp: the app layer bounds `h_scroll` by the longest
     // line, but the exact body width is only known now — never scroll past what
     // the widest line can reveal. Wrapped/side-by-side layouts pin it to 0.
@@ -210,7 +218,7 @@ fn render_rows(
     // Clamp scroll so the selection stays visible (the nav layer set a lower
     // bound; here we enforce the upper edge given the known height). With wrap
     // off, one logical row = one visual row, so the original math holds.
-    if !state.wrap {
+    if !wrap {
         if state.selected >= state.scroll + height {
             state.scroll = state.selected + 1 - height;
         }
@@ -231,7 +239,9 @@ fn render_rows(
         .map(|s| s.query.trim().to_lowercase())
         .filter(|q| !q.is_empty());
 
-    converge_wrap_scroll(state, width, num_w, height);
+    if wrap {
+        converge_wrap_scroll(state, width, num_w, height);
+    }
 
     // Build the windowed visual lines. When wrapping, the selected logical row's
     // first visual line must stay on screen: expand from `scroll` and, if the
@@ -255,7 +265,7 @@ fn render_rows(
                 num_w,
                 query.as_deref(),
                 state.h_scroll,
-                state.wrap,
+                wrap,
             ) {
                 lines.push(line);
                 logical.push(i);
@@ -263,9 +273,8 @@ fn render_rows(
         }
         // Selection off the bottom (only possible when wrapping inflates rows):
         // scroll down one logical row and rebuild.
-        let overflows = state.wrap
-            && selected_first.map_or(true, |f| f >= height)
-            && state.scroll < state.selected;
+        let overflows =
+            wrap && selected_first.map_or(true, |f| f >= height) && state.scroll < state.selected;
         if overflows {
             state.scroll += 1;
             continue;
@@ -339,12 +348,14 @@ fn row_visual_lines<'a>(
         }
         ReviewRow::Line(fi, hi, li) => {
             let f = &state.files[*fi];
-            let l = &f.hunks[*hi].lines[*li];
+            let hunk = &f.hunks[*hi];
             if state.side_by_side {
-                vec![side_by_side_line(l, width, num_w, &sel_style)]
+                vec![paired_diff_line(hunk, *li, width, num_w, &sel_style)]
             } else if wrap {
+                let l = &hunk.lines[*li];
                 unified_diff_line_wrapped(f, l, width, num_w, selected, query, &sel_style)
             } else {
+                let l = &hunk.lines[*li];
                 vec![unified_diff_line(
                     f, l, width, num_w, selected, h_scroll, query, &sel_style,
                 )]
@@ -730,16 +741,31 @@ fn comment_line<'a>(
     Line::from(spans)
 }
 
-/// Render one diff line as two side-by-side cells (old | new). One source line
-/// per screen row: context appears in both cells, a deletion only on the left,
-/// an addition only on the right — so selection + comment anchoring (1 row = 1
-/// line) are unchanged.
-fn side_by_side_line<'a>(
-    l: &DiffLine,
+/// Render one paired side-by-side row: the old-side cell `│` the new-side cell.
+/// True GitHub-style pairing — a deletion (left) and its aligned addition
+/// (right) sit on the *same* screen row (see
+/// [`crate::session::review::pair_hunk`]). `li` is the row's representative line
+/// index; the [`SidePair`] it belongs to supplies both sides (a blank half-cell
+/// where a side is absent). The selection + comment anchor stay 1 row = 1
+/// selectable unit; which side a comment attaches to is resolved at compose
+/// time. Plain add/remove tinting (no syntax highlighting), matching the
+/// unified body's gutter-sign convention.
+fn paired_diff_line<'a>(
+    hunk: &DiffHunk,
+    li: usize,
     width: usize,
     num_w: usize,
     sel_style: &impl Fn(Style) -> Style,
 ) -> Line<'a> {
+    // Re-derive the pair this row stands for from the same pure pairing the row
+    // builder used, so the two never disagree on which lines share the row.
+    let pair = pair_hunk(hunk)
+        .into_iter()
+        .find(|p| p.old == Some(li) || p.new == Some(li))
+        .unwrap_or(SidePair {
+            old: Some(li),
+            new: None,
+        });
     let half = width.saturating_sub(1) / 2;
     let prim = || Style::default().fg(Theme::text_primary());
     let removed = || {
@@ -752,27 +778,29 @@ fn side_by_side_line<'a>(
             .fg(Theme::diff_added())
             .bg(Theme::diff_added_bg())
     };
-    // (cell text, cell style) for each side; the changed side carries its tint
-    // (sel_style overrides bg when the row is selected).
-    let (left, lstyle, right, rstyle) = match l.kind {
-        DiffLineKind::Context => (
+    // Each cell tints only when it carries a change (a context line pairs with
+    // itself and stays plain on both sides); sel_style overrides bg on select.
+    let (left, lstyle) = match pair.old.map(|i| &hunk.lines[i]) {
+        Some(l) => (
             half_cell(l.old_no, &l.text, num_w, half),
-            prim(),
+            if l.kind == DiffLineKind::Del {
+                removed()
+            } else {
+                prim()
+            },
+        ),
+        None => (half_cell(None, "", num_w, half), prim()),
+    };
+    let (right, rstyle) = match pair.new.map(|i| &hunk.lines[i]) {
+        Some(l) => (
             half_cell(l.new_no, &l.text, num_w, half),
-            prim(),
+            if l.kind == DiffLineKind::Add {
+                added()
+            } else {
+                prim()
+            },
         ),
-        DiffLineKind::Del => (
-            half_cell(l.old_no, &l.text, num_w, half),
-            removed(),
-            half_cell(None, "", num_w, half),
-            prim(),
-        ),
-        DiffLineKind::Add => (
-            half_cell(None, "", num_w, half),
-            prim(),
-            half_cell(l.new_no, &l.text, num_w, half),
-            added(),
-        ),
+        None => (half_cell(None, "", num_w, half), prim()),
     };
     Line::from(vec![
         Span::styled(left, sel_style(lstyle)),
@@ -1060,7 +1088,7 @@ fn render_footer(
     // so it stays discoverable. The non-composing bar leads with the essential
     // actions (Comment, Send→Agent, Close) so they survive a narrow footer —
     // `render_button_bar` drops overflow from the right and marks it with `…`.
-    let view_label = if side_by_side { "Unified" } else { "Split" };
+    let view_label = if side_by_side { "Unified" } else { "Side" };
     let wrap_label = if wrap { "NoWrap" } else { "Wrap" };
     let (specs, actions): (Vec<ButtonSpec>, Vec<ReviewButton>) = if composing {
         (
@@ -1267,6 +1295,7 @@ mod tests {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            click_side: None,
             h_scroll: 0,
             wrap: false,
             target: crate::app::code_review::ReviewTarget::Branch,
@@ -1305,6 +1334,33 @@ mod tests {
                 .unwrap();
             }
         }
+    }
+
+    /// True paired side-by-side draws a deletion and its aligned addition on the
+    /// SAME screen row: one line shows the old body left, the new body right,
+    /// split by the `│` separator — the density win over v1's split-column.
+    #[test]
+    fn paired_side_by_side_shows_both_sides_on_one_row() {
+        let mut state = demo_state();
+        state.side_by_side = true;
+        state.rebuild_rows();
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| {
+            let _ = render(f, Rect::new(0, 0, 60, 20), &mut state, FocusLevel::Focused);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let mut paired_row = false;
+        for y in 0..20 {
+            let row: String = (0..60).map(|x| buf[(x, y)].symbol()).collect();
+            if row.contains("old") && row.contains("new") && row.contains('│') {
+                paired_row = true;
+            }
+        }
+        assert!(
+            paired_row,
+            "the deletion (old) and addition (new) render on one paired row"
+        );
     }
 
     /// A far jump under wrap (`G`-style: selection moved, scroll untouched)

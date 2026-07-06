@@ -620,10 +620,18 @@ reviewed-marks never collide across repos. Each repo resolves its own base
 branch); the commit target lists commits across all repos, repo-tagged.
 
 **Why unified *and* side-by-side?** tuicr offers both (its `diff_view`);
-`v` toggles them. v1's side-by-side is split-column (one source line per
-row — context on both sides, additions/deletions on their own side) so
-selection + comment anchoring (1 row = 1 line) stay intact; true paired
-side-by-side is a follow-up.
+`v` toggles them. The side-by-side layout is **true paired** — a deletion
+(left) and its aligned addition (right) sit on the *same* screen row
+(positional `del[k] ↔ add[k]` alignment, `session::review::pair_hunk`),
+so a modified block reads as N rows instead of the 2N a stacked layout
+takes. The core invariant is preserved: a paired row is still **one
+selectable unit** (the pairing is a rendering concern; `ReviewRow::Line`
+stays row-granular), and which side a comment attaches to is resolved at
+compose time — keyboard defaults to New (the addition), a mouse click uses
+the column it hit (left = Old, right = New). Alignment is positional
+(dependency-free, matching the heuristic syntax highlighter); token-level
+intra-line word diffs, and horizontal-scroll/wrap parity in the paired
+layout, are follow-ups.
 
 **Why syntax highlighting?** Plain diffs are hard to skim. A small,
 dependency-free lexer (`ui::syntax`) colours comments / strings / numbers

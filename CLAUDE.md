@@ -1508,10 +1508,20 @@ code_review`.
   (`App::handle_review_files_key`, captured before the global lookup like the diff
   pane). While open it owns the central pane; `Esc`/`Ctrl+X` (or `F7`) close it.
   Rendered by `ui::code_review`, reusing `scrollbar`/`focus_block`/
-  `render_button_bar`/theme. **Unified or side-by-side** diff layout, toggled with
-  `v` / the footer button (`side_by_side`). **Mouse-first** (no vim modal): click a
-  diff line to select/comment, click footer buttons, drag the scrollbar,
-  wheel-scroll. **tuicr nav keys**: `j`/`k` + arrows, PageUp/Down + `Ctrl+D`/`U`,
+  `render_button_bar`/theme. **Unified or true paired side-by-side** diff layout,
+  toggled with `v` / the footer button (`side_by_side`). Side-by-side is
+  GitHub-style paired: a deletion (left) and its aligned addition (right) share
+  **one** screen row (positional `del[k] ↔ add[k]` alignment via the pure
+  `session::review::pair_hunk`; unpaired remainders get a blank half-cell). The
+  pairing is a rendering concern only — `ReviewRow::Line` stays row-granular, so
+  a paired row is still one selectable unit and every `match` on it is unchanged;
+  the row build (`push_file_rows`) just emits one row per pair (the addition
+  folds into its deletion's row) when `side_by_side`. Which side a comment
+  attaches to is resolved at compose time (`CodeReviewState::selected_anchor`):
+  keyboard defaults to New (the addition), a mouse click uses the column it hit
+  (`App::cr_click_row` → `click_side`; left = Old, right = New). **Mouse-first**
+  (no vim modal): click a diff line to select/comment, click footer buttons, drag
+  the scrollbar, wheel-scroll. **tuicr nav keys**: `j`/`k` + arrows, PageUp/Down + `Ctrl+D`/`U`,
   `g`/`G`, `{`/`}` (or Tab) next/prev file, `[`/`]` next/prev hunk. Every footer
   button is labelled with its key (`Comment·c`, `Send→Agent·e`, `Find·/`, …) so
   the shortcuts are discoverable; the changed-files column shows a nav-key legend.
@@ -1601,12 +1611,14 @@ code_review`.
   the compiled review into the session's agent as a prompt to address it — the
   review → agent → re-review loop, the orchestrator-native equivalent of submit.
 - **v1 follow-ups** (named, not silently dropped): range/multi-line comments,
-  *true* paired side-by-side (v1's side-by-side is split-column — one source line
-  per row, context on both sides, add/del on their own side), async diff build for
+  token-level intra-line word diffs on a paired row (v1 aligns whole lines
+  positionally, not sub-line), async diff build for
   huge repos (v1 builds synchronously on toggle), grammar-aware syntax
   highlighting (v1's lexer is heuristic + language-agnostic), horizontal
   scroll + wrap in the **side-by-side** layout (v1 supports them in unified
-  only), auto-revealing a horizontally-scrolled-off search match, and
+  only; paired rows pin `h_scroll = 0`), per-side search-match highlighting in
+  side-by-side (v1 navigates but doesn't substring-highlight paired rows),
+  auto-revealing a horizontally-scrolled-off search match, and
   search-match highlight across a wrap-boundary seam.
 
 ## Demo Video

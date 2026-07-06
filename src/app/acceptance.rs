@@ -1722,6 +1722,7 @@ fn open_minimal_review(h: &mut Harness) {
             scroll: 0,
             compose: None,
             side_by_side: false,
+            click_side: None,
             h_scroll: 0,
             wrap: false,
             target: crate::app::code_review::ReviewTarget::Working,
@@ -2026,6 +2027,65 @@ fn clicking_review_row_focuses_the_pane() {
         h.app.focus,
         InputFocus::CodeReview,
         "clicking a diff row focuses the review pane"
+    );
+}
+
+/// A click in the paired side-by-side layout records which column (old | new)
+/// it hit, so a follow-up comment attaches to that side; a later column-less
+/// select (scrollbar drag) clears it.
+#[test]
+fn side_by_side_click_records_column_side() {
+    use crate::session::review::Side;
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
+    let sid = h.app.sessions[0].info.id;
+    let mut cr = crate::app::code_review::CodeReviewState::for_test(sid, 1);
+    cr.side_by_side = true;
+    cr.rebuild_rows();
+    h.app.code_reviews.insert(sid, cr);
+    h.app.focus = InputFocus::CodeReview;
+    h.render();
+    let r = h
+        .app
+        .click_targets
+        .iter()
+        .find(|t| matches!(t.action, ClickAction::ReviewRow(_)))
+        .map(|t| t.rect)
+        .expect("review diff rows recorded as click targets");
+
+    // Right column → the New side is recorded for that row.
+    h.app.update(AppMessage::MouseClick {
+        x: r.x + r.width - 1,
+        y: r.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(
+        matches!(
+            h.app.active_review().unwrap().click_side,
+            Some((_, Side::New))
+        ),
+        "a right-column click records the New side"
+    );
+
+    // Left column → the Old side.
+    h.app.update(AppMessage::MouseClick {
+        x: r.x,
+        y: r.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(
+        matches!(
+            h.app.active_review().unwrap().click_side,
+            Some((_, Side::Old))
+        ),
+        "a left-column click records the Old side"
+    );
+
+    // A column-less select (scrollbar drag / cr_select_row) clears it.
+    let sel = h.app.active_review().unwrap().selected;
+    h.app.cr_select_row(sel);
+    assert!(
+        h.app.active_review().unwrap().click_side.is_none(),
+        "a column-less select clears the recorded click side"
     );
 }
 

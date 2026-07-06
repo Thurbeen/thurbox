@@ -404,6 +404,64 @@ fn parse_start(s: &str) -> u32 {
         .unwrap_or(0)
 }
 
+// ── Side-by-side pairing ─────────────────────────────────────────────────────
+
+/// One visual row of the paired (true side-by-side) layout: the old-side and
+/// new-side line indices within a hunk (`None` = a blank half-cell). A context
+/// line pairs with itself (`old == new`); within a change block a deletion and
+/// an addition align positionally (`del[k] ↔ add[k]`), and any uneven remainder
+/// is left half-blank. Every hunk line appears in exactly one [`SidePair`] on
+/// exactly one side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidePair {
+    pub old: Option<usize>,
+    pub new: Option<usize>,
+}
+
+/// Collapse a hunk into paired side-by-side rows (see [`SidePair`]). Positional
+/// alignment — cheap, deterministic, and dependency-free (matching the
+/// heuristic, language-agnostic stance already taken for syntax highlighting).
+/// Pure so the row builder ([`crate::app`]) and the renderer ([`crate::ui`])
+/// derive the exact same pairing and never disagree on which lines share a row.
+pub fn pair_hunk(hunk: &DiffHunk) -> Vec<SidePair> {
+    let lines = &hunk.lines;
+    let mut pairs = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        match lines[i].kind {
+            DiffLineKind::Context => {
+                pairs.push(SidePair {
+                    old: Some(i),
+                    new: Some(i),
+                });
+                i += 1;
+            }
+            // A change block: the run of deletions, then the run of additions
+            // immediately after it (git emits `-` lines before `+` within a
+            // contiguous change). Align them positionally.
+            _ => {
+                let del_start = i;
+                while i < lines.len() && lines[i].kind == DiffLineKind::Del {
+                    i += 1;
+                }
+                let del_len = i - del_start;
+                let add_start = i;
+                while i < lines.len() && lines[i].kind == DiffLineKind::Add {
+                    i += 1;
+                }
+                let add_len = i - add_start;
+                for k in 0..del_len.max(add_len) {
+                    pairs.push(SidePair {
+                        old: (k < del_len).then_some(del_start + k),
+                        new: (k < add_len).then_some(add_start + k),
+                    });
+                }
+            }
+        }
+    }
+    pairs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,5 +693,167 @@ index 1..2 100644
     #[test]
     fn empty_input_yields_no_files() {
         assert!(parse_unified_diff("").is_empty());
+    }
+
+    /// Build a hunk from a compact `kind` list (`c`/`-`/`+`) for pairing tests.
+    fn hunk_of(kinds: &str) -> DiffHunk {
+        let (mut o, mut n) = (1u32, 1u32);
+        let lines = kinds
+            .chars()
+            .map(|ch| {
+                let (kind, old, new) = match ch {
+                    '-' => {
+                        let l = (DiffLineKind::Del, Some(o), None);
+                        o += 1;
+                        l
+                    }
+                    '+' => {
+                        let l = (DiffLineKind::Add, None, Some(n));
+                        n += 1;
+                        l
+                    }
+                    _ => {
+                        let l = (DiffLineKind::Context, Some(o), Some(n));
+                        o += 1;
+                        n += 1;
+                        l
+                    }
+                };
+                DiffLine {
+                    kind,
+                    old_no: old,
+                    new_no: new,
+                    text: ch.to_string(),
+                }
+            })
+            .collect();
+        DiffHunk {
+            old_start: 1,
+            new_start: 1,
+            header: String::new(),
+            lines,
+        }
+    }
+
+    #[test]
+    fn pairs_context_with_itself() {
+        // Two context lines → two rows, each showing the same line on both sides.
+        let pairs = pair_hunk(&hunk_of("cc"));
+        assert_eq!(
+            pairs,
+            vec![
+                SidePair {
+                    old: Some(0),
+                    new: Some(0)
+                },
+                SidePair {
+                    old: Some(1),
+                    new: Some(1)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn pairs_even_change_block_positionally() {
+        // `c - - + + c` → context, then del[0]↔add[0], del[1]↔add[1], context.
+        let pairs = pair_hunk(&hunk_of("c--++c"));
+        assert_eq!(
+            pairs,
+            vec![
+                SidePair {
+                    old: Some(0),
+                    new: Some(0)
+                },
+                SidePair {
+                    old: Some(1),
+                    new: Some(3)
+                },
+                SidePair {
+                    old: Some(2),
+                    new: Some(4)
+                },
+                SidePair {
+                    old: Some(5),
+                    new: Some(5)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn uneven_block_leaves_remainder_half_blank() {
+        // 3 deletions, 1 addition: del[0]↔add[0], then two del-only rows.
+        let pairs = pair_hunk(&hunk_of("---+"));
+        assert_eq!(
+            pairs,
+            vec![
+                SidePair {
+                    old: Some(0),
+                    new: Some(3)
+                },
+                SidePair {
+                    old: Some(1),
+                    new: None
+                },
+                SidePair {
+                    old: Some(2),
+                    new: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn pure_additions_and_deletions_pair_against_blanks() {
+        // Pure additions: every row is new-only (old blank).
+        assert_eq!(
+            pair_hunk(&hunk_of("++")),
+            vec![
+                SidePair {
+                    old: None,
+                    new: Some(0)
+                },
+                SidePair {
+                    old: None,
+                    new: Some(1)
+                },
+            ]
+        );
+        // Pure deletions: every row is old-only (new blank).
+        assert_eq!(
+            pair_hunk(&hunk_of("--")),
+            vec![
+                SidePair {
+                    old: Some(0),
+                    new: None
+                },
+                SidePair {
+                    old: Some(1),
+                    new: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn every_line_appears_in_exactly_one_pair() {
+        let hunk = hunk_of("c--++c-+c");
+        let pairs = pair_hunk(&hunk);
+        let mut seen = std::collections::HashSet::new();
+        for p in &pairs {
+            // A context pair references the same line on both sides (old == new);
+            // an add/del pair references two distinct lines. Count distinct.
+            let distinct: std::collections::HashSet<usize> =
+                [p.old, p.new].into_iter().flatten().collect();
+            for li in distinct {
+                assert!(seen.insert(li), "line {li} placed twice");
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            hunk.lines.len(),
+            "every hunk line is placed exactly once"
+        );
     }
 }
