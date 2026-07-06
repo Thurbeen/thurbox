@@ -640,11 +640,17 @@ via `App::backend_for`).
   re-report must not resurrect an acknowledged `done`). Carve-outs: psmux
   remotes (no subscriptions; hooks stripped) and non-claude agents (their hook
   configs aren't materialized remotely) stay Idle-only.
-- **Caveats** (WSL inherits the SSH path): the headless `session delete --force`
-  teardown (`kill_window`/`git::remove_worktree`) is local-only — a `--force`
-  delete won't kill the in-distro window or remove the in-distro worktree (the
-  TUI's own teardown is backend-aware). `wsl.exe`'s exact arg-passing isn't
-  verified in CI (no WSL runner); the construction is unit-tested
+- **Remote teardown** (WSL inherits the SSH path): `session delete --force`
+  teardown is **backend-aware** — `teardown_runtime_resources` resolves the
+  session's `HostDef` from its `backend_type` and, for a remote session, kills
+  the pane via `kill_pane_remote(host, backend_id)` and removes each worktree
+  via `git::remove_worktree_on(Some(host), …)` (local sessions keep the
+  `kill_window`/`remove_worktree` + Windows pane-reap path). Best-effort: an
+  unreachable host or a missing `hosts.toml` entry is recorded in
+  `ForceDeleteReport.remote_teardown_error` (surfaced in the CLI JSON) and the
+  row is still soft-/force-deleted. Like local force-delete it removes the
+  worktree *directory* only, leaving the branch. `wsl.exe`'s exact arg-passing
+  isn't verified in CI (no WSL runner); the construction is unit-tested
   (`transport::tests::wsl_*`, `git_command_wsl_*`).
 - **Local e2e**: `scripts/dev/e2e/linux-container.sh up` spins a throwaway Podman
   container (sshd + tmux + git) and `… test` asserts a session lands on the

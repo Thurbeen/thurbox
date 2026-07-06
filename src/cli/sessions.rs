@@ -218,6 +218,9 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 if !report.worktree_errors.is_empty() {
                     detail.push(("worktree errors", report.worktree_errors.join("; ")));
                 }
+                if let Some(err) = &report.remote_teardown_error {
+                    detail.push(("remote teardown error", err.clone()));
+                }
                 for line in output::kv(&detail).lines() {
                     human.push_str(&format!("\n  {line}"));
                 }
@@ -232,6 +235,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     "removed_worktrees": report.removed_worktrees,
                     "worktree_errors": report.worktree_errors,
                     "disabled_automations": report.disabled_automations,
+                    "remote_teardown_error": report.remote_teardown_error,
                 }),
                 human,
             ))

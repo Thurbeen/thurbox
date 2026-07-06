@@ -13,6 +13,12 @@ pub struct ForceDeleteReport {
     pub removed_worktrees: Vec<String>,
     pub worktree_errors: Vec<String>,
     pub disabled_automations: usize,
+    /// Set when the session lived on a remote host (SSH/WSL) and its window
+    /// could not be torn down there: the host is unreachable, has no
+    /// `hosts.toml` entry, or the session carries no pane id. Best-effort — an
+    /// unreachable host is expected (that's often *why* someone force-deletes),
+    /// so this is recorded rather than aborting the delete.
+    pub remote_teardown_error: Option<String>,
 }
 
 /// Soft-delete a session and (when `force`) also tear down its runtime
@@ -61,10 +67,58 @@ pub fn delete_session_headless(
 /// the TUI's hard-delete confirmation can close without blocking on a remote
 /// `kill-window` or a `git worktree remove`. Best-effort: failures are logged
 /// into `report` (or `tracing::warn`), never abort.
+///
+/// **Backend-aware.** The window kill and each worktree removal run on the
+/// server the session actually lives on, resolved from `session.backend_type`:
+/// a local backend uses the local tmux socket + local `git`; an `ssh:`/`wsl:`
+/// backend kills the pane and removes the worktrees over that host's launcher.
+/// The symlink workspace is always local (a spawn-time process-cwd detail under
+/// the local data dir), so it is torn down regardless of backend.
 pub fn teardown_runtime_resources(
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
+    if crate::session::is_remote_backend(&session.backend_type) {
+        // Off-local session: kill the pane + remove worktrees on the host. An
+        // unresolvable/unreachable host is expected — record it, never abort.
+        let registry = crate::agent::host_config::load_all();
+        match registry.get_by_backend(&session.backend_type) {
+            Some(host) => {
+                kill_remote_window(host, session, report);
+                for wt in &session.worktrees {
+                    remove_worktree_into(Some(host), wt, report);
+                }
+            }
+            None => {
+                let msg = format!(
+                    "remote host '{}' not found in hosts.toml; \
+                     left its window + worktrees in place",
+                    session.backend_type
+                );
+                tracing::warn!("{msg}");
+                report.remote_teardown_error = Some(msg);
+            }
+        }
+    } else {
+        kill_local_window(session, report);
+        for wt in &session.worktrees {
+            remove_worktree_into(None, wt, report);
+        }
+    }
+
+    // Tear down the multi-repo symlink workspace (if any). Only the symlinks
+    // are removed — the underlying repos are untouched. Always local: the
+    // workspace lives under the local data dir even for a remote session.
+    if let Some(asid) = &session.agent_session_id {
+        if let Err(e) = crate::workspace::remove_workspace(asid) {
+            tracing::warn!("remove_workspace({asid}) failed: {e}");
+        }
+    }
+}
+
+/// Kill the session's window on the local tmux server, reaping the pane's child
+/// process on Windows (where a live process's cwd blocks the later rmdir).
+fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDeleteReport) {
     // Capture the pane's OS pid *before* the kill so we can reap the pane's child
     // process below. Windows refuses to remove a directory that is a live
     // process's cwd, and a session's agent runs with cwd = its worktree /
@@ -91,16 +145,37 @@ pub fn teardown_runtime_resources(
     if let Some(pid) = pane_pid {
         reap_pane_process(pid);
     }
+}
 
-    for wt in &session.worktrees {
-        remove_worktree_into(wt, report);
+/// Kill the session's pane on a remote host by its persisted pane id (`%N`) —
+/// the addressable unit remotely (there's no cheap "window by thurbox name"
+/// lookup over the wire). Best-effort: a blank pane id or an unreachable host
+/// is recorded in `report.remote_teardown_error`, never aborts.
+fn kill_remote_window(
+    host: &crate::session::HostDef,
+    session: &crate::sync::SharedSession,
+    report: &mut ForceDeleteReport,
+) {
+    let pane = session.backend_id.trim();
+    if pane.is_empty() {
+        let msg = format!(
+            "session '{}' on {} has no pane id; could not kill its remote window",
+            session.name,
+            host.backend_name()
+        );
+        tracing::warn!("{msg}");
+        report.remote_teardown_error = Some(msg);
+        return;
     }
-
-    // Tear down the multi-repo symlink workspace (if any). Only the symlinks
-    // are removed — the underlying repos are untouched.
-    if let Some(asid) = &session.agent_session_id {
-        if let Err(e) = crate::workspace::remove_workspace(asid) {
-            tracing::warn!("remove_workspace({asid}) failed: {e}");
+    match crate::agent::tmux::kill_pane_remote(host, pane) {
+        Ok(()) => report.killed_window = true,
+        Err(e) => {
+            let msg = format!(
+                "kill_pane_remote({}, {pane}) failed: {e}",
+                host.backend_name()
+            );
+            tracing::warn!("{msg}");
+            report.remote_teardown_error = Some(msg);
         }
     }
 }
@@ -134,9 +209,16 @@ fn reap_pane_process(pid: u32) {
     }
 }
 
-/// Best-effort worktree removal, recording success/failure into `report`.
-fn remove_worktree_into(wt: &crate::sync::SharedWorktree, report: &mut ForceDeleteReport) {
-    match crate::git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
+/// Best-effort worktree removal on `host` (local when `None`), recording
+/// success/failure into `report`. Removes the worktree *directory* only — the
+/// git branch is deliberately left behind (local and remote alike), matching
+/// force-delete's contract.
+fn remove_worktree_into(
+    host: Option<&crate::session::HostDef>,
+    wt: &crate::sync::SharedWorktree,
+    report: &mut ForceDeleteReport,
+) {
+    match crate::git::remove_worktree_on(host, &wt.repo_path, &wt.worktree_path) {
         Ok(()) => report
             .removed_worktrees
             .push(wt.worktree_path.display().to_string()),
@@ -153,13 +235,24 @@ mod tests {
     use crate::sync::SharedSession;
 
     fn insert_session(db: &Database, name: &str) -> SessionId {
+        insert_session_on(db, name, "local-tmux", "")
+    }
+
+    /// Insert a session with an explicit backend type + pane id, so the remote
+    /// teardown paths can be exercised.
+    fn insert_session_on(
+        db: &Database,
+        name: &str,
+        backend_type: &str,
+        backend_id: &str,
+    ) -> SessionId {
         let id = SessionId::default();
         let shared = SharedSession {
             id,
             name: name.into(),
             agent: "dev".into(),
-            backend_id: String::new(),
-            backend_type: "local-tmux".into(),
+            backend_id: backend_id.into(),
+            backend_type: backend_type.into(),
             agent_session_id: Some(uuid::Uuid::new_v4().to_string()),
             cwd: None,
             additional_dirs: Vec::new(),
@@ -243,6 +336,90 @@ mod tests {
                 .force_deleted,
             "a force delete is flagged as not restorable"
         );
+    }
+
+    // The resolved-remote-host kill/worktree path (a configured, reachable
+    // host) is not unit-tested here: it needs a live SSH/WSL host and
+    // `kill_pane_remote` would issue a real connection. The routing is thin —
+    // `remove_worktree_on` / `kill_pane_remote` are exercised where they live —
+    // so these tests cover the two host-resolution failure modes instead.
+    // (cfg(test) sandboxes the config dir, so `load_all` sees an empty
+    // `hosts.toml` and never touches the real network.)
+
+    #[test]
+    fn force_delete_remote_session_with_no_configured_host_records_error() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+
+        let report = delete_session_headless(&db, id, true).unwrap();
+
+        // No matching host in (the empty test) hosts.toml → recorded, not killed.
+        assert!(!report.killed_window);
+        let err = report
+            .remote_teardown_error
+            .expect("remote teardown error recorded");
+        assert!(err.contains("ssh:devbox"), "got {err}");
+
+        // The row is still soft- + force-deleted (best-effort teardown).
+        assert!(db.get_session_by_id(id).unwrap().is_none());
+        assert!(
+            db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .force_deleted
+        );
+    }
+
+    #[test]
+    fn force_delete_local_session_records_no_remote_error() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session(&db, "local");
+
+        let report = delete_session_headless(&db, id, true).unwrap();
+        assert!(report.remote_teardown_error.is_none());
+    }
+
+    #[test]
+    fn remote_teardown_with_unresolved_host_leaves_worktrees_untouched() {
+        // A remote session whose host isn't configured: its worktree dirs live
+        // on that (now unreachable) host, so they must be left alone — NOT
+        // attempted against the local `git`, which would either error out or,
+        // worse, act on a same-path local directory. Exercises the routing
+        // directly (no DB round-trip needed for the worktree list).
+        let session = SharedSession {
+            id: SessionId::default(),
+            name: "remote".into(),
+            agent: "dev".into(),
+            backend_id: "%3".into(),
+            backend_type: "wsl:Ubuntu".into(),
+            // `None` so no local symlink-workspace cleanup is attempted either.
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: vec![crate::sync::SharedWorktree {
+                repo_path: "/nonexistent/repo".into(),
+                worktree_path: "/nonexistent/repo/wt".into(),
+                branch: "feat/x".into(),
+            }],
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+
+        let mut report = ForceDeleteReport::default();
+        teardown_runtime_resources(&session, &mut report);
+
+        assert!(
+            report.remote_teardown_error.is_some(),
+            "unreachable host recorded"
+        );
+        assert!(
+            report.removed_worktrees.is_empty() && report.worktree_errors.is_empty(),
+            "no local git worktree removal attempted for a remote session"
+        );
+        assert!(!report.killed_window);
     }
 
     #[test]
