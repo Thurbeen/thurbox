@@ -287,7 +287,7 @@ fn push_idle_counts<'a>(spans: &mut Vec<Span<'a>>, state: &FooterState<'a>) {
 }
 
 fn push_shortcut_hints(spans: &mut Vec<Span<'_>>) {
-    // Focus stays an informational hint (no single click target); the footer
+    // Focus + Open stay informational hints (no single click target); the footer
     // buttons (Help / Info / Files / Theme / Tasks / Settings / Quit) are
     // rendered as right-aligned clickable pills.
     let bold_key = Theme::keybind().add_modifier(Modifier::BOLD);
@@ -297,6 +297,8 @@ fn push_shortcut_hints(spans: &mut Vec<Span<'_>>) {
         Span::styled("/", desc),
         Span::styled("^L", bold_key),
         Span::styled(" Focus ", desc),
+        Span::styled("^O", bold_key),
+        Span::styled(" Open ", desc),
     ]);
 }
 
@@ -603,5 +605,20 @@ mod tests {
         );
         let last = hits.iter().max_by_key(|(h, _)| h.rect.x).unwrap().0.rect;
         assert_eq!(last.x + last.width, 120);
+    }
+
+    /// The left informational hint cluster advertises both Focus (^H/^L) and
+    /// Open (^O). Asserted on the spans directly — on a narrow footer the
+    /// right-aligned pills overlay this text, so a full render can't see it.
+    #[test]
+    fn shortcut_hints_advertise_focus_and_open() {
+        let mut spans = Vec::new();
+        push_shortcut_hints(&mut spans);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("^H"), "Focus-previous key present: {text:?}");
+        assert!(text.contains("^L"), "Focus-next key present: {text:?}");
+        assert!(text.contains("Focus"), "Focus label present: {text:?}");
+        assert!(text.contains("^O"), "Open key present: {text:?}");
+        assert!(text.contains("Open"), "Open label present: {text:?}");
     }
 }

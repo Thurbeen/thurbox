@@ -763,7 +763,7 @@ pub struct App {
 }
 
 const EDITOR_NOT_CONFIGURED: &str =
-    "No editor configured — set `editor_command` via MCP or export $EDITOR/$VISUAL";
+    "No editor configured — run `thurbox-cli editor set <cmd>` or export $EDITOR/$VISUAL";
 
 /// Output-quiescence threshold that breaks a *stuck* `working` hook state.
 ///

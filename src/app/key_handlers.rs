@@ -670,10 +670,7 @@ impl App {
 
     fn open_file_in_editor(&mut self, root: std::path::PathBuf, file: std::path::PathBuf) {
         let Some(editor) = super::helpers::resolve_editor_command(&self.db) else {
-            self.set_status(
-                super::StatusLevel::Error,
-                "No editor configured — set `editor_command` via MCP or $VISUAL / $EDITOR.",
-            );
+            self.set_error(super::EDITOR_NOT_CONFIGURED);
             return;
         };
         if let Err(e) = super::helpers::open_in_editor(&[root, file], &editor) {
