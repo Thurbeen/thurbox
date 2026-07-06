@@ -789,9 +789,9 @@ impl App {
         }
     }
 
-    /// Toggle soft-wrap of long diff lines (unified layout). Wrapping and
-    /// horizontal scroll are mutually exclusive, so turning wrap on resets the
-    /// column offset.
+    /// Toggle soft-wrap of long diff lines (unified body, or each paired
+    /// side-by-side half independently). Wrapping and horizontal scroll are
+    /// mutually exclusive, so turning wrap on resets the column offset.
     pub(crate) fn cr_toggle_wrap(&mut self) {
         if let Some(cr) = self.active_review_mut() {
             cr.wrap = !cr.wrap;

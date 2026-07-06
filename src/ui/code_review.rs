@@ -196,11 +196,12 @@ fn render_rows(
     // Line-number column width from the largest number on screen.
     let num_w = line_number_width(state);
 
-    // Wrapping is a unified-only concern: the paired side-by-side layout is
-    // always one screen row per logical row (its horizontal-scroll/wrap parity
-    // is a named follow-up). Collapse the two flags into one local so the scroll
-    // math below treats side-by-side exactly like unwrapped unified.
-    let wrap = state.wrap && !state.side_by_side;
+    // Wrap applies to both layouts: a unified line soft-wraps its body, a paired
+    // side-by-side row soft-wraps each half independently (the taller half drives
+    // the row count). Horizontal scroll stays unified-only — side-by-side always
+    // pins `h_scroll` to 0 (below), so the scroll math treats an unwrapped paired
+    // row exactly like an unwrapped unified one.
+    let wrap = state.wrap;
 
     // Final horizontal clamp: the app layer bounds `h_scroll` by the longest
     // line, but the exact body width is only known now — never scroll past what
@@ -318,9 +319,10 @@ fn line_number_width(state: &CodeReviewState) -> usize {
 
 /// Build the visual sub-rows for logical row `i`. `query` (lowercased,
 /// non-empty) is the active find-in-diff search. `h_scroll` slides the body
-/// horizontally (unified, non-wrap). With `wrap` on, a long unified diff line
-/// expands into several `Line`s (continuation rows carry a blank gutter); every
-/// other row kind, and side-by-side, always yields exactly one line.
+/// horizontally (unified, non-wrap). With `wrap` on, a long diff line expands
+/// into several `Line`s — a unified line wraps its body (continuation rows carry
+/// a blank gutter), a paired side-by-side row wraps each half independently
+/// (the taller half drives the row count); every other row kind yields one line.
 fn row_visual_lines<'a>(
     state: &CodeReviewState,
     i: usize,
@@ -350,7 +352,7 @@ fn row_visual_lines<'a>(
             let f = &state.files[*fi];
             let hunk = &f.hunks[*hi];
             if state.side_by_side {
-                vec![paired_diff_line(hunk, *li, width, num_w, &sel_style)]
+                paired_diff_line(hunk, *li, width, num_w, wrap, &sel_style)
             } else if wrap {
                 let l = &hunk.lines[*li];
                 unified_diff_line_wrapped(f, l, width, num_w, selected, query, &sel_style)
@@ -619,22 +621,42 @@ fn converge_wrap_scroll(state: &mut CodeReviewState, width: usize, num_w: usize,
 }
 
 /// How many visual rows logical row `i` occupies — the count-only mirror of
-/// [`row_visual_lines`] (wrap inflates only unified diff lines; every other
-/// row kind, and side-by-side, is exactly one). Must stay in lockstep with
-/// [`unified_diff_line_wrapped`]'s chunking so the wrap scroll walk in
-/// `render_rows` lands exactly where the build does.
+/// [`row_visual_lines`] (wrap inflates only diff lines; every other row kind is
+/// exactly one). Must stay in lockstep with [`unified_diff_line_wrapped`]'s and
+/// [`paired_diff_line`]'s chunking so the wrap scroll walk in `render_rows`
+/// lands exactly where the build does.
 fn visual_line_count(state: &CodeReviewState, i: usize, width: usize, num_w: usize) -> usize {
-    if !state.wrap || state.side_by_side {
+    if !state.wrap {
         return 1;
     }
     match &state.rows[i] {
         ReviewRow::Line(fi, hi, li) => {
-            let l = &state.files[*fi].hunks[*hi].lines[*li];
-            let avail = width.saturating_sub(gutter_width(num_w)).max(1);
-            l.text.chars().count().div_ceil(avail).max(1)
+            let hunk = &state.files[*fi].hunks[*hi];
+            if state.side_by_side {
+                paired_visual_count(hunk, *li, width, num_w)
+            } else {
+                let l = &hunk.lines[*li];
+                let avail = width.saturating_sub(gutter_width(num_w)).max(1);
+                l.text.chars().count().div_ceil(avail).max(1)
+            }
         }
         _ => 1,
     }
+}
+
+/// Visual-row count of a wrapped paired side-by-side row — the count-only mirror
+/// of [`paired_diff_line`]'s chunking (each half wraps independently; the taller
+/// half drives the row count). Kept next to it so the two can't drift.
+fn paired_visual_count(hunk: &DiffHunk, li: usize, width: usize, num_w: usize) -> usize {
+    let pair = paired_row(hunk, li);
+    let body_w = paired_body_width(width, num_w);
+    let lc = pair.old.map_or(0, |i| {
+        hunk.lines[i].text.chars().count().div_ceil(body_w).max(1)
+    });
+    let rc = pair.new.map_or(0, |i| {
+        hunk.lines[i].text.chars().count().div_ceil(body_w).max(1)
+    });
+    lc.max(rc).max(1)
 }
 
 /// Styled spans for a diff body windowed to `[start, start + avail)` chars,
@@ -741,6 +763,27 @@ fn comment_line<'a>(
     Line::from(spans)
 }
 
+/// Re-derive the [`SidePair`] a paired row stands for from the same pure pairing
+/// the row builder used, so renderer and builder never disagree on which lines
+/// share the row. `li` is the row's representative line index.
+fn paired_row(hunk: &DiffHunk, li: usize) -> SidePair {
+    pair_hunk(hunk)
+        .into_iter()
+        .find(|p| p.old == Some(li) || p.new == Some(li))
+        .unwrap_or(SidePair {
+            old: Some(li),
+            new: None,
+        })
+}
+
+/// Body (text) width of one side-by-side half cell: the half width minus the
+/// right-aligned line-number column and its trailing space (mirrors
+/// [`half_cell_chunk`]'s framing).
+fn paired_body_width(width: usize, num_w: usize) -> usize {
+    let half = width.saturating_sub(1) / 2;
+    half.saturating_sub(num_w + 1).max(1)
+}
+
 /// Render one paired side-by-side row: the old-side cell `│` the new-side cell.
 /// True GitHub-style pairing — a deletion (left) and its aligned addition
 /// (right) sit on the *same* screen row (see
@@ -750,23 +793,22 @@ fn comment_line<'a>(
 /// selectable unit; which side a comment attaches to is resolved at compose
 /// time. Plain add/remove tinting (no syntax highlighting), matching the
 /// unified body's gutter-sign convention.
+///
+/// With `wrap` on, each half soft-wraps independently onto as many chunks as its
+/// text needs; the taller half drives the visual-row count (mirrored by
+/// [`paired_visual_count`]), and the shorter half pads with blank cells past its
+/// last chunk. Off, each half truncates to one row (the historical behavior).
 fn paired_diff_line<'a>(
     hunk: &DiffHunk,
     li: usize,
     width: usize,
     num_w: usize,
+    wrap: bool,
     sel_style: &impl Fn(Style) -> Style,
-) -> Line<'a> {
-    // Re-derive the pair this row stands for from the same pure pairing the row
-    // builder used, so the two never disagree on which lines share the row.
-    let pair = pair_hunk(hunk)
-        .into_iter()
-        .find(|p| p.old == Some(li) || p.new == Some(li))
-        .unwrap_or(SidePair {
-            old: Some(li),
-            new: None,
-        });
+) -> Vec<Line<'a>> {
+    let pair = paired_row(hunk, li);
     let half = width.saturating_sub(1) / 2;
+    let body_w = paired_body_width(width, num_w);
     let prim = || Style::default().fg(Theme::text_primary());
     let removed = || {
         Style::default()
@@ -778,42 +820,72 @@ fn paired_diff_line<'a>(
             .fg(Theme::diff_added())
             .bg(Theme::diff_added_bg())
     };
+
+    let left = pair.old.map(|i| &hunk.lines[i]);
+    let right = pair.new.map(|i| &hunk.lines[i]);
     // Each cell tints only when it carries a change (a context line pairs with
     // itself and stays plain on both sides); sel_style overrides bg on select.
-    let (left, lstyle) = match pair.old.map(|i| &hunk.lines[i]) {
-        Some(l) => (
-            half_cell(l.old_no, &l.text, num_w, half),
-            if l.kind == DiffLineKind::Del {
-                removed()
-            } else {
-                prim()
-            },
-        ),
-        None => (half_cell(None, "", num_w, half), prim()),
+    let lstyle = match left {
+        Some(l) if l.kind == DiffLineKind::Del => removed(),
+        _ => prim(),
     };
-    let (right, rstyle) = match pair.new.map(|i| &hunk.lines[i]) {
-        Some(l) => (
-            half_cell(l.new_no, &l.text, num_w, half),
-            if l.kind == DiffLineKind::Add {
-                added()
-            } else {
-                prim()
-            },
-        ),
-        None => (half_cell(None, "", num_w, half), prim()),
+    let rstyle = match right {
+        Some(l) if l.kind == DiffLineKind::Add => added(),
+        _ => prim(),
     };
-    Line::from(vec![
-        Span::styled(left, sel_style(lstyle)),
-        Span::styled("│", sel_style(Style::default().fg(Theme::text_muted()))),
-        Span::styled(right, sel_style(rstyle)),
-    ])
+
+    // How many chunks each present half needs (an absent half contributes none);
+    // the taller drives the row count. Must match `paired_visual_count`.
+    let chunks = |line: Option<&DiffLine>| -> usize {
+        match line {
+            Some(l) if wrap => l.text.chars().count().div_ceil(body_w).max(1),
+            Some(_) => 1,
+            None => 0,
+        }
+    };
+    let lchunks = chunks(left);
+    let rchunks = chunks(right);
+    let rows = lchunks.max(rchunks).max(1);
+
+    (0..rows)
+        .map(|c| {
+            // A half renders its `c`-th chunk while it still has one; past that
+            // (the shorter side, or an absent side) it pads blank + plain.
+            let (left_cell, ls) = if c < lchunks {
+                let l = left.expect("chunk count > 0 implies present");
+                (half_cell_chunk(l.old_no, &l.text, c, num_w, half), lstyle)
+            } else {
+                (half_cell_chunk(None, "", 0, num_w, half), prim())
+            };
+            let (right_cell, rs) = if c < rchunks {
+                let r = right.expect("chunk count > 0 implies present");
+                (half_cell_chunk(r.new_no, &r.text, c, num_w, half), rstyle)
+            } else {
+                (half_cell_chunk(None, "", 0, num_w, half), prim())
+            };
+            Line::from(vec![
+                Span::styled(left_cell, sel_style(ls)),
+                Span::styled("│", sel_style(Style::default().fg(Theme::text_muted()))),
+                Span::styled(right_cell, sel_style(rs)),
+            ])
+        })
+        .collect()
 }
 
-/// A fixed-width side-by-side cell: right-aligned line number + text, padded or
-/// truncated to exactly `cell_w` columns so the center separator stays aligned.
-fn half_cell(num: Option<u32>, text: &str, num_w: usize, cell_w: usize) -> String {
-    let n = num.map(|n| n.to_string()).unwrap_or_default();
-    let raw = format!("{n:>num_w$} {text}");
+/// A fixed-width side-by-side half cell for wrap chunk `c`: the right-aligned
+/// line number (only on `c == 0`; blank on continuation rows) then the `c`-th
+/// `body_w`-wide slice of `text`, padded or truncated to exactly `cell_w`
+/// columns so the center separator stays aligned. With `c == 0` and a
+/// single-chunk text this reproduces the unwrapped cell exactly.
+fn half_cell_chunk(num: Option<u32>, text: &str, c: usize, num_w: usize, cell_w: usize) -> String {
+    let body_w = cell_w.saturating_sub(num_w + 1).max(1);
+    let n = if c == 0 {
+        num.map(|n| n.to_string()).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let slice: String = text.chars().skip(c * body_w).take(body_w).collect();
+    let raw = format!("{n:>num_w$} {slice}");
     let len = raw.chars().count();
     if len > cell_w {
         raw.chars().take(cell_w).collect()
@@ -1418,6 +1490,106 @@ mod tests {
         assert!(
             cont.contains('z'),
             "wrapped continuation shows body text: {cont:?}"
+        );
+    }
+
+    /// Wrap in side-by-side: a long paired row expands onto several visual rows
+    /// sharing its logical index (so selection/anchor stay 1 row = 1 unit), each
+    /// keeps the `│` separator, and the wrapped tail shows body text on a lower
+    /// row — the split-mode mirror of [`wrap_expands_long_line_into_multiple_visual_rows`].
+    #[test]
+    fn wrap_expands_paired_row_in_side_by_side() {
+        let mut state = demo_state_long();
+        state.side_by_side = true;
+        state.wrap = true;
+        state.rebuild_rows();
+        // Side-by-side rows: FileHeader, HunkHeader, then one paired row per
+        // SidePair. The 300-char line is the context pair (logical row 2).
+        state.selected = 2;
+        let mut term = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        let mut hits: Vec<RowHitbox> = Vec::new();
+        term.draw(|f| {
+            hits = render(f, Rect::new(0, 0, 40, 20), &mut state, FocusLevel::Focused).rows;
+        })
+        .unwrap();
+        let dup = hits.iter().filter(|h| h.index == 2).count();
+        assert!(
+            dup >= 2,
+            "the long paired row wraps onto ≥2 visual rows sharing its logical index (got {dup})"
+        );
+        let cont_y = hits.iter().filter(|h| h.index == 2).nth(1).unwrap().rect.y;
+        let buf = term.backend().buffer();
+        let cont: String = (0..40).map(|x| buf[(x, cont_y)].symbol()).collect();
+        assert!(
+            cont.contains('z'),
+            "wrapped continuation shows body text: {cont:?}"
+        );
+        assert!(
+            cont.contains('│'),
+            "the paired separator persists on continuation rows: {cont:?}"
+        );
+    }
+
+    /// Asymmetric paired wrap: a long deletion paired with a short addition. The
+    /// taller (left) half drives the visual-row count — and the builder emits
+    /// exactly as many rows as `paired_visual_count` predicts (the counter/render
+    /// mirror can't drift) — while the shorter half renders only on the first row
+    /// and pads blank on the continuations.
+    #[test]
+    fn wrap_paired_row_taller_half_drives_rows_shorter_pads_blank() {
+        let mut state = demo_state();
+        // demo_state's hunk is [ctx, Del "old", Add "new"]; make the deletion
+        // long so its half wraps while the addition stays a single row.
+        state.files[0].hunks[0].lines[1].text = "x".repeat(300);
+        state.side_by_side = true;
+        state.wrap = true;
+        state.rebuild_rows();
+        // Side-by-side rows: FileHeader, HunkHeader, context pair (2), the
+        // del/add pair (3, keyed by the old line index 1).
+        state.selected = 3;
+        // `render` wraps the diff in a bordered block, so the row builder sees a
+        // content width of (area 40 − 1-col border each side) = 38 — feed the
+        // counter the same so `expected` matches what the builder emits.
+        let num_w = line_number_width(&state);
+        let expected = paired_visual_count(&state.files[0].hunks[0], 1, 38, num_w);
+        assert!(expected >= 2, "the long deletion should wrap to ≥2 rows");
+
+        // Tall enough that the whole wrapped pair (plus the header/context rows
+        // and the footer) fits the viewport, so the windowed render isn't cut
+        // short and can be compared against the full `paired_visual_count`.
+        let mut term = Terminal::new(TestBackend::new(40, 40)).unwrap();
+        let mut hits: Vec<RowHitbox> = Vec::new();
+        term.draw(|f| {
+            hits = render(f, Rect::new(0, 0, 40, 40), &mut state, FocusLevel::Focused).rows;
+        })
+        .unwrap();
+
+        let pair_rows: Vec<u16> = hits
+            .iter()
+            .filter(|h| h.index == 3)
+            .map(|h| h.rect.y)
+            .collect();
+        assert_eq!(
+            pair_rows.len(),
+            expected,
+            "the builder emits exactly paired_visual_count rows"
+        );
+
+        let buf = term.backend().buffer();
+        let row_text = |y: u16| -> String { (0..40).map(|x| buf[(x, y)].symbol()).collect() };
+        // The short addition ("new") shows on exactly one visual row of the pair.
+        let with_new = pair_rows
+            .iter()
+            .filter(|&&y| row_text(y).contains("new"))
+            .count();
+        assert_eq!(
+            with_new, 1,
+            "shorter half renders once, blank on continuations"
+        );
+        // Every row of the pair carries the long deletion's wrapping tail.
+        assert!(
+            pair_rows.iter().all(|&y| row_text(y).contains('x')),
+            "the taller half's wrapped body spans all pair rows"
         );
     }
 

@@ -1537,15 +1537,19 @@ code_review`.
   (`CodeReviewState::h_scroll`, stepped by `App::cr_scroll_h`, clamped to the
   longest line). A **wrap toggle** (`w` / the `Wrap`/`NoWrap` footer pill,
   `CodeReviewState::wrap`, `App::cr_toggle_wrap`) soft-wraps long lines onto
-  extra screen rows instead. Both are transient (unified layout only; no-ops in
-  side-by-side, which resets `h_scroll`). The core invariant — **1 logical diff
+  extra screen rows instead. **Wrap works in both layouts** — a unified line
+  wraps its body; a paired side-by-side row wraps each half independently and the
+  taller half drives the visual-row count (the shorter half pads blank past its
+  last chunk). Horizontal scroll stays unified-only (side-by-side always pins
+  `h_scroll = 0`). The core invariant — **1 logical diff
   row = 1 selectable unit** — is preserved: selection, comment anchoring, click
   hitboxes, and the `selected`-primary scrollbar stay logical; wrapping only
   expands the *visual* rows in `render_rows`, and every visual sub-row carries
   its parent's logical index (so a click on a wrapped continuation selects the
   whole line, and compose anchors to the line's first visual row). Rendering:
-  `unified_diff_line` (h-scroll) / `unified_diff_line_wrapped` (wrap) both build
-  the windowed body via the shared `diff_body_spans`.
+  `unified_diff_line` (h-scroll) / `unified_diff_line_wrapped` (wrap) /
+  `paired_diff_line` (side-by-side, wrap-aware) — the wrapped-row counts are
+  mirrored by `visual_line_count` / `paired_visual_count` for the scroll walk.
 - **Find in diff (`/`).** A `/`-triggered find sub-mode (also the `Find·/` footer
   button, and `/` from the changed-files pane) searches every visible row's text
   — file paths, hunk headings, diff line bodies, comment bodies (case-insensitive
@@ -1621,8 +1625,8 @@ code_review`.
   positionally, not sub-line), async diff build for
   huge repos (v1 builds synchronously on toggle), grammar-aware syntax
   highlighting (v1's lexer is heuristic + language-agnostic), horizontal
-  scroll + wrap in the **side-by-side** layout (v1 supports them in unified
-  only; paired rows pin `h_scroll = 0`), per-side search-match highlighting in
+  scroll in the **side-by-side** layout (wrap now works there; paired rows still
+  pin `h_scroll = 0`), per-side search-match highlighting in
   side-by-side (v1 navigates but doesn't substring-highlight paired rows),
   auto-revealing a horizontally-scrolled-off search match, and
   search-match highlight across a wrap-boundary seam.
