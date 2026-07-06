@@ -880,10 +880,11 @@ fn push_prefix_marks(
 
     // Remote (ssh:/wsl:) sessions get a remote-link mark so it's clear at a
     // glance the agent runs on another machine. Sits right after the status
-    // dot; two trailing spaces keep it off the session name.
+    // dot; a single trailing space keeps it off the session name, matching
+    // the worktree mark's spacing.
     if info.remote_host.is_some() {
         spans.push(Span::styled(
-            "\u{21c5}  ",
+            "\u{21c5} ",
             mark_style(is_dimmed, Theme::accent),
         ));
     }
