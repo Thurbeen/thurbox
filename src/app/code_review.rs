@@ -766,8 +766,14 @@ impl App {
             .iter()
             .position(|r| matches!(r, ReviewRow::FileHeader(fi) if *fi == file_idx))
         {
+            // Clicking a file in the changed-files list means "reveal this
+            // file", so anchor its header to the top of the viewport. Setting
+            // `scroll = selected` subsumes `ensure_visible` (which only pulls
+            // the window up); without it a downward jump would let the renderer
+            // clamp the header to the bottom row. The renderer's `total -
+            // height` clamp still handles a file near the end.
             cr.selected = pos;
-            cr.ensure_visible();
+            cr.scroll = pos;
         }
     }
 

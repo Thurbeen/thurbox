@@ -977,6 +977,24 @@ fn review_files_pane_navigates_and_opens_into_diff() {
 }
 
 #[test]
+fn review_jump_to_file_anchors_header_to_top() {
+    let mut h = Harness::standard(1);
+    open_review(&mut h, 5);
+
+    // Jumping to a file below the current window must scroll its header to the
+    // top of the viewport, not leave it pinned to the bottom line (the renderer
+    // only clamps the *upper* edge). Regression: clicking a changed-files row
+    // landed the file at the last visible row.
+    h.app.cr_jump_to_file(3);
+    let cr = h.app.active_review().unwrap();
+    assert_eq!(cr.current_file(), Some(3));
+    assert_eq!(
+        cr.scroll, cr.selected,
+        "the jumped-to file header sits at the top of the viewport"
+    );
+}
+
+#[test]
 fn review_files_pane_demoted_to_terminal_when_review_closes() {
     let mut h = Harness::standard(1);
     open_review(&mut h, 2);
