@@ -65,6 +65,7 @@ mod tests {
             _: &str,
             _: u16,
             _: u16,
+            _: Option<Vec<u8>>,
         ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
             anyhow::bail!("stub backend does not adopt")
         }

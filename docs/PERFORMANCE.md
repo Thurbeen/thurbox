@@ -77,6 +77,7 @@ wall-clock-free `u64` counters bumped at the render/tick hot paths:
 | `hook_state_loads` | `refresh_session_statuses` actually reloaded the persisted hook columns (`load_hook_states`) — gated on a `data_version` change (ADR-P6), so it stays flat while idle |
 | `external_poll_checks` / `external_poll_reloads` | `poll_external_changes` ran its cheap `PRAGMA data_version` check / found a change and did a full shared-state reload |
 | `review_builds_dispatched` / `review_builds_applied` | code-review diff builds handed to the background worker / applied back on the UI thread (ADR-P8) |
+| `restore_seed_prefetches` | restore history captures prefetched in parallel, one per matched pane (ADR-P9) |
 
 `hook_state_loads` is the regression gate for ADR-P6: it climbs once at startup
 and then only when an external `session signal` commits, instead of ~1 per tick.
@@ -188,10 +189,13 @@ won't pay off.
   `adopt_split` line (in `TmuxBackend::adopt`) further breaks `adopt_ms` into
   `capture_ms` (the independent `tmux capture-pane` subprocess — the only part
   that could run in parallel across sessions) and `connect_ms` (the
-  control-mode attach). This split is the deciding measurement for parallelizing
-  restore: the control-mode connection is serialized by a single mutex held
-  across each command's full round-trip (`TmuxBackend::with_control`), so
-  `connect_ms` is inherently sequential and only `capture_ms` can be overlapped.
+  control-mode attach). This split was the deciding measurement for
+  parallelizing restore: the control-mode connection is serialized by a single
+  mutex held across each command's full round-trip
+  (`TmuxBackend::with_control`), so `connect_ms` is inherently sequential and
+  only `capture_ms` can be overlapped — which ADR-P9 now does (on the startup
+  restore path `capture_ms` reads ≈ 0 and a `restore_capture_prefetch` line
+  reports the overlapped batch).
   Off by default — never affects normal runs or the smoke test; the timing reads
   are gated on the flag so there is zero overhead otherwise.
 - **Binary size**: the non-gating `binary-size` CI job
@@ -341,6 +345,44 @@ uses for git stats and worktree creation.
 - *An async-aware diff stream (progressive per-repo fill-in)* — more moving
   parts for a build that is fast locally; revisit only if multi-repo remote
   reviews prove slow *after* this change.
+
+---
+
+## ADR-P9: Prefetch restore's history captures in parallel
+
+**Choice**: The sequential local-session restore adopts one session at a time,
+and ADR-P5's `adopt_split` measurement shows each adopt is `capture_ms` (an
+independent `tmux capture-pane` subprocess) + `connect_ms` (the control-mode
+attach, serialized by the connection mutex — inherently sequential). Restore
+now runs all matched panes' captures **in parallel** up front
+(`App::prefetch_capture_seeds`, a bounded `std::thread::scope` fan-out capped
+at 8 concurrent subprocesses) and passes each seed into the adopt:
+`SessionBackend::adopt` takes `seed: Option<Vec<u8>>` (`None` = capture
+inline, exactly the old behavior — used by mid-run adopts, shell-pane
+re-adoption, and the remote restore path) and the new
+`SessionBackend::capture_history` exposes the capture as its own trait method.
+With N sessions the restore's capture cost drops from `N × capture_ms` to
+roughly one `capture_ms`; `adopt_split` now logs `capture_ms ≈ 0` on the
+startup path, and a `restore_capture_prefetch` line (`sessions`,
+`prefetch_ms`) reports the overlapped batch.
+
+Gate: `restore_seed_prefetches` (one per prefetched pane) +
+`perf_restore_prefetches_capture_seeds` (`src/app/mod.rs` tests — a recording
+backend asserts every adopt received a prefetched seed and the capture ran
+exactly once per session; count-based, no timing).
+
+**Why**: startup time is dominated by restore once a few sessions exist, and
+the capture half is the only slice that parallelizes without touching the
+control-mode serialization ADR-P5 documents.
+
+**Rejected**:
+
+- *Parallelizing whole adopts* — `connect_pane` shares one control-mode
+  connection guarded by a mutex held across each command round-trip; threads
+  would just queue on it.
+- *Unbounded capture fan-out* — a 50-session restore would fork 50
+  subprocesses at once; the cap keeps the burst bounded with the same
+  wall-clock win.
 
 ---
 

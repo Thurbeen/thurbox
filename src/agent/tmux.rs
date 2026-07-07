@@ -1218,23 +1218,33 @@ impl SessionBackend for TmuxBackend {
         })
     }
 
-    fn adopt(&self, backend_id: &str, rows: u16, cols: u16) -> Result<AdoptedSession> {
+    fn adopt(
+        &self,
+        backend_id: &str,
+        rows: u16,
+        cols: u16,
+        seed: Option<Vec<u8>>,
+    ) -> Result<AdoptedSession> {
         // backend_id comes from the shared DB — never interpolate it unvalidated.
         if !control_mode::is_valid_pane_id(backend_id) {
             bail!("refusing to adopt invalid pane id: {backend_id:?}");
         }
-        // Opt-in split timing (THURBOX_PERF_LOG): `capture_history_seed` is an
-        // independent `tmux capture-pane` subprocess (parallelizable), while
-        // `connect_pane` drives the serialized control-mode connection. Knowing
-        // their ratio decides whether parallelizing the capture half is worth it.
+        // Opt-in split timing (THURBOX_PERF_LOG): the history capture is an
+        // independent `tmux capture-pane` subprocess, while `connect_pane`
+        // drives the serialized control-mode connection. Restore prefetches
+        // the captures in parallel and passes them in (ADR-P9), so
+        // `capture_ms` here reads 0 on that path; a `None` seed (a mid-run
+        // adopt) still captures inline, before connecting so seeded history
+        // can't duplicate live output. Best-effort: adoption must survive a
+        // failed capture.
         let perf_log = std::env::var_os("THURBOX_PERF_LOG").is_some();
 
-        // Capture before connecting so seeded history can't duplicate live
-        // output. Best-effort: adoption must survive a failed capture.
         let capture_start = perf_log.then(std::time::Instant::now);
-        let seed = self.capture_history_seed(backend_id).unwrap_or_else(|e| {
-            warn!("Failed to capture history for pane {backend_id}: {e}");
-            Vec::new()
+        let seed = seed.unwrap_or_else(|| {
+            self.capture_history(backend_id).unwrap_or_else(|e| {
+                warn!("Failed to capture history for pane {backend_id}: {e}");
+                Vec::new()
+            })
         });
         let capture_ms = capture_start.map(|s| s.elapsed().as_millis() as u64);
 
@@ -1257,6 +1267,13 @@ impl SessionBackend for TmuxBackend {
             output: Box::new(Cursor::new(seed).chain(connected.output)),
             input: connected.input,
         })
+    }
+
+    fn capture_history(&self, backend_id: &str) -> Result<Vec<u8>> {
+        if !control_mode::is_valid_pane_id(backend_id) {
+            bail!("refusing to capture invalid pane id: {backend_id:?}");
+        }
+        self.capture_history_seed(backend_id)
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {

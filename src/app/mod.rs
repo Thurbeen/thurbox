@@ -5081,6 +5081,7 @@ impl App {
             backend,
             &provider,
             HashMap::new(),
+            None,
         ) {
             Ok(mut adopted_session) => {
                 // Preserve the original session ID from shared state
@@ -5356,6 +5357,16 @@ impl App {
 
         let discovered_by_backend = self.discover_windows_by_backend(&local, perf_log);
 
+        // Prefetch every matched pane's scrollback capture in parallel before
+        // the sequential adopt loop: the captures are independent subprocesses,
+        // only the control-mode connect is serialized (ADR-P9).
+        let seeds = self.prefetch_capture_seeds(&local, &discovered_by_backend, perf_log);
+        self.metrics.perf.restore_seed_prefetches = self
+            .metrics
+            .perf
+            .restore_seed_prefetches
+            .wrapping_add(seeds.len() as u64);
+
         for shared in local {
             let discovered = discovered_by_backend
                 .get(&shared.backend_type)
@@ -5363,7 +5374,7 @@ impl App {
                 .unwrap_or_default();
             let adopt_start = perf_log.then(std::time::Instant::now);
             let name = perf_log.then(|| shared.name.clone());
-            self.restore_single_session(shared, &discovered);
+            self.restore_single_session(shared, &discovered, &seeds);
             if let (Some(start), Some(name)) = (adopt_start, name) {
                 tracing::info!(
                     session = %name,
@@ -5708,7 +5719,9 @@ impl App {
                     continue;
                 }
                 let retry_copy = shared.clone();
-                self.restore_single_session(shared, &discovered);
+                // Remote adoption keeps the inline capture (`seed: None` path)
+                // — the SSH control-mode round-trips dominate there anyway.
+                self.restore_single_session(shared, &discovered, &HashMap::new());
                 if self
                     .sessions
                     .iter()
@@ -5838,10 +5851,75 @@ impl App {
 
     /// Restore a single session synchronously (used during startup). The
     /// backend is selected from the session's persisted `backend_type`.
+    /// Capture every matched local pane's scrollback in parallel, keyed by
+    /// pane id, for [`Self::restore_single_session`] to pass into
+    /// [`Session::adopt`]. `tmux capture-pane` is an independent subprocess
+    /// per pane, so overlapping them shrinks the sequential restore's
+    /// `capture_ms` slice to ~0 (ADR-P9); the control-mode connect stays
+    /// sequential. Concurrency is bounded so a big restore doesn't fork one
+    /// subprocess per session at once. A failed capture is simply absent from
+    /// the map — the adopt falls back to its inline capture.
+    fn prefetch_capture_seeds(
+        &self,
+        local: &[sync::SharedSession],
+        discovered_by_backend: &HashMap<String, Vec<crate::agent::backend::DiscoveredSession>>,
+        perf_log: bool,
+    ) -> HashMap<String, Vec<u8>> {
+        const MAX_CONCURRENT_CAPTURES: usize = 8;
+
+        let mut jobs: Vec<(String, Arc<dyn SessionBackend>)> = Vec::new();
+        for shared in local {
+            let Some(discovered) = discovered_by_backend.get(&shared.backend_type) else {
+                continue;
+            };
+            let Some(disc) = Self::find_matching_discovered(shared, discovered) else {
+                continue;
+            };
+            let Some(backend) = self.resolve_persisted_backend(&shared.backend_type) else {
+                continue;
+            };
+            jobs.push((disc.backend_id.clone(), backend));
+        }
+        if jobs.is_empty() {
+            return HashMap::new();
+        }
+
+        let start = std::time::Instant::now();
+        let count = jobs.len();
+        let queue = std::sync::Mutex::new(jobs);
+        let results = std::sync::Mutex::new(HashMap::new());
+        let workers = MAX_CONCURRENT_CAPTURES.min(count);
+        std::thread::scope(|s| {
+            for _ in 0..workers {
+                s.spawn(|| loop {
+                    let job = queue.lock().ok().and_then(|mut q| q.pop());
+                    let Some((pane, backend)) = job else { break };
+                    match backend.capture_history(&pane) {
+                        Ok(seed) => {
+                            if let Ok(mut r) = results.lock() {
+                                r.insert(pane, seed);
+                            }
+                        }
+                        Err(e) => warn!("Failed to prefetch history for pane {pane}: {e}"),
+                    }
+                });
+            }
+        });
+        if perf_log {
+            tracing::info!(
+                sessions = count as u64,
+                prefetch_ms = start.elapsed().as_millis() as u64,
+                "restore_capture_prefetch"
+            );
+        }
+        results.into_inner().unwrap_or_default()
+    }
+
     fn restore_single_session(
         &mut self,
         shared: sync::SharedSession,
         discovered: &[crate::agent::backend::DiscoveredSession],
+        seeds: &HashMap<String, Vec<u8>>,
     ) {
         let name = shared.name.clone();
 
@@ -5882,6 +5960,7 @@ impl App {
                 &backend,
                 &provider,
                 HashMap::new(),
+                seeds.get(&disc.backend_id).cloned(),
             ) {
                 Ok(session) => Some(session),
                 Err(e) => {
@@ -6396,6 +6475,7 @@ mod tests {
             _: &str,
             _: u16,
             _: u16,
+            _: Option<Vec<u8>>,
         ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
             anyhow::bail!("stub backend does not adopt")
         }
@@ -11328,6 +11408,125 @@ mod tests {
         assert!(!app.review_build.in_progress());
     }
 
+    /// Local backend that records capture/adopt interplay for the ADR-P9
+    /// restore-prefetch gate: `capture_history` counts calls and returns
+    /// recognizable bytes; `adopt` asserts it always receives a prefetched
+    /// seed (never `None`, which would mean an inline capture on the
+    /// sequential path).
+    struct RecordingCaptureBackend {
+        captures: std::sync::atomic::AtomicUsize,
+        seeded_adopts: std::sync::atomic::AtomicUsize,
+    }
+    impl RecordingCaptureBackend {
+        fn new() -> Self {
+            Self {
+                captures: std::sync::atomic::AtomicUsize::new(0),
+                seeded_adopts: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+    impl SessionBackend for RecordingCaptureBackend {
+        fn name(&self) -> &str {
+            "capture-stub"
+        }
+        fn check_available(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_ready(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&Path>,
+            _: &std::collections::HashMap<String, String>,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+            anyhow::bail!("capture stub does not spawn")
+        }
+        fn adopt(
+            &self,
+            _: &str,
+            _: u16,
+            _: u16,
+            seed: Option<Vec<u8>>,
+        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+            assert!(
+                seed.is_some(),
+                "restore must pass the prefetched seed (ADR-P9), not capture inline"
+            );
+            self.seeded_adopts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::agent::backend::AdoptedSession {
+                output: Box::new(std::io::empty()),
+                input: Box::new(std::io::sink()),
+            })
+        }
+        fn capture_history(&self, backend_id: &str) -> anyhow::Result<Vec<u8>> {
+            self.captures
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(format!("history:{backend_id}").into_bytes())
+        }
+        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+            Ok(vec![
+                make_discovered("%1", "tb-one", true),
+                make_discovered("%2", "tb-two", true),
+            ])
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn kill(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn detach(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+    }
+
+    /// ADR-P9: the local restore prefetches every matched pane's scrollback
+    /// capture in parallel and hands the seeds to the sequential adopt loop —
+    /// one `capture_history` per session, every `adopt` seeded, counter == N.
+    #[tokio::test]
+    async fn perf_restore_prefetches_capture_seeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let mut app = app_with_sessions(0);
+        let backend = Arc::new(RecordingCaptureBackend::new());
+        app.backends.register(backend.clone());
+
+        let mut one = make_shared_session("%1", "one");
+        one.backend_type = "capture-stub".to_string();
+        let mut two = make_shared_session("%2", "two");
+        two.backend_type = "capture-stub".to_string();
+
+        app.restore_sessions(vec![one, two], 2);
+
+        assert_eq!(
+            backend.captures.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one prefetched capture per matched pane"
+        );
+        assert_eq!(
+            backend
+                .seeded_adopts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "every adopt received its prefetched seed"
+        );
+        assert_eq!(app.perf_counters().restore_seed_prefetches, 2);
+        assert_eq!(app.sessions.len(), 2);
+    }
+
     #[test]
     fn poll_worktree_create_disconnected_clears_guard() {
         let mut app = app_with_sessions(0);
@@ -11815,6 +12014,7 @@ mod tests {
             _: &str,
             _: u16,
             _: u16,
+            _: Option<Vec<u8>>,
         ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
             Ok(crate::agent::backend::AdoptedSession {
                 output: Box::new(std::io::empty()),
@@ -11871,6 +12071,7 @@ mod tests {
             _: &str,
             _: u16,
             _: u16,
+            _: Option<Vec<u8>>,
         ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
             anyhow::bail!("host down")
         }
@@ -11992,6 +12193,7 @@ mod tests {
             _: &str,
             _: u16,
             _: u16,
+            _: Option<Vec<u8>>,
         ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
             Ok(crate::agent::backend::AdoptedSession {
                 output: Box::new(std::io::empty()),

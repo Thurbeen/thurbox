@@ -149,6 +149,7 @@ impl SessionBackend for FakeBackend {
         _: &str,
         _: u16,
         _: u16,
+        _: Option<Vec<u8>>,
     ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
         anyhow::ensure!(self.spawnable, "inert fake backend does not adopt");
         Ok(crate::agent::backend::AdoptedSession {

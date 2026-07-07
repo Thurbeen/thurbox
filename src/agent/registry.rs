@@ -102,7 +102,7 @@ mod tests {
         ) -> Result<SpawnedSession> {
             unimplemented!()
         }
-        fn adopt(&self, _: &str, _: u16, _: u16) -> Result<AdoptedSession> {
+        fn adopt(&self, _: &str, _: u16, _: u16, _: Option<Vec<u8>>) -> Result<AdoptedSession> {
             unimplemented!()
         }
         fn discover(&self) -> Result<Vec<DiscoveredSession>> {

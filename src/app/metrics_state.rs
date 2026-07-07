@@ -53,6 +53,10 @@ pub(crate) struct PerfCounters {
     /// Worker-built review results applied back on the UI thread (a dispatched
     /// build whose review was closed before delivery is dropped, not applied).
     pub(crate) review_builds_applied: u64,
+    /// Scrollback captures prefetched in parallel during the local session
+    /// restore, one per matched pane (ADR-P9). Proves the sequential adopt
+    /// loop received pre-captured seeds instead of capturing inline.
+    pub(crate) restore_seed_prefetches: u64,
 }
 
 impl PerfCounters {
@@ -87,6 +91,9 @@ impl PerfCounters {
             review_builds_applied: self
                 .review_builds_applied
                 .wrapping_sub(prev.review_builds_applied),
+            restore_seed_prefetches: self
+                .restore_seed_prefetches
+                .wrapping_sub(prev.restore_seed_prefetches),
         }
     }
 }

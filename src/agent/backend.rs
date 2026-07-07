@@ -191,8 +191,27 @@ pub trait SessionBackend: Send + Sync {
         cols: u16,
     ) -> Result<SpawnedSession>;
 
-    /// Reconnect to an existing session.
-    fn adopt(&self, backend_id: &str, rows: u16, cols: u16) -> Result<AdoptedSession>;
+    /// Reconnect to an existing session. `seed` is pre-captured scrollback
+    /// history to prepend to the live stream (see [`Self::capture_history`]);
+    /// `None` makes the backend capture it itself — the two paths produce the
+    /// same bytes, `Some` just lets restore overlap the captures (ADR-P9).
+    fn adopt(
+        &self,
+        backend_id: &str,
+        rows: u16,
+        cols: u16,
+        seed: Option<Vec<u8>>,
+    ) -> Result<AdoptedSession>;
+
+    /// Capture a session's scrollback history as terminal bytes suitable for
+    /// seeding a fresh parser, to pass into [`Self::adopt`]. An independent
+    /// subprocess per pane, safe to run concurrently across sessions — unlike
+    /// `adopt`'s control-mode connect, which is serialized. Default: no
+    /// history (backends without a capture facility adopt with an empty
+    /// scrollback, exactly as if the capture had failed).
+    fn capture_history(&self, _backend_id: &str) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
 
     /// Discover existing sessions managed by this backend.
     fn discover(&self) -> Result<Vec<DiscoveredSession>>;
@@ -428,7 +447,10 @@ impl Session {
         ))
     }
 
-    /// Reconnect to an existing backend session.
+    /// Reconnect to an existing backend session. `seed` is optional
+    /// pre-captured scrollback (see [`SessionBackend::capture_history`]);
+    /// `None` = the backend captures it during the adopt.
+    #[allow(clippy::too_many_arguments)]
     pub fn adopt(
         name: String,
         rows: u16,
@@ -437,8 +459,9 @@ impl Session {
         backend: &Arc<dyn SessionBackend>,
         provider: &Arc<dyn AgentProvider>,
         env: HashMap<String, String>,
+        seed: Option<Vec<u8>>,
     ) -> Result<Self> {
-        let adopted = backend.adopt(backend_id, rows, cols)?;
+        let adopted = backend.adopt(backend_id, rows, cols, seed)?;
 
         debug!(
             backend_id = %backend_id,
@@ -938,7 +961,7 @@ impl Session {
 
     /// Re-adopt an existing shell pane from a backend_id (for restore on restart).
     pub fn adopt_shell_pane(&mut self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
-        let adopted = self.backend.adopt(backend_id, rows, cols)?;
+        let adopted = self.backend.adopt(backend_id, rows, cols, None)?;
 
         let (state, bid) = Self::wire_up(
             rows,
