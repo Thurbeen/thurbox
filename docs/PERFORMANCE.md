@@ -78,6 +78,8 @@ wall-clock-free `u64` counters bumped at the render/tick hot paths:
 | `external_poll_checks` / `external_poll_reloads` | `poll_external_changes` ran its cheap `PRAGMA data_version` check / found a change and did a full shared-state reload |
 | `review_builds_dispatched` / `review_builds_applied` | code-review diff builds handed to the background worker / applied back on the UI thread (ADR-P8) |
 | `restore_seed_prefetches` | restore history captures prefetched in parallel, one per matched pane (ADR-P9) |
+| `agent_meta_syncs` | a session's OSC title/notification actually re-read (gated on the reader thread's meta generation, ADR-P10) |
+| `data_version_checks` | the status refresh actually ran its `PRAGMA data_version` read (throttled ~10×/s, ADR-P10) |
 
 `hook_state_loads` is the regression gate for ADR-P6: it climbs once at startup
 and then only when an external `session signal` commits, instead of ~1 per tick.
@@ -383,6 +385,56 @@ control-mode serialization ADR-P5 documents.
 - *Unbounded capture fan-out* — a 50-session restore would fork 50
   subprocesses at once; the cap keeps the burst bounded with the same
   wall-clock win.
+
+---
+
+## ADR-P10: Cut the idle tick's per-session churn
+
+**Choice**: two reductions in `refresh_session_statuses`' ~100 Hz work, both
+gated by counters:
+
+- **Agent meta generation gate.** `apply_session_status_fields` called
+  `session.agent_title()` + `session.notification()` for every session every
+  tick — 2·N mutex locks and up to 2·N `String` clones at ~100 Hz, almost
+  always re-reading unchanged values. The reader thread's `TermSignals` now
+  bumps a shared `meta_gen` atomic **after** each title/notification write,
+  and `Session::sync_agent_meta` re-reads the mutexes only when the
+  generation moved (one relaxed/acquire atomic load per session per tick
+  otherwise). Status derivation itself still runs every tick, so
+  blocked/working/done latency is unchanged; a generation observed mid-write
+  only delays the text by one ~10 ms tick (the counter is bumped after the
+  value lands). Gate: `agent_meta_syncs` +
+  `perf_agent_meta_cached_across_idle_ticks` /
+  `perf_agent_meta_resyncs_on_change`.
+- **Throttled `data_version` read.** The ADR-P6 cache still ran its `PRAGMA
+  data_version` `query_row` every tick (~100 rusqlite round-trips/s). The
+  read now runs every `HOOK_VERSION_CHECK_TICKS` (10 ticks ≈ 100 ms) — except
+  when the cache was explicitly invalidated (a remote hook event or restart
+  wrote on our own connection, which the pragma can't see; those check
+  immediately). Worst case an external `session signal` displays ~100 ms
+  late instead of ~10 ms — far below the 250 ms coupling ADR-P6 rejected as
+  visible. Gate: `data_version_checks` +
+  `perf_data_version_read_is_throttled` (and
+  `perf_hook_states_reload_on_external_change` now ticks through a full
+  throttle window before asserting).
+
+**Why**: with the render loop demand-driven (ADR-P1) and the hook reload
+cached (ADR-P6), these two were the largest remaining per-tick costs, and
+both scale with session count. Neither changes any user-visible latency
+budget.
+
+**Rejected**:
+
+- *Sharing `poll_external_changes`' cursor for the hook check* — still the
+  ADR-P6 rejection: `has_external_changes` mutates the shared
+  `last_data_version`, so two consumers would steal each other's edges.
+- *Gating the whole status derivation on the generation* — the
+  output-quiescence `working → Idle` fallback and the spinner are
+  time-driven; they must run every tick regardless.
+- *Deferred follow-ups* (measure first via the new observability):
+  extension self-heal gating on a fingerprint (watch `extension_heal_ms`),
+  and an adaptive idle poll interval for the 100 Hz loop itself (idle CPU
+  was not a reported pain point; the tick is now cheap).
 
 ---
 

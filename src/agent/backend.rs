@@ -76,6 +76,10 @@ pub struct TermSignals {
     attention_at: Arc<AtomicU64>,
     /// Message text from the most recent OSC 9/777 notification, if any.
     notification: Arc<Mutex<Option<String>>>,
+    /// Generation counter bumped after every title/notification write, so the
+    /// per-tick status refresh can skip the mutex locks + String clones while
+    /// nothing changed (ADR-P10; see [`Session::sync_agent_meta`]).
+    meta_gen: Arc<AtomicU64>,
 }
 
 impl TermSignals {
@@ -84,6 +88,9 @@ impl TermSignals {
         if let Ok(mut guard) = self.title.lock() {
             *guard = (!s.is_empty()).then_some(s);
         }
+        // After the write, so a reader that observes the new generation also
+        // observes the new value.
+        self.meta_gen.fetch_add(1, Ordering::Release);
     }
 
     /// Mark an attention signal, optionally with notification message text.
@@ -94,6 +101,7 @@ impl TermSignals {
             if let Ok(mut guard) = self.notification.lock() {
                 *guard = (!msg.is_empty()).then_some(msg);
             }
+            self.meta_gen.fetch_add(1, Ordering::Release);
         }
     }
 }
@@ -314,6 +322,7 @@ struct WiredState {
     last_title: Arc<Mutex<Option<String>>>,
     attention_at: Arc<AtomicU64>,
     notification: Arc<Mutex<Option<String>>>,
+    meta_gen: Arc<AtomicU64>,
 }
 
 /// A companion shell pane running alongside an agent session.
@@ -375,6 +384,12 @@ pub struct Session {
     attention_at: Arc<AtomicU64>,
     /// Message text from the latest OSC 9/777 notification, if any.
     notification: Arc<Mutex<Option<String>>>,
+    /// Shared with [`TermSignals::meta_gen`]: bumped by the reader thread on
+    /// every title/notification write.
+    meta_gen: Arc<AtomicU64>,
+    /// The generation last consumed by [`Self::sync_agent_meta`]. Starts at
+    /// `u64::MAX` so the first tick always syncs.
+    last_synced_meta_gen: u64,
     /// `now_millis()` of the last attention acknowledgement (set while the
     /// session is the active one). Attention is pending when
     /// `attention_at > attention_ack_at`.
@@ -496,6 +511,7 @@ impl Session {
         let last_title = Arc::new(Mutex::new(None));
         let attention_at = Arc::new(AtomicU64::new(0));
         let notification = Arc::new(Mutex::new(None));
+        let meta_gen = Arc::new(AtomicU64::new(0));
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
@@ -504,6 +520,7 @@ impl Session {
                 title: Arc::clone(&last_title),
                 attention_at: Arc::clone(&attention_at),
                 notification: Arc::clone(&notification),
+                meta_gen: Arc::clone(&meta_gen),
             },
         )));
 
@@ -528,6 +545,7 @@ impl Session {
             last_title,
             attention_at,
             notification,
+            meta_gen,
         };
         (state, io.backend_id)
     }
@@ -555,6 +573,8 @@ impl Session {
             last_title: state.last_title,
             attention_at: state.attention_at,
             notification: state.notification,
+            meta_gen: state.meta_gen,
+            last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
             env,
@@ -584,6 +604,7 @@ impl Session {
         let last_title = Arc::new(Mutex::new(None));
         let attention_at = Arc::new(AtomicU64::new(0));
         let notification = Arc::new(Mutex::new(None));
+        let meta_gen = Arc::new(AtomicU64::new(0));
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows.max(1),
             cols.max(1),
@@ -592,6 +613,7 @@ impl Session {
                 title: Arc::clone(&last_title),
                 attention_at: Arc::clone(&attention_at),
                 notification: Arc::clone(&notification),
+                meta_gen: Arc::clone(&meta_gen),
             },
         )));
         let host = info.remote_host.clone().unwrap_or_else(|| "?".into());
@@ -620,6 +642,8 @@ impl Session {
             last_title,
             attention_at,
             notification,
+            meta_gen,
+            last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
             env,
@@ -775,6 +799,33 @@ impl Session {
     /// Latest OSC window title the agent emitted, if any (live activity text).
     pub fn agent_title(&self) -> Option<String> {
         self.last_title.lock().ok().and_then(|t| t.clone())
+    }
+
+    /// Read the agent's title + notification **only when they changed** since
+    /// the last call: `None` means unchanged (reuse the previously-synced
+    /// values), `Some` carries the fresh pair. The reader thread bumps a
+    /// generation counter on every write (`TermSignals::meta_gen`), so the
+    /// ~100 Hz status refresh pays one atomic load per session instead of two
+    /// mutex locks + two `String` clones (ADR-P10). A generation observed
+    /// before its write completes only delays the sync by one ~10 ms tick —
+    /// the counter is bumped *after* the value write, never before.
+    pub fn sync_agent_meta(&mut self) -> Option<(Option<String>, Option<String>)> {
+        let gen = self.meta_gen.load(Ordering::Acquire);
+        if gen == self.last_synced_meta_gen {
+            return None;
+        }
+        self.last_synced_meta_gen = gen;
+        Some((self.agent_title(), self.notification()))
+    }
+
+    /// Simulate a reader-thread title/notification write for the ADR-P10
+    /// perf tests (mirrors [`Self::mark_exited_for_test`]).
+    #[cfg(test)]
+    pub(crate) fn bump_meta_gen_for_test(&self, title: &str) {
+        if let Ok(mut guard) = self.last_title.lock() {
+            *guard = Some(title.to_string());
+        }
+        self.meta_gen.fetch_add(1, Ordering::Release);
     }
 
     /// Whether the agent has signalled for attention (bell / OSC 9 / OSC 777)
@@ -1016,6 +1067,7 @@ impl Session {
         let last_title = Arc::new(Mutex::new(None));
         let attention_at = Arc::new(AtomicU64::new(0));
         let notification = Arc::new(Mutex::new(None));
+        let meta_gen = Arc::new(AtomicU64::new(0));
         let session = Self {
             info: SessionInfo::new(name.to_string()),
             parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -1026,6 +1078,7 @@ impl Session {
                     title: Arc::clone(&last_title),
                     attention_at: Arc::clone(&attention_at),
                     notification: Arc::clone(&notification),
+                    meta_gen: Arc::clone(&meta_gen),
                 },
             ))),
             input_tx,
@@ -1037,6 +1090,8 @@ impl Session {
             last_title,
             attention_at,
             notification,
+            meta_gen,
+            last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
             env: HashMap::new(),

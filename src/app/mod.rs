@@ -81,6 +81,12 @@ const PERF_WINDOW_TICKS: u64 = 1_000;
 /// coarse and only runs while someone is actually looking at perf data.
 const PERF_SNAPSHOT_TICKS: u64 = 500;
 
+/// Ticks (~10 ms each) between the status refresh's `PRAGMA data_version`
+/// reads (~100 ms). Bounds an external `session signal`'s worst-case display
+/// latency while cutting the per-tick rusqlite round-trip 10× (ADR-P10);
+/// own-connection writes bypass the throttle via cache invalidation.
+const HOOK_VERSION_CHECK_TICKS: u64 = 10;
+
 /// Prompt sent to Claude sessions when a worktree rebase has conflicts.
 const SYNC_CONFLICT_PROMPT: &str = "Please sync this worktree with main. Run: git fetch origin && git rebase origin/main -- if there are conflicts, resolve them and continue the rebase with git rebase --continue.";
 
@@ -4329,13 +4335,23 @@ impl App {
         // an *external* `session signal` bumps `data_version`, but our own
         // `seen_at` writes (below) do not — otherwise reuse the cached map. This
         // replaces a full sessions-table scan on every (~10 ms) tick with a
-        // cheap in-memory `PRAGMA data_version` read on idle ticks. See
-        // `docs/PERFORMANCE.md`.
-        let version = self.db.data_version().ok();
-        if self.hook_states_version.is_none() || version != self.hook_states_version {
-            self.metrics.bump(|p| &mut p.hook_state_loads);
-            self.cached_hook_states = self.db.load_hook_states().unwrap_or_default();
-            self.hook_states_version = version;
+        // cheap in-memory `PRAGMA data_version` read — itself throttled to
+        // every `HOOK_VERSION_CHECK_TICKS` ticks (~100 ms; still ~10 rusqlite
+        // round-trips/s saved), except when the cache was explicitly
+        // invalidated (a remote hook event / restart wrote on our own
+        // connection, which the pragma can't see — check immediately). Worst
+        // case an external signal shows ~100 ms late, under any perceptible
+        // threshold. See `docs/PERFORMANCE.md` (ADR-P6 + ADR-P10).
+        let version_check_due = self.hook_states_version.is_none()
+            || self.metrics.tick_count % HOOK_VERSION_CHECK_TICKS == 0;
+        if version_check_due {
+            self.metrics.bump(|p| &mut p.data_version_checks);
+            let version = self.db.data_version().ok();
+            if self.hook_states_version.is_none() || version != self.hook_states_version {
+                self.metrics.bump(|p| &mut p.hook_state_loads);
+                self.cached_hook_states = self.db.load_hook_states().unwrap_or_default();
+                self.hook_states_version = version;
+            }
         }
         // "Seen" writes are deferred past the &mut self.sessions borrow below.
         let mut seen_writes: Vec<(crate::session::SessionId, i64)> = Vec::new();
@@ -4358,11 +4374,13 @@ impl App {
         // Track whether any visible field changed so a quiet transition (no new
         // output, so the output detector won't catch it) still repaints promptly
         // instead of waiting for the forced-redraw floor.
-        let changed = Self::apply_session_status_fields(
+        let (changed, meta_syncs) = Self::apply_session_status_fields(
             &mut self.sessions,
             &self.cached_hook_states,
             &seen_writes,
         );
+        self.metrics.perf.agent_meta_syncs =
+            self.metrics.perf.agent_meta_syncs.wrapping_add(meta_syncs);
 
         // Persist the seen marks now that the sessions borrow is released, and
         // mirror them into the cache write-through: our own write doesn't move
@@ -4505,8 +4523,9 @@ impl App {
         sessions: &mut [Session],
         hooks: &HashMap<crate::session::SessionId, crate::storage::HookRow>,
         seen_writes: &[(crate::session::SessionId, i64)],
-    ) -> bool {
+    ) -> (bool, u64) {
         let mut changed = false;
+        let mut meta_syncs = 0u64;
         for session in sessions.iter_mut() {
             // A placeholder (unreachable remote) has no live pane / hooks; keep
             // its `Unreachable` status until the host recovers and it adopts.
@@ -4524,24 +4543,27 @@ impl App {
                 just_seen,
                 session.millis_since_last_output(),
             );
-
-            // Live activity text from the agent-emitted OSC terminal title.
-            let new_activity = session.agent_title();
-            // Retain the agent's latest pushed notification (OSC 9/777) so the
-            // info panel can show it as a persistent "last signal".
-            let new_notification = session.notification();
-
-            if session.info.status != new_status
-                || session.info.agent_activity != new_activity
-                || session.info.notification != new_notification
-            {
+            if session.info.status != new_status {
                 changed = true;
             }
             session.info.status = new_status;
-            session.info.agent_activity = new_activity;
-            session.info.notification = new_notification;
+
+            // Live activity text (OSC title) + latest pushed notification
+            // (OSC 9/777): re-read only when the reader thread wrote something
+            // new — its generation counter gates the two mutex locks + String
+            // clones that otherwise ran per session per ~10 ms tick (ADR-P10).
+            if let Some((new_activity, new_notification)) = session.sync_agent_meta() {
+                meta_syncs += 1;
+                if session.info.agent_activity != new_activity
+                    || session.info.notification != new_notification
+                {
+                    changed = true;
+                }
+                session.info.agent_activity = new_activity;
+                session.info.notification = new_notification;
+            }
         }
-        changed
+        (changed, meta_syncs)
     }
 
     /// Advance the Working spinner from the (deterministic) tick counter, and
@@ -11085,16 +11107,79 @@ mod tests {
         app.tick();
         assert_eq!(app.perf_counters().hook_state_loads, 1);
 
-        // A different connection commits → `data_version` moves.
+        // A different connection commits → `data_version` moves. The pragma
+        // read itself is throttled (ADR-P10), so tick past a full
+        // `HOOK_VERSION_CHECK_TICKS` window for the change to be observed.
         let db2 = Database::open(tmp.path()).unwrap();
         db2.set_session_counter(7).unwrap();
 
-        app.tick();
+        for _ in 0..HOOK_VERSION_CHECK_TICKS {
+            app.tick();
+        }
         assert_eq!(
             app.perf_counters().hook_state_loads,
             2,
             "an external commit must invalidate the cache exactly once"
         );
+    }
+
+    #[tokio::test]
+    async fn perf_data_version_read_is_throttled() {
+        // The status refresh's `PRAGMA data_version` runs on the throttle
+        // cadence (~100 ms), not per ~10 ms tick: 100 idle ticks = the forced
+        // first check + one per `HOOK_VERSION_CHECK_TICKS` window (ADR-P10).
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
+        for _ in 0..100 {
+            app.tick();
+        }
+        let checks = app.perf_counters().data_version_checks;
+        assert!(
+            checks <= 100 / HOOK_VERSION_CHECK_TICKS + 1,
+            "expected ≤{} throttled checks over 100 ticks, got {checks}",
+            100 / HOOK_VERSION_CHECK_TICKS + 1
+        );
+        assert!(
+            checks >= 100 / HOOK_VERSION_CHECK_TICKS,
+            "still polls each window"
+        );
+    }
+
+    #[tokio::test]
+    async fn perf_agent_meta_cached_across_idle_ticks() {
+        // The agent title/notification mutexes are re-read only when the
+        // reader thread bumped the meta generation: one initial sync per
+        // session, then flat across idle ticks — not 2·N locks per tick
+        // (ADR-P10).
+        let mut app = app_with_sessions(2);
+        for _ in 0..50 {
+            app.tick();
+        }
+        assert_eq!(
+            app.perf_counters().agent_meta_syncs,
+            2,
+            "one initial sync per session, then cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn perf_agent_meta_resyncs_on_change() {
+        let mut app = app_with_sessions(1);
+        app.tick();
+        assert_eq!(app.perf_counters().agent_meta_syncs, 1);
+
+        // The reader thread writes a new title → next tick re-reads it.
+        app.sessions[0].bump_meta_gen_for_test("build: cargo");
+        app.tick();
+        assert_eq!(app.perf_counters().agent_meta_syncs, 2);
+        assert_eq!(
+            app.sessions[0].info.agent_activity.as_deref(),
+            Some("build: cargo"),
+            "the fresh title landed in the session info"
+        );
+
+        // And goes quiet again.
+        app.tick();
+        assert_eq!(app.perf_counters().agent_meta_syncs, 2);
     }
 
     #[test]

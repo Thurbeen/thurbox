@@ -57,6 +57,16 @@ pub(crate) struct PerfCounters {
     /// restore, one per matched pane (ADR-P9). Proves the sequential adopt
     /// loop received pre-captured seeds instead of capturing inline.
     pub(crate) restore_seed_prefetches: u64,
+    /// Times a session's agent title/notification was actually re-read
+    /// (mutex locks + String clones) during the per-tick status refresh.
+    /// Gated on the reader thread's meta generation counter (ADR-P10), so it
+    /// stays flat while agents emit nothing — not 2·N locks per tick.
+    pub(crate) agent_meta_syncs: u64,
+    /// Times the per-tick status refresh actually ran its `PRAGMA
+    /// data_version` read. Throttled to every `HOOK_VERSION_CHECK_TICKS`
+    /// ticks (~100 ms) unless the cache was explicitly invalidated
+    /// (ADR-P10), so it climbs ~10×/s, not ~100×/s.
+    pub(crate) data_version_checks: u64,
 }
 
 impl PerfCounters {
@@ -94,6 +104,10 @@ impl PerfCounters {
             restore_seed_prefetches: self
                 .restore_seed_prefetches
                 .wrapping_sub(prev.restore_seed_prefetches),
+            agent_meta_syncs: self.agent_meta_syncs.wrapping_sub(prev.agent_meta_syncs),
+            data_version_checks: self
+                .data_version_checks
+                .wrapping_sub(prev.data_version_checks),
         }
     }
 }
