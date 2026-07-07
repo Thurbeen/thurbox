@@ -615,6 +615,7 @@ Live in the `metadata` table and apply immediately (no restart):
 | `editor_command` | `thurbox-cli editor set "<cmd>"` | what `Ctrl+O` runs |
 | `active_extensions` | `thurbox-cli extension activate/deactivate` | JSON array of active extensions to self-heal |
 | `builtin_hooks_optout` | `thurbox-cli extension deactivate hooks` | `1` when the user opted out of the auto-activated hooks extension |
+| `perf_snapshot` | the TUI, while perf timing is active (`THURBOX_PERF_LOG` or an open perf HUD) | JSON perf snapshot read by `thurbox-cli perf` (see `docs/PERFORMANCE.md`) |
 
 These are in the DB rather than a file because they are written
 concurrently by multiple thurbox processes (TUI, CLI, MCP) and picked

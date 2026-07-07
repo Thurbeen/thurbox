@@ -330,6 +330,16 @@ only** and never CI-asserted (the counters remain the sole regression gate):
   **deltas** for the window (`PerfCounters::delta`), frame/tick p50/p95/max,
   and the window's slow ops — then resets the per-window timing state. The
   one-shot `startup` line is unchanged.
+- **The perf HUD** (`src/ui/perf_hud.rs`, F12, `[features] perf_hud`): a
+  floating, non-modal overlay with the same counters/percentiles/slow-ops,
+  refreshed by the existing 250 ms forced-redraw floor.
+- **External inspection**: while timing is active the TUI also publishes a
+  JSON snapshot (counters + percentiles + slow ops + the startup phases) into
+  the SQLite `metadata` table (`perf_snapshot` key, ~every 5–10 s), read by
+  **`thurbox-cli perf`** (`--json` for machine output). Publishing is gated on
+  timing being active because each write bumps *other* thurbox connections'
+  `data_version` (a full shared-state reload on their next poll) — an idle,
+  default-config instance must never churn that row.
 
 **Why**: the counters gate regressions in CI but were invisible in a live
 build, and they deliberately count rather than time — so a user-perceived
@@ -357,6 +367,8 @@ rule holds.
 | Break down startup time | Read the `startup` phase fields (`config_init_ms`/`db_open_ms`/`theme_activate_ms`/`extension_heal_ms`/`app_new_ms`/`restore_ms`/`heartbeat_ms`) + the `restore_discover`/`restore_adopt` lines |
 | Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~10 s cadence: counter deltas + frame/tick percentiles + slow ops) |
 | Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms), or the slow-op list in `perf_window` |
+| Watch perf live in the TUI | Press `F12` (perf HUD overlay; `[features] perf_hud`) |
+| Inspect a running TUI from outside | `thurbox-cli perf` (needs THURBOX_PERF_LOG or an open HUD in that TUI) |
 | Verify the status-hook cache (ADR-P6) | `cargo nextest run -E 'test(perf_hook_states)'`; `hook_state_loads` stays flat while idle, +1 per external `session signal` |
 | See binary size | Check the `Binary Size` CI job summary, or `cargo bloat --release --crates` |
 | Profile CPU | `cargo flamegraph --profile release-with-debug --bin thurbox` |

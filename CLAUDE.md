@@ -729,7 +729,9 @@ release — `--force` bypasses the up-to-date/dev-build guards; gated on
 `[features] auto_update`, off by default; the TUI also runs this silently on
 startup when the flag is on), `notify`
 (diagnose OS desktop notifications: prints the detected delivery backend
-and last error; `--test` fires a sample — see OS notifications below).
+and last error; `--test` fires a sample — see OS notifications below), `perf`
+(print the perf snapshot a running TUI publishes while `THURBOX_PERF_LOG`
+or its perf HUD is active — see `docs/PERFORMANCE.md`).
 Output is
 **human-readable by default** and switches to JSON automatically when stdout is
 piped (so `… | jq` keeps working); force a format with `--json` (compact),

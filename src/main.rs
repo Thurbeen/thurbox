@@ -203,6 +203,10 @@ async fn main() -> Result<()> {
     arm_automation_heartbeat();
     startup.heartbeat_ms = t_phase.elapsed().as_millis();
 
+    // Hand the phase breakdown to the app so the published perf snapshot
+    // (`thurbox-cli perf`) can show boot cost alongside the runtime stats.
+    app.set_startup_phases(startup.as_json());
+
     let res = run_loop(&mut terminal, &mut app, process_start, startup).await;
 
     // Restore the terminal *before* the (potentially slow) session detach:
@@ -422,6 +426,22 @@ struct StartupTimings {
     restore_ms: u128,
     /// `arm_automation_heartbeat`: a synchronous tmux subprocess.
     heartbeat_ms: u128,
+}
+
+impl StartupTimings {
+    /// The phase breakdown as JSON, mirroring the `startup` log line's fields
+    /// (sans `first_frame_ms`, which isn't known until the first paint).
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "config_init_ms": self.config_init_ms as u64,
+            "db_open_ms": self.db_open_ms as u64,
+            "theme_activate_ms": self.theme_activate_ms as u64,
+            "extension_heal_ms": self.extension_heal_ms as u64,
+            "app_new_ms": self.app_new_ms as u64,
+            "restore_ms": self.restore_ms as u64,
+            "heartbeat_ms": self.heartbeat_ms as u64,
+        })
+    }
 }
 
 async fn run_loop(

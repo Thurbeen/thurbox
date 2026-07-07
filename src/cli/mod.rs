@@ -22,6 +22,7 @@ pub mod identity;
 pub mod messages;
 pub mod notify;
 pub mod output;
+pub mod perf;
 pub mod sessions;
 pub mod tasks;
 pub mod update;
@@ -102,6 +103,9 @@ pub enum Command {
     Update(update::UpdateArgs),
     /// Diagnose OS desktop notifications; `--test` fires a sample.
     Notify(notify::NotifyArgs),
+    /// Print the perf snapshot a running TUI publishes (THURBOX_PERF_LOG or
+    /// the perf HUD must be active in that TUI).
+    Perf,
 }
 
 /// Build the additional-repo list for a multi-repo `Spawn` from the repeatable
@@ -154,6 +158,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Version(args) => Ok(version::run(args)),
         Command::Update(args) => Ok(update::run(args)),
         Command::Notify(args) => Ok(notify::run(args)),
+        Command::Perf => perf::run(db),
     }?;
 
     println!("{}", format.render(&output));

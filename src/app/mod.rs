@@ -76,6 +76,11 @@ const SLOW_OP_WARN_MS: u64 = 100;
 /// Tick-based so tests can drive windows without a wall clock.
 const PERF_WINDOW_TICKS: u64 = 1_000;
 
+/// Ticks between perf-snapshot publishes while the perf HUD is open (~5 s).
+/// Snapshot writes bump other connections' `data_version`, so this stays
+/// coarse and only runs while someone is actually looking at perf data.
+const PERF_SNAPSHOT_TICKS: u64 = 500;
+
 /// Prompt sent to Claude sessions when a worktree rebase has conflicts.
 const SYNC_CONFLICT_PROMPT: &str = "Please sync this worktree with main. Run: git fetch origin && git rebase origin/main -- if there are conflicts, resolve them and continue the rebase with git rebase --continue.";
 
@@ -823,6 +828,10 @@ pub struct App {
     /// Counter values at the last `perf_window` report, so each window logs
     /// deltas (the counters themselves stay cumulative for the tests/HUD).
     perf_window_base: metrics_state::PerfCounters,
+    /// Startup phase breakdown handed over by `main` (the `startup` log line's
+    /// fields), included in the published perf snapshot so `thurbox-cli perf`
+    /// shows boot cost too.
+    startup_phases: Option<serde_json::Value>,
 }
 
 const EDITOR_NOT_CONFIGURED: &str =
@@ -1042,6 +1051,7 @@ impl App {
             perf_log_env: std::env::var_os("THURBOX_PERF_LOG").is_some(),
             show_perf_hud: false,
             perf_window_base: metrics_state::PerfCounters::default(),
+            startup_phases: None,
         };
         app.report_config_warnings(config_warnings);
         app
@@ -3979,9 +3989,20 @@ impl App {
     /// Steady-state perf reporting: once per window (under `THURBOX_PERF_LOG`)
     /// log counter deltas + timing percentiles + the window's slow ops, then
     /// reset the per-window timing state so each report stands alone. The
-    /// startup line at first paint is separate and unaffected.
+    /// startup line at first paint is separate and unaffected. Both the window
+    /// report and an open HUD also refresh the published snapshot
+    /// (`thurbox-cli perf`); a default run publishes nothing.
     fn tick_perf_window(&mut self) {
-        if !self.perf_log_env || self.metrics.tick_count % PERF_WINDOW_TICKS != 0 {
+        let tick = self.metrics.tick_count;
+        let window_due = self.perf_log_env && tick % PERF_WINDOW_TICKS == 0;
+        let snapshot_due = self.show_perf_hud && tick % PERF_SNAPSHOT_TICKS == 0;
+        if !window_due && !snapshot_due {
+            return;
+        }
+        // Publish before the window reset below so the snapshot carries this
+        // window's timing percentiles rather than an empty histogram.
+        self.publish_perf_snapshot();
+        if !window_due {
             return;
         }
         let now = self.perf_counters();
@@ -4014,6 +4035,62 @@ impl App {
         );
         self.perf_window_base = now;
         self.metrics.timings.reset_window();
+    }
+
+    /// Startup phase durations from `main`, for the published snapshot.
+    pub fn set_startup_phases(&mut self, phases: serde_json::Value) {
+        self.startup_phases = phases.into();
+    }
+
+    /// Write the current counters + timing stats as a JSON blob into the
+    /// `metadata` table for `thurbox-cli perf`. Only called while perf timing
+    /// is active (see [`Self::tick_perf_window`]) — the write bumps other
+    /// thurbox connections' `data_version`, so it must never run on a
+    /// default-config idle instance. Best-effort: a failed write only warns.
+    fn publish_perf_snapshot(&self) {
+        let p = self.perf_counters();
+        let t = &self.metrics.timings;
+        let histo = |h: &metrics_state::DurationHistogram| {
+            serde_json::json!({
+                "p50_us": h.percentile_us(50),
+                "p95_us": h.percentile_us(95),
+                "max_us": h.max_us(),
+            })
+        };
+        let slow_ops: Vec<serde_json::Value> = t
+            .slow_ops
+            .iter_recent()
+            .map(|op| serde_json::json!({ "op": op.name, "ms": op.ms }))
+            .collect();
+        let captured_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let snapshot = serde_json::json!({
+            "pid": std::process::id(),
+            "captured_at": captured_at,
+            "session_count": self.sessions.len(),
+            "tick_count": self.metrics.tick_count,
+            "counters": {
+                "frames_rendered": p.frames_rendered,
+                "redraws_requested": p.redraws_requested,
+                "redraws_skipped": p.redraws_skipped,
+                "status_refreshes": p.status_refreshes,
+                "ordered_sessions_rebuilds": p.ordered_sessions_rebuilds,
+                "parser_locks_render": p.parser_locks_render,
+                "automation_entries_built": p.automation_entries_built,
+                "hook_state_loads": p.hook_state_loads,
+                "external_poll_checks": p.external_poll_checks,
+                "external_poll_reloads": p.external_poll_reloads,
+            },
+            "frame": histo(&t.frame),
+            "tick": histo(&t.tick),
+            "slow_ops": slow_ops,
+            "startup": self.startup_phases,
+        });
+        if let Err(e) = self.db.set_perf_snapshot(&snapshot.to_string()) {
+            warn!("failed to publish perf snapshot: {e}");
+        }
     }
 
     /// Snapshot of the deterministic render/tick performance counters. Read by

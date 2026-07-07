@@ -10,6 +10,7 @@ const EDITOR_COMMAND_KEY: &str = "editor_command";
 const THEME_KEY: &str = "active_theme";
 const ACTIVE_EXTENSIONS_KEY: &str = "active_extensions";
 const BUILTIN_HOOKS_OPTOUT_KEY: &str = "builtin_hooks_optout";
+const PERF_SNAPSHOT_KEY: &str = "perf_snapshot";
 
 impl Database {
     /// Get the configured editor command (e.g. `code`, `nvim --remote-tab`).
@@ -64,6 +65,31 @@ impl Database {
             )?;
         }
         Ok(())
+    }
+
+    /// Publish the TUI's latest perf snapshot (a JSON blob) for
+    /// `thurbox-cli perf` to read. Written only while perf timing is active
+    /// (THURBOX_PERF_LOG or an open perf HUD) — each write bumps other
+    /// connections' `data_version`, so an idle default-config TUI must never
+    /// churn this row.
+    pub fn set_perf_snapshot(&self, json: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![PERF_SNAPSHOT_KEY, json],
+        )?;
+        Ok(())
+    }
+
+    /// The last published perf snapshot, if any (see [`Self::set_perf_snapshot`]).
+    pub fn get_perf_snapshot(&self) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![PERF_SNAPSHOT_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
     }
 
     /// The set of currently-active extension names (e.g. `["flow"]`), stored as
@@ -296,6 +322,19 @@ mod tests {
             Some(second.to_string().as_str())
         );
         assert_eq!(db.take_pending_focus_session_id().unwrap(), None);
+    }
+
+    #[test]
+    fn perf_snapshot_round_trips_and_overwrites() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(db.get_perf_snapshot().unwrap(), None);
+        db.set_perf_snapshot(r#"{"frames":1}"#).unwrap();
+        db.set_perf_snapshot(r#"{"frames":2}"#).unwrap();
+        assert_eq!(
+            db.get_perf_snapshot().unwrap().as_deref(),
+            Some(r#"{"frames":2}"#),
+            "the latest snapshot wins"
+        );
     }
 
     #[test]
