@@ -76,6 +76,7 @@ wall-clock-free `u64` counters bumped at the render/tick hot paths:
 | `automation_entries_built` | automations-pane entry list built |
 | `hook_state_loads` | `refresh_session_statuses` actually reloaded the persisted hook columns (`load_hook_states`) — gated on a `data_version` change (ADR-P6), so it stays flat while idle |
 | `external_poll_checks` / `external_poll_reloads` | `poll_external_changes` ran its cheap `PRAGMA data_version` check / found a change and did a full shared-state reload |
+| `review_builds_dispatched` / `review_builds_applied` | code-review diff builds handed to the background worker / applied back on the UI thread (ADR-P8) |
 
 `hook_state_loads` is the regression gate for ADR-P6: it climbs once at startup
 and then only when an external `session signal` commits, instead of ~1 per tick.
@@ -300,6 +301,46 @@ already brought up and is cheap on the main thread.
 - *Adopting on the background thread too* — `restore_single_session` mutates
   `App` (session list, wizard state on the respawn path); shipping a built
   `Session` across the channel would split that invariant for no measured win.
+
+---
+
+## ADR-P8: Build code-review diffs off the UI thread
+
+**Choice**: Opening the code-review view (`Ctrl+X`/`F7`) and switching its
+target used to run the whole git pipeline **synchronously in the key
+handler** — per repo: base resolution (`branch_exists` + `list_branches` +
+`default_branch`), the target-picker commit listing, and the diff itself,
+each a `git` subprocess and **each an ssh round-trip for a remote session**.
+Measured via the `code_review_build` slow op (ADR-P11): seconds of frozen UI
+on a remote host. Now `toggle_code_review` does only the cheap gather
+(session id, host, worktree list, label dedup), installs the review in a
+`loading` state — the pane opens instantly with a "Building diff…"
+placeholder — and hands the git work to a `spawn_blocking` worker
+(`build_review_open` / `build_review_retarget` in `src/app/code_review.rs`,
+via the shared `BackgroundTask` fire-and-poll shape). `App::poll_review_build`
+(a `tick` step) applies the result **by session id** into `App::code_reviews`,
+so a review closed (or switched away from) mid-build simply drops the result.
+One build runs at a time; a second open/retarget while one is in flight is
+refused with a toast.
+
+Gate: `review_builds_dispatched` / `review_builds_applied` +
+`perf_review_open_never_builds_on_ui_thread`,
+`perf_review_build_result_applied_via_poll`,
+`review_build_for_closed_review_is_dropped` (`src/app/mod.rs` tests).
+
+**Why**: this was the largest *interactive* stall in the app, and the inputs
+are all owned/cloneable data (`ReviewRepo`, `HostDef`, the target), so the
+work moves off-thread wholesale with the same pattern the codebase already
+uses for git stats and worktree creation.
+
+**Rejected**:
+
+- *Queueing a second build behind the in-flight one* — a rapid open→retarget
+  would apply two results in sequence for no benefit; the refuse-with-toast
+  is simpler and the loading state makes it obvious.
+- *An async-aware diff stream (progressive per-repo fill-in)* — more moving
+  parts for a build that is fast locally; revisit only if multi-repo remote
+  reviews prove slow *after* this change.
 
 ---
 

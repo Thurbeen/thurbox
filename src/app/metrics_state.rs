@@ -46,6 +46,13 @@ pub(crate) struct PerfCounters {
     /// full shared-state reload ran. The ratio of reloads to checks shows how
     /// often the poll does real work vs. spins.
     pub(crate) external_poll_reloads: u64,
+    /// Code-review diff builds handed to a background worker (open/retarget).
+    /// Proves the git subprocess fan-out left the UI thread (ADR-P8): the
+    /// toggle path bumps this and must leave `files` empty until the poll.
+    pub(crate) review_builds_dispatched: u64,
+    /// Worker-built review results applied back on the UI thread (a dispatched
+    /// build whose review was closed before delivery is dropped, not applied).
+    pub(crate) review_builds_applied: u64,
 }
 
 impl PerfCounters {
@@ -74,6 +81,12 @@ impl PerfCounters {
             external_poll_reloads: self
                 .external_poll_reloads
                 .wrapping_sub(prev.external_poll_reloads),
+            review_builds_dispatched: self
+                .review_builds_dispatched
+                .wrapping_sub(prev.review_builds_dispatched),
+            review_builds_applied: self
+                .review_builds_applied
+                .wrapping_sub(prev.review_builds_applied),
         }
     }
 }

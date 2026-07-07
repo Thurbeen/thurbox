@@ -697,6 +697,9 @@ pub struct App {
     /// interactive new-session flow, polled each tick. Programmatic spawns
     /// stay synchronous.
     session_spawn: background::BackgroundTask<Result<Session, String>>,
+    /// Off-thread code-review diff build (open/retarget), applied by
+    /// [`Self::poll_review_build`]. See ADR-P8 in `docs/PERFORMANCE.md`.
+    review_build: background::BackgroundTask<code_review::ReviewBuildResult>,
     /// Continuation for a completed background spawn: the metadata + follow-up
     /// (task prompt) to apply once the session is live.
     pending_session_spawn: Option<PendingSessionSpawn>,
@@ -1010,6 +1013,7 @@ impl App {
             worktree_create: background::BackgroundTask::default(),
             pending_worktree_create: None,
             session_spawn: background::BackgroundTask::default(),
+            review_build: background::BackgroundTask::default(),
             pending_session_spawn: None,
             remote_restore: None,
             deferred_inputs: Vec::new(),
@@ -3947,6 +3951,9 @@ impl App {
         self.poll_worktree_create();
         self.poll_session_spawn();
 
+        // Apply a finished off-thread code-review diff build (ADR-P8).
+        self.poll_review_build();
+
         // Adopt remote-backed sessions whose host discovery (started at
         // restore) has since completed.
         self.poll_remote_restore();
@@ -4135,6 +4142,18 @@ impl App {
             .timings
             .slow_ops
             .push(metrics_state::SlowOp { name, ms, tick });
+    }
+
+    /// Record an already-measured operation duration under the same
+    /// thresholds as [`Self::time_op`] — for work timed elsewhere (e.g. by a
+    /// background worker reporting its own elapsed time).
+    pub(crate) fn note_slow_op(&mut self, name: &'static str, ms: u64) {
+        if ms >= SLOW_OP_WARN_MS {
+            tracing::warn!(op = name, ms, "slow op");
+        }
+        if ms >= SLOW_OP_RECORD_MS {
+            self.push_slow_op(name, ms);
+        }
     }
 
     /// Measure a named synchronous UI-thread operation. Call sites are rare,
@@ -11232,6 +11251,81 @@ mod tests {
         assert!(msg.text.contains("branch exists"));
         assert!(!app.worktree_create.in_progress());
         assert!(app.pending_worktree_create.is_none());
+    }
+
+    /// ADR-P8: opening a review dispatches the git work to a background
+    /// worker; the toggle path itself must leave the diff empty (loading).
+    #[tokio::test]
+    async fn perf_review_open_never_builds_on_ui_thread() {
+        let mut app = app_with_sessions(1);
+        app.sessions[0].info.cwd = Some(std::env::temp_dir());
+
+        app.toggle_code_review();
+
+        assert_eq!(app.perf_counters().review_builds_dispatched, 1);
+        assert!(app.review_build.in_progress());
+        let cr = app.active_review().expect("the pane opens instantly");
+        assert!(cr.loading, "opens in the loading state");
+        assert!(cr.files.is_empty(), "no git work ran on the UI thread");
+        assert_eq!(app.focus, InputFocus::CodeReview);
+    }
+
+    /// The worker's result lands via the tick poll: loading clears, the rows
+    /// rebuild from the delivered files, and the applied counter bumps.
+    #[test]
+    fn perf_review_build_result_applied_via_poll() {
+        let mut app = app_with_sessions(1);
+        let sid = app.sessions[0].info.id;
+        let built = code_review::CodeReviewState::for_test(sid, 2);
+        let mut pending = code_review::CodeReviewState::for_test(sid, 0);
+        pending.loading = true;
+        let repos = built.repos.clone();
+        app.code_reviews.insert(sid, pending);
+
+        let tx = app.review_build.start();
+        tx.send(code_review::ReviewBuildResult {
+            session_id: sid,
+            elapsed_ms: 7,
+            kind: code_review::ReviewBuildKind::Open {
+                repos,
+                commits: Vec::new(),
+                target: code_review::ReviewTarget::Branch,
+                files: built.files.clone(),
+            },
+        })
+        .unwrap();
+        app.poll_review_build();
+
+        let cr = &app.code_reviews[&sid];
+        assert!(!cr.loading);
+        assert_eq!(cr.files.len(), 2);
+        assert!(!cr.rows.is_empty(), "rows rebuilt from the delivered diff");
+        assert_eq!(app.perf_counters().review_builds_applied, 1);
+        assert!(!app.review_build.in_progress());
+    }
+
+    /// A build whose review was closed before delivery is dropped without
+    /// panicking or resurrecting state.
+    #[test]
+    fn review_build_for_closed_review_is_dropped() {
+        let mut app = app_with_sessions(1);
+        let sid = app.sessions[0].info.id;
+        let tx = app.review_build.start();
+        tx.send(code_review::ReviewBuildResult {
+            session_id: sid,
+            elapsed_ms: 3,
+            kind: code_review::ReviewBuildKind::Retarget {
+                target: code_review::ReviewTarget::Working,
+                files: Vec::new(),
+            },
+        })
+        .unwrap();
+
+        app.poll_review_build();
+
+        assert!(app.code_reviews.is_empty(), "no state resurrected");
+        assert_eq!(app.perf_counters().review_builds_applied, 0);
+        assert!(!app.review_build.in_progress());
     }
 
     #[test]

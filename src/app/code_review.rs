@@ -126,9 +126,40 @@ pub(crate) struct ComposeState {
     pub editing_id: Option<i64>,
 }
 
+/// What an off-thread review build produced (see [`App::poll_review_build`]).
+/// The git subprocess fan-out — base resolution, commit listing, the diffs
+/// themselves, possibly over SSH — happens on a `spawn_blocking` worker so
+/// opening or retargeting a review never stalls the UI thread (ADR-P8).
+pub(crate) struct ReviewBuildResult {
+    pub session_id: SessionId,
+    /// Worker-measured wall time, reported as the `code_review_build` slow op.
+    pub elapsed_ms: u64,
+    pub kind: ReviewBuildKind,
+}
+
+pub(crate) enum ReviewBuildKind {
+    /// A fresh open: bases resolved per repo, commits listed, default target
+    /// chosen, diff built.
+    Open {
+        repos: Vec<ReviewRepo>,
+        commits: Vec<(usize, String, String)>,
+        target: ReviewTarget,
+        files: Vec<DiffFile>,
+    },
+    /// A target switch on an already-open review (repos/commits unchanged).
+    Retarget {
+        target: ReviewTarget,
+        files: Vec<DiffFile>,
+    },
+}
+
 /// The open code-review view for the active session (rebuilt per toggle).
 pub(crate) struct CodeReviewState {
     pub session_id: SessionId,
+    /// A background build (open or retarget) is in flight; the view shows a
+    /// "Building diff…" placeholder until [`App::poll_review_build`] applies
+    /// the result. Navigation is safe meanwhile (`rows` is empty or stale).
+    pub loading: bool,
     /// The repos under review (one per worktree; ≥2 = multi-repo). Cached so
     /// switching targets doesn't re-resolve the session.
     pub repos: Vec<ReviewRepo>,
@@ -501,20 +532,24 @@ impl CodeReviewState {
 }
 
 impl App {
-    /// Toggle the native code-review view for the active session. Building it
-    /// runs `git diff <base>..HEAD` synchronously (normally fast); a huge-repo
-    /// async build is a follow-up.
+    /// Toggle the native code-review view for the active session. The git
+    /// work (base resolution, commit listing, the diff) runs on a background
+    /// worker — the pane opens instantly in a loading state (ADR-P8).
     pub(crate) fn toggle_code_review(&mut self) {
         if self.active_review().is_some() {
             self.close_code_review();
             return;
         }
-        // Measured as a slow op: the build shells out to git (over SSH for a
-        // remote session), and the duration attributes any perceived stall.
-        self.time_op("code_review_build", |s| s.open_code_review());
+        self.open_code_review();
     }
 
     fn open_code_review(&mut self) {
+        // One build at a time: a second open while a build is in flight would
+        // orphan the first receiver (see `BackgroundTask::start`).
+        if self.review_build.in_progress() {
+            self.set_info("A code-review build is already in progress…");
+            return;
+        }
         let Some(session) = self.sessions.get(self.active_index) else {
             return;
         };
@@ -536,18 +571,19 @@ impl App {
 
         // One review repo per worktree (multi-repo sessions have several); a
         // session with no worktree reviews its bare cwd. Attached `additional_dirs`
-        // are reference-only (no branch) and are not reviewed.
+        // are reference-only (no branch) and are not reviewed. Only the cheap
+        // gather happens here — base resolution and the diffs are git
+        // subprocesses (over SSH for a remote session) and run on the worker.
         let worktrees = session.info.worktrees.clone();
         let mut repos: Vec<ReviewRepo> = if worktrees.is_empty() {
             let Some(cwd) = session.info.cwd.clone() else {
                 self.set_error("This session has no working directory to review");
                 return;
             };
-            let base = resolve_repo_base(session_base.as_deref(), &cwd, host.as_ref());
             vec![ReviewRepo {
                 label: String::new(),
                 dir: cwd,
-                base,
+                base: None,
             }]
         } else {
             worktrees
@@ -559,12 +595,10 @@ impl App {
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_default()
                     });
-                    let base =
-                        resolve_repo_base(session_base.as_deref(), &w.worktree_path, host.as_ref());
                     ReviewRepo {
                         label,
                         dir: w.worktree_path.clone(),
-                        base,
+                        base: None,
                     }
                 })
                 .collect()
@@ -574,29 +608,12 @@ impl App {
         dedup_repo_labels(&mut repos);
         let multi = repos.len() > 1;
 
-        // Commits across every repo for the target picker (tagged by repo index).
-        let mut commits: Vec<(usize, String, String)> = Vec::new();
-        for (i, r) in repos.iter().enumerate() {
-            if let Some(b) = r.base.as_deref() {
-                for (sha, subj) in crate::git::list_commits_on(host.as_ref(), &r.dir, b) {
-                    commits.push((i, sha, subj));
-                }
-            }
-        }
-        // Default to the branch diff when any repo has a base; otherwise the
-        // uncommitted changes (a bare / unknown-base session still reviews its tree).
-        let target = if repos.iter().any(|r| r.base.is_some()) {
-            ReviewTarget::Branch
-        } else {
-            ReviewTarget::Working
-        };
-        let files = build_files(&repos, &target, host.as_ref(), multi);
-
         let state = CodeReviewState {
             session_id,
-            repos,
+            loading: true,
+            repos: repos.clone(),
             multi,
-            files,
+            files: Vec::new(),
             comments: Vec::new(),
             reviewed_files: HashSet::new(),
             reviewed_hunks: HashSet::new(),
@@ -609,17 +626,72 @@ impl App {
             click_side: None,
             h_scroll: 0,
             wrap: false,
-            target,
-            commits,
-            host,
+            target: ReviewTarget::Working,
+            commits: Vec::new(),
+            host: host.clone(),
             target_picker: None,
             search: None,
         };
-        // Install the bare state for this session, then load comments + marks +
-        // build rows through the single shared path (`reload_review_data`).
+        // Install the loading state (the pane opens instantly with a
+        // "Building diff…" placeholder), load comments + marks through the
+        // single shared path, and hand the git work to the worker.
         self.code_reviews.insert(session_id, state);
         self.reload_review_data();
         self.focus = InputFocus::CodeReview;
+
+        self.metrics.bump(|p| &mut p.review_builds_dispatched);
+        let tx = self.review_build.start();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(build_review_open(session_id, repos, session_base, host));
+        });
+    }
+
+    /// Apply a finished background review build (a `tick` step). A result whose
+    /// review was closed (or replaced by another session's) in the meantime is
+    /// dropped — the map lookup by session id is the ownership check.
+    pub(crate) fn poll_review_build(&mut self) {
+        use super::background::TaskPoll;
+        match self.review_build.poll() {
+            TaskPoll::Pending => {}
+            TaskPoll::Died => {
+                // The worker panicked; stop any spinner so the view shows its
+                // (empty) rows instead of loading forever.
+                for cr in self.code_reviews.values_mut() {
+                    cr.loading = false;
+                }
+                self.set_error("Code-review build failed");
+                self.request_redraw();
+            }
+            TaskPoll::Done(result) => {
+                self.note_slow_op("code_review_build", result.elapsed_ms);
+                let Some(cr) = self.code_reviews.get_mut(&result.session_id) else {
+                    return;
+                };
+                match result.kind {
+                    ReviewBuildKind::Open {
+                        repos,
+                        commits,
+                        target,
+                        files,
+                    } => {
+                        cr.repos = repos;
+                        cr.commits = commits;
+                        cr.target = target;
+                        cr.files = files;
+                    }
+                    ReviewBuildKind::Retarget { target, files } => {
+                        cr.target = target;
+                        cr.files = files;
+                        cr.selected = 0;
+                        cr.scroll = 0;
+                    }
+                }
+                cr.loading = false;
+                cr.rebuild_rows();
+                self.metrics.bump(|p| &mut p.review_builds_applied);
+                self.request_redraw();
+            }
+        }
     }
 
     /// Reload comments + marks from the DB into the open review and rebuild rows.
@@ -848,26 +920,30 @@ impl App {
 
     /// Switch the diff to a different target, recomputing it from git.
     pub(crate) fn cr_set_target(&mut self, target: ReviewTarget) {
-        if self.active_review().is_none() {
+        let Some(cr) = self.active_review() else {
+            return;
+        };
+        // Same git-subprocess cost profile as opening the review, so it runs
+        // on the same worker (one build at a time).
+        if self.review_build.in_progress() {
+            self.set_info("A code-review build is already in progress…");
             return;
         }
-        // Same git-subprocess cost profile as opening the review.
-        self.time_op("code_review_retarget", |s| {
-            let Some(cr) = s.active_review() else {
-                return;
-            };
-            let repos = cr.repos.clone();
-            let host = cr.host.clone();
-            let multi = cr.multi;
-            let files = build_files(&repos, &target, host.as_ref(), multi);
-            if let Some(cr) = s.active_review_mut() {
-                cr.target = target;
-                cr.files = files;
-                cr.selected = 0;
-                cr.scroll = 0;
-                cr.target_picker = None;
-                cr.rebuild_rows();
-            }
+        let session_id = cr.session_id;
+        let repos = cr.repos.clone();
+        let host = cr.host.clone();
+        let multi = cr.multi;
+        if let Some(cr) = self.active_review_mut() {
+            cr.loading = true;
+            cr.target_picker = None;
+        }
+        self.request_redraw();
+        self.metrics.bump(|p| &mut p.review_builds_dispatched);
+        let tx = self.review_build.start();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(build_review_retarget(
+                session_id, repos, host, multi, target,
+            ));
         });
     }
 
@@ -1569,6 +1645,67 @@ fn resolve_repo_base(
     crate::git::default_branch_on(host, dir, &branches)
 }
 
+/// Off-thread worker for a fresh review open: resolve each repo's base, list
+/// the target-picker commits, pick the default target, and build the diff —
+/// every step a git subprocess (over SSH for a remote host). Pure of `App`.
+fn build_review_open(
+    session_id: SessionId,
+    mut repos: Vec<ReviewRepo>,
+    session_base: Option<String>,
+    host: Option<HostDef>,
+) -> ReviewBuildResult {
+    let start = std::time::Instant::now();
+    for r in &mut repos {
+        r.base = resolve_repo_base(session_base.as_deref(), &r.dir, host.as_ref());
+    }
+    // Commits across every repo for the target picker (tagged by repo index).
+    let mut commits: Vec<(usize, String, String)> = Vec::new();
+    for (i, r) in repos.iter().enumerate() {
+        if let Some(b) = r.base.as_deref() {
+            for (sha, subj) in crate::git::list_commits_on(host.as_ref(), &r.dir, b) {
+                commits.push((i, sha, subj));
+            }
+        }
+    }
+    // Default to the branch diff when any repo has a base; otherwise the
+    // uncommitted changes (a bare / unknown-base session still reviews its tree).
+    let target = if repos.iter().any(|r| r.base.is_some()) {
+        ReviewTarget::Branch
+    } else {
+        ReviewTarget::Working
+    };
+    let multi = repos.len() > 1;
+    let files = build_files(&repos, &target, host.as_ref(), multi);
+    ReviewBuildResult {
+        session_id,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+        kind: ReviewBuildKind::Open {
+            repos,
+            commits,
+            target,
+            files,
+        },
+    }
+}
+
+/// Off-thread worker for a target switch: rebuild the diff for `target`
+/// against the already-resolved repos.
+fn build_review_retarget(
+    session_id: SessionId,
+    repos: Vec<ReviewRepo>,
+    host: Option<HostDef>,
+    multi: bool,
+    target: ReviewTarget,
+) -> ReviewBuildResult {
+    let start = std::time::Instant::now();
+    let files = build_files(&repos, &target, host.as_ref(), multi);
+    ReviewBuildResult {
+        session_id,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+        kind: ReviewBuildKind::Retarget { target, files },
+    }
+}
+
 /// Disambiguate repos that share a display name so the `"<label>/<path>"`
 /// namespacing stays unique (two members basenamed `app` would otherwise key
 /// comments/marks identically). Colliding labels get a ` (2)`, ` (3)`, … suffix
@@ -1750,6 +1887,7 @@ impl CodeReviewState {
             .collect();
         let mut s = CodeReviewState {
             session_id,
+            loading: false,
             repos: vec![ReviewRepo {
                 label: String::new(),
                 dir: PathBuf::from("/tmp"),
@@ -1818,6 +1956,7 @@ mod tests {
     fn state_with(files: Vec<DiffFile>, comments: Vec<ReviewComment>) -> CodeReviewState {
         let mut s = CodeReviewState {
             session_id: SessionId::default(),
+            loading: false,
             repos: vec![ReviewRepo {
                 label: String::new(),
                 dir: PathBuf::from("/tmp"),

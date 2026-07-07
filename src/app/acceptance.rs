@@ -1785,6 +1785,7 @@ fn open_minimal_review(h: &mut Harness) {
         sid,
         crate::app::code_review::CodeReviewState {
             session_id: sid,
+            loading: false,
             repos: Vec::new(),
             multi: false,
             files: Vec::new(),
@@ -2165,9 +2166,12 @@ fn side_by_side_click_records_column_side() {
 }
 
 /// The review-target picker is mouse-driven too: clicking one of its entries
-/// switches the diff to that target, mirroring the keyboard Enter path.
-#[test]
-fn clicking_review_target_entry_switches_target() {
+/// dispatches the switch to that target, mirroring the keyboard Enter path.
+/// The rebuild itself runs on a background worker (ADR-P8) — its application
+/// is covered by `perf_review_build_result_applied_via_poll` — so this asserts
+/// the dispatch side: picker closed, loading state on, build handed off.
+#[tokio::test]
+async fn clicking_review_target_entry_switches_target() {
     use crate::app::code_review::ReviewTarget;
     let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
     let sid = h.app.sessions[0].info.id;
@@ -2199,12 +2203,18 @@ fn clicking_review_target_entry_switches_target() {
     let cr = h.app.active_review().unwrap();
     assert_eq!(
         cr.target,
-        ReviewTarget::Working,
-        "clicking a target-picker entry switches the diff to that target"
+        ReviewTarget::Branch,
+        "the target only switches once the background build lands"
     );
+    assert!(cr.loading, "the click enters the loading state");
     assert!(
         cr.target_picker.is_none(),
         "selecting a target closes the picker"
+    );
+    assert_eq!(
+        h.app.perf_counters().review_builds_dispatched,
+        1,
+        "the rebuild was handed to the background worker"
     );
 }
 

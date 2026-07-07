@@ -95,7 +95,21 @@ pub(crate) fn render(
     // The target picker, when open, replaces the diff body. Its entries are
     // clickable (`targets`), on top of the keyboard-driven ↑/↓/Enter path.
     let mut targets = Vec::new();
-    let hits = if state.target_picker.is_some() {
+    let hits = if state.loading {
+        // A background build is in flight (ADR-P8): the pane opened instantly
+        // and fills in when the worker delivers. No rows = nothing clickable.
+        let msg = Line::from(Span::styled(
+            "Building diff…",
+            Style::default().fg(Theme::text_muted()),
+        ))
+        .centered();
+        let y = diff_area.y + diff_area.height / 2;
+        frame.render_widget(
+            Paragraph::new(msg),
+            Rect::new(diff_area.x, y, diff_area.width, 1),
+        );
+        (Vec::new(), None)
+    } else if state.target_picker.is_some() {
         targets = render_target_picker(frame, diff_area, state);
         (Vec::new(), None)
     } else {
@@ -1351,6 +1365,7 @@ mod tests {
         };
         let mut s = CodeReviewState {
             session_id: SessionId::default(),
+            loading: false,
             repos: vec![crate::app::code_review::ReviewRepo {
                 label: String::new(),
                 dir: std::path::PathBuf::from("/tmp"),

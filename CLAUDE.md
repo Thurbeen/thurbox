@@ -1677,10 +1677,14 @@ code_review`.
   `y` copies the review as markdown to the clipboard, and `e` (Send→Agent) pastes
   the compiled review into the session's agent as a prompt to address it — the
   review → agent → re-review loop, the orchestrator-native equivalent of submit.
+- **Async diff build.** Opening/retargeting a review runs its git pipeline
+  (base resolution, commit listing, the diffs — over SSH for a remote session)
+  on a background worker with a "Building diff…" loading state, applied by
+  `App::poll_review_build` per tick — the pane opens instantly (ADR-P8,
+  `docs/PERFORMANCE.md`).
 - **v1 follow-ups** (named, not silently dropped): range/multi-line comments,
   token-level intra-line word diffs on a paired row (v1 aligns whole lines
-  positionally, not sub-line), async diff build for
-  huge repos (v1 builds synchronously on toggle), grammar-aware syntax
+  positionally, not sub-line), grammar-aware syntax
   highlighting (v1's lexer is heuristic + language-agnostic), horizontal
   scroll in the **side-by-side** layout (wrap now works there; paired rows still
   pin `h_scroll = 0`), per-side search-match highlighting in
