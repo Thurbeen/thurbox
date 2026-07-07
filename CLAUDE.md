@@ -77,12 +77,30 @@ The TUI has two layers of end-to-end coverage:
   module). A `Harness` builds a real `App` on a no-op `StubBackend` +
   `Database::open_in_memory()` + a `TestPathGuard` tempdir (fully hermetic),
   feeds `AppMessage::KeyPress` events exactly as `main.rs`'s loop does, and
-  renders to a headless ratatui `TestBackend`. Stable screens (welcome state,
+  renders to a headless ratatui `TestBackend`. It also drives the loop's
+  **tick**: `App::tick` is split into a deterministic `tick_core` (status
+  derivation, timer expiry, search debounce, automation firing, external-change
+  polling — what `Harness::tick` runs, hermetic and runtime-free) and a
+  spawning `tick_background` (sysinfo/git/usage shell-outs, update checks —
+  `main` only). Wall-clock-gated behavior is fast-forwarded via
+  `Harness::advance` (the `app::clock` test clock — a thread-local offset every
+  UI-thread timer reads through), and agent output is injected per session via
+  `Harness::feed_output` (same vt100 + `TermSignals` path as the PTY reader),
+  so redraw detection, OSC title/bell signals, buffer-content search, and
+  terminal rendering are all testable. Stable screens (welcome state,
   F1 help, theme picker) are pinned with **`insta`** snapshots
   (`src/app/snapshots/`); dynamic flows (navigation, modals, panel toggles,
   quit) assert on `App` state instead, so live metrics/clock never make them
   flaky. Runs in the normal `cargo nextest --all` — no tmux/TTY needed. Update
   snapshots with `INSTA_UPDATE=always cargo test` (or `cargo insta review`).
+- **Invariant monkey test** (`monkey_random_events_uphold_invariants` in
+  `src/app/acceptance.rs`). Seeded pseudo-random event streams (keys, chords,
+  mouse, ticks, clock jumps, resizes, injected agent output) against the
+  harness, rendering after **every** step and checking `assert_invariants`
+  (selection indices in bounds, focus never on a hidden surface, panels never
+  outlive their feature flag). A failure prints the seed + step for exact
+  replay. When a "weird TUI behavior" reduces to a rule, add it to
+  `assert_invariants` and let the monkey hunt for a violating sequence.
 - **Black-box smoke test** (`scripts/dev/smoke/tui-smoke.sh`). Launches the real
   `thurbox` binary inside a throwaway tmux pane (isolated `HOME`/XDG/
   `TMUX_TMPDIR`, mirroring `scripts/demo/record.sh`), drives it with

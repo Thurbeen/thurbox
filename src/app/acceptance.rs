@@ -2,17 +2,21 @@
 //!
 //! Where the focused unit tests in [`super::tests`] poke individual methods,
 //! these drive a *real* [`App`] the way `main.rs`'s loop does — feeding
-//! `update(AppMessage)` events and rendering `view(Frame)` to a headless
-//! ratatui [`TestBackend`]. (The loop's third step, `tick()`, is deliberately
-//! skipped: it spawns Tokio tasks and so needs a runtime these synchronous
-//! tests don't have; nothing under test here depends on it.) No TTY, tmux
-//! server, or agent process is involved:
+//! `update(AppMessage)` events, running the loop's deterministic tick half
+//! ([`App::tick_core`] via [`Harness::tick`]; the excluded `tick_background`
+//! spawns Tokio tasks that shell out), and rendering `view(Frame)` to a
+//! headless ratatui [`TestBackend`]. No TTY, tmux server, or agent process is
+//! involved:
 //!
 //! * sessions are inert [`Session::stub`]s on a no-op [`FakeBackend`],
 //! * the database is `Database::open_in_memory()`,
 //! * every config/data path is redirected to a throwaway tempdir via
 //!   [`crate::paths::TestPathGuard`], so the suite never touches the
-//!   developer's real `~/.config/thurbox`.
+//!   developer's real `~/.config/thurbox`,
+//! * agent output is injected per session with [`Harness::feed_output`]
+//!   (through the same vt100 parser + `TermSignals` path the PTY reader uses),
+//! * wall-clock-gated behavior (timeouts, debounces, the redraw floor) is
+//!   fast-forwarded with [`Harness::advance`] (see [`clock`]) — never slept.
 //!
 //! Stable, deterministic screens (the empty welcome state, the keybindings
 //! help overlay, the theme picker) are pinned with `insta` snapshots so a UI
@@ -20,6 +24,12 @@
 //! `INSTA_UPDATE=always cargo test`). Flows whose output depends on live
 //! metrics or wall-clock time are asserted on `App` *state* instead (modal
 //! kind, selection index, panel visibility, quit flag) to stay robust.
+//!
+//! Finally, [`monkey_random_events_uphold_invariants`] fuzzes the whole
+//! surface: thousands of seeded pseudo-random events (keys, chords, mouse,
+//! ticks, clock jumps, resizes, injected output) with [`assert_invariants`]
+//! checked after every step — the regression net for "weird TUI behavior"
+//! that no directed test anticipated.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -337,6 +347,42 @@ impl Harness {
             y: rect.y,
             modifiers: KeyModifiers::NONE,
         });
+        self
+    }
+
+    /// Run one deterministic tick — the third step of `main.rs`'s loop, minus
+    /// its background half ([`App::tick_core`]; the excluded
+    /// `tick_background` spawns Tokio tasks that shell out / hit the network).
+    /// This drives everything tick-dependent hermetically: status derivation,
+    /// timer expiry, the global-search debounce, automation firing, and the
+    /// external-change poll.
+    fn tick(&mut self) -> &mut Self {
+        self.app.tick_core();
+        self
+    }
+
+    /// Fast-forward the app's clock by `d` (see [`clock`]). Timers, debounces
+    /// and retry windows age deterministically — the next [`Self::tick`] (or
+    /// `should_redraw` check) observes the elapsed time without real waiting.
+    fn advance(&mut self, d: std::time::Duration) -> &mut Self {
+        clock::advance(d);
+        self
+    }
+
+    /// Feed raw agent-output bytes to session `idx`, exactly as its PTY reader
+    /// loop would — the seam for testing everything downstream of output:
+    /// terminal rendering, the output-change redraw detector, OSC
+    /// title/bell/notification signals, and buffer-content search.
+    fn feed_output(&mut self, idx: usize, bytes: &[u8]) -> &mut Self {
+        self.app.sessions[idx].feed_output_for_test(bytes);
+        self
+    }
+
+    /// Resize both the app (as the real loop would on a terminal resize) and
+    /// the headless backend, so subsequent renders draw at the new size.
+    fn resize(&mut self, cols: u16, rows: u16) -> &mut Self {
+        self.app.update(AppMessage::Resize(cols, rows));
+        self.terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
         self
     }
 
@@ -2292,4 +2338,432 @@ fn remote_hook_event_dedupes_repeated_state() {
         first_at, second_at,
         "an identical re-report must not re-stamp state_at"
     );
+}
+
+// ── Tick-driven behavior: timers, debounce, redraw floor ─────────────────────
+//
+// These drive `App::tick_core` (the deterministic half of the event loop's
+// tick) with the clock fast-forwarded via `Harness::advance`, so every
+// wall-clock-gated behavior is asserted without sleeping.
+
+#[test]
+fn status_message_expires_after_timeout_via_tick() {
+    let mut h = Harness::standard(1);
+    h.app.set_status(StatusLevel::Info, "transient note");
+    assert!(h.app.status_message.is_some());
+
+    h.tick();
+    assert!(
+        h.app.status_message.is_some(),
+        "a fresh message survives a tick"
+    );
+
+    h.advance(STATUS_MESSAGE_TIMEOUT).tick();
+    assert!(
+        h.app.status_message.is_none(),
+        "the tick clears an expired status message"
+    );
+}
+
+#[test]
+fn pending_delete_finalizes_after_undo_window() {
+    let mut h = Harness::standard(2);
+    h.ctrl('d'); // DeleteSession (soft) — starts the undo window
+    assert!(h.app.pending_delete.is_some());
+
+    // Inside the window the delete stays pending (undoable).
+    h.advance(UNDO_TIMEOUT - std::time::Duration::from_secs(1))
+        .tick();
+    assert!(
+        h.app.pending_delete.is_some(),
+        "still undoable inside the window"
+    );
+
+    h.advance(std::time::Duration::from_secs(2)).tick();
+    assert!(
+        h.app.pending_delete.is_none(),
+        "the expired window finalizes the delete"
+    );
+
+    h.ctrl('z'); // UndoDelete — too late now
+    assert_eq!(
+        h.app.sessions.len(),
+        1,
+        "a finalized delete can no longer be undone"
+    );
+}
+
+#[test]
+fn global_search_content_scan_waits_for_debounce() {
+    let mut h = Harness::standard(2);
+    h.feed_output(1, b"a unique zebra-crossing appears\r\n");
+
+    h.ctrl('/'); // GlobalSearch
+    for c in "zebra".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let content_hit = |app: &App| {
+        app.global_search
+            .results
+            .iter()
+            .any(|r| r.kind == search::SearchKind::Session && r.snippet.is_some())
+    };
+
+    h.tick();
+    assert!(
+        !content_hit(&h.app),
+        "the expensive buffer scan is debounced — no content hit immediately"
+    );
+    assert!(h.app.global_search.content_dirty, "a scan is pending");
+
+    h.advance(std::time::Duration::from_millis(
+        search::CONTENT_DEBOUNCE_MS + 10,
+    ))
+    .tick();
+    assert!(
+        content_hit(&h.app),
+        "once the query settles, the tick scans session buffers"
+    );
+    assert!(!h.app.global_search.content_dirty);
+}
+
+#[test]
+fn forced_redraw_floor_repaints_after_interval() {
+    let mut h = Harness::standard(1);
+    h.app.mark_redrawn();
+    assert!(
+        !h.app.should_redraw(),
+        "clean state right after a paint — no redraw needed"
+    );
+
+    h.advance(FORCE_REDRAW_INTERVAL);
+    assert!(
+        h.app.should_redraw(),
+        "the forced-redraw floor repaints time-driven UI"
+    );
+}
+
+// ── Regressions the monkey test originally caught ────────────────────────────
+
+#[test]
+fn global_search_on_short_terminal_does_not_panic_session_resize() {
+    // The search strip + footer can eat a short terminal's entire height,
+    // producing a zero-row content area. `Session::resize` must clamp before
+    // vt100's `set_size` (which underflows on 0) — this panicked pre-clamp.
+    let mut h = Harness::new(30, 8, 1);
+    h.render();
+    h.ctrl('/'); // GlobalSearch — resizes sessions to the shrunken content area
+    h.render();
+    assert!(h.app.global_search.active);
+}
+
+#[test]
+fn narrow_resize_rescues_task_editor_focus() {
+    // Shrinking below 120 cols hides the tasks panel; focus must leave the
+    // *editor* too, or it keeps capturing every key for an invisible surface.
+    let mut h = Harness::standard(1);
+    h.ctrl('w'); // FocusTasks
+    h.key(KeyCode::Char('n'), KeyModifiers::NONE); // new task → TaskEditor
+    assert!(matches!(h.app.focus, InputFocus::TaskEditor));
+
+    h.resize(100, 40);
+    assert!(!h.app.show_tasks_panel, "narrow layout hides the panel");
+    assert!(
+        matches!(h.app.focus, InputFocus::SessionList),
+        "focus is rescued off the hidden panel's editor"
+    );
+    h.render();
+}
+
+// ── Injected agent output: the PTY seam ──────────────────────────────────────
+
+#[test]
+fn injected_output_marks_redraw_and_renders() {
+    let mut h = Harness::standard(1);
+    // Sync the output-change detector, then settle to a clean state.
+    h.app.detect_output_redraw();
+    h.app.mark_redrawn();
+    h.app.detect_output_redraw();
+    assert!(!h.app.should_redraw(), "no new output ⇒ no repaint");
+
+    h.feed_output(0, b"MARKER-7f3a output line\r\n");
+    h.app.detect_output_redraw();
+    assert!(h.app.should_redraw(), "new output marks the UI dirty");
+
+    let screen = h.render();
+    assert!(
+        screen.contains("MARKER-7f3a"),
+        "injected output reaches the rendered terminal pane:\n{screen}"
+    );
+}
+
+#[test]
+fn osc_title_and_bell_reach_the_session() {
+    let mut h = Harness::standard(1);
+
+    h.feed_output(0, b"\x1b]0;Reticulating splines\x07");
+    assert_eq!(
+        h.app.sessions[0].agent_title().as_deref(),
+        Some("Reticulating splines"),
+        "an OSC 0 title lands in the session's activity text"
+    );
+
+    assert!(!h.app.sessions[0].needs_attention());
+    h.feed_output(0, b"\x07");
+    assert!(
+        h.app.sessions[0].needs_attention(),
+        "a BEL raises the attention flag"
+    );
+}
+
+#[test]
+fn split_utf8_output_chunks_render_intact() {
+    // The reader loop protects vt100 from mid-codepoint chunks with a carry
+    // buffer; `feed_output` bypasses the reader, so this documents that a test
+    // feeding whole-codepoint chunks renders multi-byte text correctly (the
+    // carry logic itself is unit-tested via `utf8_ready_prefix_len`).
+    let mut h = Harness::standard(1);
+    h.feed_output(0, "boîte — ünïcode ✓\r\n".as_bytes());
+    let screen = h.render();
+    assert!(
+        screen.contains("boîte — ünïcode ✓"),
+        "multi-byte output renders intact:\n{screen}"
+    );
+}
+
+// ── Invariant tripwires + deterministic monkey test ──────────────────────────
+
+/// Structural invariants that must hold after *any* event, in any order. The
+/// monkey test checks these after every step; when a "weird TUI behavior" is
+/// reduced to a rule ("focus never rests on a hidden pane"), add it here and
+/// the monkey hunts for a sequence that breaks it.
+fn assert_invariants(app: &App, ctx: &str) {
+    assert!(
+        app.sessions.is_empty() || app.active_index < app.sessions.len(),
+        "[{ctx}] active_index {} out of bounds ({} sessions)",
+        app.active_index,
+        app.sessions.len()
+    );
+    assert!(
+        app.task_ui.filtered_task_indices.is_empty()
+            || app.task_ui.task_panel_index < app.task_ui.filtered_task_indices.len(),
+        "[{ctx}] task panel selection out of bounds"
+    );
+    assert!(
+        app.automation_ui.cached_automations.is_empty()
+            || app.automation_ui.automation_panel_index
+                < app.automation_ui.cached_automations.len(),
+        "[{ctx}] automation pane selection out of bounds"
+    );
+
+    // Panel visibility never outlives its feature flag.
+    assert!(
+        !app.show_tasks_panel || app.features.tasks,
+        "[{ctx}] tasks panel shown with the feature disabled"
+    );
+    assert!(
+        !app.show_file_viewer || app.features.file_viewer,
+        "[{ctx}] file viewer shown with the feature disabled"
+    );
+
+    // Focus only ever rests on a surface that exists.
+    match app.focus {
+        InputFocus::TaskList | InputFocus::TaskEditor => assert!(
+            app.features.tasks && app.show_tasks_panel,
+            "[{ctx}] focus {:?} but the tasks panel is hidden",
+            app.focus
+        ),
+        InputFocus::FileViewer => assert!(
+            app.show_file_viewer,
+            "[{ctx}] focus on a hidden file viewer"
+        ),
+        InputFocus::GlobalSearch => assert!(
+            app.global_search.active,
+            "[{ctx}] focus on a closed search strip"
+        ),
+        InputFocus::CodeReview | InputFocus::ReviewFiles => {
+            assert!(
+                app.features.code_review,
+                "[{ctx}] review focus with the feature disabled"
+            );
+            assert!(
+                app.active_review().is_some(),
+                "[{ctx}] focus {:?} but the active session has no open review",
+                app.focus
+            );
+        }
+        InputFocus::Automations
+        | InputFocus::AutomationEditor
+        | InputFocus::AutomationRunHistory => assert!(
+            app.features.automations,
+            "[{ctx}] automations focus with the feature disabled"
+        ),
+        InputFocus::SessionList | InputFocus::Terminal => {}
+    }
+
+    if app.global_search.active {
+        assert!(
+            app.features.global_search,
+            "[{ctx}] search strip active with the feature disabled"
+        );
+    }
+}
+
+/// Deterministic pseudo-random stream (an LCG — no dev-dependency, and a
+/// failing seed reproduces exactly).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0 >> 33
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// `Ctrl` chords the monkey may press. Excluded on purpose:
+/// `n` (repo picker `Enter` can reach real-git branch listing on the dev
+/// machine), `o` (spawns `$EDITOR`), `v` (reads the system clipboard),
+/// `q` (quit is a terminal state with nothing to fuzz behind it).
+const MONKEY_CTRL: &[char] = &[
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'j', 'k', 'l', 'p', 'r', 's', 't', 'u', 'w', 'x', 'y',
+    'z', '/', ',',
+];
+
+/// Plain (unmodified) keys the monkey may press: pane-scoped letters, digits,
+/// and the structural navigation/editing keys.
+const MONKEY_KEYS: &[KeyCode] = &[
+    KeyCode::Char('j'),
+    KeyCode::Char('k'),
+    KeyCode::Char('h'),
+    KeyCode::Char('l'),
+    KeyCode::Char('g'),
+    KeyCode::Char('r'),
+    KeyCode::Char('d'),
+    KeyCode::Char('e'),
+    KeyCode::Char('n'),
+    KeyCode::Char('s'),
+    KeyCode::Char('w'),
+    KeyCode::Char('y'),
+    KeyCode::Char('/'),
+    KeyCode::Char(' '),
+    KeyCode::Char('1'),
+    KeyCode::Char('9'),
+    KeyCode::Esc,
+    KeyCode::Enter,
+    KeyCode::Tab,
+    KeyCode::Backspace,
+    KeyCode::Up,
+    KeyCode::Down,
+    KeyCode::Left,
+    KeyCode::Right,
+    KeyCode::PageUp,
+    KeyCode::PageDown,
+    KeyCode::Home,
+    KeyCode::End,
+];
+
+/// Realistic agent-output chunks: plain text, SGR colour, OSC title, BEL,
+/// OSC 9 notification, unicode, screen clears, and alt-screen flips.
+const MONKEY_OUTPUT: &[&[u8]] = &[
+    b"compiling foo v0.1.0\r\n",
+    b"\x1b[31merror\x1b[0m: something\r\n",
+    b"\x1b]0;Agent thinking\x07",
+    b"\x07",
+    b"\x1b]9;needs input\x07",
+    "héllo wörld — \u{2714}\r\n".as_bytes(),
+    b"\x1b[2J\x1b[H",
+    b"\x1b[?1049h",
+    b"\x1b[?1049l",
+];
+
+/// Monkey test: drive a real `App` with thousands of pseudo-random events —
+/// keys, chords, ticks, clock jumps, resizes, mouse, and injected agent
+/// output — rendering after every step and asserting [`assert_invariants`].
+/// This is the net for "weird TUI behavior": any panic (in update *or* view)
+/// or invariant violation fails with the seed + step for exact replay.
+/// Tokio flavor: spawn-adjacent flows (fork/restart on the inert backend) may
+/// touch the runtime before erroring.
+#[tokio::test]
+async fn monkey_random_events_uphold_invariants() {
+    for seed in [0xDEADBEEFu64, 42, 20260707] {
+        let mut rng = Rng(seed);
+        let mut h = Harness::standard(3);
+        h.render();
+
+        for step in 0..2500 {
+            let ctx = format!("seed {seed:#x} step {step}");
+            match rng.below(100) {
+                // Plain keys: letters, digits, and structural keys.
+                0..=39 => {
+                    let code = MONKEY_KEYS[rng.below(MONKEY_KEYS.len())];
+                    h.key(code, KeyModifiers::NONE);
+                }
+                // Ctrl chords (thurbox's global namespace).
+                40..=59 => {
+                    let c = MONKEY_CTRL[rng.below(MONKEY_CTRL.len())];
+                    h.ctrl(c);
+                }
+                // Shift chords (reorder/sort) and F-keys.
+                60..=69 => {
+                    if rng.below(2) == 0 {
+                        let c = ['j', 'k', 's', 'd'][rng.below(4)];
+                        h.shift(c);
+                    } else {
+                        h.func((rng.below(8) + 1) as u8);
+                    }
+                }
+                // Deterministic tick, sometimes after a clock jump.
+                70..=79 => {
+                    if rng.below(2) == 0 {
+                        let ms = [50, 200, 1_000, 5_000, 11_000][rng.below(5)];
+                        h.advance(std::time::Duration::from_millis(ms));
+                    }
+                    h.tick();
+                }
+                // Mouse: click / scroll / move at a random point.
+                80..=89 => {
+                    let size = *h.terminal.backend().buffer().area();
+                    let x = (rng.below(size.width.max(1) as usize)) as u16;
+                    let y = (rng.below(size.height.max(1) as usize)) as u16;
+                    let msg = match rng.below(4) {
+                        0 => AppMessage::MouseClick {
+                            x,
+                            y,
+                            modifiers: KeyModifiers::NONE,
+                        },
+                        1 => AppMessage::MouseScrollUp { x, y },
+                        2 => AppMessage::MouseScrollDown { x, y },
+                        _ => AppMessage::MouseMove { x, y },
+                    };
+                    h.app.update(msg);
+                }
+                // Agent output into a random session.
+                90..=94 => {
+                    if !h.app.sessions.is_empty() {
+                        let idx = rng.below(h.app.sessions.len());
+                        let chunk = MONKEY_OUTPUT[rng.below(MONKEY_OUTPUT.len())];
+                        h.feed_output(idx, chunk);
+                        h.app.detect_output_redraw();
+                    }
+                }
+                // Resize, including below the 80/120 layout breakpoints.
+                _ => {
+                    let cols = (20 + rng.below(160)) as u16;
+                    let rows = (8 + rng.below(43)) as u16;
+                    h.resize(cols, rows);
+                }
+            }
+
+            // Render every step: a draw panic (layout overflow, index OOB in a
+            // widget) is as much a bug as an update panic.
+            h.render();
+            assert_invariants(&h.app, &ctx);
+        }
+    }
 }

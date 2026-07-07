@@ -1,6 +1,7 @@
 mod automation;
 mod automation_state;
 mod background;
+pub(crate) mod clock;
 pub(crate) mod code_review;
 mod config_reload;
 mod helpers;
@@ -1012,7 +1013,7 @@ impl App {
             cached_hook_states: HashMap::new(),
             pending_remote_hook_events: Vec::new(),
             hook_states_version: None,
-            last_draw_at: std::time::Instant::now(),
+            last_draw_at: clock::now(),
             last_output_gen: 0,
             cached_session_order: None,
         };
@@ -1716,7 +1717,7 @@ impl App {
             self.pending_delete = Some(PendingDelete {
                 session: removed,
                 session_id,
-                created_at: std::time::Instant::now(),
+                created_at: clock::now(),
             });
             self.set_status(
                 StatusLevel::Info,
@@ -1765,7 +1766,7 @@ impl App {
         self.pending_delete = Some(PendingDelete {
             session: removed_session,
             session_id,
-            created_at: std::time::Instant::now(),
+            created_at: clock::now(),
         });
 
         self.set_status(
@@ -3858,7 +3859,9 @@ impl App {
         if cols < 120 {
             self.show_info_panel = false;
             self.show_tasks_panel = false;
-            if self.focus == InputFocus::TaskList {
+            // Rescue the editor too, not just the list — otherwise focus stays
+            // on the hidden panel's editor, which keeps capturing every key.
+            if matches!(self.focus, InputFocus::TaskList | InputFocus::TaskEditor) {
                 self.focus = InputFocus::SessionList;
             }
         }
@@ -3875,6 +3878,17 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.tick_core();
+        self.tick_background();
+    }
+
+    /// The deterministic half of [`Self::tick`]: everything that only reads
+    /// state, polls already-running work, or writes through the in-process DB —
+    /// no Tokio task is ever spawned here. Split out so the acceptance harness
+    /// can drive the tick pipeline (status derivation, timer expiry, search
+    /// debounce, automation firing, external-change polling) hermetically and
+    /// without a runtime; `main`'s loop always runs both halves via `tick()`.
+    pub(crate) fn tick_core(&mut self) {
         self.metrics.tick_count = self.metrics.tick_count.wrapping_add(1);
 
         self.tick_global_search_content();
@@ -3916,7 +3930,14 @@ impl App {
             self.refresh_automations();
             self.refresh_tasks();
         }
+    }
 
+    /// The spawning half of [`Self::tick`]: kicks off background refreshes
+    /// (sysinfo/git/usage shell-outs), the opt-in update check, and the
+    /// auto-updater — each lands on a Tokio task. Kept out of
+    /// [`Self::tick_core`] so tests driving the tick pipeline never touch the
+    /// network, the filesystem outside the harness tempdir, or a runtime.
+    fn tick_background(&mut self) {
         self.tick_background_refreshes();
 
         self.tick_version_check();
@@ -3943,14 +3964,14 @@ impl App {
     /// elapsed (so time-driven UI — clock, metrics, cursor blink, quiet-session
     /// status transitions — still refreshes without an explicit dirty flag).
     pub fn should_redraw(&self) -> bool {
-        self.needs_redraw || self.last_draw_at.elapsed() >= FORCE_REDRAW_INTERVAL
+        self.needs_redraw || clock::elapsed_since(self.last_draw_at) >= FORCE_REDRAW_INTERVAL
     }
 
     /// Record that a frame was just painted: clear the dirty flag, reset the
     /// forced-redraw timer, and count the requested redraw.
     pub fn mark_redrawn(&mut self) {
         self.needs_redraw = false;
-        self.last_draw_at = std::time::Instant::now();
+        self.last_draw_at = clock::now();
         self.metrics.bump(|p| &mut p.redraws_requested);
     }
 
@@ -4026,14 +4047,14 @@ impl App {
     fn tick_expire_timers(&mut self) {
         // Finalize pending delete after undo timeout
         if let Some(ref pending) = self.pending_delete {
-            if pending.created_at.elapsed() >= UNDO_TIMEOUT {
+            if clock::elapsed_since(pending.created_at) >= UNDO_TIMEOUT {
                 self.finalize_pending_delete();
             }
         }
 
         // Auto-expire status messages so default project/session counts reappear
         if let Some(ref msg) = self.status_message {
-            if msg.created_at.elapsed() >= STATUS_MESSAGE_TIMEOUT {
+            if clock::elapsed_since(msg.created_at) >= STATUS_MESSAGE_TIMEOUT {
                 self.status_message = None;
             }
         }
@@ -4181,7 +4202,7 @@ impl App {
             .filter(|(_, events)| !events.is_empty())
             .collect();
         // Older pending retries first, so per-pane event order is preserved.
-        let now = std::time::Instant::now();
+        let now = clock::now();
         let mut queue = std::mem::take(&mut self.pending_remote_hook_events);
         for (backend_name, events) in batches {
             for (pane_id, state) in events {
@@ -4330,7 +4351,7 @@ impl App {
             return;
         };
         let active_index = self.active_index;
-        let now = std::time::Instant::now();
+        let now = clock::now();
         for (idx, session) in self.sessions.iter().enumerate() {
             let id = session.info.id;
             let status = session.info.status;
@@ -4997,7 +5018,7 @@ impl App {
         self.status_message = Some(StatusMessage {
             text: text.into(),
             level,
-            created_at: std::time::Instant::now(),
+            created_at: clock::now(),
         });
     }
 
@@ -5153,8 +5174,7 @@ impl App {
                 .push(shared);
         }
 
-        let mut restore =
-            RemoteRestore::new(perf_log, std::time::Instant::now() + REMOTE_RETRY_INTERVAL);
+        let mut restore = RemoteRestore::new(perf_log, clock::now() + REMOTE_RETRY_INTERVAL);
         for (backend_type, sessions) in grouped {
             // Always show the session, even before (or without) a live host:
             // insert a placeholder row up front so it never silently vanishes.
@@ -5298,7 +5318,7 @@ impl App {
         if self.resolve_persisted_backend(&backend_type).is_none() {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = clock::now();
         if self.remote_restore.is_none() {
             // Reconnect as soon as the next tick, not after the retry interval.
             self.remote_restore = Some(RemoteRestore::new(false, now));
@@ -5364,7 +5384,7 @@ impl App {
     /// [`REMOTE_RETRY_INTERVAL`] has elapsed, so a recovered host auto-adopts its
     /// placeholder sessions without a restart.
     fn maybe_retry_remote_restore(&mut self) {
-        let now = std::time::Instant::now();
+        let now = clock::now();
         if !self
             .remote_restore
             .as_ref()
@@ -5404,7 +5424,7 @@ impl App {
     fn retry_remote_backend_now(&mut self, backend_type: &str) {
         if let Some(s) = self.remote_restore.as_mut() {
             if s.pending.contains_key(backend_type) {
-                s.next_retry_at = std::time::Instant::now();
+                s.next_retry_at = clock::now();
             }
         }
     }

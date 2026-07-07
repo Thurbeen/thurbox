@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::modals::TextInput;
-use super::{App, InputFocus};
+use super::{clock, App, InputFocus};
 use crossterm::event::{KeyCode, KeyModifiers};
 
 /// Max results kept per group (sessions/tasks/automations/files), so a broad
@@ -169,7 +169,7 @@ impl App {
         self.recompute_global_search_metadata();
         self.preview_global_search_result();
         self.global_search.content_dirty = true;
-        self.global_search.query_changed_at = Some(Instant::now());
+        self.global_search.query_changed_at = Some(clock::now());
     }
 
     /// Rebuild the metadata results (sessions/tasks/automations/files) — fast
@@ -534,7 +534,7 @@ impl App {
         let settled = self
             .global_search
             .query_changed_at
-            .map(|t| t.elapsed() >= Duration::from_millis(CONTENT_DEBOUNCE_MS))
+            .map(|t| clock::elapsed_since(t) >= Duration::from_millis(CONTENT_DEBOUNCE_MS))
             .unwrap_or(false);
         if settled {
             self.recompute_global_search_content();

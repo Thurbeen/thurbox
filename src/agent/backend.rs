@@ -684,12 +684,16 @@ impl Session {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {
+        // A cramped layout (tiny terminal + open panels/strips) can compute a
+        // zero-row/col content area; vt100's `set_size` underflows on 0 and
+        // tmux rejects it, so clamp at this boundary for every path below.
+        let (rows, cols) = (rows.max(1), cols.max(1));
         // A placeholder has no live pane; only resize its local notice buffer.
         // Talking to the (possibly-down) backend here would issue a blocking
         // ssh resize on the UI thread — the freeze we're avoiding.
         if self.placeholder {
             if let Ok(mut parser) = self.parser.lock() {
-                parser.screen_mut().set_size(rows.max(1), cols.max(1));
+                parser.screen_mut().set_size(rows, cols);
             }
             return;
         }
@@ -983,13 +987,23 @@ impl Session {
         provider: &Arc<dyn AgentProvider>,
     ) -> (Self, mpsc::Receiver<Vec<u8>>) {
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+        // Wire TermSignals to the session's accessor cells exactly like
+        // `wire_up`, so bytes injected via `feed_output_for_test` drive
+        // `agent_title`/`needs_attention` the same way live PTY output does.
+        let last_title = Arc::new(Mutex::new(None));
+        let attention_at = Arc::new(AtomicU64::new(0));
+        let notification = Arc::new(Mutex::new(None));
         let session = Self {
             info: SessionInfo::new(name.to_string()),
             parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
                 24,
                 80,
                 0,
-                TermSignals::default(),
+                TermSignals {
+                    title: Arc::clone(&last_title),
+                    attention_at: Arc::clone(&attention_at),
+                    notification: Arc::clone(&notification),
+                },
             ))),
             input_tx,
             backend_id: String::new(),
@@ -997,15 +1011,32 @@ impl Session {
             provider: Arc::clone(provider),
             exited: Arc::new(AtomicBool::new(false)),
             last_output_at: Arc::new(AtomicU64::new(now_millis())),
-            last_title: Arc::new(Mutex::new(None)),
-            attention_at: Arc::new(AtomicU64::new(0)),
-            notification: Arc::new(Mutex::new(None)),
+            last_title,
+            attention_at,
+            notification,
             attention_ack_at: 0,
             shell_pane: None,
             env: HashMap::new(),
             placeholder: false,
         };
         (session, input_rx)
+    }
+
+    /// Feed raw agent-output bytes into the session exactly as the reader loop
+    /// would: bump `last_output_at` and run the bytes through the vt100 parser
+    /// (firing `TermSignals` callbacks). This is the test seam for everything
+    /// downstream of PTY output — terminal rendering, the output-change redraw
+    /// detector, OSC title/bell signals, and buffer-content search.
+    #[cfg(test)]
+    pub fn feed_output_for_test(&self, bytes: &[u8]) {
+        // Strictly-increasing bump: two feeds within the same millisecond must
+        // still read as *new* output to `App::detect_output_redraw`'s signature.
+        let prev = self.last_output_at.load(Ordering::Relaxed);
+        self.last_output_at
+            .store(now_millis().max(prev + 1), Ordering::Relaxed);
+        if let Ok(mut p) = self.parser.lock() {
+            p.process(bytes);
+        }
     }
 }
 
