@@ -46,6 +46,7 @@ config_version = 1
 # global_search = true    # Ctrl+/ search strip
 # info_panel = true       # F2 info panel
 # shell_pane = true       # Ctrl+T per-session shell
+# code_review = true      # native code-review view (diff + comments)
 # mouse = true            # mouse capture: clicks, wheel, drag-select, hover
 # notifications = true    # OS desktop notifications when a session needs attention
 # soft_delete = true      # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard delete after a prompt
@@ -230,6 +231,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         set_table_bool(features, "global_search", f.global_search);
         set_table_bool(features, "info_panel", f.info_panel);
         set_table_bool(features, "shell_pane", f.shell_pane);
+        set_table_bool(features, "code_review", f.code_review);
         set_table_bool(features, "mouse", f.mouse);
         set_table_bool(features, "notifications", f.notifications);
         set_table_bool(features, "soft_delete", f.soft_delete);
@@ -292,6 +294,7 @@ mod tests {
             "global_search",
             "info_panel",
             "shell_pane",
+            "code_review",
             "notifications",
             "[notifications]",
             "also_on_waiting",
