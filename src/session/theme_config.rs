@@ -21,6 +21,10 @@ pub struct ThemePalette {
     pub status_done: Color,
     pub status_idle: Color,
     pub status_error: Color,
+    /// Colour of the "unreachable" status glyph (a remote host that is down /
+    /// offline). Muted grey by default so a placeholder row reads as inert, not
+    /// urgent.
+    pub status_unreachable: Color,
 
     pub text_primary: Color,
     pub text_secondary: Color,
@@ -286,6 +290,8 @@ pub struct CustomThemeDef {
     #[serde(default)]
     pub status_error: Option<String>,
     #[serde(default)]
+    pub status_unreachable: Option<String>,
+    #[serde(default)]
     pub text_primary: Option<String>,
     #[serde(default)]
     pub text_secondary: Option<String>,
@@ -367,7 +373,7 @@ impl CustomThemeDef {
     /// (`override_array_covers_every_color_field`) asserts it matches the
     /// struct's colour-field count, so a forgotten row can't silently make a
     /// colour un-overridable.
-    const COLOR_OVERRIDE_COUNT: usize = 30;
+    const COLOR_OVERRIDE_COUNT: usize = 31;
 
     /// Materialise the theme: base preset palette + overrides. Unparsable
     /// colours and an unknown base degrade to warnings, never to a hard
@@ -412,6 +418,11 @@ impl CustomThemeDef {
                 "status_error",
                 &self.status_error,
                 &mut palette.status_error,
+            ),
+            (
+                "status_unreachable",
+                &self.status_unreachable,
+                &mut palette.status_unreachable,
             ),
             (
                 "text_primary",
@@ -520,6 +531,7 @@ fn default_palette() -> ThemePalette {
         status_done: Color::LightBlue,
         status_idle: Color::Green,
         status_error: Color::Red,
+        status_unreachable: Color::DarkGray,
 
         text_primary: Color::White,
         text_secondary: Color::Gray,
@@ -599,6 +611,8 @@ impl PaletteSlots {
             status_done: self.blue,
             status_idle: self.green,
             status_error: self.red,
+            // Muted grey: an unreachable placeholder is inert, not urgent.
+            status_unreachable: self.text_muted,
             text_primary: self.text_primary,
             text_secondary: self.text_secondary,
             text_muted: self.text_muted,

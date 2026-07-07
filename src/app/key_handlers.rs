@@ -694,6 +694,25 @@ impl App {
             }
         });
 
+        // A placeholder (unreachable remote) has no live pane; swallow the
+        // keystroke and hint how to recover instead of silently dropping it.
+        if self
+            .sessions
+            .get(self.active_index)
+            .is_some_and(|s| s.is_placeholder())
+        {
+            let host = self
+                .sessions
+                .get(self.active_index)
+                .and_then(|s| s.info.remote_host.clone())
+                .unwrap_or_else(|| "?".into());
+            self.set_status(
+                super::StatusLevel::Info,
+                format!("Session unreachable — host '{host}' is offline (restart to retry)"),
+            );
+            return;
+        }
+
         if let Some(session) = self.sessions.get(self.active_index) {
             if let Some(bytes) = input::key_to_bytes(code, mods) {
                 let result = if let (TerminalView::Shell, Some(shell)) =

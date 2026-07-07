@@ -63,7 +63,7 @@ The colored **status dot** is driven by **agent hooks**, not output
 heuristics. Each agent CLI's lifecycle hooks call `thurbox-cli session
 signal --state <working|blocked|done|idle>` (identity from the injected
 `THURBOX_SESSION`), and `refresh_session_statuses` maps the persisted
-state to one of five `SessionStatus` values once per tick:
+state to one of six `SessionStatus` values once per tick:
 
 | State | Colour | Glyph | Meaning |
 |-------|--------|-------|---------|
@@ -72,13 +72,20 @@ state to one of five `SessionStatus` values once per tick:
 | `Done` | blue | `●` | a turn just finished; shown until you switch away |
 | `Idle` | green | `○` | acknowledged, never active, or at rest |
 | `Error` | red | `✗` | reserved for a crashed agent (not derived yet) |
+| `Unreachable` | muted grey | `⊘` | remote host is down/offline; placeholder row awaiting reconnect |
 
 A `Done` session becomes `Idle` once you move focus off it (you've
 acknowledged it); a `working` session that goes quiet for 10 s is
-treated as `Idle` so an interrupted turn never spins forever. Status
-only **recolors** the dot — the manual order is never disturbed (see
-*Smart ordering* below). Repo groups roll up to their most-urgent
-member (`Blocked > Error > Working > Done > Idle`).
+treated as `Idle` so an interrupted turn never spins forever. A remote
+session whose host is unreachable is shown as a **placeholder** tagged
+`Unreachable` — it never silently vanishes from the list, and the host
+is retried in the background (or on demand via restart) until the session
+reconnects and adopts in place. This covers both a host that is down at
+restore *and* a live session whose host dies mid-run (detected via the
+control-mode connection dropping). Status only **recolors** the dot — the
+manual order is never disturbed (see *Smart ordering* below). Repo groups
+roll up to their most-urgent member
+(`Blocked > Error > Working > Done > Unreachable > Idle`).
 
 The hooks are wired automatically by the built-in **hooks** extension
 (auto-activated on first run; opt out with `thurbox-cli extension

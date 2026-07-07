@@ -396,6 +396,7 @@ pub fn status_color(status: SessionStatus) -> Color {
         SessionStatus::Done => Theme::status_done(),
         SessionStatus::Idle => Theme::status_idle(),
         SessionStatus::Error => Theme::status_error(),
+        SessionStatus::Unreachable => Theme::status_unreachable(),
     }
 }
 

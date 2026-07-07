@@ -169,11 +169,16 @@ mod tests {
         let cmd = t.tmux_command("thurbox", &["has-session", "-t", "thurbox"]);
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "ssh");
-        assert_eq!(
-            args,
+        // User opts, then the always-appended fail-fast hardening
+        // (crate::shell::SSH_HARDENING_OPTS), then the destination + remote cmd.
+        let mut expected: Vec<String> = vec!["-o".into(), "ControlMaster=auto".into()];
+        expected.extend(
+            crate::shell::SSH_HARDENING_OPTS
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        expected.extend(
             [
-                "-o",
-                "ControlMaster=auto",
                 "me@devbox",
                 "tmux",
                 "-L",
@@ -182,7 +187,10 @@ mod tests {
                 "-t",
                 "thurbox",
             ]
+            .iter()
+            .map(|s| s.to_string()),
         );
+        assert_eq!(args, expected);
     }
 
     #[test]
@@ -195,7 +203,16 @@ mod tests {
         let cmd = t.tmux_command("thurbox", &["has-session"]);
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "ssh");
-        assert_eq!(args, ["me@winbox", "psmux", "-L", "thurbox", "has-session"]);
+        let mut expected: Vec<String> = crate::shell::SSH_HARDENING_OPTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        expected.extend(
+            ["me@winbox", "psmux", "-L", "thurbox", "has-session"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        assert_eq!(args, expected);
     }
 
     #[test]

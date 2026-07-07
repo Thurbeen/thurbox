@@ -117,6 +117,9 @@ impl Theme {
     pub fn status_error() -> Color {
         current().status_error
     }
+    pub fn status_unreachable() -> Color {
+        current().status_unreachable
+    }
 
     // ── Text hierarchy ──────────────────────────────────────────────────────
 

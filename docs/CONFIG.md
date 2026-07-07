@@ -372,8 +372,8 @@ no id. A finished turn shows `Done` (blue) — for the session you're watching t
 The hooks are wired up automatically by the built-in **hooks** extension
 (auto-activated on first run). Opt out with `thurbox-cli extension deactivate
 hooks`. The status colours are tunable theme keys (`status_working` /
-`status_blocked` / `status_done` / `status_idle` / `status_error` — see
-`themes.toml`).
+`status_blocked` / `status_done` / `status_idle` / `status_error` /
+`status_unreachable` — see `themes.toml`).
 
 The wiring is applied **only to agents thurbox launches** — it never edits your
 own global agent config (e.g. your personal `~/.claude/settings.json`). thurbox's

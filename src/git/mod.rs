@@ -339,11 +339,11 @@ pub fn expand_remote_tilde(host: &HostDef, path: &str) -> Result<String> {
 /// re-interpret the user-typed dir through a shell (`sh -c` loop; see the
 /// wsl list_dir test) or fail wholesale on a broken symlink (`ls -L`).
 ///
-/// This runs synchronously on the caller's (UI) thread, so the ssh variant
-/// adds `BatchMode=yes` + `ConnectTimeout=5` **after** the host's own
-/// `ssh_opts` (ssh honors the first occurrence of an option, so a user
-/// setting wins): completion fails fast on an unreachable or
-/// password-prompting host instead of freezing the TUI indefinitely.
+/// This runs synchronously on the caller's (UI) thread; the ssh launcher is
+/// hardened centrally ([`crate::shell::SSH_HARDENING_OPTS`] — `BatchMode=yes` +
+/// `ConnectTimeout=5` + `ServerAlive*`, appended after the host's own
+/// `ssh_opts`), so completion fails fast on an unreachable or password-prompting
+/// host instead of freezing the TUI indefinitely.
 pub fn list_dir_on(host: &HostDef, dir: &str) -> Result<Vec<String>> {
     let dir = expand_remote_tilde(host, dir)?;
     let output = list_dir_command(host, &dir)
@@ -373,13 +373,9 @@ fn list_dir_command(host: &HostDef, dir: &str) -> Command {
         }
         cmd
     } else {
-        let mut opts = host.ssh_opts.clone();
-        opts.extend(
-            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
-                .iter()
-                .map(|s| s.to_string()),
-        );
-        let mut cmd = crate::shell::ssh_command(&host.destination, &opts);
+        // `host_launcher` builds `ssh <ssh_opts> <hardening> <dest>` — the
+        // fail-fast flags are applied centrally by `shell::ssh_command`.
+        let mut cmd = host_launcher(host);
         for tok in ["ls", "-1p", dir] {
             cmd.arg(posix_quote(tok));
         }
@@ -1683,11 +1679,16 @@ mod tests {
         );
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "ssh");
-        assert_eq!(
-            args,
+        // User ssh_opts first, then the always-appended fail-fast hardening
+        // (crate::shell::SSH_HARDENING_OPTS), then destination + remote git.
+        let mut expected: Vec<String> = vec!["-o".into(), "ControlMaster=auto".into()];
+        expected.extend(
+            crate::shell::SSH_HARDENING_OPTS
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        expected.extend(
             [
-                "-o",
-                "ControlMaster=auto",
                 "me@box",
                 "git",
                 "-C",
@@ -1697,7 +1698,10 @@ mod tests {
                 "-b",
                 "x",
             ]
+            .iter()
+            .map(|s| s.to_string()),
         );
+        assert_eq!(args, expected);
         // No local current_dir is set for the remote variant.
         assert_eq!(cmd.get_current_dir(), None);
     }

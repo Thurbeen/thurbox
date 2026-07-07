@@ -28,11 +28,42 @@ pub fn posix_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Build an `ssh <opts> <destination>` [`Command`], ready for the caller to
-/// append the remote command and its arguments.
+/// Defensive `ssh` options thurbox appends to **every** ssh invocation so a
+/// broken, unreachable, or password-only host fails fast and non-interactively
+/// instead of freezing the single-threaded TUI.
+///
+/// - `BatchMode=yes` — never fall back to a password/keyboard-interactive
+///   prompt. Such a prompt reads from the controlling `/dev/tty` (the terminal
+///   ratatui owns), so it would corrupt the display and steal keystrokes; with
+///   BatchMode ssh fails immediately instead.
+/// - `ConnectTimeout=5` — bound the connect phase for an unreachable host.
+/// - `ServerAliveInterval=5` + `ServerAliveCountMax=1` — bound a *hung
+///   established* connection (e.g. a mid-session network drop on the long-lived
+///   control-mode ssh), so it is detected in ~5s rather than hanging until the
+///   OS TCP timeout.
+///
+/// These are appended **after** the caller's own `ssh_opts`; ssh honors the
+/// first occurrence of each option, so a user-configured value still wins.
+pub const SSH_HARDENING_OPTS: [&str; 8] = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=5",
+    "-o",
+    "ServerAliveInterval=5",
+    "-o",
+    "ServerAliveCountMax=1",
+];
+
+/// Build an `ssh <opts> <hardening> <destination>` [`Command`], ready for the
+/// caller to append the remote command and its arguments.
+///
+/// Every thurbox ssh use is non-interactive, so [`SSH_HARDENING_OPTS`] is always
+/// applied (after the caller's `ssh_opts`, which therefore take precedence).
 pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.args(ssh_opts);
+    cmd.args(SSH_HARDENING_OPTS);
     cmd.arg(destination);
     cmd
 }
@@ -105,14 +136,33 @@ mod tests {
     }
 
     #[test]
-    fn ssh_command_sets_program_opts_and_destination() {
+    fn ssh_command_sets_program_opts_hardening_and_destination() {
         let cmd = ssh_command("me@box", &["-p".into(), "2222".into()]);
         assert_eq!(cmd.get_program().to_string_lossy(), "ssh");
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(args, ["-p", "2222", "me@box"]);
+        // Caller opts first, hardening appended, destination last.
+        let mut expected: Vec<&str> = vec!["-p", "2222"];
+        expected.extend(SSH_HARDENING_OPTS);
+        expected.push("me@box");
+        assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn ssh_command_hardening_follows_user_opts_so_user_wins() {
+        // ssh honors the first occurrence of an option, so a user-set
+        // ConnectTimeout must precede ours in the arg list.
+        let cmd = ssh_command("me@box", &["-o".into(), "ConnectTimeout=30".into()]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let user = args.iter().position(|a| a == "ConnectTimeout=30").unwrap();
+        let ours = args.iter().position(|a| a == "ConnectTimeout=5").unwrap();
+        assert!(user < ours, "user opt must precede hardening opt");
+        assert!(args.iter().any(|a| a == "BatchMode=yes"));
     }
 
     #[test]

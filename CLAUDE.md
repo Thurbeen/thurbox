@@ -1334,8 +1334,8 @@ global_search` in settings.toml; scopes whose feature is disabled
 ## Session status (hooks-driven)
 
 The session list shows, at a glance, which agents are blocked, working,
-or done. `SessionStatus` (`src/session/mod.rs`) has five states driven by
-**agent hooks**, not heuristics:
+or done. `SessionStatus` (`src/session/mod.rs`) has six states — five driven by
+**agent hooks**, not heuristics, plus `Unreachable` for a down remote host:
 
 | State | Colour | Glyph | Meaning |
 |-------|--------|-------|---------|
@@ -1344,6 +1344,32 @@ or done. `SessionStatus` (`src/session/mod.rs`) has five states driven by
 | `Done` | blue | `●` (filled) | a turn just finished; shown until you switch away |
 | `Idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
 | `Error` | red | `✗` | reserved for a crashed agent — **not derived yet** (no exit-code signal; exited → `Idle`) |
+| `Unreachable` | muted grey | `⊘` | remote host down/offline; a **placeholder** row (no live pane) awaiting reconnect |
+
+**Unreachable / placeholder sessions.** A persisted **remote** session whose host
+is unreachable at restore (SSH down / auth failing / offline) is inserted as a
+`Session::placeholder` (`src/agent/backend.rs`) so it **always appears** in the
+list instead of silently vanishing, tagged `Unreachable`. A placeholder holds no
+live backend pane — its reader/writer loops are never spawned, keystrokes are
+dropped with a hint, and `resize`/`kill`/`detach`/`save_state` skip it (so it
+never issues a blocking ssh call on the UI thread nor clobbers the persisted
+row). The remote-restore loop (`App::poll_remote_restore` /
+`maybe_retry_remote_restore`) readies each remote backend off-thread, retries a
+down host every `REMOTE_RETRY_INTERVAL` (20 s) — or immediately on restart
+(`Ctrl+R`) — and, once the host recovers, replaces the placeholder **in place**
+with the adopted session (same `SessionId`, so the order signature is unchanged).
+
+The same treatment covers **mid-session host loss**: `App::detect_lost_remote_sessions`
+(per tick) spots a *live* remote session whose control-mode connection just died
+and converts it in place to an `Unreachable` placeholder + queues it for
+reconnect (`enqueue_remote_reconnect`). The reliable signal is `has_exited()`:
+because tmux runs with `remain-on-exit=on`, a clean agent exit keeps its pane
+alive (no reader EOF), so a remote session's reader hitting EOF means the host/SSH
+connection dropped, not a normal exit. So a running session whose host dies flips
+to `Unreachable` and auto-reconnects instead of silently going `Idle`.
+This composes with the fail-fast SSH hardening (`crate::shell::SSH_HARDENING_OPTS`
+= `BatchMode=yes` + `ConnectTimeout` + `ServerAlive*`), which stops a broken host
+from prompting for a password on the TUI's terminal or hanging the render loop.
 
 The live session list **animates** the `Working` spinner (`ui::SPINNER_FRAMES`,
 `App::spinner_frame` advanced from `tick_count`, ~8 fps, repaints forced only
@@ -1395,7 +1421,7 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
   left untouched — the override is purely in the per-tick derivation, like
   exited → `Idle`.
 - **Rollup.** Repo groups roll up to their most-urgent member
-  (`Blocked > Error > Working > Done > Idle`), rendered as a colored dot on
+  (`Blocked > Error > Working > Done > Unreachable > Idle`), rendered as a colored dot on
   the group header (`ui::project_list::group_status` +
   `group_header_line`). Status only recolors — it **never** reorders rows
   (the order cache stays status-independent).

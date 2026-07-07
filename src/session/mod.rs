@@ -115,6 +115,11 @@ pub enum SessionStatus {
     /// variant is wired through colour/glyph/rollup but never assigned. Kept for
     /// when exit-code plumbing lands.
     Error,
+    /// The session lives on a remote host that is currently unreachable (SSH
+    /// down / auth failing / host offline). Assigned to placeholder rows so a
+    /// remote session never silently vanishes from the list; cleared to the
+    /// real hook-driven status once the host recovers and the session adopts.
+    Unreachable,
 }
 
 impl SessionStatus {
@@ -131,6 +136,7 @@ impl SessionStatus {
             Self::Done => "●",
             Self::Idle => "○",
             Self::Error => "✗",
+            Self::Unreachable => "⊘",
         }
     }
 }
@@ -143,6 +149,7 @@ impl fmt::Display for SessionStatus {
             Self::Done => write!(f, "Done"),
             Self::Idle => write!(f, "Idle"),
             Self::Error => write!(f, "Error"),
+            Self::Unreachable => write!(f, "Unreachable"),
         }
     }
 }

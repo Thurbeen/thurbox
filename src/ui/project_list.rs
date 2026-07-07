@@ -796,19 +796,24 @@ fn group_header_line(
 }
 
 /// Urgency rank for the repo-group rollup; higher is more urgent.
+///
+/// `Unreachable` sits just above `Idle`: a group whose only notable member is a
+/// down remote session rolls up as unreachable, but any live member (Done and
+/// up) still dominates the header dot.
 fn status_urgency(s: SessionStatus) -> u8 {
     match s {
-        SessionStatus::Blocked => 4,
-        SessionStatus::Error => 3,
-        SessionStatus::Working => 2,
-        SessionStatus::Done => 1,
+        SessionStatus::Blocked => 5,
+        SessionStatus::Error => 4,
+        SessionStatus::Working => 3,
+        SessionStatus::Done => 2,
+        SessionStatus::Unreachable => 1,
         SessionStatus::Idle => 0,
     }
 }
 
 /// The most-urgent status across a group's members (Blocked > Error > Working >
-/// Done > Idle), so the group header dot surfaces whatever needs attention
-/// first. Empty input rolls up to `Idle`.
+/// Done > Unreachable > Idle), so the group header dot surfaces whatever needs
+/// attention first. Empty input rolls up to `Idle`.
 pub fn group_status(statuses: impl IntoIterator<Item = SessionStatus>) -> SessionStatus {
     statuses
         .into_iter()
