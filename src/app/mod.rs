@@ -63,6 +63,19 @@ const SPINNER_TICKS_PER_FRAME: u64 = 12;
 /// `docs/PERFORMANCE.md`.
 const FORCE_REDRAW_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Slow-op thresholds (ms): a named synchronous UI-thread operation at or
+/// above `RECORD` lands in the slow-op ring (HUD / perf-window line); at or
+/// above `WARN` it also gets a `tracing::warn!` — a visible stall (multiple
+/// dropped frames) worth a log entry even when nobody is watching the HUD.
+const SLOW_OP_RECORD_MS: u64 = 5;
+const SLOW_OP_WARN_MS: u64 = 100;
+
+/// Ticks (~10 ms each) per steady-state perf report window (~10 s): under
+/// `THURBOX_PERF_LOG` each window emits one `perf_window` log line (counter
+/// deltas + timing percentiles) and refreshes the published snapshot.
+/// Tick-based so tests can drive windows without a wall clock.
+const PERF_WINDOW_TICKS: u64 = 1_000;
+
 /// Prompt sent to Claude sessions when a worktree rebase has conflicts.
 const SYNC_CONFLICT_PROMPT: &str = "Please sync this worktree with main. Run: git fetch origin && git rebase origin/main -- if there are conflicts, resolve them and continue the rebase with git rebase --continue.";
 
@@ -800,6 +813,16 @@ pub struct App {
     /// reused across frames until [`Self::session_order_signature`] changes,
     /// skipping the per-frame grouping/sort/nest work. See `render_left_panel`.
     cached_session_order: Option<(u64, crate::ui::project_list::SessionOrder)>,
+    /// `THURBOX_PERF_LOG` presence, read once at construction so the hot loop's
+    /// timing gate ([`Self::perf_timing_active`]) is a bool check, not an env
+    /// lookup per iteration.
+    perf_log_env: bool,
+    /// Whether the perf HUD overlay is visible (toggled by
+    /// `Action::TogglePerfHud`); also enables timing collection.
+    show_perf_hud: bool,
+    /// Counter values at the last `perf_window` report, so each window logs
+    /// deltas (the counters themselves stay cumulative for the tests/HUD).
+    perf_window_base: metrics_state::PerfCounters,
 }
 
 const EDITOR_NOT_CONFIGURED: &str =
@@ -1016,6 +1039,9 @@ impl App {
             last_draw_at: clock::now(),
             last_output_gen: 0,
             cached_session_order: None,
+            perf_log_env: std::env::var_os("THURBOX_PERF_LOG").is_some(),
+            show_perf_hud: false,
+            perf_window_base: metrics_state::PerfCounters::default(),
         };
         app.report_config_warnings(config_warnings);
         app
@@ -3943,13 +3969,109 @@ impl App {
         self.tick_version_check();
 
         self.poll_auto_update();
+
+        self.tick_perf_window();
     }
 
-    /// Snapshot of the deterministic render/tick performance counters. Used by
-    /// the perf regression tests. See [`metrics_state::PerfCounters`].
-    #[cfg(test)]
+    /// Steady-state perf reporting: once per window (under `THURBOX_PERF_LOG`)
+    /// log counter deltas + timing percentiles + the window's slow ops, then
+    /// reset the per-window timing state so each report stands alone. The
+    /// startup line at first paint is separate and unaffected.
+    fn tick_perf_window(&mut self) {
+        if !self.perf_log_env || self.metrics.tick_count % PERF_WINDOW_TICKS != 0 {
+            return;
+        }
+        let now = self.perf_counters();
+        let d = now.delta(&self.perf_window_base);
+        let timings = &self.metrics.timings;
+        let slow_ops = timings
+            .slow_ops
+            .iter_recent()
+            .map(|op| format!("{}={}ms", op.name, op.ms))
+            .collect::<Vec<_>>()
+            .join(",");
+        tracing::info!(
+            frames = d.frames_rendered,
+            redraws_requested = d.redraws_requested,
+            redraws_skipped = d.redraws_skipped,
+            status_refreshes = d.status_refreshes,
+            order_rebuilds = d.ordered_sessions_rebuilds,
+            hook_state_loads = d.hook_state_loads,
+            external_poll_checks = d.external_poll_checks,
+            external_poll_reloads = d.external_poll_reloads,
+            frame_p50_us = timings.frame.percentile_us(50),
+            frame_p95_us = timings.frame.percentile_us(95),
+            frame_max_us = timings.frame.max_us(),
+            tick_p50_us = timings.tick.percentile_us(50),
+            tick_p95_us = timings.tick.percentile_us(95),
+            tick_max_us = timings.tick.max_us(),
+            slow_ops = %slow_ops,
+            sessions = self.sessions.len(),
+            "perf_window"
+        );
+        self.perf_window_base = now;
+        self.metrics.timings.reset_window();
+    }
+
+    /// Snapshot of the deterministic render/tick performance counters. Read by
+    /// the perf regression tests, the perf HUD, the `perf_window` log line, and
+    /// the published snapshot. See [`metrics_state::PerfCounters`].
     pub(crate) fn perf_counters(&self) -> metrics_state::PerfCounters {
         self.metrics.perf
+    }
+
+    /// Whether wall-clock perf timing should be collected this iteration:
+    /// opted in via `THURBOX_PERF_LOG` or by opening the perf HUD. A cached
+    /// bool so the hot loop pays nothing when observability is off.
+    pub fn perf_timing_active(&self) -> bool {
+        self.perf_log_env || self.show_perf_hud
+    }
+
+    /// Record one `terminal.draw` duration (called from the render loop, only
+    /// while [`Self::perf_timing_active`]).
+    pub fn record_frame_time(&mut self, d: std::time::Duration) {
+        self.metrics.timings.frame.record(d);
+    }
+
+    /// Record one `App::tick` duration (called from the render loop, only
+    /// while [`Self::perf_timing_active`]).
+    pub fn record_tick_time(&mut self, d: std::time::Duration) {
+        self.metrics.timings.tick.record(d);
+    }
+
+    /// Record one `App::update` (input dispatch) duration; outliers land in
+    /// the slow-op ring so a stalling key handler is attributable.
+    pub fn record_update_time(&mut self, d: std::time::Duration) {
+        let ms = d.as_millis() as u64;
+        if ms >= SLOW_OP_WARN_MS {
+            tracing::warn!(op = "input_dispatch", ms, "slow op");
+            self.push_slow_op("input_dispatch", ms);
+        }
+    }
+
+    fn push_slow_op(&mut self, name: &'static str, ms: u64) {
+        let tick = self.metrics.tick_count;
+        self.metrics
+            .timings
+            .slow_ops
+            .push(metrics_state::SlowOp { name, ms, tick });
+    }
+
+    /// Measure a named synchronous UI-thread operation. Call sites are rare,
+    /// user-triggered ops (never the per-tick hot path), so this measures
+    /// unconditionally: notable durations land in the slow-op ring and
+    /// stall-grade ones also get a `warn!` in the log.
+    pub(crate) fn time_op<T>(&mut self, name: &'static str, f: impl FnOnce(&mut Self) -> T) -> T {
+        let start = std::time::Instant::now();
+        let out = f(self);
+        let ms = start.elapsed().as_millis() as u64;
+        if ms >= SLOW_OP_WARN_MS {
+            tracing::warn!(op = name, ms, "slow op");
+        }
+        if ms >= SLOW_OP_RECORD_MS {
+            self.push_slow_op(name, ms);
+        }
+        out
     }
 
     /// Mark the UI dirty so the render loop paints on its next iteration.

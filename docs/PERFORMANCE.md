@@ -170,10 +170,13 @@ won't pay off.
   `startup …` line to `~/.local/share/thurbox/thurbox.log` with a **phase
   breakdown** that sums to roughly `first_frame_ms` —
   `config_init_ms` (config-file loads + local backend ready), `db_open_ms`,
+  `theme_activate_ms` (persisted-theme lookup + custom-theme publish),
   `extension_heal_ms` (self-heal + built-in hooks wiring + agents reload),
+  `app_new_ms` (`App::new`: keybindings load, settings snapshot, channels),
   `restore_ms` (the synchronous local-session restore — remote backends restore
-  on background threads, off this phase; see ADR-P7), and `first_frame_ms`
-  (total to first paint).
+  on background threads, off this phase; see ADR-P7), `heartbeat_ms` (arming
+  the automation-heartbeat tmux window), and `first_frame_ms` (total to first
+  paint).
   When restore is the long pole, the same flag also emits per-backend
   `restore_discover` lines (`discover_ms`; for a remote backend the line comes
   from its background thread) and per-session `restore_adopt` lines
@@ -300,12 +303,60 @@ already brought up and is cheap on the main thread.
 
 ---
 
+## ADR-P11: Runtime observability — timing histograms, slow ops, perf window
+
+**Choice**: The deterministic counters (ADR-P2) now have a **runtime
+observability layer** on top — wall-clock stats that are **display/logging
+only** and never CI-asserted (the counters remain the sole regression gate):
+
+- `App::perf_counters()` is a runtime accessor (previously `#[cfg(test)]`).
+- `MetricsState.timings` (`src/app/metrics_state.rs`) holds two hand-rolled
+  fixed-bucket `DurationHistogram`s — `terminal.draw` duration per painted
+  frame and `App::tick` duration per iteration — plus a 16-slot `SlowOps`
+  ring of named synchronous UI-thread operations (`SlowOp { name, ms, tick }`).
+  No new dependencies: the histogram is ~40 lines with power-of-two µs buckets
+  (250 µs → 1 s + overflow), good enough to answer "is a frame 1 ms or 30 ms".
+- **Gating**: the hot-loop `Instant` reads run only while
+  `App::perf_timing_active()` — `THURBOX_PERF_LOG` set (cached at
+  construction) or the perf HUD open — so a normal run pays a single cached
+  bool check per loop iteration, keeping ADR-P5's zero-overhead promise.
+- **Slow ops**: `App::time_op(name, f)` wraps rare, user-triggered synchronous
+  operations (the code-review build/retarget/reload, and `App::update` outliers
+  as `input_dispatch`). Always measured (call sites are not the hot path):
+  ≥ 5 ms lands in the ring, ≥ 100 ms also logs a `slow op` warning — so an
+  interactive stall is attributable even when nobody was watching.
+- **Steady-state reporting**: under `THURBOX_PERF_LOG`, every 1000 ticks
+  (~10 s) `App::tick_perf_window` logs one `perf_window` line — counter
+  **deltas** for the window (`PerfCounters::delta`), frame/tick p50/p95/max,
+  and the window's slow ops — then resets the per-window timing state. The
+  one-shot `startup` line is unchanged.
+
+**Why**: the counters gate regressions in CI but were invisible in a live
+build, and they deliberately count rather than time — so a user-perceived
+stall ("opening review froze for 3 s") had no signal at all. The histograms
+and slow-op ring answer *how long*, the `perf_window` line answers *what is
+the app doing while idle*, and both stay out of CI so ADR-P2's no-flaky-timing
+rule holds.
+
+**Rejected**:
+
+- *Always-on timing* — two `Instant::now()` calls per ≤10 ms loop iteration is
+  cheap but not free, and observability nobody asked for shouldn't tax every
+  run; the opt-in gate costs one bool.
+- *A timing dependency (hdrhistogram etc.)* — same licensing/vetting cost
+  ADR-P5 rejected for criterion; the fixed-bucket histogram is sufficient.
+- *CI assertions on the new timings* — explicitly ruled out; ADR-P2 stands.
+
+---
+
 ## Quick reference
 
 | I want to… | Do this |
 | --- | --- |
 | Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read the `startup` line in `thurbox.log` |
-| Break down startup time | Read the `startup` phase fields (`config_init_ms`/`db_open_ms`/`extension_heal_ms`/`restore_ms`) + the `restore_discover`/`restore_adopt` lines |
+| Break down startup time | Read the `startup` phase fields (`config_init_ms`/`db_open_ms`/`theme_activate_ms`/`extension_heal_ms`/`app_new_ms`/`restore_ms`/`heartbeat_ms`) + the `restore_discover`/`restore_adopt` lines |
+| Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~10 s cadence: counter deltas + frame/tick percentiles + slow ops) |
+| Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms), or the slow-op list in `perf_window` |
 | Verify the status-hook cache (ADR-P6) | `cargo nextest run -E 'test(perf_hook_states)'`; `hook_state_loads` stays flat while idle, +1 per external `session signal` |
 | See binary size | Check the `Binary Size` CI job summary, or `cargo bloat --release --crates` |
 | Profile CPU | `cargo flamegraph --profile release-with-debug --bin thurbox` |

@@ -509,6 +509,12 @@ impl App {
             self.close_code_review();
             return;
         }
+        // Measured as a slow op: the build shells out to git (over SSH for a
+        // remote session), and the duration attributes any perceived stall.
+        self.time_op("code_review_build", |s| s.open_code_review());
+    }
+
+    fn open_code_review(&mut self) {
         let Some(session) = self.sessions.get(self.active_index) else {
             return;
         };
@@ -618,6 +624,10 @@ impl App {
 
     /// Reload comments + marks from the DB into the open review and rebuild rows.
     pub(crate) fn reload_review_data(&mut self) {
+        self.time_op("code_review_reload", |s| s.reload_review_data_inner());
+    }
+
+    fn reload_review_data_inner(&mut self) {
         let Some(cr) = self.active_review() else {
             return;
         };
@@ -838,21 +848,27 @@ impl App {
 
     /// Switch the diff to a different target, recomputing it from git.
     pub(crate) fn cr_set_target(&mut self, target: ReviewTarget) {
-        let Some(cr) = self.active_review() else {
+        if self.active_review().is_none() {
             return;
-        };
-        let repos = cr.repos.clone();
-        let host = cr.host.clone();
-        let multi = cr.multi;
-        let files = build_files(&repos, &target, host.as_ref(), multi);
-        if let Some(cr) = self.active_review_mut() {
-            cr.target = target;
-            cr.files = files;
-            cr.selected = 0;
-            cr.scroll = 0;
-            cr.target_picker = None;
-            cr.rebuild_rows();
         }
+        // Same git-subprocess cost profile as opening the review.
+        self.time_op("code_review_retarget", |s| {
+            let Some(cr) = s.active_review() else {
+                return;
+            };
+            let repos = cr.repos.clone();
+            let host = cr.host.clone();
+            let multi = cr.multi;
+            let files = build_files(&repos, &target, host.as_ref(), multi);
+            if let Some(cr) = s.active_review_mut() {
+                cr.target = target;
+                cr.files = files;
+                cr.selected = 0;
+                cr.scroll = 0;
+                cr.target_picker = None;
+                cr.rebuild_rows();
+            }
+        });
     }
 
     /// Apply the target-picker entry at `idx` (a click), mirroring the keyboard

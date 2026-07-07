@@ -627,6 +627,7 @@ User-set (read by thurbox):
 | `VISUAL`, then `EDITOR` | `Ctrl+O` editor when `editor_command` is unset |
 | `SHELL` | the `Ctrl+T` companion shell pane (fallback `/bin/sh`). For a remote/WSL session the pane uses the **host's** `$SHELL` as an interactive login shell (the SSH-login environment), not the local one. |
 | `RUST_LOG` | log filter for `thurbox.log` |
+| `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, per-session `restore_adopt`/`adopt_split` lines, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/PERFORMANCE.md`. |
 | `THURBOX_SOCKET` | overrides the **local** multiplexer socket name (default `thurbox`; dev builds `thurbox-dev`). For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
 
 Set **by** thurbox into every spawned agent process (not user-set;
