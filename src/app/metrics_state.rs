@@ -146,7 +146,9 @@ impl DurationHistogram {
     }
 
     /// Approximate percentile (0–100) as the upper bound (µs) of the bucket
-    /// containing that rank; the overflow bucket reports the observed max.
+    /// containing that rank, clamped to the observed max so a high percentile
+    /// can never read above the max next to it (the overflow bucket reports
+    /// the max directly).
     pub(crate) fn percentile_us(&self, p: u8) -> u64 {
         if self.total == 0 {
             return 0;
@@ -156,7 +158,11 @@ impl DurationHistogram {
         for (i, &count) in self.counts.iter().enumerate() {
             seen += count;
             if seen >= rank {
-                return HISTO_BUCKETS_US.get(i).copied().unwrap_or(self.max_us);
+                return HISTO_BUCKETS_US
+                    .get(i)
+                    .copied()
+                    .unwrap_or(self.max_us)
+                    .min(self.max_us);
             }
         }
         self.max_us
@@ -294,7 +300,9 @@ mod tests {
         h.record(Duration::from_millis(30));
         assert_eq!(h.total(), 10);
         assert_eq!(h.percentile_us(50), 1_000);
-        assert_eq!(h.percentile_us(95), 33_000);
+        // The slow sample lands in the 33 ms bucket, but the reported p95 is
+        // clamped to the observed max so it never reads above it.
+        assert_eq!(h.percentile_us(95), 30_000);
         assert_eq!(h.max_us(), 30_000);
     }
 
