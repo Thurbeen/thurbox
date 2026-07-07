@@ -140,11 +140,18 @@ covers time-driven UI (clock/metrics/cursor blink). Idle paints drop ~100 fps �
 keyed by a content signature (`App::session_order_signature`), rebuilt only when
 its grouping/nesting inputs change. The per-tick session-status read is likewise
 cached (`App::cached_hook_states`), reloaded only when `PRAGMA data_version`
-moves — so an idle `tick` no longer rescans the `sessions` table (ADR-P6). Launch
-with `THURBOX_PERF_LOG=1` to log a `startup` line (phase breakdown +
-`first_frame_ms`, plus `restore_discover`/`restore_adopt`/`adopt_split`) to
-`thurbox.log`. Full rationale + intentionally-skipped optimizations:
-`docs/PERFORMANCE.md`.
+moves — so an idle `tick` no longer rescans the `sessions` table (ADR-P6), with
+the `PRAGMA` itself throttled to ~100 ms and the per-session OSC title/
+notification re-read gated on a reader-thread generation counter (ADR-P10).
+Restore prefetches all history captures in parallel (ADR-P9) and code-review
+diffs build off the UI thread with a loading state (ADR-P8). **Observability**:
+`F12` toggles a live perf HUD (counters + frame/tick percentiles + slow ops;
+`[features] perf_hud`); launching with `THURBOX_PERF_LOG=1` logs a `startup`
+line (phase breakdown + `first_frame_ms`, plus `restore_discover`/
+`restore_adopt`/`adopt_split`/`restore_capture_prefetch`), steady-state
+`perf_window` lines (~10 s), and `slow op` warnings to `thurbox.log`; while
+either is active the TUI publishes a JSON snapshot read by `thurbox-cli perf`.
+Full rationale + intentionally-skipped optimizations: `docs/PERFORMANCE.md`.
 
 ### Windows test environment (VM)
 

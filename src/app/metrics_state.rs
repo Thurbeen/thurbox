@@ -188,8 +188,6 @@ impl DurationHistogram {
 pub(crate) struct SlowOp {
     pub(crate) name: &'static str,
     pub(crate) ms: u64,
-    /// `tick_count` when recorded, so the HUD can show recency without a clock.
-    pub(crate) tick: u64,
 }
 
 /// Fixed-capacity ring of the most recent [`SlowOp`]s (newest first on read).
@@ -329,11 +327,7 @@ mod tests {
     fn slow_ops_ring_drops_oldest_past_capacity() {
         let mut ring = SlowOps::default();
         for i in 0..20u64 {
-            ring.push(SlowOp {
-                name: "op",
-                ms: i,
-                tick: i,
-            });
+            ring.push(SlowOp { name: "op", ms: i });
         }
         let recent: Vec<u64> = ring.iter_recent().map(|o| o.ms).collect();
         assert_eq!(recent.len(), SlowOps::CAP);

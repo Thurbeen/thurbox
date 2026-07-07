@@ -27,7 +27,8 @@ pub(crate) struct PerfHudView<'a> {
 const HUD_WIDTH: u16 = 46;
 const HUD_HEIGHT: u16 = 18;
 
-/// Format a µs value compactly: `420µs`, `3.2ms`, `1.8s`.
+/// Format a µs value compactly: `420µs`, `3.2ms`, `1.8s`. Mirrored by
+/// `cli::perf::fmt_us` (the architecture rules bar `cli` from importing `ui`).
 fn fmt_us(us: u64) -> String {
     if us < 1_000 {
         format!("{us}µs")

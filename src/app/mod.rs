@@ -4135,30 +4135,23 @@ impl App {
     /// Record one `App::update` (input dispatch) duration; outliers land in
     /// the slow-op ring so a stalling key handler is attributable.
     pub fn record_update_time(&mut self, d: std::time::Duration) {
-        let ms = d.as_millis() as u64;
-        if ms >= SLOW_OP_WARN_MS {
-            tracing::warn!(op = "input_dispatch", ms, "slow op");
-            self.push_slow_op("input_dispatch", ms);
-        }
+        self.note_slow_op("input_dispatch", d.as_millis() as u64);
     }
 
-    fn push_slow_op(&mut self, name: &'static str, ms: u64) {
-        let tick = self.metrics.tick_count;
-        self.metrics
-            .timings
-            .slow_ops
-            .push(metrics_state::SlowOp { name, ms, tick });
-    }
-
-    /// Record an already-measured operation duration under the same
-    /// thresholds as [`Self::time_op`] — for work timed elsewhere (e.g. by a
-    /// background worker reporting its own elapsed time).
+    /// Record an already-measured operation duration: at or above
+    /// `SLOW_OP_RECORD_MS` it lands in the slow-op ring (HUD / perf-window
+    /// line); at or above `SLOW_OP_WARN_MS` it also gets a `warn!` in the log.
+    /// The single sink behind [`Self::time_op`] and the workers that time
+    /// themselves (e.g. the code-review build).
     pub(crate) fn note_slow_op(&mut self, name: &'static str, ms: u64) {
         if ms >= SLOW_OP_WARN_MS {
             tracing::warn!(op = name, ms, "slow op");
         }
         if ms >= SLOW_OP_RECORD_MS {
-            self.push_slow_op(name, ms);
+            self.metrics
+                .timings
+                .slow_ops
+                .push(metrics_state::SlowOp { name, ms });
         }
     }
 
@@ -4169,13 +4162,7 @@ impl App {
     pub(crate) fn time_op<T>(&mut self, name: &'static str, f: impl FnOnce(&mut Self) -> T) -> T {
         let start = std::time::Instant::now();
         let out = f(self);
-        let ms = start.elapsed().as_millis() as u64;
-        if ms >= SLOW_OP_WARN_MS {
-            tracing::warn!(op = name, ms, "slow op");
-        }
-        if ms >= SLOW_OP_RECORD_MS {
-            self.push_slow_op(name, ms);
-        }
+        self.note_slow_op(name, start.elapsed().as_millis() as u64);
         out
     }
 
@@ -11491,6 +11478,53 @@ mod tests {
         assert!(app.code_reviews.is_empty(), "no state resurrected");
         assert_eq!(app.perf_counters().review_builds_applied, 0);
         assert!(!app.review_build.in_progress());
+    }
+
+    #[test]
+    fn note_slow_op_applies_record_threshold() {
+        let mut app = app_with_sessions(0);
+        app.note_slow_op("fast", SLOW_OP_RECORD_MS - 1);
+        assert!(
+            app.metrics.timings.slow_ops.iter_recent().next().is_none(),
+            "below the record threshold nothing lands in the ring"
+        );
+        app.note_slow_op("slow", SLOW_OP_RECORD_MS);
+        assert_eq!(
+            app.metrics
+                .timings
+                .slow_ops
+                .iter_recent()
+                .next()
+                .map(|o| o.name),
+            Some("slow")
+        );
+    }
+
+    /// The perf snapshot write bumps *other* connections' `data_version`
+    /// (forcing their shared-state reload), so a default-config idle instance
+    /// must never publish it — only THURBOX_PERF_LOG or an open HUD opts in
+    /// (ADR-P11).
+    #[tokio::test]
+    async fn perf_snapshot_published_only_while_timing_active() {
+        let mut app = app_with_sessions(0);
+        app.perf_log_env = false;
+        for _ in 0..=PERF_WINDOW_TICKS {
+            app.tick();
+        }
+        assert_eq!(
+            app.db.get_perf_snapshot().unwrap(),
+            None,
+            "no snapshot churn without opt-in"
+        );
+
+        app.show_perf_hud = true;
+        for _ in 0..=PERF_SNAPSHOT_TICKS {
+            app.tick();
+        }
+        assert!(
+            app.db.get_perf_snapshot().unwrap().is_some(),
+            "an open HUD publishes the snapshot"
+        );
     }
 
     /// Local backend that records capture/adopt interplay for the ADR-P9
