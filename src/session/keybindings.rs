@@ -53,6 +53,8 @@ pub enum Action {
     GlobalSearch,
     /// Open the Settings panel (view/edit settings.toml in the TUI).
     OpenSettings,
+    /// Toggle the perf HUD overlay (live counters + frame/tick timing).
+    TogglePerfHud,
     /// Copy the active mouse selection. With no selection it copies the current
     /// status-bar message instead — except in a focused terminal, where it falls
     /// through to SIGINT (the status row stays click-to-copy there).
@@ -152,6 +154,7 @@ impl Action {
             Action::FocusTasks,
             Action::GlobalSearch,
             Action::OpenSettings,
+            Action::TogglePerfHud,
             Action::Copy,
             Action::Paste,
             Action::SessionListNext,
@@ -217,6 +220,7 @@ impl Action {
             Action::FocusTasks => "Tasks",
             Action::GlobalSearch => "Global search",
             Action::OpenSettings => "Settings",
+            Action::TogglePerfHud => "Toggle perf HUD",
             Action::Copy => "Copy selection / status",
             Action::Paste => "Paste",
             Action::SessionListNext => "Next item",
@@ -419,6 +423,10 @@ impl Action {
             // from a focused terminal too). F6 is a discoverable alternate
             // (F1–F5 are already bound). Fully rebindable.
             Action::OpenSettings => vec![KeyChord::ctrl(','), KeyChord::function(6)],
+            // F12 only — a diagnostic surface, not worth spending a scarce
+            // Ctrl+<letter> on. F-keys dispatch from every pane (a focused
+            // terminal included), which is exactly what a HUD toggle needs.
+            Action::TogglePerfHud => vec![KeyChord::function(12)],
             Action::Copy => vec![KeyChord::ctrl('c')],
             Action::Paste => vec![KeyChord::ctrl('v')],
             // Scoped single-letter / arrow nav. These only fire while their
@@ -554,6 +562,7 @@ pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
                 OpenThemePicker,
                 OpenSettings,
                 GlobalSearch,
+                TogglePerfHud,
             ],
         ),
         ("Clipboard", vec![Copy, Paste]),
@@ -1341,6 +1350,7 @@ mod tests {
                 Action::FocusTasks => 0,
                 Action::GlobalSearch => 0,
                 Action::OpenSettings => 0,
+                Action::TogglePerfHud => 0,
                 Action::Copy => 0,
                 Action::Paste => 0,
                 Action::SessionListNext => 0,
@@ -1381,7 +1391,7 @@ mod tests {
         }
         // The listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 59;
+        const EXPECTED: usize = 60;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);

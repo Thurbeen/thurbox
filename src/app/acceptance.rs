@@ -1524,6 +1524,35 @@ async fn info_panel_hides_automations_when_feature_off() {
 // in the `#[tokio::test]` units in `super::tests`.
 
 #[test]
+fn perf_hud_toggles_with_f12_and_activates_timing() {
+    let mut h = Harness::standard(1);
+    assert!(!h.app.perf_timing_active(), "timing is off by default");
+    h.key(KeyCode::F(12), KeyModifiers::NONE);
+    assert!(h.app.show_perf_hud, "F12 opens the perf HUD");
+    assert!(
+        h.app.perf_timing_active(),
+        "an open HUD switches timing collection on"
+    );
+    h.render(); // the overlay renders without disturbing the panes
+    h.key(KeyCode::F(12), KeyModifiers::NONE);
+    assert!(!h.app.show_perf_hud, "F12 closes it again");
+}
+
+#[test]
+fn perf_hud_feature_flag_disables_toggle_and_closes_overlay() {
+    let mut h = Harness::standard(1);
+    h.key(KeyCode::F(12), KeyModifiers::NONE);
+    assert!(h.app.show_perf_hud);
+    // Disabling the live flag tears the overlay down and blocks the chord.
+    let mut settings = crate::session::settings::Settings::default();
+    settings.features.perf_hud = false;
+    h.app.apply_live_settings(&settings);
+    assert!(!h.app.show_perf_hud, "disabling the flag closes the HUD");
+    h.key(KeyCode::F(12), KeyModifiers::NONE);
+    assert!(!h.app.show_perf_hud, "the chord toasts instead of toggling");
+}
+
+#[test]
 fn perf_render_counter_tracks_painted_frames() {
     let mut h = Harness::standard(2);
     assert_eq!(h.app.perf_counters().frames_rendered, 0);

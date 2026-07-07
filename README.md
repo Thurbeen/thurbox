@@ -680,6 +680,7 @@ repos? Add `--add-repo PATH@main` (its own worktree per repo) or
 | `F1` / `Ctrl+G` | Keybindings help + interactive editor | Universal |
 | `Ctrl+B` / `F2` | Toggle info panel | **B**rief |
 | `Ctrl+E` / `F3` | Toggle file viewer | **E**xplorer |
+| `F12` | Toggle perf HUD (live counters + frame/tick timing) | Diagnostics |
 
 Every chord above is rebindable from the `F1` editor (or by editing
 `~/.config/thurbox/keybindings.json`). `Shift+J`/`Shift+K`/`Shift+S`

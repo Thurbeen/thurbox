@@ -100,6 +100,16 @@ impl App {
         }
         self.render_footer(frame, areas.footer);
         self.render_modals(frame);
+        if self.show_perf_hud {
+            crate::ui::perf_hud::render_perf_hud(
+                frame,
+                frame.area(),
+                &crate::ui::perf_hud::PerfHudView {
+                    metrics: &self.metrics,
+                    session_count: self.sessions.len(),
+                },
+            );
+        }
         self.repaint_theme_background(frame);
         self.apply_hover_highlight(frame);
         self.apply_selection_highlight(frame);

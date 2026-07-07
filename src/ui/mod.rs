@@ -15,6 +15,7 @@ pub mod info_panel;
 pub mod layout;
 pub mod links;
 pub mod markdown;
+pub mod perf_hud;
 pub mod project_list;
 pub mod repo_picker_modal;
 pub mod restore_sessions_modal;

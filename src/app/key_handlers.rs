@@ -1150,6 +1150,10 @@ impl App {
                 "Global search",
                 Self::open_global_search,
             ),
+            Action::TogglePerfHud => self.gated(self.features.perf_hud, "Perf HUD", |s| {
+                s.show_perf_hud = !s.show_perf_hud;
+                s.request_redraw();
+            }),
             _ => return None,
         };
         Some(consumed)

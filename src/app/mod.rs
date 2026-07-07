@@ -6,7 +6,7 @@ pub(crate) mod code_review;
 mod config_reload;
 mod helpers;
 mod key_handlers;
-mod metrics_state;
+pub(crate) mod metrics_state;
 pub(crate) mod modals;
 mod new_session_state;
 mod notify_state;
@@ -1201,6 +1201,9 @@ impl App {
             if matches!(self.focus, InputFocus::CodeReview | InputFocus::ReviewFiles) {
                 self.focus = InputFocus::Terminal;
             }
+        }
+        if !self.features.perf_hud {
+            self.show_perf_hud = false;
         }
     }
 
@@ -7972,6 +7975,7 @@ mod tests {
             info_panel: false,
             shell_pane: false,
             code_review: false,
+            perf_hud: false,
             mouse: true,
             notifications: false,
             soft_delete: true,
