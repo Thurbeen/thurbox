@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+#
+# Winget version manifest for thurbox. Canonical source, kept in the main repo.
+# CI (the `publish-winget` job in .github/workflows/cd.yml) bumps PackageVersion
+# here and in the installer/locale manifests on every release via
+# packaging/winget/bump-manifests.py, then submits the set to
+# microsoft/winget-pkgs with wingetcreate. The version below is a
+# last-known-good template — CI overrides it per release.
+PackageIdentifier: Thurbeen.thurbox
+PackageVersion: 0.79.46
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

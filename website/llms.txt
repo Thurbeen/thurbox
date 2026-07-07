@@ -16,7 +16,7 @@
 - [FAQ](https://thurbox.thurbeen.eu/docs/faq.html): short answers to the most common questions (what it is, how it differs, install, platforms, license).
 - [Features](https://thurbox.thurbeen.eu/docs/features.html): sessions, agent definitions, git worktrees, remote SSH, automations, tasks, code review, headless CLI.
 - [Comparison](https://thurbox.thurbeen.eu/docs/comparison.html): how Thurbox compares to Conductor, Claude Squad, Cursor, and other parallel coding-agent tools.
-- [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, Chocolatey, or from source; prerequisites.
+- [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, winget, Chocolatey, or from source; prerequisites.
 - [Configuration](https://thurbox.thurbeen.eu/docs/configuration.html): every config file and knob — agents.toml, hosts.toml, settings.toml, themes, keybindings.
 - [Architecture](https://thurbox.thurbeen.eu/docs/architecture.html): the Elm Architecture, module isolation, the tmux session backend, and design decisions.
 

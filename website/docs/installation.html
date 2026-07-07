@@ -104,6 +104,28 @@ onThisPage:
             </tbody>
           </table>
 
+          <h2 id="winget">
+            winget (Windows)
+            <a href="#winget" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            On Windows, install the prebuilt x86_64 binaries with
+            <a href="https://learn.microsoft.com/windows/package-manager/">winget</a>
+            (Microsoft's package manager, bundled with Windows 10/11):
+          </p>
+          <pre><code class="language-powershell">winget install Thurbeen.thurbox</code></pre>
+          <p>
+            Installs
+            <code>thurbox.exe</code>
+            and
+            <code>thurbox-cli.exe</code>
+            from the GitHub Release as portable commands on your
+            <code>PATH</code>
+            . Needs
+            <a href="https://github.com/psmux/psmux">psmux</a>
+            as the multiplexer, installed separately.
+          </p>
+
           <h2 id="chocolatey">
             Chocolatey (Windows)
             <a href="#chocolatey" class="heading-anchor">#</a>
@@ -114,6 +136,18 @@ onThisPage:
             :
           </p>
           <pre><code class="language-powershell">choco install thurbox</code></pre>
+          <div class="info-box warning">
+            <p>
+              <strong>Pending moderation.</strong>
+              The Chocolatey package has been pushed to the community repository but is
+              <strong>not yet approved</strong>
+              by the moderators, so
+              <code>choco install thurbox</code>
+              will not resolve it from the community feed until it goes live. Use
+              <a href="#winget">winget</a>
+              or the PowerShell installer above in the meantime.
+            </p>
+          </div>
           <p>
             Installs
             <code>thurbox.exe</code>
@@ -305,6 +339,7 @@ cargo build --release</code></pre>
           <pre><code class="language-bash">rm ~/.local/bin/thurbox        # curl one-liner / manual install
 brew uninstall thurbox         # Homebrew
 paru -R thurbox thurbox-bin    # Arch (AUR)
+winget uninstall Thurbeen.thurbox  # winget (Windows)
 choco uninstall thurbox        # Chocolatey (Windows)</code></pre>
           <p>
             Sessions outlive Thurbox in tmux, so stop them too &mdash; and optionally delete state

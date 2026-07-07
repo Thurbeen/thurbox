@@ -9,6 +9,7 @@ Optional OS-level integration and distribution packages for thurbox.
 | `homebrew/` | Homebrew tap (macOS/Linux) | prebuilt release binaries — see [`homebrew/README.md`](homebrew/README.md) |
 | `aur/`      | Arch Linux (AUR)         | source + prebuilt binary — see [`aur/README.md`](aur/README.md) |
 | `chocolatey/` | Chocolatey (Windows)   | prebuilt release zip — see [`chocolatey/README.md`](chocolatey/README.md) |
+| `winget/`   | winget (Windows)         | prebuilt release zip (portable) — see [`winget/README.md`](winget/README.md) |
 
 These are published automatically on each release by jobs in
 [`.github/workflows/cd.yml`](../.github/workflows/cd.yml). For the

@@ -61,6 +61,17 @@ verification. Pin a version or directory with the `THURBOX_VERSION` /
 `THURBOX_INSTALL_DIR` env vars. Needs [psmux](https://github.com/psmux/psmux)
 as the multiplexer.
 
+**winget (Windows):**
+
+```powershell
+winget install Thurbeen.thurbox
+```
+
+Installs the prebuilt x86_64 Windows binaries (`thurbox.exe` +
+`thurbox-cli.exe`) from the GitHub Release as portable commands on your `PATH`.
+Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
+separately).
+
 **Chocolatey (Windows):**
 
 ```powershell
@@ -71,6 +82,11 @@ Installs the prebuilt x86_64 Windows binaries (`thurbox.exe` +
 `thurbox-cli.exe`) from the GitHub Release and shims them onto your `PATH`.
 Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
 separately — there is no Chocolatey package for it).
+
+> **⚠️ Pending moderation.** The Chocolatey package has been pushed but is
+> **not yet approved** by the community-repo moderators, so `choco install
+> thurbox` won't resolve it from the community feed until it goes live. Use
+> **winget** or the PowerShell installer (both above) in the meantime.
 
 **Homebrew (macOS / Linux):**
 
@@ -426,6 +442,7 @@ Remove the binary, depending on how you installed it:
 rm ~/.local/bin/thurbox        # curl one-liner / manual install
 brew uninstall thurbox         # Homebrew
 paru -R thurbox thurbox-bin    # Arch (AUR)
+winget uninstall Thurbeen.thurbox  # winget (Windows)
 choco uninstall thurbox        # Chocolatey (Windows)
 ```
 

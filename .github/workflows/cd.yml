@@ -415,3 +415,63 @@ jobs:
         run: |
           $nupkg = Get-ChildItem packaging/chocolatey/thurbox.*.nupkg | Select-Object -First 1
           choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+
+  # Submit the winget manifests to microsoft/winget-pkgs.
+  # Runs after `publish` so the release zip + checksums.txt exist. wingetcreate
+  # is Windows-only, so this runs on windows-latest. Requires the WINGET_TOKEN
+  # secret (a classic PAT with `public_repo` scope that can fork/PR against
+  # microsoft/winget-pkgs); skipped automatically if unset (e.g. on forks).
+  # New versions go through winget-pkgs PR review before going live.
+  publish-winget:
+    name: Publish winget manifest
+    needs: [check-release, create-tag, publish]
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: windows-latest
+    # Hoisted so the steps can be skipped when the secret is unset
+    # (the `secrets` context cannot be used directly in an `if` condition).
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.check-release.outputs.version }}
+
+      - name: Download release checksums
+        if: env.WINGET_TOKEN != ''
+        shell: pwsh
+        run: |
+          $version = "${{ needs.check-release.outputs.version }}"
+          $repo = "${{ github.repository }}"
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri "https://github.com/$repo/releases/download/$version/thurbox-$version-checksums.txt" `
+            -OutFile checksums.txt
+          Get-Content checksums.txt
+
+      - name: Bump manifests to the release version
+        if: env.WINGET_TOKEN != ''
+        shell: pwsh
+        run: |
+          python packaging/winget/bump-manifests.py `
+            "${{ needs.check-release.outputs.version }}" `
+            packaging/winget/manifests `
+            checksums.txt
+          Get-Content packaging/winget/manifests/Thurbeen.thurbox.installer.yaml
+
+      - name: Install wingetcreate
+        if: env.WINGET_TOKEN != ''
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri https://aka.ms/wingetcreate/latest `
+            -OutFile wingetcreate.exe
+
+      # `submit` validates the bumped manifests and opens a PR against
+      # microsoft/winget-pkgs from a fork of the WINGET_TOKEN account. Works for
+      # both the first submission and every subsequent version from the same
+      # in-repo manifest set.
+      - name: Submit manifests to winget-pkgs
+        if: env.WINGET_TOKEN != ''
+        shell: pwsh
+        run: |
+          .\wingetcreate.exe submit --token $env:WINGET_TOKEN packaging/winget/manifests

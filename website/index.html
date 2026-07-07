@@ -84,6 +84,16 @@ footer: true
             </button>
             <button
               class="install-tab"
+              id="tab-winget"
+              role="tab"
+              aria-controls="panel-winget"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              winget
+            </button>
+            <button
+              class="install-tab"
               id="tab-choco"
               role="tab"
               aria-controls="panel-choco"
@@ -151,6 +161,25 @@ footer: true
             <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
           </div>
 
+          <div class="install-panel" role="tabpanel" id="panel-winget" aria-labelledby="tab-winget" hidden>
+            <p>
+              Windows x86_64 via
+              <a href="https://learn.microsoft.com/windows/package-manager/" target="_blank" rel="noopener">
+                winget
+              </a>
+              (bundled with Windows 10/11). Installs the prebuilt
+              <code>thurbox.exe</code>
+              +
+              <code>thurbox-cli.exe</code>
+              as portable commands on your
+              <code>PATH</code>
+              . Needs
+              <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
+              as the multiplexer (installed separately).
+            </p>
+            <pre><code class="language-powershell">winget install Thurbeen.thurbox</code></pre>
+          </div>
+
           <div class="install-panel" role="tabpanel" id="panel-choco" aria-labelledby="tab-choco" hidden>
             <p>
               Windows x86_64 via the
@@ -166,6 +195,14 @@ footer: true
               . Needs
               <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
               as the multiplexer (installed separately).
+            </p>
+            <p>
+              <strong>Pending moderation:</strong>
+              the package is pushed but not yet approved by the community-repo moderators, so
+              <code>choco install thurbox</code>
+              won't resolve until it goes live &mdash; use
+              <strong>winget</strong>
+              or the install script meanwhile.
             </p>
             <pre><code class="language-powershell">choco install thurbox</code></pre>
           </div>

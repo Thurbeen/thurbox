@@ -338,7 +338,7 @@ Each release includes:
   - `thurbox-v{ver}-x86_64-unknown-linux-musl.tar.gz`
   - `thurbox-v{ver}-aarch64-apple-darwin.tar.gz`
   - `thurbox-v{ver}-x86_64-pc-windows-msvc.zip` (the Windows artifact
-    extracted by `install.ps1` / packaged by Chocolatey)
+    extracted by `install.ps1` / packaged by Chocolatey + winget)
 - `thurbox-v{ver}-checksums.txt` (SHA256 sums for verification)
 - Changelog with categorized commits
 
@@ -363,6 +363,17 @@ package channels (each gated on its secret, skipped on forks):
   community repo. Runs on `windows-latest`; needs the `CHOCOLATEY_API_KEY`
   secret. New versions go through community-repo moderation.
   Install: `choco install thurbox`. Windows x86_64 only.
+- **winget** (`publish-winget`): bumps `PackageVersion`/`InstallerUrl`/
+  `InstallerSha256`/`ReleaseNotesUrl` in the three manifests under
+  `packaging/winget/manifests/` (via `packaging/winget/bump-manifests.py`,
+  reading the release `checksums.txt`), then `wingetcreate submit`s the set as a
+  PR to `microsoft/winget-pkgs`. Runs on `windows-latest`; needs the
+  `WINGET_TOKEN` secret (a `public_repo` PAT owning a fork of
+  `microsoft/winget-pkgs`). New versions go through winget-pkgs PR
+  validation + review. The release zip is a `zip` installer with
+  `NestedInstallerType = portable` (PATH aliases `thurbox`/`thurbox-cli`, no
+  MSI). Install: `winget install Thurbeen.thurbox`. Windows x86_64 only (added
+  as a moderation-independent alternative to the Chocolatey channel).
 
 See `packaging/README.md` for the full packaging overview.
 
