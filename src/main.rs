@@ -44,17 +44,20 @@ fn push_keyboard_enhancement() {
 /// does not, so both the shutdown path and the panic hook call this before
 /// leaving raw mode.
 fn pop_keyboard_enhancement() {
-    if KEYBOARD_ENHANCEMENT_PUSHED.load(Ordering::SeqCst) {
+    // `swap` so a second restore (guard drop after an explicit restore, or the
+    // panic hook racing the guard) can't pop a level we never pushed.
+    if KEYBOARD_ENHANCEMENT_PUSHED.swap(false, Ordering::SeqCst) {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }
 }
 
 /// Undo every terminal mutation we made on startup, in reverse order: pop the
 /// kitty flags, disable bracketed paste + mouse capture, then leave the
-/// alternate screen / raw mode (`ratatui::restore()`). Idempotent enough that
-/// calling it twice (e.g. the panic hook *and* the unwinding `TerminalGuard`)
-/// is harmless. The single source of truth shared by the panic hook and the
-/// guard so the two restore paths can't drift.
+/// alternate screen / raw mode (`ratatui::restore()`). Idempotent, so the
+/// callers can safely overlap: the normal quit path calls it explicitly (before
+/// the slow session detach) *and* again via the `TerminalGuard` drop, and the
+/// panic hook may race that guard on unwind. The single source of truth shared
+/// by all three so the restore paths can't drift.
 fn restore_terminal() {
     pop_keyboard_enhancement();
     let _ = execute!(
@@ -195,9 +198,15 @@ async fn main() -> Result<()> {
 
     let res = run_loop(&mut terminal, &mut app, process_start, startup).await;
 
+    // Restore the terminal *before* the (potentially slow) session detach:
+    // `shutdown()` detaches tmux/SSH sessions, and while it runs the event loop
+    // is no longer draining stdin. With mouse capture still on, any mouse motion
+    // in that window queues SGR reports (`ESC[<b;x;yM`) in the tty buffer that
+    // the shell then echoes as `51;82;30M`-style garbage once thurbox exits.
+    // `restore_terminal` is idempotent, so the `_terminal_guard` drop below (and
+    // early-error returns) still restore correctly.
+    restore_terminal();
     app.shutdown();
-    // `_terminal_guard` restores the terminal as it drops here (and on any early
-    // error return above).
     res
 }
 
