@@ -1438,13 +1438,47 @@ fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~")
 }
 
+/// Whether a `#{pane_dead}` format string reports an exited pane.
+///
+/// Only the literal `1` means dead: `display-message` against a *missing*
+/// window still exits 0 printing nothing, so an empty value must read as "not
+/// dead" and leave the missing-window diagnosis to `send-keys`, which does
+/// fail on it.
+fn parse_pane_dead(output: &str) -> bool {
+    output.trim() == "1"
+}
+
+/// Whether `target`'s pane has exited. The one-shot mirror of
+/// [`TmuxBackend::is_dead`], which asks the same question over control mode.
+///
+/// Errors read as "not dead" so a tmux hiccup degrades to the previous
+/// behavior (attempt the send) rather than silently dropping a prompt.
+fn pane_is_dead(target: &str) -> bool {
+    local_mux_command(&["display-message", "-p", "-t", target, "#{pane_dead}"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| parse_pane_dead(&String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or(false)
+}
+
 /// Send text immediately to a session pane (no scheduling), followed by Enter.
 ///
 /// Targets the tmux window named `tb-<session_name>` in the thurbox tmux
 /// session and uses a "paste text → brief delay → press Enter" sequence so the
 /// target app has time to process the pasted input.
+///
+/// Refuses a pane whose process has exited. Sessions run with
+/// `remain-on-exit=on` (`SESSION_OPTS`), so a dead agent leaves its window in
+/// place and `send-keys` still exits 0 while discarding the keystrokes. Every
+/// caller reads that success as "the agent got it" — which is how the mailbox
+/// wake came to report `woke: true` at a pane nothing was listening to — so the
+/// liveness check belongs here, once, rather than in each of them.
 pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
     let target = window_target(session_name);
+    if pane_is_dead(&target) {
+        bail!("session '{session_name}' has exited; its pane accepts no input");
+    }
     let payload = bracketed_paste(text);
 
     let status = local_mux_command(&["send-keys", "-t", &target, "-l", &payload])
@@ -2221,6 +2255,23 @@ mod tests {
         // `tb-foo-bar` exist. The `=` prefix forces exact-match lookup.
         let t = window_target("foo");
         assert!(t.ends_with(":=tb-foo"), "got {t}");
+    }
+
+    #[test]
+    fn parse_pane_dead_only_accepts_one() {
+        assert!(parse_pane_dead("1"));
+        assert!(parse_pane_dead("1\n"));
+        assert!(!parse_pane_dead("0\n"));
+
+        // A missing window makes `display-message` exit 0 printing nothing.
+        // Reading that as dead would mask the `send-keys` "can't find window"
+        // error that actually diagnoses it, turning a typo into "has exited".
+        assert!(!parse_pane_dead(""));
+        assert!(!parse_pane_dead("\n"));
+
+        // Never infer deadness from anything but the flag itself.
+        assert!(!parse_pane_dead("10"));
+        assert!(!parse_pane_dead("dead"));
     }
 
     // --- history_seed_bytes tests (adopt-time scrollback seeding) ---
