@@ -707,7 +707,7 @@ pub struct App {
     /// [`Self::poll_review_build`]. See ADR-P8 in `docs/PERFORMANCE.md`.
     review_build: background::BackgroundTask<code_review::ReviewBuildResult>,
     /// `Exec` automation commands running on worker threads, drained each tick
-    /// by `App::drain_exec_results`.
+    /// by [`Self::process_automations`] so a slow command never blocks the loop.
     automation_exec: automation::ExecJobs,
     /// Continuation for a completed background spawn: the metadata + follow-up
     /// (task prompt) to apply once the session is live.
@@ -9755,6 +9755,61 @@ mod tests {
         let runs = drain_until_recorded(&mut app, id, 2);
         assert_eq!(runs.len(), 2, "no second copy of the command was launched");
         assert_eq!(runs[0].status, crate::session::AutomationRunStatus::Success);
+    }
+
+    /// Once its command exits, the automation is released and a later fire runs
+    /// it again — the in-flight guard must not wedge it shut.
+    #[cfg(unix)]
+    #[test]
+    fn exec_automation_is_refired_after_its_command_exits() {
+        let mut app = app_with_sessions(0);
+        let id = create_exec_automation(&app, "true");
+        app.process_automations(true);
+        drain_until_recorded(&mut app, id, 1);
+
+        assert!(app.db.trigger_automation_now(id).unwrap());
+        app.process_automations(true);
+
+        let runs = drain_until_recorded(&mut app, id, 2);
+        assert!(
+            runs.iter()
+                .all(|r| r.status == crate::session::AutomationRunStatus::Success),
+            "the second fire ran the command, it did not record a skip"
+        );
+    }
+
+    /// A command already in flight is recorded even if the feature is switched
+    /// off under it — the drain runs ahead of the feature gate.
+    #[cfg(unix)]
+    #[test]
+    fn exec_result_is_recorded_after_automations_are_disabled() {
+        let mut app = app_with_sessions(0);
+        let id = create_exec_automation(&app, "sleep 1");
+        app.process_automations(true);
+
+        app.features.automations = false;
+
+        let runs = drain_until_recorded(&mut app, id, 1);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, crate::session::AutomationRunStatus::Success);
+    }
+
+    /// A failing command's exit status survives the trip through the worker
+    /// thread into the run history.
+    #[cfg(unix)]
+    #[test]
+    fn exec_automation_records_a_failing_command_as_error() {
+        let mut app = app_with_sessions(0);
+        let id = create_exec_automation(&app, "echo boom >&2; exit 3");
+        app.process_automations(true);
+
+        let runs = drain_until_recorded(&mut app, id, 1);
+        assert_eq!(runs[0].status, crate::session::AutomationRunStatus::Error);
+        assert!(
+            runs[0].detail.contains("boom"),
+            "stderr is kept in the run detail, got {:?}",
+            runs[0].detail
+        );
     }
 
     #[test]

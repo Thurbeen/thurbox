@@ -61,8 +61,9 @@ enum FireOutcome {
 }
 
 impl App {
-    /// Fire any due automations. Called once per ~second from `tick()`; pass
-    /// `force = true` for the one-shot startup catch-up pass (ignores cadence).
+    /// Record finished `Exec` commands, then fire any due automations. Called
+    /// once per ~second from `tick()`; pass `force = true` for the one-shot
+    /// startup catch-up pass (ignores cadence).
     pub(crate) fn process_automations(&mut self, force: bool) {
         // Drain before either gate: an `Exec` already in flight must still be
         // recorded (and its id released) on a non-firing tick, and after the
@@ -86,38 +87,52 @@ impl App {
             }
         };
         for auto in due {
-            // Claim before firing so a concurrent headless `automation tick`
-            // (keeper window / systemd) can't double-fire the same automation.
-            // Claim advances the schedule; `None` disables a spent one-shot.
-            let next = auto.schedule.next_after(now, auto.timezone.as_deref());
-            match self
-                .db
-                .claim_due_automation(auto.id, auto.next_run_at.unwrap_or(0), next, now)
-            {
-                Ok(true) => {}
-                Ok(false) => {
-                    debug!(
-                        automation_id = auto.id,
-                        "automation claim lost to a concurrent firer (headless tick / other instance)"
-                    );
-                    continue;
-                }
-                Err(e) => {
-                    error!("Failed to claim automation {}: {e}", auto.id);
-                    continue;
-                }
+            if !self.claim_automation(&auto, now) {
+                continue;
             }
-            match self.fire_automation(&auto) {
-                FireOutcome::Completed(status, detail, related) => {
-                    if let Err(e) = self
-                        .db
-                        .record_automation_run(auto.id, status, &detail, related)
-                    {
-                        error!("Failed to record run for automation {}: {e}", auto.id);
-                    }
-                }
-                FireOutcome::Deferred => {}
+            if let FireOutcome::Completed(status, detail, related) = self.fire_automation(&auto) {
+                self.record_run(auto.id, status, &detail, related);
             }
+        }
+    }
+
+    /// Take ownership of a due automation before firing it, so a concurrent
+    /// headless `automation tick` (keeper window / systemd) can't double-fire
+    /// the same one. Claiming advances the schedule; a `None` next-run disables
+    /// a spent one-shot. Returns `false` when the claim was lost or errored —
+    /// this instance must not fire the automation.
+    fn claim_automation(&self, auto: &Automation, now: u64) -> bool {
+        let next = auto.schedule.next_after(now, auto.timezone.as_deref());
+        match self
+            .db
+            .claim_due_automation(auto.id, auto.next_run_at.unwrap_or(0), next, now)
+        {
+            Ok(true) => true,
+            Ok(false) => {
+                debug!(
+                    automation_id = auto.id,
+                    "automation claim lost to a concurrent firer (headless tick / other instance)"
+                );
+                false
+            }
+            Err(e) => {
+                error!("Failed to claim automation {}: {e}", auto.id);
+                false
+            }
+        }
+    }
+
+    /// Append a run-history entry, logging rather than propagating a DB error:
+    /// a lost history row must not abort the firing pass.
+    fn record_run(
+        &self,
+        id: i64,
+        status: AutomationRunStatus,
+        detail: &str,
+        related: Option<SessionId>,
+    ) {
+        if let Err(e) = self.db.record_automation_run(id, status, detail, related) {
+            error!("Failed to record run for automation {id}: {e}");
         }
     }
 
@@ -130,17 +145,7 @@ impl App {
             self.automation_exec
                 .in_flight
                 .remove(&outcome.automation_id);
-            if let Err(e) = self.db.record_automation_run(
-                outcome.automation_id,
-                outcome.status,
-                &outcome.detail,
-                None,
-            ) {
-                error!(
-                    "Failed to record run for automation {}: {e}",
-                    outcome.automation_id
-                );
-            }
+            self.record_run(outcome.automation_id, outcome.status, &outcome.detail, None);
             drained = true;
         }
         if drained {
@@ -148,9 +153,9 @@ impl App {
         }
     }
 
-    /// Execute a single automation's action, returning its run status, detail,
-    /// and the session it sent to / spawned (when one exists) — or
-    /// [`FireOutcome::Deferred`] when the action was handed to a worker thread.
+    /// Execute a single automation's action: [`FireOutcome::Completed`] carries
+    /// the run's status, detail, and the session it sent to / spawned (when one
+    /// exists); [`FireOutcome::Deferred`] means a worker thread owns it now.
     fn fire_automation(&mut self, auto: &Automation) -> FireOutcome {
         match &auto.action {
             AutomationAction::Send { session_id } => {
