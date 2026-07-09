@@ -260,7 +260,7 @@ pub fn install_extension(
     //    activate. `target` is recorded verbatim so `update` re-fetches the same
     //    source (a bare name re-resolves against the *current* binary's tag).
     let resolved = def
-        .resolved_for_home(&home_str)
+        .resolved_for_home(&home_str, crate::paths::home_dir().as_deref())
         .with_provenance(current, target);
     crate::agent::extension_config::write_manifest(&resolved)?;
     report.ensure = activate_extension(db, &resolved)?;

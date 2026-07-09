@@ -522,7 +522,8 @@ requires_dir = "~/.gemini"      #   exactly our entries (by marker). no-op write
 [[sessions]]
 name = "flow"
 agent = "flow"
-repo_path = "{home}"            # resolved to the absolute home at install
+repo_path = "{home}"            # absolute, `~`-relative, or `{home}`; resolved
+                                #   to an absolute path at install
 
 # [[automations]] is an OPTIONAL runtime resource (flow itself ships none —
 # it is purely event-driven). An extension that wants a scheduled tick declares:

@@ -14,7 +14,7 @@
 //! orchestration) can depend on the same type without crossing module-isolation
 //! rules — exactly like [`crate::session::HostDef`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -168,7 +168,10 @@ pub struct ExtensionSession {
     pub name: String,
     /// Agent name to launch (an `agents.toml` entry the installer registers).
     pub agent: String,
-    /// Directory the agent runs in (absolute; the installer resolves any `~`).
+    /// Directory the agent runs in: absolute, `~`-relative, or containing
+    /// `{home}` — the same forms accepted for file destinations. Both are
+    /// resolved by [`ExtensionDef::resolved_for_home`] at install time, so the
+    /// stored manifest always holds an absolute path.
     pub repo_path: PathBuf,
 }
 
@@ -308,12 +311,21 @@ impl ExtensionDef {
     /// This is what gets written to the discovery dir at install time, so
     /// `activate`/self-heal read absolute paths (they don't expand tokens
     /// themselves) and uninstall knows the real home directory.
-    pub fn resolved_for_home(&self, home: &str) -> ExtensionDef {
+    ///
+    /// A session `repo_path` may also be `~`-relative; `user_home` is the user's
+    /// home directory ([`crate::paths::home_dir`]), passed in because `session`
+    /// is the dependency sink and never resolves paths itself. `None` (no
+    /// `$HOME`) leaves a leading `~` verbatim, matching
+    /// [`crate::paths::expand_tilde`]'s graceful fallback.
+    pub fn resolved_for_home(&self, home: &str, user_home: Option<&Path>) -> ExtensionDef {
         let mut out = self.clone();
         out.home = Some(home.to_string());
         for s in &mut out.sessions {
+            // `{home}` first, `~` second: an extension home that itself lives
+            // under `~` resolves to an absolute path here, so the tilde pass
+            // finds nothing left to expand and can't double-resolve it.
             let p = s.repo_path.to_string_lossy().replace(HOME_TOKEN, home);
-            s.repo_path = PathBuf::from(p);
+            s.repo_path = expand_leading_tilde(&p, user_home);
         }
         // External-file destinations and patched agent args may reference the
         // home dir (e.g. `--settings {home}/hooks/claude.json`); resolve them so
@@ -386,6 +398,29 @@ impl ExtensionDef {
         } else {
             None
         }
+    }
+}
+
+/// Expand a leading `~` (bare, or followed by a path separator) against
+/// `user_home`. The pure counterpart of [`crate::paths::expand_tilde`], which
+/// reads `$HOME` itself — `session` may not reach into `paths`, so the home dir
+/// arrives as an argument. Same rules: `~` anywhere but the front is an ordinary
+/// filename character, `~user` is not expanded (no passwd lookup), and an
+/// unresolvable home leaves the path untouched.
+fn expand_leading_tilde(path: &str, user_home: Option<&Path>) -> PathBuf {
+    let Some(home) = user_home else {
+        return PathBuf::from(path);
+    };
+    if path == "~" {
+        return home.to_path_buf();
+    }
+    // `\` is a separator on Windows only; on Unix it is a legal filename char.
+    let rest = path
+        .strip_prefix("~/")
+        .or_else(|| cfg!(windows).then(|| path.strip_prefix("~\\")).flatten());
+    match rest {
+        Some(rest) => home.join(rest),
+        None => PathBuf::from(path),
     }
 }
 
@@ -570,7 +605,7 @@ prompt = "tick"
             "name = \"hooks\"\n[[config_merges]]\npath = \"{home}/settings.json\"\nrequires_dir = \"{home}\"\n",
         )
         .unwrap();
-        let resolved = def.resolved_for_home("/home/me/.gemini");
+        let resolved = def.resolved_for_home("/home/me/.gemini", None);
         assert_eq!(
             resolved.config_merges[0].path,
             "/home/me/.gemini/settings.json"
@@ -583,19 +618,83 @@ prompt = "tick"
         assert_eq!(def.config_merges[0].path, "{home}/settings.json");
     }
 
+    /// The env var `paths::home_dir()` reads on this platform: `USERPROFILE` on
+    /// Windows, `HOME` elsewhere. The tilde tests source the home directory from
+    /// the same var the installer passes in, so they pass on every target.
+    const HOME_VAR: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+
+    /// The user home the installer would pass to `resolved_for_home`.
+    fn user_home() -> PathBuf {
+        PathBuf::from(std::env::var_os(HOME_VAR).expect("home var set in tests"))
+    }
+
+    /// Resolve a single-session manifest exactly as the installer does, and
+    /// return the session's `repo_path`.
+    fn resolved_repo_path(repo_path: &str, home: &str) -> PathBuf {
+        let def: ExtensionDef = toml::from_str(&format!(
+            "name = \"x\"\n[[sessions]]\nname = \"x\"\nagent = \"x\"\nrepo_path = '{repo_path}'\n"
+        ))
+        .unwrap();
+        let home_dir = user_home();
+        let mut resolved = def.resolved_for_home(home, Some(&home_dir));
+        resolved.sessions.remove(0).repo_path
+    }
+
     #[test]
     fn resolved_for_home_substitutes_session_repo_path() {
         let def: ExtensionDef = toml::from_str(
             "name = \"flow\"\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{home}\"\n",
         )
         .unwrap();
-        let resolved = def.resolved_for_home("/home/me/flow");
+        let resolved = def.resolved_for_home("/home/me/flow", Some(&user_home()));
         assert_eq!(
             resolved.sessions[0].repo_path,
             PathBuf::from("/home/me/flow")
         );
         // Original is untouched.
         assert_eq!(def.sessions[0].repo_path, PathBuf::from("{home}"));
+    }
+
+    #[test]
+    fn resolved_for_home_expands_leading_tilde_in_session_repo_path() {
+        assert_eq!(
+            resolved_repo_path("~/Repositories/fleet", "/home/me/flow"),
+            user_home().join("Repositories").join("fleet")
+        );
+        assert_eq!(resolved_repo_path("~", "/home/me/flow"), user_home());
+    }
+
+    #[test]
+    fn resolved_for_home_leaves_absolute_session_repo_path_alone() {
+        assert_eq!(
+            resolved_repo_path("/abs/path", "/home/me/flow"),
+            PathBuf::from("/abs/path")
+        );
+    }
+
+    #[test]
+    fn resolved_for_home_ignores_non_leading_tilde_in_session_repo_path() {
+        // `~` is an ordinary filename character anywhere but the front — so a
+        // resolved `{home}` that happens to contain one is not re-expanded.
+        assert_eq!(
+            resolved_repo_path("/tmp/a~b", "/home/me/flow"),
+            PathBuf::from("/tmp/a~b")
+        );
+        assert_eq!(
+            resolved_repo_path("{home}", "/tmp/a~b/flow"),
+            PathBuf::from("/tmp/a~b/flow")
+        );
+    }
+
+    #[test]
+    fn resolved_for_home_keeps_tilde_when_home_is_unresolvable() {
+        let def: ExtensionDef = toml::from_str(
+            "name = \"x\"\n[[sessions]]\nname = \"x\"\nagent = \"x\"\nrepo_path = \"~/x\"\n",
+        )
+        .unwrap();
+        // No `$HOME`: leave the path verbatim rather than inventing a root.
+        let resolved = def.resolved_for_home("/home/me/x", None);
+        assert_eq!(resolved.sessions[0].repo_path, PathBuf::from("~/x"));
     }
 
     #[test]

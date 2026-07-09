@@ -326,19 +326,10 @@ pub fn resolve_source(target: &str) -> ExtensionSource {
 
 /// Expand a leading `~/` (or bare `~`) to the user's home directory. Shared by
 /// the source resolver and the installer so both agree on home expansion.
+/// Delegates to [`crate::paths::expand_tilde`] — the single implementation —
+/// which additionally honours `~\` on Windows.
 pub fn expand_tilde(path: &str) -> PathBuf {
-    // `$HOME` on Unix, `%USERPROFILE%` on Windows (matches `paths::home_dir`).
-    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os(home_var) {
-            return PathBuf::from(home).join(rest);
-        }
-    } else if path == "~" {
-        if let Some(home) = std::env::var_os(home_var) {
-            return PathBuf::from(home);
-        }
-    }
-    PathBuf::from(path)
+    crate::paths::expand_tilde(path)
 }
 
 /// Fetch one file's text content from a source (`<source>/<rel>`).
