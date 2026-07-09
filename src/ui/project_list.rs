@@ -9,7 +9,7 @@ use ratatui::{
 use super::highlight::append_highlighted as append_name_spans;
 use super::theme::Theme;
 use super::{focus_block, status_color, FocusLevel};
-use crate::session::{SessionInfo, SessionStatus};
+use crate::session::SessionInfo;
 
 /// Per-field fuzzy match positions for a session entry.
 #[derive(Clone)]
@@ -637,24 +637,6 @@ fn render_session_section(
     // Available width inside the block (subtract 2 for borders)
     let inner_width = area.width.saturating_sub(2) as usize;
 
-    // The header row each row belongs to, used to roll each group's members up
-    // to a single status dot on the header below.
-    let group_of = header_group_of(headers);
-
-    // Roll each repo group up to its most-urgent member status, keyed by the
-    // group's header row index, so the header shows a single dot you can scan.
-    // Computed at render time (not in `SessionOrder`) so status never feeds the
-    // order cache or reorders rows — it only recolors.
-    let mut group_rollup: std::collections::HashMap<usize, SessionStatus> =
-        std::collections::HashMap::new();
-    for (i, info) in sessions.iter().enumerate() {
-        let h = group_of[i];
-        group_rollup
-            .entry(h)
-            .and_modify(|s| *s = group_status([*s, info.status]))
-            .or_insert(info.status);
-    }
-
     let mut item_heights: Vec<u16> = Vec::with_capacity(sessions.len());
 
     // Session ids on screen, for the cross-group child mark (a child whose
@@ -687,11 +669,10 @@ fn render_session_section(
             )];
 
             // Prepend a subtle repo-group header above the first session of
-            // each group. The header carries the group's rolled-up status dot
-            // but never reflects selection (that stays on the session rows).
+            // each group. The header never reflects selection (that stays on
+            // the session rows).
             if let Some(Some(label)) = headers.get(i) {
-                let rollup = group_rollup.get(&i).copied().unwrap_or(info.status);
-                item_lines.insert(0, group_header_line(label, rollup, inner_width, spinner));
+                item_lines.insert(0, group_header_line(label, inner_width));
             }
 
             item_heights.push(item_lines.len() as u16);
@@ -757,68 +738,17 @@ fn render_empty_sessions(frame: &mut Frame, area: Rect, block: ratatui::widgets:
     frame.render_widget(text, area);
 }
 
-/// For each row, the index of the group header row it belongs to. Lets a group's
-/// members roll up to a single status dot on their header. Rows before the first
-/// header map to row 0, which is harmless since those rows carry no header.
-fn header_group_of(headers: &[Option<String>]) -> Vec<usize> {
-    let mut out = Vec::with_capacity(headers.len());
-    let mut current = 0;
-    for (i, h) in headers.iter().enumerate() {
-        if h.is_some() {
-            current = i;
-        }
-        out.push(current);
-    }
-    out
-}
-
-/// A full-width repo-group header: `● ── label ──────────`. The leading dot is
-/// the group's rolled-up most-urgent status; the label is always muted. The
-/// header never reflects selection — highlighting belongs to the session rows
-/// alone, so selecting a group's first row must not light up its header.
-fn group_header_line(
-    label: &str,
-    rollup: SessionStatus,
-    inner_width: usize,
-    spinner: &str,
-) -> Line<'static> {
-    let style = Style::default().fg(Theme::text_muted());
-    let dot = format!("{} ", super::status_glyph(rollup, spinner));
+/// A full-width repo-group header: `── label ──────────`. The label is always
+/// muted, and the header never reflects selection — highlighting belongs to the
+/// session rows alone, so selecting a group's first row must not light up its
+/// header. Status lives on the session rows, never here.
+fn group_header_line(label: &str, inner_width: usize) -> Line<'static> {
     let mut text = format!("\u{2500}\u{2500} {label} ");
-    let used = dot.chars().count() + text.chars().count();
+    let used = text.chars().count();
     if inner_width > used {
         text.push_str(&"\u{2500}".repeat(inner_width - used));
     }
-    Line::from(vec![
-        Span::styled(dot, Style::default().fg(status_color(rollup))),
-        Span::styled(text, style),
-    ])
-}
-
-/// Urgency rank for the repo-group rollup; higher is more urgent.
-///
-/// `Unreachable` sits just above `Idle`: a group whose only notable member is a
-/// down remote session rolls up as unreachable, but any live member (Done and
-/// up) still dominates the header dot.
-fn status_urgency(s: SessionStatus) -> u8 {
-    match s {
-        SessionStatus::Blocked => 5,
-        SessionStatus::Error => 4,
-        SessionStatus::Working => 3,
-        SessionStatus::Done => 2,
-        SessionStatus::Unreachable => 1,
-        SessionStatus::Idle => 0,
-    }
-}
-
-/// The most-urgent status across a group's members (Blocked > Error > Working >
-/// Done > Unreachable > Idle), so the group header dot surfaces whatever needs
-/// attention first. Empty input rolls up to `Idle`.
-pub fn group_status(statuses: impl IntoIterator<Item = SessionStatus>) -> SessionStatus {
-    statuses
-        .into_iter()
-        .max_by_key(|s| status_urgency(*s))
-        .unwrap_or(SessionStatus::Idle)
+    Line::from(Span::styled(text, Style::default().fg(Theme::text_muted())))
 }
 
 /// Resolve the agent-reported status text for a session row, if any.
@@ -1414,10 +1344,23 @@ mod tests {
     fn group_header_is_always_muted_without_background() {
         // The header never reflects selection: selecting a group's first row
         // must not light up its header. Always muted, never a background tint.
-        let line = group_header_line("repo", SessionStatus::Idle, WIDE, "◐");
+        let line = group_header_line("repo", WIDE);
         assert!(line.spans.iter().all(|sp| sp.style.bg.is_none()));
-        assert_eq!(line.spans[1].style.fg, Some(Theme::text_muted()));
-        assert!(!line.spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(line.spans[0].style.fg, Some(Theme::text_muted()));
+        assert!(!line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn group_header_starts_with_the_rule_and_carries_no_status_glyph() {
+        // Status belongs to the session rows; the header is a plain rule.
+        let text = line_text(&group_header_line("repo", WIDE));
+        assert!(text.starts_with("\u{2500}\u{2500} repo "), "{text:?}");
+        for glyph in ["\u{25c6}", "\u{25cf}", "\u{25cb}", "\u{2717}", "\u{2298}"]
+            .iter()
+            .chain(super::super::SPINNER_FRAMES.iter())
+        {
+            assert!(!text.contains(glyph), "{text:?} contains {glyph:?}");
+        }
     }
 
     #[test]
@@ -1556,19 +1499,6 @@ mod tests {
             order_names(&flipped),
             vec!["infra-1", "web-attn", "web-busy"]
         );
-    }
-
-    #[test]
-    fn group_status_rolls_up_to_most_urgent() {
-        use SessionStatus::*;
-        // Precedence: Blocked > Error > Working > Done > Idle.
-        assert_eq!(group_status([Idle, Done, Working]), Working);
-        assert_eq!(group_status([Done, Idle]), Done);
-        assert_eq!(group_status([Working, Error]), Error);
-        assert_eq!(group_status([Working, Blocked, Error]), Blocked);
-        assert_eq!(group_status([Idle, Idle]), Idle);
-        // Empty rolls up to Idle.
-        assert_eq!(group_status(std::iter::empty()), Idle);
     }
 
     #[test]
@@ -1999,28 +1929,6 @@ mod tests {
         );
         // Single composite group, header from the first member ("b").
         assert_eq!(headers, vec![Some("webapp + infra".to_string()), None]);
-    }
-
-    // --- header_group_of (group-header highlight membership) ---
-
-    #[test]
-    fn header_group_of_maps_each_row_to_its_header() {
-        // Two groups: rows 0-1 under header 0, rows 2-4 under header 2.
-        let headers = vec![
-            Some("a".to_string()),
-            None,
-            Some("b".to_string()),
-            None,
-            None,
-        ];
-        assert_eq!(header_group_of(&headers), vec![0, 0, 2, 2, 2]);
-    }
-
-    #[test]
-    fn header_group_of_rows_before_first_header_map_to_zero() {
-        // Rows with no header preceding the first group header at row 2.
-        let headers = vec![None, None, Some("repo".to_string()), None];
-        assert_eq!(header_group_of(&headers), vec![0, 0, 2, 2]);
     }
 
     // --- visible_count_from_heights ---

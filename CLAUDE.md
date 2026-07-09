@@ -670,7 +670,7 @@ via `App::backend_for`).
   `%subscription-changed` pushes (≤1/s), queued on the connection and drained
   each tick by `App::drain_remote_hook_events` into the same `set_hook_state`
   columns local signals use — so Done→seen acknowledgment, OS notifications,
-  rollups, and the stuck-`working` fallback are shared. Events are matched by
+  and the stuck-`working` fallback are shared. Events are matched by
   **backend name + pane id** (pane ids collide across hosts), allow-listed
   (remote-controlled text), and deduped against the cache (a reconnect
   re-report must not resurrect an acknowledged `done`). Carve-outs: psmux
@@ -1458,11 +1458,12 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
   trips it; only `working` is time-gated (`blocked`/`done` are not). The DB row is
   left untouched — the override is purely in the per-tick derivation, like
   exited → `Idle`.
-- **Rollup.** Repo groups roll up to their most-urgent member
-  (`Blocked > Error > Working > Done > Unreachable > Idle`), rendered as a colored dot on
-  the group header (`ui::project_list::group_status` +
-  `group_header_line`). Status only recolors — it **never** reorders rows
-  (the order cache stays status-independent).
+- **Per-session only.** Status is rendered on the session's own row (and in the
+  ` Sessions ` panel border title, one dot per session). Repo-group headers
+  (`ui::project_list::group_header_line`) carry **no** status — a rolled-up
+  group dot would restate what every member row already shows. Status only
+  recolors — it **never** reorders rows (the order cache stays
+  status-independent).
 - **Colours** are tunable theme fields: `status_working` / `status_blocked`
   / `status_done` / `status_idle` / `status_error`
   (`session::theme_config`, all 15 presets + custom-theme overrides), mapped
