@@ -494,6 +494,209 @@ rule holds.
 
 ---
 
+## Investigation 2026-07-09: where the time actually goes
+
+A measurement pass over the render loop, the tick, the draw path, startup, the
+database, and the mailbox wake. Ranked by **measured** impact. Anything not
+measured is called out under [Honest gaps](#honest-gaps) rather than guessed at.
+
+### Method
+
+- **Machine**: Intel i7-8700K (6C/12T, 3.70 GHz), 31 GiB RAM, Linux
+  7.0.14-arch1-1, tmux 3.7, rustc 1.97.0 stable.
+- **Build**: `cargo build --release` (LTO, stripped). No number below comes
+  from a debug build.
+- **Isolation**: every binary ran with `HOME`, `THURBOX_CONFIG_DIR`,
+  `THURBOX_DATA_DIR`, `THURBOX_SOCKET` and `TMUX_TMPDIR` redirected to
+  throwaway directories, so no measurement touched real config, the real
+  database, or the real tmux socket. Database work ran against a **copy** of
+  `thurbox.db`; `EXPLAIN QUERY PLAN` was never pointed at the live file.
+- **Loop timing**: the built-in instrumentation, not a new dependency —
+  `THURBOX_PERF_LOG=1 thurbox` inside a scratch tmux pane, reading the
+  `startup` and `perf_window` lines (ADR-P11) from
+  `$THURBOX_DATA_DIR/thurbox.log.<date>`.
+- **Load generator**: a synthetic agent declared in a scratch `agents.toml` —
+  a throttled producer (100 lines/s/session) and an unthrottled one (`yes`) —
+  driven at 0, 4 sessions.
+- **Database**: `sqlite3` against the copy (544 session rows, 22,726
+  `audit_log` rows), 200 iterations per statement.
+- **Subprocess costs**: `git worktree add`, `git fetch`, and `ssh` timed
+  directly with a monotonic clock, five/three runs each.
+
+Reproduce: build release, export the five env vars above to temp dirs, run
+`THURBOX_PERF_LOG=1 thurbox` in a tmux pane, read the log.
+
+### Findings
+
+#### 1. `git fetch` blocks the UI thread for ~2 s on the new-session path
+
+`App::start_branch_selection` (`src/app/key_handlers.rs:1448`) calls
+`fetch_pending_repos` (`src/app/key_handlers.rs:1486`), which runs
+`git::git_fetch_on` (`src/app/key_handlers.rs:1491`) synchronously on the UI
+thread, once per repo.
+
+Measured against this repository's `origin`: **1776 ms, 1954 ms, 2018 ms**
+(three runs). The cost is network-bound and therefore unbounded — for a repo
+on a remote host the call is ssh-wrapped, and a single ssh connect to an
+unroutable address takes exactly **5014 ms** (`ConnectTimeout=5`,
+`src/shell.rs:51`).
+
+Symptom: the TUI stops painting and stops accepting input for ~2 s after a repo
+is chosen in the new-session flow, longer on a slow network, and ~5 s per
+unreachable host. This is the only multi-second freeze on the ordinary
+interactive path. The sibling calls on the same path (`list_branches_on`,
+`default_branch_on`, `branch_exists_on`, `list_dir_on`) are local `git` and
+cost single-digit ms.
+
+#### 2. A `Spawn` automation creates worktrees and a tmux window inline
+
+`process_automations` runs on the tick. Its `Spawn` arm reaches
+`spawn_and_prompt` (`src/app/mod.rs:6156`), which calls
+`git::create_or_attach_worktree` at `src/app/mod.rs:6183` (primary repo) and
+`src/app/mod.rs:6206` (each extra repo), then the **synchronous**
+`do_spawn_session` (`src/app/mod.rs:3660`).
+
+Measured `git worktree add` on this repository: **84, 88, 93, 97, 100 ms**
+(median ~93 ms) — roughly six dropped frames at 60 Hz, multiplied by the number
+of repos in a multi-repo spawn, before the tmux window spawn is even counted.
+
+The contrast is the point: the **interactive** `Ctrl+N` spawn was already moved
+off-thread (`do_spawn_session_async` at `src/app/mod.rs:3733`, drained by
+`poll_worktree_create`/`poll_session_spawn` in `tick_core`). The automation
+spawn path never received the same treatment.
+
+#### 3. The mailbox wake reports success at a pane nothing is listening to
+
+`send_prompt_now` (`src/agent/tmux.rs`) targets the session's tmux window and
+treats a zero exit from `send-keys` as delivery. thurbox sets
+`remain-on-exit=on` (`SESSION_OPTS`, `src/agent/tmux.rs:1719`; verified
+session-level on the live server), so an agent that exits or crashes **leaves
+its window and pane in place**.
+
+Measured against a pane whose process was killed (`pane_dead=1`, window still
+listed):
+
+| Target | `send-keys` exit | bytes delivered |
+| --- | --- | --- |
+| live pane | 0 | 18 |
+| **dead pane** (`remain-on-exit`) | **0** | **0** |
+| missing window | 1 | 0 |
+
+So `{"woke": true}` meant "tmux accepted the keystrokes", not "an agent
+received them". `cli::messages::enqueue_and_wake` set `woke = true` on that
+`Ok(())`, and the recipient never acted because there was no process to act.
+The message itself was always durably queued — only the liveness report lied.
+
+This is **not** the automation freeze and shares no mechanism with it: no event
+loop, no blocking call, no starvation. It is a false-positive liveness signal
+in a headless CLI path. Five call sites shared it — the mailbox wake
+(`src/cli/messages.rs:300`), `session send` (`src/cli/sessions.rs:299`),
+`task run` (`src/cli/tasks.rs:310,333`), and the **headless `Send` automation**
+(`src/cli/automations.rs:545,571`), which recorded a `Success` run for a prompt
+that went nowhere.
+
+Fixed here: `send_prompt_now` now refuses a dead pane, so all five callers
+report the truth. A missing window still surfaces through `send-keys`, because
+`display-message` against one exits 0 printing nothing.
+
+#### 4. Output-driven repaint runs at the full loop rate (~100 fps)
+
+ADR-P1's demand-driven paint holds while idle, but any agent output marks the
+UI dirty, so during a streaming turn the loop paints on essentially every
+iteration.
+
+| Load | frames / ~10 s window | frame p50 | p95 | max | tick max |
+| --- | --- | --- | --- | --- | --- |
+| idle, 0 sessions | 40 (~4 fps floor) | 0.50 ms | 0.79 ms | 0.79 ms | 0.39 ms |
+| 4 sessions, 100 lines/s each | 987 (~99 fps) | 1.00 ms | 4.00 ms | 7.81 ms | 0.49 ms |
+| 4 sessions, unthrottled | 1000 (~100 fps) | 1.00 ms | 1.00 ms | 1.51 ms | 0.79 ms |
+
+Under the unthrottled load thurbox held a steady **65.6 % of one core** (RSS 34
+MB) and the tmux server **98.7 %**. No frame came close to the 16 ms budget and
+**zero slow ops** were logged in any run.
+
+This is a throughput cost, not a freeze. Related but smaller: a `Working`
+session forces a repaint every `SPINNER_TICKS_PER_FRAME = 12` ticks (~8 fps,
+`src/app/mod.rs:4560`) even when nothing visible changed — dominated by the
+output-driven rate above whenever the agent is actually producing output.
+
+### What is fine
+
+Checked, measured, and acceptable — listed so the absence of a finding here
+means "looked at", not "not looked at".
+
+- **The tick.** `tick_core` p50 **250 µs**; worst observed max **790 µs**
+  (idle), **490 µs** (4 throttled sessions), **786 µs** (flood). Never within
+  20x of a dropped frame.
+- **The draw.** Diffed, not full: `terminal.draw` double-buffers and flushes
+  changed cells only; there is no per-frame `terminal.clear()`, and the `Clear`
+  widget is scoped to modals, the perf HUD, and the review pane. Frame p50
+  0.5–1.0 ms, worst max 7.81 ms.
+- **Startup.** `first_frame_ms` = **46 ms** (no sessions), **67 ms** (4
+  sessions), **152 ms** (4 sessions including restore + adopt). Nothing is
+  enumerated eagerly that need not be.
+- **The database.** The only per-tick statements are `PRAGMA data_version`
+  (**0.0062 ms**) and, behind it, `load_hook_states` (**0.014 ms**).
+  `EXPLAIN QUERY PLAN` gives `SCAN sessions USING INDEX idx_sessions_active`,
+  returning 3 active rows out of 544. `audit_log` (22,726 rows) and
+  `automation_runs` are never read from the loop. No missing index; no full
+  scan; the ADR-P6 cache does what it claims.
+- **The session-order cache (ADR-P3).** Signature is an O(sessions) hash with
+  no allocation and is status-independent, so streaming output and spinner
+  ticks reuse the cached order.
+- **The vt100 lock.** Taken once per painted frame, for the visible pane only,
+  for an O(rows x cols) copy. Background sessions' parsers are never locked
+  during render.
+- **Remote SSH.** Both configured hosts were **up** during this pass
+  (`linux-hp` 317 ms rc=0; `windows-hp` connects, returns `ALIVE`) — ssh
+  returns 255 on connect failure, and neither did. No **active** session is
+  remote: all 3 live sessions are `local-tmux`; the 8 `ssh:*` rows are
+  soft-deleted. Backends are registered lazily (`App::backend_for`) and readied
+  on background threads (ADR-P7), so a down host cannot block `tick_core`. For
+  the paths reachable here, "keep the TUI usable when remote SSH hosts fail"
+  holds.
+
+### Recommendations
+
+| # | Change | Benefit | Cost | Safe independently? |
+| --- | --- | --- | --- | --- |
+| R1 | Move the new-session `git fetch` off the UI thread, mirroring `poll_worktree_create` | Removes the only multi-second freeze on the normal interactive path (~2 s, unbounded) | Medium: needs a loading state + a `poll_*` drain | Yes |
+| R2 | Route the automation `Spawn` through the existing `do_spawn_session_async` | Removes a ~93 ms x repos + tmux-spawn freeze per fire | Low–medium: the async path already exists | **No** — must edit `src/app/automation.rs`, reserved by `fix/automation-exec-nonblocking` |
+| R3 | Refuse a dead pane in `send_prompt_now` | `woke`/run-status stop lying; applies to all five callers | One tmux round-trip per send | Yes — **applied in this PR** |
+| R4 | Clamp output-driven repaint to ~30 fps | ~3x less TUI CPU while agents stream (65.6 % -> ~20 % of a core) | Low (one clamp) but needs an input-latency measurement first | Yes — **not done**, see gaps |
+| R5 | Skip the spinner repaint when the spinner cell is off-screen | Minor; subsumed by R4 whenever output is flowing | Low | Yes |
+
+R2 is the one that overlaps the in-flight `Exec` fix. Both arms live in
+`fire_automation`, so landing them separately would conflict; the
+worktree/spawn offload should ride with that branch or follow it.
+
+### Honest gaps
+
+- **The chronic freeze was not reproduced.** Under worst-case synthetic output
+  nothing on the UI thread exceeded 16 ms and zero slow ops were logged. If a
+  continuous freeze is real, the evidence points *away* from the render/tick
+  loop; the tmux server pegging ~99 % of a core (finding 4) and the host
+  terminal emulator are the untested candidates.
+- **No real agent CLI was exercised.** `HOME` was isolated, so no authenticated
+  `claude`/`codex` ran. A real agent's output — full-screen TUI repaints, wide
+  ANSI runs — has a different vt100 shape than the synthetic producers used
+  here, so finding 4's frame times are a lower bound.
+- **No CPU profile by symbol.** `perf`, `cargo-flamegraph` and `valgrind` are
+  all absent on this machine and `perf_event_paranoid = 2`; `criterion` is not
+  a dependency and there is no `benches/`. Per ADR-P5 none were added just to
+  measure. All attribution above is from the built-in counters plus direct
+  subprocess timing.
+- **The `Exec` automation path was not measured** — reserved for
+  `fix/automation-exec-nonblocking`.
+- **Remote-session render and status cost is unmeasured**: no active remote
+  session existed and both hosts were up, so the `Unreachable` placeholder path
+  never engaged.
+- **Per-frame allocation counts are static reads**, not an allocation profile;
+  no allocator instrumentation was added. The O(sessions) left-panel rebuild is
+  described by code inspection, not by a measured allocation count.
+
+---
+
 ## Quick reference
 
 | I want to… | Do this |
