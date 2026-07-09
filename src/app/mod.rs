@@ -706,6 +706,9 @@ pub struct App {
     /// Off-thread code-review diff build (open/retarget), applied by
     /// [`Self::poll_review_build`]. See ADR-P8 in `docs/PERFORMANCE.md`.
     review_build: background::BackgroundTask<code_review::ReviewBuildResult>,
+    /// `Exec` automation commands running on worker threads, drained each tick
+    /// by `App::drain_exec_results`.
+    automation_exec: automation::ExecJobs,
     /// Continuation for a completed background spawn: the metadata + follow-up
     /// (task prompt) to apply once the session is live.
     pending_session_spawn: Option<PendingSessionSpawn>,
@@ -1020,6 +1023,7 @@ impl App {
             pending_worktree_create: None,
             session_spawn: background::BackgroundTask::default(),
             review_build: background::BackgroundTask::default(),
+            automation_exec: automation::ExecJobs::default(),
             pending_session_spawn: None,
             remote_restore: None,
             deferred_inputs: Vec::new(),
@@ -9655,6 +9659,102 @@ mod tests {
             1,
             "a due automation must stay unclaimed while the feature is off"
         );
+    }
+
+    /// Create a due `Exec` automation on a once-a-minute cron (so an overlapping
+    /// fire is reachable) and return its id.
+    #[cfg(unix)]
+    fn create_exec_automation(app: &App, command: &str) -> i64 {
+        app.db
+            .create_automation(&crate::storage::automations::NewAutomation {
+                name: "sync".into(),
+                enabled: true,
+                schedule: crate::session::AutomationSchedule::Cron {
+                    expr: "* * * * *".into(),
+                },
+                timezone: None,
+                action: crate::session::AutomationAction::Exec {
+                    command: command.into(),
+                },
+                prompt: String::new(),
+                next_run_at: Some(1),
+            })
+            .unwrap()
+    }
+
+    /// Tick until `expected` runs are recorded for `id`, or fail after 20 s.
+    /// `tick_count` is left off the firing cadence, so only the drain runs.
+    #[cfg(unix)]
+    fn drain_until_recorded(
+        app: &mut App,
+        id: i64,
+        expected: usize,
+    ) -> Vec<crate::session::AutomationRun> {
+        app.metrics.tick_count = 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            app.process_automations(false);
+            let runs = app.db.list_automation_runs(id, 20).unwrap();
+            if runs.len() >= expected {
+                return runs;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "exec result never arrived (got {} of {expected} runs)",
+                runs.len()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// The regression this guards: `run_exec_command` blocks until the child
+    /// exits, so firing it on the TUI thread parked the render loop inside
+    /// `waitpid` for the command's whole runtime. Firing must return promptly,
+    /// and the run must be recorded exactly once on a later drain.
+    #[cfg(unix)]
+    #[test]
+    fn exec_automation_does_not_block_the_tick() {
+        let mut app = app_with_sessions(0);
+        let id = create_exec_automation(&app, "sleep 2");
+
+        let started = std::time::Instant::now();
+        app.process_automations(true);
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "firing blocked the caller for {elapsed:?} while the command ran"
+        );
+        assert!(
+            app.db.list_automation_runs(id, 20).unwrap().is_empty(),
+            "the run is recorded when the command exits, not when it is fired"
+        );
+
+        let runs = drain_until_recorded(&mut app, id, 1);
+        assert_eq!(runs.len(), 1, "exactly one run recorded");
+        assert_eq!(runs[0].status, crate::session::AutomationRunStatus::Success);
+    }
+
+    /// An `Exec` whose command is still running must not be launched a second
+    /// time when its cron comes due again — the overlapping fire records a skip.
+    #[cfg(unix)]
+    #[test]
+    fn exec_automation_in_flight_is_not_fired_again() {
+        let mut app = app_with_sessions(0);
+        let id = create_exec_automation(&app, "sleep 2");
+        app.process_automations(true);
+
+        assert!(app.db.trigger_automation_now(id).unwrap());
+        app.process_automations(true);
+
+        let runs = app.db.list_automation_runs(id, 20).unwrap();
+        assert_eq!(runs.len(), 1, "the overlapping fire only records a skip");
+        assert_eq!(runs[0].status, crate::session::AutomationRunStatus::Skipped);
+
+        // Newest first: the skip landed immediately, the command finishes later.
+        let runs = drain_until_recorded(&mut app, id, 2);
+        assert_eq!(runs.len(), 2, "no second copy of the command was launched");
+        assert_eq!(runs[0].status, crate::session::AutomationRunStatus::Success);
     }
 
     #[test]

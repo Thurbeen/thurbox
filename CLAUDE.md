@@ -891,8 +891,13 @@ running session), **Spawn** (start a fresh session and prompt it), or **Exec**
 (run a shell command headlessly — `sh -c`, or `cmd /C` on Windows — with no
 agent/session; its exit status + tail-truncated output land in the run history).
 `Exec` is the deterministic-scheduled-job action (the task-integration sync
-extensions use it). The shared runner is `session_ops::run_exec_command` (called
-by both the headless `automation tick` and the TUI `App::fire_automation`); the
+extensions use it). The shared runner is `session_ops::run_exec_command`, which
+blocks until the child exits: the headless `automation tick` calls it directly,
+while the TUI (`App::start_exec`) hands it to a **detached worker thread** so a
+slow command can't park the render loop inside `waitpid` — the run is recorded
+when `App::drain_exec_results` picks up the result on a later tick, and an
+automation whose command is still in flight records a `skipped` run instead of
+launching a second copy. The
 command is stored in the `action_command` column (schema **v36**, on both
 `tasks` and `automations`). Author one headlessly with `thurbox-cli automation
 create --command "<shell>"` (mutually exclusive with `--session`/`--repo`), in

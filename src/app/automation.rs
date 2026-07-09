@@ -14,12 +14,61 @@ use crate::session::{
     Automation, AutomationAction, AutomationRunStatus, AutomationSchedule, SessionId,
 };
 use crossterm::event::{KeyCode, KeyModifiers};
+use std::collections::HashSet;
+use std::sync::mpsc;
 use tracing::{debug, error, info};
+
+/// The result of an `Exec` automation's command, delivered from its worker
+/// thread to [`App::drain_exec_results`].
+struct ExecOutcome {
+    automation_id: i64,
+    status: AutomationRunStatus,
+    detail: String,
+}
+
+/// `Exec` automation commands currently running on worker threads.
+///
+/// `run_exec_command` blocks until the child exits, so firing it on the TUI
+/// thread parks the render loop inside `waitpid` for the command's whole
+/// runtime. The TUI hands it to a detached thread instead and records the run
+/// when the result arrives here.
+pub(crate) struct ExecJobs {
+    tx: mpsc::Sender<ExecOutcome>,
+    rx: mpsc::Receiver<ExecOutcome>,
+    /// Automations whose command is still running. A command that outlives its
+    /// own cron period must not be launched a second time alongside itself.
+    in_flight: HashSet<i64>,
+}
+
+impl Default for ExecJobs {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self {
+            tx,
+            rx,
+            in_flight: HashSet::new(),
+        }
+    }
+}
+
+/// What [`App::fire_automation`] did with an automation's action.
+enum FireOutcome {
+    /// Ran to completion on the TUI thread; record the run now.
+    Completed(AutomationRunStatus, String, Option<SessionId>),
+    /// Handed to a worker thread; [`App::drain_exec_results`] records the run
+    /// once the command exits.
+    Deferred,
+}
 
 impl App {
     /// Fire any due automations. Called once per ~second from `tick()`; pass
     /// `force = true` for the one-shot startup catch-up pass (ignores cadence).
     pub(crate) fn process_automations(&mut self, force: bool) {
+        // Drain before either gate: an `Exec` already in flight must still be
+        // recorded (and its id released) on a non-firing tick, and after the
+        // feature was toggled off under it.
+        self.drain_exec_results();
+
         // Automations fully off: the TUI neither fires schedules nor catches
         // up at startup (explicit `thurbox-cli automation` use still works).
         if !self.features.automations {
@@ -58,34 +107,63 @@ impl App {
                     continue;
                 }
             }
-            let (status, detail, related) = self.fire_automation(&auto);
-            if let Err(e) = self
-                .db
-                .record_automation_run(auto.id, status, &detail, related)
-            {
-                error!("Failed to record run for automation {}: {e}", auto.id);
+            match self.fire_automation(&auto) {
+                FireOutcome::Completed(status, detail, related) => {
+                    if let Err(e) = self
+                        .db
+                        .record_automation_run(auto.id, status, &detail, related)
+                    {
+                        error!("Failed to record run for automation {}: {e}", auto.id);
+                    }
+                }
+                FireOutcome::Deferred => {}
             }
         }
     }
 
+    /// Record every `Exec` command that finished since the last drain, releasing
+    /// its automation for a future fire.
+    fn drain_exec_results(&mut self) {
+        let mut drained = false;
+        // `App` holds a `Sender`, so the channel never disconnects.
+        while let Ok(outcome) = self.automation_exec.rx.try_recv() {
+            self.automation_exec
+                .in_flight
+                .remove(&outcome.automation_id);
+            if let Err(e) = self.db.record_automation_run(
+                outcome.automation_id,
+                outcome.status,
+                &outcome.detail,
+                None,
+            ) {
+                error!(
+                    "Failed to record run for automation {}: {e}",
+                    outcome.automation_id
+                );
+            }
+            drained = true;
+        }
+        if drained {
+            self.refresh_selected_automation_runs();
+        }
+    }
+
     /// Execute a single automation's action, returning its run status, detail,
-    /// and the session it sent to / spawned (when one exists).
-    fn fire_automation(
-        &mut self,
-        auto: &Automation,
-    ) -> (AutomationRunStatus, String, Option<SessionId>) {
+    /// and the session it sent to / spawned (when one exists) — or
+    /// [`FireOutcome::Deferred`] when the action was handed to a worker thread.
+    fn fire_automation(&mut self, auto: &Automation) -> FireOutcome {
         match &auto.action {
             AutomationAction::Send { session_id } => {
                 if self.sessions.iter().any(|s| s.info.id == *session_id) {
                     self.send_prompt_to_session(*session_id, &auto.prompt, 0);
                     info!("Automation {} sent prompt to {}", auto.id, session_id);
-                    (
+                    FireOutcome::Completed(
                         AutomationRunStatus::Success,
                         format!("sent to {session_id}"),
                         Some(*session_id),
                     )
                 } else {
-                    (
+                    FireOutcome::Completed(
                         AutomationRunStatus::Skipped,
                         "target session not running".to_string(),
                         None,
@@ -106,21 +184,60 @@ impl App {
                 agent.as_deref(),
                 extra_repos,
             ) {
-                Ok(session_id) => (
+                Ok(session_id) => FireOutcome::Completed(
                     AutomationRunStatus::Success,
                     format!("session {session_id}"),
                     Some(session_id),
                 ),
                 Err(e) => {
                     error!("Automation {} spawn failed: {e}", auto.id);
-                    (AutomationRunStatus::Error, e, None)
+                    FireOutcome::Completed(AutomationRunStatus::Error, e, None)
                 }
             },
-            AutomationAction::Exec { command } => {
-                let (status, detail) = crate::session_ops::run_exec_command(command);
-                (status, detail, None)
-            }
+            AutomationAction::Exec { command } => self.start_exec(auto.id, command),
         }
+    }
+
+    /// Run an `Exec` automation's command on a detached worker thread, so the
+    /// render loop keeps painting and accepting keys while the child runs. The
+    /// headless `automation tick` keeps calling `run_exec_command` directly,
+    /// where blocking until the child exits is the wanted behavior.
+    ///
+    /// Detached rather than joined: quitting the TUI mid-command must not hang
+    /// on the child. The worker's send into a dropped receiver is discarded.
+    fn start_exec(&mut self, id: i64, command: &str) -> FireOutcome {
+        // The claim advances `next_run_at`, but a command outliving its own
+        // cron period would still overlap with itself.
+        if self.automation_exec.in_flight.contains(&id) {
+            info!("Automation {id} still running; skipping this fire");
+            return FireOutcome::Completed(
+                AutomationRunStatus::Skipped,
+                "previous run still in flight".to_string(),
+                None,
+            );
+        }
+        self.automation_exec.in_flight.insert(id);
+        let tx = self.automation_exec.tx.clone();
+        let command = command.to_string();
+        std::thread::spawn(move || {
+            let run =
+                std::panic::AssertUnwindSafe(|| crate::session_ops::run_exec_command(&command));
+            // A panicking worker would drop its sender without a result, so the
+            // id would never leave `in_flight` and the automation would be
+            // skipped forever.
+            let (status, detail) = std::panic::catch_unwind(run).unwrap_or_else(|_| {
+                (
+                    AutomationRunStatus::Error,
+                    "exec worker panicked".to_string(),
+                )
+            });
+            let _ = tx.send(ExecOutcome {
+                automation_id: id,
+                status,
+                detail,
+            });
+        });
+        FireOutcome::Deferred
     }
 
     /// Spawn (or reuse) the session for a `Spawn` automation and queue its
