@@ -1,0 +1,306 @@
+---
+layout: docs.njk
+title: 'Orchestration — Thurbox Docs'
+description: 'The control-plane pattern: a dedicated repo that holds the map of your projects and the log of every orchestration run, while thurbox worker sessions hold the branches.'
+currentPage: 'orchestration'
+breadcrumb: 'Orchestration'
+onThisPage:
+  - { id: 'problem', label: 'The problem' }
+  - { id: 'control-plane', label: 'The control plane' }
+  - { id: 'layout', label: 'The layout' }
+  - { id: 'loop', label: 'The run loop' }
+  - { id: 'primitives', label: 'Why it is a Thurbox pattern' }
+  - { id: 'constraints', label: 'Two constraints' }
+  - { id: 'template', label: 'Start from the template' }
+---
+<h1>Orchestration</h1>
+<p>
+  Running agents across many repos raises a question that one repo never does:
+  <strong>where does the plan live?</strong>
+  This page describes the
+  <strong>control plane</strong>
+  &mdash; the shape that falls out of Thurbox's primitives once you use them at more than one
+  repo &mdash; and points at a template you can start from.
+</p>
+
+<h2 id="problem">
+  The problem
+  <a href="#problem" class="heading-anchor">#</a>
+</h2>
+<p>
+  One repo, one agent session, one task: nothing to orchestrate. The repo holds the code, the
+  session holds the context, and the pull request is the record of what happened.
+</p>
+<p>
+  At five repos this breaks in a specific place. The work still lands in the repos &mdash; that
+  part is fine. But the
+  <em>plan</em>
+  has nowhere to live. A goal that spans three repos is not a file in any of them. Neither is the
+  context that makes the goal legible: what each project is for, which ones depend on each other,
+  which are dormant. Neither is the log of what you launched last Tuesday and what came back.
+</p>
+<p>
+  So it ends up in a chat transcript &mdash; not durable, not diffable, and not readable by the
+  next session.
+</p>
+
+<h2 id="control-plane">
+  The control plane
+  <a href="#control-plane" class="heading-anchor">#</a>
+</h2>
+<p>Give the plan its own repo, holding two things and nothing else:</p>
+<ul>
+  <li>
+    <strong>The map.</strong>
+    An always-current index of your repos, generated from the GitHub API so it cannot drift, plus
+    hand-written context files holding the judgement a generated index can't: what a project is
+    <em>for</em>
+    , how it relates to the others, what its current goals are.
+  </li>
+  <li>
+    <strong>The orchestration.</strong>
+    Reusable recipes (playbooks) and one log per run.
+  </li>
+</ul>
+<p>The defining rule is what the control plane does <em>not</em> hold:</p>
+<blockquote>
+  <p>
+    The control plane holds
+    <strong>the plan and the log</strong>
+    . It never holds the workers' branches.
+  </p>
+</blockquote>
+<p>
+  Each unit of work becomes one Thurbox worker session, targeting a real repo in
+  <a href="features.html#git-worktrees">its own git worktree</a>
+  , driven by a single self-contained prompt. Workers share no context with the control plane and
+  none with each other, so every prompt restates the goal, the constraints, and what "done" means,
+  from scratch.
+</p>
+<p>
+  <strong>Why split generated from hand-written?</strong>
+  They have different failure modes. An index of repo names and default branches goes stale the
+  moment you rename something, so it must be regenerated and never hand-edited. Why a project
+  exists cannot be generated at all, and changes on a human timescale. One file for both
+  guarantees that refreshing the half that must be fresh destroys the half that must be preserved.
+</p>
+<p>
+  <strong>Why a separate repo?</strong>
+  The plan outlives every branch it spawns. A run log inside a worker repo would collide with the
+  branches it describes, and would need a new home the moment a run touched a second repo. The
+  split also makes the rule enforceable rather than aspirational: a control plane with no
+  worktrees cannot accidentally become a place where work happens.
+</p>
+
+<h2 id="layout">
+  The layout
+  <a href="#layout" class="heading-anchor">#</a>
+</h2>
+<pre data-title="the control-plane repo"><code class="language-bash">registry/
+  owners.txt                 GitHub owners to index, one per line
+  repos.generated.yaml       generated; never hand-edited
+  context/_TEMPLATE.md       copy this to add a project
+orchestration/
+  playbooks/_TEMPLATE.md     copy this to add a recipe
+  runs/_TEMPLATE.md          copy this per run
+scripts/
+  sync-registry.sh           regenerate the index via `gh`
+  install-extension.sh       render extension.toml, then install
+extension.toml.in            manifest template (rendered at install time)
+FLEET.md                     standing context for the long-lived session</code></pre>
+
+<h2 id="loop">
+  The run loop
+  <a href="#loop" class="heading-anchor">#</a>
+</h2>
+<ol>
+  <li>Clarify the goal. Pick a playbook, or write one from the template.</li>
+  <li>
+    Open a run log, named
+    <code>&lt;YYYY-MM-DD&gt;-&lt;slug&gt;.md</code>
+    .
+  </li>
+  <li>
+    For each unit of work, launch a worker session with one self-contained prompt, in its own
+    worktree on the target repo.
+  </li>
+  <li>
+    Record every session &mdash; name, repo, prompt intent, outcome, PR &mdash; in the run log
+    <strong>as it happens</strong>
+    . A log written afterwards is a summary; one written during is the source of truth, and it
+    survives the lead session dying.
+  </li>
+  <li>Drain results from the mailbox as workers report.</li>
+  <li>Review the PRs. Delete each session as it closes out.</li>
+</ol>
+<p>Steps 3 and 5, concretely &mdash; the lead spawns, then reads its mail:</p>
+<pre><code class="language-bash"># The lead spawns a worker: its own worktree, parented to the lead.
+thurbox-cli session create \
+  --name ship-auth-fix \
+  --repo-path /abs/path/to/repo \
+  --worktree-branch fix/auth --base-branch main \
+  --parent "$THURBOX_SESSION" \
+  --json
+
+# The worker, when it is done, mails the lead. `send` wakes the recipient.
+thurbox-cli message send --to "$LEAD" --kind result --body 'https://github.com/owner/repo/pull/42'
+
+# The lead drains its inbox exactly once. No polling.
+thurbox-cli message inbox --for "$LEAD" --claim --json
+
+# Afterwards, enumerate the run's workers — including the silent ones.
+thurbox-cli session list --parent "$LEAD" --json</code></pre>
+
+<h2 id="primitives">
+  Why it is a Thurbox pattern
+  <a href="#primitives" class="heading-anchor">#</a>
+</h2>
+<p>Nothing above is invented. Each piece is a Thurbox primitive doing load-bearing work.</p>
+
+<h3>Worktree-per-session</h3>
+<p>
+  A worker creates a
+  <a href="features.html#git-worktrees">git worktree</a>
+  on its own branch. Two workers on the same repo cannot collide, and an abandoned worker costs you
+  a directory, not a dirty checkout on a branch someone else needs. This is what makes "one unit of
+  work, one session" safe to say.
+</p>
+
+<h3>The lead is a real session</h3>
+<p>
+  The control plane installs itself as an
+  <a href="extensions.html">extension</a>
+  with one long-lived
+  <code>[[sessions]]</code>
+  entry, which Thurbox
+  <strong>self-heals</strong>
+  : delete the session and it comes back at the next startup or automation tick. A control plane
+  that evaporates when someone tidies their session list is not a control plane.
+</p>
+<p>
+  And because it
+  <em>is</em>
+  a real session rather than an ad-hoc terminal, it can be addressed: workers can mail it, it has a
+  UUID to hand out as
+  <code>--parent</code>
+  , and it gets
+  <code>THURBOX_SESSION</code>
+  in its environment like any other session.
+</p>
+
+<h3>The mailbox, not polling</h3>
+<p>
+  Workers report through
+  <a href="features.html#inter-session-messages">inter-session messages</a>
+  .
+  <code>send</code>
+  wakes the recipient, so the lead never polls. Thurbox injects
+  <code>THURBOX_SESSION</code>
+  into every session's environment, and both
+  <code>--from</code>
+  and
+  <code>inbox --for</code>
+  default to it &mdash; a worker needs no ids to mail home.
+</p>
+<p>
+  <strong>Why not poll</strong>
+  <code>gh pr list</code>
+  <strong>?</strong>
+  It is
+  <em>exact</em>
+  (a message comes from a worker that knows it finished, not from a side effect),
+  <em>immediate</em>
+  (a poll adds latency proportional to its interval), and it can report
+  <strong>"not applicable"</strong>
+  . A worker that correctly concludes there was nothing to do says so in one message. A PR poll
+  cannot distinguish "no PR because nothing needed fixing" from "no PR because the worker is still
+  thinking" &mdash; and those demand opposite responses from the lead.
+</p>
+
+<h3>Deliberately no automations</h3>
+<p>
+  Thurbox has
+  <a href="features.html#automations">automations</a>
+  , and this pattern does not use them. The one scheduled candidate &mdash; the registry sync
+  &mdash; commits and pushes, so a human runs it and reads the diff. Nothing else is periodic: a
+  run starts because someone has a goal. Restraint is part of the pattern. A control plane that
+  fires unattended writes is a second actor in a system whose whole point is that there is one.
+</p>
+
+<h2 id="constraints">
+  Two constraints
+  <a href="#constraints" class="heading-anchor">#</a>
+</h2>
+<p>Both cost real time to rediscover.</p>
+
+<h3>There is no status field to poll</h3>
+<p>
+  <code>session get --json</code>
+  returns identity and layout &mdash; id, name, agent, backend, cwd, parent, worktrees. It exposes
+  <strong>no lifecycle state</strong>
+  . The
+  <code>working</code>
+  /
+  <code>done</code>
+  state that
+  <a href="agent-hooks.html">agent hooks</a>
+  report via
+  <code>session signal</code>
+  is persisted for the TUI to render, not for the CLI to serve.
+</p>
+<p>
+  So headless completion detection is the mailbox, or a printed sentinel the lead greps out of
+  <code>session capture</code>
+  . There is no third option. This is the strongest argument for the mailbox: it is not merely
+  nicer than polling, it is the only thing that works.
+</p>
+
+<h3>Fast-forward the base branch first</h3>
+<p>
+  A worktree inherits whatever the
+  <em>local</em>
+  base branch points at, not what the remote does. A stale local
+  <code>main</code>
+  yields a worker that does perfectly correct work against a month-old tree and opens a conflicting
+  PR &mdash; a failure that looks like a bad agent and is really a bad base.
+</p>
+<pre><code class="language-bash">git -C "$REPO" fetch origin
+git -C "$REPO" merge --ff-only origin/main
+git -C "$REPO" rev-list --count main..origin/main   # expect 0</code></pre>
+
+<h2 id="template">
+  Start from the template
+  <a href="#template" class="heading-anchor">#</a>
+</h2>
+<p>
+  A working, public implementation of everything above lives at
+  <a href="https://github.com/Thurbeen/fleet-template">Thurbeen/fleet-template</a>
+  . Click
+  <strong>"Use this template"</strong>
+  , edit
+  <code>registry/owners.txt</code>
+  , and run:
+</p>
+<pre><code class="language-bash">./scripts/sync-registry.sh      # regenerate the repo index via `gh`
+./scripts/install-extension.sh  # render the manifest, then install it</code></pre>
+<p>That leaves you with a working control-plane session.</p>
+<p>
+  <strong>Why does the manifest ship as</strong>
+  <code>extension.toml.in</code>
+  <strong>?</strong>
+  A
+  <code>[[sessions]]</code>
+  entry needs an absolute
+  <code>repo_path</code>
+  , and Thurbox does not expand
+  <code>~</code>
+  there &mdash; a tilde is taken literally and the session lands in a directory named
+  <code>~</code>
+  . A template cannot hardcode a path that exists on one machine, so it ships a
+  <code>__REPO_PATH__</code>
+  placeholder that
+  <code>install-extension.sh</code>
+  renders from
+  <code>git rev-parse --show-toplevel</code>
+  before installing.
+</p>
