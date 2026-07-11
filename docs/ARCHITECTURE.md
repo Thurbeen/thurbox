@@ -448,8 +448,10 @@ WSL needs no credentials at all.
 
 - **Lazy registration**: off-local backends are registered but *not*
   connected at startup (`check_available`/`ensure_ready` deferred to
-  first use via `App::backend_for`), so a down host (or slow WSL
-  discovery) never blocks the TUI.
+  first use), so a down host (or slow WSL discovery) never blocks the
+  TUI. `App::select_backend` only resolves the backend from the
+  registry; the blocking `ensure_backend_ready` runs on the spawn
+  worker, never on the UI thread (ADR-P12).
 - **Auto-discovery**: WSL distros appear with zero config; an explicit
   `kind = "wsl"` entry of the same name wins (for overrides like
   `worktrees_dir`). `discover_wsl_hosts` decodes `wsl.exe`'s UTF-16LE

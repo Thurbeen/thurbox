@@ -2423,6 +2423,92 @@ fn status_message_expires_after_timeout_via_tick() {
     );
 }
 
+/// The regression this whole indicator exists for: creating a session used to
+/// announce itself with a `status_message`, which expires after 5 s — so a
+/// `git worktree add` on a large repo went silent partway through and the app
+/// looked idle. `pending_spawn` is not a status message and must outlive it.
+#[test]
+fn spawn_progress_outlives_the_status_message_timeout() {
+    let mut h = Harness::standard(1);
+    h.app.pending_spawn = Some(PendingSpawn::new("feat/big", SpawnPhase::Worktree));
+
+    h.advance(STATUS_MESSAGE_TIMEOUT * 4).tick();
+
+    assert!(
+        h.app.pending_spawn.is_some(),
+        "a spawn still in flight is never expired by the status-message timer"
+    );
+    let screen = h.render();
+    assert!(
+        screen.contains("Creating worktree(s)…"),
+        "the status row still shows the phase after 20s:\n{screen}"
+    );
+    assert!(
+        screen.contains("feat/big"),
+        "the placeholder row names the session being created:\n{screen}"
+    );
+}
+
+/// The elapsed counter is what makes a long wait read as progressing rather
+/// than hung, so it must actually advance with the clock.
+#[test]
+fn spawn_progress_reports_elapsed_time() {
+    let mut h = Harness::standard(1);
+    h.app.pending_spawn = Some(PendingSpawn::new("feat/big", SpawnPhase::Worktree));
+    assert_eq!(h.app.pending_spawn.as_ref().unwrap().elapsed_secs(), 0);
+
+    h.advance(std::time::Duration::from_secs(14)).tick();
+
+    assert_eq!(h.app.pending_spawn.as_ref().unwrap().elapsed_secs(), 14);
+    let screen = h.render();
+    assert!(
+        screen.contains("14s"),
+        "elapsed shown in the badge:\n{screen}"
+    );
+}
+
+/// The placeholder row has no session behind it: it must not be selectable, and
+/// the session-list indices must stay a valid range over the real sessions.
+#[test]
+fn spawn_placeholder_row_is_not_selectable() {
+    let mut h = Harness::standard(2);
+    h.app.pending_spawn = Some(PendingSpawn::new("feat/x", SpawnPhase::Spawning));
+    h.render();
+
+    let max_session_index = h
+        .app
+        .click_targets
+        .iter()
+        .filter_map(|t| match t.action {
+            ClickAction::SelectSession(i) => Some(i),
+            _ => None,
+        })
+        .max();
+    assert_eq!(
+        max_session_index,
+        Some(1),
+        "only the 2 real sessions are clickable — the placeholder records no hitbox"
+    );
+    assert_invariants(&h.app, "placeholder row present");
+}
+
+/// With no sessions at all, the placeholder must replace the "No sessions yet"
+/// empty state — otherwise the very first `Ctrl+N` shows nothing happening.
+#[test]
+fn spawn_placeholder_replaces_the_empty_state() {
+    let mut h = Harness::standard(0);
+    assert!(h.render().contains("No sessions yet"));
+
+    h.app.pending_spawn = Some(PendingSpawn::new("thurbox", SpawnPhase::Branches));
+
+    let screen = h.render();
+    assert!(
+        !screen.contains("No sessions yet"),
+        "the empty state gives way to the session being created:\n{screen}"
+    );
+    assert!(screen.contains("Fetching branches…"), "{screen}");
+}
+
 #[test]
 fn pending_delete_finalizes_after_undo_window() {
     let mut h = Harness::standard(2);

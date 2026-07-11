@@ -507,6 +507,11 @@ pub struct LeftPanelState<'a> {
     /// Current animated spinner frame for the `Working` status
     /// (`SPINNER_FRAMES[App::spinner_frame()]`).
     pub spinner: &'a str,
+    /// A session being created (git fetch / `worktree add` / spawn), rendered as
+    /// a trailing placeholder row so it shows up the moment the wizard is
+    /// confirmed rather than after a slow shell-out. Not selectable and not
+    /// clickable — it has no `SessionId` to select yet.
+    pub pending_spawn: Option<&'a crate::app::PendingSpawn>,
 }
 
 pub fn render_left_panel(
@@ -529,6 +534,7 @@ pub fn render_left_panel(
         state.headers,
         state.depths,
         state.spinner,
+        state.pending_spawn,
     )
 }
 
@@ -613,6 +619,7 @@ fn render_session_section(
     headers: &[Option<String>],
     depths: &[u8],
     spinner: &str,
+    pending_spawn: Option<&crate::app::PendingSpawn>,
 ) -> Vec<super::RowHitbox> {
     let mut block = focus_block(" Sessions ", level);
 
@@ -629,7 +636,7 @@ fn render_session_section(
         block = block.title_top(Line::from(dots).right_aligned());
     }
 
-    if sessions.is_empty() {
+    if sessions.is_empty() && pending_spawn.is_none() {
         render_empty_sessions(frame, area, block);
         return Vec::new();
     }
@@ -644,7 +651,7 @@ fn render_session_section(
     let visible_ids: std::collections::HashSet<crate::session::SessionId> =
         sessions.iter().map(|s| s.id).collect();
 
-    let items: Vec<ListItem> = sessions
+    let mut items: Vec<ListItem> = sessions
         .iter()
         .enumerate()
         .map(|(i, info)| {
@@ -680,6 +687,18 @@ fn render_session_section(
         })
         .collect();
 
+    // The session being created, appended last. It carries no `SessionInfo`, so
+    // it gets no hitbox below and can never be selected — the list's selection
+    // indices stay a valid range over `sessions`.
+    if let Some(pending) = pending_spawn {
+        items.push(ListItem::new(vec![pending_spawn_line(
+            pending,
+            inner_width,
+            spinner,
+        )]));
+        item_heights.push(1);
+    }
+
     // The active-row selection background is painted by `build_session_line`
     // itself (per-span, full width), *not* by the List's `highlight_style` —
     // because `highlight_style` patches the whole item area, which for a row
@@ -711,13 +730,53 @@ fn render_session_section(
             break;
         }
         let height = h.min(bottom - y);
-        hitboxes.push(super::RowHitbox {
-            rect: Rect::new(inner.x, y, inner.width, height),
-            index: i,
-        });
+        // The trailing placeholder row (`i == sessions.len()`) is skipped: its
+        // index isn't a session index, and clicking a session that doesn't exist
+        // yet has nothing to select.
+        if i < sessions.len() {
+            hitboxes.push(super::RowHitbox {
+                rect: Rect::new(inner.x, y, inner.width, height),
+                index: i,
+            });
+        }
         y += h;
     }
     hitboxes
+}
+
+/// The placeholder row for a session still being created: a spinner, the name
+/// we know it by so far, and the phase it's blocked on. Muted throughout — it is
+/// not selectable, and shouldn't read as a live session.
+fn pending_spawn_line(
+    pending: &crate::app::PendingSpawn,
+    inner_width: usize,
+    spinner: &str,
+) -> Line<'static> {
+    let phase = pending.phase.short_label();
+    // A spinner only while something is actually running; waiting on the user at
+    // a modal gets a static glyph (distinct from the ○/● of a live session).
+    let (glyph, glyph_color) = if pending.phase.is_working() {
+        (spinner, Theme::status_working())
+    } else {
+        ("◌", Theme::text_muted())
+    };
+    let mut spans = vec![
+        Span::styled(format!(" {glyph} "), Style::default().fg(glyph_color)),
+        Span::styled(
+            pending.label.clone(),
+            Style::default().fg(Theme::text_secondary()),
+        ),
+    ];
+    // Drop the phase text rather than overflow a narrow panel; the spinner and
+    // the badge in the status row still carry the "in progress" signal.
+    let used = 3 + pending.label.chars().count();
+    if inner_width > used + phase.chars().count() + 2 {
+        spans.push(Span::styled(
+            format!("  {phase}"),
+            Style::default().fg(Theme::text_muted()),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Render the centered "no sessions yet" placeholder inside the given block.
@@ -1206,6 +1265,7 @@ mod tests {
                         headers: ordered.headers,
                         depths: ordered.depths,
                         spinner: "◐",
+                        pending_spawn: None,
                     },
                 );
             })

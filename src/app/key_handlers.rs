@@ -776,6 +776,7 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
+                self.abandon_pending_spawn();
                 self.new_session.repo_path = None;
                 self.new_session.all_repos = None;
                 self.new_session.normal_repos.clear();
@@ -822,6 +823,7 @@ impl App {
 
     /// Clear the worktree-flow pending state when the branch-name modal is cancelled.
     fn cancel_worktree_name(&mut self) {
+        self.abandon_pending_spawn();
         self.new_session.base_branch = None;
         self.new_session.repo_path = None;
         self.new_session.all_repos = None;
@@ -873,6 +875,7 @@ impl App {
 
     /// Clear pending state when the session-name modal is cancelled.
     fn cancel_session_name(&mut self) {
+        self.abandon_pending_spawn();
         if self.new_session.base_branch.is_some() {
             // Worktree flow — clean up worktree-specific pending state.
             self.new_session.base_branch = None;
@@ -893,6 +896,9 @@ impl App {
         if self.new_session.base_branch.is_some() {
             // Worktree flow — proceed to branch name input.
             let branch = session_name_to_branch(&name);
+            // The name is settled, so the placeholder row stops going by the
+            // repo and takes the name the real row will have.
+            self.mark_spawn_configuring(name.clone());
             self.new_session.session_name = Some(name);
             let mut modal = super::modals::WorktreeNameModal::default();
             modal.name.set(&branch);
@@ -960,6 +966,7 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
+                self.abandon_pending_spawn();
                 self.new_session.spawn_config = None;
                 self.new_session.spawn_worktrees.clear();
                 self.new_session.spawn_name = None;
@@ -1445,28 +1452,80 @@ impl App {
         self.active_theme = entry;
     }
 
+    /// Kick off the branch listing that feeds the branch selector.
+    ///
+    /// The git work — a `git fetch` per repo (a network round-trip each, ssh for
+    /// a remote host) plus the branch/default-branch queries — runs on a worker,
+    /// not here. On the UI thread it froze the whole TUI in the gap between the
+    /// repo picker closing and the branch selector opening: no modal, no repaint,
+    /// no message (ADR-P12). The selector opens in [`Self::poll_branch_list`];
+    /// meanwhile `pending_spawn` drives the placeholder row + status badge.
     pub(crate) fn start_branch_selection(&mut self) {
+        // Belt-and-braces: `start_new_session` already refuses re-entry while a
+        // listing is in flight, so reaching here means a caller bypassed the
+        // wizard entry. Never silently drop it — a no-op would strand the user
+        // with a repo picked and nothing happening.
+        if self.branch_list.in_progress() {
+            self.set_status(
+                super::StatusLevel::Info,
+                "Still listing branches — try again in a moment",
+            );
+            return;
+        }
         // Resolve the remote host (if any) so branch listing targets the
-        // session's machine. Cloned so we don't hold a borrow on `self`.
+        // session's machine. Owned so the worker can take it.
         let host = self
             .host_for_backend(self.new_session.backend.as_deref())
             .cloned();
-        let host = host.as_ref();
 
         let Some(repo_path) = self.new_session.repo_path.clone() else {
             return;
         };
-        let repo_path = repo_path.as_path();
+        let all_repos = self.new_session.all_repos.clone();
 
-        Self::fetch_pending_repos(host, repo_path, self.new_session.all_repos.as_ref());
+        let label = super::spawn_label_for_repo(Some(&repo_path));
+        self.mark_spawn_working(label, super::SpawnPhase::Branches);
 
-        match crate::git::list_branches_on(host, repo_path) {
-            Ok(branches) if branches.is_empty() => {
-                self.set_error("No branches found in repository");
+        let tx = self.branch_list.start();
+        tokio::task::spawn_blocking(move || {
+            let host = host.as_ref();
+            Self::fetch_pending_repos(host, &repo_path, all_repos.as_ref());
+            let result = match crate::git::list_branches_on(host, &repo_path) {
+                Ok(branches) if branches.is_empty() => {
+                    Err("No branches found in repository".to_string())
+                }
+                Ok(branches) => Ok(Self::ordered_branch_list(host, &repo_path, branches)),
+                Err(e) => Err(format!("Failed to list branches: {e:#}")),
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Open the branch selector once the backgrounded fetch + listing lands.
+    pub(crate) fn poll_branch_list(&mut self) {
+        let result = match self.branch_list.poll() {
+            super::background::TaskPoll::Pending => return,
+            super::background::TaskPoll::Died => {
+                self.abandon_pending_spawn();
                 self.new_session.repo_path = None;
+                self.set_error("Branch listing failed (worker died)");
+                self.request_redraw();
+                return;
             }
+            super::background::TaskPoll::Done(result) => result,
+        };
+
+        match result {
             Ok(branches) => {
-                let branches = Self::ordered_branch_list(host, repo_path, branches);
+                // The session is still on its way — park the indicator on the
+                // user (it keeps its row, stops spinning) rather than clearing
+                // it, so it doesn't vanish behind the branch selector.
+                let label = self
+                    .pending_spawn
+                    .as_ref()
+                    .map(|p| p.label.clone())
+                    .unwrap_or_default();
+                self.mark_spawn_configuring(label);
                 self.modal =
                     super::modals::Modal::BranchSelector(super::modals::BranchSelectorModal {
                         index: 0,
@@ -1474,11 +1533,13 @@ impl App {
                     });
             }
             Err(e) => {
+                self.abandon_pending_spawn();
                 error!("Failed to list branches: {e}");
-                self.set_error(format!("Failed to list branches: {e:#}"));
+                self.set_error(e);
                 self.new_session.repo_path = None;
             }
         }
+        self.request_redraw();
     }
 
     /// Fetch origin for the primary repo and any extra worktree repos so

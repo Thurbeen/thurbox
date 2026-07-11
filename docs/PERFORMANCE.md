@@ -494,6 +494,99 @@ rule holds.
 
 ---
 
+## ADR-P12: Make the whole new-session flow non-blocking, and show it working
+
+**Choice**: `Ctrl+N` had one phase left on the UI thread and one with no
+feedback; both are fixed, and the flow now reports itself for its full
+duration.
+
+*Off-thread* (the R1 recommendation from the 2026-07-09 investigation):
+
+- **Branch listing.** `start_branch_selection` ran `fetch_pending_repos`
+  (`git fetch` — a network round-trip **per repo**, ssh-wrapped for a remote
+  host), `list_branches_on`, and `ordered_branch_list` inline in the key
+  handler. Since the repo picker closes *before* it runs, the freeze happened
+  with **no modal, no toast and no repaint** on screen — measured at ~2 s
+  locally, unbounded on a slow network, ~5 s per unreachable host. It now
+  dispatches a `BackgroundTask` (`App::branch_list`) and the selector opens in
+  `App::poll_branch_list`, mirroring `worktree_create`/`poll_worktree_create`.
+- **Backend ready-up.** `build_spawn_inputs` called `backend_for`, whose
+  `ensure_ready()` is an ssh connect + remote tmux bring-up (15–30 s on a slow
+  host, per ADR-P7) — and it sat in the *prelude* of `do_spawn_session_async`,
+  so a remote spawn blocked the loop before the worker was ever dispatched.
+  Split into `App::select_backend` (registry lookup, cheap, UI thread) and the
+  free `ensure_backend_ready` (blocking), which the async path now calls
+  **inside** its `spawn_blocking` closure. The synchronous `do_spawn_session`
+  (automations/tasks/restore, which need the id back immediately) calls it on
+  its own thread by contract.
+
+*Feedback* — `App::pending_spawn` (`PendingSpawn` + `SpawnPhase`), which lives
+for the **whole wizard**: from the repo being chosen until the session is live,
+across both the background phases *and* the modals between them. It is cleared
+only when the session lands, the flow errors, or the user Escs out (every wizard
+modal's cancel path calls `abandon_pending_spawn`, or a cancelled flow would
+strand a placeholder row forever).
+
+- A **placeholder row** in the session list (`ui::project_list`), so the session
+  appears the moment the wizard is confirmed rather than after a slow shell-out.
+  It carries no `SessionInfo`, records **no hitbox**, and is appended last — so
+  selection indices stay a valid range over the real sessions and the monkey
+  test's invariants are untouched. Its label upgrades as the wizard learns it:
+  the repo, then the session name.
+- An **animated badge** in the status row (`⠹ NEW  Creating worktree(s)… feat/x
+  · 14s`), reusing the `Ctrl+S` sync spinner's surface, with an elapsed counter
+  so a long wait reads as progressing rather than hung.
+- `SpawnPhase::is_working()` splits the three shell-out phases from
+  `Configuring` (a wizard modal is open). A `Configuring` spawn keeps its row and
+  badge — the session is still on its way — but shows a **static `◌`**, no
+  elapsed counter, and does not drive `advance_spinner_frame`: spinning a spinner
+  while the app waits on the *user*, and timing how long they take to answer,
+  would both be lies. A working phase animates at ~8 fps instead of resting on
+  the 250 ms redraw floor.
+
+*Re-entrancy.* Unfreezing the flow makes its window **interactive**, which is a
+new hazard: `branch_list` and `worktree_create` carry `new_session` state across
+a thread boundary, so a second `Ctrl+N` in that window would overwrite the repo
+the in-flight job is resolving — repo A's branch list would land on repo B's
+config, cutting a worktree from a branch B may not have. `start_new_session`
+therefore refuses re-entry while `new_session_in_flight()`, and drops anything
+the caller staged (a task-spawn's `pending_task_prompt` would otherwise be
+`take()`n by the session already in flight — the wrong one).
+
+**Why**: the phases were *already* mostly backgrounded (ADR-P8's shape), but the
+progress was announced with a `status_message` — and those expire after
+`STATUS_MESSAGE_TIMEOUT` (5 s). A `git worktree add` on a large repo runs well
+past that, so the toast vanished mid-job and the app looked idle: the user's
+report was "creating takes time and I have no info on screen that creation is in
+progress". Progress that outlives a 5 s timer cannot *be* a status message, hence
+a separate piece of state that lives exactly as long as the work.
+
+Gate: `spawn_progress_outlives_the_status_message_timeout`,
+`spawn_progress_reports_elapsed_time`, `spawn_placeholder_row_is_not_selectable`,
+`spawn_placeholder_replaces_the_empty_state` (`src/app/acceptance.rs`);
+`poll_branch_list_*`, `indicator_survives_every_wizard_modal`,
+`escaping_a_wizard_modal_drops_the_indicator`,
+`new_session_is_refused_while_the_branch_list_is_in_flight`
+(`src/app/mod.rs` tests).
+
+**Rejected**:
+
+- *Keeping the repo picker open in a `loading` state instead of a placeholder
+  row* — the row doubles as the answer to "where did my session go", and the
+  modal would block the rest of the TUI for no gain.
+- *Exempting `status_message` from expiry while a spawn is in flight* — the
+  smaller diff, but it overloads a transient-toast slot with durable state, and
+  a frozen string still reads as hung. The elapsed counter is what proves
+  liveness.
+- *Making the placeholder selectable* — it has no `SessionId` to select, and a
+  clickable row that resolves to nothing is worse than an inert one.
+- *Clearing the indicator whenever a wizard modal opens* (the first cut) — it
+  made the session blink in and out of the list between phases, which reads as
+  "it disappeared". A session being created exists from the moment you commit to
+  it; the phase only changes what it's waiting on.
+
+---
+
 ## Investigation 2026-07-09: where the time actually goes
 
 A measurement pass over the render loop, the tick, the draw path, startup, the
@@ -529,6 +622,10 @@ Reproduce: build release, export the five env vars above to temp dirs, run
 ### Findings
 
 #### 1. `git fetch` blocks the UI thread for ~2 s on the new-session path
+
+> **Fixed by ADR-P12.** `start_branch_selection` now dispatches to a worker and
+> the selector opens in `poll_branch_list`. The measurement below is what
+> motivated it.
 
 `App::start_branch_selection` (`src/app/key_handlers.rs:1448`) calls
 `fetch_pending_repos` (`src/app/key_handlers.rs:1486`), which runs
@@ -651,8 +748,9 @@ means "looked at", not "not looked at".
   (`linux-hp` 317 ms rc=0; `windows-hp` connects, returns `ALIVE`) — ssh
   returns 255 on connect failure, and neither did. No **active** session is
   remote: all 3 live sessions are `local-tmux`; the 8 `ssh:*` rows are
-  soft-deleted. Backends are registered lazily (`App::backend_for`) and readied
-  on background threads (ADR-P7), so a down host cannot block `tick_core`. For
+  soft-deleted. Backends are registered lazily (`App::select_backend`) and
+  readied on background threads (ADR-P7/P12), so a down host cannot block
+  `tick_core`. For
   the paths reachable here, "keep the TUI usable when remote SSH hosts fail"
   holds.
 
@@ -660,7 +758,7 @@ means "looked at", not "not looked at".
 
 | # | Change | Benefit | Cost | Safe independently? |
 | --- | --- | --- | --- | --- |
-| R1 | Move the new-session `git fetch` off the UI thread, mirroring `poll_worktree_create` | Removes the only multi-second freeze on the normal interactive path (~2 s, unbounded) | Medium: needs a loading state + a `poll_*` drain | Yes |
+| R1 | Move the new-session `git fetch` off the UI thread, mirroring `poll_worktree_create` | Removes the only multi-second freeze on the normal interactive path (~2 s, unbounded) | Medium: needs a loading state + a `poll_*` drain | Yes — **done**, ADR-P12 |
 | R2 | Route the automation `Spawn` through the existing `do_spawn_session_async` | Removes a ~93 ms x repos + tmux-spawn freeze per fire | Low–medium: the async path already exists | **No** — must edit `src/app/automation.rs`, reserved by `fix/automation-exec-nonblocking` |
 | R3 | Refuse a dead pane in `send_prompt_now` | `woke`/run-status stop lying; applies to all five callers | One tmux round-trip per send | Yes — **applied in this PR** |
 | R4 | Clamp output-driven repaint to ~30 fps | ~3x less TUI CPU while agents stream (65.6 % -> ~20 % of a core) | Low (one clamp) but needs an input-latency measurement first | Yes — **not done**, see gaps |

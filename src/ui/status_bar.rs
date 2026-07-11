@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use super::theme::Theme;
-use crate::app::{StatusLevel, StatusMessage};
+use crate::app::{PendingSpawn, StatusLevel, StatusMessage};
 use crate::session::{Action, KeyBindings};
 
 fn brand_style() -> Style {
@@ -77,6 +77,10 @@ pub struct FooterState<'a> {
     pub status: Option<&'a StatusMessage>,
     pub focus_label: &'a str,
     pub sync_in_progress: bool,
+    /// A new session is being created (fetch / worktree / spawn). Takes over the
+    /// status row with a live badge for the whole wait — a `status` toast can't,
+    /// since those expire after 5 s and these phases routinely run longer.
+    pub pending_spawn: Option<&'a PendingSpawn>,
     pub tick_count: u64,
     pub automation_count: usize,
     pub file_viewer_open: bool,
@@ -237,7 +241,11 @@ pub fn render_status_message_row(frame: &mut Frame, area: Rect, state: &FooterSt
         return;
     }
     let mut spans: Vec<Span<'_>> = Vec::new();
-    if state.sync_in_progress {
+    if let Some(spawn) = state.pending_spawn {
+        // Wins over `status`: an error toast from an *earlier* action shouldn't
+        // hide the fact that a session is being created right now.
+        push_pending_spawn(&mut spans, spawn, state.tick_count);
+    } else if state.sync_in_progress {
         push_spinner_badge(&mut spans, state.tick_count, "SYNC");
         let text = state
             .status
@@ -253,6 +261,32 @@ pub fn render_status_message_row(frame: &mut Frame, area: Rect, state: &FooterSt
     }
     // A status row is a single line; ratatui clips a longer message to width.
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The "a session is being created" badge: `⠹ NEW  Creating worktree(s)… feat/x
+/// · 14s` while a background phase runs, `◌ NEW  Setting up… feat/x` while the
+/// wizard waits on the user at a modal — no spinner and no elapsed there, since
+/// nothing is running and the clock would just be timing the user.
+fn push_pending_spawn<'a>(spans: &mut Vec<Span<'a>>, spawn: &PendingSpawn, tick_count: u64) {
+    let working = spawn.phase.is_working();
+    if working {
+        push_spinner_badge(spans, tick_count, "NEW");
+    } else {
+        push_badge(spans, '◌', "NEW");
+    }
+    spans.push(Span::styled(
+        format!(" {} ", spawn.phase.message()),
+        Style::default().fg(Theme::accent()),
+    ));
+    let detail = if working {
+        format!("{} · {}s ", spawn.label, spawn.elapsed_secs())
+    } else {
+        format!("{} ", spawn.label)
+    };
+    spans.push(Span::styled(
+        detail,
+        Style::default().fg(Theme::text_muted()),
+    ));
 }
 
 fn push_status_message<'a>(spans: &mut Vec<Span<'a>>, msg: &'a StatusMessage) {
@@ -321,9 +355,14 @@ fn file_viewer_shortcut_spans() -> Vec<Span<'static>> {
 
 fn push_spinner_badge<'a>(spans: &mut Vec<Span<'a>>, tick_count: u64, label: &'a str) {
     let idx = (tick_count as usize / 10) % SPINNER_CHARS.len();
-    let spinner = SPINNER_CHARS[idx];
+    push_badge(spans, SPINNER_CHARS[idx], label);
+}
+
+/// A filled `<glyph> LABEL` badge. The glyph is a spinner frame while work is
+/// running, or a static marker when the state is live but idle.
+fn push_badge<'a>(spans: &mut Vec<Span<'a>>, glyph: char, label: &'a str) {
     spans.push(Span::styled(
-        format!(" {spinner} {label} "),
+        format!(" {glyph} {label} "),
         Style::default()
             .fg(Theme::text_primary())
             .bg(Theme::accent()),
@@ -389,6 +428,7 @@ mod tests {
             status: None,
             focus_label: "Files",
             sync_in_progress: false,
+            pending_spawn: None,
             tick_count: 0,
             automation_count: 0,
             file_viewer_open,

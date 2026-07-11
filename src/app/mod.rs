@@ -148,6 +148,96 @@ struct PendingSessionSpawn {
     base_branch: Option<String>,
 }
 
+/// Where the interactive new-session flow currently is. Ordered as the wizard
+/// runs them, and split two ways: three phases are **shell-outs on a worker**
+/// (git/ssh/tmux), while `Configuring` is the wizard **waiting on the user** at
+/// one of its modals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnPhase {
+    /// `git fetch` (one network round-trip per repo) + the branch listing that
+    /// feeds the branch selector.
+    Branches,
+    /// A wizard modal is open (base branch / session name / branch name / agent
+    /// picker) and nothing is churning in the background — the session is still
+    /// on its way, so it keeps its place in the list rather than blinking out of
+    /// existence between steps.
+    Configuring,
+    /// `git worktree add` — the slow one on a large repo.
+    Worktree,
+    /// Backend ready-up (an ssh connect for a remote host) + the tmux/PTY spawn.
+    Spawning,
+}
+
+impl SpawnPhase {
+    /// Whether a background job is actually running. Drives whether the UI spins
+    /// a spinner and counts elapsed time — a spinner turning while the app waits
+    /// on the *user* would be a lie.
+    pub fn is_working(self) -> bool {
+        !matches!(self, SpawnPhase::Configuring)
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            SpawnPhase::Branches => "Fetching branches…",
+            SpawnPhase::Configuring => "Setting up…",
+            SpawnPhase::Worktree => "Creating worktree(s)…",
+            SpawnPhase::Spawning => "Spawning agent…",
+        }
+    }
+
+    /// The compact form for the session list's placeholder row. Kept short
+    /// enough to fit beside a name in the default ~28-column panel (the row
+    /// drops it rather than overflow); the full phase is in the status badge.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            SpawnPhase::Branches => "fetching…",
+            SpawnPhase::Configuring => "setting up…",
+            SpawnPhase::Worktree => "creating…",
+            SpawnPhase::Spawning => "spawning…",
+        }
+    }
+}
+
+/// A session between "confirmed in the wizard" and "live in the list".
+///
+/// Every phase above shells out to git/ssh/tmux on a background worker, which on
+/// a large repo runs for tens of seconds. This is what the UI shows meanwhile: a
+/// placeholder row in the session list plus an animated status badge. It exists
+/// because the old feedback was a `status_message`, and those auto-expire after
+/// `STATUS_MESSAGE_TIMEOUT` — so a long `git worktree add` went silent partway
+/// through and the app looked idle.
+pub struct PendingSpawn {
+    /// Whatever names the session at this phase: the repo (before a branch is
+    /// picked), then the branch, then the session name.
+    pub label: String,
+    pub phase: SpawnPhase,
+    started_at: std::time::Instant,
+}
+
+/// What to call a session the wizard hasn't named yet: the repo it's being cut
+/// from. Replaced by the real name as soon as the user supplies one.
+fn spawn_label_for_repo(repo: Option<&std::path::Path>) -> String {
+    repo.and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "new session".to_string())
+}
+
+impl PendingSpawn {
+    fn new(label: impl Into<String>, phase: SpawnPhase) -> Self {
+        Self {
+            label: label.into(),
+            phase,
+            started_at: clock::now(),
+        }
+    }
+
+    /// Whole seconds since this phase started — shown so a long wait reads as
+    /// progressing rather than hung.
+    pub fn elapsed_secs(&self) -> u64 {
+        clock::elapsed_since(self.started_at).as_secs()
+    }
+}
+
 /// One remote backend's discovery result: its `backend_type`, whether the host
 /// was **reachable** (its `ensure_ready` succeeded — distinguishes "host down"
 /// from "host up but no windows"), plus the windows it reported. Sent once per
@@ -218,6 +308,16 @@ struct PendingWorktreeCreate {
     /// Base branch the worktrees were forked from, carried through to the spawn
     /// so it can be persisted for the code-review view.
     base_branch: String,
+}
+
+/// Bring a backend up so a session can spawn on it. For a remote backend this
+/// establishes the SSH control-mode connection (an ssh connect + remote tmux
+/// bring-up — 15–30 s on a slow host, per ADR-P7), so every caller runs it off
+/// the UI thread. Returns a status-line-friendly error.
+fn ensure_backend_ready(backend: &Arc<dyn SessionBackend>) -> Result<(), String> {
+    backend
+        .ensure_ready()
+        .map_err(|e| format!("Backend '{}' not ready: {e:#}", backend.name()))
 }
 
 /// Create one worktree per repo off the UI thread, rolling back any already
@@ -692,6 +792,11 @@ pub struct App {
     /// once on startup when the cache is stale; on success the cache is rewritten
     /// and `update_status` re-read from it.
     version_check_task: background::BackgroundTask<Result<(), String>>,
+    /// Background `git fetch` + branch listing for the new-session wizard, polled
+    /// each tick. On the UI thread this was a hard freeze between the repo picker
+    /// closing and the branch selector opening — one network round-trip per repo,
+    /// an ssh round-trip each for a remote host (ADR-P8).
+    branch_list: background::BackgroundTask<Result<Vec<String>, String>>,
     /// Background worktree-creation (`git worktree add`) for the new-session
     /// wizard, polled each tick; in-flight state guards against re-entry and
     /// clobbering the pending continuation.
@@ -712,6 +817,11 @@ pub struct App {
     /// Continuation for a completed background spawn: the metadata + follow-up
     /// (task prompt) to apply once the session is live.
     pending_session_spawn: Option<PendingSessionSpawn>,
+    /// The new session the wizard is currently building, if any — what the
+    /// placeholder row and the status badge render. Spans all three phases
+    /// (`branch_list` → `worktree_create` → `session_spawn`), so it outlives any
+    /// single [`background::BackgroundTask`] above.
+    pending_spawn: Option<PendingSpawn>,
     /// Remote-backed sessions still being restored in the background (one
     /// discovery thread per host), drained each tick by
     /// [`Self::poll_remote_restore`]. `None` once every remote backend has
@@ -1019,12 +1129,14 @@ impl App {
                 None
             },
             version_check_task: background::BackgroundTask::default(),
+            branch_list: background::BackgroundTask::default(),
             worktree_create: background::BackgroundTask::default(),
             pending_worktree_create: None,
             session_spawn: background::BackgroundTask::default(),
             review_build: background::BackgroundTask::default(),
             automation_exec: automation::ExecJobs::default(),
             pending_session_spawn: None,
+            pending_spawn: None,
             remote_restore: None,
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
@@ -1328,6 +1440,46 @@ impl App {
             })
     }
 
+    /// A background phase (`Branches`/`Worktree`/`Spawning`) just started: the
+    /// indicator spins and counts elapsed for as long as it runs.
+    fn mark_spawn_working(&mut self, label: impl Into<String>, phase: SpawnPhase) {
+        debug_assert!(phase.is_working(), "use mark_spawn_configuring instead");
+        self.pending_spawn = Some(PendingSpawn::new(label, phase));
+    }
+
+    /// Hand the "being created" indicator back to the user: a wizard modal is
+    /// up, so the session keeps its placeholder row and its badge, but stops
+    /// spinning and stops counting (no background job is running).
+    ///
+    /// Every step that opens a wizard modal goes through here, so the indicator
+    /// survives the modals instead of blinking off between phases.
+    fn mark_spawn_configuring(&mut self, label: impl Into<String>) {
+        self.pending_spawn = Some(PendingSpawn::new(label, SpawnPhase::Configuring));
+    }
+
+    /// The wizard ended — the session landed, the flow errored, or the user Esc'd
+    /// out of one of its modals. Drop the indicator, or a cancelled flow would
+    /// strand a placeholder row in the session list forever.
+    ///
+    /// The single way `pending_spawn` is cleared, so no path can forget.
+    fn abandon_pending_spawn(&mut self) {
+        self.pending_spawn = None;
+    }
+
+    /// The wizard is mid-flight in a phase that carries `new_session` state
+    /// across a thread boundary: `branch_list` resolves the repo that was chosen
+    /// *before* it was dispatched, and `worktree_create` the branch. Re-entering
+    /// the wizard would overwrite that state underneath the in-flight job — repo
+    /// A's branch list would land on top of repo B's config, and the worktree
+    /// would be cut from a branch that may not even exist in B.
+    ///
+    /// This can only happen now that those phases no longer freeze the UI
+    /// (ADR-P12): the window is real and the user can type into it, so the
+    /// wizard has to refuse re-entry itself.
+    fn new_session_in_flight(&self) -> bool {
+        self.branch_list.in_progress() || self.worktree_create.in_progress()
+    }
+
     /// Entry point for the new-session wizard.
     ///
     /// When any off-local host is available — a configured SSH/WSL host
@@ -1335,6 +1487,20 @@ impl App {
     /// picker so the user can choose where the session runs; otherwise goes
     /// straight to the repo picker (preserving the local-only UX).
     pub(crate) fn start_new_session(&mut self) {
+        if self.new_session_in_flight() {
+            // The wizard never starts, so drop what the caller staged for it.
+            // A task-spawn sets `pending_task_prompt` *before* calling in, and
+            // leaving it set would hand the task's prompt to the session already
+            // in flight — the wrong one entirely.
+            self.task_ui.pending_task_prompt = None;
+            self.new_session.parent_session_id = None;
+            self.set_status(
+                StatusLevel::Info,
+                "Already creating a session — try again in a moment",
+            );
+            return;
+        }
+
         // Clear any choice left over from a previously cancelled flow.
         self.new_session.backend = None;
 
@@ -1503,6 +1669,10 @@ impl App {
     /// Shows an empty session-name modal. After the user enters a name, the
     /// agent picker is shown, then spawn.
     pub(crate) fn prepare_spawn(&mut self, config: SessionConfig, worktrees: Vec<WorktreeInfo>) {
+        // No name yet, so the placeholder row goes by the repo it's being cut
+        // from — the same thing the user just picked.
+        self.mark_spawn_configuring(spawn_label_for_repo(config.cwd.as_deref()));
+
         // Show session name modal (empty — user types from scratch).
         self.new_session.spawn_config = Some(config);
         self.new_session.spawn_worktrees = worktrees;
@@ -1540,6 +1710,10 @@ impl App {
                 command: a.command.clone(),
             })
             .collect();
+
+        // The name is settled now, so the placeholder row can go by it — the
+        // same label the real row will carry once the agent picker is answered.
+        self.mark_spawn_configuring(name.clone());
         self.new_session.spawn_name = Some(name);
         self.new_session.spawn_config = Some(config);
         self.new_session.spawn_worktrees = worktrees;
@@ -3327,6 +3501,9 @@ impl App {
 
         // Shell out to `git worktree add` off the UI thread (one per repo, with
         // rollback on failure); the spawn flow resumes in `poll_worktree_create`.
+        // Go by the session name where we have one (the label the real row will
+        // carry); the branch is the only handle we have otherwise.
+        let label = session_name.clone().unwrap_or_else(|| new_branch.clone());
         let tx = self.worktree_create.start();
         self.pending_worktree_create = Some(PendingWorktreeCreate {
             backend,
@@ -3334,7 +3511,7 @@ impl App {
             session_name,
             base_branch: base_branch.clone(),
         });
-        self.set_status(StatusLevel::Info, "Creating worktree(s)…");
+        self.mark_spawn_working(label, SpawnPhase::Worktree);
         tokio::task::spawn_blocking(move || {
             let result = create_worktrees(host.as_ref(), &repo_paths, &new_branch, &base_branch);
             let _ = tx.send(result);
@@ -3348,6 +3525,7 @@ impl App {
             background::TaskPoll::Pending => return,
             background::TaskPoll::Died => {
                 self.pending_worktree_create = None;
+                self.abandon_pending_spawn();
                 self.set_error("Worktree creation failed (worker died)");
                 return;
             }
@@ -3358,8 +3536,14 @@ impl App {
         };
 
         match result {
+            // The indicator is *not* cleared here: the flow continues into the
+            // name/agent modal, and `prepare_spawn`/`finish_prepare_spawn` park
+            // it on `Configuring` so the session stays in the list across them.
             Ok(worktree_infos) => self.continue_worktree_spawn(worktree_infos, pending),
-            Err(e) => self.set_error(format!("Failed to create worktree: {e}")),
+            Err(e) => {
+                self.abandon_pending_spawn();
+                self.set_error(format!("Failed to create worktree: {e}"));
+            }
         }
     }
 
@@ -3489,28 +3673,18 @@ impl App {
         Some(self.backends.default_backend().clone())
     }
 
-    /// Resolve the backend a session should spawn on, ensuring it is ready.
-    ///
-    /// Looks up `config.backend` in the registry (falling back to the default
-    /// local backend), then calls `ensure_ready()` so a remote backend's SSH
-    /// control-mode connection is established lazily on first use. Returns a
-    /// status-line-friendly error if the backend is unknown or unreachable.
-    pub(crate) fn backend_for(
-        &self,
-        config: &SessionConfig,
-    ) -> Result<Arc<dyn SessionBackend>, String> {
-        let backend = match config.backend.as_deref() {
+    /// Look up the backend a session should spawn on, **without** readying it.
+    /// Cheap (a registry lookup), so it is safe on the UI thread; the caller is
+    /// responsible for [`ensure_backend_ready`] before spawning.
+    fn select_backend(&self, config: &SessionConfig) -> Result<Arc<dyn SessionBackend>, String> {
+        match config.backend.as_deref() {
             Some(name) if !name.is_empty() => self
                 .backends
                 .get(name)
                 .cloned()
-                .ok_or_else(|| format!("Unknown backend '{name}'"))?,
-            _ => self.backends.default_backend().clone(),
-        };
-        backend
-            .ensure_ready()
-            .map_err(|e| format!("Backend '{}' not ready: {e:#}", backend.name()))?;
-        Ok(backend)
+                .ok_or_else(|| format!("Unknown backend '{name}'")),
+            _ => Ok(self.backends.default_backend().clone()),
+        }
     }
 
     /// Common spawn preparation shared by the sync and async paths: fill in
@@ -3559,7 +3733,10 @@ impl App {
             spawn_host.as_ref(),
         );
 
-        let backend = match self.backend_for(&config) {
+        // Registry lookup only — readying the backend (an ssh connect for a
+        // remote host) is left to the caller, so the async path can do it on its
+        // worker rather than here on the UI thread.
+        let backend = match self.select_backend(&config) {
             Ok(b) => b,
             Err(e) => {
                 error!("Failed to select backend: {e}");
@@ -3660,6 +3837,14 @@ impl App {
         let Some(inputs) = self.build_spawn_inputs(config, &worktrees, &additional_dirs) else {
             return;
         };
+        // This path is synchronous by contract (its callers need the session id
+        // back immediately), so it eats the ready-up on the calling thread —
+        // unlike `do_spawn_session_async`, which hands it to a worker.
+        if let Err(e) = ensure_backend_ready(&inputs.backend) {
+            error!("Failed to ready backend: {e}");
+            self.set_error(e);
+            return;
+        }
 
         match Session::spawn(
             name,
@@ -3732,11 +3917,17 @@ impl App {
             agent,
             base_branch,
         });
-        self.set_status(StatusLevel::Info, format!("Spawning {name}…"));
+        self.mark_spawn_working(name.clone(), SpawnPhase::Spawning);
 
         tokio::task::spawn_blocking(move || {
-            let result = Session::spawn(name, rows, cols, &config, &backend, &provider)
-                .map_err(|e| format!("{e:#}"));
+            // `ensure_ready` is inside the worker, not in the prelude above: for a
+            // remote backend it is an ssh connect + remote tmux bring-up, 15–30 s
+            // on a slow host (ADR-P7), and on the UI thread that froze the loop
+            // before the spawn was ever dispatched.
+            let result = ensure_backend_ready(&backend).and_then(|()| {
+                Session::spawn(name, rows, cols, &config, &backend, &provider)
+                    .map_err(|e| format!("{e:#}"))
+            });
             let _ = tx.send(result);
         });
     }
@@ -3747,11 +3938,14 @@ impl App {
             background::TaskPoll::Pending => return,
             background::TaskPoll::Died => {
                 self.pending_session_spawn = None;
+                self.abandon_pending_spawn();
                 self.set_error("Session spawn failed (worker died)");
                 return;
             }
             background::TaskPoll::Done(result) => result,
         };
+        // The wizard is over either way — the session is live, or it failed.
+        self.abandon_pending_spawn();
         let Some(pending) = self.pending_session_spawn.take() else {
             return;
         };
@@ -3956,8 +4150,9 @@ impl App {
         // Poll for sync results from background worktree sync threads
         self.poll_sync_results();
 
-        // Poll for backgrounded interactive spawn work (worktree creation +
-        // `Session::spawn`) so `Ctrl+N` never freezes the UI.
+        // Poll for backgrounded interactive spawn work (branch fetch + listing,
+        // worktree creation, `Session::spawn`) so `Ctrl+N` never freezes the UI.
+        self.poll_branch_list();
         self.poll_worktree_create();
         self.poll_session_spawn();
 
@@ -4559,18 +4754,25 @@ impl App {
 
     /// Advance the Working spinner from the (deterministic) tick counter, and
     /// report whether a repaint is needed because the frame ticked over *while*
-    /// something is working — so an idle TUI still rests at ~4 fps but a working
-    /// session animates smoothly.
+    /// something is animating — a working session, or a session being spawned
+    /// (whose placeholder row + status badge spin too). So an idle TUI still
+    /// rests at ~4 fps but either animates smoothly.
     fn advance_spinner_frame(&mut self) -> bool {
         let new_frame = (self.metrics.tick_count / SPINNER_TICKS_PER_FRAME) as usize
             % crate::ui::SPINNER_FRAMES.len();
         let spinner_advanced = new_frame != self.spinner_frame;
         self.spinner_frame = new_frame;
-        let any_working = self
-            .sessions
-            .iter()
-            .any(|s| s.info.status == SessionStatus::Working);
-        any_working && spinner_advanced
+        // A spawn parked on the user at a modal (`Configuring`) shows a static
+        // glyph, so it must not force repaints — only a running job does.
+        let any_animating = self
+            .pending_spawn
+            .as_ref()
+            .is_some_and(|p| p.phase.is_working())
+            || self
+                .sessions
+                .iter()
+                .any(|s| s.info.status == SessionStatus::Working);
+        any_animating && spinner_advanced
     }
 
     /// Current `Working`-spinner frame index (into [`crate::ui::SPINNER_FRAMES`]).
@@ -6326,9 +6528,12 @@ impl App {
             self.features.automations,
             self.automation_ui.cached_automations.len(),
             // Carve the transient status row whenever there's a message to show
-            // (a status/error toast or the live sync spinner) — must match what
-            // `render_status_message_row` renders so the row is never empty.
-            self.worktree_sync.in_progress || self.status_message.is_some(),
+            // (a status/error toast, the live sync spinner, or a spawn in
+            // flight) — must match what `render_status_message_row` renders so
+            // the row is never empty.
+            self.worktree_sync.in_progress
+                || self.pending_spawn.is_some()
+                || self.status_message.is_some(),
         )
     }
 
@@ -7248,32 +7453,32 @@ mod tests {
     }
 
     #[test]
-    fn backend_for_defaults_to_registry_default() {
+    fn select_backend_defaults_to_registry_default() {
         let app = app_with_sessions(0);
         let config = SessionConfig::default();
-        let backend = app.backend_for(&config).expect("default backend");
+        let backend = app.select_backend(&config).expect("default backend");
         assert_eq!(backend.name(), "stub");
     }
 
     #[test]
-    fn backend_for_empty_name_uses_default() {
+    fn select_backend_empty_name_uses_default() {
         let app = app_with_sessions(0);
         let config = SessionConfig {
             backend: Some(String::new()),
             ..SessionConfig::default()
         };
-        let backend = app.backend_for(&config).expect("default backend");
+        let backend = app.select_backend(&config).expect("default backend");
         assert_eq!(backend.name(), "stub");
     }
 
     #[test]
-    fn backend_for_unknown_backend_errors() {
+    fn select_backend_unknown_backend_errors() {
         let app = app_with_sessions(0);
         let config = SessionConfig {
             backend: Some("ssh:does-not-exist".into()),
             ..SessionConfig::default()
         };
-        match app.backend_for(&config) {
+        match app.select_backend(&config) {
             Ok(b) => panic!("expected error, got backend {}", b.name()),
             Err(err) => assert!(err.contains("Unknown backend"), "got: {err}"),
         }
@@ -11507,6 +11712,157 @@ mod tests {
 
         assert!(app.metrics.sys.is_some());
         assert!(!app.metrics_refresh.in_progress());
+    }
+
+    /// Backgrounding the branch fetch made its window *interactive*, so a second
+    /// `Ctrl+N` can land in it. It must not overwrite `new_session.repo_path`
+    /// under the in-flight job, or the branch list for repo A would be applied
+    /// to repo B and the worktree cut from a branch B may not have.
+    #[test]
+    fn new_session_is_refused_while_the_branch_list_is_in_flight() {
+        let mut app = app_with_sessions(0);
+        app.new_session.repo_path = Some(PathBuf::from("/repo-a"));
+        let _in_flight = app.branch_list.start();
+
+        app.start_new_session();
+
+        assert!(
+            matches!(app.modal, modals::Modal::None),
+            "the repo picker must not open over an in-flight listing"
+        );
+        assert_eq!(
+            app.new_session.repo_path,
+            Some(PathBuf::from("/repo-a")),
+            "the in-flight job's repo is left intact"
+        );
+        assert!(app.status_message.is_some(), "and the user is told why");
+    }
+
+    /// A refused task-spawn must not leave its prompt staged — the session
+    /// already in flight would `take()` it and receive another task's prompt.
+    #[test]
+    fn refused_new_session_does_not_leak_its_task_prompt() {
+        let mut app = app_with_sessions(0);
+        let _in_flight = app.worktree_create.start();
+        app.task_ui.pending_task_prompt = Some((7, "do the thing".into()));
+
+        app.start_new_session();
+
+        assert!(
+            app.task_ui.pending_task_prompt.is_none(),
+            "the staged prompt is dropped, not handed to the in-flight spawn"
+        );
+    }
+
+    #[test]
+    fn poll_branch_list_opens_the_branch_selector() {
+        let mut app = app_with_sessions(0);
+        app.pending_spawn = Some(PendingSpawn::new("repo", SpawnPhase::Branches));
+        let tx = app.branch_list.start();
+        tx.send(Ok(vec!["origin/main".into(), "main".into()]))
+            .unwrap();
+
+        app.poll_branch_list();
+
+        assert!(!app.branch_list.in_progress());
+        match app.modal {
+            modals::Modal::BranchSelector(ref m) => {
+                assert_eq!(m.branches, vec!["origin/main", "main"]);
+                assert_eq!(m.index, 0);
+            }
+            _ => panic!("expected the branch selector to open"),
+        }
+        // The session is still being created — it keeps its place in the list
+        // behind the modal, it just stops spinning.
+        let pending = app.pending_spawn.as_ref().expect("indicator survives");
+        assert_eq!(pending.phase, SpawnPhase::Configuring);
+        assert!(!pending.phase.is_working());
+        assert_eq!(pending.label, "repo", "and keeps the label it had");
+    }
+
+    /// The wizard's modal steps must not drop the indicator — that flicker is
+    /// exactly what made a session being created look like it had vanished.
+    #[test]
+    fn indicator_survives_every_wizard_modal() {
+        let mut app = app_with_sessions(0);
+
+        // Session-name modal (the normal, non-worktree flow enters here).
+        app.prepare_spawn(
+            SessionConfig {
+                cwd: Some(PathBuf::from("/repos/thurbox")),
+                ..SessionConfig::default()
+            },
+            Vec::new(),
+        );
+        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
+        let pending = app.pending_spawn.as_ref().expect("shown at the name modal");
+        assert_eq!(pending.phase, SpawnPhase::Configuring);
+        assert_eq!(pending.label, "thurbox", "labelled by the repo until named");
+
+        // Agent picker — now labelled by the name the real row will carry.
+        app.finish_prepare_spawn("my-session".into(), SessionConfig::default(), Vec::new());
+        if matches!(app.modal, modals::Modal::AgentPicker(_)) {
+            let pending = app
+                .pending_spawn
+                .as_ref()
+                .expect("shown at the agent picker");
+            assert_eq!(pending.phase, SpawnPhase::Configuring);
+            assert_eq!(pending.label, "my-session");
+        }
+    }
+
+    /// …but an abandoned wizard must not strand a placeholder row forever.
+    #[test]
+    fn escaping_a_wizard_modal_drops_the_indicator() {
+        let mut app = app_with_sessions(0);
+        app.prepare_spawn(SessionConfig::default(), Vec::new());
+        assert!(app.pending_spawn.is_some());
+
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+
+        assert!(matches!(app.modal, modals::Modal::None));
+        assert!(
+            app.pending_spawn.is_none(),
+            "cancelling the flow clears the row it was holding"
+        );
+    }
+
+    #[test]
+    fn poll_branch_list_error_sets_status_and_resets_the_wizard() {
+        let mut app = app_with_sessions(0);
+        app.new_session.repo_path = Some(PathBuf::from("/repo"));
+        app.pending_spawn = Some(PendingSpawn::new("repo", SpawnPhase::Branches));
+        let tx = app.branch_list.start();
+        tx.send(Err("No branches found in repository".into()))
+            .unwrap();
+
+        app.poll_branch_list();
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.level),
+            Some(StatusLevel::Error)
+        );
+        assert!(app.pending_spawn.is_none());
+        assert!(app.new_session.repo_path.is_none());
+        assert!(matches!(app.modal, modals::Modal::None));
+    }
+
+    /// A panicking worker drops its sender; the wizard must not be left with a
+    /// spinner running forever over a job that will never land.
+    #[test]
+    fn poll_branch_list_disconnected_clears_guard() {
+        let mut app = app_with_sessions(0);
+        app.pending_spawn = Some(PendingSpawn::new("repo", SpawnPhase::Branches));
+        drop(app.branch_list.start());
+
+        app.poll_branch_list();
+
+        assert!(!app.branch_list.in_progress());
+        assert!(app.pending_spawn.is_none());
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.level),
+            Some(StatusLevel::Error)
+        );
     }
 
     #[test]

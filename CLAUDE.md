@@ -144,7 +144,19 @@ moves — so an idle `tick` no longer rescans the `sessions` table (ADR-P6), wit
 the `PRAGMA` itself throttled to ~100 ms and the per-session OSC title/
 notification re-read gated on a reader-thread generation counter (ADR-P10).
 Restore prefetches all history captures in parallel (ADR-P9) and code-review
-diffs build off the UI thread with a loading state (ADR-P8). **Observability**:
+diffs build off the UI thread with a loading state (ADR-P8). The **whole
+new-session flow is non-blocking** (ADR-P12): the branch `git fetch` + listing
+(`App::branch_list` → `poll_branch_list`), `git worktree add`
+(`worktree_create`), the backend ready-up (`ensure_backend_ready`, an ssh
+connect for a remote host), and `Session::spawn` all run on workers. Because
+those phases can run for tens of seconds on a large repo, progress is carried by
+`App::pending_spawn` (`PendingSpawn`/`SpawnPhase`) rather than a
+`status_message` (which expires after 5 s): it renders a **placeholder row** in
+the session list plus a **status badge**. It lives for the **whole wizard** —
+background phases *and* the modals between them (`SpawnPhase::Configuring`, a
+static `◌` with no spinner/elapsed, since nothing is running) — and is cleared
+only when the session lands, the flow errors, or the user Escs out
+(`abandon_pending_spawn`). **Observability**:
 `F12` toggles a live perf HUD (counters + frame/tick percentiles + slow ops;
 `[features] perf_hud`); launching with `THURBOX_PERF_LOG=1` logs a `startup`
 line (phase breakdown + `first_frame_ms`, plus `restore_discover`/
@@ -623,7 +635,8 @@ Each host registers a backend named
 `ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`, registered lazily in
 `main.rs` from `host_config::load_all_with_warnings`: discovery/down hosts must
 not block startup, so `check_available`/`ensure_ready` are deferred to first use
-via `App::backend_for`).
+— `App::select_backend` only looks the backend up, and the blocking
+`ensure_backend_ready` runs on a worker at spawn time, ADR-P12).
 
 - **Data**: `session::HostDef` (with `kind: HostKind {Ssh, Wsl}`) /
   `HostRegistry` (pure data, in `session/` so both `agent` and `git` can use

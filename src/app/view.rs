@@ -314,6 +314,7 @@ impl App {
                 headers: ordered.headers,
                 depths: ordered.depths,
                 spinner,
+                pending_spawn: self.pending_spawn.as_ref(),
             },
         );
         self.record_row_clicks(
@@ -818,6 +819,7 @@ impl App {
             status: self.status_message.as_ref(),
             focus_label,
             sync_in_progress: self.worktree_sync.in_progress,
+            pending_spawn: self.pending_spawn.as_ref(),
             tick_count: self.metrics.tick_count,
             // With automations disabled the badge would advertise a feature the
             // TUI won't fire — report 0 so it stays hidden.
