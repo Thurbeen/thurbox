@@ -80,11 +80,16 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
     // *local* absolute path (e.g. claude's hooks `--settings <config>/hooks/
     // claude.json`), which the agent errors on when the path doesn't exist on
     // the host ("Settings file not found" → the pane dies instantly). Rewrite
-    // them for the host: materialize the file remotely (translating a
+    // them for the host — materialize the file remotely (translating a
     // home-anchored path to the remote home) or, when that's impossible, strip
-    // the flag so the agent at least launches.
-    if let Some(h) = host.as_ref() {
-        agent_def.args = adapt_agent_args_for_remote(h, agent_def.args);
+    // the flag so the agent at least launches — and provision the agent's
+    // config-dir hook files on the host so it reports status remotely.
+    // Degradation is best-effort-logged (headless has no info panel).
+    let hooks_enabled = !db.builtin_hooks_opted_out().unwrap_or(false);
+    let (adapted, hook_degraded) = adapt_def_for_launch(agent_def, host.as_ref(), hooks_enabled);
+    agent_def = adapted;
+    if let Some(reason) = hook_degraded {
+        tracing::warn!("remote hook wiring degraded for '{}': {reason}", req.name);
     }
     let (primary_cwd, worktrees, additional_dirs) = resolve_dirs(&req, host.as_ref())?;
 
@@ -379,52 +384,166 @@ pub(crate) fn build_multi_repo_workspace(
 /// path in the agent's own args — a repo path, a user file — is never
 /// rewritten or shipped. Each shipped file also has its thurbox-managed hook
 /// commands rewritten for the host
-/// ([`super::builtin_hooks::rewrite_hook_signals_for_remote`]): the local
+/// ([`super::builtin_hooks::rewrite_hook_signals_for_target`]): the local
 /// `thurbox-cli session signal` can't work there, but a tmux pane user option
-/// can — the local TUI receives it over its control-mode subscription, so
-/// remote sessions get live hooks-driven status.
+/// can — the local TUI receives it over its control-mode subscription (tmux)
+/// or pane-option polling (psmux), so remote sessions get live hooks-driven
+/// status. The same rewrite maps over every **literal** arg too, so a hook
+/// command carried directly in the args (aider's
+/// `--notifications-command "thurbox-cli session signal --state blocked"`)
+/// also reports remotely instead of invoking a CLI that isn't there — it is
+/// marker-keyed and idempotent, so non-matching args pass through
+/// byte-identical.
 ///
 /// Shared by the headless spawn and the TUI (`App::build_spawn_inputs`) so
 /// both paths launch a remote session with the same args.
 pub(crate) fn adapt_agent_args_for_remote(host: &HostDef, args: Vec<String>) -> Vec<String> {
+    adapt_agent_args_for_remote_with_report(host, args).0
+}
+
+/// [`adapt_agent_args_for_remote`] plus the list of local config paths that
+/// were **stripped** (no remote location could hold them) — the caller
+/// surfaces those as a hook-wiring degradation, since a stripped hooks config
+/// means the session reports no status.
+pub(crate) fn adapt_agent_args_for_remote_with_report(
+    host: &HostDef,
+    args: Vec<String>,
+) -> (Vec<String>, Vec<String>) {
+    let target = super::builtin_hooks::remote_signal_target(host);
+    let rewrite_literals = |args: Vec<String>| -> Vec<String> {
+        args.into_iter()
+            .map(|a| super::builtin_hooks::rewrite_hook_signals_for_target(&a, &target))
+            .collect()
+    };
     let Some(config_root) = crate::paths::config_file()
         .and_then(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
     else {
-        return args;
+        return (rewrite_literals(args), Vec::new());
     };
     // Resolve the translation target lazily (one ssh round-trip) and at most
     // once; `None` = strip mode.
     let mut remote_root: Option<Option<String>> = None;
-    rewrite_config_path_args(args, &config_root, |local_path| {
-        let root = remote_root
-            .get_or_insert_with(|| remote_config_root(host, &config_root))
-            .clone()?;
-        let remote_path = format!("{root}{}", &local_path[config_root.len()..]);
-        // Read failure (missing/unreadable/non-file) → strip, as before.
-        let contents = std::fs::read_to_string(local_path).ok()?;
-        let contents = super::builtin_hooks::rewrite_hook_signals_for_remote(&contents);
-        match crate::git::copy_bytes_to_remote(host, contents.as_bytes(), &remote_path) {
-            Ok(()) => Some(remote_path),
-            Err(e) => {
-                tracing::warn!(
-                    "failed to materialize agent config {local_path} on host '{}': {e:#}",
-                    host.name
-                );
-                None
+    let mut stripped: Vec<String> = Vec::new();
+    let args = rewrite_config_path_args(args, &config_root, |local_path| {
+        let materialized = (|| {
+            let root = remote_root
+                .get_or_insert_with(|| remote_config_root(host, &config_root))
+                .clone()?;
+            let remote_path = format!("{root}{}", &local_path[config_root.len()..]);
+            // Read failure (missing/unreadable/non-file) → strip, as before.
+            let contents = std::fs::read_to_string(local_path).ok()?;
+            let contents =
+                super::builtin_hooks::rewrite_hook_signals_for_target(&contents, &target);
+            // A psmux host is native Windows — no `sh`/`cat` for the POSIX
+            // stream copy, so the payload goes via the PowerShell variant.
+            let copied = if host.mux() == "psmux" {
+                crate::git::copy_bytes_to_remote_windows(host, contents.as_bytes(), &remote_path)
+            } else {
+                crate::git::copy_bytes_to_remote(host, contents.as_bytes(), &remote_path)
+            };
+            match copied {
+                Ok(()) => Some(remote_path),
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to materialize agent config {local_path} on host '{}': {e:#}",
+                        host.name
+                    );
+                    None
+                }
             }
+        })();
+        if materialized.is_none() {
+            stripped.push(local_path.to_string());
         }
-    })
+        materialized
+    });
+    (rewrite_literals(args), stripped)
+}
+
+/// Adapt an agent def for launch on an optional remote host: rewrite/ship its
+/// args ([`adapt_agent_args_for_remote_with_report`]) and provision the
+/// agent's config-dir hook files there
+/// ([`super::remote_hooks::provision_agent_hooks_on_host`]). Returns the
+/// adapted def plus a human-readable note when remote hooks-driven status
+/// will be degraded/absent. Performs ssh round-trips for a remote host — call
+/// on a worker, never the UI thread (ADR-P12). Identity for a local launch.
+pub(crate) fn adapt_def_for_launch(
+    mut def: crate::session::AgentDef,
+    host: Option<&HostDef>,
+    hooks_enabled: bool,
+) -> (
+    crate::session::AgentDef,
+    super::remote_hooks::HookDegradation,
+) {
+    let Some(h) = host else {
+        return (def, None);
+    };
+    let (args, stripped) = adapt_agent_args_for_remote_with_report(h, def.args);
+    def.args = args;
+    // A stripped config path outranks a provisioning note: it means the
+    // agent's own hooks file never reached the host at all.
+    let degraded = if stripped.is_empty() {
+        super::remote_hooks::provision_agent_hooks_on_host(h, &def.name, hooks_enabled)
+    } else {
+        Some(format!(
+            "hooks config stripped for host '{}' (no status): {}",
+            h.name,
+            stripped.join(", ")
+        ))
+    };
+    (def, degraded)
+}
+
+/// Whether hook configs may be shipped to (and their commands rewritten for) a
+/// **psmux** (native-Windows SSH) host. **Gate, currently closed**: the psmux
+/// path rests on behaviors not yet proven against psmux 3.3.6 — in-pane
+/// `set-option -p` without `-t` (no `$TMUX_PANE` guarantee), `#{@user_option}`
+/// expansion for the poller, and claude accepting a forward-slash `--settings`
+/// path on Windows. `scripts/dev/e2e/windows-vm.sh test` carries the probes;
+/// flip this to `true` only with that evidence. Closed = exactly the old strip
+/// behavior (the agent launches clean with no hooks, surfaced via
+/// `SessionInfo::hook_wiring`).
+pub(crate) fn psmux_hook_rewrite_supported() -> bool {
+    false
 }
 
 /// Where the local thurbox config root lands on `host`, or `None` when no
 /// remote location can hold it (→ strip the args instead):
-/// - a non-POSIX (Windows `C:\…`) local root or a `psmux` host can't take a
-///   POSIX copy at all;
+/// - a non-POSIX (Windows `C:\…`) local root can't take a POSIX copy at all;
+/// - a `psmux` (native-Windows) host maps onto
+///   `%USERPROFILE%/.config/<root-name>` — dev/release isolation carries over
+///   via the root's final component — but only once
+///   [`psmux_hook_rewrite_supported`] is flipped;
 /// - a home-anchored root translates onto the **remote** home (identity when
 ///   local and remote `$HOME` agree — the common same-user WSL/devbox case);
 /// - a root outside the local home is mirrored at the same absolute path.
 fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
-    if !config_root.starts_with('/') || host.mux() == "psmux" {
+    if host.mux() == "psmux" {
+        if !psmux_hook_rewrite_supported() {
+            tracing::warn!(
+                "stripping local agent-config args for host '{}': psmux hook rewrite \
+                 is not enabled",
+                host.name
+            );
+            return None;
+        }
+        let name = std::path::Path::new(config_root)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("thurbox");
+        return match crate::git::remote_home_windows(host) {
+            Ok(home) => Some(format!("{home}/.config/{name}")),
+            Err(e) => {
+                tracing::warn!(
+                    "stripping local agent-config args for host '{}': cannot resolve \
+                     Windows home: {e:#}",
+                    host.name
+                );
+                None
+            }
+        };
+    }
+    if !config_root.starts_with('/') {
         tracing::warn!(
             "stripping local agent-config args for host '{}': no POSIX path for the \
              thurbox config dir there",
@@ -634,6 +753,50 @@ mod tests {
             .map(String::from)
             .into();
         assert_eq!(adapt_agent_args_for_remote(&host, args.clone()), args);
+    }
+
+    #[test]
+    fn adapt_agent_args_rewrites_literal_signal_commands() {
+        // aider carries its hook as a literal arg (`--notifications-command
+        // "thurbox-cli session signal --state blocked"`), not a config-file
+        // path — the remote adaptation must rewrite it to the pane-option form
+        // or the host invokes a CLI that isn't there.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let host = HostDef {
+            name: "devbox".into(),
+            destination: "user@devbox".into(),
+            ..Default::default()
+        };
+        let args: Vec<String> = [
+            "--notifications",
+            "--notifications-command",
+            "thurbox-cli session signal --state blocked",
+        ]
+        .map(String::from)
+        .into();
+        let out = adapt_agent_args_for_remote(&host, args.clone());
+        assert_eq!(
+            out,
+            [
+                "--notifications",
+                "--notifications-command",
+                "tmux set-option -p @thurbox_state blocked",
+            ]
+            .map(String::from)
+        );
+
+        // A psmux host gets the socket-explicit psmux form (psmux has no
+        // in-pane `$TMUX` socket resolution).
+        let psmux_host = HostDef {
+            name: "winbox".into(),
+            destination: "user@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            socket: Some("tb".into()),
+            ..Default::default()
+        };
+        let out = adapt_agent_args_for_remote(&psmux_host, args);
+        assert_eq!(out[2], "psmux -L tb set-option -p @thurbox_state blocked");
     }
 
     #[test]

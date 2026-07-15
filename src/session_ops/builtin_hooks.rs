@@ -24,41 +24,87 @@ use super::install_extension;
 /// The extension name (matches `extensions/hooks/extension.toml`).
 pub const HOOKS_EXTENSION_NAME: &str = "hooks";
 
-const MANIFEST: &str = include_str!("../../extensions/hooks/extension.toml");
-const CLAUDE_SETTINGS: &str = include_str!("../../extensions/hooks/claude.json");
-const OPENCODE_PLUGIN: &str = include_str!("../../extensions/hooks/opencode-status.js");
-const ANTIGRAVITY_HOOKS: &str = include_str!("../../extensions/hooks/antigravity-hooks.json");
-const CODEX_HOOKS: &str = include_str!("../../extensions/hooks/codex-hooks.json");
-const VIBE_HOOKS: &str = include_str!("../../extensions/hooks/vibe-hooks.toml");
-const COPILOT_HOOKS: &str = include_str!("../../extensions/hooks/copilot-hooks.json");
+pub(crate) const MANIFEST: &str = include_str!("../../extensions/hooks/extension.toml");
+pub(crate) const CLAUDE_SETTINGS: &str = include_str!("../../extensions/hooks/claude.json");
+pub(crate) const OPENCODE_PLUGIN: &str = include_str!("../../extensions/hooks/opencode-status.js");
+pub(crate) const ANTIGRAVITY_HOOKS: &str =
+    include_str!("../../extensions/hooks/antigravity-hooks.json");
+pub(crate) const CODEX_HOOKS: &str = include_str!("../../extensions/hooks/codex-hooks.json");
+pub(crate) const VIBE_HOOKS: &str = include_str!("../../extensions/hooks/vibe-hooks.toml");
+pub(crate) const COPILOT_HOOKS: &str = include_str!("../../extensions/hooks/copilot-hooks.json");
 
 /// Marker prefix of every thurbox-managed hook command; the state word
 /// (`working`/`blocked`/`done`/`idle`) follows it directly.
 const SIGNAL_MARKER: &str = "thurbox-cli session signal --state ";
 
-/// Rewrite thurbox-managed hook commands for a **remote (real-tmux) host**:
+/// How a remote host's rewritten hook commands report state — which
+/// multiplexer binary sets the pane user option.
+pub(crate) enum RemoteSignalTarget {
+    /// POSIX host with real tmux: `tmux set-option -p @thurbox_state <s>`.
+    /// Inside a pane tmux resolves its own socket/pane from `$TMUX`/`$TMUX_PANE`.
+    Tmux,
+    /// Native-Windows host with psmux: `psmux -L <socket> set-option -p …`.
+    /// psmux has no `TMUX_TMPDIR`-style socket dir — every `-L <name>` resolves
+    /// machine-wide — so the socket is baked into the command at rewrite time.
+    Psmux { socket: String },
+}
+
+impl RemoteSignalTarget {
+    /// The replacement for [`SIGNAL_MARKER`]. Must stay free of `"` and `\` so
+    /// the byte-level replace on JSON text stays safe (guarded by a test; the
+    /// only variable part is the socket name, `thurbox`/`thurbox-dev`).
+    fn replacement(&self) -> String {
+        let option = crate::session::REMOTE_HOOK_STATE_OPTION;
+        match self {
+            RemoteSignalTarget::Tmux => format!("tmux set-option -p {option} "),
+            RemoteSignalTarget::Psmux { socket } => {
+                format!("psmux -L {socket} set-option -p {option} ")
+            }
+        }
+    }
+}
+
+/// Rewrite thurbox-managed hook commands for a **remote host**:
 /// `thurbox-cli session signal --state <s>` →
-/// `tmux set-option -p @thurbox_state <s>`.
+/// `<mux> set-option -p @thurbox_state <s>`.
 ///
 /// `thurbox-cli` can't signal from a remote host (it isn't installed there,
 /// and it would write the host's own DB — never the one the local TUI reads).
 /// A tmux **pane user option** can: inside a pane `set-option -p` needs no
 /// socket, pane id, or identity (`$TMUX`/`$TMUX_PANE` are in the pane env),
 /// and the local TUI's control-mode connection receives changes through its
-/// [`crate::session::REMOTE_HOOK_SUBSCRIPTION`] format subscription. Applied
-/// by the spawn-time materialization (`adapt_agent_args_for_remote`) to every
-/// config file it ships. Prefix-replace keeps the state word and whatever
-/// trails it (`|| true`, `;; esac; true`) intact; the replacement contains no
-/// `"`/`\`, so a byte-level replace on JSON text is safe. Idempotent, and a
-/// no-op for marker-free content.
+/// [`crate::session::REMOTE_HOOK_SUBSCRIPTION`] format subscription (tmux) or
+/// pane-option polling (psmux). Applied by the spawn-time materialization
+/// (`adapt_agent_args_for_remote`) to every launch arg and every config file
+/// it ships, and by `remote_hooks` to the per-agent config-dir payloads.
+/// Prefix-replace keeps the state word and whatever trails it (`|| true`,
+/// `;; esac; true`) intact; the replacement contains no `"`/`\`, so a
+/// byte-level replace on JSON text is safe. Idempotent, and a no-op for
+/// marker-free content.
+pub(crate) fn rewrite_hook_signals_for_target(
+    contents: &str,
+    target: &RemoteSignalTarget,
+) -> String {
+    contents.replace(SIGNAL_MARKER, &target.replacement())
+}
+
+/// [`rewrite_hook_signals_for_target`] for a real-tmux POSIX host — the
+/// original remote rewrite, kept as the common-case shorthand.
 pub(crate) fn rewrite_hook_signals_for_remote(contents: &str) -> String {
-    contents.replace(
-        SIGNAL_MARKER,
-        &format!(
-            "tmux set-option -p {} ",
-            crate::session::REMOTE_HOOK_STATE_OPTION
-        ),
-    )
+    rewrite_hook_signals_for_target(contents, &RemoteSignalTarget::Tmux)
+}
+
+/// The signal target for `host`, derived from its multiplexer: a psmux host
+/// gets the socket-explicit `psmux` form, everything else (tmux over SSH, tmux
+/// inside a WSL distro) the plain `tmux` form.
+pub(crate) fn remote_signal_target(host: &crate::session::HostDef) -> RemoteSignalTarget {
+    if host.mux() == "psmux" {
+        RemoteSignalTarget::Psmux {
+            socket: crate::agent::tmux::host_socket(host),
+        }
+    } else {
+        RemoteSignalTarget::Tmux
+    }
 }
 
 /// The hooks extension's home, under this build's resolved config dir
@@ -196,19 +242,61 @@ mod tests {
 
     #[test]
     fn signal_marker_matches_shipped_hook_commands() {
-        // Guard: a future edit to the hook asset that drifts from the marker
+        // Guard: a future edit to a hook asset that drifts from the marker
         // (e.g. reordering flags) would silently break the remote rewrite.
-        // Every `session signal` occurrence in the claude asset must carry the
-        // exact marker prefix.
-        let occurrences = CLAUDE_SETTINGS.matches("session signal").count();
+        // Every `session signal` occurrence in EVERY shipped asset must carry
+        // the exact marker prefix — all of them are candidates for the remote
+        // rewrite (claude via `--settings`, the rest via `remote_hooks`).
+        for (name, asset) in [
+            ("claude.json", CLAUDE_SETTINGS),
+            ("opencode-status.js", OPENCODE_PLUGIN),
+            ("antigravity-hooks.json", ANTIGRAVITY_HOOKS),
+            ("codex-hooks.json", CODEX_HOOKS),
+            ("vibe-hooks.toml", VIBE_HOOKS),
+            ("copilot-hooks.json", COPILOT_HOOKS),
+            ("extension.toml", MANIFEST), // aider's literal --notifications-command arg
+        ] {
+            // Key on the command-with-flag form — a bare `session signal`
+            // mention in a comment is fine, an actual `--state` invocation
+            // must carry the exact marker prefix.
+            let occurrences = asset.matches("session signal --state").count();
+            assert!(occurrences > 0, "{name} carries no session-signal command");
+            assert_eq!(
+                asset.matches(SIGNAL_MARKER).count(),
+                occurrences,
+                "a `session signal --state` command in {name} doesn't match SIGNAL_MARKER"
+            );
+        }
         assert_eq!(
             CLAUDE_SETTINGS.matches(SIGNAL_MARKER).count(),
-            occurrences,
-            "a `session signal` command in claude.json doesn't match SIGNAL_MARKER"
-        );
-        assert_eq!(
-            occurrences, 5,
+            5,
             "claude.json hook count changed — review the rewrite"
+        );
+    }
+
+    #[test]
+    fn psmux_target_rewrite_embeds_socket_and_stays_json_safe() {
+        let target = RemoteSignalTarget::Psmux {
+            socket: "thurbox".into(),
+        };
+        // The replacement must never contain `"`/`\` — it is spliced into JSON
+        // strings by a byte-level replace.
+        assert!(!target.replacement().contains(['"', '\\']));
+        let rewritten = rewrite_hook_signals_for_target(CLAUDE_SETTINGS, &target);
+        assert!(!rewritten.contains("thurbox-cli"));
+        for state in ["idle", "working", "blocked", "done"] {
+            assert!(
+                rewritten.contains(&format!(
+                    "psmux -L thurbox set-option -p @thurbox_state {state}"
+                )),
+                "missing rewritten {state} command"
+            );
+        }
+        // Still valid JSON, and idempotent.
+        serde_json::from_str::<serde_json::Value>(&rewritten).expect("still valid JSON");
+        assert_eq!(
+            rewrite_hook_signals_for_target(&rewritten, &target),
+            rewritten
         );
     }
 

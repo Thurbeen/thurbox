@@ -263,6 +263,11 @@ pub struct SessionInfo {
     /// Manual position in the session list. `None` = never moved: renders
     /// after all ordered sessions, in creation order.
     pub display_order: Option<i64>,
+    /// Why hooks-driven status is degraded/absent on this (remote) session —
+    /// e.g. the hooks config was stripped for the host, or provisioning
+    /// failed. Set at spawn time, transient (never persisted); rendered as a
+    /// hint in the info panel. `None` = healthy or local.
+    pub hook_wiring: Option<String>,
 }
 
 impl SessionInfo {
@@ -286,6 +291,7 @@ impl SessionInfo {
             repo_display_names: Vec::new(),
             parent_session_id: None,
             display_order: None,
+            hook_wiring: None,
         }
     }
 }

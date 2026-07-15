@@ -323,6 +323,146 @@ pub fn expand_remote_tilde(host: &HostDef, path: &str) -> Result<String> {
     }
 }
 
+/// Sentinel exit code remote probe scripts use for their "negative" answer, so
+/// it can't be confused with a transport failure (ssh's 255, a launch error,
+/// or the probed command's own 1).
+const REMOTE_PROBE_NEGATIVE: i32 = 3;
+
+/// Resolve `%USERPROFILE%` on a **native-Windows** SSH host (a `psmux` host),
+/// normalized to forward slashes (`C:/Users/me`) and cached like
+/// [`remote_home`] (same key space — a host is either POSIX or Windows, never
+/// both). Runs `powershell -NoProfile -Command Write-Output $env:USERPROFILE`,
+/// which works whether the host's default sshd shell is `cmd` or PowerShell
+/// (`cmd` passes `$env:…` through untouched for PowerShell to evaluate).
+pub(crate) fn remote_home_windows(host: &HostDef) -> Result<String> {
+    let key = host.backend_name();
+    if let Ok(guard) = remote_home_cache().lock() {
+        if let Some(home) = guard.get(&key) {
+            return Ok(home.clone());
+        }
+    }
+    let mut cmd = host_launcher(host);
+    cmd.args(["powershell", "-NoProfile", "-Command"])
+        .arg("Write-Output $env:USERPROFILE");
+    let output = cmd
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to resolve host %USERPROFILE%")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("resolving %USERPROFILE% on {key} failed: {}", stderr.trim());
+    }
+    let home = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .replace('\\', "/");
+    if home.is_empty() {
+        anyhow::bail!("%USERPROFILE% resolved empty for {key}");
+    }
+    if let Ok(mut guard) = remote_home_cache().lock() {
+        guard.insert(key, home.clone());
+    }
+    Ok(home)
+}
+
+/// The longest command line safely below Windows `cmd.exe`'s ~8191-char limit
+/// (the sshd default shell may be `cmd`), leaving headroom for the PowerShell
+/// wrapper around the base64 payload.
+const WINDOWS_COMMAND_BUDGET: usize = 7_500;
+
+/// [`copy_bytes_to_remote`] for a **native-Windows** SSH host: `cat > file`
+/// doesn't exist there, so the payload travels base64-encoded inside a
+/// PowerShell one-liner (`[IO.File]::WriteAllBytes` + `New-Item -Force` for
+/// the parent dir). Bounded by the Windows command-line limit — thurbox's hook
+/// payloads are 1–4 KB, well within it; anything larger errors instead of
+/// truncating. `remote_path` must be `/`-separated (PowerShell accepts it).
+pub(crate) fn copy_bytes_to_remote_windows(
+    host: &HostDef,
+    bytes: &[u8],
+    remote_path: &str,
+) -> Result<()> {
+    use base64::Engine as _;
+
+    let parent = Path::new(remote_path)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    anyhow::ensure!(
+        !remote_path.contains('\'') && !parent.contains('\''),
+        "remote path {remote_path} contains a quote"
+    );
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let script = format!(
+        "New-Item -ItemType Directory -Force -Path '{parent}' | Out-Null; \
+         [IO.File]::WriteAllBytes('{remote_path}', [Convert]::FromBase64String('{b64}'))"
+    );
+    anyhow::ensure!(
+        script.len() <= WINDOWS_COMMAND_BUDGET,
+        "payload too large for a Windows command line ({} bytes)",
+        bytes.len()
+    );
+    let mut cmd = host_launcher(host);
+    // Double-quoted so the host's default shell (cmd or PowerShell) hands the
+    // script to `powershell -Command` as one argument; the payload/path are
+    // single-quoted inside, and base64 text never contains quotes.
+    cmd.args(["powershell", "-NoProfile", "-Command"])
+        .arg(format!("\"{script}\""));
+    let output = cmd
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to spawn windows remote file-copy")?;
+    remote_output_or_stderr(output, "windows file-copy").map(|_| ())
+}
+
+/// Whether `dir` exists as a directory on `host` (a leading `~` expands against
+/// the remote home). `Ok(false)` means the probe *ran* and answered no — a
+/// transport failure is an `Err`, distinguished by the exit code: the script
+/// answers only 0 / [`REMOTE_PROBE_NEGATIVE`] itself.
+pub(crate) fn remote_dir_exists(host: &HostDef, dir: &str) -> Result<bool> {
+    let dir = expand_remote_tilde(host, dir)?;
+    let script = format!(
+        "if test -d {}; then exit 0; else exit {REMOTE_PROBE_NEGATIVE}; fi",
+        posix_quote(&dir)
+    );
+    let output = host_shell_c(host, &script)
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to run remote dir probe")?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(REMOTE_PROBE_NEGATIVE) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("remote dir probe failed: {}", stderr.trim())
+        }
+    }
+}
+
+/// Read a regular file on `host` (a leading `~` expands against the remote
+/// home). `Ok(None)` = the path doesn't exist; an existing-but-not-regular
+/// path or a transport failure is an `Err` (see [`remote_dir_exists`] for the
+/// exit-code discipline).
+pub(crate) fn read_remote_file(host: &HostDef, path: &str) -> Result<Option<String>> {
+    let path = expand_remote_tilde(host, path)?;
+    let quoted = posix_quote(&path);
+    let script = format!(
+        "if test -f {quoted}; then cat {quoted}; elif test -e {quoted}; then exit 1; \
+         else exit {REMOTE_PROBE_NEGATIVE}; fi"
+    );
+    let output = host_shell_c(host, &script)
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to run remote file read")?;
+    match output.status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned())),
+        Some(REMOTE_PROBE_NEGATIVE) => Ok(None),
+        Some(1) => anyhow::bail!("remote path {path} exists but is not a regular file"),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("remote file read failed: {}", stderr.trim())
+        }
+    }
+}
+
 /// Global cache for repo display names (path → name).
 static REPO_NAME_CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, String>>> =
     std::sync::OnceLock::new();

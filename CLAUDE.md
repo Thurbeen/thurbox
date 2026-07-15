@@ -662,33 +662,50 @@ not block startup, so `check_available`/`ensure_ready` are deferred to first use
 - **Agent config on the host**: agent args referencing thurbox-managed config
   by *local* path (the hooks extension's `--settings <config>/hooks/
   claude.json`) would kill the remote agent on launch ("Settings file not
-  found"). `session_ops::spawn::adapt_agent_args_for_remote` (shared by
-  headless spawn and the TUI) rewrites them per host: on a POSIX remote the
-  home-anchored path is **translated to the remote home**, the file copied
-  there, and the arg substituted; on a psmux host / non-POSIX config root /
-  failed copy the **flag+path pair is stripped** so the agent launches clean.
+  found"). `session_ops::spawn::adapt_def_for_launch` (shared by headless
+  spawn and the TUI, run on the spawn worker — never the UI thread) rewrites
+  them per host: on a POSIX remote the home-anchored path is **translated to
+  the remote home**, the file copied there, and the arg substituted; on a
+  psmux host (while `psmux_hook_rewrite_supported` stays off) / non-POSIX
+  config root / failed copy the **flag+path pair is stripped** so the agent
+  launches clean — surfaced as a `Hooks: degraded` row in the info panel
+  (`SessionInfo.hook_wiring`). Literal signal commands carried directly in
+  args (aider's `--notifications-command`) are rewritten too.
   The local-path env hints
   (`THURBOX_METRICS_DIR`/`THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR`) are likewise
   skipped for remote spawns (`inject_thurbox_env`); only the opaque identity
   vars travel.
-- **Remote session status** (hooks-driven, like local): `thurbox-cli session
-  signal` can't work from a host (no CLI there; it would write the host's own
-  DB), so the materialized hook file's commands are **rewritten**
-  (`builtin_hooks::rewrite_hook_signals_for_remote`) to set a tmux **pane user
+- **Remote session status** (hooks-driven, like local, **all agents**):
+  `thurbox-cli session signal` can't work from a host (no CLI there; it would
+  write the host's own DB), so hook commands are **rewritten**
+  (`builtin_hooks::rewrite_hook_signals_for_target`) to set a tmux **pane user
   option** instead — `tmux set-option -p @thurbox_state <s>` needs no socket,
-  pane id, or identity inside a pane. The local TUI's persistent control-mode
-  connection subscribes once per connection (`refresh-client -B
-  'thurbox-status:%*:#{@thurbox_state}'`, armed in `ControlMode::start` so
-  reconnects re-arm; tmux ≥ 3.2 = the existing floor) and receives
-  `%subscription-changed` pushes (≤1/s), queued on the connection and drained
-  each tick by `App::drain_remote_hook_events` into the same `set_hook_state`
-  columns local signals use — so Done→seen acknowledgment, OS notifications,
-  and the stuck-`working` fallback are shared. Events are matched by
-  **backend name + pane id** (pane ids collide across hosts), allow-listed
-  (remote-controlled text), and deduped against the cache (a reconnect
-  re-report must not resurrect an acknowledged `done`). Carve-outs: psmux
-  remotes (no subscriptions; hooks stripped) and non-claude agents (their hook
-  configs aren't materialized remotely) stay Idle-only.
+  pane id, or identity inside a pane (the psmux form bakes in
+  `-L <socket>`). Delivery per agent: claude's hooks file travels via its
+  `--settings` arg; agents wired through their **own config dir** (codex,
+  antigravity, opencode, vibe, copilot) are provisioned at spawn time by
+  `session_ops::remote_hooks::provision_agent_hooks_on_host` — the rewritten
+  payload is shipped into the host's agent config dir with the local
+  installer's safety rules (`requires_dir` probe over ssh, prune-then-merge
+  for shared JSON, managed-marker guard for standalone files,
+  compare-before-write; cached per `(backend, agent)`, best-effort, never
+  fails the spawn; remote **cleanup** is a documented leave-behind). The
+  local TUI's persistent control-mode connection subscribes once per
+  connection (`refresh-client -B 'thurbox-status:%*:#{@thurbox_state}'`,
+  armed in `ControlMode::start` so reconnects re-arm; tmux ≥ 3.2 = the
+  existing floor) and receives `%subscription-changed` pushes (≤1/s); a
+  **psmux** connection instead runs a 1 s **poller thread** (`list-panes -F`
+  diffed by `control_mode::diff_polled_hook_states`) feeding the same queue. Both
+  channels drain each tick via `App::drain_remote_hook_events` into the same
+  `set_hook_state` columns local signals use — so Done→seen acknowledgment,
+  OS notifications, and the stuck-`working` fallback are shared. Events are
+  matched by **backend name + pane id** (pane ids collide across hosts),
+  allow-listed (remote-controlled text), and deduped against the cache (a
+  reconnect re-report must not resurrect an acknowledged `done`). Remaining
+  carve-out: hook **provisioning onto psmux/Windows hosts** is gated off
+  (`spawn::psmux_hook_rewrite_supported`) until the psmux behaviors are
+  proven by `scripts/dev/e2e/windows-vm.sh test`'s probes — such sessions
+  show a `Hooks: degraded` hint instead of silently idling.
 - **Remote teardown** (WSL inherits the SSH path): `session delete --force`
   teardown is **backend-aware** — `teardown_runtime_resources` resolves the
   session's `HostDef` from its `backend_type` and, for a remote session, kills

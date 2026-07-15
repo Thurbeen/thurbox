@@ -116,7 +116,9 @@ remote_reset() {
     git worktree list --porcelain | awk "/^worktree/ {print \$2}" | grep -v "^/srv/repo$" \
       | while read -r w; do git worktree remove --force "$w"; done
     git worktree prune
-    git branch -D test/e2e 2>/dev/null || true
+    git for-each-ref --format="%(refname:short)" "refs/heads/test/*" \
+      | while read -r b; do git branch -D "$b"; done
+    rm -rf /root/.codex
     tmux -L thurbox-dev kill-server 2>/dev/null || true
   ' 2>/dev/null || true
 }
@@ -129,13 +131,29 @@ cmd_test() {
   # running TUI watches this database.
   local xdg; xdg="$(mktemp -d)"
   trap 'rm -rf "$xdg"; remote_reset' RETURN
-  mkdir -p "$xdg/config/thurbox-dev"
+  mkdir -p "$xdg/config/thurbox-dev/hooks"
   container_hosts_block > "$xdg/config/thurbox-dev/hosts.toml"
-  cat > "$xdg/config/thurbox-dev/agents.toml" <<'EOF'
+  # `codex` (a config-dir-hooked agent name) exercises the remote hook
+  # provisioning; `clauded` carries a thurbox-managed config file as a launch
+  # arg (claude's `--settings` shape) exercising the arg materialization. Both
+  # just run bash — only the *name*/args drive the remote wiring under test.
+  cat > "$xdg/config/thurbox-dev/agents.toml" <<EOF
 default = "shell"
 [[agents]]
 name = "shell"
 command = "bash"
+[[agents]]
+name = "codex"
+command = "bash"
+[[agents]]
+name = "clauded"
+command = "bash"
+args = ["$xdg/config/thurbox-dev/hooks/claude.json"]
+EOF
+  # A claude-shaped hooks file carrying the signal marker the remote rewrite
+  # keys on.
+  cat > "$xdg/config/thurbox-dev/hooks/claude.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state done || true"}]}]}}
 EOF
 
   remote_reset
@@ -152,8 +170,51 @@ EOF
   remote_window="$(ssh_remote 'tmux -L thurbox-dev list-windows -t thurbox-dev -F "#{window_name}" 2>/dev/null' | grep -c '^tb-e2e$' || true)"
   remote_wt="$(ssh_remote 'cd /srv/repo && git worktree list | grep -c test-e2e' 2>/dev/null || echo 0)"
 
+  # --- remote hooks-driven status wiring ------------------------------------
+  # A codex spawn must ship the rewritten hooks payload into the host's
+  # ~/.codex (created here = "agent installed"), idempotently across spawns;
+  # the arg-carried config file must land rewritten at its mirrored path.
+  log "asserting remote hook provisioning (codex config-dir + arg-carried file)"
+  FAILS=0
+  ssh_remote 'mkdir -p /root/.codex'
+  e2e_cli session create --name e2e-codex --host podman --repo-path "$REMOTE_REPO" \
+    --agent codex --worktree-branch test/e2e-codex --base-branch main >/dev/null \
+    || die "codex session create failed"
+  local hooks_json
+  hooks_json="$(ssh_remote 'cat /root/.codex/hooks.json 2>/dev/null' || true)"
+  case "$hooks_json" in
+    *"tmux set-option -p @thurbox_state"*) ok "codex hooks.json shipped rewritten" ;;
+    *) bad "codex hooks.json missing or not rewritten" ;;
+  esac
+  case "$hooks_json" in
+    *thurbox-cli*) bad "codex hooks.json still references thurbox-cli" ;;
+    *) ok "no thurbox-cli reference survives the rewrite" ;;
+  esac
+  # Second spawn (fresh process, so no in-process cache): byte-stable file.
+  e2e_cli session create --name e2e-codex2 --host podman --repo-path "$REMOTE_REPO" \
+    --agent codex --worktree-branch test/e2e-codex2 --base-branch main >/dev/null \
+    || die "second codex session create failed"
+  if [ "$(ssh_remote 'cat /root/.codex/hooks.json 2>/dev/null' || true)" = "$hooks_json" ]; then
+    ok "re-provisioning is idempotent (byte-stable hooks.json)"
+  else
+    bad "second spawn changed hooks.json (merge not idempotent)"
+  fi
+  e2e_cli session create --name e2e-arg --host podman --repo-path "$REMOTE_REPO" \
+    --agent clauded --worktree-branch test/e2e-arg --base-branch main >/dev/null \
+    || die "arg-carried session create failed"
+  # The local config root is outside $HOME, so it mirrors at the same path.
+  # shellcheck disable=SC2029 # $xdg expands locally on purpose (it names the remote mirror path)
+  case "$(ssh_remote "cat '$xdg/config/thurbox-dev/hooks/claude.json' 2>/dev/null" || true)" in
+    *"tmux set-option -p @thurbox_state done"*) ok "arg-carried config materialized rewritten" ;;
+    *) bad "arg-carried config missing or not rewritten on the host" ;;
+  esac
+
+  if [ "$FAILS" -gt 0 ]; then
+    fail "remote hook provisioning checks failed ($FAILS)"
+    return 1
+  fi
   e2e_assert "ssh:podman" "$backend" "$remote_window" "$remote_wt" \
-    "remote SSH session created on the container" \
+    "remote SSH session created on the container (+ hook provisioning verified)" \
     "expected ssh:podman + remote window + remote worktree"
 }
 

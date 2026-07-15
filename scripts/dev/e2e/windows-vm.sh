@@ -290,6 +290,37 @@ cmd_test() {
   sessions="$(ssh_vm "psmux -L $SOCKET list-sessions -F '#{session_name}'" 2>/dev/null | tr -d '\r')"
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
 
+  # --- psmux hook-status gate probes (evidence, not verdict) ----------------
+  # Remote hooks-driven status on a psmux host is gated off in the binary
+  # (`psmux_hook_rewrite_supported` in src/session_ops/spawn.rs) until these
+  # behaviors are proven against the pinned psmux: (A) pane **user options**
+  # settable via `set-option -p -t` and expanded by `#{@opt}` in
+  # `list-panes -F` (what the status poller reads); (B) an **id-less** in-pane
+  # `set-option -p` landing on the calling pane (what the rewritten hook
+  # command runs). Probes report ok/-- but never fail this smoke test.
+  log "probing psmux pane-user-option support (hook-status gate evidence)"
+  local pane opt inpane
+  ssh_vm "psmux -L $SOCKET new-session -d -s probe" >/dev/null 2>&1 || true
+  pane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id}'" 2>/dev/null | tr -d '\r' | head -n1)"
+  if [ -n "$pane" ]; then
+    ssh_vm "psmux -L $SOCKET set-option -p -t $pane @thurboxprobe working" >/dev/null 2>&1 || true
+    opt="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id} #{@thurboxprobe}'" 2>/dev/null | tr -d '\r')"
+    case "$opt" in
+      *"$pane working"*) ok "probe A: set-option -p + #{@opt} list-panes -F expansion works" ;;
+      *) info "probe A: pane user options / -F expansion unsupported (got: ${opt:-<none>})" ;;
+    esac
+    ssh_vm "psmux -L $SOCKET send-keys -t $pane 'psmux -L $SOCKET set-option -p @thurboxinpane done' Enter" >/dev/null 2>&1 || true
+    sleep 2
+    inpane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id} #{@thurboxinpane}'" 2>/dev/null | tr -d '\r')"
+    case "$inpane" in
+      *"$pane done"*) ok "probe B: id-less in-pane set-option -p lands on the calling pane" ;;
+      *) info "probe B: id-less in-pane set-option unsupported (got: ${inpane:-<none>})" ;;
+    esac
+  else
+    info "gate probes skipped: could not resolve a probe pane id"
+  fi
+  ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
+
   echo
   if printf '%s\n' "$sessions" | grep -qx smoke; then
     pass "psmux is installed and a -L $SOCKET session round-tripped"

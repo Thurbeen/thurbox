@@ -95,6 +95,19 @@ report the full range, codex reports idle/working/done, aider reports
 blocked, and vibe is experimental. See the per-agent matrix in
 `extensions/hooks/README.md` (and the website's *Agent hooks* page).
 
+**Remote sessions report status too** (same per-agent range): at spawn
+time the hook commands are rewritten to a tmux pane user option
+(`@thurbox_state`) and each agent's hook config is shipped to the host —
+claude's via its `--settings` arg, the config-dir agents via
+`session_ops::remote_hooks` provisioning (probe → prune-then-merge or
+managed-file write, best-effort). The local TUI receives changes over its
+control-mode connection (a format subscription on tmux hosts; a 1 s
+pane-option poller on psmux hosts). When wiring is degraded (host
+unreachable mid-provision, a user-owned file refused, or the
+still-gated psmux provisioning), the session shows a `Hooks: degraded`
+row in the info panel instead of silently idling. See the
+*Remote SSH & WSL Sessions* section in `CLAUDE.md` for the full pipeline.
+
 ### Smart ordering & repo groups
 
 The list is **grouped by repository** under subtle headers

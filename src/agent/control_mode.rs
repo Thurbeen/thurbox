@@ -385,6 +385,41 @@ pub fn is_valid_pane_id(s: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// Diff one psmux hook-poll result against the previous poll, returning the
+/// `(pane_id, value)` pairs to report — the poller-side equivalent of tmux's
+/// `%subscription-changed` edge semantics.
+///
+/// `body` is `list-panes -F "#{pane_id} #{@thurbox_state}"` output: one
+/// `%<id> [value]` line per pane. Reported: a pane's **non-empty** value seen
+/// for the first time (parity with the subscription's arm-time catch-up
+/// report) or changed since the last poll. Not reported: an unchanged value
+/// (steady state stays silent), an empty value (option unset — also *clears*
+/// the pane's entry, like a vanished pane, so a respawned pane's state
+/// re-reports). Malformed lines are skipped; wire data never panics.
+pub fn diff_polled_hook_states(
+    last: &mut std::collections::HashMap<String, String>,
+    body: &str,
+) -> Vec<(String, String)> {
+    let mut current = std::collections::HashMap::new();
+    let mut changed = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        let (pane_id, value) = match line.split_once(' ') {
+            Some((id, v)) => (id, v.trim()),
+            None => (line, ""),
+        };
+        if !is_valid_pane_id(pane_id) || value.is_empty() {
+            continue;
+        }
+        if last.get(pane_id).map(String::as_str) != Some(value) {
+            changed.push((pane_id.to_string(), value.to_string()));
+        }
+        current.insert(pane_id.to_string(), value.to_string());
+    }
+    *last = current;
+    changed
+}
+
 /// Format a `send-keys -H` command for a pane.
 ///
 /// Each byte is encoded as two hex digits.
@@ -416,6 +451,56 @@ mod tests {
     use std::sync::mpsc::sync_channel;
 
     use super::*;
+
+    // --- diff_polled_hook_states tests ---
+
+    #[test]
+    fn poll_diff_reports_first_seen_and_changes_only() {
+        let mut last = std::collections::HashMap::new();
+        // First poll: every non-empty value reports (arm-time catch-up parity).
+        let events = diff_polled_hook_states(&mut last, "%1 working\n%2 \n%3 done");
+        assert_eq!(
+            events,
+            vec![
+                ("%1".to_string(), "working".to_string()),
+                ("%3".to_string(), "done".to_string())
+            ]
+        );
+        // Steady state stays silent.
+        assert!(diff_polled_hook_states(&mut last, "%1 working\n%3 done").is_empty());
+        // Only the changed pane reports.
+        let events = diff_polled_hook_states(&mut last, "%1 done\n%3 done");
+        assert_eq!(events, vec![("%1".to_string(), "done".to_string())]);
+    }
+
+    #[test]
+    fn poll_diff_clears_vanished_and_unset_panes_so_they_rereport() {
+        let mut last = std::collections::HashMap::new();
+        diff_polled_hook_states(&mut last, "%1 working\n%2 blocked");
+        // %1 vanishes (respawn), %2's option is unset.
+        assert!(diff_polled_hook_states(&mut last, "%2").is_empty());
+        // Both re-report when they come back with a value.
+        let events = diff_polled_hook_states(&mut last, "%1 working\n%2 blocked");
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn poll_diff_skips_malformed_lines_and_trims_values() {
+        let mut last = std::collections::HashMap::new();
+        let events = diff_polled_hook_states(
+            &mut last,
+            "not-a-pane working\n%x done\n\n%7  done  \n%8 two words",
+        );
+        // Invalid pane tokens are dropped; values are trimmed; a multi-word
+        // value passes through (the app-side allow-list rejects it there).
+        assert_eq!(
+            events,
+            vec![
+                ("%7".to_string(), "done".to_string()),
+                ("%8".to_string(), "two words".to_string())
+            ]
+        );
+    }
 
     // --- is_valid_pane_id tests ---
 

@@ -8,6 +8,7 @@
 pub mod builtin_hooks;
 pub mod delete;
 pub mod extensions;
+pub mod remote_hooks;
 pub mod restart;
 pub mod spawn;
 

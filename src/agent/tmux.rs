@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -40,6 +41,17 @@ fn local_socket() -> String {
     std::env::var(SOCKET_OVERRIDE_ENV)
         .ok()
         .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| TMUX_SOCKET.to_string())
+}
+
+/// The `-L` socket name a remote `host`'s multiplexer runs on: the host's
+/// `socket` override, else the same compile-time default the local backend
+/// uses. Single source of truth shared by [`TmuxBackend::from_host`] and the
+/// psmux hook-signal rewrite (which must bake the socket into the command —
+/// psmux has no `$TMUX`-style in-pane socket resolution to rely on).
+pub fn host_socket(host: &crate::session::HostDef) -> String {
+    host.socket
+        .clone()
         .unwrap_or_else(|| TMUX_SOCKET.to_string())
 }
 
@@ -226,6 +238,10 @@ struct ControlMode {
     /// [`Self::take_sub_events`]. Bounded (drop-oldest): a short-lived
     /// connection (e.g. a headless spawn's) has no drainer.
     sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
+    /// True while this connection lives; cleared on reader EOF and in `Drop`.
+    /// The psmux hook poller checks it each cycle so a replaced connection's
+    /// poller winds down instead of writing into a dead pipe forever.
+    alive: Arc<AtomicBool>,
     reader_handle: Mutex<Option<JoinHandle<()>>>,
     child: Mutex<Child>,
 }
@@ -234,6 +250,11 @@ struct ControlMode {
 /// queue is drained every TUI tick — the cap only guards an undrained
 /// connection against unbounded growth.
 const SUB_EVENTS_CAP: usize = 256;
+
+/// How often the psmux hook poller lists pane options — matches tmux's own
+/// ≤1/s subscription-report cadence, so both channels have the same worst-case
+/// status latency.
+const PSMUX_HOOK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 
 impl ControlMode {
     /// Start a control mode connection to the thurbox tmux session over the
@@ -265,11 +286,13 @@ impl ControlMode {
             Arc::new(Mutex::new(VecDeque::new()));
         let sub_events: Arc<Mutex<VecDeque<(String, String)>>> =
             Arc::new(Mutex::new(VecDeque::new()));
+        let alive = Arc::new(AtomicBool::new(true));
 
         let reader_stdin = Arc::clone(&stdin);
         let reader_pane_senders = Arc::clone(&pane_senders);
         let reader_queue = Arc::clone(&response_queue);
         let reader_sub_events = Arc::clone(&sub_events);
+        let reader_alive = Arc::clone(&alive);
 
         let reader_handle = std::thread::Builder::new()
             .name("tmux-control-reader".into())
@@ -281,6 +304,7 @@ impl ControlMode {
                     reader_queue,
                     reader_sub_events,
                 );
+                reader_alive.store(false, Ordering::Relaxed);
             })
             .context("Failed to spawn control reader thread")?;
 
@@ -289,6 +313,7 @@ impl ControlMode {
             pane_senders,
             response_queue,
             sub_events,
+            alive,
             reader_handle: Mutex::new(Some(reader_handle)),
             child: Mutex::new(child),
         };
@@ -318,9 +343,73 @@ impl ControlMode {
             if let Err(e) = control.send_command(&arm) {
                 warn!("failed to arm the remote-hook status subscription: {e:#}");
             }
+        } else {
+            control.spawn_psmux_hook_poller(session);
         }
 
         Ok(control)
+    }
+
+    /// psmux has no format subscriptions, so a psmux connection **polls** the
+    /// remote-hook pane option instead: a background thread lists every pane of
+    /// the session with its `@thurbox_state` each [`PSMUX_HOOK_POLL_INTERVAL`],
+    /// diffs against the previous poll ([`control_mode::diff_polled_hook_states`]),
+    /// and feeds changes into the same `sub_events` queue the tmux subscription
+    /// uses — everything downstream (`take_hook_state_events` → the app's
+    /// drain) is shared. Best-effort: a command failure ends the thread (the
+    /// connection is dying; a reconnect's fresh `ControlMode` spawns a fresh
+    /// poller), and an idle server pays one cheap command per second on an
+    /// already-persistent connection.
+    ///
+    /// The thread is deliberately **detached** (not joined in `Drop`): a poll
+    /// blocked in its command timeout when the connection dies would stall the
+    /// drop for [`COMMAND_TIMEOUT`]; instead it exits on its own via the
+    /// `alive` flag or the dead pipe shortly after.
+    fn spawn_psmux_hook_poller(&self, session: &str) {
+        let stdin = Arc::clone(&self.stdin);
+        let queue = Arc::clone(&self.response_queue);
+        let events = Arc::clone(&self.sub_events);
+        let alive = Arc::clone(&self.alive);
+        // Double-quoted format: psmux's tokenizer passes `'` through `"…"`
+        // tokens but mangles adjacent `'…'` segments (see
+        // `psmux_window_command`), so double quotes are the safe framing.
+        let cmd = format!(
+            "list-panes -s -t {session} -F \"#{{pane_id}} #{{{}}}\"",
+            crate::session::REMOTE_HOOK_STATE_OPTION,
+        );
+        let spawned = std::thread::Builder::new()
+            .name("psmux-hook-poller".into())
+            .spawn(move || {
+                let mut last = std::collections::HashMap::new();
+                loop {
+                    std::thread::sleep(PSMUX_HOOK_POLL_INTERVAL);
+                    if !alive.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let body = match Self::send_command_on(&stdin, &queue, &cmd) {
+                        Ok(body) => body,
+                        Err(e) => {
+                            debug!("psmux hook poller stopping: {e:#}");
+                            break;
+                        }
+                    };
+                    let changed = control_mode::diff_polled_hook_states(&mut last, &body);
+                    if changed.is_empty() {
+                        continue;
+                    }
+                    if let Ok(mut events) = events.lock() {
+                        for ev in changed {
+                            if events.len() >= SUB_EVENTS_CAP {
+                                events.pop_front();
+                            }
+                            events.push_back(ev);
+                        }
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            warn!("failed to spawn the psmux hook poller: {e}");
+        }
     }
 
     /// Background thread that reads and dispatches control mode output.
@@ -477,25 +566,37 @@ impl ControlMode {
 
     /// Send a command and wait for its response.
     fn send_command(&self, cmd: &str) -> Result<String> {
+        Self::send_command_on(&self.stdin, &self.response_queue, cmd)
+    }
+
+    /// [`Self::send_command`] without `&self`, so background threads holding
+    /// only the shared handles (the psmux hook poller) can issue commands.
+    ///
+    /// Both locks are held across enqueue **and** write: concurrent senders
+    /// (a backend caller vs the poller) must not interleave one thread's
+    /// waiter-push with another's stdin-write, or the FIFO waiter order stops
+    /// matching the on-wire command order and every later response is
+    /// delivered one command off. A failed write pops the just-enqueued
+    /// waiter for the same reason.
+    fn send_command_on(
+        stdin: &Arc<Mutex<ChildStdin>>,
+        response_queue: &Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
+        cmd: &str,
+    ) -> Result<String> {
         let (tx, rx) = sync_channel(1);
 
-        // Enqueue our response channel before sending, so the reader thread
-        // can deliver the response even if it arrives before we start waiting.
         {
-            let mut queue = self
-                .response_queue
+            let mut queue = response_queue
                 .lock()
                 .map_err(|e| anyhow::anyhow!("response_queue lock: {e}"))?;
-            queue.push_back(tx);
-        }
-
-        {
-            let mut stdin = self
-                .stdin
+            let mut stdin = stdin
                 .lock()
                 .map_err(|e| anyhow::anyhow!("stdin lock: {e}"))?;
-            writeln!(stdin, "{cmd}")?;
-            stdin.flush()?;
+            queue.push_back(tx);
+            if let Err(e) = writeln!(stdin, "{cmd}").and_then(|()| stdin.flush()) {
+                queue.pop_back();
+                return Err(e.into());
+            }
         }
 
         let response = rx
@@ -529,6 +630,10 @@ impl ControlMode {
 
 impl Drop for ControlMode {
     fn drop(&mut self) {
+        // Wind down the (detached) psmux hook poller; it observes the flag on
+        // its next cycle, or exits via the dead pipe once the child is killed.
+        self.alive.store(false, Ordering::Relaxed);
+
         // Try to gracefully detach.
         if let Ok(mut stdin) = self.stdin.lock() {
             let _ = writeln!(stdin, "detach-client");
@@ -616,10 +721,7 @@ impl TmuxBackend {
     /// `ssh:<host.name>` / `wsl:<host.name>` and uses the same socket/session
     /// names as the local backend unless the host overrides them.
     pub fn from_host(host: &crate::session::HostDef) -> Self {
-        let socket = host
-            .socket
-            .clone()
-            .unwrap_or_else(|| TMUX_SOCKET.to_string());
+        let socket = host_socket(host);
         let session = host
             .session
             .clone()

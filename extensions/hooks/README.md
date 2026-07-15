@@ -142,3 +142,29 @@ This extension exercises two extension-manifest capabilities (see
   Note: on the **first** merge, thurbox rewrites `settings.json` with normalized
   formatting (alphabetized keys, 2-space indent). This is one-time and lossless —
   your values are untouched and the file is stable afterward.
+
+## Remote (SSH/WSL) sessions
+
+`thurbox-cli` isn't installed on a remote host, so the shipped hook commands
+are rewritten there to set a tmux **pane user option**
+(`tmux set-option -p @thurbox_state <s>`) that the local TUI picks up over its
+control-mode connection. Delivery per agent, at spawn time:
+
+- **claude** — the `--settings` hooks file is copied to the host (rewritten)
+  and the arg substituted.
+- **aider** — its literal `--notifications-command` arg is rewritten in place.
+- **codex / antigravity / opencode / vibe / copilot** — the rewritten payload
+  is provisioned into the host's agent config dir
+  (`session_ops::remote_hooks`), with the same safety rules as the local
+  install: skipped when the agent isn't installed there (`requires_dir` probed
+  over ssh), deep-merge-not-clobber for shared JSON (prune-then-merge on both
+  the `session signal` and `@thurbox_state` markers, so upgrades replace
+  rather than accumulate), managed-marker guard for standalone files, and
+  compare-before-write.
+
+Provisioning is **best-effort** (a down host or refused write degrades to a
+`Hooks: degraded` hint in the info panel — never a failed spawn) and
+**one-way**: thurbox never uninstalls from remote hosts (same policy as remote
+worktrees). The files it leaves carry both prune markers, so removing them by
+hand — or a future remote prune — needs no schema knowledge. Windows (`psmux`)
+hosts are not provisioned yet (gated in `session_ops::spawn`).

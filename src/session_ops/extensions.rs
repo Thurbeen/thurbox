@@ -385,8 +385,10 @@ fn install_external_file(
 
 /// Marker present in every hook command we ship (`thurbox-cli session signal
 /// …`). [`crate::agent::json_merge::prune_marked`] uses it to remove exactly our
-/// merged entries on uninstall — robust across payload schema changes.
-const HOOK_SIGNAL_MARKER: &str = "thurbox-cli session signal";
+/// merged entries on uninstall — robust across payload schema changes. The
+/// remote provisioning (`remote_hooks`) prunes on it too, paired with the
+/// rewritten form's [`crate::session::REMOTE_HOOK_STATE_OPTION`] marker.
+pub(crate) const HOOK_SIGNAL_MARKER: &str = "thurbox-cli session signal";
 
 /// Read the JSON config at `path` (or `{}` when absent), parsed. A malformed
 /// file is an error rather than a silent overwrite — we never clobber config we
@@ -774,8 +776,9 @@ fn safe_join(home: &Path, rel: &str) -> Result<PathBuf, String> {
 
 /// Marker an installer-managed `substitute` file carries (in the template
 /// content) so reinstall can overwrite *its own* file but not one the user has
-/// edited (or whose marker they removed).
-const MANAGED_MARKER: &str = "thurbox `extension install`";
+/// edited (or whose marker they removed). The remote provisioning
+/// (`remote_hooks`) applies the same rule to files it ships to a host.
+pub(crate) const MANAGED_MARKER: &str = "thurbox `extension install`";
 
 /// Whether `dest` is a `substitute` file the user has taken ownership of: it
 /// exists but no longer carries the managed marker. A missing file (fresh
