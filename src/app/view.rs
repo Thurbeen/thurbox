@@ -391,7 +391,10 @@ impl App {
             return;
         };
         let now = crate::sync::current_time_millis();
-        let agent_usage = self.usage.get(&info.agent);
+        // Usage is scoped per (agent, host): a remote session shows the
+        // account its *host* is logged into, not the local one.
+        let usage_key = (info.agent.clone(), info.remote_host.clone());
+        let agent_usage = self.usage.get(&usage_key);
         // Skip the upcoming-automations section entirely when the feature is
         // off: the TUI won't fire those schedules, so advertising their
         // countdowns here (the cache is loaded from the DB regardless) would

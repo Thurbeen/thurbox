@@ -207,7 +207,9 @@ pub struct UsageWindow {
 }
 
 /// Account-level usage/rate-limit info for an agent, fetched from the vendor
-/// (the `/usage`-equivalent). Account-global, not per-session. Agent-neutral.
+/// (the `/usage`-equivalent). Account-global — but the *account* is scoped to
+/// wherever the agent's credentials live, i.e. the host the session runs on
+/// (local machine, SSH host, or WSL distro). Agent-neutral.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentUsage {
     pub windows: Vec<UsageWindow>,

@@ -111,6 +111,25 @@ const CONFIG_RELOAD_TICKS: u64 = 100;
 /// network, so this is deliberately slow; fires once early then every 5 min.
 const USAGE_REFRESH_TICKS: u64 = 30_000;
 
+/// Cache key for account usage: `(agent name, host name)` (`None` = local).
+/// The credential source — and therefore the account — is the machine the
+/// agent process runs on, so two sessions with the same agent on different
+/// hosts get separate entries while same-host sessions share one fetch.
+pub(crate) type UsageKey = (String, Option<String>);
+
+/// One planned account-usage refresh from [`App::plan_usage_fetches`]: either
+/// a real background fetch, or a static note for a scope that can't be
+/// fetched right now (host unreachable / missing from `hosts.toml`).
+#[derive(Debug)]
+enum UsageFetchPlan {
+    /// Spawn [`crate::usage::fetch`] against these credentials
+    /// (`None` host = local).
+    Fetch(Option<crate::session::HostDef>),
+    /// Don't spawn anything; show this note **unless** an earlier fetch
+    /// already cached real data (last-known usage beats a transient outage).
+    Unavailable(&'static str),
+}
+
 /// Prepared inputs for a `Session::spawn`, produced on the UI thread by
 /// [`App::build_spawn_inputs`] and consumed either inline (synchronous spawn)
 /// or moved into a blocking task (interactive spawn).
@@ -870,14 +889,16 @@ pub struct App {
     /// `~/.config/thurbox/keybindings.json` on startup, falling back to defaults
     /// when the file is missing or malformed.
     pub(crate) keybindings: crate::session::KeyBindings,
-    /// Account-level usage/rate-limit info per agent name (the `/usage`
-    /// equivalent), fetched in the background and shown for the active
-    /// session's agent. Account-global, so keyed by agent rather than session.
-    pub(crate) usage: HashMap<String, crate::session::AgentUsage>,
+    /// Account-level usage/rate-limit info (the `/usage` equivalent), fetched
+    /// in the background and shown for the active session. Keyed per
+    /// [`UsageKey`] — agent **and** host — because the account is whatever
+    /// credentials live on the machine the agent runs on: a `claude` session
+    /// on `ssh:devbox` may be a different account than a local one.
+    pub(crate) usage: HashMap<UsageKey, crate::session::AgentUsage>,
     /// Sends background usage-fetch results back to the app loop.
-    usage_tx: mpsc::Sender<(String, crate::session::AgentUsage)>,
+    usage_tx: mpsc::Sender<(UsageKey, crate::session::AgentUsage)>,
     /// Receives background usage-fetch results, drained each tick.
-    usage_rx: mpsc::Receiver<(String, crate::session::AgentUsage)>,
+    usage_rx: mpsc::Receiver<(UsageKey, crate::session::AgentUsage)>,
     /// Config-load problems collected at startup (keybindings.json here,
     /// agents.toml/hosts.toml reported by main), shown joined in one status
     /// toast via [`Self::report_config_warnings`].
@@ -4492,8 +4513,8 @@ impl App {
         }
 
         // Drain any completed background usage fetches into the cache.
-        while let Ok((agent, usage)) = self.usage_rx.try_recv() {
-            self.usage.insert(agent, usage);
+        while let Ok((key, usage)) = self.usage_rx.try_recv() {
+            self.usage.insert(key, usage);
         }
         // Kick off usage fetches early and then on a slow cadence.
         if self.metrics.tick_count % USAGE_REFRESH_TICKS == 1 {
@@ -4871,22 +4892,76 @@ impl App {
         self.active_theme = entry;
     }
 
-    /// Spawn background usage/rate-limit fetches for each distinct supported
-    /// agent currently in the session list. Results return via `usage_tx` and
-    /// are drained in [`Self::tick`]. Network/process work runs off the UI
-    /// thread; unsupported agents are skipped entirely.
-    fn spawn_usage_fetches(&self) {
-        let mut seen = std::collections::HashSet::new();
+    /// Plan the account-usage refreshes for the current session list: one
+    /// entry per distinct [`UsageKey`] (agent + host), covering every case —
+    /// local sessions use local credentials; a remote session resolves its
+    /// `HostDef` so credentials are read on that host; a placeholder session
+    /// (host currently unreachable) or a host missing from `hosts.toml`
+    /// yields a static note instead of a doomed ssh attempt. Pure (no spawns)
+    /// so the scoping rules are unit-testable.
+    fn plan_usage_fetches(&self) -> Vec<(UsageKey, UsageFetchPlan)> {
+        let mut seen: HashMap<UsageKey, usize> = HashMap::new();
+        let mut plan: Vec<(UsageKey, UsageFetchPlan)> = Vec::new();
         for session in &self.sessions {
-            let agent = session.info.agent.clone();
-            if !crate::usage::is_supported(&agent) || !seen.insert(agent.clone()) {
+            if !crate::usage::is_supported(&session.info.agent) {
                 continue;
             }
-            let tx = self.usage_tx.clone();
-            tokio::spawn(async move {
-                let usage = crate::usage::fetch(&agent).await;
-                let _ = tx.send((agent, usage));
-            });
+            let key: UsageKey = (session.info.agent.clone(), session.info.remote_host.clone());
+            let entry = match &key.1 {
+                None => UsageFetchPlan::Fetch(None),
+                Some(_) if session.is_placeholder() => {
+                    UsageFetchPlan::Unavailable("usage unavailable (host unreachable)")
+                }
+                Some(host_name) => match self.hosts.get(host_name) {
+                    Some(host) => UsageFetchPlan::Fetch(Some(host.clone())),
+                    None => UsageFetchPlan::Unavailable("usage unavailable (host not configured)"),
+                },
+            };
+            match seen.get(&key) {
+                None => {
+                    seen.insert(key.clone(), plan.len());
+                    plan.push((key, entry));
+                }
+                // Mid-reconnect a host's sessions can be mixed (one adopted,
+                // one still a placeholder): a live session's fetch beats a
+                // placeholder's note for the same scope.
+                Some(&i) => {
+                    if matches!(plan[i].1, UsageFetchPlan::Unavailable(_))
+                        && matches!(entry, UsageFetchPlan::Fetch(_))
+                    {
+                        plan[i].1 = entry;
+                    }
+                }
+            }
+        }
+        plan
+    }
+
+    /// Spawn background usage/rate-limit fetches for each distinct supported
+    /// (agent, host) scope currently in the session list (see
+    /// [`Self::plan_usage_fetches`]). Results return via `usage_tx` and are
+    /// drained in [`Self::tick`]. Network/process work runs off the UI thread.
+    fn spawn_usage_fetches(&mut self) {
+        for (key, entry) in self.plan_usage_fetches() {
+            match entry {
+                UsageFetchPlan::Fetch(host) => {
+                    let tx = self.usage_tx.clone();
+                    tokio::spawn(async move {
+                        let usage = crate::usage::fetch(&key.0, host.as_ref()).await;
+                        let _ = tx.send((key, usage));
+                    });
+                }
+                // Keep last-known data over a transient outage; the note only
+                // fills a scope that never fetched successfully.
+                UsageFetchPlan::Unavailable(note) => {
+                    self.usage
+                        .entry(key)
+                        .or_insert_with(|| crate::session::AgentUsage {
+                            note: Some(note.to_string()),
+                            ..Default::default()
+                        });
+                }
+            }
         }
     }
 
@@ -7428,6 +7503,116 @@ mod tests {
         );
         assert!(app.host_for_backend(Some("wsl:Ubuntu")).unwrap().is_wsl());
         assert!(app.host_for_backend(Some("ssh:unknown")).is_none());
+    }
+
+    fn devbox_registry() -> crate::session::HostRegistry {
+        crate::session::HostRegistry {
+            config_version: None,
+            hosts: vec![crate::session::HostDef {
+                name: "devbox".into(),
+                destination: "me@devbox".into(),
+                ..Default::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn usage_plan_scopes_by_agent_and_host() {
+        let mut app = app_with_sessions(3);
+        app.set_hosts(devbox_registry());
+        // Two local claude sessions (deduped) + one on devbox (own scope).
+        app.sessions[0].info.agent = "claude".into();
+        app.sessions[1].info.agent = "claude".into();
+        app.sessions[1].info.remote_host = Some("devbox".into());
+        app.sessions[2].info.agent = "claude".into();
+
+        let plan = app.plan_usage_fetches();
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].0, ("claude".to_string(), None));
+        assert!(matches!(plan[0].1, UsageFetchPlan::Fetch(None)));
+        assert_eq!(plan[1].0, ("claude".to_string(), Some("devbox".into())));
+        match &plan[1].1 {
+            UsageFetchPlan::Fetch(Some(h)) => assert_eq!(h.destination, "me@devbox"),
+            other => panic!("expected host-scoped fetch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_plan_notes_unknown_host_and_skips_unsupported() {
+        let mut app = app_with_sessions(2);
+        // A remote session whose host vanished from hosts.toml, plus an
+        // agent without usage support: only the former appears, as a note.
+        app.sessions[0].info.agent = "claude".into();
+        app.sessions[0].info.remote_host = Some("ghost".into());
+        app.sessions[1].info.agent = "aider".into();
+
+        let plan = app.plan_usage_fetches();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].0, ("claude".to_string(), Some("ghost".into())));
+        match plan[0].1 {
+            UsageFetchPlan::Unavailable(note) => assert!(note.contains("not configured")),
+            _ => panic!("expected an unavailable note for an unknown host"),
+        }
+    }
+
+    #[test]
+    fn usage_unreachable_host_notes_but_keeps_last_known_data() {
+        let mut app = app_with_sessions(0);
+        app.set_hosts(devbox_registry());
+        let backend_arc = stub_backend_arc();
+        let provider = stub_provider();
+        let mut info = crate::session::SessionInfo::new("remote".into());
+        info.agent = "claude".into();
+        info.remote_host = Some("devbox".into());
+        app.sessions.push(Session::placeholder(
+            info,
+            24,
+            80,
+            &backend_arc,
+            &provider,
+            HashMap::new(),
+        ));
+
+        // No cached data → the outage note fills the scope (no ssh spawned).
+        app.spawn_usage_fetches();
+        let key = ("claude".to_string(), Some("devbox".to_string()));
+        let note = app.usage.get(&key).unwrap().note.clone().unwrap();
+        assert!(note.contains("unreachable"), "got note: {note}");
+
+        // With real data cached from before the outage, the note must not
+        // clobber it — last-known usage beats a transient host drop.
+        app.usage.insert(
+            key.clone(),
+            crate::session::AgentUsage {
+                windows: vec![],
+                plan: Some("max".into()),
+                note: None,
+            },
+        );
+        app.spawn_usage_fetches();
+        assert_eq!(app.usage.get(&key).unwrap().plan.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn usage_plan_live_session_beats_placeholder_for_same_scope() {
+        // Mid-reconnect a host's sessions can be mixed: a placeholder seen
+        // first must not shadow an adopted (live) session's fetch.
+        let mut app = app_with_sessions(1);
+        app.set_hosts(devbox_registry());
+        let backend_arc = stub_backend_arc();
+        let provider = stub_provider();
+        let mut info = crate::session::SessionInfo::new("remote".into());
+        info.agent = "claude".into();
+        info.remote_host = Some("devbox".into());
+        let placeholder =
+            Session::placeholder(info, 24, 80, &backend_arc, &provider, HashMap::new());
+        app.sessions.insert(0, placeholder);
+        app.sessions[1].info.agent = "claude".into();
+        app.sessions[1].info.remote_host = Some("devbox".into());
+
+        let plan = app.plan_usage_fetches();
+        assert_eq!(plan.len(), 1);
+        assert!(matches!(plan[0].1, UsageFetchPlan::Fetch(Some(_))));
     }
 
     #[test]

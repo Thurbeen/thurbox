@@ -66,9 +66,11 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session", "storage", "workspace"],
         allowed_path_only: &[],
     },
+    // `shell` builds the host launchers (ssh/wsl) for reading a remote
+    // session's credentials where the agent actually runs.
     ModuleRules {
         name: "usage",
-        allowed: &["session"],
+        allowed: &["session", "shell"],
         // `paths::home_dir()` (fully-qualified, never `use`) to resolve agent
         // credential files cross-platform ($HOME / %USERPROFILE%).
         allowed_path_only: &["paths"],

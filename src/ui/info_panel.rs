@@ -64,7 +64,9 @@ pub fn render_info_panel(
 
     if let Some(u) = usage {
         if !u.is_empty() {
-            append_usage_section(&mut lines, u, inner_width);
+            // Usage is per (agent, host); label the host so two sessions on
+            // different accounts read unambiguously.
+            append_usage_section(&mut lines, u, info.remote_host.as_deref(), inner_width);
         }
     }
 
@@ -465,15 +467,20 @@ fn format_countdown_secs(secs: u64) -> String {
 
 /// Append the account-level usage / rate-limit section (the `/usage`
 /// equivalent): one gauge per window with used-% and a reset countdown.
+/// `host` names the credential source for a remote session (`None` = local),
+/// so usage from different accounts is never mistaken for the local one.
 fn append_usage_section(
     lines: &mut Vec<Line<'_>>,
     usage: &crate::session::AgentUsage,
+    host: Option<&str>,
     width: usize,
 ) {
     lines.push(separator(width));
-    let header = match &usage.plan {
-        Some(plan) => format!("Usage ({plan})"),
-        None => "Usage".to_string(),
+    let header = match (&usage.plan, host) {
+        (Some(plan), Some(host)) => format!("Usage ({plan} · {host})"),
+        (Some(plan), None) => format!("Usage ({plan})"),
+        (None, Some(host)) => format!("Usage ({host})"),
+        (None, None) => "Usage".to_string(),
     };
     lines.push(Line::from(Span::styled(header, Theme::section_header())));
 
@@ -889,8 +896,12 @@ mod tests {
     }
 
     fn render_usage(u: &crate::session::AgentUsage) -> String {
+        render_usage_on(u, None)
+    }
+
+    fn render_usage_on(u: &crate::session::AgentUsage, host: Option<&str>) -> String {
         let mut lines: Vec<Line> = Vec::new();
-        append_usage_section(&mut lines, u, 24);
+        append_usage_section(&mut lines, u, host, 24);
         lines
             .iter()
             .map(|l| {
@@ -939,5 +950,24 @@ mod tests {
         let out = render_usage(&u);
         assert!(out.contains("Usage"));
         assert!(out.contains("not logged in"));
+    }
+
+    #[test]
+    fn usage_section_labels_remote_host() {
+        let u = crate::session::AgentUsage {
+            windows: vec![crate::session::UsageWindow {
+                label: "5h".into(),
+                used_percent: 42.0,
+                resets_at: None,
+            }],
+            plan: Some("max".into()),
+            note: None,
+        };
+        assert!(render_usage_on(&u, Some("devbox")).contains("Usage (max · devbox)"));
+        let no_plan = crate::session::AgentUsage {
+            plan: None,
+            ..u.clone()
+        };
+        assert!(render_usage_on(&no_plan, Some("devbox")).contains("Usage (devbox)"));
     }
 }
