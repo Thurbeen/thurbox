@@ -469,9 +469,15 @@ jobs:
       # `submit` validates the bumped manifests and opens a PR against
       # microsoft/winget-pkgs from a fork of the WINGET_TOKEN account. Works for
       # both the first submission and every subsequent version from the same
-      # in-repo manifest set.
+      # in-repo manifest set. WINGET_TOKEN MUST be a classic PAT with the
+      # `public_repo` scope — wingetcreate rejects fine-grained tokens as
+      # invalid (microsoft/winget-create#595). The token is passed via
+      # WINGET_CREATE_GITHUB_TOKEN (Microsoft's recommended CI path) instead of
+      # --token, which wingetcreate warns can leak the token into logs.
       - name: Submit manifests to winget-pkgs
         if: env.WINGET_TOKEN != ''
         shell: pwsh
+        env:
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
-          .\wingetcreate.exe submit --token $env:WINGET_TOKEN packaging/winget/manifests
+          .\wingetcreate.exe submit packaging/winget/manifests
