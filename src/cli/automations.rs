@@ -438,6 +438,17 @@ fn tick(db: &Database) -> Result<Value, String> {
     if let Err(e) = db.prune_old_messages() {
         tracing::debug!("prune_old_messages: {e}");
     }
+    // Headless remote-status poll: the live control-mode channels
+    // (subscription / psmux poller) die with the TUI, so this keeps remote
+    // sessions' hook states flowing at the heartbeat's 60 s cadence — the TUI
+    // stays the sub-second channel while open. Skipped when the built-in
+    // hooks extension is opted out (nothing sets the pane option then).
+    if !db.builtin_hooks_opted_out().unwrap_or(false) {
+        let polled = crate::session_ops::remote_hooks::poll_remote_hook_states(db);
+        if polled > 0 {
+            tracing::info!("remote status poll: {polled} hook state(s) updated");
+        }
+    }
     let now = current_time_millis();
     let due = db
         .due_automations(now)

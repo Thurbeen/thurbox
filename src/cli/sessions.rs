@@ -144,13 +144,20 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 .into_iter()
                 .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
                 .collect();
-            let json = Value::Array(sessions.iter().map(shared_session_to_json).collect());
+            let states = db.load_hook_states().unwrap_or_default();
+            let json = Value::Array(
+                sessions
+                    .iter()
+                    .map(|s| session_json_with_state(s, &states))
+                    .collect(),
+            );
             Ok(CommandOutput::new(json, render_session_list(&sessions)))
         }
         Action::Get { uuid } => {
             let session = resolve(db, &uuid)?;
+            let states = db.load_hook_states().unwrap_or_default();
             Ok(CommandOutput::new(
-                shared_session_to_json(&session),
+                session_json_with_state(&session, &states),
                 render_session_detail(&session),
             ))
         }
@@ -429,6 +436,24 @@ fn resolve(db: &Database, uuid: &str) -> Result<SharedSession, String> {
     db.get_session_by_id(id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .ok_or_else(|| format!("Session not found: {uuid}"))
+}
+
+/// [`shared_session_to_json`] plus the session's persisted hooks-driven state
+/// (`hook_state`: `working`/`blocked`/`done`/`idle`, `null` when never
+/// reported). This is the **raw persisted value** written by `session signal`
+/// and the headless remote-status poll — the TUI's display status additionally
+/// derives exited→Idle and the stuck-`working` quiescence fallback, which need
+/// a live pane and don't exist headless.
+fn session_json_with_state(
+    s: &SharedSession,
+    states: &std::collections::HashMap<crate::session::SessionId, crate::storage::HookRow>,
+) -> Value {
+    let mut json = shared_session_to_json(s);
+    json["hook_state"] = states
+        .get(&s.id)
+        .and_then(|r| r.state.clone())
+        .map_or(Value::Null, Value::String);
+    json
 }
 
 fn shared_session_to_json(s: &SharedSession) -> Value {

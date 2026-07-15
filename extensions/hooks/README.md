@@ -162,6 +162,11 @@ control-mode connection. Delivery per agent, at spawn time:
   rather than accumulate), managed-marker guard for standalone files, and
   compare-before-write.
 
+The local TUI receives the state over its persistent control-mode connection;
+with the TUI closed, the headless `automation tick` (the 60 s tmux heartbeat)
+polls hosts that have live remote sessions and writes changes to the same
+database columns, so remote status keeps flowing either way.
+
 Provisioning is **best-effort** (a down host or refused write degrades to a
 `Hooks: degraded` hint in the info panel — never a failed spawn) and
 **one-way**: thurbox never uninstalls from remote hosts (same policy as remote

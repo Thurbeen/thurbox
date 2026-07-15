@@ -159,6 +159,11 @@ EOF
   remote_reset
   log "creating a remote session via thurbox-cli (isolated DB)"
   export XDG_CONFIG_HOME="$xdg/config" XDG_DATA_HOME="$xdg/data"
+  # Running this script from inside a thurbox session injects THURBOX_*_DIR
+  # overrides that outrank XDG_* (paths.rs) and would point the CLI at the
+  # real config/DB — pin them to the sandbox (same pattern as
+  # scripts/dev/lib/sandbox-env.sh).
+  export THURBOX_CONFIG_DIR="$xdg/config/thurbox-dev" THURBOX_DATA_DIR="$xdg/data/thurbox-dev"
   local result backend
   result="$(e2e_create_and_get \
     --name e2e --host podman --repo-path "$REMOTE_REPO" \
@@ -207,6 +212,29 @@ EOF
   case "$(ssh_remote "cat '$xdg/config/thurbox-dev/hooks/claude.json' 2>/dev/null" || true)" in
     *"tmux set-option -p @thurbox_state done"*) ok "arg-carried config materialized rewritten" ;;
     *) bad "arg-carried config missing or not rewritten on the host" ;;
+  esac
+
+  # --- headless remote-status poll (automation tick) --------------------------
+  # With no TUI attached (no control-mode subscription alive), an
+  # `automation tick` must pull the pane's @thurbox_state option into the DB —
+  # visible as `hook_state` in `session list --json`. Simulate the rewritten
+  # hook firing by setting the option on every remote pane, exactly as the
+  # in-pane command would.
+  log "asserting the headless remote-status poll (tick pulls @thurbox_state)"
+  # shellcheck disable=SC2016 # $p expands on the remote side on purpose
+  ssh_remote 'tmux -L thurbox-dev list-panes -s -t thurbox-dev -F "#{pane_id}" 2>/dev/null \
+    | while read -r p; do tmux -L thurbox-dev set-option -p -t "$p" @thurbox_state working; done'
+  e2e_cli automation tick >/dev/null || die "automation tick failed"
+  case "$(e2e_cli session list)" in
+    *'"hook_state":"working"'*) ok "tick polled the pane option into hook_state" ;;
+    *) bad "hook_state not updated by the headless poll" ;;
+  esac
+  # Steady state must stay silent: a second tick re-reads the same option but
+  # must not error or change the value (dedup against the stored state).
+  e2e_cli automation tick >/dev/null || die "second automation tick failed"
+  case "$(e2e_cli session list)" in
+    *'"hook_state":"working"'*) ok "second tick is a stable no-op" ;;
+    *) bad "hook_state lost after a steady-state tick" ;;
   esac
 
   if [ "$FAILS" -gt 0 ]; then

@@ -704,7 +704,14 @@ not block startup, so `check_available`/`ensure_ready` are deferred to first use
   OS notifications, and the stuck-`working` fallback are shared. Events are
   matched by **backend name + pane id** (pane ids collide across hosts),
   allow-listed (remote-controlled text), and deduped against the cache (a
-  reconnect re-report must not resurrect an acknowledged `done`). Remaining
+  reconnect re-report must not resurrect an acknowledged `done`). Those live
+  channels die with the TUI, so the headless **`automation tick`** (the 60 s
+  heartbeat keeper) also polls each host that has live remote sessions in the
+  DB (`session_ops::remote_hooks::poll_remote_hook_states` — one-shot
+  `list-panes -F`, allow-listed, diffed against the stored `hook_state` so an
+  acknowledged `done` is never resurrected) and writes changes into the same
+  columns — remote status keeps flowing with the TUI closed, at tick cadence.
+  Remaining
   carve-out: the **whole psmux/Windows-host path** — hook provisioning,
   rewrite shipping, and the status poller — is gated off on the one switch
   (`session::psmux_hook_rewrite_supported`) until the psmux behaviors are

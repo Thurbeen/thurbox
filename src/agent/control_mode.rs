@@ -385,36 +385,46 @@ pub fn is_valid_pane_id(s: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// Parse `list-panes -F "#{pane_id} #{@thurbox_state}"` output into the
+/// `(pane_id, value)` pairs whose option is **set**: one `%<id> [value]` line
+/// per pane; empty values (option unset) and malformed lines are skipped —
+/// wire data never panics. Shared by the psmux poller's diff below and the
+/// headless status poll (`session_ops::remote_hooks::poll_remote_hook_states`).
+pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
+    body.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (pane_id, value) = match line.split_once(' ') {
+                Some((id, v)) => (id, v.trim()),
+                None => (line, ""),
+            };
+            (is_valid_pane_id(pane_id) && !value.is_empty())
+                .then(|| (pane_id.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
 /// Diff one psmux hook-poll result against the previous poll, returning the
 /// `(pane_id, value)` pairs to report — the poller-side equivalent of tmux's
 /// `%subscription-changed` edge semantics.
 ///
-/// `body` is `list-panes -F "#{pane_id} #{@thurbox_state}"` output: one
-/// `%<id> [value]` line per pane. Reported: a pane's **non-empty** value seen
-/// for the first time (parity with the subscription's arm-time catch-up
-/// report) or changed since the last poll. Not reported: an unchanged value
-/// (steady state stays silent), an empty value (option unset — also *clears*
-/// the pane's entry, like a vanished pane, so a respawned pane's state
-/// re-reports). Malformed lines are skipped; wire data never panics.
+/// `body` is parsed by [`parse_pane_hook_states`]. Reported: a pane's
+/// **non-empty** value seen for the first time (parity with the
+/// subscription's arm-time catch-up report) or changed since the last poll.
+/// Not reported: an unchanged value (steady state stays silent), an empty
+/// value (option unset — also *clears* the pane's entry, like a vanished
+/// pane, so a respawned pane's state re-reports).
 pub fn diff_polled_hook_states(
     last: &mut std::collections::HashMap<String, String>,
     body: &str,
 ) -> Vec<(String, String)> {
     let mut current = std::collections::HashMap::new();
     let mut changed = Vec::new();
-    for line in body.lines() {
-        let line = line.trim();
-        let (pane_id, value) = match line.split_once(' ') {
-            Some((id, v)) => (id, v.trim()),
-            None => (line, ""),
-        };
-        if !is_valid_pane_id(pane_id) || value.is_empty() {
-            continue;
+    for (pane_id, value) in parse_pane_hook_states(body) {
+        if last.get(&pane_id).map(String::as_str) != Some(value.as_str()) {
+            changed.push((pane_id.clone(), value.clone()));
         }
-        if last.get(pane_id).map(String::as_str) != Some(value) {
-            changed.push((pane_id.to_string(), value.to_string()));
-        }
-        current.insert(pane_id.to_string(), value.to_string());
+        current.insert(pane_id, value);
     }
     *last = current;
     changed

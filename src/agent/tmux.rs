@@ -1924,6 +1924,25 @@ pub fn spawn_window_remote(
     Ok(spawned.backend_id)
 }
 
+/// One-shot read of every pane's remote-hook state option on `host`:
+/// `list-panes -s -t <session> -F "#{pane_id} #{@thurbox_state}"` over the
+/// host launcher, parsed to the set `(pane_id, state)` pairs. The headless
+/// status poll (`session_ops::remote_hooks::poll_remote_hook_states`) uses it
+/// to keep remote hook states flowing with no TUI attached. Read-only by
+/// design — no `ensure_ready`, so a poll never creates the remote
+/// server/session; an unreachable host or absent server is an `Err` the
+/// caller treats as "no reports this cycle".
+pub fn list_remote_hook_states(host: &crate::session::HostDef) -> Result<Vec<(String, String)>> {
+    let backend = TmuxBackend::from_host(host);
+    let session = backend.session.clone();
+    let format = format!(
+        "#{{pane_id}} #{{{}}}",
+        crate::session::REMOTE_HOOK_STATE_OPTION
+    );
+    let body = backend.tmux_output(&["list-panes", "-s", "-t", &session, "-F", &format])?;
+    Ok(control_mode::parse_pane_hook_states(&body))
+}
+
 /// Kill a remote tmux pane on `host` by its pane id (`%N`), best-effort.
 ///
 /// Mirror of [`kill_window`] for the SSH transport. Used to tear down a window

@@ -23,11 +23,15 @@
 //! entries carry two prune markers (`thurbox-cli session signal` pre-rewrite,
 //! `@thurbox_state` post-rewrite), so a future remote prune needs no schema
 //! knowledge.
+//!
+//! Besides provisioning (the write side), this module also owns the
+//! **headless status poll** (`poll_remote_hook_states`) — the read side that
+//! keeps remote hook states flowing while no TUI is attached.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-use crate::session::HostDef;
+use crate::session::{HostDef, SessionId};
 
 use super::builtin_hooks;
 use super::extensions::{HOOK_SIGNAL_MARKER, MANAGED_MARKER};
@@ -295,9 +299,152 @@ fn merged_remote_doc(existing: &str, payload: &str) -> Result<Option<String>, St
         .map_err(|e| format!("serialize merged doc: {e}"))
 }
 
+/// The hook states a headless poll may write — the same allow-list the TUI's
+/// drain applies (`App::drain_remote_hook_events`): the polled value is
+/// remote-host-controlled free text, so it is matched, never interpolated.
+const VALID_POLL_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
+
+/// Join one host's polled `(pane_id, state)` pairs against that backend's
+/// sessions, returning the `(session, state)` writes that change anything.
+/// Pure — the ssh/DB plumbing lives in [`poll_remote_hook_states`].
+///
+/// Comparing against the **stored** state is the resurrection guard: an
+/// acknowledged `done` still stores `done` (`seen_at` is a separate column),
+/// so a steady-state re-report compares equal and is dropped — the headless
+/// equivalent of the TUI drain's dedup against its cache.
+fn remote_status_updates(
+    polled: &[(String, String)],
+    sessions: &[(SessionId, &str, Option<&str>)],
+) -> Vec<(SessionId, String)> {
+    let states: HashMap<&str, &str> = polled
+        .iter()
+        .map(|(pane, state)| (pane.as_str(), state.as_str()))
+        .collect();
+    sessions
+        .iter()
+        .filter_map(|(id, backend_id, stored)| {
+            let state = states.get(backend_id)?;
+            if !VALID_POLL_STATES.contains(state) {
+                return None;
+            }
+            (*stored != Some(*state)).then(|| (*id, state.to_string()))
+        })
+        .collect()
+}
+
+/// Headless counterpart of the TUI's live status channels: poll each remote
+/// host that has **live sessions in the DB** and write changed pane states
+/// into the same hook columns `session signal` uses. Returns the number of
+/// states written.
+///
+/// The subscription/poller channels live on the TUI's persistent control-mode
+/// connection and die with it, so with the TUI closed a remote session's
+/// status froze at its last pushed value (local sessions are immune —
+/// `session signal` writes SQLite directly). Called from the headless
+/// `automation tick` (the 60 s tmux heartbeat keeper): coarse latency is fine
+/// there — no human is watching a dot; the consumers are `session list
+/// --json` readers — while the TUI stays the sub-second channel when open.
+///
+/// Best-effort everywhere: an unreachable host (bounded by the ssh
+/// `ConnectTimeout`) or a host with no running server is skipped for the
+/// cycle. Hosts from `hosts.toml` with **no** live remote sessions are never
+/// contacted, and psmux hosts stay excluded behind
+/// [`crate::session::psmux_hook_rewrite_supported`] (nothing sets the pane
+/// option there yet).
+pub(crate) fn poll_remote_hook_states(db: &crate::storage::Database) -> usize {
+    let Ok(sessions) = db.list_active_sessions() else {
+        return 0;
+    };
+    let mut by_backend: HashMap<String, Vec<&crate::sync::SharedSession>> = HashMap::new();
+    for s in &sessions {
+        if crate::session::is_remote_backend(&s.backend_type) {
+            by_backend
+                .entry(s.backend_type.clone())
+                .or_default()
+                .push(s);
+        }
+    }
+    if by_backend.is_empty() {
+        return 0;
+    }
+    let hook_rows = db.load_hook_states().unwrap_or_default();
+    let hosts = crate::agent::host_config::load_all();
+    let mut written = 0;
+    for (backend_name, group) in by_backend {
+        let Some(host) = hosts.get_by_backend(&backend_name) else {
+            continue;
+        };
+        if host.mux() == "psmux" && !crate::session::psmux_hook_rewrite_supported() {
+            continue;
+        }
+        let polled = match crate::agent::tmux::list_remote_hook_states(host) {
+            Ok(polled) => polled,
+            Err(e) => {
+                tracing::debug!("remote status poll skipped for host '{}': {e:#}", host.name);
+                continue;
+            }
+        };
+        let rows: Vec<(SessionId, &str, Option<&str>)> = group
+            .iter()
+            .map(|s| {
+                (
+                    s.id,
+                    s.backend_id.as_str(),
+                    hook_rows.get(&s.id).and_then(|r| r.state.as_deref()),
+                )
+            })
+            .collect();
+        for (id, state) in remote_status_updates(&polled, &rows) {
+            match db.set_hook_state(id, &state) {
+                Ok(()) => written += 1,
+                Err(e) => tracing::debug!("remote status poll write failed for {id}: {e}"),
+            }
+        }
+    }
+    written
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_status_updates_writes_changes_only() {
+        let a = SessionId::default();
+        let b = SessionId::default();
+        let polled = vec![
+            ("%1".to_string(), "working".to_string()),
+            ("%2".to_string(), "done".to_string()),
+            ("%9".to_string(), "blocked".to_string()), // no matching session
+        ];
+        let sessions = [
+            (a, "%1", None),         // first report → write
+            (b, "%2", Some("done")), // unchanged (incl. an acknowledged done) → silent
+        ];
+        assert_eq!(
+            remote_status_updates(&polled, &sessions),
+            vec![(a, "working".to_string())]
+        );
+        // A change writes; a pane whose option is unset stays untouched.
+        let sessions = [(a, "%1", Some("working")), (b, "%3", Some("done"))];
+        let polled = vec![("%1".to_string(), "done".to_string())];
+        assert_eq!(
+            remote_status_updates(&polled, &sessions),
+            vec![(a, "done".to_string())]
+        );
+    }
+
+    #[test]
+    fn remote_status_updates_allowlists_states() {
+        // The polled value is remote-controlled text — anything outside the
+        // states `session signal` accepts is dropped, never written.
+        let a = SessionId::default();
+        let polled = vec![
+            ("%1".to_string(), "pwned; DROP TABLE".to_string()),
+            ("%1".to_string(), "Working".to_string()), // case-sensitive
+        ];
+        assert!(remote_status_updates(&polled, &[(a, "%1", None)]).is_empty());
+    }
 
     /// Every config-dir wiring in the embedded manifest must have a matching
     /// remote asset (same destination, guard dir, and payload), so the local

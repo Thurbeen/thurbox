@@ -103,7 +103,10 @@ claude's via its `--settings` arg, the config-dir agents via
 managed-file write, best-effort). The local TUI receives changes over its
 control-mode connection (a format subscription on tmux hosts; a 1 s
 pane-option poller on psmux hosts, armed once the psmux gate —
-`session::psmux_hook_rewrite_supported` — is flipped). When wiring is
+`session::psmux_hook_rewrite_supported` — is flipped). With the TUI closed,
+the headless `automation tick` (60 s heartbeat) polls hosts that have live
+remote sessions and writes changed states into the same DB columns, so
+remote status never freezes at its last pushed value. When wiring is
 degraded (host
 unreachable mid-provision, a user-owned file refused, or the
 still-gated psmux provisioning), the session shows a `Hooks: degraded`
