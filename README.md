@@ -72,6 +72,11 @@ Installs the prebuilt x86_64 Windows binaries (`thurbox.exe` +
 Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
 separately).
 
+> **⚠️ Pending review.** The winget package has been submitted to
+> `microsoft/winget-pkgs` but is **not yet merged/live**, so `winget install
+> Thurbeen.thurbox` won't resolve it until the PR is approved. Use
+> **Chocolatey** or the PowerShell installer (both below) in the meantime.
+
 **Chocolatey (Windows):**
 
 ```powershell
@@ -82,11 +87,6 @@ Installs the prebuilt x86_64 Windows binaries (`thurbox.exe` +
 `thurbox-cli.exe`) from the GitHub Release and shims them onto your `PATH`.
 Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
 separately — there is no Chocolatey package for it).
-
-> **⚠️ Pending moderation.** The Chocolatey package has been pushed but is
-> **not yet approved** by the community-repo moderators, so `choco install
-> thurbox` won't resolve it from the community feed until it goes live. Use
-> **winget** or the PowerShell installer (both above) in the meantime.
 
 **Homebrew (macOS / Linux):**
 

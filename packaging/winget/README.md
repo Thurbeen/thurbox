@@ -9,6 +9,15 @@ commands on your `PATH`.
 winget install Thurbeen.thurbox
 ```
 
+> **Status: pending review.** The package has been submitted to
+> [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs) but the PR
+> has **not yet merged**, so `winget install Thurbeen.thurbox` will not resolve
+> until it goes live (see [Automated publishing](#automated-publishing-ci)
+> below). Until then,
+> install with the approved [Chocolatey](../chocolatey/README.md) package,
+> [`scripts/install.ps1`](../../scripts/install.ps1), or validate the local
+> manifest (see [Manual publishing](#manual-publishing--initial-import)).
+
 The canonical manifest set lives here under [`manifests/`](manifests/):
 
 | File | Manifest type | Purpose |

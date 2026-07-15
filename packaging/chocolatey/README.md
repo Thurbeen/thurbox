@@ -8,13 +8,11 @@ from the GitHub Release and shims them onto your `PATH`.
 choco install thurbox
 ```
 
-> **Status: pending moderation.** The package has been pushed to the Chocolatey
-> community repository but has **not yet been approved by the moderators**, so
-> `choco install thurbox` will not resolve it from the community feed until it
-> goes live. This is expected for a new package (see
-> [Moderation](#automated-publishing-ci) below); until then, install with
-> [`scripts/install.ps1`](../../scripts/install.ps1) or pack/install the local
-> template (see [Test locally](#test-locally)).
+> **Status: live.** The package has been approved by the Chocolatey community
+> moderators and resolves from the community feed:
+> [community.chocolatey.org/packages/thurbox](https://community.chocolatey.org/packages/thurbox).
+> New versions still go through community-repo moderation before they appear (see
+> [Moderation](#automated-publishing-ci) below).
 
 The canonical package source lives here:
 [`thurbox.nuspec`](thurbox.nuspec) (metadata) plus
