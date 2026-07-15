@@ -1,7 +1,7 @@
 // Modal state management for Thurbox TUI: a single discriminated `Modal` enum
 // makes invalid states (two modals open at once) unrepresentable.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -1213,6 +1213,66 @@ pub enum RepoPickerFocus {
     Search,
 }
 
+/// One row of the path-browser dropdown: an immediate sub-directory of the
+/// browsed dir, flagged when it is itself a git repo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowseEntry {
+    pub name: String,
+    pub is_git: bool,
+}
+
+/// The path-input browser dropdown: a listing of the directory prefix of the
+/// typed path, filtered live by the remainder. Local listings compute inline;
+/// remote ones arrive async (`loading` renders a spinner row meanwhile).
+#[derive(Debug, Clone, Default)]
+pub struct PathBrowser {
+    pub open: bool,
+    /// The directory being browsed, exactly as typed (tilde unexpanded — the
+    /// display form and the `dir_cache` key).
+    pub dir: String,
+    /// Full unfiltered listing of `dir`.
+    pub listing: Vec<BrowseEntry>,
+    /// Indices into `listing` matching the typed prefix (see
+    /// [`recompute_filter`](Self::recompute_filter)).
+    pub filtered: Vec<usize>,
+    /// Cursor index into `filtered`.
+    pub index: usize,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+impl PathBrowser {
+    /// Rebuild `filtered` for the typed `prefix`. Hidden (`.`-prefixed)
+    /// entries are offered only when the prefix itself starts with a `.`,
+    /// mirroring the local ghost-completion's behavior. Keeps `index` in
+    /// range, resetting to the top when the visible set changes.
+    pub fn recompute_filter(&mut self, prefix: &str) {
+        let filtered: Vec<usize> = self
+            .listing
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.name.starts_with(prefix))
+            .filter(|(_, e)| !e.name.starts_with('.') || prefix.starts_with('.'))
+            .map(|(i, _)| i)
+            .collect();
+        if filtered != self.filtered {
+            self.index = 0;
+            self.filtered = filtered;
+        }
+    }
+
+    /// The entry under the cursor, if any.
+    pub fn selected(&self) -> Option<&BrowseEntry> {
+        self.listing.get(*self.filtered.get(self.index)?)
+    }
+
+    /// Close and forget the transient view state (the parent modal's
+    /// `dir_cache` keeps the fetched listings).
+    pub fn close(&mut self) {
+        *self = Self::default();
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RepoPickerModal {
     /// Bookmarked repos shown in the list. For a header row this is the parent
@@ -1243,16 +1303,36 @@ pub struct RepoPickerModal {
     /// Indices into `bookmarks` that match the current search query.
     /// When search is empty, contains `0..bookmarks.len()`.
     pub filtered_indices: Vec<usize>,
+    /// Per-row git-ness, parallel to `bookmarks`: `None` = never checked
+    /// (legacy row). Gates the worktree toggle on `Some(false)`.
+    pub is_git: Vec<Option<bool>>,
+    /// The path-input browser dropdown (closed by default).
+    pub browser: PathBrowser,
+    /// Directory listings fetched this modal instance, keyed by the browsed
+    /// dir as typed (the host is fixed per instance, so it isn't in the key).
+    pub dir_cache: HashMap<String, Vec<BrowseEntry>>,
+    /// The raw input text whose Enter-commit is being validated on a remote
+    /// host (renders a "checking…" spinner on the input label).
+    pub pending_commit: Option<String>,
 }
 
 impl RepoPickerModal {
-    /// Push a row, keeping all parallel vectors in lockstep.
-    pub fn push_row(&mut self, path: PathBuf, selected: bool, is_header: bool, is_child: bool) {
+    /// Push a row, keeping all parallel vectors in lockstep. `is_git` is
+    /// `None` when the path was never classified.
+    pub fn push_row(
+        &mut self,
+        path: PathBuf,
+        selected: bool,
+        is_header: bool,
+        is_child: bool,
+        is_git: Option<bool>,
+    ) {
         self.bookmarks.push(path);
         self.selected.push(selected);
         self.worktree.push(false);
         self.is_header.push(is_header);
         self.is_child.push(is_child);
+        self.is_git.push(is_git);
     }
 
     /// Whether the row at `idx` is a parent header (bounds-safe).
@@ -2534,9 +2614,9 @@ mod tests {
     #[test]
     fn test_repo_picker_clear_search_resets_filter() {
         let mut rp = RepoPickerModal::default();
-        rp.push_row("/a".into(), false, false, false);
-        rp.push_row("/b".into(), true, false, false);
-        rp.push_row("/c".into(), false, false, false);
+        rp.push_row("/a".into(), false, false, false, None);
+        rp.push_row("/b".into(), true, false, false, None);
+        rp.push_row("/c".into(), false, false, false, None);
         rp.list_index = 1;
         rp.filtered_indices = vec![1]; // simulating an active filter
         rp.search_input.set("b");
@@ -2551,9 +2631,9 @@ mod tests {
     #[test]
     fn test_repo_picker_push_row_keeps_vectors_in_lockstep() {
         let mut rp = RepoPickerModal::default();
-        rp.push_row("/repo".into(), true, false, false);
-        rp.push_row("/parent".into(), false, true, false);
-        rp.push_row("/parent/child".into(), false, false, true);
+        rp.push_row("/repo".into(), true, false, false, None);
+        rp.push_row("/parent".into(), false, true, false, None);
+        rp.push_row("/parent/child".into(), false, false, true, None);
 
         let n = rp.bookmarks.len();
         assert_eq!(n, 3);
@@ -2568,7 +2648,7 @@ mod tests {
     #[test]
     fn test_repo_picker_toggle_collapsed_ignores_non_header_rows() {
         let mut rp = RepoPickerModal::default();
-        rp.push_row("/repo".into(), false, false, false); // standalone, not a header
+        rp.push_row("/repo".into(), false, false, false, None); // standalone, not a header
         rp.toggle_collapsed(0);
         assert!(
             rp.collapsed.is_empty(),
@@ -2582,9 +2662,9 @@ mod tests {
     #[test]
     fn test_repo_picker_search_overrides_collapse() {
         let mut rp = RepoPickerModal::default();
-        rp.push_row("/parent".into(), false, true, false); // header
-        rp.push_row("/parent/foo".into(), false, false, true);
-        rp.push_row("/parent/bar".into(), false, false, true);
+        rp.push_row("/parent".into(), false, true, false, None); // header
+        rp.push_row("/parent/foo".into(), false, false, true, None);
+        rp.push_row("/parent/bar".into(), false, false, true, None);
         rp.collapsed.insert("/parent".into());
         rp.recompute_filter();
         // Collapsed: only the header is visible.

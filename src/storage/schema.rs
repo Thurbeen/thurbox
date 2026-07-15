@@ -16,9 +16,11 @@ use rusqlite::Connection;
 /// v38 adds `base_branch` to `sessions` plus the `review_comments` /
 /// `review_marks` tables (the native code-review view); v39 scopes
 /// `repo_bookmarks` to a `host` (`''` = local), giving remote targets the
-/// same bookmark memory as local ones.
+/// same bookmark memory as local ones; v40 adds `is_git` (NULL = unknown,
+/// gates the worktree toggle) and `parent_path` (persisted children of a
+/// remote parent bookmark) to `repo_bookmarks`.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 39;
+pub const SCHEMA_VERSION: u32 = 40;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -176,6 +178,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             last_used_at INTEGER NOT NULL,
             use_count    INTEGER NOT NULL DEFAULT 1,
             is_parent    INTEGER NOT NULL DEFAULT 0,
+            is_git       INTEGER,
+            parent_path  TEXT,
             PRIMARY KEY (host, repo_path)
         );
 
@@ -286,6 +290,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (37, migrate_v37_force_deleted),
         (38, migrate_v38_code_review),
         (39, migrate_v39_bookmark_host),
+        (40, migrate_v40_bookmark_git_kind),
     ];
 
     for &(target, step) in steps {
@@ -1161,6 +1166,18 @@ fn migrate_v39_bookmark_host(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// v39 → v40: teach `repo_bookmarks` what its path *is*. `is_git` (NULL =
+/// unknown, for pre-v40 rows) records whether the path is a git repo — the
+/// picker refuses the worktree toggle on a known non-repo, and remote rows
+/// learn it opportunistically from listing/validation results instead of a
+/// dedicated ssh round-trip. `parent_path` marks a row as a persisted child
+/// of a remote parent bookmark (local parents keep the live re-scan; a remote
+/// re-scan per picker open would be an ssh round-trip).
+fn migrate_v40_bookmark_git_kind(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(conn, "repo_bookmarks", "is_git", "INTEGER")?;
+    add_column_if_absent(conn, "repo_bookmarks", "parent_path", "TEXT")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,6 +1459,52 @@ mod tests {
             })
             .unwrap();
         assert_eq!((host.as_str(), path.as_str()), ("", "/repo/a"));
+    }
+
+    #[test]
+    fn migrate_from_v39_adds_git_kind_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v39 state: the host-keyed repo_bookmarks shape, pre-v40.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '39');
+             CREATE TABLE repo_bookmarks (
+                host         TEXT NOT NULL DEFAULT '',
+                repo_path    TEXT NOT NULL,
+                label        TEXT,
+                last_used_at INTEGER NOT NULL,
+                use_count    INTEGER NOT NULL DEFAULT 1,
+                is_parent    INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (host, repo_path)
+             );
+             INSERT INTO repo_bookmarks (host, repo_path, last_used_at)
+             VALUES ('ssh:devbox', '/repo/a', 1);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        // Re-run is a no-op (guarded ALTERs).
+        migrate(&conn).unwrap();
+
+        // Legacy row survives with both new columns NULL (= unknown).
+        let (is_git, parent_path): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT is_git, parent_path FROM repo_bookmarks WHERE repo_path = '/repo/a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(is_git, None);
+        assert_eq!(parent_path, None);
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
     }
 
     #[test]

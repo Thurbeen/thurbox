@@ -1135,6 +1135,24 @@ impl App {
                 host: self
                     .host_for_backend(self.new_session.backend.as_deref())
                     .map(|h| h.name.as_str()),
+                is_git: &rp.is_git,
+                browser: rp
+                    .browser
+                    .open
+                    .then(|| crate::ui::repo_picker_modal::BrowserView {
+                        dir: &rp.browser.dir,
+                        entries: rp
+                            .browser
+                            .filtered
+                            .iter()
+                            .filter_map(|&i| rp.browser.listing.get(i))
+                            .collect(),
+                        index: rp.browser.index,
+                        loading: rp.browser.loading,
+                        error: rp.browser.error.as_deref(),
+                    }),
+                pending_commit: rp.pending_commit.is_some(),
+                spinner: crate::ui::SPINNER_FRAMES[self.spinner_frame()],
             },
         )
     }

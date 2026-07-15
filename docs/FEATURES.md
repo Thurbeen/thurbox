@@ -179,16 +179,27 @@ not applicable.
    remote SSH host defined in `hosts.toml`. Skipped entirely when no
    remote hosts are configured (preserving the local-only flow). For
    a remote host the repo picker shows the repos previously used *on
-   that host* (bookmarks are host-scoped, schema v39); new paths are
-   typed (with `Tab` completing against the remote filesystem, `~`
-   resolving to the remote home, and existence verified on Enter) and
-   the worktree + tmux window are created on that host over SSH.
+   that host* (bookmarks are host-scoped, schema v39) and every remote
+   filesystem touch — the path browser's listings, Enter validation,
+   `Ctrl+P` parent scans — runs on a worker, never blocking the UI on
+   an ssh round trip; the worktree + tmux window are created on that
+   host over SSH.
 2. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` toggles selection, `w` marks the selected repo
-   as a worktree base, `d` deletes the bookmark, and a path-input
-   field with filesystem autocomplete adds new bookmarks. The
-   first selected repo becomes the session's `cwd`; the rest may be
-   exposed to the agent depending on the agent's own flags.
+   as a worktree base (refused on a known non-git dir, which is
+   still selectable as a plain member and rendered with a dim
+   `(dir)` tag), `d` deletes the bookmark, and a path-input field
+   adds new bookmarks: `Tab` accepts the inline autocomplete
+   suggestion, or — with nothing to complete — opens a **path
+   browser** dropdown listing the typed directory (git repos marked
+   `●git`; `Enter` descends into a plain dir or picks a repo
+   directly, `Esc` closes it, listings are cached per picker).
+   Remote paths expand `~` against the remote home and are verified
+   (exists + is-it-git, one round trip, async with a `checking…`
+   spinner) on Enter; git-ness is persisted per bookmark (schema
+   v40) so it's learned once. The first selected repo becomes the
+   session's `cwd`; the rest may be exposed to the agent depending
+   on the agent's own flags.
 3. **Base branch selector** — worktree mode only.
 4. **Session name** — free text identifier shown in the sidebar.
 5. **New branch name** — worktree mode only.
@@ -436,6 +447,11 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `w` | Repo picker | Toggle worktree mode for repo | |
 | `d` | Repo picker | Delete bookmark | |
 | `Tab` | Repo picker | Switch to path input | |
+| `Tab` | Repo picker input | Accept suggestion, else open the path browser | |
+| `↑`/`↓` | Repo picker browser | Move the dropdown selection | |
+| `Enter` | Repo picker browser | Descend into a dir / pick a git repo | |
+| `Esc` | Repo picker browser | Close the dropdown (modal stays open) | |
+| `Ctrl+P` | Repo picker | Import typed path as a parent folder (local + remote) | |
 | `Enter` | Repo picker | Confirm selection | |
 | `Esc` | Repo picker | Cancel | |
 | `Shift+Up` | Focused terminal | Scroll up 1 line | |

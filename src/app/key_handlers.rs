@@ -39,53 +39,6 @@ fn is_ctrl_letter_chord(code: KeyCode, mods: KeyModifiers) -> bool {
     mods == KeyModifiers::CONTROL && matches!(code, KeyCode::Char(c) if c.is_ascii_alphabetic())
 }
 
-/// The directory-completion suffix to append after `prefix`, given the candidate
-/// directory `names` in the parent (as returned by `git::list_dir_on`). Mirrors
-/// `paths::complete_directory_path` for the remote case:
-/// - hidden (`.`-prefixed) names are offered only to a `.`-prefix (like the
-///   local completer's `matching_dir_names`);
-/// - no match, or an ambiguous prefix with nothing more shared → `None`;
-/// - a single match → the remaining chars **plus a trailing `/`** (so the next
-///   `Tab` descends into it);
-/// - several matches → their longest common prefix beyond `prefix`.
-///
-/// Pure (no I/O) so the completion logic is unit-tested without a remote host.
-fn dir_completion_suffix(names: &[String], prefix: &str) -> Option<String> {
-    let show_hidden = prefix.starts_with('.');
-    let matches: Vec<&str> = names
-        .iter()
-        .map(String::as_str)
-        .filter(|n| show_hidden || !n.starts_with('.'))
-        .filter(|n| n.starts_with(prefix))
-        .collect();
-    let first = matches.first()?;
-    // Longest common prefix of the matches, floored to a char boundary of
-    // `first` (a byte-wise LCP can land mid-char when names diverge inside a
-    // multibyte char). It always covers at least `prefix` — itself a valid
-    // boundary — so slicing back into `first` is safe.
-    let mut common_len = matches[1..].iter().fold(first.len(), |end, m| {
-        first
-            .bytes()
-            .zip(m.bytes())
-            .take(end)
-            .take_while(|(a, b)| a == b)
-            .count()
-    });
-    while !first.is_char_boundary(common_len) {
-        common_len -= 1;
-    }
-    let beyond = first.get(prefix.len()..common_len)?;
-    if beyond.is_empty() && matches.len() > 1 {
-        return None; // ambiguous with nothing new to add
-    }
-    let suffix = if matches.len() == 1 {
-        format!("{beyond}/")
-    } else {
-        beyond.to_string()
-    };
-    (!suffix.is_empty()).then_some(suffix)
-}
-
 impl App {
     /// Main key handler dispatcher.
     ///
@@ -1674,7 +1627,9 @@ impl App {
     }
 
     /// Toggle the worktree flag of the repo under the cursor, auto-selecting it
-    /// when worktree mode is turned on.
+    /// when worktree mode is turned on. Refused on a known non-repo (`git
+    /// worktree add` needs one); unknown git-ness (a legacy row) stays allowed
+    /// — worktree creation surfaces the real error if it isn't.
     fn repo_picker_toggle_worktree(&mut self) {
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
@@ -1683,6 +1638,13 @@ impl App {
             return;
         };
         if rp.is_header_row(real_idx) {
+            return;
+        }
+        if rp.is_git.get(real_idx).copied().flatten() == Some(false) {
+            self.set_status(
+                super::StatusLevel::Info,
+                "Not a git repo — worktree mode needs one (it can still be added as a plain dir)",
+            );
             return;
         }
         let Some(wt) = rp.worktree.get_mut(real_idx) else {
@@ -1740,10 +1702,20 @@ impl App {
         rp.worktree.remove(real_idx);
         rp.is_header.remove(real_idx);
         rp.is_child.remove(real_idx);
+        rp.is_git.remove(real_idx);
         self.recompute_repo_filter();
     }
 
     fn handle_repo_picker_input_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        // With the browser dropdown open, navigation/act keys are consumed by
+        // it; editing keys fall through to the input below (the browser then
+        // re-syncs to the edited path).
+        if rp.browser.open && self.handle_repo_browser_key(code, mods) {
+            return;
+        }
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
@@ -1753,37 +1725,17 @@ impl App {
                 return;
             }
             KeyCode::Tab => {
-                // Remote targets have no per-keystroke suggestion (that would
-                // fire an ssh/wsl round-trip on every character); compute one on
-                // demand here by listing the remote directory. Mirrors the local
-                // branch below: completion only applies with the cursor at the
-                // end (inserting mid-string would garble the path), and a Tab
-                // with nothing to complete moves focus to the list.
-                if self.new_session.backend.is_some() {
-                    let value = rp.path_input.value().to_string();
-                    let at_end = rp.path_input.cursor_pos() == value.chars().count();
-                    let sug = at_end
-                        .then(|| self.remote_path_completion(&value))
-                        .flatten();
-                    if let super::modals::Modal::RepoPicker(ref mut rp) = self.modal {
-                        match sug {
-                            Some(sug) => {
-                                for c in sug.chars() {
-                                    rp.path_input.insert(c);
-                                }
-                            }
-                            None => rp.focus = super::modals::RepoPickerFocus::List,
-                        }
-                    }
-                    return;
-                }
+                // Tab accepts a pending inline suggestion; with nothing to
+                // complete it opens the path-browser dropdown instead — which
+                // is also the only Tab behavior for a remote target (no
+                // per-keystroke suggestion there; the listing is fetched
+                // async, never blocking on an ssh/wsl round trip).
                 if let Some(suggestion) = rp.path_suggestion.take() {
                     for c in suggestion.chars() {
                         rp.path_input.insert(c);
                     }
                 } else {
-                    rp.focus = super::modals::RepoPickerFocus::List;
-                    rp.path_suggestion = None;
+                    self.repo_picker_open_browser();
                     return;
                 }
             }
@@ -1803,138 +1755,7 @@ impl App {
             }
         }
         self.update_repo_picker_path_suggestion();
-    }
-
-    /// Commit the typed path in the repo-picker input: add or re-select the
-    /// bookmark, persist it (scoped to the target host), clear the input, and
-    /// refresh the filter.
-    fn repo_picker_commit_path_input(&mut self) {
-        // A remote path expands `~` against the *remote* home (never the local
-        // one) and is verified to exist on the host before it's accepted —
-        // catching a typo here beats failing minutes later at branch listing
-        // or worktree creation. One ssh/wsl round-trip, on explicit Enter only.
-        let remote_host = self
-            .host_for_backend(self.new_session.backend.as_deref())
-            .cloned();
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        let path = rp.path_input.value().trim().to_string();
-        if path.is_empty() {
-            self.recompute_repo_filter();
-            return;
-        }
-        let expanded = match &remote_host {
-            Some(host) => {
-                let expanded = match crate::git::expand_remote_tilde(host, &path) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        self.set_error(format!("Cannot resolve ~ on '{}': {e:#}", host.name));
-                        return;
-                    }
-                };
-                if crate::git::list_dir_on(host, &expanded).is_err() {
-                    self.set_error(format!("Path not found on '{}': {expanded}", host.name));
-                    return;
-                }
-                std::path::PathBuf::from(expanded)
-            }
-            None => paths::expand_tilde(&path),
-        };
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        let persist = Self::repo_picker_select_or_add_row(rp, &expanded);
-        if persist {
-            if let Err(e) = self
-                .db
-                .upsert_repo_bookmark(self.bookmark_host_key(), &expanded)
-            {
-                error!("Failed to save repo bookmark: {e}");
-                self.set_error(format!("Failed to save repo bookmark: {e}"));
-            }
-        }
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        rp.path_input.clear();
-        rp.path_suggestion = None;
-        self.recompute_repo_filter();
-    }
-
-    /// Select an already-represented bookmark row for `expanded`, or push a new
-    /// auto-selected row. Returns whether the path should be persisted as a
-    /// standalone bookmark: a path already shown as a parent's child (or the
-    /// parent header itself) is already covered, so it is not re-persisted.
-    fn repo_picker_select_or_add_row(
-        rp: &mut super::modals::RepoPickerModal,
-        expanded: &std::path::Path,
-    ) -> bool {
-        // If already represented, just select it (no duplicate row or DB entry).
-        let Some(idx) = rp.bookmarks.iter().position(|p| p == expanded) else {
-            rp.push_row(expanded.to_path_buf(), true, false, false);
-            return true;
-        };
-        let is_child = rp.is_child_row(idx);
-        let is_header = rp.is_header_row(idx);
-        if !is_header {
-            rp.selected[idx] = true;
-        }
-        !is_child && !is_header
-    }
-
-    /// Import the typed path as a *parent* folder: persist it as a parent
-    /// bookmark, then rebuild the list (re-scanning its git sub-directories).
-    /// The parent itself is not added as a selectable repo — its children are.
-    /// Local targets only: the child scan walks the local filesystem, so a
-    /// remote parent would import the wrong machine's repos.
-    fn repo_picker_import_parent(&mut self) {
-        if self.new_session.backend.is_some() {
-            self.set_status(
-                super::StatusLevel::Info,
-                "Parent import scans the local filesystem — add remote repos by path instead",
-            );
-            return;
-        }
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        let path = rp.path_input.value().trim().to_string();
-        if path.is_empty() {
-            self.set_status(
-                super::StatusLevel::Info,
-                "Type a folder path, then Ctrl+P to import its repos as a parent",
-            );
-            return;
-        }
-        let expanded = paths::expand_tilde(&path);
-        // Equivalent to a literal "" (the remote guard above means the wizard
-        // is local here), but keeps the `"" = local` encoding owned by
-        // `bookmark_host_key` alone.
-        let host = self.bookmark_host_key().to_string();
-        if let Err(e) = self.db.upsert_repo_bookmark_kind(&host, &expanded, true) {
-            error!("Failed to save parent bookmark: {e}");
-            self.set_error(format!("Failed to save parent bookmark: {e}"));
-        }
-        if let super::modals::Modal::RepoPicker(ref mut rp) = self.modal {
-            rp.path_input.clear();
-            rp.path_suggestion = None;
-            rp.focus = super::modals::RepoPickerFocus::List;
-        }
-        self.refresh_repo_picker_rows();
-    }
-
-    /// Compute a remote directory completion for the repo-picker path input by
-    /// listing the parent directory on the selected host over ssh/wsl. Returns
-    /// the suffix to append (mirroring `paths::complete_directory_path`), or
-    /// `None`. Only called on an explicit `Tab` so it doesn't run per keystroke.
-    fn remote_path_completion(&self, input: &str) -> Option<String> {
-        let host = self.host_for_backend(self.new_session.backend.as_deref())?;
-        // Need at least one `/` to know which remote dir to list.
-        let (parent, prefix) = input.rsplit_once('/')?;
-        let parent = if parent.is_empty() { "/" } else { parent };
-        let entries = crate::git::list_dir_on(host, parent).ok()?;
-        dir_completion_suffix(&entries, prefix)
+        self.repo_picker_sync_browser();
     }
 
     pub(super) fn update_repo_picker_path_suggestion(&mut self) {
@@ -1984,7 +1805,7 @@ impl App {
         }
     }
 
-    fn recompute_repo_filter(&mut self) {
+    pub(super) fn recompute_repo_filter(&mut self) {
         if let super::modals::Modal::RepoPicker(ref mut rp) = self.modal {
             rp.recompute_filter();
         }
@@ -2078,82 +1899,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{dir_completion_suffix, is_ctrl_letter_chord, session_name_to_branch};
+    use super::{is_ctrl_letter_chord, session_name_to_branch};
     use crossterm::event::{KeyCode, KeyModifiers};
-
-    fn names(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn dir_completion_single_match_appends_trailing_slash() {
-        // One match → complete the rest and descend on the next Tab.
-        let dirs = names(&["repositories", "downloads"]);
-        assert_eq!(
-            dir_completion_suffix(&dirs, "rep"),
-            Some("ositories/".to_string())
-        );
-    }
-
-    #[test]
-    fn dir_completion_multi_match_uses_common_prefix() {
-        // Several matches → their longest common prefix beyond the typed prefix,
-        // no trailing slash (still ambiguous).
-        let dirs = names(&["adaptfy-landing", "adaptfy-landing-infra", "ai-ml"]);
-        assert_eq!(
-            dir_completion_suffix(&dirs, "adaptfy"),
-            Some("-landing".to_string())
-        );
-    }
-
-    #[test]
-    fn dir_completion_ambiguous_with_no_shared_extension_is_none() {
-        // Two matches that share nothing past the prefix → nothing to add.
-        let dirs = names(&["ai-ml", "ai-infra"]);
-        assert_eq!(dir_completion_suffix(&dirs, "ai-"), None);
-    }
-
-    #[test]
-    fn dir_completion_no_match_is_none() {
-        let dirs = names(&["repositories", "downloads"]);
-        assert_eq!(dir_completion_suffix(&dirs, "zzz"), None);
-        assert_eq!(dir_completion_suffix(&[], "any"), None);
-    }
-
-    #[test]
-    fn dir_completion_hidden_dirs_only_offered_to_dot_prefix() {
-        // Mirrors the local completer: hidden entries never match a plain
-        // prefix (including the empty one), but a `.`-prefix reaches them.
-        let dirs = names(&[".config", ".cache", "repos"]);
-        assert_eq!(dir_completion_suffix(&dirs, ""), Some("repos/".to_string()));
-        assert_eq!(
-            dir_completion_suffix(&dirs, ".co"),
-            Some("nfig/".to_string())
-        );
-        assert_eq!(dir_completion_suffix(&dirs, "."), Some("c".to_string()));
-    }
-
-    #[test]
-    fn dir_completion_multibyte_divergence_floors_to_char_boundary() {
-        // "répo-a" vs "rêpo-b" diverge inside the 2-byte é/ê — the byte-wise
-        // LCP lands mid-char and must be floored, not sliced (panic) or
-        // dropped (no completion for a valid shared prefix).
-        let dirs = names(&["répo-a", "rêpo-b"]);
-        assert_eq!(dir_completion_suffix(&dirs, "r"), None);
-        // Diverging *after* a multibyte char keeps the full shared run.
-        let dirs = names(&["été-x", "été-y"]);
-        assert_eq!(dir_completion_suffix(&dirs, "é"), Some("té-".to_string()));
-    }
-
-    #[test]
-    fn dir_completion_exact_match_alone_still_descends() {
-        // Prefix already equals the only entry → append just the slash.
-        let dirs = names(&["repositories"]);
-        assert_eq!(
-            dir_completion_suffix(&dirs, "repositories"),
-            Some("/".to_string())
-        );
-    }
 
     #[test]
     fn ctrl_letter_chord_detects_readline_namespace() {

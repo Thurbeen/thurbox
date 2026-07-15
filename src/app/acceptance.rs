@@ -437,6 +437,16 @@ fn theme_picker_lists_palettes() {
     insta::assert_snapshot!(h.render());
 }
 
+#[test]
+fn repo_picker_path_browser_snapshot() {
+    // The dropdown under the path input: a `●git`-marked repo, a plain dir,
+    // and the browser footer hints. Paths are `~`-relative (the guarded test
+    // home), so the frame is stable.
+    let mut h = Harness::snapshot();
+    open_browser_on_home_code(&mut h);
+    insta::assert_snapshot!(h.render());
+}
+
 // ── Behavioral tests: drive keys, assert on App state ────────────────────────
 
 #[test]
@@ -450,6 +460,115 @@ fn ctrl_n_opens_repo_picker() {
     );
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(!h.app.modal.is_open(), "Esc should dismiss the modal");
+}
+
+/// Create `~/code` under the harness's guarded home with one git child and
+/// one plain child, and drive the picker to the path input with `~/code/`
+/// typed — the setup shared by the path-browser tests. (Local listings
+/// compute inline, so no runtime/tick is needed.)
+fn open_browser_on_home_code(h: &mut Harness) {
+    let home = crate::paths::home_dir().unwrap();
+    std::fs::create_dir_all(home.join("code").join("alpha").join(".git")).unwrap();
+    std::fs::create_dir_all(home.join("code").join("notes")).unwrap();
+
+    h.ctrl('n');
+    h.key(KeyCode::Tab, KeyModifiers::NONE); // list → path input
+    for c in "~/code/".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    // "alpha" and "notes" share no prefix → no ghost suggestion, so Tab
+    // opens the browser dropdown instead.
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+}
+
+#[test]
+fn repo_picker_browser_lists_and_picks_a_git_repo() {
+    let mut h = Harness::standard(0);
+    open_browser_on_home_code(&mut h);
+
+    let modals::Modal::RepoPicker(ref rp) = h.app.modal else {
+        panic!("picker open");
+    };
+    assert!(rp.browser.open, "Tab with no suggestion opens the browser");
+    assert_eq!(rp.browser.dir, "~/code");
+    let names: Vec<(&str, bool)> = rp
+        .browser
+        .filtered
+        .iter()
+        .map(|&i| {
+            (
+                rp.browser.listing[i].name.as_str(),
+                rp.browser.listing[i].is_git,
+            )
+        })
+        .collect();
+    assert_eq!(names, vec![("alpha", true), ("notes", false)]);
+
+    // Enter on the git repo commits it directly: row added + selected +
+    // classified, input reset, browser closed.
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    let modals::Modal::RepoPicker(ref rp) = h.app.modal else {
+        panic!("picker still open");
+    };
+    let home = crate::paths::home_dir().unwrap();
+    assert_eq!(rp.bookmarks, vec![home.join("code").join("alpha")]);
+    assert_eq!(rp.selected, vec![true]);
+    assert_eq!(rp.is_git, vec![Some(true)]);
+    assert!(!rp.browser.open);
+    assert!(rp.path_input.value().is_empty());
+}
+
+#[test]
+fn repo_picker_browser_descends_into_plain_dirs() {
+    let mut h = Harness::standard(0);
+    open_browser_on_home_code(&mut h);
+
+    // Down to "notes" (a plain dir), Enter descends instead of committing.
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+
+    let modals::Modal::RepoPicker(ref rp) = h.app.modal else {
+        panic!("picker open");
+    };
+    assert_eq!(rp.path_input.value(), "~/code/notes/");
+    assert!(rp.browser.open, "still browsing after the descent");
+    assert_eq!(rp.browser.dir, "~/code/notes");
+    assert!(
+        rp.browser.filtered.is_empty(),
+        "notes has no subdirectories"
+    );
+    assert!(rp.bookmarks.is_empty(), "descending never commits");
+}
+
+#[test]
+fn repo_picker_browser_filters_live_and_esc_layers() {
+    let mut h = Harness::standard(0);
+    open_browser_on_home_code(&mut h);
+
+    // Typing narrows the open dropdown by prefix without a refetch.
+    for c in "al".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let modals::Modal::RepoPicker(ref rp) = h.app.modal else {
+        panic!("picker open");
+    };
+    assert_eq!(
+        rp.browser.filtered.len(),
+        1,
+        "prefix `al` leaves only alpha"
+    );
+
+    // Esc closes just the dropdown; the modal (and typed path) survive.
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    let modals::Modal::RepoPicker(ref rp) = h.app.modal else {
+        panic!("first Esc must not close the modal");
+    };
+    assert!(!rp.browser.open);
+    assert_eq!(rp.path_input.value(), "~/code/al");
+
+    // The second Esc closes the picker itself.
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!h.app.modal.is_open());
 }
 
 #[test]

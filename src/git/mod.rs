@@ -323,66 +323,6 @@ pub fn expand_remote_tilde(host: &HostDef, path: &str) -> Result<String> {
     }
 }
 
-/// List immediate sub-directory **names** of `dir` on `host` over the host
-/// launcher, sorted. Hidden (`.`-prefixed) entries are *included* — the
-/// completion layer decides their visibility (`dir_completion_suffix` offers
-/// them only to a `.`-prefix, mirroring the local completer). A leading `~`
-/// is expanded against the host's `$HOME`. Used by the repo picker's remote
-/// path completion.
-///
-/// Runs `ls -1p <dir>` — a **variable-free** command on purpose, and over WSL
-/// with `--exec` so argv reaches `ls` verbatim (no `wsl.exe` `$`-substitution
-/// or shell re-splitting; over ssh each token is `posix_quote`d instead). `-p`
-/// appends a trailing `/` to directories, which is how they're identified
-/// without a shell loop. Known gap: `-p` slashes only *real* directories, so
-/// a symlink to a directory is omitted — accepted, because the alternatives
-/// re-interpret the user-typed dir through a shell (`sh -c` loop; see the
-/// wsl list_dir test) or fail wholesale on a broken symlink (`ls -L`).
-///
-/// This runs synchronously on the caller's (UI) thread; the ssh launcher is
-/// hardened centrally ([`crate::shell::SSH_HARDENING_OPTS`] — `BatchMode=yes` +
-/// `ConnectTimeout=5` + `ServerAlive*`, appended after the host's own
-/// `ssh_opts`), so completion fails fast on an unreachable or password-prompting
-/// host instead of freezing the TUI indefinitely.
-pub fn list_dir_on(host: &HostDef, dir: &str) -> Result<Vec<String>> {
-    let dir = expand_remote_tilde(host, dir)?;
-    let output = list_dir_command(host, &dir)
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to list remote directory")?;
-    let stdout = remote_output_or_stderr(output, "dir listing")?;
-    let mut names: Vec<String> = String::from_utf8_lossy(&stdout)
-        .lines()
-        .filter_map(|line| line.strip_suffix('/'))
-        .filter(|name| !name.is_empty())
-        .map(String::from)
-        .collect();
-    names.sort();
-    Ok(names)
-}
-
-/// The `ls -1p <dir>` launcher [`list_dir_on`] runs (`dir` already
-/// tilde-expanded). Split out so the per-transport construction is testable
-/// without a live host.
-fn list_dir_command(host: &HostDef, dir: &str) -> Command {
-    if host.is_wsl() {
-        let mut cmd = host_launcher(host);
-        cmd.arg("-e");
-        for tok in ["ls", "-1p", dir] {
-            cmd.arg(tok);
-        }
-        cmd
-    } else {
-        // `host_launcher` builds `ssh <ssh_opts> <hardening> <dest>` — the
-        // fail-fast flags are applied centrally by `shell::ssh_command`.
-        let mut cmd = host_launcher(host);
-        for tok in ["ls", "-1p", dir] {
-            cmd.arg(posix_quote(tok));
-        }
-        cmd
-    }
-}
-
 /// Global cache for repo display names (path → name).
 static REPO_NAME_CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, String>>> =
     std::sync::OnceLock::new();
@@ -443,6 +383,192 @@ pub fn scan_child_repos(parent: &Path) -> Vec<PathBuf> {
         .collect();
     repos.sort();
     repos
+}
+
+/// Immediate sub-directories of a path, each flagged as a git repo or not —
+/// the repo picker's path-browser payload. `Missing` distinguishes "the dir
+/// isn't there" (a user typo, reported inline) from a transport error (`Err`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirListing {
+    /// The requested directory does not exist on the target filesystem.
+    Missing,
+    /// `(name, is_git)` per immediate sub-directory, sorted by name. Hidden
+    /// (`.`-prefixed) entries are included — the picker's filter decides
+    /// their visibility (offered only to a `.`-prefix, like the local
+    /// completer).
+    Entries(Vec<(String, bool)>),
+}
+
+/// What a committed repo-picker path turned out to be on the target
+/// filesystem. `Dir` (a non-repo directory) is still selectable — it becomes
+/// a plain `--add-dir`-style member — but can't take the worktree toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathClass {
+    Git,
+    Dir,
+    Missing,
+}
+
+/// List the immediate sub-directories of `dir` on `host` (`None` = local),
+/// flagging each as a git repo. One round trip on a remote host: a `sh -c`
+/// loop using `test -d` per entry (which, unlike an `ls -p` probe, follows a
+/// symlink to a directory) and `test -e <e>/.git` (matching
+/// [`is_git_repo`]'s `.git`-file worktree handling). A leading `~` expands
+/// against the target's home. Blocking — call from a worker thread for a
+/// remote host.
+pub fn list_dir_entries_on(host: Option<&HostDef>, dir: &str) -> Result<DirListing> {
+    let Some(host) = host else {
+        return Ok(list_dir_entries_local(&paths::expand_tilde(dir)));
+    };
+    let dir = expand_remote_tilde(host, dir)?;
+    let output = host_shell_c(host, &list_dir_entries_script(&dir))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to list remote directory")?;
+    let stdout = remote_output_or_stderr(output, "dir listing")?;
+    Ok(parse_dir_listing(&String::from_utf8_lossy(&stdout)))
+}
+
+/// The [`list_dir_entries_on`] shell script (`dir` already tilde-expanded,
+/// quoted here). Line protocol: `!missing` alone when the dir is absent; else
+/// one line per entry, `g <name>` (git repo) or `d <name>` (plain dir). A
+/// `cd` failure on an *existing* dir (permissions) exits non-zero so the
+/// stderr surfaces as a real error rather than a bogus "missing". Pure so the
+/// quoting is testable without a host.
+fn list_dir_entries_script(dir: &str) -> String {
+    format!(
+        "d={q}; [ -d \"$d\" ] || {{ echo '!missing'; exit 0; }}; cd \"$d\" || exit 1; \
+         for e in * .*; do [ -d \"$e\" ] || continue; \
+         case \"$e\" in .|..) continue;; esac; \
+         if [ -e \"$e/.git\" ]; then printf 'g %s\\n' \"$e\"; \
+         else printf 'd %s\\n' \"$e\"; fi; done; exit 0",
+        q = posix_quote(dir),
+    )
+}
+
+/// Local branch of [`list_dir_entries_on`] (`dir` already tilde-expanded).
+fn list_dir_entries_local(dir: &Path) -> DirListing {
+    if !dir.is_dir() {
+        return DirListing::Missing;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // Exists but unreadable (permissions): an empty listing keeps the
+        // browser usable; the path itself may still be committed.
+        return DirListing::Entries(Vec::new());
+    };
+    let mut names: Vec<(String, bool)> = entries
+        .filter_map(|e| e.ok())
+        // `path().is_dir()` follows symlinks, matching the remote `test -d`.
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            let is_git = is_git_repo(&e.path());
+            Some((name, is_git))
+        })
+        .collect();
+    names.sort();
+    DirListing::Entries(names)
+}
+
+/// Parse the [`list_dir_entries_on`] line protocol. Unknown lines are skipped
+/// (a host's shell may emit noise) rather than failing the whole listing.
+fn parse_dir_listing(stdout: &str) -> DirListing {
+    if stdout.lines().next().map(str::trim) == Some("!missing") {
+        return DirListing::Missing;
+    }
+    let mut entries: Vec<(String, bool)> = stdout
+        .lines()
+        .filter_map(|line| {
+            let (tag, name) = line.split_once(' ')?;
+            let is_git = match tag {
+                "g" => true,
+                "d" => false,
+                _ => return None,
+            };
+            (!name.is_empty()).then(|| (name.to_string(), is_git))
+        })
+        .collect();
+    entries.sort();
+    DirListing::Entries(entries)
+}
+
+/// Classify `path` on `host` in one round trip: does it exist, and is it a
+/// git repo? The repo picker's Enter-commit validation — replacing the old
+/// exists-only `ls` probe with the same trip cost. Blocking — call
+/// from a worker thread.
+pub fn classify_path_on(host: &HostDef, path: &str) -> Result<PathClass> {
+    let path = expand_remote_tilde(host, path)?;
+    let output = host_shell_c(host, &classify_path_script(&path))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to check remote path")?;
+    let stdout = remote_output_or_stderr(output, "path check")?;
+    parse_path_class(&String::from_utf8_lossy(&stdout))
+}
+
+/// The [`classify_path_on`] shell script (`path` already tilde-expanded).
+fn classify_path_script(path: &str) -> String {
+    format!(
+        "p={q}; if [ ! -d \"$p\" ]; then echo missing; \
+         elif [ -e \"$p/.git\" ]; then echo git; else echo dir; fi",
+        q = posix_quote(path),
+    )
+}
+
+/// Parse the single-word [`classify_path_on`] output.
+fn parse_path_class(stdout: &str) -> Result<PathClass> {
+    match stdout.trim() {
+        "git" => Ok(PathClass::Git),
+        "dir" => Ok(PathClass::Dir),
+        "missing" => Ok(PathClass::Missing),
+        other => anyhow::bail!("unexpected path-check output: {other:?}"),
+    }
+}
+
+/// Remote analogue of [`scan_child_repos`]: the immediate child git repos of
+/// `parent` on `host`, as absolute paths, sorted. Hidden entries are skipped
+/// (matching the local scan). One round trip; blocking — call from a worker
+/// thread. A missing/unreadable parent is an error (unlike the local scan's
+/// empty vec) so the picker can tell the user instead of silently importing
+/// nothing.
+pub fn scan_child_repos_on(host: &HostDef, parent: &str) -> Result<Vec<PathBuf>> {
+    let parent = expand_remote_tilde(host, parent)?;
+    let output = host_shell_c(host, &scan_child_repos_script(&parent))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to scan remote parent directory")?;
+    let stdout = remote_output_or_stderr(output, "parent scan")?;
+    let parent = Path::new(&parent);
+    collect_scanned_children(parent, &String::from_utf8_lossy(&stdout))
+}
+
+/// The [`scan_child_repos_on`] shell script (`parent` already tilde-expanded).
+/// `*` skips hidden entries, matching the local scan; a missing/unreadable
+/// parent exits non-zero (surfaced as an error, unlike the local scan's empty
+/// vec, so the picker can tell the user instead of silently importing nothing).
+fn scan_child_repos_script(parent: &str) -> String {
+    format!(
+        "d={q}; cd \"$d\" || exit 1; \
+         for e in *; do if [ -d \"$e\" ] && [ -e \"$e/.git\" ]; then \
+         printf '%s\\n' \"$e\"; fi; done; exit 0",
+        q = posix_quote(parent),
+    )
+}
+
+/// Join the scanned child names onto `parent`, sorted. A literal `*` line
+/// (an empty dir's unexpanded glob never passes the `-d` test, but keep the
+/// guard) and blank lines are skipped.
+fn collect_scanned_children(parent: &Path, stdout: &str) -> Result<Vec<PathBuf>> {
+    let mut repos: Vec<PathBuf> = stdout
+        .lines()
+        .filter(|name| !name.is_empty() && *name != "*")
+        .map(|name| parent.join(name))
+        .collect();
+    repos.sort();
+    Ok(repos)
 }
 
 /// Parse repo name from the origin remote URL.
@@ -1771,54 +1897,93 @@ mod tests {
     }
 
     #[test]
-    fn list_dir_command_wsl_uses_variable_free_exec_ls() {
-        // Must be `--exec ls -1p <dir>` as separate argv tokens — NOT an
-        // `sh -c` script — so no wsl.exe `$`-substitution or shell
-        // re-interpretation can touch the user-typed dir.
-        let h = HostDef::wsl("Ubuntu");
-        let cmd = list_dir_command(&h, "/home/me/repos");
-        let (prog, args) = program_and_args(&cmd);
-        assert_eq!(prog, "wsl.exe");
-        #[cfg(unix)]
-        let prefix: &[&str] = &["-d", "Ubuntu", "--cd", "/"];
-        #[cfg(not(unix))]
-        let prefix: &[&str] = &["-d", "Ubuntu"];
-        let expected: Vec<&str> = prefix
-            .iter()
-            .copied()
-            .chain(["-e", "ls", "-1p", "/home/me/repos"])
-            .collect();
-        assert_eq!(args, expected);
-        // No `sh -c` (the broken form) anywhere.
-        assert!(
-            !args.iter().any(|a| a == "-c"),
-            "must not use sh -c: {args:?}"
+    fn browse_scripts_posix_quote_the_user_typed_path() {
+        // The dir/path is user-typed and embedded in a `sh -c` script — a
+        // single quote or `$` must arrive literally, never as shell syntax.
+        let tricky = "/srv/it's $HOME";
+        for script in [
+            list_dir_entries_script(tricky),
+            classify_path_script(tricky),
+            scan_child_repos_script(tricky),
+        ] {
+            assert!(
+                script.contains(r#"'/srv/it'\''s $HOME'"#),
+                "path must be posix-quoted in: {script}"
+            );
+        }
+        // The listing script's protocol pieces are present.
+        let script = list_dir_entries_script("/srv");
+        assert!(script.contains("!missing"));
+        assert!(script.contains("printf 'g %s\\n'"));
+        assert!(script.contains("printf 'd %s\\n'"));
+    }
+
+    #[test]
+    fn collect_scanned_children_joins_and_sorts() {
+        let parent = Path::new("/srv/projects");
+        let repos = collect_scanned_children(parent, "web\napi\n\n*\n").unwrap();
+        assert_eq!(
+            repos,
+            vec![
+                PathBuf::from("/srv/projects/api"),
+                PathBuf::from("/srv/projects/web"),
+            ]
         );
     }
 
     #[test]
-    fn list_dir_command_ssh_adds_noninteractive_opts_after_user_opts() {
-        // Completion runs synchronously on the UI thread: BatchMode +
-        // ConnectTimeout make an unreachable/password host fail fast instead
-        // of freezing the TUI. They come AFTER the host's own ssh_opts — ssh
-        // honors the first occurrence, so a user setting wins.
-        let h = HostDef {
-            name: "box".into(),
-            destination: "me@box".into(),
-            ssh_opts: vec!["-o".into(), "ConnectTimeout=30".into()],
-            ..Default::default()
+    fn parse_dir_listing_reads_the_line_protocol() {
+        // `g`/`d` tagged lines, sorted; unknown lines skipped, not fatal.
+        let listing = parse_dir_listing("g thurbox\nd scratch\nnoise\ng api server\n");
+        assert_eq!(
+            listing,
+            DirListing::Entries(vec![
+                ("api server".into(), true),
+                ("scratch".into(), false),
+                ("thurbox".into(), true),
+            ])
+        );
+        assert_eq!(parse_dir_listing("!missing\n"), DirListing::Missing);
+        assert_eq!(parse_dir_listing(""), DirListing::Entries(Vec::new()));
+    }
+
+    #[test]
+    fn parse_path_class_reads_the_single_word() {
+        assert_eq!(parse_path_class("git\n").unwrap(), PathClass::Git);
+        assert_eq!(parse_path_class("dir\n").unwrap(), PathClass::Dir);
+        assert_eq!(parse_path_class("missing\n").unwrap(), PathClass::Missing);
+        assert!(parse_path_class("garbage").is_err());
+    }
+
+    #[test]
+    fn list_dir_entries_local_flags_git_repos_and_follows_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("repo").join(".git")).unwrap();
+        std::fs::create_dir(root.join("plain")).unwrap();
+        std::fs::create_dir(root.join(".hidden")).unwrap();
+        std::fs::write(root.join("file.txt"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("plain"), root.join("link")).unwrap();
+
+        let DirListing::Entries(entries) =
+            list_dir_entries_on(None, &root.display().to_string()).unwrap()
+        else {
+            panic!("existing dir must not be Missing");
         };
-        let cmd = list_dir_command(&h, "/srv/repos");
-        let (prog, args) = program_and_args(&cmd);
-        assert_eq!(prog, "ssh");
-        let user_pos = args.iter().position(|a| a == "ConnectTimeout=30");
-        let ours_pos = args.iter().position(|a| a == "ConnectTimeout=5");
-        assert!(user_pos.unwrap() < ours_pos.unwrap());
-        assert!(args.iter().any(|a| a == "BatchMode=yes"));
-        // The listing itself follows the destination, each token quoted for
-        // the remote shell's re-split (no-ops for these safe tokens).
-        let dest = args.iter().position(|a| a == "me@box").unwrap();
-        assert_eq!(&args[dest + 1..], ["ls", "-1p", "/srv/repos"]);
+        // Hidden entries included (the picker filters); files excluded; a
+        // symlink to a dir is listed (the `ls -p` gap this fixes).
+        assert!(entries.contains(&(".hidden".to_string(), false)));
+        assert!(entries.contains(&("repo".to_string(), true)));
+        assert!(entries.contains(&("plain".to_string(), false)));
+        assert!(!entries.iter().any(|(n, _)| n == "file.txt"));
+        #[cfg(unix)]
+        assert!(entries.contains(&("link".to_string(), false)));
+
+        assert_eq!(
+            list_dir_entries_on(None, &root.join("nope").display().to_string()).unwrap(),
+            DirListing::Missing
+        );
     }
 
     #[test]

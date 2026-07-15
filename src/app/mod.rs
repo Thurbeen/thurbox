@@ -10,6 +10,7 @@ pub(crate) mod metrics_state;
 pub(crate) mod modals;
 mod new_session_state;
 mod notify_state;
+mod repo_picker;
 pub(crate) mod search;
 mod state;
 mod sync_state;
@@ -830,6 +831,21 @@ pub struct App {
     /// Off-thread code-review diff build (open/retarget), applied by
     /// [`Self::poll_review_build`]. See ADR-P8 in `docs/PERFORMANCE.md`.
     review_build: background::BackgroundTask<code_review::ReviewBuildResult>,
+    /// Async remote directory listing feeding the repo picker's path-browser
+    /// dropdown, polled each tick (local listings compute inline instead).
+    repo_dir_listing: background::BackgroundTask<repo_picker::DirListingResult>,
+    /// Async Enter-commit validation of a typed remote repo path (exists +
+    /// git-ness in one round trip), polled each tick.
+    repo_path_check: background::BackgroundTask<repo_picker::PathCheckResult>,
+    /// Async remote parent import (Ctrl+P): scan a remote folder's child git
+    /// repos, polled each tick.
+    repo_parent_import: background::BackgroundTask<repo_picker::ParentImportResult>,
+    /// Generation stamp carried by every repo-picker async result: bumped per
+    /// picker instance (`open_repo_picker`), so a result outliving its modal
+    /// (Esc + reopen) is recognized and dropped on arrival. Supersession
+    /// *within* an instance needs no bump — restarting the `BackgroundTask`
+    /// orphans the superseded worker's receiver.
+    repo_picker_gen: u64,
     /// `Exec` automation commands running on worker threads, drained each tick
     /// by [`Self::process_automations`] so a slow command never blocks the loop.
     automation_exec: automation::ExecJobs,
@@ -1154,6 +1170,10 @@ impl App {
             worktree_create: background::BackgroundTask::default(),
             pending_worktree_create: None,
             session_spawn: background::BackgroundTask::default(),
+            repo_dir_listing: background::BackgroundTask::default(),
+            repo_path_check: background::BackgroundTask::default(),
+            repo_parent_import: background::BackgroundTask::default(),
+            repo_picker_gen: 0,
             review_build: background::BackgroundTask::default(),
             automation_exec: automation::ExecJobs::default(),
             pending_session_spawn: None,
@@ -1556,14 +1576,45 @@ impl App {
     /// local target.
     pub(crate) fn open_repo_picker(&mut self) {
         let remote = self.new_session.backend.is_some();
+        // A previous picker's in-flight listing/validation results must not
+        // land in this fresh instance.
+        self.repo_picker_gen = self.repo_picker_gen.wrapping_add(1);
         let bookmarks = self.load_repo_bookmarks();
         let empty = bookmarks.is_empty();
         let mut rp = modals::RepoPickerModal::default();
-        Self::rebuild_repo_picker_rows(&mut rp, bookmarks);
+        Self::rebuild_repo_picker_rows(&mut rp, bookmarks, remote);
+        if !remote {
+            self.backfill_local_git_kind(&mut rp);
+        }
         if remote && empty {
             rp.focus = modals::RepoPickerFocus::Input;
         }
         self.modal = modals::Modal::RepoPicker(rp);
+    }
+
+    /// Fill in `is_git` for local rows that were never classified (legacy
+    /// pre-v40 bookmarks): a local `.git` probe is instant, and persisting the
+    /// answer means it's done once per bookmark, ever. Headers are skipped (a
+    /// parent folder is not itself a repo row).
+    fn backfill_local_git_kind(&self, rp: &mut modals::RepoPickerModal) {
+        for i in 0..rp.bookmarks.len() {
+            if rp.is_git[i].is_some() || rp.is_header_row(i) {
+                continue;
+            }
+            let is_git = crate::git::is_git_repo(&rp.bookmarks[i]);
+            rp.is_git[i] = Some(is_git);
+            // Ephemeral child rows aren't persisted bookmarks (the UPDATE
+            // no-ops on them anyway); only standalone rows write back.
+            if !rp.is_child_row(i) {
+                if let Err(e) = self.db.set_bookmark_git_kind(
+                    self.bookmark_host_key(),
+                    &rp.bookmarks[i],
+                    is_git,
+                ) {
+                    tracing::error!("Failed to backfill bookmark git kind: {e}");
+                }
+            }
+        }
     }
 
     /// The host-scope key for repo bookmarks: the new-session wizard's target
@@ -1588,21 +1639,29 @@ impl App {
     /// Re-read bookmarks and rebuild the open repo picker's rows in place
     /// (re-scanning parent folders). Used after importing/deleting a bookmark.
     pub(crate) fn refresh_repo_picker_rows(&mut self) {
+        let remote = self.new_session.backend.is_some();
         let bookmarks = self.load_repo_bookmarks();
         let modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
-        Self::rebuild_repo_picker_rows(rp, bookmarks);
+        Self::rebuild_repo_picker_rows(rp, bookmarks, remote);
     }
 
-    /// (Re)build the repo picker rows from persisted bookmarks, **re-scanning**
-    /// parent bookmarks for their current git sub-directories. Standalone repos
-    /// become one row; a parent becomes a header row followed by an indented
-    /// child row per discovered repo (children are ephemeral — never persisted).
+    /// (Re)build the repo picker rows from persisted bookmarks. Standalone
+    /// repos become one row; a parent becomes a header row followed by an
+    /// indented child row per repo under it. Children come from two sources
+    /// (asymmetric by design): a **local** parent live-scans its git
+    /// sub-directories on every rebuild (instant, always fresh, ephemeral),
+    /// while a **remote** parent uses the children *persisted* at Ctrl+P
+    /// import time (`parent_path` rows — a live re-scan would be an ssh
+    /// round-trip per picker open; re-import to refresh). `remote` also
+    /// disables the live scan wholesale: a remote parent's path could
+    /// coincidentally exist locally and list the wrong machine's repos.
     /// Preserves the existing search input by recomputing the filter.
     fn rebuild_repo_picker_rows(
         rp: &mut modals::RepoPickerModal,
         bookmarks: Vec<crate::storage::repo_bookmarks::RepoBookmark>,
+        remote: bool,
     ) {
         use std::collections::HashSet;
 
@@ -1611,27 +1670,50 @@ impl App {
         rp.worktree.clear();
         rp.is_header.clear();
         rp.is_child.clear();
+        rp.is_git.clear();
 
-        // Scan each parent once; a path that appears as a child of any parent
-        // takes precedence over a standalone bookmark of the same path, so the
-        // repo is shown only once (grouped under its parent).
-        let scans: HashMap<PathBuf, Vec<PathBuf>> = bookmarks
+        // Scan each local parent once; a path that appears as a child of any
+        // parent takes precedence over a standalone bookmark of the same path,
+        // so the repo is shown only once (grouped under its parent).
+        let scans: HashMap<PathBuf, Vec<PathBuf>> = if remote {
+            HashMap::new()
+        } else {
+            bookmarks
+                .iter()
+                .filter(|b| b.is_parent)
+                .map(|b| {
+                    (
+                        b.repo_path.clone(),
+                        crate::git::scan_child_repos(&b.repo_path),
+                    )
+                })
+                .collect()
+        };
+        // Persisted children grouped under their parent (remote imports). An
+        // orphan whose parent bookmark is gone falls back to standalone.
+        let parent_set: HashSet<&PathBuf> = bookmarks
             .iter()
             .filter(|b| b.is_parent)
-            .map(|b| {
-                (
-                    b.repo_path.clone(),
-                    crate::git::scan_child_repos(&b.repo_path),
-                )
-            })
+            .map(|b| &b.repo_path)
             .collect();
-        let child_paths: HashSet<&PathBuf> = scans.values().flatten().collect();
+        let mut persisted: HashMap<&PathBuf, Vec<&crate::storage::repo_bookmarks::RepoBookmark>> =
+            HashMap::new();
+        for bm in &bookmarks {
+            if let Some(parent) = bm.parent_path.as_ref().filter(|p| parent_set.contains(p)) {
+                persisted.entry(parent).or_default().push(bm);
+            }
+        }
+        let child_paths: HashSet<&PathBuf> = scans
+            .values()
+            .flatten()
+            .chain(persisted.values().flatten().map(|b| &b.repo_path))
+            .collect();
 
         // `emitted` guards against any path being rendered twice (duplicate
         // bookmarks, a child shared by two parents, a parent nested in another).
         let mut emitted: HashSet<PathBuf> = HashSet::new();
         for bm in &bookmarks {
-            Self::emit_bookmark_row(rp, bm, &scans, &child_paths, &mut emitted);
+            Self::emit_bookmark_row(rp, bm, &scans, &persisted, &child_paths, &mut emitted);
         }
 
         rp.list_index = 0;
@@ -1639,33 +1721,42 @@ impl App {
     }
 
     /// Emit the row(s) for a single bookmark into the repo picker: a parent
-    /// header followed by its scanned children, or a standalone repo.
-    /// `emitted` dedupes paths across the whole list; `child_paths` lets a
-    /// standalone bookmark be dropped when a parent already covers it.
+    /// header followed by its children (live-scanned and/or persisted), or a
+    /// standalone repo. `emitted` dedupes paths across the whole list;
+    /// `child_paths` lets a standalone bookmark be dropped when a parent
+    /// already covers it.
     fn emit_bookmark_row(
         rp: &mut modals::RepoPickerModal,
         bm: &crate::storage::repo_bookmarks::RepoBookmark,
         scans: &HashMap<PathBuf, Vec<PathBuf>>,
+        persisted: &HashMap<&PathBuf, Vec<&crate::storage::repo_bookmarks::RepoBookmark>>,
         child_paths: &std::collections::HashSet<&PathBuf>,
         emitted: &mut std::collections::HashSet<PathBuf>,
     ) {
         if !bm.is_parent {
-            // Drop a standalone bookmark that is already covered by a parent.
+            // Drop a standalone bookmark that is already covered by a parent
+            // (its row is emitted under the parent header instead).
             if child_paths.contains(&bm.repo_path) {
                 return;
             }
             if emitted.insert(bm.repo_path.clone()) {
-                rp.push_row(bm.repo_path.clone(), false, false, false);
+                rp.push_row(bm.repo_path.clone(), false, false, false, bm.is_git);
             }
             return;
         }
         if !emitted.insert(bm.repo_path.clone()) {
             return;
         }
-        rp.push_row(bm.repo_path.clone(), false, true, false);
+        rp.push_row(bm.repo_path.clone(), false, true, false, None);
+        // Live-scanned children are git repos by construction.
         for child in scans.get(&bm.repo_path).into_iter().flatten() {
             if emitted.insert(child.clone()) {
-                rp.push_row(child.clone(), false, false, true);
+                rp.push_row(child.clone(), false, false, true, Some(true));
+            }
+        }
+        for child in persisted.get(&bm.repo_path).into_iter().flatten() {
+            if emitted.insert(child.repo_path.clone()) {
+                rp.push_row(child.repo_path.clone(), false, false, true, child.is_git);
             }
         }
     }
@@ -4176,6 +4267,10 @@ impl App {
         self.poll_branch_list();
         self.poll_worktree_create();
         self.poll_session_spawn();
+
+        // Repo-picker async results: remote dir listings (path browser),
+        // Enter-commit path checks, and parent imports.
+        self.poll_repo_picker();
 
         // Apply a finished off-thread code-review diff build (ADR-P8).
         self.poll_review_build();
@@ -11406,6 +11501,8 @@ mod tests {
             last_used_at: 0,
             use_count: 1,
             is_parent,
+            is_git: None,
+            parent_path: None,
         }
     }
 
@@ -11423,7 +11520,7 @@ mod tests {
             repo_bookmark(root, true),
         ];
         let mut rp = modals::RepoPickerModal::default();
-        App::rebuild_repo_picker_rows(&mut rp, bookmarks);
+        App::rebuild_repo_picker_rows(&mut rp, bookmarks, false);
 
         // Rows: parent header, alpha (child), beta (child). The standalone
         // `alpha` was dropped in favour of the grouped child.
@@ -11455,7 +11552,7 @@ mod tests {
             repo_bookmark(&root.join("sub"), true),
         ];
         let mut rp = modals::RepoPickerModal::default();
-        App::rebuild_repo_picker_rows(&mut rp, bookmarks);
+        App::rebuild_repo_picker_rows(&mut rp, bookmarks, false);
 
         let sub_rows = rp
             .bookmarks
@@ -11473,7 +11570,7 @@ mod tests {
         std::fs::create_dir_all(root.join("beta").join(".git")).unwrap();
 
         let mut rp = modals::RepoPickerModal::default();
-        App::rebuild_repo_picker_rows(&mut rp, vec![repo_bookmark(root, true)]);
+        App::rebuild_repo_picker_rows(&mut rp, vec![repo_bookmark(root, true)], false);
         // Header + two children all visible.
         assert_eq!(rp.filtered_indices.len(), 3);
 
@@ -11484,6 +11581,283 @@ mod tests {
         // Expanding restores the children.
         rp.toggle_collapsed(0);
         assert_eq!(rp.filtered_indices.len(), 3);
+    }
+
+    #[test]
+    fn rebuild_rows_groups_persisted_children_under_remote_parent() {
+        // A remote parent has no live local scan (its path belongs to another
+        // machine); its children are the rows persisted at Ctrl+P import time,
+        // grouped and marked git without touching the local filesystem.
+        let parent = PathBuf::from("/srv/projects");
+        let mut child = repo_bookmark(&parent.join("api"), false);
+        child.parent_path = Some(parent.clone());
+        child.is_git = Some(true);
+        let bookmarks = vec![repo_bookmark(&parent, true), child];
+
+        let mut rp = modals::RepoPickerModal::default();
+        App::rebuild_repo_picker_rows(&mut rp, bookmarks, true);
+
+        assert_eq!(rp.bookmarks.len(), 2);
+        assert_eq!(rp.is_header, vec![true, false]);
+        assert_eq!(rp.is_child, vec![false, true]);
+        assert_eq!(rp.bookmarks[1], parent.join("api"));
+        assert_eq!(rp.is_git[1], Some(true));
+    }
+
+    #[test]
+    fn rebuild_rows_remote_never_scans_the_local_filesystem() {
+        // The remote parent's path coincidentally exists locally with a git
+        // child — that child belongs to the wrong machine and must not leak
+        // into the remote picker.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("local-repo").join(".git")).unwrap();
+
+        let mut rp = modals::RepoPickerModal::default();
+        App::rebuild_repo_picker_rows(&mut rp, vec![repo_bookmark(root, true)], true);
+
+        assert_eq!(rp.bookmarks.len(), 1, "header only — no local children");
+        assert_eq!(rp.is_header, vec![true]);
+    }
+
+    #[test]
+    fn rebuild_rows_orphan_persisted_child_falls_back_to_standalone() {
+        // A persisted child whose parent bookmark is gone (defensive: the
+        // delete cascade should prevent this) still renders, as a standalone.
+        let mut orphan = repo_bookmark(Path::new("/srv/projects/api"), false);
+        orphan.parent_path = Some(PathBuf::from("/srv/projects"));
+        orphan.is_git = Some(true);
+
+        let mut rp = modals::RepoPickerModal::default();
+        App::rebuild_repo_picker_rows(&mut rp, vec![orphan], true);
+
+        assert_eq!(rp.bookmarks.len(), 1);
+        assert_eq!(rp.is_child, vec![false]);
+        assert_eq!(rp.is_git[0], Some(true));
+    }
+
+    // --- Repo picker async results (path browser / commit / parent import) ---
+
+    /// A repo picker open on a remote target, with the given backend name.
+    fn app_with_remote_picker(backend: &str) -> App {
+        let mut app = app_with_sessions(0);
+        app.new_session.backend = Some(backend.to_string());
+        app.modal = modals::Modal::RepoPicker(modals::RepoPickerModal::default());
+        app
+    }
+
+    #[test]
+    fn poll_repo_dir_listing_populates_and_caches_the_browser() {
+        let mut app = app_with_remote_picker("ssh:devbox");
+        if let modals::Modal::RepoPicker(ref mut rp) = app.modal {
+            rp.browser.open = true;
+            rp.browser.dir = "~/projects".to_string();
+            rp.browser.loading = true;
+        }
+        let tx = app.repo_dir_listing.start();
+        tx.send(repo_picker::DirListingResult {
+            gen: app.repo_picker_gen,
+            dir: "~/projects".to_string(),
+            result: Ok(vec![
+                modals::BrowseEntry {
+                    name: "api".into(),
+                    is_git: true,
+                },
+                modals::BrowseEntry {
+                    name: "scratch".into(),
+                    is_git: false,
+                },
+            ]),
+        })
+        .unwrap();
+
+        app.poll_repo_picker();
+
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("picker stays open");
+        };
+        assert!(!rp.browser.loading);
+        assert_eq!(rp.browser.listing.len(), 2);
+        assert_eq!(rp.browser.filtered, vec![0, 1]);
+        assert!(rp.dir_cache.contains_key("~/projects"), "listing cached");
+    }
+
+    #[test]
+    fn poll_repo_dir_listing_drops_a_stale_generation() {
+        let mut app = app_with_remote_picker("ssh:devbox");
+        if let modals::Modal::RepoPicker(ref mut rp) = app.modal {
+            rp.browser.open = true;
+            rp.browser.dir = "~/projects".to_string();
+            rp.browser.loading = true;
+        }
+        let tx = app.repo_dir_listing.start();
+        tx.send(repo_picker::DirListingResult {
+            // A result from a previous picker instance (Esc + reopen).
+            gen: app.repo_picker_gen.wrapping_sub(1),
+            dir: "~/projects".to_string(),
+            result: Ok(vec![modals::BrowseEntry {
+                name: "stale".into(),
+                is_git: true,
+            }]),
+        })
+        .unwrap();
+
+        app.poll_repo_picker();
+
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("picker stays open");
+        };
+        assert!(rp.browser.listing.is_empty(), "stale listing dropped");
+        assert!(rp.dir_cache.is_empty(), "stale listing not even cached");
+    }
+
+    #[test]
+    fn poll_repo_path_check_commits_a_valid_git_path() {
+        let mut app = app_with_remote_picker("ssh:devbox");
+        if let modals::Modal::RepoPicker(ref mut rp) = app.modal {
+            rp.path_input.set("~/repo");
+            rp.pending_commit = Some("~/repo".to_string());
+        }
+        let tx = app.repo_path_check.start();
+        tx.send(repo_picker::PathCheckResult {
+            gen: app.repo_picker_gen,
+            raw: "~/repo".to_string(),
+            result: Ok((PathBuf::from("/home/me/repo"), crate::git::PathClass::Git)),
+        })
+        .unwrap();
+
+        app.poll_repo_picker();
+
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("picker stays open");
+        };
+        assert_eq!(rp.bookmarks, vec![PathBuf::from("/home/me/repo")]);
+        assert_eq!(rp.selected, vec![true]);
+        assert_eq!(rp.is_git, vec![Some(true)]);
+        assert!(rp.pending_commit.is_none());
+        assert!(rp.path_input.value().is_empty(), "input cleared on commit");
+        // Persisted under the remote host's scope with its git-ness.
+        let saved = app.db.list_repo_bookmarks("ssh:devbox").unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].is_git, Some(true));
+    }
+
+    #[test]
+    fn poll_repo_path_check_missing_keeps_the_input_for_fixing() {
+        let mut app = app_with_remote_picker("ssh:devbox");
+        if let modals::Modal::RepoPicker(ref mut rp) = app.modal {
+            rp.path_input.set("~/tpyo");
+            rp.pending_commit = Some("~/tpyo".to_string());
+        }
+        let tx = app.repo_path_check.start();
+        tx.send(repo_picker::PathCheckResult {
+            gen: app.repo_picker_gen,
+            raw: "~/tpyo".to_string(),
+            result: Ok((
+                PathBuf::from("/home/me/tpyo"),
+                crate::git::PathClass::Missing,
+            )),
+        })
+        .unwrap();
+
+        app.poll_repo_picker();
+
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("picker stays open");
+        };
+        assert!(rp.bookmarks.is_empty(), "nothing added");
+        assert_eq!(rp.path_input.value(), "~/tpyo", "typo left in place");
+        assert!(rp.pending_commit.is_none(), "spinner cleared");
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.level),
+            Some(StatusLevel::Error)
+        );
+    }
+
+    #[test]
+    fn poll_repo_path_check_plain_dir_is_selectable_but_not_worktree() {
+        let mut app = app_with_remote_picker("ssh:devbox");
+        if let modals::Modal::RepoPicker(ref mut rp) = app.modal {
+            rp.pending_commit = Some("/srv/notes".to_string());
+        }
+        let tx = app.repo_path_check.start();
+        tx.send(repo_picker::PathCheckResult {
+            gen: app.repo_picker_gen,
+            raw: "/srv/notes".to_string(),
+            result: Ok((PathBuf::from("/srv/notes"), crate::git::PathClass::Dir)),
+        })
+        .unwrap();
+
+        app.poll_repo_picker();
+
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("picker stays open");
+        };
+        assert_eq!(rp.selected, vec![true], "plain dir still selectable");
+        assert_eq!(rp.is_git, vec![Some(false)]);
+
+        // `w` on the known non-repo is refused with a hint, not toggled.
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("picker stays open");
+        };
+        assert_eq!(rp.worktree, vec![false], "worktree toggle refused");
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.level),
+            Some(StatusLevel::Info)
+        );
+    }
+
+    #[test]
+    fn poll_repo_parent_import_persists_children_and_rebuilds() {
+        let mut app = app_with_remote_picker("ssh:devbox");
+        let parent = PathBuf::from("/srv/projects");
+        let tx = app.repo_parent_import.start();
+        tx.send(repo_picker::ParentImportResult {
+            gen: app.repo_picker_gen,
+            result: Ok((parent.clone(), vec![parent.join("api"), parent.join("web")])),
+        })
+        .unwrap();
+
+        app.poll_repo_picker();
+
+        // Parent + children persisted under the host scope…
+        let saved = app.db.list_repo_bookmarks("ssh:devbox").unwrap();
+        assert_eq!(saved.len(), 3);
+        assert!(saved.iter().any(|b| b.is_parent));
+        assert_eq!(
+            saved
+                .iter()
+                .filter(|b| b.parent_path.as_deref() == Some(parent.as_path()))
+                .count(),
+            2
+        );
+        // …and the open picker shows the grouped rows.
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("picker stays open");
+        };
+        assert_eq!(rp.bookmarks.len(), 3);
+        assert_eq!(rp.is_header.iter().filter(|h| **h).count(), 1);
+        assert_eq!(rp.is_child.iter().filter(|c| **c).count(), 2);
+    }
+
+    #[test]
+    fn poll_repo_parent_import_after_close_is_dropped() {
+        // Esc'ing the picker before the scan lands must drop the result —
+        // including its DB writes (mutating bookmarks after cancel would
+        // violate least surprise).
+        let mut app = app_with_remote_picker("ssh:devbox");
+        let tx = app.repo_parent_import.start();
+        app.modal.close();
+        tx.send(repo_picker::ParentImportResult {
+            gen: app.repo_picker_gen,
+            result: Ok((PathBuf::from("/srv/projects"), vec![])),
+        })
+        .unwrap();
+
+        app.poll_repo_picker();
+
+        assert!(app.db.list_repo_bookmarks("ssh:devbox").unwrap().is_empty());
     }
 
     // --- Worktree sync tests ---

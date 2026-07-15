@@ -544,6 +544,23 @@ strand a placeholder row forever).
   would both be lies. A working phase animates at ~8 fps instead of resting on
   the 250 ms redraw floor.
 
+*Extension (repo-picker path entry).* The picker itself later gained the same
+treatment: its three remote round trips — the path-browser directory listing
+(Tab), the Enter-commit path check (exists + git-ness, one trip), and the
+`Ctrl+P` parent scan — each run on a `BackgroundTask` worker drained by
+`App::poll_repo_picker` in `tick_core` (`src/app/repo_picker.rs`), replacing
+the synchronous `list_dir_on` probes that ran in the key handler. The modal
+stays fully interactive while a fetch is in flight (spinner rows/labels);
+supersession is handled by restarting the task (the orphaned worker's send
+fails harmlessly) plus a per-picker-instance `repo_picker_gen` stamp so a
+result that outlives its modal (Esc + reopen) is dropped — including a parent
+import's DB writes. Local targets compute inline (`std::fs` is instant, and
+the acceptance harness runs without a Tokio runtime). Listings are cached per
+`(picker instance, dir)`; an in-browser Tab bypasses the cache as an explicit
+refresh. Gates: `poll_repo_dir_listing_*`, `poll_repo_path_check_*`,
+`poll_repo_parent_import_*` (`src/app/mod.rs` tests);
+`repo_picker_browser_*` (`src/app/acceptance.rs`).
+
 *Re-entrancy.* Unfreezing the flow makes its window **interactive**, which is a
 new hazard: `branch_list` and `worktree_create` carry `new_session` state across
 a thread boundary, so a second `Ctrl+N` in that window would overwrite the repo

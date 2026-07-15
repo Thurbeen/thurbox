@@ -74,8 +74,7 @@ pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
 /// This is the WSL analogue of [`ssh_command`], but `wsl.exe`'s argument
 /// forwarding is subtly different from ssh's plain space-join (observed against
 /// current `wsl.exe`; callers that need argv to arrive verbatim bypass the
-/// shell entirely by appending `-e`/`--exec` — see `git::host_shell_c` /
-/// `git::list_dir_on`):
+/// shell entirely by appending `-e`/`--exec` — see `git::host_shell_c`):
 ///
 /// - a **whitespace-free** token reaches the in-distro shell for interpretation
 ///   exactly like over ssh — POSIX-quote it the same way (the shell strips the

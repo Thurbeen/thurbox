@@ -12,7 +12,19 @@ use ratatui::{
 use super::render_modal_frame;
 use super::theme::Theme;
 use super::{centered_fixed_height_rect, render_text_field, render_text_field_with_suggestion};
-use crate::app::modals::RepoPickerFocus;
+use crate::app::modals::{BrowseEntry, RepoPickerFocus};
+
+/// The path-browser dropdown's render view: the browsed dir, its
+/// prefix-filtered entries, and the fetch state.
+pub struct BrowserView<'a> {
+    pub dir: &'a str,
+    /// Already prefix-filtered by the app (indices resolved from
+    /// `PathBrowser::filtered`).
+    pub entries: Vec<&'a BrowseEntry>,
+    pub index: usize,
+    pub loading: bool,
+    pub error: Option<&'a str>,
+}
 
 pub struct RepoPickerState<'a> {
     pub bookmarks: &'a [PathBuf],
@@ -37,6 +49,16 @@ pub struct RepoPickerState<'a> {
     /// Shown in the list title so it's unambiguous whose filesystem the
     /// repos (and the typed path) belong to.
     pub host: Option<&'a str>,
+    /// Per-row git-ness parallel to `bookmarks` (`Some(false)` renders a dim
+    /// `(dir)` suffix — selectable, but not worktree-capable).
+    pub is_git: &'a [Option<bool>],
+    /// The path-browser dropdown (`None` = closed).
+    pub browser: Option<BrowserView<'a>>,
+    /// Whether an Enter-commit is being validated on the host (renders a
+    /// spinner on the path-input label).
+    pub pending_commit: bool,
+    /// The current spinner frame (`ui::SPINNER_FRAMES[app.spinner_frame()]`).
+    pub spinner: &'a str,
 }
 
 /// The clickable sub-areas of the repo picker that focus an editable field:
@@ -59,8 +81,16 @@ pub fn render_repo_picker_modal(
 
     let search_height: u16 = if state.search_active { 3 } else { 0 };
 
-    // Layout: search(optional 3) + list + path input(3) + footer(1) + outer border(2)
-    let total_height = search_height + list_height + 3 + 1 + 2;
+    // Dropdown chunk under the path input: entry rows capped at 8, floored at
+    // 1 (the loading/empty/error line), +2 borders.
+    let browser_height: u16 = match &state.browser {
+        Some(b) => b.entries.len().clamp(1, 8) as u16 + 2,
+        None => 0,
+    };
+
+    // Layout: search(optional 3) + list + path input(3) + browser(optional)
+    // + footer(1) + outer border(2)
+    let total_height = search_height + list_height + 3 + browser_height + 1 + 2;
 
     let area = centered_fixed_height_rect(60, total_height, frame.area());
 
@@ -72,6 +102,9 @@ pub fn render_repo_picker_modal(
     }
     constraints.push(Constraint::Length(list_height));
     constraints.push(Constraint::Length(3));
+    if state.browser.is_some() {
+        constraints.push(Constraint::Length(browser_height));
+    }
     constraints.push(Constraint::Min(1));
 
     let chunks = Layout::default()
@@ -79,11 +112,12 @@ pub fn render_repo_picker_modal(
         .constraints(constraints)
         .split(inner);
 
-    let (search_area, list_area, input_area, footer_area) = if state.search_active {
-        (Some(chunks[0]), chunks[1], chunks[2], chunks[3])
-    } else {
-        (None, chunks[0], chunks[1], chunks[2])
-    };
+    let mut chunk = chunks.iter().copied();
+    let search_area = state.search_active.then(|| chunk.next()).flatten();
+    let list_area = chunk.next().unwrap_or_default();
+    let input_area = chunk.next().unwrap_or_default();
+    let browser_area = state.browser.is_some().then(|| chunk.next()).flatten();
+    let footer_area = chunk.next().unwrap_or_default();
 
     if let Some(area) = search_area {
         render_search_bar(frame, area, state);
@@ -91,15 +125,24 @@ pub fn render_repo_picker_modal(
 
     let hitboxes = render_bookmark_list(frame, list_area, state);
 
+    let input_label = if state.pending_commit {
+        format!("Add Repo Path {} checking…", state.spinner)
+    } else {
+        "Add Repo Path".to_string()
+    };
     render_text_field_with_suggestion(
         frame,
         input_area,
-        "Add Repo Path",
+        &input_label,
         state.path_input,
         state.path_cursor,
         state.focus == RepoPickerFocus::Input,
         state.path_suggestion,
     );
+
+    if let (Some(browser), Some(area)) = (&state.browser, browser_area) {
+        render_path_browser(frame, area, browser, state.spinner);
+    }
 
     // Footer: focus-dependent key hints on the left, clickable `[ Done ]`
     // (Enter) / `[ Cancel ]` (Esc) buttons on the right. The hint is clipped to
@@ -140,6 +183,88 @@ fn render_search_bar(frame: &mut Frame, area: ratatui::layout::Rect, state: &Rep
         state.search_cursor,
         state.focus == RepoPickerFocus::Search,
     );
+}
+
+/// Render the path-browser dropdown under the path input: the browsed dir as
+/// the block title, then a spinner / error / empty line or the entry rows
+/// (git repos marked with an accent `●git`; the cursor row highlighted).
+fn render_path_browser(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    browser: &BrowserView<'_>,
+    spinner: &str,
+) {
+    // Elide the dir from the left so the tail (the part being browsed) stays
+    // visible in a narrow modal.
+    let max_title = area.width.saturating_sub(6) as usize;
+    let dir = if browser.dir.chars().count() > max_title {
+        let tail: String = browser
+            .dir
+            .chars()
+            .rev()
+            .take(max_title.saturating_sub(1))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!("…{tail}")
+    } else {
+        browser.dir.to_string()
+    };
+    let block = Block::default()
+        .title(format!(" Browse {dir} "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Theme::border_focused()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if browser.loading {
+        let line = Line::from(Span::styled(
+            format!(" {spinner} listing…"),
+            Style::default().fg(Theme::text_muted()),
+        ));
+        frame.render_widget(Paragraph::new(line), inner);
+        return;
+    }
+    if let Some(err) = browser.error {
+        let line = Line::from(Span::styled(
+            format!(" {err}"),
+            Style::default().fg(Theme::danger()),
+        ));
+        frame.render_widget(Paragraph::new(line), inner);
+        return;
+    }
+    if browser.entries.is_empty() {
+        let line = Line::from(Span::styled(
+            " (no subdirectories)",
+            Style::default().fg(Theme::text_muted()),
+        ));
+        frame.render_widget(Paragraph::new(line), inner);
+        return;
+    }
+
+    let visible = inner.height as usize;
+    let scroll_offset = browser.index.saturating_sub(visible.saturating_sub(1));
+    let items: Vec<ListItem<'_>> = browser
+        .entries
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible)
+        .map(|(i, entry)| {
+            let style = if i == browser.index {
+                Theme::selected_item()
+            } else {
+                Theme::normal_item()
+            };
+            let mut spans = vec![Span::styled(format!(" {}/", entry.name), style)];
+            if entry.is_git {
+                spans.push(Span::styled(" ●git", Style::default().fg(Theme::accent())));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    frame.render_widget(List::new(items), inner);
 }
 
 /// Render the bookmark list with checkboxes, fuzzy highlighting, and scrolling.
@@ -295,6 +420,13 @@ fn child_item<'a>(state: &RepoPickerState<'a>, real_idx: usize, style: Style) ->
     if checked && is_wt {
         spans.push(Span::styled(" [wt]", Style::default().fg(Theme::accent())));
     }
+    // A known non-repo reads as a plain dir — selectable, but `w` won't take.
+    if state.is_git.get(real_idx).copied().flatten() == Some(false) {
+        spans.push(Span::styled(
+            " (dir)",
+            Style::default().fg(Theme::text_muted()),
+        ));
+    }
     ListItem::new(Line::from(spans))
 }
 
@@ -345,11 +477,21 @@ fn footer_line(state: &RepoPickerState<'_>) -> Line<'static> {
             Span::styled("Enter", Theme::keybind()),
             Span::styled(" ok", Theme::keybind_desc()),
         ]),
+        RepoPickerFocus::Input if state.browser.is_some() => Line::from(vec![
+            Span::styled("↑/↓", Theme::keybind()),
+            Span::styled(" select  ", Theme::keybind_desc()),
+            Span::styled("Enter", Theme::keybind()),
+            Span::styled(" open/pick  ", Theme::keybind_desc()),
+            Span::styled("Tab", Theme::keybind()),
+            Span::styled(" refresh  ", Theme::keybind_desc()),
+            Span::styled("Esc", Theme::keybind()),
+            Span::styled(" close", Theme::keybind_desc()),
+        ]),
         RepoPickerFocus::Input => {
             let tab_hint = if state.path_suggestion.is_some() {
                 " complete  "
             } else {
-                " list  "
+                " browse  "
             };
             Line::from(vec![
                 Span::styled("Tab", Theme::keybind()),
@@ -432,6 +574,7 @@ mod tests {
         static EMPTY_PATHS: &[PathBuf] = &[];
         static EMPTY_BOOLS: &[bool] = &[];
         static EMPTY_IDX: &[usize] = &[];
+        static EMPTY_GIT: &[Option<bool>] = &[];
         // Leaked once so the borrow is 'static — fine for a test fixture.
         let collapsed: &'static HashSet<PathBuf> = Box::leak(Box::new(HashSet::new()));
         RepoPickerState {
@@ -451,6 +594,10 @@ mod tests {
             search_active: false,
             filtered_indices: EMPTY_IDX,
             host: None,
+            is_git: EMPTY_GIT,
+            browser: None,
+            pending_commit: false,
+            spinner: "⠋",
         }
     }
 
@@ -471,8 +618,24 @@ mod tests {
 
         let without = picker_state(RepoPickerFocus::Input, None);
         let without_text = span_text(&footer_line(&without).spans);
-        assert!(without_text.contains("list"));
+        assert!(without_text.contains("browse"));
         assert!(!without_text.contains("complete"));
+    }
+
+    #[test]
+    fn footer_line_open_browser_shows_dropdown_hints() {
+        let mut s = picker_state(RepoPickerFocus::Input, None);
+        s.browser = Some(BrowserView {
+            dir: "~/projects",
+            entries: Vec::new(),
+            index: 0,
+            loading: false,
+            error: None,
+        });
+        let text = span_text(&footer_line(&s).spans);
+        assert!(text.contains("open/pick"));
+        assert!(text.contains("refresh"));
+        assert!(text.contains("close"));
     }
 
     #[test]
