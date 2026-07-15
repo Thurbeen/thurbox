@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::{ExtraRepo, HostDef, SessionConfig, SessionId};
+use crate::session::{psmux_hook_rewrite_supported, ExtraRepo, HostDef, SessionConfig, SessionId};
 use crate::storage::Database;
 use crate::sync::{SharedSession, SharedWorktree};
 
@@ -492,19 +492,6 @@ pub(crate) fn adapt_def_for_launch(
         ))
     };
     (def, degraded)
-}
-
-/// Whether hook configs may be shipped to (and their commands rewritten for) a
-/// **psmux** (native-Windows SSH) host. **Gate, currently closed**: the psmux
-/// path rests on behaviors not yet proven against psmux 3.3.6 — in-pane
-/// `set-option -p` without `-t` (no `$TMUX_PANE` guarantee), `#{@user_option}`
-/// expansion for the poller, and claude accepting a forward-slash `--settings`
-/// path on Windows. `scripts/dev/e2e/windows-vm.sh test` carries the probes;
-/// flip this to `true` only with that evidence. Closed = exactly the old strip
-/// behavior (the agent launches clean with no hooks, surfaced via
-/// `SessionInfo::hook_wiring`).
-pub(crate) fn psmux_hook_rewrite_supported() -> bool {
-    false
 }
 
 /// Where the local thurbox config root lands on `host`, or `None` when no

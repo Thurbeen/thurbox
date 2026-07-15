@@ -694,16 +694,20 @@ not block startup, so `check_available`/`ensure_ready` are deferred to first use
   connection (`refresh-client -B 'thurbox-status:%*:#{@thurbox_state}'`,
   armed in `ControlMode::start` so reconnects re-arm; tmux ≥ 3.2 = the
   existing floor) and receives `%subscription-changed` pushes (≤1/s); a
-  **psmux** connection instead runs a 1 s **poller thread** (`list-panes -F`
-  diffed by `control_mode::diff_polled_hook_states`) feeding the same queue. Both
+  **remote psmux** connection instead runs a 1 s **poller thread**
+  (`list-panes -F` diffed by `control_mode::diff_polled_hook_states`) feeding
+  the same queue — armed only behind the psmux gate below (a poll is an
+  active per-second command, unlike the passive subscription, and a *local*
+  psmux session signals via `thurbox-cli` directly). Both
   channels drain each tick via `App::drain_remote_hook_events` into the same
   `set_hook_state` columns local signals use — so Done→seen acknowledgment,
   OS notifications, and the stuck-`working` fallback are shared. Events are
   matched by **backend name + pane id** (pane ids collide across hosts),
   allow-listed (remote-controlled text), and deduped against the cache (a
   reconnect re-report must not resurrect an acknowledged `done`). Remaining
-  carve-out: hook **provisioning onto psmux/Windows hosts** is gated off
-  (`spawn::psmux_hook_rewrite_supported`) until the psmux behaviors are
+  carve-out: the **whole psmux/Windows-host path** — hook provisioning,
+  rewrite shipping, and the status poller — is gated off on the one switch
+  (`session::psmux_hook_rewrite_supported`) until the psmux behaviors are
   proven by `scripts/dev/e2e/windows-vm.sh test`'s probes — such sessions
   show a `Hooks: degraded` hint instead of silently idling.
 - **Remote teardown** (WSL inherits the SSH path): `session delete --force`

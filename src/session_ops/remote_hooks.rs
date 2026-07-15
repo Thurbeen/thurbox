@@ -99,17 +99,40 @@ fn remote_asset_for(agent: &str) -> Option<RemoteHookAsset> {
 /// fails a spawn.
 pub(crate) type HookDegradation = Option<String>;
 
-/// Successfully provisioned `(backend_name, agent)` pairs — provisioning runs
-/// per spawn, so repeat spawns of the same agent on the same host skip the ssh
-/// round-trips. Failures are *not* recorded (retried on the next spawn).
+/// Outcome of one uncached provisioning pass.
+enum ProvisionOutcome {
+    /// The payload is verified present on the host (written now, or already
+    /// up to date) — cacheable for the process lifetime.
+    Provisioned,
+    /// The agent isn't installed on the host (guard dir absent): nothing to
+    /// wire *yet*. Deliberately **not** cached — installing the agent on the
+    /// host later is picked up by the next spawn, at the cost of one cheap
+    /// probe per spawn.
+    NotInstalled,
+    /// Provisioning failed; the reason is surfaced as the session's
+    /// hook-wiring degradation. Not cached (retried on the next spawn).
+    Degraded(String),
+}
+
+/// Provisioning bookkeeping, keyed by `(backend_name, agent)`.
 /// Process-lifetime, like `git`'s remote-home cache: `hosts.toml` is read once
-/// at startup. The lock is held across the whole read-merge-write, so two
-/// concurrent spawns of the same agent on the same host can't interleave the
-/// merge (the ssh launcher is hardened with `ConnectTimeout`, bounding how
-/// long a down host can hold it).
-fn provisioned_cache() -> &'static Mutex<HashSet<(String, String)>> {
-    static CACHE: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashSet::new()))
+/// at startup. Only [`ProvisionOutcome::Provisioned`] lands in `provisioned`,
+/// so repeat spawns of the same agent on the same host skip the ssh
+/// round-trips while failures and not-installed skips are re-tried.
+/// `in_flight` guards the read-merge-write per key **without** holding the
+/// lock across the ssh round-trips (a slow or down host must not stall an
+/// unrelated host's spawn): a concurrent spawn of the same key skips
+/// provisioning entirely — the first pass either succeeds, or the next spawn
+/// retries.
+#[derive(Default)]
+struct ProvisionCache {
+    provisioned: HashSet<(String, String)>,
+    in_flight: HashSet<(String, String)>,
+}
+
+fn provisioned_cache() -> &'static Mutex<ProvisionCache> {
+    static CACHE: OnceLock<Mutex<ProvisionCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ProvisionCache::default()))
 }
 
 /// Ensure `agent`'s hook config exists (rewritten for the host) on `host`,
@@ -135,18 +158,32 @@ pub(crate) fn provision_agent_hooks_on_host(
     }
 
     let key = (host.backend_name(), agent.to_string());
-    let Ok(mut cache) = provisioned_cache().lock() else {
-        return None;
-    };
-    if cache.contains(&key) {
-        return None;
-    }
-    match provision_uncached(host, &asset) {
-        None => {
-            cache.insert(key);
-            None
+    {
+        let Ok(mut cache) = provisioned_cache().lock() else {
+            // A poisoned lock means a prior provisioning pass panicked —
+            // report it rather than claiming healthy wiring.
+            return Some("hook provisioning unavailable (cache lock poisoned)".to_string());
+        };
+        if cache.provisioned.contains(&key) {
+            return None;
         }
-        Some(reason) => {
+        if !cache.in_flight.insert(key.clone()) {
+            // Another spawn is mid-provision for this exact key; don't
+            // interleave its read-merge-write (and don't wait out its ssh
+            // round-trips either — see `ProvisionCache`).
+            return None;
+        }
+    }
+    let outcome = provision_uncached(host, &asset);
+    if let Ok(mut cache) = provisioned_cache().lock() {
+        cache.in_flight.remove(&key);
+        if matches!(outcome, ProvisionOutcome::Provisioned) {
+            cache.provisioned.insert(key);
+        }
+    }
+    match outcome {
+        ProvisionOutcome::Provisioned | ProvisionOutcome::NotInstalled => None,
+        ProvisionOutcome::Degraded(reason) => {
             tracing::warn!(
                 "remote hook provisioning degraded on host '{}': {reason}",
                 host.name
@@ -158,14 +195,16 @@ pub(crate) fn provision_agent_hooks_on_host(
 
 /// The uncached provisioning pass: probe → rewrite → merge/write →
 /// compare-before-copy.
-fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> HookDegradation {
+fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> ProvisionOutcome {
+    use ProvisionOutcome::{Degraded, NotInstalled, Provisioned};
+
     match crate::git::remote_dir_exists(host, asset.requires_dir) {
         // Agent not installed on the host — nothing to wire, not a degradation
         // (the pane would have no hooks locally either).
-        Ok(false) => return None,
+        Ok(false) => return NotInstalled,
         Ok(true) => {}
         Err(e) => {
-            return Some(format!(
+            return Degraded(format!(
                 "cannot probe {} on host: {e:#}",
                 asset.requires_dir
             ))
@@ -177,7 +216,7 @@ fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> HookDegradatio
 
     let existing = match crate::git::read_remote_file(host, asset.remote_path) {
         Ok(existing) => existing,
-        Err(e) => return Some(format!("cannot read {} on host: {e:#}", asset.remote_path)),
+        Err(e) => return Degraded(format!("cannot read {} on host: {e:#}", asset.remote_path)),
     };
 
     let to_write = match asset.kind {
@@ -185,9 +224,9 @@ fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> HookDegradatio
             match merged_remote_doc(existing.as_deref().unwrap_or(""), &rewritten) {
                 Ok(Some(merged)) => merged,
                 // Already up to date — record success without a write.
-                Ok(None) => return None,
+                Ok(None) => return Provisioned,
                 Err(e) => {
-                    return Some(format!(
+                    return Degraded(format!(
                         "cannot merge into {} on host: {e}",
                         asset.remote_path
                     ))
@@ -195,12 +234,12 @@ fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> HookDegradatio
             }
         }
         RemoteAssetKind::WriteFile => match existing {
-            Some(content) if content == rewritten => return None,
+            Some(content) if content == rewritten => return Provisioned,
             // A pre-existing file without the managed marker belongs to the
             // remote user — never clobber it (same rule as the local
             // installer's `is_user_modified`).
             Some(content) if !content.contains(MANAGED_MARKER) => {
-                return Some(format!(
+                return Degraded(format!(
                     "{} on host is user-owned (no managed marker)",
                     asset.remote_path
                 ))
@@ -212,15 +251,15 @@ fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> HookDegradatio
     let dest = match crate::git::expand_remote_tilde(host, asset.remote_path) {
         Ok(dest) => dest,
         Err(e) => {
-            return Some(format!(
+            return Degraded(format!(
                 "cannot resolve {} on host: {e:#}",
                 asset.remote_path
             ))
         }
     };
     match crate::git::copy_bytes_to_remote(host, to_write.as_bytes(), &dest) {
-        Ok(()) => None,
-        Err(e) => Some(format!("cannot write {dest} on host: {e:#}")),
+        Ok(()) => Provisioned,
+        Err(e) => Degraded(format!("cannot write {dest} on host: {e:#}")),
     }
 }
 

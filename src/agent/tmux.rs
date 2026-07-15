@@ -18,8 +18,10 @@ use crate::agent::control_mode::{
 use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
 
 /// Dedicated tmux socket name — isolates thurbox sessions from the user's tmux.
-/// Dev builds use "thurbox-dev" to avoid interfering with an installed release binary.
-const TMUX_SOCKET: &str = if cfg!(dev_build) {
+/// Dev builds use "thurbox-dev" to avoid interfering with an installed release
+/// binary. Crate-visible as the last-resort fallback when a host's configured
+/// socket sanitizes to empty (`builtin_hooks::remote_signal_target`).
+pub(crate) const TMUX_SOCKET: &str = if cfg!(dev_build) {
     "thurbox-dev"
 } else {
     "thurbox"
@@ -343,22 +345,30 @@ impl ControlMode {
             if let Err(e) = control.send_command(&arm) {
                 warn!("failed to arm the remote-hook status subscription: {e:#}");
             }
-        } else {
+        } else if transport.is_remote() && crate::session::psmux_hook_rewrite_supported() {
+            // Unlike the subscription (passive — zero recurring cost), the
+            // poller is a 1 Hz command, so it only runs where a producer can
+            // exist: a *remote* psmux host with the hook rewrite enabled. A
+            // local psmux (Windows) session signals via `thurbox-cli` straight
+            // into the DB and never sets the pane option.
             control.spawn_psmux_hook_poller(session);
         }
 
         Ok(control)
     }
 
-    /// psmux has no format subscriptions, so a psmux connection **polls** the
-    /// remote-hook pane option instead: a background thread lists every pane of
-    /// the session with its `@thurbox_state` each [`PSMUX_HOOK_POLL_INTERVAL`],
-    /// diffs against the previous poll ([`control_mode::diff_polled_hook_states`]),
-    /// and feeds changes into the same `sub_events` queue the tmux subscription
-    /// uses — everything downstream (`take_hook_state_events` → the app's
-    /// drain) is shared. Best-effort: a command failure ends the thread (the
-    /// connection is dying; a reconnect's fresh `ControlMode` spawns a fresh
-    /// poller), and an idle server pays one cheap command per second on an
+    /// psmux has no format subscriptions, so a remote psmux connection
+    /// **polls** the remote-hook pane option instead (once
+    /// [`crate::session::psmux_hook_rewrite_supported`] is flipped — the same
+    /// gate that enables shipping the rewritten hooks that set it): a
+    /// background thread lists every pane of the session with its
+    /// `@thurbox_state` each [`PSMUX_HOOK_POLL_INTERVAL`], diffs against the
+    /// previous poll ([`control_mode::diff_polled_hook_states`]), and feeds
+    /// changes into the same `sub_events` queue the tmux subscription uses —
+    /// everything downstream (`take_hook_state_events` → the app's drain) is
+    /// shared. Best-effort: a command failure ends the thread (the connection
+    /// is dying; a reconnect's fresh `ControlMode` spawns a fresh poller), and
+    /// an idle server pays one cheap command per second on an
     /// already-persistent connection.
     ///
     /// The thread is deliberately **detached** (not joined in `Drop`): a poll

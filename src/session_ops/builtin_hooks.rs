@@ -51,8 +51,9 @@ pub(crate) enum RemoteSignalTarget {
 
 impl RemoteSignalTarget {
     /// The replacement for [`SIGNAL_MARKER`]. Must stay free of `"` and `\` so
-    /// the byte-level replace on JSON text stays safe (guarded by a test; the
-    /// only variable part is the socket name, `thurbox`/`thurbox-dev`).
+    /// the byte-level replace on JSON text stays safe (guarded by a test). The
+    /// only variable part is the socket name, sanitized to a conservative
+    /// charset at construction ([`remote_signal_target`]).
     fn replacement(&self) -> String {
         let option = crate::session::REMOTE_HOOK_STATE_OPTION;
         match self {
@@ -97,10 +98,34 @@ pub(crate) fn rewrite_hook_signals_for_remote(contents: &str) -> String {
 /// The signal target for `host`, derived from its multiplexer: a psmux host
 /// gets the socket-explicit `psmux` form, everything else (tmux over SSH, tmux
 /// inside a WSL distro) the plain `tmux` form.
+///
+/// The socket name is user-authored (`hosts.toml`) but gets spliced into
+/// JSON/JS/TOML hook text by a byte-level replace and tokenized by psmux
+/// without quoting, so it is **sanitized** here to a filename-safe charset
+/// (`[A-Za-z0-9._-]`). A violating name keeps only its safe characters (warn
+/// logged): the signal lands dark on a wrong socket instead of corrupting the
+/// shipped config file — and such a name would break every other
+/// `-L <socket>` invocation anyway.
 pub(crate) fn remote_signal_target(host: &crate::session::HostDef) -> RemoteSignalTarget {
     if host.mux() == "psmux" {
+        let socket = crate::agent::tmux::host_socket(host);
+        let safe: String = socket
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        if safe != socket {
+            tracing::warn!(
+                "host '{}' socket {socket:?} has characters unsafe for the hook \
+                 rewrite; using {safe:?}",
+                host.name
+            );
+        }
         RemoteSignalTarget::Psmux {
-            socket: crate::agent::tmux::host_socket(host),
+            socket: if safe.is_empty() {
+                crate::agent::tmux::TMUX_SOCKET.to_string()
+            } else {
+                safe
+            },
         }
     } else {
         RemoteSignalTarget::Tmux
@@ -298,6 +323,37 @@ mod tests {
             rewrite_hook_signals_for_target(&rewritten, &target),
             rewritten
         );
+    }
+
+    #[test]
+    fn remote_signal_target_sanitizes_a_hostile_socket_name() {
+        // The socket is user-authored hosts.toml text spliced into JSON by a
+        // byte-level replace — unsafe characters must never survive into the
+        // replacement.
+        let host = crate::session::HostDef {
+            name: "winbox".into(),
+            destination: "user@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            socket: Some("we\"ird sock\\et".into()),
+            ..Default::default()
+        };
+        match remote_signal_target(&host) {
+            RemoteSignalTarget::Psmux { socket } => assert_eq!(socket, "weirdsocket"),
+            RemoteSignalTarget::Tmux => panic!("psmux host must get the psmux target"),
+        }
+
+        // An all-invalid socket falls back to the compile-time default rather
+        // than emitting `psmux -L  set-option …`.
+        let host = crate::session::HostDef {
+            socket: Some("\"\\ ".into()),
+            ..host
+        };
+        match remote_signal_target(&host) {
+            RemoteSignalTarget::Psmux { socket } => {
+                assert_eq!(socket, crate::agent::tmux::TMUX_SOCKET)
+            }
+            RemoteSignalTarget::Tmux => panic!("psmux host must get the psmux target"),
+        }
     }
 
     #[test]

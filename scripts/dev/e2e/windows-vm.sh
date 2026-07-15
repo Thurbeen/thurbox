@@ -292,7 +292,7 @@ cmd_test() {
 
   # --- psmux hook-status gate probes (evidence, not verdict) ----------------
   # Remote hooks-driven status on a psmux host is gated off in the binary
-  # (`psmux_hook_rewrite_supported` in src/session_ops/spawn.rs) until these
+  # (`psmux_hook_rewrite_supported` in src/session/mod.rs) until these
   # behaviors are proven against the pinned psmux: (A) pane **user options**
   # settable via `set-option -p -t` and expanded by `#{@opt}` in
   # `list-panes -F` (what the status poller reads); (B) an **id-less** in-pane

@@ -167,4 +167,4 @@ Provisioning is **best-effort** (a down host or refused write degrades to a
 **one-way**: thurbox never uninstalls from remote hosts (same policy as remote
 worktrees). The files it leaves carry both prune markers, so removing them by
 hand — or a future remote prune — needs no schema knowledge. Windows (`psmux`)
-hosts are not provisioned yet (gated in `session_ops::spawn`).
+hosts are not provisioned yet (gated on `session::psmux_hook_rewrite_supported`).
