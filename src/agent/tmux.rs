@@ -380,11 +380,18 @@ impl ControlMode {
         let queue = Arc::clone(&self.response_queue);
         let events = Arc::clone(&self.sub_events);
         let alive = Arc::clone(&self.alive);
-        // Double-quoted format: psmux's tokenizer passes `'` through `"…"`
+        // Double-quoted framing: psmux's tokenizer passes `'` through `"…"`
         // tokens but mangles adjacent `'…'` segments (see
-        // `psmux_window_command`), so double quotes are the safe framing.
+        // `psmux_window_command`). The session name is user-authored
+        // hosts.toml text embedded in a wire command, so it gets the same
+        // double-quote framing, minus the `"`/`\` it can't carry — mirroring
+        // the socket sanitization in `builtin_hooks::remote_signal_target`.
+        let session_safe: String = session
+            .chars()
+            .filter(|c| !matches!(c, '"' | '\\'))
+            .collect();
         let cmd = format!(
-            "list-panes -s -t {session} -F \"#{{pane_id}} #{{{}}}\"",
+            "list-panes -s -t \"{session_safe}\" -F \"#{{pane_id}} #{{{}}}\"",
             crate::session::REMOTE_HOOK_STATE_OPTION,
         );
         let spawned = std::thread::Builder::new()
@@ -596,15 +603,29 @@ impl ControlMode {
         let (tx, rx) = sync_channel(1);
 
         {
-            let mut queue = response_queue
-                .lock()
-                .map_err(|e| anyhow::anyhow!("response_queue lock: {e}"))?;
+            // Lock order: stdin first, queue only for the brief push/pop.
+            // Holding stdin across enqueue AND write keeps the FIFO waiter
+            // order matching the on-wire command order for concurrent senders
+            // (a backend caller vs the psmux poller) — while never holding the
+            // queue lock across the pipe write, so a write blocked on a wedged
+            // transport can't stall the reader thread (whose response dispatch
+            // needs the queue lock) or any other `send_command` caller beyond
+            // the command itself.
             let mut stdin = stdin
                 .lock()
                 .map_err(|e| anyhow::anyhow!("stdin lock: {e}"))?;
-            queue.push_back(tx);
+            {
+                let mut queue = response_queue
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("response_queue lock: {e}"))?;
+                queue.push_back(tx);
+            }
             if let Err(e) = writeln!(stdin, "{cmd}").and_then(|()| stdin.flush()) {
-                queue.pop_back();
+                // Un-enqueue our waiter — still under the stdin lock, so no
+                // other sender can have pushed after us: the back is ours.
+                if let Ok(mut queue) = response_queue.lock() {
+                    queue.pop_back();
+                }
                 return Err(e.into());
             }
         }

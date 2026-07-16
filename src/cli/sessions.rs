@@ -125,7 +125,7 @@ pub enum Action {
     Signal {
         /// The reported state. `idle` = agent ready/at-rest (e.g. a fresh
         /// session boot); `done` = a turn just finished (shows until you look).
-        #[arg(long, value_parser = ["working", "blocked", "done", "idle"])]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(crate::session::HOOK_STATES))]
         state: String,
         /// Override the calling session (UUID). Defaults to $THURBOX_SESSION,
         /// then a lookup by the agent conversation id ($THURBOX_SESSION_ID).

@@ -328,6 +328,12 @@ pub fn expand_remote_tilde(host: &HostDef, path: &str) -> Result<String> {
 /// or the probed command's own 1).
 const REMOTE_PROBE_NEGATIVE: i32 = 3;
 
+/// Sentinel for "the path exists but is not a regular file" — distinct from
+/// [`REMOTE_PROBE_NEGATIVE`] *and* from the probed command's own exit 1 (e.g.
+/// `cat` failing on a permission-denied file must not be misreported as a
+/// file-type problem).
+const REMOTE_PROBE_NOT_FILE: i32 = 4;
+
 /// Resolve `%USERPROFILE%` on a **native-Windows** SSH host (a `psmux` host),
 /// normalized to forward slashes (`C:/Users/me`) and cached like
 /// [`remote_home`] (same key space — a host is either POSIX or Windows, never
@@ -445,8 +451,8 @@ pub(crate) fn read_remote_file(host: &HostDef, path: &str) -> Result<Option<Stri
     let path = expand_remote_tilde(host, path)?;
     let quoted = posix_quote(&path);
     let script = format!(
-        "if test -f {quoted}; then cat {quoted}; elif test -e {quoted}; then exit 1; \
-         else exit {REMOTE_PROBE_NEGATIVE}; fi"
+        "if test -f {quoted}; then cat {quoted}; elif test -e {quoted}; then \
+         exit {REMOTE_PROBE_NOT_FILE}; else exit {REMOTE_PROBE_NEGATIVE}; fi"
     );
     let output = host_shell_c(host, &script)
         .stderr(Stdio::piped())
@@ -455,7 +461,11 @@ pub(crate) fn read_remote_file(host: &HostDef, path: &str) -> Result<Option<Stri
     match output.status.code() {
         Some(0) => Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned())),
         Some(REMOTE_PROBE_NEGATIVE) => Ok(None),
-        Some(1) => anyhow::bail!("remote path {path} exists but is not a regular file"),
+        Some(REMOTE_PROBE_NOT_FILE) => {
+            anyhow::bail!("remote path {path} exists but is not a regular file")
+        }
+        // Anything else includes `cat`'s own failure (e.g. permission denied,
+        // exit 1) — surface its stderr rather than misreporting the file type.
         _ => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("remote file read failed: {}", stderr.trim())

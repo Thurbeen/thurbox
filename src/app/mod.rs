@@ -4780,7 +4780,7 @@ impl App {
     fn drain_remote_hook_events(&mut self) {
         // The value is remote-host-controlled free text: allow-list it (the
         // same states `session signal` accepts) and never interpolate it.
-        const VALID_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
+        const VALID_STATES: [&str; 4] = crate::session::HOOK_STATES;
         // Unmatched events are retried this long — comfortably past a slow
         // host's background restore — then dropped (bounded below, so another
         // instance's panes can't accumulate).

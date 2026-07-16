@@ -123,11 +123,10 @@ enum ProvisionOutcome {
 /// at startup. Only [`ProvisionOutcome::Provisioned`] lands in `provisioned`,
 /// so repeat spawns of the same agent on the same host skip the ssh
 /// round-trips while failures and not-installed skips are re-tried.
-/// `in_flight` guards the read-merge-write per key **without** holding the
-/// lock across the ssh round-trips (a slow or down host must not stall an
-/// unrelated host's spawn): a concurrent spawn of the same key skips
-/// provisioning entirely — the first pass either succeeds, or the next spawn
-/// retries.
+/// `in_flight` makes the read-merge-write exclusive per key **without**
+/// holding the lock across the ssh round-trips (a slow or down host must not
+/// stall an unrelated host's spawn): a concurrent spawn of the same key waits
+/// for the holder (bounded), then reads the cache or retries the pass itself.
 #[derive(Default)]
 struct ProvisionCache {
     provisioned: HashSet<(String, String)>,
@@ -138,6 +137,35 @@ fn provisioned_cache() -> &'static Mutex<ProvisionCache> {
     static CACHE: OnceLock<Mutex<ProvisionCache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(ProvisionCache::default()))
 }
+
+/// Lock the cache, recovering from poison: every mutation under this lock is
+/// a single `insert`/`remove`/`contains` (no multi-step invariant a panic
+/// could tear), so a poisoned mutex — e.g. [`InFlightGuard`]'s own release
+/// during an unwind — carries consistent data and is safe to keep using.
+fn cache_lock() -> std::sync::MutexGuard<'static, ProvisionCache> {
+    provisioned_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Removes its key from `in_flight` on drop — **including on unwind**, so a
+/// panic inside the provisioning pass can never leak the key and permanently
+/// (and silently) disable provisioning for that `(host, agent)`.
+struct InFlightGuard {
+    key: (String, String),
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        cache_lock().in_flight.remove(&self.key);
+    }
+}
+
+/// How a same-key waiter polls the in-flight holder, and for how long. The
+/// cap only trips if the holder is wedged past every ssh timeout — the waiter
+/// then degrades with a note instead of spinning forever.
+const IN_FLIGHT_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(200);
+const IN_FLIGHT_WAIT_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Ensure `agent`'s hook config exists (rewritten for the host) on `host`,
 /// returning the degradation reason when it can't. Called from the spawn
@@ -162,28 +190,36 @@ pub(crate) fn provision_agent_hooks_on_host(
     }
 
     let key = (host.backend_name(), agent.to_string());
-    {
-        let Ok(mut cache) = provisioned_cache().lock() else {
-            // A poisoned lock means a prior provisioning pass panicked —
-            // report it rather than claiming healthy wiring.
-            return Some("hook provisioning unavailable (cache lock poisoned)".to_string());
-        };
-        if cache.provisioned.contains(&key) {
-            return None;
+    // Claim the key, or wait for the concurrent spawn that holds it: skipping
+    // would report this session healthy while its agent may boot before the
+    // holder's file lands (or after the holder *fails*). Waiting is bounded —
+    // the holder's ssh calls are ConnectTimeout/ServerAlive-bounded and the
+    // guard releases the key even on panic — and runs on a spawn worker by
+    // contract, never the UI thread. If the holder succeeded we return
+    // healthy from the cache; if it failed, we retry the pass ourselves.
+    let mut waited = std::time::Duration::ZERO;
+    let _guard = loop {
+        {
+            let mut cache = cache_lock();
+            if cache.provisioned.contains(&key) {
+                return None;
+            }
+            if cache.in_flight.insert(key.clone()) {
+                break InFlightGuard { key: key.clone() };
+            }
         }
-        if !cache.in_flight.insert(key.clone()) {
-            // Another spawn is mid-provision for this exact key; don't
-            // interleave its read-merge-write (and don't wait out its ssh
-            // round-trips either — see `ProvisionCache`).
-            return None;
+        if waited >= IN_FLIGHT_WAIT_MAX {
+            return Some(format!(
+                "{agent} hook provisioning still in flight on host '{}' (concurrent spawn)",
+                host.name
+            ));
         }
-    }
+        std::thread::sleep(IN_FLIGHT_WAIT_STEP);
+        waited += IN_FLIGHT_WAIT_STEP;
+    };
     let outcome = provision_uncached(host, &asset);
-    if let Ok(mut cache) = provisioned_cache().lock() {
-        cache.in_flight.remove(&key);
-        if matches!(outcome, ProvisionOutcome::Provisioned) {
-            cache.provisioned.insert(key);
-        }
+    if matches!(outcome, ProvisionOutcome::Provisioned) {
+        cache_lock().provisioned.insert(key);
     }
     match outcome {
         ProvisionOutcome::Provisioned | ProvisionOutcome::NotInstalled => None,
@@ -302,7 +338,7 @@ fn merged_remote_doc(existing: &str, payload: &str) -> Result<Option<String>, St
 /// The hook states a headless poll may write — the same allow-list the TUI's
 /// drain applies (`App::drain_remote_hook_events`): the polled value is
 /// remote-host-controlled free text, so it is matched, never interpolated.
-const VALID_POLL_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
+const VALID_POLL_STATES: [&str; 4] = crate::session::HOOK_STATES;
 
 /// Join one host's polled `(pane_id, state)` pairs against that backend's
 /// sessions, returning the `(session, state)` writes that change anything.
@@ -407,6 +443,25 @@ pub(crate) fn poll_remote_hook_states(db: &crate::storage::Database) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_flight_guard_releases_on_unwind() {
+        // A panic inside the provisioning pass must not leak the in-flight
+        // key (which would silently disable provisioning for the process
+        // lifetime while reporting healthy).
+        let key = ("test-guard-backend".to_string(), "codex".to_string());
+        assert!(cache_lock().in_flight.insert(key.clone()));
+        let k = key.clone();
+        let unwound = std::panic::catch_unwind(move || {
+            let _guard = InFlightGuard { key: k };
+            panic!("simulated provisioning panic");
+        });
+        assert!(unwound.is_err());
+        assert!(
+            !cache_lock().in_flight.contains(&key),
+            "guard must release the key on unwind"
+        );
+    }
 
     #[test]
     fn remote_status_updates_writes_changes_only() {
