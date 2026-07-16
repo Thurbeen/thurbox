@@ -499,6 +499,22 @@ workspace, so `--last`/`--continue` finds no parent session (multi-repo
 A session stores only its **agent name**; there are no
 per-session model/permission/prompt/tool knobs.
 
+**Custom-agent status hooks (`hook_schema`).** thurbox stays agent-neutral, so
+the built-in **hooks** extension wires status hooks only for the built-ins it
+knows by name — a **custom** agent (e.g. a rebranded-claude `fleet`) gets no
+`--settings` patch and so never reports working/blocked/done. An optional
+`AgentDef.hook_schema: Option<String>` closes this: it names the hook **family**
+the CLI speaks, and `agent::extension_config::apply_agent_patches` (+ its
+uninstall reverse) fans each `[[agent_patches]]` out to the built-in named
+`patch.name` **and** every agent with `hook_schema == patch.name`. So
+`hook_schema = "claude"` on `fleet` injects the same `--settings {home}/
+claude.json` claude gets — and, because the remote rewrite
+(`session_ops::spawn::adapt_agent_args_for_remote`) keys off the `--settings`
+arg rather than the agent name, remote/WSL wiring follows for free. Only the
+per-arg-patch families (claude, aider) need it; codex/opencode/antigravity/vibe/
+copilot wire through their own config dir, so a rebrand sharing that dir already
+reports. thurbox bakes in no agent knowledge — the *user* asserts the family.
+
 ### Multi-repo sessions (symlink workspace)
 
 A session can span several repositories (the repo picker allows

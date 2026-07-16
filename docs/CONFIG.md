@@ -111,6 +111,9 @@ resume_args = ["--resume", "{id}"]            # emitted when resuming
 fork_args = ["--resume", "{id}", "--fork-session"]
 new_session_args = ["--session-id", "{id}"]   # emitted on a fresh spawn
 resume_latest = false       # true = id-less "resume last session in cwd"
+# hook_schema = "claude"    # optional: name the hook FAMILY this CLI speaks so
+                            #   the built-in hooks extension wires its status
+                            #   hooks under this custom agent's name too
 ```
 
 `{id}` is substituted with the thurbox-generated session UUID. Groups
@@ -118,6 +121,16 @@ are emitted only when their driving value exists; precedence is
 fork > resume > new-session. See the seeded file's comments and
 CLAUDE.md's *Agent Definitions* section for the `resume_latest`
 semantics.
+
+`hook_schema` is optional. Custom agents are agent-neutral, so the built-in
+**hooks** extension normally wires status hooks only for the built-ins it knows
+by name. Set `hook_schema = "claude"` on a **rebranded** agent (one whose
+`command` runs `claude` under a different `name`) and it inherits claude's hook
+wiring — the `--settings` patch locally, and the same rewrite on a remote/WSL
+host. It names the *family* to imitate, not a boolean; today the useful value is
+`"claude"` (the only family wired via a per-agent arg patch — codex/opencode/
+antigravity/vibe/copilot are wired through their own config dir, so a rebrand
+sharing that dir already reports status).
 
 The seeded file also ships two commented, copy-pasteable templates
 below the built-ins — **Add your own agent** (every field annotated)

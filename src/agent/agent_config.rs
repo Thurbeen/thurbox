@@ -106,6 +106,12 @@ command = "vibe"
 # new_session_args = []         # appended on a fresh spawn, with {id} substituted
 # resume_latest = false         # true ⇒ resume "the last session in this dir"
 #                               #   (id-less flags); leave false to pin by {id}
+# hook_schema = "claude"        # OPTIONAL: name the hook FAMILY this CLI speaks
+#                               #   so the built-in `hooks` extension wires its
+#                               #   status hooks as if this were that built-in.
+#                               #   A rebranded-claude CLI sets "claude" to get
+#                               #   claude's --settings hook wiring under its own
+#                               #   name. Omit if the agent has no known family.
 #
 # {id} is a thurbox-generated UUID. Only agents that accept it at creation
 # (like claude's `--session-id {id}`) can resume/fork by that exact id; for

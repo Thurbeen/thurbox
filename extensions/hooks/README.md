@@ -90,6 +90,29 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   fail-open no-op. If a future `agy` changes the hook schema, edit
   `antigravity-hooks.json` (no code change).
 
+## Custom agents (`hook_schema`)
+
+The wiring above is keyed to the built-in agent **names**, so a **custom** agent
+you add to `agents.toml` (e.g. a rebranded-claude `fleet`) normally gets no
+hooks — its status dot stays driven only by the agent-neutral fallbacks (working
+inferred from output, done from output quiescence). To opt a custom agent into a
+known family, set `hook_schema` on its `[[agents]]` entry:
+
+```toml
+[[agents]]
+name = "fleet"
+command = "fleet"        # runs claude under the hood
+hook_schema = "claude"   # ⇒ inherit claude's --settings hook wiring
+```
+
+thurbox then applies the `claude` `[[agent_patches]]` to `fleet` as well, so it
+reports working/blocked/done exactly like `claude` (locally and on a remote/WSL
+host). `hook_schema` names the *family* to imitate; today `"claude"` is the
+useful value — it's the family wired via a per-agent arg patch. The
+config-dir-wired families (codex/opencode/antigravity/vibe/copilot) don't need
+it: a rebrand that runs the same CLI reads the same `~/.<agent>/…` hook file and
+already reports.
+
 ## Where the config lives
 
 The wiring is applied **only to agents thurbox launches** — it never edits your

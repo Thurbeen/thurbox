@@ -539,6 +539,7 @@ prompt = "tick"
                 fork_args: vec![],
                 new_session_args: vec![],
                 resume_latest: false,
+                hook_schema: None,
             }],
             files: vec![ExtensionFile {
                 path: "FLOW.md".into(),

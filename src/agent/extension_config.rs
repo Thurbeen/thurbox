@@ -496,11 +496,14 @@ pub fn remove_agents_from_toml(names: &[String]) -> Result<Vec<String>, String> 
     Ok(removed)
 }
 
-/// Append each patch's `append_args` to the named existing agent's `args` in
+/// Append each patch's `append_args` to the matching agents' `args` in
 /// `agents.toml`, idempotently and preserving comments/formatting (toml_edit).
-/// Unlike [`ensure_agents_registered`] (which only adds *new* agents), this
-/// extends an agent the extension does not own (e.g. the built-in `claude`).
-/// Agents not present are skipped. Returns the names actually patched.
+/// A patch matches the agent literally named `patch.name` **and** every custom
+/// agent that declared `hook_schema = "<patch.name>"` — so a rebranded-claude
+/// agent picks up the same `--settings` wiring as the built-in `claude`. Unlike
+/// [`ensure_agents_registered`] (which only adds *new* agents), this extends
+/// agents the extension does not own. Agents not present are skipped. Returns
+/// the names actually patched (one entry per matched agent).
 pub fn apply_agent_patches(patches: &[AgentPatch]) -> Result<Vec<String>, String> {
     edit_agent_patches(patches, true)
 }
@@ -539,15 +542,34 @@ fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, 
         if patch.append_args.is_empty() {
             continue;
         }
+        // A patch targets its named built-in agent AND every custom agent that
+        // declared `hook_schema = "<patch.name>"` — so a rebranded-claude agent
+        // gets the same `--settings` wiring. No `break`: fan out to all matches.
         for table in agents.iter_mut() {
-            if table.get("name").and_then(|v| v.as_str()) != Some(patch.name.as_str()) {
+            // Snapshot the identity fields into owned strings first: the args
+            // mutation below reborrows `table` mutably.
+            let agent_name = table
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let hook_schema = table
+                .get("hook_schema")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let matches = agent_name.as_deref() == Some(patch.name.as_str())
+                || hook_schema.as_deref() == Some(patch.name.as_str());
+            if !matches {
                 continue;
             }
+            // A hook_schema match with no `name` can't be patched — skip it.
+            let Some(agent_name) = agent_name else {
+                continue;
+            };
             if table.get("args").is_none() {
                 table["args"] = toml_edit::value(Array::new());
             }
             let Some(args) = table.get_mut("args").and_then(|i| i.as_array_mut()) else {
-                break;
+                continue;
             };
             let current: Vec<String> = args
                 .iter()
@@ -558,16 +580,15 @@ fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, 
                 for a in &patch.append_args {
                     args.push(a.as_str());
                 }
-                changed.push(patch.name.clone());
+                changed.push(agent_name);
             } else if !add && present {
                 let mut arr = Array::new();
                 for a in remove_subsequence(&current, &patch.append_args) {
                     arr.push(a.as_str());
                 }
                 table["args"] = toml_edit::value(arr);
-                changed.push(patch.name.clone());
+                changed.push(agent_name);
             }
-            break;
         }
     }
 
@@ -863,6 +884,7 @@ mod tests {
             fork_args: vec![],
             new_session_args: vec![],
             resume_latest: false,
+            hook_schema: None,
         };
         // claude already exists in the seeded built-ins → not re-added.
         let claude = AgentDef {
@@ -895,6 +917,7 @@ mod tests {
             fork_args: vec![],
             new_session_args: vec![],
             resume_latest: false,
+            hook_schema: None,
         };
         ensure_agents_registered(&[flow]).unwrap();
         // Sanity: flow + the seeded built-ins are present.
@@ -962,6 +985,63 @@ mod tests {
             append_args: vec!["--x".into()],
         };
         assert!(apply_agent_patches(&[ghost]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_patch_fans_out_to_hook_schema_family() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+
+        // A custom rebranded-claude agent declaring it speaks the claude hook
+        // family. It should pick up the claude `--settings` patch too.
+        let fleet = AgentDef {
+            name: "fleet".into(),
+            command: "fleet".into(),
+            args: vec![],
+            resume_args: vec![],
+            fork_args: vec![],
+            new_session_args: vec![],
+            resume_latest: false,
+            hook_schema: Some("claude".into()),
+        };
+        ensure_agents_registered(&[fleet]).unwrap();
+
+        let patch = AgentPatch {
+            name: "claude".into(),
+            append_args: vec!["--settings".into(), "/x/hooks.json".into()],
+        };
+        let mut patched = apply_agent_patches(std::slice::from_ref(&patch)).unwrap();
+        patched.sort();
+        // The built-in `claude` and the family member `fleet` both get it.
+        assert_eq!(patched, ["claude", "fleet"]);
+
+        let reg = super::super::agent_config::load_or_seed();
+        for name in ["claude", "fleet"] {
+            let args = &reg.get(name).unwrap().args;
+            assert!(
+                args.windows(2)
+                    .any(|w| w == ["--settings".to_string(), "/x/hooks.json".to_string()]),
+                "{name} carries the injected flag: {args:?}"
+            );
+        }
+
+        // Idempotent across the family.
+        assert!(apply_agent_patches(std::slice::from_ref(&patch))
+            .unwrap()
+            .is_empty());
+
+        // Reverse strips it from every family member.
+        let mut removed = remove_agent_patches(std::slice::from_ref(&patch)).unwrap();
+        removed.sort();
+        assert_eq!(removed, ["claude", "fleet"]);
+        let reg = super::super::agent_config::load_or_seed();
+        for name in ["claude", "fleet"] {
+            assert!(!reg
+                .get(name)
+                .unwrap()
+                .args
+                .contains(&"--settings".to_string()));
+        }
     }
 
     #[test]
