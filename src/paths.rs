@@ -41,6 +41,7 @@ pub const CONFIG_DIR_OVERRIDE_ENV: &str = "THURBOX_CONFIG_DIR";
 pub const DATA_DIR_OVERRIDE_ENV: &str = "THURBOX_DATA_DIR";
 
 /// Returns "thurbox-dev" for dev builds, "thurbox" for release builds.
+#[cfg_attr(test, allow(dead_code))] // only used by the non-test XDG fallback
 fn app_dir_name() -> &'static str {
     if cfg!(dev_build) {
         "thurbox-dev"
@@ -68,6 +69,7 @@ pub fn which_on_path(exe: &str) -> bool {
 /// Base directory for config files. `$XDG_CONFIG_HOME` wins on every platform
 /// (some users set it on Windows too); otherwise `%APPDATA%` on Windows,
 /// `$HOME/.config` on Unix.
+#[cfg_attr(test, allow(dead_code))] // only used by the non-test XDG fallback
 fn config_base() -> Option<PathBuf> {
     if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(x));
@@ -84,6 +86,7 @@ fn config_base() -> Option<PathBuf> {
 
 /// Base directory for data files. `$XDG_DATA_HOME` wins on every platform;
 /// otherwise `%LOCALAPPDATA%` on Windows, `$HOME/.local/share` on Unix.
+#[cfg_attr(test, allow(dead_code))] // only used by the non-test XDG fallback
 fn data_base() -> Option<PathBuf> {
     if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
         return Some(PathBuf::from(x));
@@ -98,11 +101,32 @@ fn data_base() -> Option<PathBuf> {
     }
 }
 
+/// Per-process temp sandbox for the XDG fallback in **test builds only**.
+///
+/// The unit-test harness (`cargo test`/`nextest`) frequently runs *inside* a
+/// live thurbox session (the dev shell is itself an agent session), whose env
+/// carries `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` pointing at the developer's
+/// **real** config/data dirs (injected so an agent's `thurbox-cli` hook targets
+/// the same DB — see `session_ops::inject_thurbox_env`). Honoring those in tests
+/// — or falling through to the real `$HOME/.config/thurbox` — let any unguarded
+/// test that writes config (settings save, hooks install, keybindings) clobber
+/// the user's live settings. So in test builds the XDG fallback ignores the
+/// override env entirely and resolves under a `<pid>`-scoped temp dir instead;
+/// `TestPathGuard`/`set_test_dir` (the `Override` strategy) still wins where a
+/// test wants a specific base.
+#[cfg(test)]
+fn test_sandbox_base() -> PathBuf {
+    std::env::temp_dir().join(format!("thurbox-unittest-{}", std::process::id()))
+}
+
 /// Resolved thurbox config app dir. A `THURBOX_CONFIG_DIR` env override (the
 /// already-resolved dir, incl. the `thurbox`/`thurbox-dev` segment) wins — this
 /// is how the TUI pins child processes (agent hooks calling `thurbox-cli`) to
 /// the *same* config it uses, immune to a stale tmux-server env or which
-/// `thurbox-cli` binary is on PATH. Otherwise `<config_base>/<app>`.
+/// `thurbox-cli` binary is on PATH. Otherwise `<config_base>/<app>`. In test
+/// builds the env override is ignored in favor of a temp sandbox — see
+/// [`test_sandbox_base`].
+#[cfg(not(test))]
 fn config_app_dir() -> Option<PathBuf> {
     if let Some(x) = std::env::var_os(CONFIG_DIR_OVERRIDE_ENV).filter(|s| !s.is_empty()) {
         return Some(PathBuf::from(x));
@@ -110,12 +134,26 @@ fn config_app_dir() -> Option<PathBuf> {
     Some(config_base()?.join(app_dir_name()))
 }
 
+/// Test build: pin the config dir to a temp sandbox, ignoring the inherited
+/// `THURBOX_CONFIG_DIR` — see [`test_sandbox_base`].
+#[cfg(test)]
+fn config_app_dir() -> Option<PathBuf> {
+    Some(test_sandbox_base().join("config"))
+}
+
 /// Resolved thurbox data app dir; see [`config_app_dir`] (`THURBOX_DATA_DIR`).
+#[cfg(not(test))]
 fn data_app_dir() -> Option<PathBuf> {
     if let Some(x) = std::env::var_os(DATA_DIR_OVERRIDE_ENV).filter(|s| !s.is_empty()) {
         return Some(PathBuf::from(x));
     }
     Some(data_base()?.join(app_dir_name()))
+}
+
+/// Test build: pin the data dir to a temp sandbox; see [`config_app_dir`].
+#[cfg(test)]
+fn data_app_dir() -> Option<PathBuf> {
+    Some(test_sandbox_base().join("data"))
 }
 
 /// `<config_app_dir>/<filename>`.
@@ -645,6 +683,37 @@ mod tests {
         PATH_STRATEGY.with(|s| {
             assert_eq!(*s.borrow(), PathStrategy::Xdg);
         });
+    }
+
+    #[test]
+    fn test_build_ignores_config_and_data_dir_override_env() {
+        // Regression: the unit-test harness often runs *inside* a live thurbox
+        // session whose env carries THURBOX_CONFIG_DIR/THURBOX_DATA_DIR pointing
+        // at the developer's real config/data. On the XDG strategy a test build
+        // must ignore those and stay under the per-process temp sandbox, so an
+        // unguarded config write can never clobber the user's live settings.
+        reset_to_xdg();
+        let saved_cfg = std::env::var_os(CONFIG_DIR_OVERRIDE_ENV);
+        let saved_data = std::env::var_os(DATA_DIR_OVERRIDE_ENV);
+        std::env::set_var(CONFIG_DIR_OVERRIDE_ENV, "/real/config/thurbox");
+        std::env::set_var(DATA_DIR_OVERRIDE_ENV, "/real/data/thurbox");
+
+        let cfg = config_file().unwrap();
+        let db = database_file().unwrap();
+
+        match saved_cfg {
+            Some(v) => std::env::set_var(CONFIG_DIR_OVERRIDE_ENV, v),
+            None => std::env::remove_var(CONFIG_DIR_OVERRIDE_ENV),
+        }
+        match saved_data {
+            Some(v) => std::env::set_var(DATA_DIR_OVERRIDE_ENV, v),
+            None => std::env::remove_var(DATA_DIR_OVERRIDE_ENV),
+        }
+
+        assert!(cfg.starts_with(test_sandbox_base()), "config: {cfg:?}");
+        assert!(db.starts_with(test_sandbox_base()), "db: {db:?}");
+        assert!(!cfg.starts_with("/real/config/thurbox"), "config: {cfg:?}");
+        assert!(!db.starts_with("/real/data/thurbox"), "db: {db:?}");
     }
 
     #[test]
