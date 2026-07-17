@@ -433,6 +433,7 @@ impl App {
             &automation_entries,
             agent_usage,
             parent_name.as_deref(),
+            self.metrics.thurbox_dir_bytes,
         );
     }
 

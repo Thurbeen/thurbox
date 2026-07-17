@@ -29,6 +29,7 @@ pub struct SystemMetrics {
     pub session_memory_bytes: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_info_panel(
     frame: &mut Frame,
     area: Rect,
@@ -37,6 +38,7 @@ pub fn render_info_panel(
     automations: &[AutomationEntry],
     usage: Option<&crate::session::AgentUsage>,
     parent_name: Option<&str>,
+    thurbox_dir_bytes: Option<u64>,
 ) {
     let block = Block::default()
         .title(" Info ")
@@ -71,7 +73,7 @@ pub fn render_info_panel(
     }
 
     if let Some(m) = metrics {
-        append_system_section(&mut lines, m, inner_width);
+        append_system_section(&mut lines, m, thurbox_dir_bytes, inner_width);
     }
 
     append_automations_section(&mut lines, automations, inner_width);
@@ -180,8 +182,15 @@ fn append_session_resources(lines: &mut Vec<Line<'_>>, m: &SystemMetrics, inner_
     }
 }
 
-/// Append the System Resources section (global CPU/RAM gauges).
-fn append_system_section(lines: &mut Vec<Line<'_>>, m: &SystemMetrics, inner_width: usize) {
+/// Append the System Resources section (global CPU/RAM gauges), plus thurbox's
+/// own on-disk footprint (`~/.local/share/thurbox`) when it has been measured —
+/// a heads-up when accumulated worktrees/workspaces have grown the data dir.
+fn append_system_section(
+    lines: &mut Vec<Line<'_>>,
+    m: &SystemMetrics,
+    thurbox_dir_bytes: Option<u64>,
+    inner_width: usize,
+) {
     lines.push(separator(inner_width));
     lines.push(Line::from(Span::styled("System", Theme::section_header())));
 
@@ -199,6 +208,16 @@ fn append_system_section(lines: &mut Vec<Line<'_>>, m: &SystemMetrics, inner_wid
         inner_width,
     );
     lines.extend(ram_lines);
+
+    if let Some(bytes) = thurbox_dir_bytes {
+        lines.push(Line::from(vec![
+            Span::styled("Disk", Style::default().fg(Theme::text_muted())),
+            Span::styled(
+                format!("  {} (thurbox dir)", format_bytes(bytes)),
+                Style::default().fg(Theme::text_primary()),
+            ),
+        ]));
+    }
 }
 
 /// Append the upcoming-automations section (skipped when there are none).
@@ -662,6 +681,47 @@ mod tests {
         append_session_section(&mut lines, &info, None);
         let rendered = text(&lines);
         assert!(rendered.contains("Hooks: degraded — codex hooks not provisioned"));
+    }
+
+    // ── append_system_section tests ──
+
+    fn render_system(m: &SystemMetrics, thurbox_dir_bytes: Option<u64>) -> String {
+        let mut lines: Vec<Line> = Vec::new();
+        append_system_section(&mut lines, m, thurbox_dir_bytes, 24);
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn sample_metrics() -> SystemMetrics {
+        SystemMetrics {
+            cpu_percent: 10.0,
+            memory_used: 8_589_934_592,
+            memory_total: 17_179_869_184,
+            session_cpu_percent: 0.0,
+            session_memory_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn system_section_shows_thurbox_dir_size_when_measured() {
+        let out = render_system(&sample_metrics(), Some(524_288_000));
+        assert!(out.contains("Disk"));
+        assert!(out.contains("500.0 MB"));
+        assert!(out.contains("thurbox dir"));
+    }
+
+    #[test]
+    fn system_section_omits_disk_line_before_first_scan() {
+        let out = render_system(&sample_metrics(), None);
+        assert!(!out.contains("thurbox dir"));
     }
 
     // ── human_bytes tests ──
