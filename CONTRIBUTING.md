@@ -62,6 +62,25 @@ sandbox for trying thurbox in isolation — lives in
 | `just arch` | architecture-rule + rustdoc checks |
 | `just sandbox` | run thurbox in an isolated dev sandbox |
 
+## Coding agents
+
+Thurbox is agent-neutral, so the repo works with any coding-agent CLI.
+[`CLAUDE.md`](CLAUDE.md) is the canonical guidance doc — Claude Code reads it
+directly, and [opencode](https://opencode.ai) loads it automatically as project
+rules via its Claude-Code compatibility (it's picked up when no `AGENTS.md`
+exists, so there's deliberately no `AGENTS.md` duplicating it).
+
+Slash-command workflows and skills are checked in for both:
+
+| Kind | Claude Code | opencode | Notes |
+|------|-------------|----------|-------|
+| Commands (`/refactor`, `/ship`, `/sync`) | `.claude/commands/` | `.opencode/commands/` | opencode does **not** auto-discover `.claude/commands/`, so the two are kept in sync by hand |
+| Skills (`publish`, `ui-review`) | `.claude/skills/` | `.claude/skills/` | opencode auto-discovers `.claude/skills/`, so one copy serves both — don't mirror them under `.opencode/skills/` (it would double-register) |
+
+A minimal [`opencode.json`](opencode.json) declares the `$schema` for editor
+validation. When you add or change a command, update **both** directories so the
+two agents stay in sync.
+
 ## Testing
 
 Thurbox follows **test-driven development** — write a failing test first, make
