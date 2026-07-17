@@ -829,13 +829,27 @@ impl TmuxBackend {
             self.tmux_run(&["set-option", "-s", "default-command", &shell])?;
         }
 
-        // Server-wide options
+        // Server-wide options every supported tmux understands. A failure here
+        // means the server can't host sessions, so it is propagated.
         let server_opts = [
             ("default-terminal", "xterm-256color"),
             ("extended-keys", "on"),
         ];
         for (key, val) in &server_opts {
             self.tmux_run(&["set-option", "-s", key, val])?;
+        }
+
+        // `extended-keys-format csi-u` is best-effort: the option landed in tmux
+        // 3.3, but thurbox's floor is 3.2, so an older tmux rejects it ("invalid
+        // option"). It is advisory only — thurbox injects keystroke bytes directly
+        // via `send-keys` (not through tmux's key forwarder), so it never
+        // re-encodes what an agent receives; it just sets what `tmux show-options`
+        // reports, which some agents (notably `pi`) probe at startup and warn about
+        // unless it is `csi-u`. Ignoring the error keeps a 3.2 host working (pi
+        // users there simply miss the hint) while 3.3+ hosts get the preferred
+        // format.
+        if let Err(e) = self.tmux_run(&["set-option", "-s", "extended-keys-format", "csi-u"]) {
+            debug!("extended-keys-format=csi-u not set (likely tmux < 3.3): {e}");
         }
 
         // Session-level options
