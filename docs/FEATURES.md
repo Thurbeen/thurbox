@@ -272,7 +272,7 @@ from accumulating stale entries.
 
 The set of available agents is **data**, not code. On first run
 Thurbox seeds `~/.config/thurbox/agents.toml` with built-in
-definitions for claude, codex, antigravity, opencode, aider, and vibe
+definitions for claude, codex, antigravity, opencode, aider, vibe, and pi
 (`agent::agent_config::load_or_seed`). Editing the file — adding an
 `[[agents]]` entry or tweaking an existing one — extends the agent
 picker with no recompile.

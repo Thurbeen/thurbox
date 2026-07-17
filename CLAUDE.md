@@ -437,7 +437,7 @@ Enforced by cocogitto via pre-commit hooks.
 
 The set of launchable coding agents is declared **as data** in
 `~/.config/thurbox/agents.toml`, seeded with built-ins
-(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`) on first run.
+(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`) on first run.
 Each `[[agents]]` entry is an `AgentDef`:
 
 ```toml
@@ -468,8 +468,8 @@ live tmux process is what carries state across TUI restarts). Add
 your own `[[agents]]` entry to support any CLI — no recompile.
 
 **Session id pinning vs. `resume_latest`.** thurbox generates the
-`agent_session_id` (a UUID) and only `claude` accepts it at creation
-(`--session-id {id}`), so only claude can resume/fork by that exact id.
+`agent_session_id` (a UUID) and `claude`/`pi` accept it at creation
+(`--session-id {id}`), so only those two can resume/fork by that exact id.
 The other built-ins (`codex`, `opencode`, `antigravity`, `aider`, `copilot`)
 can't pin or report their id, so they set `resume_latest = true` with
 **id-less** resume/fork flags (no `{id}` token): the agent resolves "the last

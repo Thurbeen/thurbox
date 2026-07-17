@@ -13,9 +13,10 @@ use crate::session::{AgentDef, AgentRegistry};
 /// Built-in agent definitions, also used to seed `agents.toml` on first run.
 ///
 /// Kept deliberately small per agent: just the command, plus resume/fork/
-/// session-id groups. `claude` pins a thurbox-generated id (`--session-id`) so
-/// it can resume/fork by that exact id. The other built-ins can't pin or report
-/// their session id, so they use `resume_latest = true` with id-less,
+/// session-id groups. `claude` and `pi` pin a thurbox-generated id
+/// (`--session-id`) so they can resume/fork by that exact id. The other
+/// built-ins can't pin or report their session id, so they use
+/// `resume_latest = true` with id-less,
 /// cwd-scoped flags (`codex resume --last`, `opencode --continue`, …): the agent
 /// resolves "the last session in this directory" itself. Agents without any
 /// resume group simply start fresh on restart. No model is passed — each agent
@@ -89,6 +90,16 @@ resume_latest = true
 name = "vibe"
 command = "vibe"
 
+# pi (the pi.dev CLI) accepts a thurbox-generated session id at creation
+# (`--session-id`), so — like claude — it resumes/forks by that exact id.
+# Sessions live under ~/.pi/agent/, organized by working directory.
+[[agents]]
+name = "pi"
+command = "pi"
+resume_args = ["--session-id", "{id}"]
+fork_args = ["--fork", "{id}"]
+new_session_args = ["--session-id", "{id}"]
+
 # ──────────────────────────────────────────────────────────────────────────
 # Add your own agent (uncomment and edit)
 # ──────────────────────────────────────────────────────────────────────────
@@ -114,8 +125,8 @@ command = "vibe"
 #                               #   name. Omit if the agent has no known family.
 #
 # {id} is a thurbox-generated UUID. Only agents that accept it at creation
-# (like claude's `--session-id {id}`) can resume/fork by that exact id; for
-# everything else use `resume_latest = true` with id-less, cwd-scoped flags
+# (claude and pi both take `--session-id {id}`) can resume/fork by that exact
+# id; for everything else use `resume_latest = true` with id-less, cwd-scoped flags
 # (e.g. `["resume", "--last"]`). Omit every resume group to start fresh on
 # restart.
 #
@@ -370,12 +381,21 @@ mod tests {
         assert!(reg.get("aider").is_some());
         assert!(reg.get("copilot").is_some());
         assert!(reg.get("vibe").is_some());
+        assert!(reg.get("pi").is_some());
 
         // Claude pins a thurbox id and resumes/forks by it.
         let claude = reg.get("claude").unwrap();
         assert!(!claude.resume_args.is_empty());
         assert!(!claude.resume_latest);
         assert!(claude.resume_args.iter().any(|t| t.contains("{id}")));
+
+        // pi pins the same way (new_session + resume via --session-id, fork
+        // via --fork), so it is NOT a resume_latest / id-less agent.
+        let pi = reg.get("pi").unwrap();
+        assert!(!pi.resume_latest);
+        assert_eq!(pi.new_session_args, ["--session-id", "{id}"]);
+        assert_eq!(pi.resume_args, ["--session-id", "{id}"]);
+        assert_eq!(pi.fork_args, ["--fork", "{id}"]);
 
         // codex/opencode resume + fork via id-less, cwd-scoped flags.
         let codex = reg.get("codex").unwrap();
@@ -411,7 +431,7 @@ mod tests {
 
     /// The seed must carry copy-pasteable examples (add-your-own-agent +
     /// pin-a-model) but keep them commented, so parsing still yields exactly
-    /// the seven built-ins — a fresh install boots on pure defaults.
+    /// the eight built-ins — a fresh install boots on pure defaults.
     #[test]
     fn seed_documents_examples_yet_stays_builtin_only() {
         for marker in [
@@ -428,7 +448,7 @@ mod tests {
         // Examples are commented, so the seed parses to just the built-ins.
         let reg = builtin_registry();
         assert_eq!(reg.default, "claude");
-        assert_eq!(reg.agents.len(), 7, "examples must stay commented out");
+        assert_eq!(reg.agents.len(), 8, "examples must stay commented out");
         assert!(
             reg.get("claude-opus").is_none(),
             "example must not register"
