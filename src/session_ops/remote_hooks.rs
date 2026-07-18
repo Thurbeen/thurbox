@@ -93,6 +93,12 @@ fn remote_asset_for(agent: &str) -> Option<RemoteHookAsset> {
             requires_dir: "~/.copilot",
             payload: builtin_hooks::COPILOT_HOOKS,
         }),
+        "pi" => Some(RemoteHookAsset {
+            kind: RemoteAssetKind::WriteFile,
+            remote_path: "~/.pi/agent/extensions/thurbox-status.ts",
+            requires_dir: "~/.pi/agent",
+            payload: builtin_hooks::PI_STATUS,
+        }),
         _ => None,
     }
 }
@@ -520,6 +526,8 @@ mod tests {
                 "vibe"
             } else if path.contains(".copilot") {
                 "copilot"
+            } else if path.contains(".pi") {
+                "pi"
             } else {
                 panic!("unknown config-dir wiring path in manifest: {path}")
             }
@@ -551,7 +559,7 @@ mod tests {
             covered += 1;
         }
         // Every table entry is reachable from the manifest (no orphan assets).
-        assert_eq!(covered, 5, "manifest wiring count changed — sync the table");
+        assert_eq!(covered, 6, "manifest wiring count changed — sync the table");
         // claude/aider stay arg-handled.
         assert!(remote_asset_for("claude").is_none());
         assert!(remote_asset_for("aider").is_none());

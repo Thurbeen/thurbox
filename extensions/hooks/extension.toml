@@ -14,7 +14,7 @@
 name = "hooks"
 description = "Report each agent's lifecycle state (working/blocked/done) to thurbox via agent hooks."
 config_version = 1
-version = "1.4.0"
+version = "1.5.0"  # v1.5: pi (pi.dev) status extension
 # Default home; the auto-activation path overrides this with *this build's*
 # resolved config dir (`~/.config/thurbox` or `~/.config/thurbox-dev`) so dev and
 # release installs stay isolated. See `session_ops::builtin_hooks::hooks_home`.
@@ -81,6 +81,27 @@ requires_dir = "~/.codex"
 path = "~/.vibe/hooks.toml"
 source = "vibe-hooks.toml"
 requires_dir = "~/.vibe"
+
+# pi (the pi.dev CLI) auto-discovers TypeScript extensions from
+# ~/.pi/agent/extensions/*.ts, so we drop a managed file in (only when pi is
+# installed, guarded by requires_dir). It subscribes to pi's lifecycle events:
+# session_start → idle, agent_start + tool_execution_start → working (a tool call
+# to ask_user_question → blocked), agent_end → done. As with the other
+# config-dir drops the write is refused (no managed marker) if a file already
+# exists at that path, so pi simply goes unreported rather than broken.
+#
+# EXPERIMENTAL: the event names are verified against pi 0.80.x; if a future pi
+# renames them, edit pi-status.ts (no code change). pi has no claude-style
+# Stop/permission hook, so `blocked` is inferred only from a structured
+# ask_user_question tool call — a turn that ends by asking something in prose
+# signals `done`, not `blocked`. As with the other config-dir agents, remote
+# (SSH/WSL) pi sessions are provisioned at spawn time (the rewritten payload is
+# shipped into the host's ~/.pi/agent/extensions/); the one carve-out is a
+# psmux/Windows host, which shows `Hooks: degraded` instead.
+[[external_files]]
+path = "~/.pi/agent/extensions/thurbox-status.ts"
+source = "pi-status.ts"
+requires_dir = "~/.pi/agent"
 
 # GitHub Copilot CLI (the `copilot` command) loads hooks from its own dir,
 # ~/.copilot/hooks/*.json (each file loaded alphabetically), so we drop a managed

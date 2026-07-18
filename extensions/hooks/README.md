@@ -89,6 +89,20 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   `$THURBOX_SESSION` may not reach the hook, in which case the signal is a
   fail-open no-op. If a future `agy` changes the hook schema, edit
   `antigravity-hooks.json` (no code change).
+- **pi** *(experimental)* — the pi.dev CLI auto-discovers TypeScript extensions
+  from `~/.pi/agent/extensions/*.ts`, so we drop a managed extension in (an
+  `[[external_files]]`, guarded by `requires_dir`, only when pi is installed). It
+  subscribes to pi's lifecycle events: `session_start` → idle, `agent_start` and
+  `tool_execution_start` → working, `agent_end` → done, and a tool call to
+  `ask_user_question` → blocked. **Caveats:** pi has no claude-style
+  `Stop`/permission hook, so `blocked` is inferred only from a structured
+  `ask_user_question` tool call — a turn that ends by asking something in prose
+  signals `done`, not `blocked`. If you already maintain your own file at that
+  path the write is **refused** (no managed marker), so it's never clobbered — pi
+  simply goes unreported rather than broken. Remote (SSH/WSL) pi sessions are
+  provisioned like the other config-dir agents (the rewritten payload ships
+  into the host's extensions dir); a psmux/Windows host shows `Hooks: degraded`.
+  If a future `pi` renames its events, edit `pi-status.ts` (no code change).
 
 ## Custom agents (`hook_schema`)
 
@@ -132,6 +146,7 @@ other agents are wired by a reversible merge into — or a managed file dropped 
 | vibe | `~/.vibe/hooks.toml` | managed file (refused if you already have one) |
 | copilot | `~/.copilot/hooks/thurbox-status.json` | managed standalone file (`requires_dir`) |
 | antigravity | `~/.gemini/settings.json` | reversible JSON-merge of our entries |
+| pi | `~/.pi/agent/extensions/thurbox-status.ts` | managed extension file (`requires_dir`) |
 
 The home dir is `~/.config/thurbox/hooks` for a release build and
 `~/.config/thurbox-dev/hooks` for a dev build, so the two stay isolated.

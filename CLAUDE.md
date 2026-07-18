@@ -1291,7 +1291,12 @@ refused if a user file already exists), an `[[external_files]]` drops a managed
 hook entries into `antigravity`'s shared `~/.gemini/settings.json`
 (idle/working/blocked/done; `agy` adopted claude's hook schema, verified
 against agy 1.0.9 — `PreToolUse` drives working, `Notification` blocked, see
-`extensions/hooks/README.md`).
+`extensions/hooks/README.md`), and an `[[external_files]]` drops a managed
+TypeScript extension into `~/.pi/agent/extensions/thurbox-status.ts` for the
+pi.dev CLI (`pi`) (idle/working/done + blocked; **experimental** — pi has no
+claude-style Stop/permission hook, so `blocked` is inferred only from a
+structured `ask_user_question` tool call). Remote pi sessions are provisioned
+like the other config-dir agents; a psmux/Windows host shows `Hooks: degraded`.
 Opt out with `thurbox-cli extension deactivate hooks` (records a
 `builtin_hooks_optout` metadata flag so self-heal won't resurrect it);
 `activate`/`install hooks` clears it. See the Session-status section.
