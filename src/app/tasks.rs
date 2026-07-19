@@ -243,7 +243,7 @@ impl App {
     /// panel) is handled here.
     pub(crate) fn handle_task_list_key(&mut self, code: KeyCode) {
         if matches!(code, KeyCode::Esc) {
-            self.focus = InputFocus::SessionList;
+            self.focus = self.focus_fallback();
             self.task_ui.task_editor = None;
         }
     }

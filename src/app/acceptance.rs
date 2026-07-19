@@ -610,6 +610,91 @@ fn f5_toggles_tasks_panel_like_ctrl_w() {
 }
 
 #[test]
+fn f9_toggles_session_list_pane() {
+    use ratatui::layout::Rect;
+    let screen = Rect::new(0, 0, STD_COLS, STD_ROWS);
+    let mut h = Harness::standard(1);
+    assert!(h.app.show_session_list, "list visible by default");
+    assert_eq!(h.app.focus, InputFocus::SessionList);
+    assert!(h.app.layout_for(screen).left_panel.is_some());
+    let shown_terminal_width = h.app.layout_for(screen).terminal.width;
+
+    // F9 hides the list. Focus can't rest on the now-hidden column, so it
+    // retreats to the terminal, and the left column disappears from the layout.
+    h.func(9);
+    assert!(!h.app.show_session_list, "F9 hides the list");
+    assert_eq!(
+        h.app.focus,
+        InputFocus::Terminal,
+        "focus retreats off the hidden list onto the terminal"
+    );
+    let hidden = h.app.layout_for(screen);
+    assert!(hidden.left_panel.is_none(), "no left column while hidden");
+    assert!(
+        hidden.automations_panel.is_none(),
+        "automations pane shares the column"
+    );
+    // The terminal reclaims the width the list would have reserved.
+    assert!(
+        hidden.terminal.width > shown_terminal_width,
+        "terminal widens when the list is hidden"
+    );
+
+    // The rendered screen drops the `Sessions` panel border.
+    let shown_screen = {
+        let mut g = Harness::standard(1);
+        g.render()
+    };
+    let hidden_screen = h.render();
+    let sessions_border = shown_screen
+        .lines()
+        .find(|row| row.contains("Sessions"))
+        .expect("the ` Sessions ` panel renders when shown");
+    assert!(
+        !hidden_screen.contains(sessions_border.trim()),
+        "the Sessions panel border is gone while hidden"
+    );
+
+    // The focus ring skips the hidden list: from the terminal, Ctrl+L wraps
+    // back to the terminal (no SessionList stop) with no side panels shown.
+    h.ctrl('l'); // FocusForward
+    assert_eq!(
+        h.app.focus,
+        InputFocus::Terminal,
+        "Ctrl+L stays on the terminal — the ring has no SessionList stop while hidden"
+    );
+
+    // F9 again reveals the list. Focus stays put (showing is a visibility
+    // toggle, not an interaction switch — it does not grab focus).
+    h.func(9);
+    assert!(h.app.show_session_list, "F9 reveals the list again");
+    assert_eq!(
+        h.app.focus,
+        InputFocus::Terminal,
+        "revealing the list does not steal focus from the terminal"
+    );
+    assert!(h.app.layout_for(screen).left_panel.is_some());
+}
+
+#[test]
+fn f9_toggles_session_list_from_focused_terminal() {
+    // F9 has no Ctrl+<letter> primary, so it is not a terminal-passthrough
+    // chord — it toggles the list even while the agent terminal is focused.
+    let mut h = Harness::standard(1);
+    h.ctrl('l'); // focus the terminal
+    assert_eq!(h.app.focus, InputFocus::Terminal);
+    assert!(h.app.show_session_list);
+
+    h.func(9);
+    assert!(
+        !h.app.show_session_list,
+        "F9 hides the list from the terminal"
+    );
+    // Focus was already on the terminal; hiding the list leaves it there.
+    assert_eq!(h.app.focus, InputFocus::Terminal);
+}
+
+#[test]
 fn ctrl_slash_opens_global_search_strip() {
     let mut h = Harness::standard(2);
     assert!(!h.app.global_search.active);
@@ -2857,11 +2942,22 @@ fn assert_invariants(app: &App, ctx: &str) {
         }
         InputFocus::Automations
         | InputFocus::AutomationEditor
-        | InputFocus::AutomationRunHistory => assert!(
-            app.features.automations,
-            "[{ctx}] automations focus with the feature disabled"
+        | InputFocus::AutomationRunHistory => {
+            assert!(
+                app.features.automations,
+                "[{ctx}] automations focus with the feature disabled"
+            );
+            assert!(
+                app.show_session_list,
+                "[{ctx}] automations focus but the left column (list) is hidden"
+            );
+        }
+        InputFocus::SessionList => assert!(
+            app.show_session_list,
+            "[{ctx}] focus {:?} but the session list is hidden",
+            app.focus
         ),
-        InputFocus::SessionList | InputFocus::Terminal => {}
+        InputFocus::Terminal => {}
     }
 
     if app.global_search.active {

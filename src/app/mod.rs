@@ -846,6 +846,12 @@ pub struct App {
     /// Whether the tasks panel column is shown (toggled like the file viewer).
     pub(crate) show_tasks_panel: bool,
     pub(crate) show_file_viewer: bool,
+    /// Whether the session-list pane (the left column: sessions + automations)
+    /// is shown. Inverse of the other `show_*` flags — defaults to `true` since
+    /// the list is the primary nav surface, not an opt-in panel. In-memory only
+    /// (resets to shown on restart), matching the other view toggles. Toggled
+    /// by `Action::ToggleSessionList` (F9).
+    pub(crate) show_session_list: bool,
     pub(crate) file_viewer: crate::ui::file_viewer::FileViewerState,
     /// Open native code-review views, keyed by session — persisted per session
     /// like [`Self::session_terminal_views`] (the shell view), so switching
@@ -1217,6 +1223,7 @@ impl App {
             show_info_panel: false,
             show_tasks_panel: false,
             show_file_viewer: false,
+            show_session_list: true,
             file_viewer: crate::ui::file_viewer::FileViewerState::new(),
             code_reviews: std::collections::HashMap::new(),
             modal: modals::Modal::None,
@@ -1397,6 +1404,19 @@ impl App {
         self.resize_sessions_to_content_area();
     }
 
+    /// Where focus should retreat to when a pane is hidden or closed. The
+    /// session list is the natural home, but when it's hidden
+    /// (`show_session_list == false`) fall back to the terminal so focus never
+    /// rests on an unrendered surface. Every site that drops a pane's focus
+    /// routes through here so the hidden-list case stays consistent.
+    pub(crate) fn focus_fallback(&self) -> InputFocus {
+        if self.show_session_list {
+            InputFocus::SessionList
+        } else {
+            InputFocus::Terminal
+        }
+    }
+
     /// Tear down any panel/view/focus that a now-disabled live feature flag
     /// leaves stranded. The open-state booleans (`show_*`), the per-session
     /// shell views, and the open code reviews are all opt-in toggles that
@@ -1411,13 +1431,13 @@ impl App {
         if !self.features.file_viewer {
             self.show_file_viewer = false;
             if self.focus == InputFocus::FileViewer {
-                self.focus = InputFocus::SessionList;
+                self.focus = self.focus_fallback();
             }
         }
         if !self.features.tasks {
             self.show_tasks_panel = false;
             if matches!(self.focus, InputFocus::TaskList | InputFocus::TaskEditor) {
-                self.focus = InputFocus::SessionList;
+                self.focus = self.focus_fallback();
             }
         }
         if !self.features.automations
@@ -1428,7 +1448,7 @@ impl App {
                     | InputFocus::AutomationRunHistory
             )
         {
-            self.focus = InputFocus::SessionList;
+            self.focus = self.focus_fallback();
         }
         if !self.features.global_search && self.global_search.active {
             self.close_global_search();
@@ -4315,7 +4335,7 @@ impl App {
             // Rescue the editor too, not just the list — otherwise focus stays
             // on the hidden panel's editor, which keeps capturing every key.
             if matches!(self.focus, InputFocus::TaskList | InputFocus::TaskEditor) {
-                self.focus = InputFocus::SessionList;
+                self.focus = self.focus_fallback();
             }
         }
 
@@ -6819,6 +6839,7 @@ impl App {
     pub(crate) fn layout_for(&self, area: Rect) -> layout::PanelAreas {
         layout::compute_layout(
             area,
+            self.show_session_list,
             self.show_info_panel,
             self.show_tasks_panel,
             // The review's changed-files list lives in the file-viewer column, so

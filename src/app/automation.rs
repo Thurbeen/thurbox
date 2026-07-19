@@ -839,7 +839,7 @@ impl App {
     /// session list (last row) at the top / when empty.
     fn automations_pane_move_up(&mut self, count: usize) {
         if self.automation_ui.automation_panel_index == 0 || count == 0 {
-            self.focus = InputFocus::SessionList;
+            self.focus = self.focus_fallback();
             self.select_last_session();
         } else {
             self.automation_ui.automation_panel_index -= 1;
@@ -851,7 +851,7 @@ impl App {
     /// the session list past the last row / when empty.
     fn automations_pane_move_down(&mut self, count: usize) {
         if count == 0 || self.automation_ui.automation_panel_index + 1 >= count {
-            self.focus = InputFocus::SessionList;
+            self.focus = self.focus_fallback();
             self.select_first_session();
         } else {
             self.automation_ui.automation_panel_index += 1;

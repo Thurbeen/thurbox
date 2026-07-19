@@ -99,6 +99,10 @@ pub struct FooterState<'a> {
 ///
 /// Ordered by F-key (`Help · F1`, `Info · F2`, … `Settings · F6`) with `Quit`
 /// last, so the row reads in the same order as the function-key alternates.
+/// `ToggleSessionList` (F9) is intentionally NOT here: adding an eighth pill
+/// tips the block past the 120-col footer width and evicts Info/Files/Tasks via
+/// the narrow-drop below, so the toggle is surfaced via the F1 help overlay
+/// instead.
 const FOOTER_BUTTONS: &[(&str, Action)] = &[
     ("Help", Action::ToggleHelp),
     ("Info", Action::ToggleInfoPanel),

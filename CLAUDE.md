@@ -2034,6 +2034,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+,` / `F6` | Settings panel (edit settings.toml) | **,** = preferences |
 | `Ctrl+B` / `F2` | Toggle info panel (visible at width >= 120) | Info **b**ox |
 | `Ctrl+E` / `F3` | Toggle file viewer | **E**xplore files |
+| `F9` | Toggle session-list pane (hide for full-width terminal) | Sessions list |
 | `F12` | Toggle perf HUD (live counters + frame/tick timing) | Diagnostics |
 | `F1` / `Ctrl+G` | Keybindings help + interactive editor | Universal |
 

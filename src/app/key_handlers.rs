@@ -493,7 +493,13 @@ impl App {
                 // the review open.
                 let review = self.active_review().is_some();
                 let central = if review { CodeReview } else { Terminal };
-                let mut ring = vec![SessionList, central];
+                // The session list is the ring's left-most stop only while
+                // shown; hidden, the cycle is central ↔ right-side panels.
+                let mut ring = vec![];
+                if self.show_session_list {
+                    ring.push(SessionList);
+                }
+                ring.push(central);
                 if self.show_tasks_panel {
                     ring.push(TaskList);
                 }
@@ -1105,6 +1111,12 @@ impl App {
                 "File viewer",
                 Self::act_toggle_file_viewer,
             ),
+            // The session list is core nav, not an opt-in feature — no feature
+            // flag to gate, so call the helper directly (no `gated` wrapper).
+            Action::ToggleSessionList => {
+                Self::act_toggle_session_list(self);
+                true
+            }
             Action::GlobalSearch => self.gated(
                 self.features.global_search,
                 "Global search",
@@ -1297,7 +1309,7 @@ impl App {
             // this the workspace shows the empty hint).
             self.sync_task_editor();
         } else if self.focus == InputFocus::TaskList {
-            self.focus = InputFocus::SessionList;
+            self.focus = self.focus_fallback();
         }
         self.resize_sessions_to_content_area();
     }
@@ -1309,7 +1321,25 @@ impl App {
         if self.show_file_viewer {
             self.rebuild_file_viewer_for_active();
         } else if self.focus == InputFocus::FileViewer {
-            self.focus = InputFocus::SessionList;
+            self.focus = self.focus_fallback();
+        }
+        self.resize_sessions_to_content_area();
+    }
+
+    /// Toggle the session-list pane (F9). Hiding it moves focus off the left
+    /// column onto the terminal (the list/automations pane can't hold focus
+    /// while unrendered); showing it leaves focus in place — this is a
+    /// visibility toggle for screen real estate, not an interaction switch, so
+    /// it doesn't grab focus the way opening Tasks/Files does.
+    fn act_toggle_session_list(&mut self) {
+        self.show_session_list = !self.show_session_list;
+        if !self.show_session_list
+            && matches!(
+                self.focus,
+                InputFocus::SessionList | InputFocus::Automations
+            )
+        {
+            self.focus = InputFocus::Terminal;
         }
         self.resize_sessions_to_content_area();
     }

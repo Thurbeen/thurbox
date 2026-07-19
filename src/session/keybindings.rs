@@ -50,6 +50,10 @@ pub enum Action {
     ToggleInfoPanel,
     ToggleFileViewer,
     FocusTasks,
+    /// Toggle the session-list pane (the left column). The only panel toggle
+    /// without a `Ctrl+<letter>` primary — F9 is the sole chord, so it never
+    /// collides with readline and needs no `terminal_passthrough` deferral.
+    ToggleSessionList,
     GlobalSearch,
     /// Open the Settings panel (view/edit settings.toml in the TUI).
     OpenSettings,
@@ -152,6 +156,7 @@ impl Action {
             Action::ToggleInfoPanel,
             Action::ToggleFileViewer,
             Action::FocusTasks,
+            Action::ToggleSessionList,
             Action::GlobalSearch,
             Action::OpenSettings,
             Action::TogglePerfHud,
@@ -218,6 +223,7 @@ impl Action {
             Action::ToggleInfoPanel => "Toggle info panel",
             Action::ToggleFileViewer => "Toggle file viewer",
             Action::FocusTasks => "Tasks",
+            Action::ToggleSessionList => "Toggle session list",
             Action::GlobalSearch => "Global search",
             Action::OpenSettings => "Settings",
             Action::TogglePerfHud => "Toggle perf HUD",
@@ -405,6 +411,12 @@ impl Action {
             Action::ToggleInfoPanel => vec![KeyChord::ctrl('b'), KeyChord::function(2)],
             Action::ToggleFileViewer => vec![KeyChord::ctrl('e'), KeyChord::function(3)],
             Action::FocusTasks => vec![KeyChord::ctrl('w'), KeyChord::function(5)],
+            // F9 only — no Ctrl primary. Every other panel toggle reuses a
+            // readline `Ctrl+<letter>` (B/E/W) and defers to the PTY in a
+            // focused terminal; the session list has no such collision, so a
+            // single F-key keeps it reachable from every pane (including the
+            // terminal) with no passthrough special-casing. F1–F8 are taken.
+            Action::ToggleSessionList => vec![KeyChord::function(9)],
             // Ctrl+/ — the near-universal "search" chord. Terminals encode it
             // inconsistently: kitty-protocol ones deliver `Ctrl+/`, while legacy
             // ones send the raw 0x1F byte that crossterm decodes as `Ctrl+7` /
@@ -559,6 +571,7 @@ pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
                 ToggleHelp,
                 ToggleInfoPanel,
                 ToggleFileViewer,
+                ToggleSessionList,
                 OpenThemePicker,
                 OpenSettings,
                 GlobalSearch,
@@ -1159,6 +1172,21 @@ mod tests {
     }
 
     #[test]
+    fn toggle_session_list_has_f9_chord() {
+        // The session-list pane toggle is F9 only — no Ctrl primary, so unlike
+        // the other panel toggles it has no dual chord and no PTY deferral.
+        let kb = KeyBindings::default();
+        assert_eq!(
+            kb.lookup(KeyCode::F(9), KeyModifiers::NONE),
+            Some(Action::ToggleSessionList)
+        );
+        assert_eq!(
+            kb.chords_for(Action::ToggleSessionList),
+            &[KeyChord::function(9)]
+        );
+    }
+
+    #[test]
     fn toggle_shell_has_dual_ctrl_and_f8_chord() {
         // Ctrl+T is the only panel toggle that historically lacked an F-key
         // alternate; F8 was the first free function key.
@@ -1348,6 +1376,7 @@ mod tests {
                 Action::ToggleInfoPanel => 0,
                 Action::ToggleFileViewer => 0,
                 Action::FocusTasks => 0,
+                Action::ToggleSessionList => 0,
                 Action::GlobalSearch => 0,
                 Action::OpenSettings => 0,
                 Action::TogglePerfHud => 0,
@@ -1391,7 +1420,7 @@ mod tests {
         }
         // The listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 60;
+        const EXPECTED: usize = 61;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);

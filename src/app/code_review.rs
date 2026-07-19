@@ -1436,6 +1436,7 @@ impl App {
                     | crate::session::Action::OpenSettings
                     | crate::session::Action::OpenThemePicker
                     | crate::session::Action::ToggleInfoPanel
+                    | crate::session::Action::ToggleSessionList
                     | crate::session::Action::GlobalSearch
             )
         )
