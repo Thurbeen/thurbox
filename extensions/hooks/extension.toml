@@ -14,7 +14,7 @@
 name = "hooks"
 description = "Report each agent's lifecycle state (working/blocked/done) to thurbox via agent hooks."
 config_version = 1
-version = "1.5.0"  # v1.5: pi (pi.dev) status extension
+version = "1.6.0"  # v1.6: vibe hooks rewritten to vibe 2.21.0's real schema (pre_tool/post_agent); v1.5: pi (pi.dev) status extension
 # Default home; the auto-activation path overrides this with *this build's*
 # resolved config dir (`~/.config/thurbox` or `~/.config/thurbox-dev`) so dev and
 # release installs stay isolated. See `session_ops::builtin_hooks::hooks_home`.
@@ -74,9 +74,13 @@ requires_dir = "~/.codex"
 # ~/.vibe/hooks.toml, the write is refused (no managed marker), so we never
 # clobber it — vibe just goes unreported rather than broken.
 #
-# EXPERIMENTAL: the hooks.toml schema is not verified against the live `vibe`
-# binary. If event/key names differ, edit vibe-hooks.toml (no code change).
-# Events: before_tool → working, after_turn → done, notification → blocked.
+# Verified against vibe 2.21.0 (`vibe.core.hooks.models.HookConfig`): each
+# `[[hooks]]` entry needs `name` + `type` (one of `pre_tool` / `post_tool` /
+# `post_agent`) + `command`. Events: pre_tool → working, post_agent → done.
+# No `blocked` — vibe's only hook types are pre_tool/post_tool/post_agent
+# (no permission/notification event), so a tool awaiting approval reads as
+# `working` (pre_tool fires before the approval prompt). If a future vibe
+# renames the types/fields, edit vibe-hooks.toml (no code change).
 [[external_files]]
 path = "~/.vibe/hooks.toml"
 source = "vibe-hooks.toml"

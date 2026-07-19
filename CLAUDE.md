@@ -1282,8 +1282,9 @@ a `[[config_merges]]` deep-merges `codex`'s claude-shaped hooks into
 the old `-c notify=…` done-only override — a reversible write into `hooks.json`,
 never `config.toml`), an `[[external_files]]` drops an opencode plugin into
 `~/.config/opencode/plugin/` (idle/working/blocked/done) and a managed
-`~/.vibe/hooks.toml` for Mistral `vibe` (working/blocked/done; **experimental**,
-refused if a user file already exists), an `[[external_files]]` drops a managed
+`~/.vibe/hooks.toml` for Mistral `vibe` (working/done, no blocked; verified
+against vibe 2.21.0's `pre_tool`/`post_agent` schema, refused if a user file
+already exists), an `[[external_files]]` drops a managed
 `~/.copilot/hooks/thurbox-status.json` for GitHub Copilot CLI (`copilot`)
 (idle/working/blocked/done; **experimental**, copilot's own hook schema —
 `notification` matched to `permission_prompt` drives blocked; ships both

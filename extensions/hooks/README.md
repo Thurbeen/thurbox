@@ -60,9 +60,12 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
 - **vibe** *(experimental)* — Mistral Vibe loads hooks from `~/.vibe/hooks.toml`.
   It's TOML, so we can't JSON-merge it — we drop a managed file in (an
   `[[external_files]]`, guarded by `requires_dir`, only when vibe is installed).
-  Events: `before_tool` → working, `after_turn` → done, `notification` (awaiting
-  approval / question) → blocked. **Caveats:** the `hooks.toml` schema is not
-  verified against the live `vibe` binary — if event/key names differ, edit
+  Verified against vibe 2.21.0 (`vibe.core.hooks.models.HookConfig`): each entry
+  needs `name` + `type` (`pre_tool`/`post_tool`/`post_agent`) + `command`. Events:
+  `pre_tool` → working, `post_agent` → done. **No blocked** — vibe's only hook
+  types are pre_tool/post_tool/post_agent (no permission/notification event),
+  so a tool awaiting approval reads as `working` (`pre_tool` fires *before* the
+  approval prompt). If a future vibe renames the types/fields, edit
   `vibe-hooks.toml` (no code change). And if you already maintain your own
   `~/.vibe/hooks.toml`, the write is **refused** (no managed marker) so it's never
   clobbered — vibe simply goes unreported rather than broken.

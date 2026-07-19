@@ -5,20 +5,29 @@
 # $THURBOX_SESSION env var; every call is best-effort (`|| true`) so it can
 # never break a session running outside thurbox.
 #
-# EXPERIMENTAL: the hooks.toml schema below is not verified against the live
-# `vibe` binary. If the event/key names differ, edit this file (no code change
-# needed) — a wrong name just means the state isn't reported (the `|| true`
-# keeps vibe itself safe). before_tool -> working, after_turn -> done,
-# notification (awaiting approval / question) -> blocked.
+# Verified against vibe 2.21.0 (`vibe.core.hooks.models.HookConfig`). Vibe's
+# hook schema is TOML with one `[[hooks]]` entry per hook, each requiring a
+# `name`, a `type` (one of `pre_tool` / `post_tool` / `post_agent`), and a
+# `command` (run via the shell with the invocation JSON on stdin; the parent
+# env is inherited, so $THURBOX_SESSION travels). If a future vibe renames the
+# types or fields, edit this file (no code change) — a wrong name just means
+# the state isn't reported (vibe logs a per-hook config issue and skips it;
+# the `|| true` keeps vibe itself safe).
+#
+# Vibe exposes only those three hook types — there is no permission/
+# notification event — so `blocked` is **not** reported. `pre_tool` fires
+# *before* the tool-approval prompt (agent_loop `_run_pre_tool_pipeline` runs
+# ahead of `_should_execute_tool`), so a tool awaiting approval still reads as
+# `working` (accurate: the agent is mid-turn). pre_tool -> working,
+# post_agent -> done. post_tool is intentionally unused (redundant with
+# pre_tool for the working signal, and carries no turn-end edge).
 
 [[hooks]]
-event = "before_tool"
+name = "thurbox-pre-tool"
+type = "pre_tool"
 command = "thurbox-cli session signal --state working || true"
 
 [[hooks]]
-event = "after_turn"
+name = "thurbox-post-agent"
+type = "post_agent"
 command = "thurbox-cli session signal --state done || true"
-
-[[hooks]]
-event = "notification"
-command = "thurbox-cli session signal --state blocked || true"

@@ -427,11 +427,45 @@ mod tests {
         // typo can't ship a file vibe would reject.
         let vibe_payload: toml::Value =
             toml::from_str(VIBE_HOOKS).expect("vibe payload is valid TOML");
+        let vibe_hooks = vibe_payload["hooks"]
+            .as_array()
+            .expect("vibe payload declares a [[hooks]] table array");
+        assert!(!vibe_hooks.is_empty(), "vibe payload has >=1 hook");
+        // Vibe 2.21.0's `HookConfig` requires `name` + `type` and accepts only
+        // `pre_tool` / `post_tool` / `post_agent` — the old shipped schema used
+        // invented `event = "before_tool"/"after_turn"/"notification"` names
+        // that vibe silently rejected (every entry failed validation), so
+        // status never reported. Guard the real schema: every entry has a
+        // `name`, a valid `type`, a `command`, and maps to working/done only
+        // (vibe has no permission/notification hook, so no `blocked`).
+        let valid_types = ["pre_tool", "post_tool", "post_agent"];
+        for hook in vibe_hooks {
+            let name = hook["name"].as_str().expect("vibe hook has a name");
+            let htype = hook["type"].as_str().expect("vibe hook has a type");
+            assert!(
+                valid_types.contains(&htype),
+                "vibe hook `{name}` has type `{htype}`, expected one of {valid_types:?}"
+            );
+            assert!(
+                hook["command"].as_str().is_some_and(|c| !c.is_empty()),
+                "vibe hook `{name}` has a non-empty command"
+            );
+            assert!(
+                hook.get("event").is_none(),
+                "vibe hook `{name}` uses the old (nonexistent) `event` field"
+            );
+        }
+        let vibe_cmds = vibe_hooks
+            .iter()
+            .filter_map(|h| h["command"].as_str())
+            .collect::<String>();
         assert!(
-            vibe_payload["hooks"]
-                .as_array()
-                .is_some_and(|h| !h.is_empty()),
-            "vibe payload should declare hook entries"
+            vibe_cmds.contains("--state working") && vibe_cmds.contains("--state done"),
+            "vibe hooks map pre_tool/post_agent to working/done"
+        );
+        assert!(
+            !vibe_cmds.contains("--state blocked"),
+            "vibe has no permission/notification hook, so blocked is not reported"
         );
 
         // antigravity (agy) shares gemini's ~/.gemini/settings.json for hooks.
