@@ -1,5 +1,5 @@
 [global]
-exclude = [".git", ".claude"]
+exclude = [".git", ".claude", ".pi"]
 
 [MD013]
 line_length = 100
