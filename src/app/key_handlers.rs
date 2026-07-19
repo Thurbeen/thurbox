@@ -1114,7 +1114,7 @@ impl App {
             // The session list is core nav, not an opt-in feature — no feature
             // flag to gate, so call the helper directly (no `gated` wrapper).
             Action::ToggleSessionList => {
-                Self::act_toggle_session_list(self);
+                self.act_toggle_session_list();
                 true
             }
             Action::GlobalSearch => self.gated(
