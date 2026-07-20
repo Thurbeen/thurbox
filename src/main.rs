@@ -82,6 +82,142 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Re-establish the TUI's terminal mutations after a suspend, mirroring the
+/// startup sequence in `main` (alt screen + raw mode first, then the optional
+/// kitty flags, bracketed paste, and mouse capture). The inverse of
+/// [`restore_terminal`], used by [`run_pending_editor`]'s suspend path so the
+/// editor's exit leaves the TUI clean.
+fn resume_terminal() {
+    use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+    let _ = execute!(std::io::stdout(), EnterAlternateScreen);
+    let _ = enable_raw_mode();
+    push_keyboard_enhancement();
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    if thurbox::session::settings::global().features.mouse {
+        let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    }
+}
+
+/// Run a terminal editor staged by `Ctrl+O`, giving it a real controlling
+/// TTY. Inside tmux (`$TMUX` set, on a tmux ≥ 3.2 that has `display-popup`)
+/// the editor floats in a `tmux display-popup` with its own PTY — the TUI
+/// keeps its state underneath and the popup closes on editor exit. Otherwise
+/// the TUI is suspended (alt screen/raw mode/mouse torn down), the editor
+/// inherits the terminal, and the TUI resumes on exit — the git/sudoedit
+/// pattern. Either way the render loop is blocked for the editor's lifetime,
+/// which is correct (the user is editing).
+fn run_pending_editor(
+    terminal: &mut ratatui::DefaultTerminal,
+    inv: &thurbox::app::EditorInvocation,
+) -> Result<()> {
+    let use_popup = std::env::var_os("TMUX").is_some() && outer_tmux_supports_popup();
+    let popup_ok = if use_popup {
+        match run_editor_popup(inv) {
+            Ok(()) => true,
+            Err(e) => {
+                // `tmux` itself wouldn't spawn (not on PATH, etc.) — fall back
+                // to suspend rather than doing nothing.
+                tracing::warn!("tmux popup unavailable, suspending TUI instead: {e}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if !popup_ok {
+        run_editor_suspended(terminal, inv)?;
+    }
+    Ok(())
+}
+
+/// Cached check that the *outer* tmux (the one `$TMUX` points at, whose client
+/// owns this process's terminal) supports `display-popup` (tmux ≥ 3.2). `tmux
+/// -V` prints the binary version, which matches the running server (a tmux
+/// client must match its server), so this is a reliable one-shot gate. Returns
+/// `false` when not inside tmux or the version can't be read.
+static OUTER_TMUX_POPUP_OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+fn outer_tmux_supports_popup() -> bool {
+    *OUTER_TMUX_POPUP_OK.get_or_init(|| {
+        let output = match std::process::Command::new("tmux").arg("-V").output() {
+            Ok(o) => o,
+            Err(_) => return false,
+        };
+        let v = String::from_utf8_lossy(&output.stdout);
+        // `tmux 3.4` → parse major.minor.
+        let nums: Vec<u32> = v
+            .split_whitespace()
+            .nth(1)
+            .map(|s| s.split('.').filter_map(|n| n.parse().ok()).collect())
+            .unwrap_or_default();
+        matches!(nums.as_slice(), [major, minor, ..] if (*major, *minor) >= (3, 2))
+    })
+}
+
+/// Float the editor in a `tmux display-popup` over the TUI. The popup gets its
+/// own PTY (the editor's termios init is independent of thurbox's), and `-E`
+/// closes it on editor exit. Returns `Ok(())` whenever tmux actually launched
+/// the command — the editor's own exit code is ignored (a nonzero editor exit
+/// must NOT trigger a fallback that would re-launch it). The command string is
+/// POSIX-quoted and run via tmux's shell, so paths/flags with spaces survive.
+/// Only called after [`outer_tmux_supports_popup`].
+fn run_editor_popup(inv: &thurbox::app::EditorInvocation) -> std::io::Result<()> {
+    let mut shell_cmd = String::new();
+    shell_cmd.push_str(&thurbox::shell::posix_quote(&inv.program));
+    for arg in &inv.args {
+        shell_cmd.push(' ');
+        shell_cmd.push_str(&thurbox::shell::posix_quote(arg));
+    }
+    // `-E` closes the popup on command exit; sized to 90% so the editor gets
+    // most of the screen while the TUI border stays visible.
+    let _status = std::process::Command::new("tmux")
+        .args([
+            "display-popup",
+            "-E",
+            "-w",
+            "90%",
+            "-h",
+            "90%",
+            "-T",
+            "thurbox editor",
+        ])
+        .arg(&shell_cmd)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
+    Ok(())
+}
+
+/// Suspend the TUI and run the editor with the inherited terminal (the
+/// git/sudoedit pattern). The editor controls termios for the duration; on its
+/// exit the TUI's terminal mutations are re-established and the frame buffer
+/// cleared so the next `draw` repaints from scratch.
+fn run_editor_suspended(
+    terminal: &mut ratatui::DefaultTerminal,
+    inv: &thurbox::app::EditorInvocation,
+) -> Result<()> {
+    // Tear down everything `main` set up (the same path as quit), so the
+    // editor owns a normal cooked terminal — it then puts the terminal into its
+    // own raw mode for the duration of editing.
+    restore_terminal();
+    let result = std::process::Command::new(&inv.program)
+        .args(&inv.args)
+        .status();
+    resume_terminal();
+    // Drop the stale frame buffer so the next paint is full-screen, not a diff
+    // against the pre-suspend frame (which the editor overwrote).
+    let _ = terminal.clear();
+    let status = result?;
+    if !status.success() {
+        tracing::info!(
+            program = %inv.program,
+            code = ?status.code(),
+            "editor exited non-zero"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Process start, for the opt-in time-to-first-frame measurement (logged
@@ -500,6 +636,19 @@ async fn run_loop(
                     app.record_update_time(start.elapsed());
                 }
             }
+        }
+
+        // Run a terminal editor staged by Ctrl+O. Blocks the loop for the
+        // editor's lifetime (by design — the user is editing); inside tmux the
+        // editor floats in a `display-popup` over the TUI, otherwise the TUI is
+        // suspended and the editor owns the terminal. Either way a forced
+        // repaint follows on return. See `App::take_pending_editor_run`.
+        if let Some(inv) = app.take_pending_editor_run() {
+            if let Err(e) = run_pending_editor(&mut *terminal, &inv) {
+                tracing::warn!("editor run failed: {e:#}");
+            }
+            // The popup covered / the suspend tore down the frame; repaint fully.
+            app.request_redraw();
         }
 
         // Cheap, lock-free check for new agent output (marks dirty on change).

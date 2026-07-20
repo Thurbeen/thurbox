@@ -136,6 +136,52 @@ pub enum NotificationBackend {
     Off,
 }
 
+/// How `Ctrl+O` launches the editor (the DB `editor_mode` key, set via
+/// `thurbox-cli editor mode`). `Auto` (the default) detects terminal vs GUI
+/// editors from the command name and gives terminal editors (vim, nano,
+/// `ttt`, helix, …) a real TTY — a floating `tmux display-popup` when thurbox
+/// runs inside tmux, or a TUI-suspend-and-resume when it does not — while GUI
+/// editors (`code`, `zed`, …) stay detached (the classic behavior). `Terminal`
+/// forces the TTY path for every editor; `Gui` forces the detached spawn.
+/// Stored in SQLite (not `settings.toml`) so it applies live, like
+/// `editor_command`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorMode {
+    /// Detect from the command name (curated terminal/GUI lists).
+    #[default]
+    Auto,
+    /// Always give the editor a real TTY (popup / suspend).
+    Terminal,
+    /// Always spawn detached (the pre-terminal-support behavior).
+    Gui,
+}
+
+impl EditorMode {
+    /// Parse a stored `editor_mode` value, tolerating any case; `None`,
+    /// empty, or an unrecognized value yields the default (`Auto`). Used by
+    /// the DB getter so a corrupted row can't panic the TUI.
+    pub fn parse_stored(stored: Option<&str>) -> Self {
+        match stored.map(str::trim) {
+            Some(s) => match s.to_ascii_lowercase().as_str() {
+                "terminal" | "term" | "tty" => EditorMode::Terminal,
+                "gui" | "detached" | "graphical" => EditorMode::Gui,
+                _ => EditorMode::Auto,
+            },
+            None => EditorMode::Auto,
+        }
+    }
+
+    /// The value written back to the DB (canonical, lowercase).
+    pub fn as_db_value(self) -> &'static str {
+        match self {
+            EditorMode::Auto => "auto",
+            EditorMode::Terminal => "terminal",
+            EditorMode::Gui => "gui",
+        }
+    }
+}
+
 /// Knobs for the OS notification feature (`[notifications]` table). All
 /// fields have defaults so an empty / absent table behaves like the seeded
 /// configuration.

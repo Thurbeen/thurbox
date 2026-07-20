@@ -628,13 +628,11 @@ impl App {
     }
 
     fn open_file_in_editor(&mut self, root: std::path::PathBuf, file: std::path::PathBuf) {
-        let Some(editor) = super::helpers::resolve_editor_command(&self.db) else {
-            self.set_error(super::EDITOR_NOT_CONFIGURED);
-            return;
-        };
-        if let Err(e) = super::helpers::open_in_editor(&[root, file], &editor) {
-            warn!("file viewer: failed to open editor: {e}");
-        }
+        let subject = file
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.launch_editor(&[root, file], Some(subject));
     }
 
     /// Session-list keys are all rebindable `SessionList`-scoped actions

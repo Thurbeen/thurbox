@@ -602,11 +602,28 @@ session after recycling.
 configured external editor. The editor command is a global setting
 stored in SQLite, defaulting to a sensible value on first run.
 
-**Why a configurable command rather than `$EDITOR`?** `$EDITOR` is
-typically a terminal editor (vim, nano) — wrong for "open this
-folder in my GUI". A separate setting lets users point at
-`code`, `cursor`, `idea`, etc. without disrupting their shell
-environment.
+**Terminal editors are first-class.** A terminal editor (vim, nano,
+`ttt`, helix, micro, …) needs a controlling TTY, which the old
+fire-and-forget detached spawn did not provide. So `Ctrl+O` now runs
+terminal editors with a real TTY: when thurbox is **inside tmux** the
+editor floats in a `tmux display-popup` (the TUI keeps running
+underneath, the popup closes on editor exit), and when it is **not**
+the TUI is suspended and the editor inherits the terminal (the
+git/sudoedit pattern — the TUI resumes on editor exit). GUI editors
+(`code`, `zed`, …) keep spawning detached as before, so they still pop
+their own window while the TUI stays interactive.
+
+**Auto detection + override.** In the default `auto` mode the launch
+path is chosen from the command name (curated terminal/GUI lists;
+`emacs -nw` and `--tty`-style flags force the terminal path). Force it
+explicitly with `thurbox-cli editor mode terminal` (TTY path for every
+editor) or `gui` (detached spawn for every editor — the pre-terminal
+behavior).
+
+**Why a configurable command rather than just `$EDITOR`?** A separate
+setting lets users point at `code`, `cursor`, `idea`, etc. without
+disrupting their shell environment; `$VISUAL`/`$EDITOR` are still
+honored as the fallback when no command is set.
 
 **Why all worktrees, not just cwd?** Multi-repo sessions touch
 several directories at once; opening only the cwd would hide the

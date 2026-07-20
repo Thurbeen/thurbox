@@ -781,7 +781,11 @@ Subcommands: `session` (create/list/get/delete/restore/restart/
 send/capture/focus/signal), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `message` (alias `msg`:
-send/inbox/prune — the inter-session mailbox queue; see below), `editor`, `config`
+send/inbox/prune — the inter-session mailbox queue; see below), `editor`
+(get/set the Ctrl+O editor command; `editor mode <auto|terminal|gui>` chooses
+how it launches — terminal editors get a real TTY via a tmux popup or TUI
+suspend, GUI editors spawn detached; see the Editor Integration section of
+`docs/FEATURES.md`), `config`
 (validate/show — strict-parses every config file / prints the
 effective resolved config; see `docs/CONFIG.md`), `extension`
 (alias `ext`: install/uninstall/reinstall/list/available/update/activate/

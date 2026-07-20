@@ -821,6 +821,19 @@ struct PendingDelete {
 }
 
 /// The TEA model: owns all session/UI state and coordinates side effects.
+/// A terminal editor invocation staged for the main loop to run with a real
+/// TTY (a `tmux display-popup` inside tmux, or a TUI suspend-and-resume
+/// outside). Built by `helpers::classify_editor` when `Ctrl+O` resolves to a
+/// terminal editor (vim, nano, `ttt`, …) and drained from `App` by `run_loop`.
+/// GUI editors never go through this — they stay detached.
+#[derive(Debug, Clone)]
+pub struct EditorInvocation {
+    /// Editor binary (first whitespace token of the configured command).
+    pub program: String,
+    /// Extra editor args followed by the paths to open, in order.
+    pub args: Vec<String>,
+}
+
 pub struct App {
     pub(crate) sessions: Vec<Session>,
     pub(crate) active_index: usize,
@@ -859,6 +872,11 @@ pub struct App {
     /// (if any) is reached via [`Self::active_review`] / [`Self::active_review_mut`].
     pub(crate) code_reviews: std::collections::HashMap<SessionId, code_review::CodeReviewState>,
     pub(crate) modal: modals::Modal,
+    /// A terminal-editor run staged for the main loop to execute with a real
+    /// TTY (set by `Ctrl+O` when the editor is a terminal one). Drained each
+    /// iteration by `run_loop` via [`Self::take_pending_editor_run`]; GUI
+    /// editors spawn detached and never populate this.
+    pub(crate) pending_editor_run: Option<EditorInvocation>,
     /// In-progress new-session wizard (also drives fork/restart re-spawns).
     pub(crate) new_session: new_session_state::NewSessionWizardState,
     /// Inter-instance DB sync (polls for changes from other thurbox instances).
@@ -1227,6 +1245,7 @@ impl App {
             file_viewer: crate::ui::file_viewer::FileViewerState::new(),
             code_reviews: std::collections::HashMap::new(),
             modal: modals::Modal::None,
+            pending_editor_run: None,
             new_session: new_session_state::NewSessionWizardState::default(),
             sync_state,
             worktree_sync: sync_state::WorktreeSyncState::default(),
@@ -2022,7 +2041,7 @@ impl App {
             Some(p) => p,
             None => return,
         };
-        self.launch_editor_with_paths(&paths);
+        self.launch_editor(&paths, Some(format!("{} path(s)", paths.len())));
     }
 
     /// If the file viewer is focused on a file, open `[root, file]` so editors
@@ -2034,19 +2053,11 @@ impl App {
         let Some((file, root)) = self.file_viewer.selected_file_with_root() else {
             return false;
         };
-        let Some(editor) = helpers::resolve_editor_command(&self.db) else {
-            self.set_error(EDITOR_NOT_CONFIGURED);
-            return true;
-        };
-        match helpers::open_in_editor(&[root, file.clone()], &editor) {
-            Ok(()) => self.set_info(format!(
-                "Opening {} in {editor}",
-                file.file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            )),
-            Err(e) => self.set_error(format!("Failed to launch editor `{editor}`: {e}")),
-        }
+        let subject = file
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.launch_editor(&[root, file.clone()], Some(subject));
         true
     }
 
@@ -2078,15 +2089,44 @@ impl App {
         Some(paths)
     }
 
-    fn launch_editor_with_paths(&mut self, paths: &[std::path::PathBuf]) {
+    /// Launch the configured editor over `paths`. Terminal editors (vim, nano,
+    /// `ttt`, …) get a real TTY: this stages an [`EditorInvocation`] for the
+    /// main loop (popup inside tmux, suspend outside) instead of spawning.
+    /// GUI editors spawn detached (the classic path). `subject` flavors the
+    /// status toast (e.g. the file name or "N path(s)").
+    fn launch_editor(&mut self, paths: &[std::path::PathBuf], subject: Option<String>) {
         let Some(editor) = helpers::resolve_editor_command(&self.db) else {
             self.set_error(EDITOR_NOT_CONFIGURED);
             return;
         };
-        match helpers::open_in_editor(paths, &editor) {
-            Ok(()) => self.set_info(format!("Opening {} path(s) in {editor}", paths.len())),
+        let mode = helpers::resolve_editor_mode(&self.db);
+        match helpers::classify_editor(paths, &editor, mode) {
+            Ok(helpers::EditorLaunch::Detached) => match helpers::open_in_editor(paths, &editor) {
+                Ok(()) => self.set_info(format!(
+                    "Opening {} in {editor}",
+                    subject.as_deref().unwrap_or("paths")
+                )),
+                Err(e) => self.set_error(format!("Failed to launch editor `{editor}`: {e}")),
+            },
+            Ok(helpers::EditorLaunch::Terminal(inv)) => {
+                // GUI-style toast, but defer the actual run to the main loop so
+                // the editor gets a real TTY (popup/suspend), not a null-stdio
+                // spawn. Cleared by `take_pending_editor_run` after it runs.
+                self.pending_editor_run = Some(inv);
+                self.set_info(format!(
+                    "Opening {} in {editor} (terminal)",
+                    subject.as_deref().unwrap_or("paths")
+                ));
+            }
             Err(e) => self.set_error(format!("Failed to launch editor `{editor}`: {e}")),
         }
+    }
+
+    /// Pop a terminal-editor invocation staged by `launch_editor`, if any.
+    /// Drained by `run_loop` after `update` so the render loop can hand the
+    /// TTY to the editor (popup/suspend) and repaint on return.
+    pub fn take_pending_editor_run(&mut self) -> Option<EditorInvocation> {
+        self.pending_editor_run.take()
     }
 
     fn fork_active_session(&mut self) {
@@ -4597,8 +4637,9 @@ impl App {
 
     /// Mark the UI dirty so the render loop paints on its next iteration.
     /// Cheap and idempotent; over-marking only costs an extra (correct) frame.
-    /// Internal-only — the loop in `main` drives painting via [`Self::should_redraw`].
-    pub(crate) fn request_redraw(&mut self) {
+    /// Also driven by the binary's `main` after a terminal-editor run (popup
+    /// cover / suspend teardown) to force a full repaint on return.
+    pub fn request_redraw(&mut self) {
         self.needs_redraw = true;
     }
 

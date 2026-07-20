@@ -2879,6 +2879,61 @@ fn split_utf8_output_chunks_render_intact() {
     );
 }
 
+// ── Ctrl+O editor: terminal vs GUI routing ─────────────────────────────
+
+#[test]
+fn terminal_editor_stages_pending_run_for_main_loop() {
+    // `ttt` is a known terminal editor, so Ctrl+O must NOT fire a null-stdio
+    // spawn (which would die with no TTY). Instead it stages an invocation for
+    // the main loop to run with a real TTY (popup/suspend).
+    let mut h = Harness::standard(0);
+    h.app.db.set_editor_command("ttt").unwrap();
+    h.app.launch_editor(
+        &[std::path::PathBuf::from("/tmp/repo")],
+        Some("paths".to_string()),
+    );
+    let inv = h
+        .app
+        .take_pending_editor_run()
+        .expect("ttt stages a terminal-editor run");
+    assert_eq!(inv.program, "ttt");
+    assert_eq!(inv.args, ["/tmp/repo".to_string()]);
+    // One-shot: a second drain yields nothing.
+    assert!(h.app.take_pending_editor_run().is_none());
+}
+
+#[test]
+fn editor_mode_terminal_forces_tty_even_for_a_gui_editor() {
+    // `code` is normally GUI (detached), but `editor mode terminal` overrides:
+    // it must stage a terminal run too, keeping extra flags before the paths.
+    let mut h = Harness::standard(0);
+    h.app.db.set_editor_command("code --wait").unwrap();
+    h.app
+        .db
+        .set_editor_mode(crate::session::settings::EditorMode::Terminal)
+        .unwrap();
+    h.app.launch_editor(
+        &[
+            std::path::PathBuf::from("/tmp/repo"),
+            std::path::PathBuf::from("/other"),
+        ],
+        Some("paths".to_string()),
+    );
+    let inv = h
+        .app
+        .take_pending_editor_run()
+        .expect("terminal mode forces the TTY path even for `code`");
+    assert_eq!(inv.program, "code");
+    assert_eq!(
+        inv.args,
+        [
+            "--wait".to_string(),
+            "/tmp/repo".to_string(),
+            "/other".to_string()
+        ]
+    );
+}
+
 // ── Invariant tripwires + deterministic monkey test ──────────────────────────
 
 /// Structural invariants that must hold after *any* event, in any order. The

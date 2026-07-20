@@ -7,6 +7,7 @@ use super::Database;
 use crate::session::{SessionId, PENDING_FOCUS_SESSION_ID_KEY};
 
 const EDITOR_COMMAND_KEY: &str = "editor_command";
+const EDITOR_MODE_KEY: &str = "editor_mode";
 const THEME_KEY: &str = "active_theme";
 const ACTIVE_EXTENSIONS_KEY: &str = "active_extensions";
 const BUILTIN_HOOKS_OPTOUT_KEY: &str = "builtin_hooks_optout";
@@ -36,6 +37,43 @@ impl Database {
                 "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![EDITOR_COMMAND_KEY, command],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Get the configured editor launch mode (`auto`/`terminal`/`gui`),
+    /// tolerating a missing/blank/corrupt row (defaults to `Auto`).
+    pub fn get_editor_mode(&self) -> rusqlite::Result<crate::session::settings::EditorMode> {
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![EDITOR_MODE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(crate::session::settings::EditorMode::parse_stored(
+            stored.as_deref(),
+        ))
+    }
+
+    /// Set the editor launch mode. Pass [`crate::session::settings::EditorMode::Auto`]
+    /// (or an empty-ish reset) to clear the row back to the default.
+    pub fn set_editor_mode(
+        &self,
+        mode: crate::session::settings::EditorMode,
+    ) -> rusqlite::Result<()> {
+        if mode == crate::session::settings::EditorMode::Auto {
+            self.conn.execute(
+                "DELETE FROM metadata WHERE key = ?1",
+                params![EDITOR_MODE_KEY],
+            )?;
+        } else {
+            self.conn.execute(
+                "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![EDITOR_MODE_KEY, mode.as_db_value()],
             )?;
         }
         Ok(())

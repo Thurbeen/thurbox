@@ -244,6 +244,7 @@ fn show(db: &Database) -> Result<Value, String> {
 
     // Editor resolution mirrors the TUI's Ctrl+O chain: DB → $VISUAL → $EDITOR.
     let (editor, editor_source) = resolve_editor(db);
+    let editor_mode = db.get_editor_mode().unwrap_or_default();
     let overridden_actions = overridden_action_names();
 
     Ok(json!({
@@ -264,7 +265,7 @@ fn show(db: &Database) -> Result<Value, String> {
         "hosts": { "names": hosts.names() },
         "settings": settings,
         "keybindings": { "overridden_actions": overridden_actions },
-        "editor": { "command": editor, "source": editor_source },
+        "editor": { "command": editor, "source": editor_source, "mode": editor_mode.as_db_value() },
         "theme": db.get_active_theme().ok().flatten(),
         "custom_themes": custom_themes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
     }))
