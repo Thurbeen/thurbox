@@ -31,4 +31,4 @@ expression: h.render()
 ┌ Automations ──────────┐│                                                                         │
 │none                   ││                                                                         │
 └───────────────────────┘└─────────────────────────────────────────────────────────────────────────┘
- Sessions  Help · F1 s Info · F2 c Files · F3   Theme · F4   Tasks · F5   Settings · F6   Quit · ^Q
+ Sessions  Help · F1   Info · F2   Files · F3   Theme · F4   Tasks · F5   Settings · F6   Quit · ^Q

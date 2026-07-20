@@ -113,20 +113,103 @@ const FOOTER_BUTTONS: &[(&str, Action)] = &[
     ("Quit", Action::QuitApp),
 ];
 
-/// The footer buttons that survive the current feature flags, in render order.
-/// The panel toggles (Info/Files/Tasks) are dropped when their feature is off
-/// (clicking a button that just toasts "disabled" would be noise).
-fn footer_entries(flags: &FooterState<'_>) -> Vec<(&'static str, Action)> {
+/// A candidate footer pill plus its live shortcut, used by the responsive
+/// trim in [`resolve_footer_pills`]. The `shortcut` is `None` once the
+/// `· key` suffix has been stripped to reclaim space on a narrow footer.
+struct FooterPill {
+    label: &'static str,
+    action: Action,
+    shortcut: Option<String>,
+}
+
+impl FooterPill {
+    /// `Label` alone, or `Label · <shortcut>` while the shortcut is still shown.
+    fn display_label(&self) -> String {
+        match &self.shortcut {
+            Some(sc) => format!("{} · {}", self.label, sc),
+            None => self.label.to_string(),
+        }
+    }
+}
+
+/// The feature-filtered candidate pills, in F-key render order (Quit last).
+/// Panel toggles (Info/Files/Tasks) are dropped here when their feature is off
+/// — clicking a button that only toasts "disabled" would be noise.
+fn candidate_pills(state: &FooterState<'_>) -> Vec<FooterPill> {
     FOOTER_BUTTONS
         .iter()
         .copied()
         .filter(|(_, action)| match action {
-            Action::FocusTasks => flags.tasks_enabled,
-            Action::ToggleFileViewer => flags.file_viewer_enabled,
-            Action::ToggleInfoPanel => flags.info_panel_enabled,
+            Action::FocusTasks => state.tasks_enabled,
+            Action::ToggleFileViewer => state.file_viewer_enabled,
+            Action::ToggleInfoPanel => state.info_panel_enabled,
             _ => true,
         })
+        .map(|(label, action)| FooterPill {
+            label,
+            action,
+            shortcut: crate::session::compact_shortcut(state.keybindings.chords_for(action)),
+        })
         .collect()
+}
+
+/// `pill_block_width` over a pill slice (each pill's `display_label` + padding),
+/// so the trim loop and the caller agree on what [`render_button_bar] actually
+/// packs.
+fn pills_block_width(pills: &[FooterPill]) -> u16 {
+    let labels: Vec<String> = pills.iter().map(|p| p.display_label()).collect();
+    pill_block_width(&labels)
+}
+
+/// Trim the pill set to `area_width` by escalating steps so the essential
+/// pills — Quit above all — always survive a narrow footer instead of being
+/// silently shed right-to-left by `render_button_bar`:
+///   1. drop the optional panel toggles (Info/Files/Tasks) as a batch;
+///   2. strip the `· shortcut` suffix from every surviving label (≈5 cols/pill);
+///   3. drop the lowest-priority pill (Theme → Settings → Help), Quit last.
+///
+/// Returns the surviving pills. Only at the absolute floor (a terminal too
+/// narrow for even Quit alone) does the block still overflow — and then there
+/// is simply nowhere to put it.
+fn resolve_footer_pills(mut pills: Vec<FooterPill>, area_width: u16) -> Vec<FooterPill> {
+    let is_toggle = |a: &Action| {
+        matches!(
+            a,
+            Action::ToggleInfoPanel | Action::ToggleFileViewer | Action::FocusTasks
+        )
+    };
+    loop {
+        if pills.len() <= 1 || pills_block_width(&pills) <= area_width {
+            break;
+        }
+        // 1. shed the optional panel toggles together.
+        if pills.iter().any(|p| is_toggle(&p.action)) {
+            pills.retain(|p| !is_toggle(&p.action));
+            continue;
+        }
+        // 2. strip the shortcut suffix from every label.
+        if pills.iter().any(|p| p.shortcut.is_some()) {
+            for p in &mut pills {
+                p.shortcut = None;
+            }
+            continue;
+        }
+        // 3. drop the lowest-priority non-Quit pill.
+        let drop_order = [
+            Action::OpenThemePicker,
+            Action::OpenSettings,
+            Action::ToggleHelp,
+        ];
+        if let Some(&victim) = drop_order
+            .iter()
+            .find(|a| pills.iter().any(|p| p.action == **a))
+        {
+            pills.retain(|p| p.action != victim);
+            continue;
+        }
+        break; // only Quit (or undroppable) remains
+    }
+    pills
 }
 
 /// Total width of the footer pill block: each pill is ` label ` (the label plus
@@ -142,95 +225,104 @@ fn pill_block_width(labels: &[String]) -> u16 {
 }
 
 /// Render the footer bar and return each clickable button's hitbox paired with
-/// the `Action` it dispatches, packed against the right edge. Info/Files/Tasks
-/// are gated by their feature flags, and the panel-toggle pills (Info/Files/
-/// Tasks) are *optional*: when the full set would overflow the footer they're
-/// dropped together, so the essential Help/Theme/Settings/Quit pills never fall
-/// off a narrow terminal. When the file viewer is open its navigation hints
-/// fill the space to the *left* of the buttons (right-aligned there) so both
-/// stay visible.
+/// the `Action` it dispatches, packed against the right edge.
+///
+/// The layout is **budget-driven** so the two halves of the row never overlap
+/// on a narrow terminal (the old code painted the left info cluster full-width
+/// and then drew the right-aligned pills *over* it, garbling the `^O Open`
+/// hint). The pill block is resolved and width-measured first, then the left
+/// cluster renders into just the columns the pills leave it. The pill set is
+/// trimmed by priority (panel toggles → shortcut suffixes → Theme/Settings/Help)
+/// so **Quit always survives** instead of being silently shed right-to-left by
+/// `render_button_bar`. When the file viewer is open its navigation hints take
+/// the shortcut-hints' place in that left cluster.
 pub fn render_footer(
     frame: &mut Frame,
     area: Rect,
     state: &FooterState<'_>,
 ) -> Vec<(super::ButtonHit, Action)> {
-    // The footer always carries the idle session/automation counts + the focus
-    // hint; the transient status/error message (and sync spinner) now live on
-    // their own dedicated row above the footer (`render_status_message_row`), so
-    // nothing here can be overwritten by the right-aligned pills.
-    let mut spans = vec![Span::styled(
-        format!(" {} ", state.focus_label),
-        Theme::focused_title(),
-    )];
-    push_idle_counts(&mut spans, state);
-    push_shortcut_hints(&mut spans);
-
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-
-    let mut entries = footer_entries(state);
-    // Suffix each pill with its live shortcut (`Help · F1`); own the strings so
-    // the borrowed `ButtonSpec`s can reference them. Kept index-aligned with
-    // `entries` through the responsive trim below.
-    let mut labels: Vec<String> = entries
-        .iter()
-        .map(|(label, action)| {
-            match crate::session::compact_shortcut(state.keybindings.chords_for(*action)) {
-                Some(sc) => format!("{label} · {sc}"),
-                None => label.to_string(),
-            }
-        })
-        .collect();
-    // When the full set won't fit, drop the optional panel-toggle pills
-    // together (all-or-nothing) rather than letting `render_button_bar` shed
-    // the rightmost essential pill (Quit).
-    if pill_block_width(&labels) > area.width {
-        let optional = |a: &Action| {
-            matches!(
-                a,
-                Action::ToggleInfoPanel | Action::ToggleFileViewer | Action::FocusTasks
-            )
-        };
-        labels = entries
-            .iter()
-            .zip(&labels)
-            .filter(|((_, a), _)| !optional(a))
-            .map(|(_, l)| l.clone())
-            .collect();
-        entries.retain(|(_, a)| !optional(a));
+    if area.height == 0 || area.width == 0 {
+        return Vec::new();
     }
+
+    // Resolve + trim the pills first so the left cluster can be bounded to the
+    // space they leave. `pill_left` is exactly where `render_button_bar`
+    // (right-aligned) starts the leftmost pill: `area.right() - block_width`.
+    let pills = resolve_footer_pills(candidate_pills(state), area.width);
+    let labels: Vec<String> = pills.iter().map(|p| p.display_label()).collect();
+    let actions: Vec<Action> = pills.iter().map(|p| p.action).collect();
+    let pill_width = pill_block_width(&labels);
+    let pill_left = area.right().saturating_sub(pill_width);
+
+    // Left info cluster: focus label + counts + hints, truncated to the columns
+    // left of the pills so it can never run under them.
+    let left_width = pill_left.saturating_sub(area.x);
+    let left_spans = footer_left_spans(state, left_width as usize);
+    if !left_spans.is_empty() {
+        let left_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: left_width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(Line::from(left_spans)), left_area);
+    }
+
     let specs: Vec<super::ButtonSpec<'_>> = labels
         .iter()
         .map(|l| super::ButtonSpec::secondary(l))
         .collect();
     let hits = super::render_button_bar(frame, area, &specs, true);
 
-    // File-viewer hints fill whatever room is left of the buttons.
+    // Each placed hit keeps its index into `actions`, so the click→action map
+    // follows the same trimmed list that was rendered.
+    hits.into_iter()
+        .map(|hit| (hit, actions[hit.index]))
+        .collect()
+}
+
+/// Build the left-side info cluster (focus label + counts + shortcut hints, or
+/// the file-viewer hints when its pane is open), truncated to `budget` columns.
+/// Trailing spans — the hints, then the counts — are shed first; the focus
+/// label is truncated only when even it alone would overflow.
+fn footer_left_spans(state: &FooterState<'_>, budget: usize) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(
+        format!(" {} ", state.focus_label),
+        Theme::focused_title(),
+    )];
+    spans.extend(idle_counts_spans(state));
     if state.file_viewer_open {
-        let buttons_left = hits
-            .iter()
-            .map(|h| h.rect.x)
-            .min()
-            .unwrap_or(area.x + area.width);
-        let avail = buttons_left.saturating_sub(area.x).saturating_sub(1);
-        if avail > 0 {
-            let hint_area = Rect {
-                width: avail,
-                ..area
-            };
-            let right = Line::from(file_viewer_shortcut_spans())
-                .alignment(ratatui::layout::Alignment::Right);
-            frame.render_widget(Paragraph::new(right), hint_area);
+        spans.extend(file_viewer_shortcut_spans());
+    } else {
+        spans.extend(shortcut_hints_spans());
+    }
+    fit_spans_to_budget(spans, budget)
+}
+
+/// Fit a span row to `budget` columns: drop trailing spans until the prefix
+/// fits, then — if a single remaining span still overflows — truncate that span
+/// with `…`. An empty result for a zero budget. Used by the footer's left
+/// cluster so the focus label is the last thing to give up its space.
+fn fit_spans_to_budget<'a>(mut spans: Vec<Span<'a>>, budget: usize) -> Vec<Span<'a>> {
+    if budget == 0 {
+        return Vec::new();
+    }
+    while spans.len() > 1 && span_vec_width(&spans) > budget {
+        spans.pop();
+    }
+    if span_vec_width(&spans) > budget {
+        if let Some(first) = spans.first().cloned() {
+            return vec![Span::styled(
+                super::truncate_ellipsis(&first.content, budget),
+                first.style,
+            )];
         }
     }
+    spans
+}
 
-    // Each placed hit keeps its index into `entries`, so the click→action map
-    // follows the same feature-filtered list that was rendered.
-    hits.into_iter()
-        .map(|hit| {
-            let action = entries[hit.index].1;
-            (hit, action)
-        })
-        .collect()
+fn span_vec_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| s.content.chars().count()).sum()
 }
 
 /// Render the active status/error message (or the live sync spinner) into its
@@ -263,7 +355,9 @@ pub fn render_status_message_row(frame: &mut Frame, area: Rect, state: &FooterSt
     } else {
         return; // nothing to show — row shouldn't have been carved
     }
-    // A status row is a single line; ratatui clips a longer message to width.
+    // Truncate to the row so a long message ends in `…` rather than being cut
+    // mid-glyph by ratatui — the leading badge is kept, the trailing text gives.
+    let spans = truncate_spans_to_width(spans, area.width);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -309,11 +403,11 @@ fn push_status_message<'a>(spans: &mut Vec<Span<'a>>, msg: &'a StatusMessage) {
     ));
 }
 
-fn push_idle_counts<'a>(spans: &mut Vec<Span<'a>>, state: &FooterState<'a>) {
-    spans.push(Span::styled(
+fn idle_counts_spans(state: &FooterState<'_>) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
         format!(" {} session(s) ", state.session_count),
         Style::default().fg(Theme::text_secondary()),
-    ));
+    )];
     if state.automation_count > 0 {
         spans.push(Span::styled(
             format!(" {} automation(s) ", state.automation_count),
@@ -322,22 +416,47 @@ fn push_idle_counts<'a>(spans: &mut Vec<Span<'a>>, state: &FooterState<'a>) {
                 .bg(Theme::accent()),
         ));
     }
+    spans
 }
 
-fn push_shortcut_hints(spans: &mut Vec<Span<'_>>) {
-    // Focus + Open stay informational hints (no single click target); the footer
-    // buttons (Help / Info / Files / Theme / Tasks / Settings / Quit) are
-    // rendered as right-aligned clickable pills.
+/// Focus + Open stay informational hints (no single click target); the footer
+/// buttons (Help / Info / Files / Theme / Tasks / Settings / Quit) are rendered
+/// as right-aligned clickable pills.
+fn shortcut_hints_spans() -> Vec<Span<'static>> {
     let bold_key = Theme::keybind().add_modifier(Modifier::BOLD);
     let desc = Theme::keybind_desc();
-    spans.extend([
+    vec![
         Span::styled(" ^H", bold_key),
         Span::styled("/", desc),
         Span::styled("^L", bold_key),
         Span::styled(" Focus ", desc),
         Span::styled("^O", bold_key),
         Span::styled(" Open ", desc),
-    ]);
+    ]
+}
+
+/// Truncate a span row to `width` columns by shortening its *last* span (the
+/// message/detail text) with `…`, preserving the leading badge. Used by the
+/// status row so a long message ends cleanly instead of being cut mid-glyph.
+fn truncate_spans_to_width<'a>(mut spans: Vec<Span<'a>>, width: u16) -> Vec<Span<'a>> {
+    let budget = width as usize;
+    if budget == 0 {
+        return Vec::new();
+    }
+    let total: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if total <= budget {
+        return spans;
+    }
+    let others: usize = spans[..spans.len().saturating_sub(1)]
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum();
+    let avail = budget.saturating_sub(others);
+    if let Some(last) = spans.last_mut() {
+        let style = last.style;
+        *last = Span::styled(super::truncate_ellipsis(&last.content, avail), style);
+    }
+    spans
 }
 
 fn file_viewer_shortcut_spans() -> Vec<Span<'static>> {
@@ -443,22 +562,31 @@ mod tests {
         }
     }
 
-    /// Render the given state into a 120×1 buffer and return (button+action
-    /// hits, line text).
-    fn render_footer_state(
+    /// Render the footer at `width` into a 1-row buffer and return (button+
+    /// action hits, line text).
+    fn render_footer_at_width(
         state: &FooterState<'_>,
+        width: u16,
     ) -> (Vec<(super::super::ButtonHit, Action)>, String) {
-        let backend = TestBackend::new(120, 1);
+        let backend = TestBackend::new(width, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = Vec::new();
         terminal
-            .draw(|f| hits = render_footer(f, Rect::new(0, 0, 120, 1), state))
+            .draw(|f| hits = render_footer(f, Rect::new(0, 0, width, 1), state))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let line: String = (0..buffer.area.width)
             .map(|x| buffer[(x, 0)].symbol())
             .collect();
         (hits, line)
+    }
+
+    /// Render the given state into a 120×1 buffer and return (button+action
+    /// hits, line text).
+    fn render_footer_state(
+        state: &FooterState<'_>,
+    ) -> (Vec<(super::super::ButtonHit, Action)>, String) {
+        render_footer_at_width(state, 120)
     }
 
     /// Render a default footer (all features on) with the given file-viewer
@@ -556,7 +684,7 @@ mod tests {
     }
 
     /// The two panel buttons gate independently — a swapped flag in
-    /// `footer_entries` would surface here.
+    /// `candidate_pills`' feature filter would surface here.
     #[test]
     fn footer_panel_buttons_gate_independently() {
         let mut state = footer_state(false);
@@ -571,10 +699,12 @@ mod tests {
     }
 
     /// The buttons stay visible with the file viewer open; its hints share the
-    /// row to the left of them.
+    /// row to the left of them. The hints only fit beside the ≈90-col pill
+    /// block on a wide terminal (at 120 they truncate to `j/k`), so render at
+    /// 160 where `Open` is honestly visible.
     #[test]
     fn footer_keeps_buttons_with_file_viewer_open() {
-        let (hits, line) = footer_render(true);
+        let (hits, line) = render_footer_at_width(&footer_state(true), 160);
         assert_eq!(
             hits.len(),
             7,
@@ -587,7 +717,7 @@ mod tests {
         );
         // The rightmost button ends at the footer's right edge.
         let last = hits.iter().max_by_key(|(h, _)| h.rect.x).unwrap().0.rect;
-        assert_eq!(last.x + last.width, 120);
+        assert_eq!(last.x + last.width, 160);
     }
 
     fn long_error() -> StatusMessage {
@@ -652,12 +782,14 @@ mod tests {
     }
 
     /// The left informational hint cluster advertises both Focus (^H/^L) and
-    /// Open (^O). Asserted on the spans directly — on a narrow footer the
-    /// right-aligned pills overlay this text, so a full render can't see it.
+    /// Open (^O). Asserted on the spans directly: buffer visibility is
+    /// width-dependent, since the seven shortcut-pills (≈90 cols) leave the
+    /// left cluster too little room to show the full hint cluster at common
+    /// widths (e.g. 120). Buffer visibility where the width allows is covered
+    /// by `footer_keeps_buttons_with_file_viewer_open`.
     #[test]
     fn shortcut_hints_advertise_focus_and_open() {
-        let mut spans = Vec::new();
-        push_shortcut_hints(&mut spans);
+        let spans = shortcut_hints_spans();
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("^H"), "Focus-previous key present: {text:?}");
         assert!(text.contains("^L"), "Focus-next key present: {text:?}");
