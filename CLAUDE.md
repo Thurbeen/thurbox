@@ -791,10 +791,10 @@ effective resolved config; see `docs/CONFIG.md`), `extension`
 (alias `ext`: install/uninstall/reinstall/list/available/update/activate/
 deactivate/status — manage opt-in extensions; see below), `version`
 (prints the running version; `--check` queries GitHub's latest release —
-gated on `[features] version_check`, off by default), `update`
+gated on `[features] version_check`, on by default for 1.0), `update`
 (downloads, verifies, and replaces the installed binaries with the latest
 release — `--force` bypasses the up-to-date/dev-build guards; gated on
-`[features] auto_update`, off by default; the TUI also runs this silently on
+`[features] auto_update`, on by default for 1.0; the TUI also runs this silently on
 startup when the flag is on), `notify`
 (diagnose OS desktop notifications: prints the detected delivery backend
 and last error; `--test` fires a sample — see OS notifications below), `perf`
@@ -1356,7 +1356,7 @@ fields into the discovery-dir copy: `installed_with` (the thurbox version
 that installed it) and `source` (the resolved install target). After a
 thurbox upgrade the on-disk copy is older than the binary, so
 `ExtensionDef::is_stale` flags it (`extension list`/`status`, and a
-self-heal nudge). With `[features] auto_update` on (the same opt-in flag that
+self-heal nudge). With `[features] auto_update` on (the same flag that
 self-updates the binary), the self-heal pass — `heal_one_extension`, run on TUI
 startup **and** the headless `automation tick` — goes a step past the nudge and
 **refreshes the stale extension in place** (calls `update_extension`); the

@@ -1179,8 +1179,8 @@ Whole features can be switched off declaratively: `tasks`,
 `true`. `soft_delete` is the odd one out: it is not a pane gate but a
 behaviour switch for the TUI `Ctrl+D` delete (soft-delete with a
 `Ctrl+Z` undo window when on; a confirmation-gated hard delete when
-off — see *Explicit close vs quit*). Two flags are the opposite —
-opt-in (default `false`, because they reach the network):
+off — see *Explicit close vs quit*). Two flags reach the network and
+were opt-in before 1.0 — now both default on:
 `version_check` (the "update available" badge +
 `thurbox-cli version --check`) and `auto_update` (silent self-update on
 startup + `thurbox-cli update`). See `docs/CONFIG.md`.
@@ -1251,8 +1251,9 @@ network — see *Feature Flags*) cover staying current:
   replaces the installed binaries with the latest release. `--force`
   bypasses the up-to-date and dev-build guards.
 
-Both are off by default so a fresh install makes **no** network calls and
-never mutates its own binary unless the user asks.
+Both are on by default for 1.0 so a fresh install stays current on its
+own; set them to `false` if you'd rather make no network calls or have
+thurbox never mutate its own binary unless you ask.
 
 ---
 

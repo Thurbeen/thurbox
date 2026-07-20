@@ -1,11 +1,11 @@
 //! `thurbox-cli update` — download, verify, and replace the installed binaries
 //! with the latest GitHub release.
 //!
-//! Gated behind the opt-in `[features] auto_update` flag (off by default, since
-//! it makes a network call and replaces files on disk). When the flag is off,
-//! `update` prints a one-line hint on how to enable it instead of reaching the
-//! network. `--force` re-downloads and replaces even when up to date or on a
-//! development build.
+//! Gated behind the `[features] auto_update` flag (on by default for 1.0,
+//! since thurbox now keeps itself current — it makes a network call and
+//! replaces files on disk). When the flag is off, `update` prints a one-line
+//! hint on how to enable it instead of reaching the network. `--force`
+//! re-downloads and replaces even when up to date or on a development build.
 
 use clap::Args;
 use serde_json::json;
@@ -25,9 +25,16 @@ pub struct UpdateArgs {
 /// Run the `update` command. Takes no database — it only reads the compiled-in
 /// version, the network, and the install directory.
 pub fn run(args: UpdateArgs) -> CommandOutput {
+    run_with(args, settings::global().features.auto_update)
+}
+
+/// Same as [`run`] but with the `auto_update` flag passed explicitly, so the
+/// disabled path is testable without depending on the process-global default
+/// (the flag is on by default for 1.0).
+fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
     let current = crate::agent::version_check::current_version();
 
-    if !settings::global().features.auto_update {
+    if !enabled {
         let hint = "update is disabled. Enable it by setting \
                     `[features] auto_update = true` in settings.toml.";
         return CommandOutput::new(
@@ -105,11 +112,10 @@ mod tests {
 
     #[test]
     fn update_when_flag_disabled_prints_enable_hint() {
-        // `settings::init` is only ever called by the binaries, so in the test
-        // process `settings::global()` is the all-default config — auto_update
-        // is off — and `update` degrades to the enable hint with no network or
+        // The flag is on by default for 1.0, so exercise the disabled path
+        // directly via `run_with` — no process-global settings, no network or
         // disk touch.
-        let out = run(UpdateArgs { force: false });
+        let out = run_with(UpdateArgs { force: false }, false);
         assert_eq!(out["update_enabled"], false);
         assert!(out.human.contains("disabled"), "got: {}", out.human);
         assert!(

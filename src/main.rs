@@ -301,7 +301,7 @@ async fn main() -> Result<()> {
     let agents = thurbox::agent::agent_config::load_or_seed();
     startup.extension_heal_ms = t_phase.elapsed().as_millis();
 
-    // Silent auto-update (opt-in via [features] auto_update). Kicked off on a
+    // Silent auto-update (on by default for 1.0 via [features] auto_update). Kicked off on a
     // background thread *before* the TUI starts so a slow download never blocks
     // the first frame — the result is surfaced as a status toast once it lands
     // (App::poll_auto_update). The self-replace only swaps the on-disk binaries

@@ -1,9 +1,10 @@
 //! `thurbox-cli version [--check]` — print the running version and, with
 //! `--check`, query GitHub for the latest release.
 //!
-//! `--check` is gated behind the opt-in `[features] version_check` flag (off by
-//! default, since it makes a network call). When the flag is off, `--check`
-//! prints a one-line hint on how to enable it instead of reaching the network.
+//! `--check` is gated behind the `[features] version_check` flag (on by
+//! default for 1.0, since thurbox now keeps itself current). When the flag is
+//! off, `--check` prints a one-line hint on how to enable it instead of
+//! reaching the network.
 //! A successful check also refreshes the on-disk cache the TUI badge reads.
 
 use clap::Args;
@@ -24,13 +25,20 @@ pub struct VersionArgs {
 /// Run the `version` command. Takes no database — it only reads the compiled-in
 /// version and (with `--check`) the network.
 pub fn run(args: VersionArgs) -> CommandOutput {
+    run_with(args, settings::global().features.version_check)
+}
+
+/// Same as [`run`] but with the `version_check` flag passed explicitly, so the
+/// disabled path is testable without depending on the process-global default
+/// (the flag is on by default for 1.0).
+fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
     let current = crate::agent::version_check::current_version();
 
     if !args.check {
         return CommandOutput::new(json!({ "version": current }), format!("thurbox {current}"));
     }
 
-    if !settings::global().features.version_check {
+    if !enabled {
         let hint = "version --check is disabled. Enable it by setting \
                     `[features] version_check = true` in settings.toml.";
         return CommandOutput::new(
@@ -105,10 +113,9 @@ mod tests {
 
     #[test]
     fn version_check_when_flag_disabled_prints_enable_hint() {
-        // `settings::init` is only ever called by the binaries, so in the test
-        // process `settings::global()` is the all-default config — version_check
-        // is off — and `--check` degrades to the enable hint with no network.
-        let out = run(VersionArgs { check: true });
+        // The flag is on by default for 1.0, so exercise the disabled path
+        // directly via `run_with` — no process-global settings, no network.
+        let out = run_with(VersionArgs { check: true }, false);
         assert_eq!(out["check_enabled"], false);
         assert!(out.human.contains("disabled"), "got: {}", out.human);
         assert!(

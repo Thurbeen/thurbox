@@ -99,19 +99,20 @@ pub struct FeatureFlags {
     #[serde(default = "default_true")]
     pub soft_delete: bool,
     /// Version-update check: the TUI header "update available" badge and the
-    /// `thurbox-cli version --check` command. **Off by default** — unlike the
-    /// other flags, this one is opt-in because it makes a network call to
-    /// GitHub. Enable it to learn when a newer release is available.
-    #[serde(default = "default_false")]
+    /// `thurbox-cli version --check` command. **On by default for 1.0** — it
+    /// makes a network call to GitHub to learn when a newer release is
+    /// available. Turn it off with `[features] version_check = false`.
+    #[serde(default = "default_true")]
     pub version_check: bool,
     /// Silent auto-update: the TUI silently downloads, verifies, and replaces
     /// the installed binaries on startup when a newer release exists, and the
     /// `thurbox-cli update` command does the same on demand. Also keeps installed
     /// extensions fresh — once the binary upgrades, the self-heal pass (TUI
     /// startup + headless tick) refreshes any extension that is now stale instead
-    /// of merely nudging. **Off by default** — opt-in because it makes a network
-    /// call and replaces files on disk. The new version applies on the next launch.
-    #[serde(default = "default_false")]
+    /// of merely nudging. **On by default for 1.0** — opt out with `[features]
+    /// auto_update = false`; it makes a network call and replaces files on
+    /// disk. The new version applies on the next launch.
+    #[serde(default = "default_true")]
     pub auto_update: bool,
 }
 
@@ -231,10 +232,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_false() -> bool {
-    false
-}
-
 impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
@@ -249,8 +246,8 @@ impl Default for FeatureFlags {
             mouse: true,
             notifications: true,
             soft_delete: true,
-            version_check: false,
-            auto_update: false,
+            version_check: true,
+            auto_update: true,
         }
     }
 }
@@ -444,26 +441,26 @@ mod tests {
     }
 
     #[test]
-    fn version_check_flag_defaults_off_and_parses() {
-        // Unlike the other flags, version_check is opt-in (network call).
+    fn version_check_flag_defaults_on_and_parses() {
+        // On by default for 1.0 (it makes a network call to GitHub).
         let s: Settings = toml::from_str("[features]").unwrap();
-        assert!(!s.features.version_check, "version_check defaults off");
+        assert!(s.features.version_check, "version_check defaults on");
         assert!(s.features.tasks, "other flags still default on");
 
-        let s: Settings = toml::from_str("[features]\nversion_check = true").unwrap();
-        assert!(s.features.version_check);
+        let s: Settings = toml::from_str("[features]\nversion_check = false").unwrap();
+        assert!(!s.features.version_check);
         assert!(s.features.mouse, "untouched flags stay at their default");
     }
 
     #[test]
-    fn auto_update_flag_defaults_off_and_parses() {
-        // Like version_check, auto_update is opt-in (network call + writes to disk).
+    fn auto_update_flag_defaults_on_and_parses() {
+        // On by default for 1.0 (network call + writes to disk).
         let s: Settings = toml::from_str("[features]").unwrap();
-        assert!(!s.features.auto_update, "auto_update defaults off");
+        assert!(s.features.auto_update, "auto_update defaults on");
         assert!(s.features.tasks, "other flags still default on");
 
-        let s: Settings = toml::from_str("[features]\nauto_update = true").unwrap();
-        assert!(s.features.auto_update);
+        let s: Settings = toml::from_str("[features]\nauto_update = false").unwrap();
+        assert!(!s.features.auto_update);
         assert!(s.features.mouse, "untouched flags stay at their default");
     }
 

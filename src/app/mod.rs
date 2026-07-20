@@ -4454,7 +4454,7 @@ impl App {
     }
 
     /// The spawning half of [`Self::tick`]: kicks off background refreshes
-    /// (sysinfo/git/usage shell-outs), the opt-in update check, and the
+    /// (sysinfo/git/usage shell-outs), the update check, and the
     /// auto-updater — each lands on a Tokio task. Kept out of
     /// [`Self::tick_core`] so tests driving the tick pipeline never touch the
     /// network, the filesystem outside the harness tempdir, or a runtime.
@@ -4699,7 +4699,7 @@ impl App {
         h.finish()
     }
 
-    /// Drive the opt-in GitHub update check. Off the render path: on the first
+    /// Drive the GitHub update check. Off the render path: on the first
     /// tick (when the flag is on and the on-disk cache is stale) it fires a
     /// single background network refresh; the result only ever lands by
     /// re-reading the cache, so rendering never makes a network call.
@@ -4709,8 +4709,14 @@ impl App {
         }
 
         // One attempt per launch: fire on the first tick if the cache is stale.
+        // The runtime check upholds the contract that a background spawn never
+        // lands on the first ticks a runtime-less unit `tick()` drives
+        // (`spawn_blocking` panics without a reactor) — now that `version_check`
+        // defaults on, this is what lets hermetic full-`tick()` unit tests keep
+        // working. Production always runs under tokio, so this is a no-op there.
         if self.metrics.tick_count == 1
             && !self.version_check_task.in_progress()
+            && tokio::runtime::Handle::try_current().is_ok()
             && crate::agent::version_check::cache_is_stale()
         {
             let tx = self.version_check_task.start();

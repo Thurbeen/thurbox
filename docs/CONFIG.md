@@ -210,8 +210,8 @@ perf_hud      = true
 mouse         = true
 notifications = true
 soft_delete   = true
-version_check = false          # opt-in: makes a network call
-auto_update   = false          # opt-in: downloads + replaces binaries
+version_check = true           # on by default (1.0): makes a network call
+auto_update   = true           # on by default (1.0): downloads + replaces binaries
 
 [notifications]
 also_on_waiting     = false    # also fire when a session finishes (Working → Done)
@@ -222,9 +222,9 @@ min_interval_secs   = 5        # per-session floor between notifications
 
 ### `[features]` — whole-feature switches
 
-Turn major TUI features off entirely. All default to `true` **except
-`version_check` and `auto_update`, which default to `false`** (both
-reach the network, so they are opt-in). The UI-panel flags
+Turn major TUI features off entirely. All default to `true` — as of 1.0
+that includes `version_check` and `auto_update`, which both reach the
+network (they were opt-in before 1.0). The UI-panel flags
 (`tasks`, `file_viewer`, `info_panel`, `global_search`, `shell_pane`,
 `code_review`, `perf_hud`, `soft_delete`) apply **live** on save; the rest
 (`automations`, `mouse`, `notifications`, `version_check`, `auto_update`)
@@ -246,8 +246,8 @@ no results. Data is never touched, so re-enabling a flag is lossless.
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `true` | TUI `Ctrl+D` soft-deletes (Ctrl+Z undo); off = hard delete after a confirmation prompt |
-| `version_check` | `false` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
-| `auto_update` | `false` | Silent self-update: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
+| `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
+| `auto_update` | `true` | Silent self-update: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
 
 `automations = false` is a full stop on the TUI side: the pane
 disappears (the session list takes the whole left column and `j`/`k`
@@ -275,8 +275,8 @@ still written last, so the session remains restorable via `Ctrl+U`
 `thurbox-cli session delete` always soft-deletes unless you pass
 `--force`, regardless of the setting.
 
-`version_check = true` enables the update check (default `false`, since
-it makes a network call). On launch the TUI reads a cached result
+`version_check` (on by default for 1.0) enables the update check — it
+makes a network call. On launch the TUI reads a cached result
 (`~/.local/share/thurbox/version-check.json`) and, if it is older than
 24 h, fires a single best-effort background fetch of GitHub's latest
 release (`api.github.com/repos/Thurbeen/thurbox/releases/latest`, via
@@ -288,8 +288,9 @@ builds (`0.0.0-dev`) never show the badge. The same flag enables
 current vs. latest (`thurbox-cli version` with no flag always prints the
 current version, regardless of the flag).
 
-`auto_update = true` goes a step further than `version_check`: instead of
-just showing a badge, the TUI **silently updates itself** on startup. On every
+`auto_update` (on by default for 1.0) goes a step further than
+`version_check`: instead of just showing a badge, the TUI **silently
+updates itself** on startup. On every
 launch (it does **not** reuse the `version_check` badge's 24 h cache — sharing
 that gate let the badge keep the cache "fresh" and starve the updater) it
 fetches the latest release tag; if a newer release exists it downloads that

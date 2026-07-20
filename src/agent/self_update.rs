@@ -1,9 +1,8 @@
 //! Self-update: download, verify, and replace the installed thurbox binaries.
 //!
-//! This is the **opt-in** auto-update feature (gated behind `[features]
-//! auto_update`, off by default — see
-//! [`crate::session::settings::FeatureFlags`]). It surfaces two ways, both
-//! calling [`perform_update`]:
+//! This is the auto-update feature (gated behind `[features] auto_update`, on
+//! by default for 1.0 — see [`crate::session::settings::FeatureFlags`]). It
+//! surfaces two ways, both calling [`perform_update`]:
 //!
 //! - **TUI** — a silent check on startup (`main::spawn_auto_update`), run on a
 //!   background thread so a slow download never blocks the first frame. A newer
