@@ -31,6 +31,11 @@ jobs:
     outputs:
       should_release: ${{ steps.parse.outputs.should_release }}
       version: ${{ steps.parse.outputs.version }}
+      # The exact `cog bump` args create-tag runs. Computed here in bash (not
+      # via a YAML `${{ && || }}` ternary in create-tag) so the forced-version
+      # path is deterministic — the ternary form silently fell back to `--auto`
+      # when an output briefly evaluated empty, defeating the forced cut.
+      bump_args: ${{ steps.parse.outputs.bump_args }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -70,7 +75,7 @@ jobs:
             VERSION="v${FORCED_VERSION#v}"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-            echo "forced=true" >> "$GITHUB_OUTPUT"
+            echo "bump_args=--version $VERSION --disable-bump-commit" >> "$GITHUB_OUTPUT"
             echo "✅ Forced release: $VERSION"
             exit 0
           fi
@@ -81,12 +86,12 @@ jobs:
           if [ -n "$VERSION" ]; then
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-            echo "forced=false" >> "$GITHUB_OUTPUT"
+            echo "bump_args=--auto --disable-bump-commit" >> "$GITHUB_OUTPUT"
             echo "✅ Release needed: $VERSION"
           else
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             echo "version=" >> "$GITHUB_OUTPUT"
-            echo "forced=false" >> "$GITHUB_OUTPUT"
+            echo "bump_args=--auto --disable-bump-commit" >> "$GITHUB_OUTPUT"
             echo "ℹ️  No releasable commits detected"
           fi
 
@@ -109,13 +114,10 @@ jobs:
         id: bump
         with:
           command: bump
-          # A forced dispatch passes the exact version via `--version`, bypassing
-          # `--auto` (which can't cross a major boundary on a 0.x line). Otherwise
-          # compute the next tag from the commit history as usual.
-          args: >-
-            ${{ needs.check-release.outputs.forced == 'true'
-                && format('--version {0} --disable-bump-commit', needs.check-release.outputs.version)
-                || '--auto --disable-bump-commit' }}
+          # `bump_args` is resolved by check-release: `--version <v>` for a
+          # forced cut (the only way across a major boundary on a 0.x line),
+          # `--auto` otherwise. Computed in bash upstream to stay deterministic.
+          args: ${{ needs.check-release.outputs.bump_args }}
           git-user: 'github-actions[bot]'
           git-user-email: 'github-actions[bot]@users.noreply.github.com'
 
