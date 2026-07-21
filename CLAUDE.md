@@ -262,7 +262,7 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
 - Colorized output (auto-disabled when stderr is not a TTY, `NO_COLOR` is set,
   or `TERM=dumb`); platforms Linux/macOS × x86_64/aarch64
 - No external deps beyond standard tools (curl/wget, tar, sha256sum/shasum)
-- Env vars: `VERSION=v0.1.0`, `INSTALL_DIR=/path` (default `~/.local/bin`)
+- Env vars: `VERSION=v1.0.0`, `INSTALL_DIR=/path` (default `~/.local/bin`)
 - Non-interactive (safe pipe-to-shell), cleanup via `trap`
 - Tested by `scripts/install.bats` (bats-core, ~28 tests; CI `install-script` job)
 
@@ -349,8 +349,8 @@ Every push to `main` automatically triggers the release workflow:
    - **If** commits include `feat`, `fix`, or `perf` → creates release
    - **If** only docs/chore/ci commits → no release (workflow exits)
 3. **Automated Release** (if needed):
-   - Determines semantic version (feat→minor, fix/perf→patch)
-   - Creates lightweight git tag: `v{version}` (e.g., v0.1.0)
+   - Determines semantic version (feat→minor, fix/perf→patch, breaking→major)
+   - Creates lightweight git tag: `v{version}` (e.g., v1.0.0)
    - Pushes tag to origin
    - Builds binaries for 4 platforms (3 Unix `.tar.gz` + 1 Windows `.zip`;
      version passed via environment variable)
@@ -360,11 +360,17 @@ Every push to `main` automatically triggers the release workflow:
 ### Version Management
 
 - **Cargo.toml version**: Always `0.0.0-dev` (static development marker)
-- **Real version**: Determined by release workflow (v0.1.0, v0.2.0, etc.)
+- **Real version**: Determined by release workflow (v1.0.0, v1.1.0, etc.)
 - **Build-time injection**: `build.rs` uses `THURBOX_RELEASE_VERSION` environment
   variable (set by workflow) to inject version into binary
 - **Development builds**: Show `0.0.0-dev` (when `THURBOX_RELEASE_VERSION` not set)
-- **Release builds**: Show actual version (e.g., `0.1.0`) via env variable from workflow
+- **Release builds**: Show actual version (e.g., `1.0.0`) via env variable from workflow
+- **Explicit cuts**: `cog bump --auto` computes the next version from commits and
+  works for every ordinary release (at 1.x+, a breaking change correctly bumps
+  the major). To cut a *specific* version that `--auto` can't reach — the only
+  way across a major boundary from a `0.x` line, or any one-off — dispatch the
+  Release workflow (`cd.yml`) with the `version` input (e.g. `1.0.0`); it runs
+  `cog bump --version <v>` instead of `--auto`.
 
 ### Release Artifacts
 
@@ -416,10 +422,16 @@ See `packaging/README.md` for the full packaging overview.
 
 ### Commit Types and Versioning
 
-- **feat**: Minor version bump (0.x.0)
-- **fix, perf**: Patch version bump (0.0.x)
+Thurbox 1.0+ follows [Semantic Versioning](https://semver.org/):
+
+- **feat**: Minor version bump (1.x.0)
+- **fix, perf**: Patch version bump (1.0.x)
 - **docs, chore, ci, style, test**: No release (appear in next version)
-- **BREAKING CHANGE**: Major version bump (x.0.0) - use cautiously for 0.x
+- **BREAKING CHANGE**: Major version bump (x.0.0)
+
+A breaking change bumps the major version automatically via `cog bump --auto`
+(at 1.x+; on a `0.x` line cocogitto maps breaking to a *minor* bump instead, so
+the only way to cross into 1.0 was the explicit-version Release dispatch).
 
 ## Conventional Commits
 

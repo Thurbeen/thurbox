@@ -667,7 +667,7 @@ Set **at build time** (not runtime):
 
 | Variable | Used for |
 |----------|----------|
-| `THURBOX_RELEASE_VERSION` | read by `build.rs` to inject the binary version at build (CI release workflow sets it, e.g. `v0.7.0`); absent → falls back to `CARGO_PKG_VERSION` |
+| `THURBOX_RELEASE_VERSION` | read by `build.rs` to inject the binary version at build (CI release workflow sets it, e.g. `v1.0.0`); absent → falls back to `CARGO_PKG_VERSION` |
 
 Editor resolution order: DB `editor_command` → `$VISUAL` → `$EDITOR` →
 error toast.

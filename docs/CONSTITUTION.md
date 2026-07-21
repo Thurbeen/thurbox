@@ -117,7 +117,7 @@ binaries have correct versions while keeping the source tree clean.
 
 **Result:**
 
-- Release builds: version from tag (e.g., 0.1.0)
+- Release builds: version from tag (e.g., 1.0.0)
 - Development builds: version from Cargo.toml (0.0.0-dev)
 
 ## Enforcement Map
