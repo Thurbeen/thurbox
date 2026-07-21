@@ -75,7 +75,10 @@ jobs:
             VERSION="v${FORCED_VERSION#v}"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-            echo "bump_args=--version $VERSION --disable-bump-commit" >> "$GITHUB_OUTPUT"
+            # `cog bump --version` parses a bare semver (no `v`); the tag_prefix
+            # in cog.toml re-adds the `v` on the created tag. `version` (above)
+            # keeps the `v` because the tag_name / `ref: <tag>` lookups need it.
+            echo "bump_args=--version ${VERSION#v} --disable-bump-commit" >> "$GITHUB_OUTPUT"
             echo "✅ Forced release: $VERSION"
             exit 0
           fi
