@@ -2,6 +2,19 @@ name: Release
 
 on:
   workflow_dispatch:
+    # Cut a specific version by dispatching with `version` (e.g. `1.0.0`).
+    # This is the only way to cross a major line: `cog bump --auto` maps a
+    # breaking change to a *minor* bump while on a 0.x line (SemVer treats 0.x
+    # as inherently unstable), so it can never reach 1.0.0 from 0.x on its own.
+    # When `version` is set the workflow tags + releases that exact version;
+    # when empty (the default, and always on a `push` trigger) it falls back to
+    # the normal `cog bump --auto` from the commit history.
+    inputs:
+      version:
+        description: "Exact version to release (e.g. 1.0.0). Empty = auto from commits."
+        required: false
+        default: ""
+        type: string
   push:
     branches: [main]
 
@@ -34,22 +47,46 @@ jobs:
 
       - name: Parse release decision
         id: parse
+        env:
+          # '' on a push trigger or an empty dispatch; a bare version otherwise.
+          FORCED_VERSION: ${{ inputs.version }}
         run: |
+          # Two paths pick the target version:
+          #
+          # 1. Forced (workflow_dispatch with `version`): use it verbatim. This
+          #    is how a major cut is made — `cog bump --auto` can't reach 1.0.0
+          #    from a 0.x line (breaking maps to minor there), so an explicit
+          #    version is the only route across a major boundary.
+          # 2. Auto (push, or dispatch with an empty `version`): the next tag
+          #    `cog bump --auto` computes from the commits since the last tag.
+          #
           # cog prints the next tag (e.g. "v0.99.1") when a bump is due, but a
           # human-readable "No conventional commits…" message when none is. Match
           # only a real semver so that non-bump message never reaches
           # $GITHUB_OUTPUT — writing its multi-line text there previously failed
           # this step (and the whole workflow) on every docs/ci/chore push.
+          if [ -n "$FORCED_VERSION" ]; then
+            # Strip a leading `v` if the caller included one (UI convenience).
+            VERSION="v${FORCED_VERSION#v}"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "forced=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Forced release: $VERSION"
+            exit 0
+          fi
+
           RAW="$(cog bump --auto --disable-bump-commit --dry-run 2>/dev/null || true)"
           echo "cog output: $RAW"
           VERSION="$(printf '%s\n' "$RAW" | grep -oE '^v?[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*' | head -1 || true)"
           if [ -n "$VERSION" ]; then
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "forced=false" >> "$GITHUB_OUTPUT"
             echo "✅ Release needed: $VERSION"
           else
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             echo "version=" >> "$GITHUB_OUTPUT"
+            echo "forced=false" >> "$GITHUB_OUTPUT"
             echo "ℹ️  No releasable commits detected"
           fi
 
@@ -72,7 +109,13 @@ jobs:
         id: bump
         with:
           command: bump
-          args: --auto --disable-bump-commit
+          # A forced dispatch passes the exact version via `--version`, bypassing
+          # `--auto` (which can't cross a major boundary on a 0.x line). Otherwise
+          # compute the next tag from the commit history as usual.
+          args: >-
+            ${{ needs.check-release.outputs.forced == 'true'
+                && format('--version {0} --disable-bump-commit', needs.check-release.outputs.version)
+                || '--auto --disable-bump-commit' }}
           git-user: 'github-actions[bot]'
           git-user-email: 'github-actions[bot]@users.noreply.github.com'
 
