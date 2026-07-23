@@ -434,6 +434,31 @@ pub fn truncate_ellipsis(s: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
+/// Fit a right-aligned top-border title into the space a left-side tab strip
+/// leaves it. `border_width` is the full pane width (its two corner cells are
+/// never title cells); `reserved_left` is the columns the tabs occupy on the
+/// left, plus a one-cell gap so the title never abuts the last pill. The title
+/// is truncated (with an ellipsis) to whatever remains — so on a narrow pane it
+/// shrinks toward the right edge instead of running left under the tabs.
+///
+/// Returns the title unchanged when nothing is reserved (no tabs) or it already
+/// fits, and an empty string when the tabs leave no usable room.
+pub fn fit_right_title(title: &str, border_width: u16, reserved_left: u16) -> String {
+    if reserved_left == 0 {
+        return title.to_string();
+    }
+    // Usable title columns: the border minus its two corners, minus the tab
+    // block, minus a one-cell breathing gap after the last pill.
+    let available = border_width
+        .saturating_sub(2)
+        .saturating_sub(reserved_left)
+        .saturating_sub(1) as usize;
+    if title.chars().count() <= available {
+        return title.to_string();
+    }
+    truncate_ellipsis(title, available)
+}
+
 /// Render a titled, bordered editor frame and return its inner area. Uses the
 /// shared [`focus_block`] chrome so a focused editor is highlighted exactly like
 /// the session list / tasks panel (bright accent border + highlighted title
@@ -1207,6 +1232,35 @@ mod tests {
     fn truncate_ellipsis_keeps_short_strings_intact() {
         assert_eq!(truncate_ellipsis("hello", 10), "hello");
         assert_eq!(truncate_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn fit_right_title_untouched_without_tabs() {
+        // No reserved columns → the title renders as-is (the empty-terminal /
+        // no-tab-strip path passes reserved_left = 0).
+        assert_eq!(fit_right_title(" foo (agent) ", 40, 0), " foo (agent) ");
+    }
+
+    #[test]
+    fn fit_right_title_untouched_when_it_fits() {
+        // Wide pane: 40 - 2 corners - 8 tabs - 1 gap = 29 usable ≥ 13-char title.
+        assert_eq!(fit_right_title(" foo (agent) ", 40, 8), " foo (agent) ");
+    }
+
+    #[test]
+    fn fit_right_title_truncates_into_the_space_tabs_leave() {
+        // Narrow pane: 20 - 2 - 12 - 1 = 5 usable, so the title is cut to 5 cols
+        // (ellipsis included) and can't extend left under the tab block.
+        let fit = fit_right_title(" my-session (claude) [main] ", 20, 12);
+        assert_eq!(fit.chars().count(), 5);
+        assert!(fit.ends_with('…'), "cut title carries an ellipsis: {fit:?}");
+    }
+
+    #[test]
+    fn fit_right_title_empty_when_tabs_fill_the_border() {
+        // Tabs (plus corners + gap) leave no room → the title collapses to empty
+        // rather than overlapping the pills.
+        assert_eq!(fit_right_title(" title ", 12, 12), "");
     }
 
     fn line_text(line: &Line) -> String {

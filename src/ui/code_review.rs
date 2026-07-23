@@ -56,12 +56,18 @@ pub(crate) fn render(
     area: Rect,
     state: &mut CodeReviewState,
     level: FocusLevel,
+    // Columns reserved on the left of the top border for the central-pane tab
+    // strip; the right-aligned title is truncated to the remaining width. See
+    // `terminal_view::render_terminal`.
+    reserved_left: u16,
 ) -> CodeReviewHits {
     let (add, del) = state.totals();
     let target = state.target.label(&state.repos, &state.commits);
     let title = format!(" Code review · {target}  +{add} -{del} ");
     // Right-aligned so the app-layer central-pane tab strip (Agent/Shell/Review)
-    // overlaid on the left of this top border has room.
+    // overlaid on the left of this top border has room; truncated to the space
+    // the tabs leave so it can't overlap the pills.
+    let title = crate::ui::fit_right_title(&title, area.width, reserved_left);
     let block = focus_block("", level)
         .title_top(Line::from(Span::styled(title, crate::ui::title_style(level))).right_aligned());
     let inner = block.inner(area);
@@ -1414,7 +1420,7 @@ mod tests {
                 let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
                 term.draw(|f| {
                     let area = Rect::new(0, 0, 100, 20);
-                    let hits = render(f, area, &mut state, FocusLevel::Focused);
+                    let hits = render(f, area, &mut state, FocusLevel::Focused, 0);
                     assert!(!hits.rows.is_empty(), "diff rows are clickable");
                     assert!(!hits.buttons.is_empty(), "footer buttons render");
                 })
@@ -1433,7 +1439,13 @@ mod tests {
         state.rebuild_rows();
         let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
         term.draw(|f| {
-            let _ = render(f, Rect::new(0, 0, 60, 20), &mut state, FocusLevel::Focused);
+            let _ = render(
+                f,
+                Rect::new(0, 0, 60, 20),
+                &mut state,
+                FocusLevel::Focused,
+                0,
+            );
         })
         .unwrap();
         let buf = term.backend().buffer();
@@ -1489,7 +1501,14 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(40, 20)).unwrap();
         let mut hits: Vec<RowHitbox> = Vec::new();
         term.draw(|f| {
-            hits = render(f, Rect::new(0, 0, 40, 20), &mut state, FocusLevel::Focused).rows;
+            hits = render(
+                f,
+                Rect::new(0, 0, 40, 20),
+                &mut state,
+                FocusLevel::Focused,
+                0,
+            )
+            .rows;
         })
         .unwrap();
         let dup = hits.iter().filter(|h| h.index == 2).count();
@@ -1524,7 +1543,14 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(40, 20)).unwrap();
         let mut hits: Vec<RowHitbox> = Vec::new();
         term.draw(|f| {
-            hits = render(f, Rect::new(0, 0, 40, 20), &mut state, FocusLevel::Focused).rows;
+            hits = render(
+                f,
+                Rect::new(0, 0, 40, 20),
+                &mut state,
+                FocusLevel::Focused,
+                0,
+            )
+            .rows;
         })
         .unwrap();
         let dup = hits.iter().filter(|h| h.index == 2).count();
@@ -1575,7 +1601,14 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(40, 40)).unwrap();
         let mut hits: Vec<RowHitbox> = Vec::new();
         term.draw(|f| {
-            hits = render(f, Rect::new(0, 0, 40, 40), &mut state, FocusLevel::Focused).rows;
+            hits = render(
+                f,
+                Rect::new(0, 0, 40, 40),
+                &mut state,
+                FocusLevel::Focused,
+                0,
+            )
+            .rows;
         })
         .unwrap();
 
@@ -1619,7 +1652,14 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(40, 20)).unwrap();
         let mut hits: Vec<RowHitbox> = Vec::new();
         term.draw(|f| {
-            hits = render(f, Rect::new(0, 0, 40, 20), &mut state, FocusLevel::Focused).rows;
+            hits = render(
+                f,
+                Rect::new(0, 0, 40, 20),
+                &mut state,
+                FocusLevel::Focused,
+                0,
+            )
+            .rows;
         })
         .unwrap();
         // One hitbox per logical row — no visual expansion when wrap is off.
@@ -1759,7 +1799,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
         term.draw(|f| {
             let area = Rect::new(0, 0, 80, 20);
-            let _ = render(f, area, &mut state, FocusLevel::Focused);
+            let _ = render(f, area, &mut state, FocusLevel::Focused, 0);
         })
         .unwrap();
         // The search bar prints the `/`-prefixed query somewhere on screen.
@@ -1795,7 +1835,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
         term.draw(|f| {
             let area = Rect::new(0, 0, 100, 20);
-            let hits = render(f, area, &mut state, FocusLevel::Focused);
+            let hits = render(f, area, &mut state, FocusLevel::Focused, 0);
             // Footer still renders its buttons while composing.
             assert!(!hits.buttons.is_empty());
         })

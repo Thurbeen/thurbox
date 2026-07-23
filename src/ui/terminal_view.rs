@@ -22,6 +22,12 @@ pub fn render_terminal(
     info: &SessionInfo,
     level: FocusLevel,
     is_shell: bool,
+    // Columns reserved on the left of the top border for the central-pane tab
+    // strip. The right-aligned title is truncated to the remaining width so it
+    // can never run left under the tabs (the app layer draws the tabs last, but
+    // an untruncated title would still show through beside/between the pills on a
+    // narrow pane).
+    reserved_left: u16,
 ) -> Option<ScrollbarGeom> {
     let scroll_offset = parser.screen().scrollback();
 
@@ -55,7 +61,9 @@ pub fn render_terminal(
 
     // The session-info title is right-aligned so the central-pane tab strip
     // (Agent/Shell/Review), overlaid on the left of this same top border by the
-    // app layer, has room.
+    // app layer, has room. Truncate it to the space the tabs leave (the border's
+    // two corner cells are never title cells) so it can't overlap the pills.
+    let title = super::fit_right_title(&title, area.width, reserved_left);
     let block = focus_block("", level)
         .title_top(Line::from(Span::styled(title, super::title_style(level))).right_aligned());
 
@@ -206,6 +214,7 @@ mod render_proptests {
                 &info,
                 FocusLevel::Focused,
                 false,
+                0,
             );
         })
         .unwrap();

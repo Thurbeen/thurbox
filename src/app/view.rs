@@ -50,6 +50,75 @@ const COLLAPSE_TOGGLE_MIN_WIDTH: u16 = 5;
 /// below it the toggle is chevron-only to save border space.
 const COLLAPSE_HINT_MIN_WIDTH: u16 = 40;
 
+/// A candidate central-pane tab plus its live shortcut, used by the responsive
+/// trim in `App::trim_central_tabs`. The `shortcut` is dropped to `None` once
+/// the `· key` suffix has been stripped to reclaim space on a narrow pane.
+struct CentralTabSpec {
+    tab: CentralTab,
+    name: &'static str,
+    shortcut: Option<String>,
+}
+
+impl CentralTabSpec {
+    /// `Name` alone, or `Name · <shortcut>` while the shortcut is still shown.
+    fn label(&self) -> String {
+        match &self.shortcut {
+            Some(sc) => format!("{} · {}", self.name, sc),
+            None => self.name.to_string(),
+        }
+    }
+}
+
+/// Total width of a packed central-tab pill block: each pill is ` label ` (the
+/// label plus two pad cells) joined by a one-space separator — mirrors
+/// `render_button_bar` / `pill_block_width` so the trim agrees with what paints.
+fn central_tabs_block_width(tabs: &[CentralTabSpec]) -> u16 {
+    if tabs.is_empty() {
+        return 0;
+    }
+    let pills: u16 = tabs
+        .iter()
+        .map(|t| t.label().chars().count() as u16 + 2)
+        .sum();
+    pills + tabs.len() as u16 - 1
+}
+
+/// Escalating narrow-strip trim shared by `App::central_tab_cells`, a pure
+/// helper over `usable` border cells so it is unit-testable. Mirrors the
+/// footer's `status_bar::resolve_footer_pills`:
+///
+/// 1. strip the `· shortcut` suffix from every label (~4 cols/pill);
+/// 2. drop the lowest-priority tab — Shell first, then Review — but keep Agent
+///    (the fallback view) and the currently-active tab untouched.
+///
+/// Leaves at least the Agent + active pair; only a pane too narrow for even
+/// those two overflows (nowhere left to trim to).
+fn trim_central_tabs(tabs: &mut Vec<CentralTabSpec>, active: CentralTab, usable: u16) {
+    loop {
+        if tabs.len() <= 1 || central_tabs_block_width(tabs) <= usable {
+            break;
+        }
+        // 1. strip the shortcut suffix from every label.
+        if tabs.iter().any(|t| t.shortcut.is_some()) {
+            for t in tabs.iter_mut() {
+                t.shortcut = None;
+            }
+            continue;
+        }
+        // 2. drop the lowest-priority droppable tab (Shell → Review); never
+        //    Agent (the fallback view) nor the active tab (must stay visible).
+        let drop_order = [CentralTab::Shell, CentralTab::Review];
+        let victim = drop_order
+            .iter()
+            .copied()
+            .find(|&t| t != active && t != CentralTab::Agent && tabs.iter().any(|s| s.tab == t));
+        match victim {
+            Some(v) => tabs.retain(|s| s.tab != v),
+            None => break, // only Agent + active remain — nothing left to shed
+        }
+    }
+}
+
 /// The rect to paint a hover tint over, given a click target's hitbox.
 ///
 /// A session row's hitbox spans a prepended repo-group header line plus the
@@ -652,10 +721,21 @@ impl App {
         for cell in &tabs {
             self.record_click(cell.rect, ClickAction::CentralTab(cell.tab));
         }
+        // Columns occupied on the left of the top border (chevron + tab block),
+        // so the pane's right-aligned title can be truncated to what's left of
+        // them and never overlap the chevron or the pills. Measured from the
+        // rightmost on-border element's edge; the chevron alone still reserves
+        // room when the pane is too narrow for any tab.
+        let reserved_left = tabs
+            .iter()
+            .map(|c| c.rect.right())
+            .chain(chevron.as_ref().map(|(r, _)| r.right()))
+            .max()
+            .map_or(0, |right| right.saturating_sub(terminal.x));
         if self.active_review().is_some() {
-            self.render_code_review_pane(frame, terminal);
+            self.render_code_review_pane(frame, terminal, reserved_left);
         } else {
-            self.render_terminal_pane(frame, terminal);
+            self.render_terminal_pane(frame, terminal, reserved_left);
         }
         // Drawn last so they overlay the pane's top border (the right-aligned
         // session-info title leaves the left free for the chevron + tabs).
@@ -668,7 +748,7 @@ impl App {
     /// Render the open code-review view into the central pane (dimmed when not
     /// the focused pane, like the shell view) and record its click/scroll
     /// targets.
-    fn render_code_review_pane(&mut self, frame: &mut Frame, terminal: Rect) {
+    fn render_code_review_pane(&mut self, frame: &mut Frame, terminal: Rect, reserved_left: u16) {
         let level = if self.focus == InputFocus::CodeReview {
             crate::ui::FocusLevel::Focused
         } else {
@@ -676,7 +756,7 @@ impl App {
         };
         let Some(hits) = self
             .active_review_mut()
-            .map(|cr| crate::ui::code_review::render(frame, terminal, cr, level))
+            .map(|cr| crate::ui::code_review::render(frame, terminal, cr, level, reserved_left))
         else {
             return;
         };
@@ -697,7 +777,7 @@ impl App {
 
     /// Render the active session's terminal (or shell view) into the central
     /// pane — the default when no overlay/review owns it.
-    fn render_terminal_pane(&mut self, frame: &mut Frame, terminal: Rect) {
+    fn render_terminal_pane(&mut self, frame: &mut Frame, terminal: Rect, reserved_left: u16) {
         let terminal_focus = if self.focus == InputFocus::Terminal {
             crate::ui::FocusLevel::Focused
         } else {
@@ -733,6 +813,7 @@ impl App {
                     &session.info,
                     terminal_focus,
                     is_shell_view,
+                    reserved_left,
                 )
             } else {
                 None
@@ -753,10 +834,17 @@ impl App {
     /// label (shortcut baked in), and whether it's the active view. Packing
     /// mirrors `render_button_bar` (` label ` chip = label+2 wide, one-space
     /// gaps) so the recorded hitboxes match the pills `draw_central_tabs` paints.
-    /// Shell/Review are gated by their feature flags; cells stop before the
-    /// pane's right edge (they can still paint over the right-aligned
-    /// session-info title on a pane barely wide enough for the pills — the tabs
-    /// win, they're the interactive part).
+    /// Shell/Review are gated by their feature flags.
+    ///
+    /// The strip is **responsively trimmed** for a narrow pane, mirroring the
+    /// footer's escalating steps (see [`status_bar::resolve_footer_pills`]) so
+    /// the tabs never overrun the right-aligned session-info title or one
+    /// another: (1) strip the `· shortcut` suffix from every label to reclaim
+    /// ~4 cols/pill, then (2) drop the lowest-priority tabs — but **never the
+    /// active tab** (you must always be able to see which view you're in) and
+    /// never Agent (the base view you fall back to). A future extra tab (e.g. an
+    /// F9 fullscreen toggle) simply appends to `specs` and is shed first by this
+    /// same trim on a small window.
     fn central_tab_cells(&self, area: Rect, start_x: u16) -> Vec<CentralTabCell> {
         // No tabs on the empty "No Session" screen, or when the pane is too
         // narrow to hold even one.
@@ -790,32 +878,50 @@ impl App {
             return Vec::new();
         }
 
-        // Pack pills left-to-right from `start_x` (past the collapse chevron),
-        // separated by a one-space gap (which shows the border between chips),
-        // matching `render_button_bar`.
+        // Resolve each spec to a candidate tab carrying its live shortcut.
+        let mut tabs: Vec<CentralTabSpec> = specs
+            .into_iter()
+            .map(|(tab, name, action)| {
+                let shortcut = action
+                    .and_then(|a| crate::session::compact_shortcut(self.keybindings.chords_for(a)));
+                CentralTabSpec {
+                    tab,
+                    name,
+                    shortcut,
+                }
+            })
+            .collect();
+
+        // Available run of border cells: from `start_x` (past the collapse
+        // chevron the caller reserved) to one shy of the right corner (the
+        // rounded corners are never painted over).
+        let usable = (area.x + area.width.saturating_sub(1)).saturating_sub(start_x);
+        trim_central_tabs(&mut tabs, active, usable);
+
+        // Pack the survivors left-to-right from `start_x`, separated by a
+        // one-space gap (which shows the border between chips), matching
+        // `render_button_bar`. `trim_central_tabs` fits the block to `usable`
+        // whenever it can; the `limit` guard is the floor backstop — when the
+        // pane is too narrow for even the Agent + active pair, drop the overflow
+        // rather than paint a pill past the pane edge.
         let mut x = start_x;
         let limit = area.x + area.width.saturating_sub(1);
-        let mut cells = Vec::with_capacity(specs.len());
-        for (i, (tab, name, action)) in specs.into_iter().enumerate() {
+        let mut cells = Vec::with_capacity(tabs.len());
+        for (i, spec) in tabs.iter().enumerate() {
             let gap = u16::from(i > 0);
-            let shortcut = action
-                .and_then(|a| crate::session::compact_shortcut(self.keybindings.chords_for(a)));
-            let label = match shortcut {
-                Some(sc) => format!("{name} · {sc}"),
-                None => name.to_string(),
-            };
+            let label = spec.label();
             // Pill width = ` label ` (label + one pad cell each side), per
             // `ui::button_width` for a hint-less `ButtonSpec`.
             let width = label.chars().count() as u16 + 2;
             if x + gap + width > limit {
-                break; // out of room — drop the rest rather than overrun the title
+                break;
             }
             x += gap;
             cells.push(CentralTabCell {
-                tab,
+                tab: spec.tab,
                 rect: Rect::new(x, area.y, width, 1),
                 label,
-                active: tab == active,
+                active: spec.tab == active,
             });
             x += width;
         }
@@ -2021,5 +2127,89 @@ mod tests {
         // Buttons / other rows keep their whole rect even when multi-line.
         let hitbox = Rect::new(1, 5, 28, 2);
         assert_eq!(hover_tint_rect(hitbox, false), hitbox);
+    }
+
+    /// Build the full three-tab candidate set (with shortcuts) as
+    /// `central_tab_cells` does before trimming.
+    fn full_tabs() -> Vec<CentralTabSpec> {
+        vec![
+            CentralTabSpec {
+                tab: CentralTab::Agent,
+                name: "Agent",
+                shortcut: None,
+            },
+            CentralTabSpec {
+                tab: CentralTab::Review,
+                name: "Review",
+                shortcut: Some("F7".to_string()),
+            },
+            CentralTabSpec {
+                tab: CentralTab::Shell,
+                name: "Shell",
+                shortcut: Some("F8".to_string()),
+            },
+        ]
+    }
+
+    #[test]
+    fn central_tabs_untrimmed_when_wide() {
+        // ` Agent ` + ` Review · F7 ` + ` Shell · F8 ` + 2 gaps.
+        let mut tabs = full_tabs();
+        let full = central_tabs_block_width(&tabs);
+        trim_central_tabs(&mut tabs, CentralTab::Agent, full);
+        assert_eq!(tabs.len(), 3, "all three tabs survive a wide pane");
+        assert!(
+            tabs.iter().any(|t| t.shortcut.is_some()),
+            "shortcuts kept when there's room"
+        );
+    }
+
+    #[test]
+    fn central_tabs_strip_shortcuts_before_dropping() {
+        // Just under the full width: the trim must reclaim space by dropping the
+        // `· F7`/`· F8` suffixes, not by shedding a whole tab.
+        let mut tabs = full_tabs();
+        let usable = central_tabs_block_width(&tabs) - 1;
+        trim_central_tabs(&mut tabs, CentralTab::Agent, usable);
+        assert_eq!(tabs.len(), 3, "no tab dropped while stripping suffices");
+        assert!(
+            tabs.iter().all(|t| t.shortcut.is_none()),
+            "every shortcut stripped: {:?}",
+            tabs.iter().map(|t| t.label()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn central_tabs_drop_shell_then_review_on_a_tiny_pane() {
+        // Room for only ` Agent ` + one more chip → Shell (lowest priority) goes,
+        // Review stays. Agent is never dropped.
+        let mut tabs = full_tabs();
+        // ` Agent ` (7) + gap (1) + ` Review ` (8) = 16.
+        trim_central_tabs(&mut tabs, CentralTab::Agent, 16);
+        let kept: Vec<CentralTab> = tabs.iter().map(|t| t.tab).collect();
+        assert_eq!(kept, vec![CentralTab::Agent, CentralTab::Review]);
+    }
+
+    #[test]
+    fn central_tabs_never_drop_the_active_tab() {
+        // Shell is active but the lowest-priority droppable — the trim must skip
+        // it and drop Review instead, so the view you're in stays on the strip.
+        let mut tabs = full_tabs();
+        trim_central_tabs(&mut tabs, CentralTab::Shell, 16);
+        let kept: Vec<CentralTab> = tabs.iter().map(|t| t.tab).collect();
+        assert_eq!(
+            kept,
+            vec![CentralTab::Agent, CentralTab::Shell],
+            "the active Shell tab is protected; Review is shed instead"
+        );
+    }
+
+    #[test]
+    fn central_tabs_keep_agent_and_active_at_the_floor() {
+        // A pane far too narrow: nothing left to shed past Agent + active.
+        let mut tabs = full_tabs();
+        trim_central_tabs(&mut tabs, CentralTab::Review, 1);
+        let kept: Vec<CentralTab> = tabs.iter().map(|t| t.tab).collect();
+        assert_eq!(kept, vec![CentralTab::Agent, CentralTab::Review]);
     }
 }
