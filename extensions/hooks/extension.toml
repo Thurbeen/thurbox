@@ -14,7 +14,7 @@
 name = "hooks"
 description = "Report each agent's lifecycle state (working/blocked/done) to thurbox via agent hooks."
 config_version = 1
-version = "1.6.0"  # v1.6: vibe hooks rewritten to vibe 2.21.0's real schema (pre_tool/post_agent); v1.5: pi (pi.dev) status extension
+version = "1.7.0"  # v1.7: omp (Oh My Pi) status extension (ask/ask_user_question → blocked); v1.6: vibe hooks rewritten to vibe 2.21.0's real schema (pre_tool/post_agent); v1.5: pi (pi.dev) status extension
 # Default home; the auto-activation path overrides this with *this build's*
 # resolved config dir (`~/.config/thurbox` or `~/.config/thurbox-dev`) so dev and
 # release installs stay isolated. See `session_ops::builtin_hooks::hooks_home`.
@@ -106,6 +106,25 @@ requires_dir = "~/.vibe"
 path = "~/.pi/agent/extensions/thurbox-status.ts"
 source = "pi-status.ts"
 requires_dir = "~/.pi/agent"
+
+# omp (Oh My Pi) is Pi-compatible and auto-discovers TypeScript extensions from
+# ~/.omp/agent/extensions/*.ts, so we drop a managed file in (only when omp is
+# installed, guarded by requires_dir). It mirrors pi's status extension but maps
+# OMP's structured user-question tool — named `ask` (upstream pi uses
+# `ask_user_question`) — to `blocked`; both names are recognized. Events:
+# session_start → idle, agent_start + tool_execution_start → working (ask /
+# ask_user_question → blocked), agent_end → done. As with the other config-dir
+# drops the write is refused (no managed marker) if a file already exists at that
+# path, so omp simply goes unreported rather than broken.
+#
+# EXPERIMENTAL: verified against OMP 17.0.6. As with the other config-dir agents,
+# remote (SSH/WSL) omp sessions are provisioned at spawn time (the rewritten
+# payload is shipped into the host's ~/.omp/agent/extensions/); the one carve-out
+# is a psmux/Windows host, which shows `Hooks: degraded` instead.
+[[external_files]]
+path = "~/.omp/agent/extensions/thurbox-status.ts"
+source = "omp-status.ts"
+requires_dir = "~/.omp/agent"
 
 # GitHub Copilot CLI (the `copilot` command) loads hooks from its own dir,
 # ~/.copilot/hooks/*.json (each file loaded alphabetically), so we drop a managed

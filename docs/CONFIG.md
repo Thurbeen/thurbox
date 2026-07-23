@@ -93,11 +93,21 @@ way), making it usable as a dotfiles CI gate.
 ## agents.toml
 
 Declares the launchable coding agents. Seeded with the built-ins
-(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`) on
+(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`,
+`omp`) on
 first run; edit or add `[[agents]]` entries to support any CLI — no
 recompile. A malformed `[[agents]]` entry is skipped (with a toast
 naming it) and the rest still load; only a document-level syntax error
 falls back to the built-ins. Either way the error is shown.
+
+The file is **seeded once** and never rewritten — so it stays yours to
+edit, but a thurbox **update that adds a new built-in agent does not
+merge it into an existing `agents.toml`**. To pick up a newly-bundled
+agent, add its `[[agents]]` block by hand (copy it from this file's
+built-in list) or delete `agents.toml` to re-seed the full set. The
+matching status hook is wired automatically once the agent's config dir
+exists — the built-in hooks extension self-heals on every startup/tick,
+independent of `agents.toml`.
 
 ```toml
 config_version = 1
@@ -116,7 +126,18 @@ resume_latest = false       # true = id-less "resume last session in cwd"
                             #   hooks under this custom agent's name too
 ```
 
-`{id}` is substituted with the thurbox-generated session UUID. Groups
+`{id}` is substituted with the thurbox-generated session UUID. `{home}`
+is substituted with the resolved home dir at spawn time (the remote home
+for an SSH/WSL host) — for an agent that wants a session *file path*
+rather than a bare id. The built-in `omp` (Oh My Pi) uses it: it generates
+its own internal id and won't take thurbox's, but its `--session <path>`
+creates a fresh session at a missing path, so thurbox maps its UUID to a
+deterministic `--session {home}/.omp/agent/sessions/thurbox-{id}.jsonl`
+(creation) / `--resume` the same (restart). `{home}` is expanded by
+thurbox, not the shell — args are POSIX-quoted, so a literal `~` would
+never expand. `omp` ships no `fork_args`, so `Ctrl+F` starts a fresh
+session (OMP has no way to pin a fork's target file to a thurbox UUID).
+Groups
 are emitted only when their driving value exists; precedence is
 fork > resume > new-session. See the seeded file's comments and
 CLAUDE.md's *Agent Definitions* section for the `resume_latest`
@@ -136,7 +157,7 @@ The seeded file also ships two commented, copy-pasteable templates
 below the built-ins — **Add your own agent** (every field annotated)
 and **Pin a model** (a `claude-opus` variant baking `--model opus`
 into `args`). Both stay commented, so a fresh install still resolves
-to exactly the seven built-ins.
+to exactly the nine built-ins.
 
 ## hosts.toml
 

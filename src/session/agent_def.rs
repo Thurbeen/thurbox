@@ -14,7 +14,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Placeholder substituted with a session id in resume/fork/new-session groups.
-const ID_PLACEHOLDER: &str = "{id}";
+/// Exposed so `session_ops` can reconstruct a path-pinned agent's session file
+/// (omp) using the *same* token [`AgentDef::build_args`] substitutes.
+pub const ID_PLACEHOLDER: &str = "{id}";
 
 /// One coding-agent CLI definition.
 ///

@@ -100,6 +100,22 @@ resume_args = ["--session-id", "{id}"]
 fork_args = ["--fork", "{id}"]
 new_session_args = ["--session-id", "{id}"]
 
+# omp (Oh My Pi, https://github.com/can1357/oh-my-pi) is Pi-compatible but
+# generates its own internal session id and won't accept thurbox's UUID as one.
+# Its `--session <path>` flag creates a fresh session at a missing path (and
+# reopens an existing one), so thurbox maps its UUID to a deterministic JSONL
+# under OMP's default root (~/.omp/agent/sessions/). The `{home}` token is
+# expanded to the resolved home dir at spawn time (thurbox, not the shell —
+# args are POSIX-quoted, so a literal `~` would never expand); it also
+# translates onto the remote/WSL home. No fork_args: OMP has no way to pin a
+# fork's target file to a thurbox UUID, so Ctrl+F starts a fresh session (see
+# the OMP note in docs/CONFIG.md).
+[[agents]]
+name = "omp"
+command = "omp"
+resume_args = ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
+new_session_args = ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
+
 # ──────────────────────────────────────────────────────────────────────────
 # Add your own agent (uncomment and edit)
 # ──────────────────────────────────────────────────────────────────────────
@@ -128,7 +144,9 @@ new_session_args = ["--session-id", "{id}"]
 # (claude and pi both take `--session-id {id}`) can resume/fork by that exact
 # id; for everything else use `resume_latest = true` with id-less, cwd-scoped flags
 # (e.g. `["resume", "--last"]`). Omit every resume group to start fresh on
-# restart.
+# restart. {home} expands to the resolved home dir at spawn (the remote home for
+# an SSH/WSL host) — use it for an agent that wants a session *path* rather than
+# a bare id (e.g. `["--session", "{home}/.foo/thurbox-{id}.jsonl"]`).
 #
 # ──────────────────────────────────────────────────────────────────────────
 # Pin a model (or any flag) — put it in `args`, which is always passed
@@ -382,6 +400,7 @@ mod tests {
         assert!(reg.get("copilot").is_some());
         assert!(reg.get("vibe").is_some());
         assert!(reg.get("pi").is_some());
+        assert!(reg.get("omp").is_some());
 
         // Claude pins a thurbox id and resumes/forks by it.
         let claude = reg.get("claude").unwrap();
@@ -396,6 +415,21 @@ mod tests {
         assert_eq!(pi.new_session_args, ["--session-id", "{id}"]);
         assert_eq!(pi.resume_args, ["--session-id", "{id}"]);
         assert_eq!(pi.fork_args, ["--fork", "{id}"]);
+
+        // omp (Oh My Pi) pins by a deterministic session-file PATH, not a bare
+        // id: `--session {home}/…/thurbox-{id}.jsonl` on create, `--resume` the
+        // same on restart. It has no native fork (Ctrl+F → fresh session).
+        let omp = reg.get("omp").unwrap();
+        assert!(!omp.resume_latest);
+        assert_eq!(
+            omp.new_session_args,
+            ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
+        );
+        assert_eq!(
+            omp.resume_args,
+            ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
+        );
+        assert!(omp.fork_args.is_empty(), "omp has no native fork target");
 
         // codex/opencode resume + fork via id-less, cwd-scoped flags.
         let codex = reg.get("codex").unwrap();
@@ -448,7 +482,7 @@ mod tests {
         // Examples are commented, so the seed parses to just the built-ins.
         let reg = builtin_registry();
         assert_eq!(reg.default, "claude");
-        assert_eq!(reg.agents.len(), 8, "examples must stay commented out");
+        assert_eq!(reg.agents.len(), 9, "examples must stay commented out");
         assert!(
             reg.get("claude-opus").is_none(),
             "example must not register"

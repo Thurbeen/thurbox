@@ -1569,7 +1569,20 @@ impl App {
     /// provisions the agent's remote hook files and runs on a worker.
     fn launch_provider_for(&self, config: &SessionConfig) -> Arc<dyn crate::agent::AgentProvider> {
         let mut def = self.agent_def_for(&config.agent);
-        if let Some(h) = self.host_for_backend(config.backend.as_deref()) {
+        let host = self.host_for_backend(config.backend.as_deref());
+        // Expand `{home}` in a path-pinned agent's arg groups (omp's
+        // `--resume/--session {home}/…`) so a restart relaunches against a
+        // concrete path — local home for a local session, the resolved host home
+        // for a remote one. A def with no `{home}` (every built-in but omp) is
+        // untouched. Mirrors the spawn path's `adapt_def_for_launch`.
+        let home = match host {
+            Some(h) => crate::session_ops::spawn::resolve_launch_home(h),
+            None => crate::paths::home_dir().map(|p| p.to_string_lossy().into_owned()),
+        };
+        if let Some(home) = home {
+            crate::session_ops::expand_home_in_def(&mut def, &home);
+        }
+        if let Some(h) = host {
             def.args = crate::session_ops::spawn::adapt_agent_args_for_remote(h, def.args);
         }
         Arc::new(GenericProvider::new(def))
@@ -1990,6 +2003,10 @@ impl App {
         // and the metrics/status hooks break.
         crate::session_ops::inject_thurbox_env(&mut config, &agent_session_id, None);
         let def = self.agent_def_for(&config.agent);
+        // `resume_trigger_for` decides resume-vs-fresh for a path-pinned agent
+        // (omp) by stat'ing its deterministic session file, expanding `{home}`
+        // to the local home itself; the actual launch args are re-expanded per
+        // host in `launch_provider_for` (inside `do_restart`).
         config.resume_session_id =
             crate::session_ops::resume_trigger_for(&def, &agent_session_id, &config.env);
 

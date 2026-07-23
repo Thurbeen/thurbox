@@ -45,7 +45,14 @@ fn build_restart_plan(session: &SharedSession) -> Result<RestartPlan, String> {
         ..SessionConfig::default()
     };
     super::inject_thurbox_env(&mut config, &agent_session_id, None);
-    let def = super::resolve_agent_def(Some(&config.agent));
+    let mut def = super::resolve_agent_def(Some(&config.agent));
+    // Headless restart is local-only (remote sessions are refused up front), so
+    // `{home}` in a session-path arg (omp's `--resume {home}/…`) resolves against
+    // the local home — matching what the original local spawn expanded it to, so
+    // `--resume` reopens the same JSONL.
+    if let Some(home) = crate::paths::home_dir() {
+        super::expand_home_in_def(&mut def, &home.to_string_lossy());
+    }
     config.resume_session_id = super::resume_trigger_for(&def, &agent_session_id, &config.env);
 
     // A multi-repo session (≥2 members) launches in its per-session symlink

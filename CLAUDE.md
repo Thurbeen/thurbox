@@ -449,7 +449,7 @@ Enforced by cocogitto via pre-commit hooks.
 
 The set of launchable coding agents is declared **as data** in
 `~/.config/thurbox/agents.toml`, seeded with built-ins
-(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`) on first run.
+(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`, `omp`) on first run.
 Each `[[agents]]` entry is an `AgentDef`:
 
 ```toml
@@ -475,6 +475,14 @@ Each `*_args` group is appended only when its driving value is
 present, with `{id}` substituted; `args` is always passed. No
 model is ever passed — each agent uses its own default config
 (put `["--model", "opus"]` in `args` if you want to pin one).
+A second token, `{home}`, expands (at spawn, on the spawn worker —
+`session_ops::expand_home_in_def`, called from
+`spawn::adapt_def_for_launch` for a launch and `App::launch_provider_for`
+for a restart) to the resolved home dir — the **remote** home for an
+SSH/WSL host — so an agent that wants a session *file path* rather than a
+bare id (the built-in `omp`, below) launches against a concrete,
+quote-safe absolute path (a literal `~` would never expand — args are
+POSIX-quoted).
 Agents that omit `resume_args` simply start fresh on restart (the
 live tmux process is what carries state across TUI restarts). Add
 your own `[[agents]]` entry to support any CLI — no recompile.
@@ -492,8 +500,19 @@ This works because restart reuses the session's cwd and a single-repo
 fork reuses the parent's cwd. `resume_latest` only changes *when* the
 resume group fires (see `session_ops::resume_trigger_for`): for these
 agents restart always triggers resume; for claude it still defers to an
-on-disk transcript check. Caveats: agents without `fork_args`
-(`antigravity`, `aider`, `copilot` — none of these CLIs fork) start fresh on
+on-disk transcript check. **`omp`** (Oh My Pi) is a third kind: it
+generates its own internal id and won't take thurbox's, but its
+`--session <path>` creates a fresh session at a missing path, so thurbox
+maps its UUID to a deterministic file (`--session
+{home}/.omp/agent/sessions/thurbox-{id}.jsonl` on create, `--resume` the
+same on restart). It is neither id-pinned nor `resume_latest`:
+`resume_trigger_for` resumes it iff that JSONL exists on disk
+(`session_file_template` — agent-neutral, keyed on a `new_session_args`
+token that is a path *and* carries `{id}`, not on the agent name). A
+remote-omp restart can't stat the host file from the UI thread, so it
+starts fresh (documented fallback). Caveats: agents without `fork_args`
+(`antigravity`, `aider`, `copilot`, `omp` — none of these CLIs fork, or
+`omp` can't pin a fork target) start fresh on
 `Ctrl+F`; and a
 **multi-repo** fork of a cwd-scoped agent lands in a fresh symlink
 workspace, so `--last`/`--continue` finds no parent session (multi-repo
@@ -1312,7 +1331,12 @@ against agy 1.0.9 — `PreToolUse` drives working, `Notification` blocked, see
 TypeScript extension into `~/.pi/agent/extensions/thurbox-status.ts` for the
 pi.dev CLI (`pi`) (idle/working/done + blocked; **experimental** — pi has no
 claude-style Stop/permission hook, so `blocked` is inferred only from a
-structured `ask_user_question` tool call). Remote pi sessions are provisioned
+structured `ask_user_question` tool call), and an `[[external_files]]` drops a
+managed TypeScript extension into `~/.omp/agent/extensions/thurbox-status.ts`
+for the Oh My Pi CLI (`omp`) (idle/working/done + blocked; **experimental**,
+verified against OMP 17.0.6 — mirrors pi but its structured user-question tool
+is named `ask`, so `blocked` fires on **either** `ask` or `ask_user_question`).
+Remote pi/omp sessions are provisioned
 like the other config-dir agents; a psmux/Windows host shows `Hooks: degraded`.
 Opt out with `thurbox-cli extension deactivate hooks` (records a
 `builtin_hooks_optout` metadata flag so self-heal won't resurrect it);

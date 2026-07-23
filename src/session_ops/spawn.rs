@@ -475,9 +475,28 @@ pub(crate) fn adapt_def_for_launch(
     crate::session::AgentDef,
     super::remote_hooks::HookDegradation,
 ) {
+    // Expand `{home}` in every arg group before anything else so a session-path
+    // agent (omp) launches against a concrete, quote-safe absolute path — the
+    // local home for a local launch, the resolved remote home for an SSH/WSL
+    // host. A def with no `{home}` (every built-in but omp) is untouched.
     let Some(h) = host else {
+        if let Some(home) = crate::paths::home_dir() {
+            super::expand_home_in_def(&mut def, &home.to_string_lossy());
+        }
         return (def, None);
     };
+    if let Some(home) = resolve_launch_home(h) {
+        super::expand_home_in_def(&mut def, &home);
+    } else if def_references_home(&def) {
+        // A session-path arg still carries a literal `{home}` — the agent would
+        // create a file named "{home}" in the cwd. Better to surface it.
+        tracing::warn!(
+            "could not resolve remote home for host '{}'; agent '{}' may launch \
+             with an unexpanded {{home}} in its session path",
+            h.name,
+            def.name
+        );
+    }
     let (args, stripped) = adapt_agent_args_for_remote_with_report(h, def.args);
     def.args = args;
     // A stripped config path outranks a provisioning note: it means the
@@ -492,6 +511,31 @@ pub(crate) fn adapt_def_for_launch(
         ))
     };
     (def, degraded)
+}
+
+/// The home dir to expand `{home}` against for a launch on `host`: the remote
+/// `$HOME` for a POSIX SSH/WSL host, or the Windows home for a psmux host.
+/// `None` when it can't be resolved (host down, no client) — the caller then
+/// leaves the token unexpanded and warns.
+pub(crate) fn resolve_launch_home(host: &HostDef) -> Option<String> {
+    let result = if host.mux() == "psmux" {
+        crate::git::remote_home_windows(host)
+    } else {
+        crate::git::remote_home(host)
+    };
+    match result {
+        Ok(home) => Some(home),
+        Err(e) => {
+            tracing::warn!("cannot resolve home for host '{}': {e:#}", host.name);
+            None
+        }
+    }
+}
+
+/// Whether any of `def`'s arg groups still carries an unexpanded `{home}`.
+fn def_references_home(def: &crate::session::AgentDef) -> bool {
+    let has = |v: &[String]| v.iter().any(|t| t.contains(super::HOME_PLACEHOLDER));
+    has(&def.args) || has(&def.resume_args) || has(&def.fork_args) || has(&def.new_session_args)
 }
 
 /// Where the local thurbox config root lands on `host`, or `None` when no

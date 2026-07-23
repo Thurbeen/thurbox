@@ -106,6 +106,18 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   provisioned like the other config-dir agents (the rewritten payload ships
   into the host's extensions dir); a psmux/Windows host shows `Hooks: degraded`.
   If a future `pi` renames its events, edit `pi-status.ts` (no code change).
+- **omp** *(experimental)* — Oh My Pi (`omp`) is Pi-compatible and likewise
+  auto-discovers TypeScript extensions, from `~/.omp/agent/extensions/*.ts`, so
+  we drop a managed extension in (an `[[external_files]]`, guarded by
+  `requires_dir`, only when omp is installed). It mirrors pi's status extension
+  but maps OMP's structured user-question tool — named `ask` — to `blocked`;
+  it recognizes **both** `ask` and pi's `ask_user_question`, so reusing pi's
+  file unchanged would leave OMP stuck `working` while it waits. Events:
+  `session_start` → idle, `agent_start`/`tool_execution_start` → working
+  (`ask`/`ask_user_question` → blocked), `agent_end` → done. Same caveats as pi
+  (managed-marker refusal, remote provisioning, psmux `Hooks: degraded`).
+  Verified against OMP 17.0.6; if a future `omp` renames its events, edit
+  `omp-status.ts` (no code change).
 
 ## Custom agents (`hook_schema`)
 
@@ -150,6 +162,7 @@ other agents are wired by a reversible merge into — or a managed file dropped 
 | copilot | `~/.copilot/hooks/thurbox-status.json` | managed standalone file (`requires_dir`) |
 | antigravity | `~/.gemini/settings.json` | reversible JSON-merge of our entries |
 | pi | `~/.pi/agent/extensions/thurbox-status.ts` | managed extension file (`requires_dir`) |
+| omp | `~/.omp/agent/extensions/thurbox-status.ts` | managed extension file (`requires_dir`) |
 
 The home dir is `~/.config/thurbox/hooks` for a release build and
 `~/.config/thurbox-dev/hooks` for a dev build, so the two stay isolated.

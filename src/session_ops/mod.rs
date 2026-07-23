@@ -25,6 +25,7 @@ pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 
 use std::collections::HashMap;
 
+use crate::session::agent_def::ID_PLACEHOLDER;
 use crate::session::{AutomationRunStatus, SessionConfig};
 
 /// Run an `Exec` automation's shell command headlessly (`sh -c`, or `cmd /C` on
@@ -128,7 +129,44 @@ pub(crate) fn resume_trigger_for(
     if def.resumes_latest() {
         return Some(agent_session_id.to_string());
     }
+    // A path-pinned agent (omp) records its conversation at a deterministic file
+    // thurbox chose — `--session {home}/.../thurbox-{id}.jsonl`. If that file
+    // exists, resume it; the `resume_args` (`--resume <same path>`) reopen it
+    // exactly. This must run before the claude-transcript check, which only
+    // knows claude's `~/.claude` layout. The check is inherently *local* — it
+    // stats the local FS — so `{home}` resolves to the local home even for a
+    // caller that hasn't expanded it. A remote session's file can't be stat'd
+    // here, so it starts fresh (documented remote-omp fallback); its launch args
+    // are still expanded per host in `spawn::adapt_def_for_launch` /
+    // `App::launch_provider_for`.
+    if let Some(path) = session_file_template(def) {
+        let expanded = match crate::paths::home_dir() {
+            Some(home) => path.replace(HOME_PLACEHOLDER, &home.to_string_lossy()),
+            None => path,
+        };
+        let file = expanded.replace(ID_PLACEHOLDER, agent_session_id);
+        if std::path::Path::new(&file).exists() {
+            return Some(agent_session_id.to_string());
+        }
+        // The template exists but the file doesn't (never launched, remote, or
+        // gone) → a fresh session, not the claude fallback (which would
+        // false-positive on a coincident claude transcript for the same id).
+        return None;
+    }
     resume_id_if_transcript_exists(agent_session_id, env)
+}
+
+/// The session *file* template of a path-pinned agent — a `new_session_args`
+/// token that both names a filesystem path (has a separator) and carries the
+/// `{id}` placeholder (e.g. omp's `{home}/.omp/.../thurbox-{id}.jsonl`).
+/// `None` for id-only agents (claude/pi pass a bare `{id}`, not a path). Used to
+/// decide resume-vs-fresh by that file's existence. Agent-neutral: it reads the
+/// def's own args rather than matching an agent name.
+fn session_file_template(def: &crate::session::AgentDef) -> Option<String> {
+    def.new_session_args
+        .iter()
+        .find(|t| t.contains(ID_PLACEHOLDER) && (t.contains('/') || t.contains('\\')))
+        .cloned()
 }
 
 /// Resolve the [`AgentDef`](crate::session::AgentDef) for a requested agent name
@@ -149,6 +187,37 @@ pub(crate) fn resolve_agent_def(requested: Option<&str>) -> crate::session::Agen
                 .cloned()
                 .expect("built-in registry always has a default agent")
         })
+}
+
+/// Placeholder in an [`AgentDef`](crate::session::AgentDef)'s arg groups,
+/// expanded to the resolved home dir at spawn time. Unlike `{id}` (a bare
+/// UUID substituted in `build_args`), `{home}` needs a filesystem side effect
+/// — the home dir — so it is resolved here in `session_ops`, not in the pure
+/// `session` layer. Used by agents that want a session *file path* rather than
+/// a bare id (e.g. omp's `--session {home}/.omp/…/thurbox-{id}.jsonl`); the
+/// path can't rely on the shell to expand `~`, since args are POSIX-quoted.
+pub(crate) const HOME_PLACEHOLDER: &str = "{home}";
+
+/// Rewrite every `{home}` token in `def`'s arg groups (`args`, `resume_args`,
+/// `fork_args`, `new_session_args`) to `home`, in place.
+///
+/// `home` is the target's home dir: the *local* home for a local launch/restart
+/// (via [`crate::paths::home_dir`]), or the *remote* home for an SSH/WSL host
+/// (resolved by [`crate::git::remote_home`] in
+/// [`spawn::adapt_def_for_launch`]). A def with no `{home}` token (every
+/// built-in but `omp`) is left byte-identical, so this is a no-op for them.
+pub(crate) fn expand_home_in_def(def: &mut crate::session::AgentDef, home: &str) {
+    let subst = |tokens: &mut Vec<String>| {
+        for t in tokens.iter_mut() {
+            if t.contains(HOME_PLACEHOLDER) {
+                *t = t.replace(HOME_PLACEHOLDER, home);
+            }
+        }
+    };
+    subst(&mut def.args);
+    subst(&mut def.resume_args);
+    subst(&mut def.fork_args);
+    subst(&mut def.new_session_args);
 }
 
 /// Build the `(command, args)` invocation for an already-resolved [`AgentDef`].
@@ -420,5 +489,93 @@ mod tests {
             resume_trigger_for(&claude, sid, &env),
             Some(sid.to_string())
         );
+    }
+
+    #[test]
+    fn expand_home_rewrites_only_home_token() {
+        let mut omp = crate::agent::agent_config::builtin_registry()
+            .get("omp")
+            .expect("omp is a built-in")
+            .clone();
+        expand_home_in_def(&mut omp, "/home/me");
+        assert_eq!(
+            omp.new_session_args,
+            vec![
+                "--session".to_string(),
+                "/home/me/.omp/agent/sessions/thurbox-{id}.jsonl".to_string()
+            ]
+        );
+        assert_eq!(
+            omp.resume_args,
+            vec![
+                "--resume".to_string(),
+                "/home/me/.omp/agent/sessions/thurbox-{id}.jsonl".to_string()
+            ]
+        );
+        // `{id}` is left for build_args; only `{home}` was touched.
+        assert!(omp.new_session_args.iter().any(|a| a.contains("{id}")));
+
+        // A def with no `{home}` (claude) is byte-identical after expansion.
+        let claude = crate::agent::agent_config::builtin_registry()
+            .get("claude")
+            .unwrap()
+            .clone();
+        let mut expanded = claude.clone();
+        expand_home_in_def(&mut expanded, "/home/me");
+        assert_eq!(expanded, claude);
+    }
+
+    #[test]
+    fn session_file_template_only_for_path_pinned_agents() {
+        let reg = crate::agent::agent_config::builtin_registry();
+        // omp pins a session file path (has a separator + `{id}`).
+        let omp = reg.get("omp").unwrap();
+        assert_eq!(
+            session_file_template(omp).as_deref(),
+            Some("{home}/.omp/agent/sessions/thurbox-{id}.jsonl")
+        );
+        // claude/pi pass a bare `{id}`, not a path → no template.
+        assert_eq!(session_file_template(reg.get("claude").unwrap()), None);
+        assert_eq!(session_file_template(reg.get("pi").unwrap()), None);
+    }
+
+    #[test]
+    fn resume_trigger_omp_resumes_only_when_session_file_exists() {
+        // omp is path-pinned: it resumes iff its deterministic JSONL exists.
+        let tmp = tempfile::tempdir().unwrap();
+        let sid = "99999999-aaaa-bbbb-cccc-dddddddddddd";
+        let mut omp = crate::agent::agent_config::builtin_registry()
+            .get("omp")
+            .unwrap()
+            .clone();
+        // The caller expands `{home}` before the trigger check; here `{home}` is
+        // the tempdir so the check is hermetic (never touches the real ~/.omp).
+        expand_home_in_def(&mut omp, &tmp.path().display().to_string());
+        let env = HashMap::new();
+
+        // No file yet → fresh session.
+        assert_eq!(resume_trigger_for(&omp, sid, &env), None);
+
+        // Create the exact JSONL thurbox would launch against → resume triggers.
+        let file = tmp
+            .path()
+            .join(".omp/agent/sessions")
+            .join(format!("thurbox-{sid}.jsonl"));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(resume_trigger_for(&omp, sid, &env), Some(sid.to_string()));
+    }
+
+    #[test]
+    fn omp_is_a_builtin_and_pi_is_unchanged() {
+        let reg = crate::agent::agent_config::builtin_registry();
+        // omp exists alongside pi (not replacing it).
+        let omp = reg.get("omp").expect("omp seeded");
+        assert_eq!(omp.command, "omp");
+        assert!(omp.fork_args.is_empty(), "omp has no native fork target");
+        // pi keeps its id-pinned resume/fork, untouched by the omp addition.
+        let pi = reg.get("pi").expect("pi still present");
+        assert_eq!(pi.resume_args, vec!["--session-id", "{id}"]);
+        assert_eq!(pi.fork_args, vec!["--fork", "{id}"]);
     }
 }
