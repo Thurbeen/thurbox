@@ -413,7 +413,12 @@ package channels (each gated on its secret, skipped on forks):
   PR to `microsoft/winget-pkgs`. Runs on `windows-latest`; needs the
   `WINGET_TOKEN` secret (a `public_repo` PAT owning a fork of
   `microsoft/winget-pkgs`). New versions go through winget-pkgs PR
-  validation + review. The release zip is a `zip` installer with
+  validation + review. Because thurbox releases far faster than that manual
+  moderation merges, each `submit` would otherwise stack another open PR
+  (wingetcreate's `--replace` only supersedes a *published* manifest version,
+  not a pending PR); a follow-up `gh pr close` step therefore closes every
+  older still-open `Thurbeen.thurbox` PR from the token account, keeping only
+  the newest (best-effort, never fails the release). The release zip is a `zip` installer with
   `NestedInstallerType = portable` (PATH aliases `thurbox`/`thurbox-cli`, no
   MSI). Install: `winget install Thurbeen.thurbox`. Windows x86_64 only (added
   as a moderation-independent alternative to the Chocolatey channel).

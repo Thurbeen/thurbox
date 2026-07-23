@@ -529,3 +529,44 @@ jobs:
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           .\wingetcreate.exe submit packaging/winget/manifests
+
+      # thurbox releases far faster than winget-pkgs' manual moderation merges,
+      # so each `submit` above stacks yet another open PR on top of the prior
+      # ones (wingetcreate has no "supersede the previous open PR" mode —
+      # `--replace` only supersedes a *published* manifest version, not a
+      # pending PR). Left alone they pile up (30 open at once, flagged in
+      # microsoft/winget-pkgs#405639) and annoy the moderators. So right after
+      # submitting the new version, close every *older* still-open
+      # Thurbeen.thurbox PR authored by the token account, keeping only the
+      # newest (the one just opened). Best-effort: never fail the release on a
+      # cleanup hiccup.
+      - name: Close superseded winget-pkgs PRs
+        if: env.WINGET_TOKEN != ''
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          $version = "${{ needs.check-release.outputs.version }}".TrimStart("v")
+          # Open PRs by the token account for this package. `search` matches the
+          # package moniker in the title that wingetcreate always emits.
+          $prs = gh pr list --repo microsoft/winget-pkgs --author "@me" `
+            --state open --search "Thurbeen.thurbox in:title" `
+            --json number,title,createdAt --limit 100 | ConvertFrom-Json
+          if (-not $prs -or $prs.Count -le 1) {
+            Write-Host "Nothing to close ($($prs.Count) open PR(s))."
+            exit 0
+          }
+          # Keep the PR for the version we just submitted; fall back to the most
+          # recently created one if the title match is somehow ambiguous.
+          $keep = $prs | Where-Object { $_.title -match [regex]::Escape("version $version") } | Select-Object -First 1
+          if (-not $keep) {
+            $keep = $prs | Sort-Object { [datetime]$_.createdAt } -Descending | Select-Object -First 1
+          }
+          Write-Host "Keeping #$($keep.number) ($($keep.title)); closing $($prs.Count - 1) superseded PR(s)."
+          foreach ($pr in $prs | Where-Object { $_.number -ne $keep.number }) {
+            gh pr close $pr.number --repo microsoft/winget-pkgs `
+              --comment "Superseded by #$($keep.number) ($($keep.title)). Auto-closing this stale version-bump PR from thurbox release CI."
+            Write-Host "Closed #$($pr.number) ($($pr.title))."
+          }
