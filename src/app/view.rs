@@ -39,6 +39,17 @@ struct CentralTabCell {
     active: bool,
 }
 
+/// Cells occupied by the padded chevron segment (` ◀ `) of the session-list
+/// collapse toggle's label. The chevron is styled accent and anything past it
+/// (the ` F9 ` hint) muted, so both the label builder and the painter must agree
+/// on where the chevron ends.
+const COLLAPSE_CHEVRON_CELLS: usize = 3;
+/// Minimum central-pane width to draw the collapse toggle at all (bare chevron).
+const COLLAPSE_TOGGLE_MIN_WIDTH: u16 = 5;
+/// Minimum central-pane width to append the ` F9 ` shortcut hint to the chevron;
+/// below it the toggle is chevron-only to save border space.
+const COLLAPSE_HINT_MIN_WIDTH: u16 = 40;
+
 /// The rect to paint a hover tint over, given a click target's hitbox.
 ///
 /// A session row's hitbox spans a prepended repo-group header line plus the
@@ -611,13 +622,33 @@ impl App {
             return;
         }
 
+        // The session-list collapse/expand chevron (`◀ F9` / `▶ F9`) lives at the
+        // central pane's top-left — a fixed spot in both states, so the control
+        // that folds the list away is also the one that brings it back. Its label
+        // (sized against the *pane* width, for the hint) + hitbox are computed
+        // first so the tab strip packs to its right.
+        let chevron: Option<(Rect, String)> =
+            self.session_collapse_toggle_label(terminal).map(|label| {
+                let width = label.chars().count() as u16;
+                (Rect::new(terminal.x + 1, terminal.y, width, 1), label)
+            });
+
         // Agent terminal / shell / code-review all share the central pane and a
-        // clickable tab strip in its top border. Record the tab click targets
-        // *before* the pane renders its own whole-rect focus fallback, so a tab
-        // click wins over a plain pane-focus click. The review overlay takes the
-        // pane whenever the active session has one open (persisted per session
-        // like the shell view, so it survives session switches).
-        let tabs = self.central_tab_cells(terminal);
+        // clickable tab strip in its top border. Record the chevron + tab click
+        // targets *before* the pane renders its own whole-rect focus fallback, so
+        // an on-border click wins over a plain pane-focus click. The review
+        // overlay takes the pane whenever the active session has one open
+        // (persisted per session like the shell view, so it survives switches).
+        let tab_start = chevron
+            .as_ref()
+            .map_or(terminal.x + 1, |(r, _)| r.x + r.width);
+        if let Some((rect, _)) = chevron.as_ref() {
+            self.record_click(
+                *rect,
+                ClickAction::Global(crate::session::Action::ToggleSessionList),
+            );
+        }
+        let tabs = self.central_tab_cells(terminal, tab_start);
         for cell in &tabs {
             self.record_click(cell.rect, ClickAction::CentralTab(cell.tab));
         }
@@ -626,8 +657,11 @@ impl App {
         } else {
             self.render_terminal_pane(frame, terminal);
         }
-        // Drawn last so it overlays the pane's top border (the right-aligned
-        // session-info title leaves the left free for the tabs).
+        // Drawn last so they overlay the pane's top border (the right-aligned
+        // session-info title leaves the left free for the chevron + tabs).
+        if let Some((rect, label)) = chevron {
+            self.draw_session_collapse_toggle(frame, rect, &label);
+        }
         self.draw_central_tabs(frame, &tabs);
     }
 
@@ -713,15 +747,17 @@ impl App {
     }
 
     /// Lay out the central-pane tab strip (Agent / Shell / Review) along the top
-    /// border of `area` as filled pill buttons. Each cell carries its on-border
-    /// rect (click target + paint position), its display label (shortcut baked
-    /// in), and whether it's the active view. Packing mirrors `render_button_bar`
-    /// (` label ` chip = label+2 wide, one-space gaps) so the recorded hitboxes
-    /// match the pills `draw_central_tabs` paints. Shell/Review are gated by
-    /// their feature flags; cells stop before the pane's right edge (they can
-    /// still paint over the right-aligned session-info title on a pane barely
-    /// wide enough for the pills — the tabs win, they're the interactive part).
-    fn central_tab_cells(&self, area: Rect) -> Vec<CentralTabCell> {
+    /// border of `area` as filled pill buttons, packed left-to-right from
+    /// `start_x` (which the caller advances past the collapse chevron). Each cell
+    /// carries its on-border rect (click target + paint position), its display
+    /// label (shortcut baked in), and whether it's the active view. Packing
+    /// mirrors `render_button_bar` (` label ` chip = label+2 wide, one-space
+    /// gaps) so the recorded hitboxes match the pills `draw_central_tabs` paints.
+    /// Shell/Review are gated by their feature flags; cells stop before the
+    /// pane's right edge (they can still paint over the right-aligned
+    /// session-info title on a pane barely wide enough for the pills — the tabs
+    /// win, they're the interactive part).
+    fn central_tab_cells(&self, area: Rect, start_x: u16) -> Vec<CentralTabCell> {
         // No tabs on the empty "No Session" screen, or when the pane is too
         // narrow to hold even one.
         if area.width < 6 || area.height == 0 || self.sessions.get(self.active_index).is_none() {
@@ -754,10 +790,10 @@ impl App {
             return Vec::new();
         }
 
-        // Pack pills left-to-right starting one cell in from the rounded corner,
+        // Pack pills left-to-right from `start_x` (past the collapse chevron),
         // separated by a one-space gap (which shows the border between chips),
         // matching `render_button_bar`.
-        let mut x = area.x + 1;
+        let mut x = start_x;
         let limit = area.x + area.width.saturating_sub(1);
         let mut cells = Vec::with_capacity(specs.len());
         for (i, (tab, name, action)) in specs.into_iter().enumerate() {
@@ -796,6 +832,60 @@ impl App {
         for cell in cells {
             crate::ui::render_pill(frame, cell.rect, &cell.label, cell.active);
         }
+    }
+
+    /// The label the collapse/expand chevron shows, sized against the central
+    /// pane's width `area`: ` ◀ F9 ` when the list is shown (collapse it
+    /// leftward), ` ▶ F9 ` when hidden (expand it back). The chevron points the
+    /// way the list will move; the F9 hint is dropped (chevron only) on a pane
+    /// too narrow to fit it. `None` on the empty welcome screen (no session
+    /// boundary to collapse) or when there's no room for even the bare chevron.
+    fn session_collapse_toggle_label(&self, area: Rect) -> Option<String> {
+        if area.width < COLLAPSE_TOGGLE_MIN_WIDTH
+            || area.height == 0
+            || self.sessions.get(self.active_index).is_none()
+        {
+            return None;
+        }
+        let chevron = if self.show_session_list { '◀' } else { '▶' };
+        let hint = crate::session::compact_shortcut(
+            self.keybindings
+                .chords_for(crate::session::Action::ToggleSessionList),
+        );
+        // Keep the hint only when the pane is comfortably wide; else chevron only.
+        Some(
+            match hint.filter(|_| area.width >= COLLAPSE_HINT_MIN_WIDTH) {
+                Some(k) => format!(" {chevron} {k} "),
+                None => format!(" {chevron} "),
+            },
+        )
+    }
+
+    /// Paint the collapse/expand chevron `label` into its precomputed `rect`. The
+    /// click target is recorded separately in `render_central_pane` (before the
+    /// pane's whole-rect focus fallback, so the on-border click wins). It's a
+    /// lightweight border affordance — an accent chevron plus a muted F9 hint —
+    /// not a filled pill, so it reads as a collapse control rather than a peer of
+    /// the Shell/Review view tabs. A click and F9 share one path
+    /// (`ClickAction::Global(ToggleSessionList)`); living at a fixed spot in both
+    /// states, the control that folds the list away is also the one that brings
+    /// it back.
+    fn draw_session_collapse_toggle(&self, frame: &mut Frame, rect: Rect, label: &str) {
+        // `label` is ` ◀ ` or ` ◀ F9 `: the padded chevron segment is styled
+        // accent, anything after it (the ` F9 ` hint) muted.
+        let chevron_part: String = label.chars().take(COLLAPSE_CHEVRON_CELLS).collect();
+        let hint_part: String = label.chars().skip(COLLAPSE_CHEVRON_CELLS).collect();
+        let mut spans = vec![Span::styled(
+            chevron_part,
+            Style::default().fg(Theme::accent()),
+        )];
+        if !hint_part.is_empty() {
+            spans.push(Span::styled(
+                hint_part,
+                Style::default().fg(Theme::text_muted()),
+            ));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), rect);
     }
 
     /// Build the shared `FooterState` for the current frame. Consumed by both

@@ -695,6 +695,51 @@ fn f9_toggles_session_list_from_focused_terminal() {
 }
 
 #[test]
+fn session_collapse_chevron_renders_and_toggles() {
+    // A lightweight collapse/expand chevron on the central pane's top-left border
+    // toggles the session list. It shows the live F9 hint and flips its arrow
+    // direction with the list's visibility (◀ collapse ↔ ▶ expand). Clicking it
+    // shares the F9 path (ClickAction::Global(ToggleSessionList)).
+    let mut h = Harness::standard(1);
+    let shown = h.render();
+    // At the standard 120-col width the F9 hint is shown beside the chevron.
+    assert!(
+        shown.contains("◀") && shown.contains("F9"),
+        "collapse chevron ◀ + F9 hint renders while the list is shown: {shown:?}"
+    );
+    let chevron_rect = |app: &super::App| {
+        app.click_targets.iter().find_map(|t| match t.action {
+            ClickAction::Global(crate::session::Action::ToggleSessionList) => Some(t.rect),
+            _ => None,
+        })
+    };
+    let rect = chevron_rect(&h.app).expect("chevron is a recorded click target when shown");
+
+    // Clicking the chevron collapses the list (same effect as pressing F9).
+    h.app.update(AppMessage::MouseClick {
+        x: rect.x + 1,
+        y: rect.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(!h.app.show_session_list, "clicking ◀ collapses the list");
+
+    // While hidden the chevron flips to ▶ (expand) and stays clickable — the only
+    // affordance left to bring the list back.
+    let hidden = h.render();
+    assert!(
+        hidden.contains("▶"),
+        "chevron flips to ▶ (expand) while hidden: {hidden:?}"
+    );
+    let rect = chevron_rect(&h.app).expect("chevron still recorded while hidden");
+    h.app.update(AppMessage::MouseClick {
+        x: rect.x + 1,
+        y: rect.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(h.app.show_session_list, "clicking ▶ re-expands the list");
+}
+
+#[test]
 fn ctrl_slash_opens_global_search_strip() {
     let mut h = Harness::standard(2);
     assert!(!h.app.global_search.active);

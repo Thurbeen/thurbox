@@ -1999,9 +1999,25 @@ backend dependency stays visible at each call site.
   `[features] mouse` in settings.toml — disabled, mouse capture is
   never enabled and the terminal keeps native mouse behavior.
   `agent_picker_modal` drives the new-session flow.
+- **Session-list collapse chevron.** A lightweight collapse/expand affordance
+  toggles the left session-list pane (`ToggleSessionList`, F9 — hides the list
+  for a full-width main pane). It sits at the **central pane's top-left border**
+  in *both* states — ` ◀ F9 ` while shown (collapse leftward), ` ▶ F9 ` while
+  hidden (expand back) — so the control that folds the list away is also the one
+  that brings it back. It is deliberately **not** a pill in the tab strip: those
+  select a central *view* (one is always accent-highlighted), whereas this is a
+  binary pane-*visibility* toggle, and two accent-filled pills conflated the two
+  meanings. So it renders as an accent chevron + muted F9 hint (dropped to a bare
+  chevron on a pane < 40 cols; suppressed entirely on the empty welcome screen).
+  `App::session_collapse_toggle_label` builds it, its hitbox is recorded as
+  `ClickAction::Global(ToggleSessionList)` **before** the pane's whole-rect focus
+  fallback (so the on-border click wins, sharing the F9 keypath), and the tab
+  strip packs to its right (`central_tab_cells(area, start_x)`);
+  `App::draw_session_collapse_toggle` paints it.
 - **Central-pane tab strip.** The agent terminal, the per-session shell, and the
   code-review view share the central pane, surfaced as a clickable tab strip
-  (`Agent · Review · F7 · Shell · F8`) painted on the pane's **top border** by
+  (`Agent · Review · F7 · Shell · F8`, packed right of the collapse chevron)
+  painted on the pane's **top border** by
   `App::draw_central_tabs`, which renders each tab as a filled **pill button**
   (`ui::render_pill`, the standalone form of the footer's `render_button_bar`
   chips) so it reads as clickable exactly like the Help/Tasks/… footer pills —
