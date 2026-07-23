@@ -272,10 +272,12 @@ from accumulating stale entries.
 
 The set of available agents is **data**, not code. On first run
 Thurbox seeds `~/.config/thurbox/agents.toml` with built-in
-definitions for claude, codex, antigravity, opencode, aider, vibe, and pi
-(`agent::agent_config::load_or_seed`). Editing the file — adding an
-`[[agents]]` entry or tweaking an existing one — extends the agent
-picker with no recompile.
+definitions for claude, codex, antigravity, opencode, aider, copilot,
+vibe, and pi (`agent::agent_config::load_or_seed`). Editing the file —
+adding an `[[agents]]` entry or tweaking an existing one — extends the
+agent picker with no recompile. Each built-in's exact config and
+behavior (and the checklist for adding a new built-in) is in
+[AGENTS.md](AGENTS.md).
 
 Each definition (`session::AgentDef`) carries:
 
@@ -294,8 +296,8 @@ each group **only when its driving value is present**, substituting
 new-session id; static `args` follow. A group with no value is
 simply omitted — no unresolved-placeholder heuristics.
 
-Only `claude` accepts the thurbox-generated id at creation
-(`--session-id {id}`), so only it resumes/forks by that exact id.
+Only `claude` and `pi` accept the thurbox-generated id at creation
+(`--session-id {id}`), so only they resume/fork by that exact id.
 The other built-ins can't pin or report their session id, so they
 set `resume_latest = true` and resume/fork via id-less, cwd-scoped
 flags (`codex resume --last`, `opencode --continue`, `agy

@@ -1,0 +1,472 @@
+---
+layout: docs.njk
+title: 'Built-in agents — Thurbox Docs'
+description: 'Every built-in coding agent Thurbox ships (claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp) with its recommended agents.toml configuration, resume/fork behavior, and status-hook support.'
+currentPage: 'agents'
+breadcrumb: 'Built-in agents'
+onThisPage:
+  - { id: 'overview', label: 'Overview' }
+  - { id: 'at-a-glance', label: 'At a glance' }
+  - { id: 'claude', label: 'claude' }
+  - { id: 'codex', label: 'codex' }
+  - { id: 'antigravity', label: 'antigravity' }
+  - { id: 'opencode', label: 'opencode' }
+  - { id: 'aider', label: 'aider' }
+  - { id: 'copilot', label: 'copilot' }
+  - { id: 'vibe', label: 'vibe' }
+  - { id: 'pi', label: 'pi' }
+  - { id: 'omp', label: 'omp' }
+  - { id: 'adding', label: 'Adding your own' }
+---
+<h1>Built-in agents</h1>
+          <p>
+            Thurbox is
+            <strong>agent-neutral</strong>
+            : it knows nothing about a coding agent's model, prompts, permissions, or tools &mdash;
+            only how to launch the CLI and how that CLI resumes, forks, and reports status. Every
+            agent is
+            <strong>data</strong>
+            , declared in
+            <a href="configuration.html#agents-toml"><code>~/.config/thurbox/agents.toml</code></a>
+            . The nine agents below are what Thurbox
+            <strong>seeds on first run</strong>
+            ; each block is the recommended configuration, ready to copy.
+          </p>
+          <div class="info-box">
+            <p>
+              <strong>No model is ever passed.</strong>
+              Each agent runs with its
+              <strong>own default config</strong>
+              . To pin a model or any other flag, add it to
+              <code>args</code>
+              (always passed) &mdash; e.g.
+              <code>args = ["--model", "opus"]</code>
+              . Keep the default entry and add a second
+              <code>[[agents]]</code>
+              variant if you want both.
+            </p>
+          </div>
+
+          <h2 id="overview">
+            Overview
+            <a href="#overview" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Each
+            <code>[[agents]]</code>
+            entry carries a
+            <code>command</code>
+            plus optional argument-template groups that Thurbox appends
+            <strong>only when their driving value is present</strong>
+            , substituting the thurbox-generated session id for
+            <code>{id}</code>
+            :
+          </p>
+          <ul>
+            <li>
+              <code>args</code>
+              &mdash; always passed (bake a model or any flag here).
+            </li>
+            <li>
+              <code>new_session_args</code>
+              &mdash; emitted on a fresh spawn (used to pin a session id).
+            </li>
+            <li>
+              <code>resume_args</code>
+              &mdash; emitted on restart/resume.
+            </li>
+            <li>
+              <code>fork_args</code>
+              &mdash; emitted on
+              <code>Ctrl+F</code>
+              fork.
+            </li>
+            <li>
+              <code>resume_latest</code>
+              &mdash;
+              <code>true</code>
+              means resume/fork target
+              <em>the last session in the launch directory</em>
+              (id-less flags), for CLIs that can't pin a session id.
+            </li>
+          </ul>
+          <p>
+            Selection precedence is
+            <strong>fork &gt; resume &gt; new-session</strong>
+            ; static
+            <code>args</code>
+            always follow. ID models matter: agents that
+            <strong>pin</strong>
+            a thurbox id (<code>claude</code>, <code>pi</code>) resume/fork
+            <em>that exact session</em>
+            ,
+            <code>omp</code>
+            is
+            <strong>path-pinned</strong>
+            (thurbox maps its id to a fixed session file), and the rest are
+            <strong>id-less</strong>
+            and resolve "the last session in this directory" themselves. Status reporting is wired
+            separately by the built-in
+            <a href="agent-hooks.html">hooks extension</a>
+            .
+          </p>
+
+          <h2 id="at-a-glance">
+            At a glance
+            <a href="#at-a-glance" class="heading-anchor">#</a>
+          </h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>Command</th>
+                <th>Resume</th>
+                <th>Fork</th>
+                <th>ID model</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><a href="#claude"><code>claude</code></a></td>
+                <td><code>claude</code></td>
+                <td>by id</td>
+                <td>yes</td>
+                <td>pinned</td>
+                <td>full</td>
+              </tr>
+              <tr>
+                <td><a href="#codex"><code>codex</code></a></td>
+                <td><code>codex</code></td>
+                <td>last in dir</td>
+                <td>yes</td>
+                <td>id-less</td>
+                <td>no blocked</td>
+              </tr>
+              <tr>
+                <td><a href="#antigravity"><code>antigravity</code></a></td>
+                <td><code>agy</code></td>
+                <td>last in dir</td>
+                <td>&mdash;</td>
+                <td>id-less</td>
+                <td>full</td>
+              </tr>
+              <tr>
+                <td><a href="#opencode"><code>opencode</code></a></td>
+                <td><code>opencode</code></td>
+                <td>last in dir</td>
+                <td>yes</td>
+                <td>id-less</td>
+                <td>full</td>
+              </tr>
+              <tr>
+                <td><a href="#aider"><code>aider</code></a></td>
+                <td><code>aider</code></td>
+                <td>chat history</td>
+                <td>&mdash;</td>
+                <td>id-less</td>
+                <td>blocked only</td>
+              </tr>
+              <tr>
+                <td><a href="#copilot"><code>copilot</code></a></td>
+                <td><code>copilot</code></td>
+                <td>last in dir</td>
+                <td>&mdash;</td>
+                <td>id-less</td>
+                <td>full</td>
+              </tr>
+              <tr>
+                <td><a href="#vibe"><code>vibe</code></a></td>
+                <td><code>vibe</code></td>
+                <td>&mdash; (fresh)</td>
+                <td>&mdash;</td>
+                <td>none</td>
+                <td>no blocked</td>
+              </tr>
+              <tr>
+                <td><a href="#pi"><code>pi</code></a></td>
+                <td><code>pi</code></td>
+                <td>by id</td>
+                <td>yes</td>
+                <td>pinned</td>
+                <td>full</td>
+              </tr>
+              <tr>
+                <td><a href="#omp"><code>omp</code></a></td>
+                <td><code>omp</code></td>
+                <td>by session file</td>
+                <td>&mdash;</td>
+                <td>path-pinned</td>
+                <td>full</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            "Status" is what the session-list dot can reflect (see the
+            <a href="agent-hooks.html#coverage">per-agent coverage matrix</a>
+            ). The
+            <code>default</code>
+            agent is
+            <code>claude</code>
+            ; change it with
+            <code>default = "&lt;name&gt;"</code>
+            at the top of the file.
+          </p>
+
+          <h2 id="claude">
+            claude
+            <a href="#claude" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Anthropic's
+            <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noopener">Claude Code</a>
+            . Accepts a thurbox-generated session id at creation, so it resumes and forks
+            <strong>that exact session</strong>
+            by id.
+          </p>
+          <p>
+            <span class="badge">Resume: by id</span>
+            <span class="badge">Fork: yes</span>
+            <span class="badge badge-green">Status: full (idle/working/blocked/done)</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "claude"
+command = "claude"
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]</code></pre>
+
+          <h2 id="codex">
+            codex
+            <a href="#codex" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            OpenAI's
+            <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>
+            . It can't pin or report a session id, so resume/fork target the most recent session in
+            the launch directory (<code>resume_latest = true</code>). Thurbox keeps that directory
+            stable across restart (same cwd) and single-repo fork (child reuses the parent cwd).
+          </p>
+          <p>
+            <span class="badge">Resume: last in dir</span>
+            <span class="badge">Fork: yes</span>
+            <span class="badge badge-yellow">Status: no blocked (experimental)</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "codex"
+command = "codex"
+resume_args = ["resume", "--last"]
+fork_args = ["fork", "--last"]
+resume_latest = true</code></pre>
+
+          <h2 id="antigravity">
+            antigravity
+            <a href="#antigravity" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The
+            <code>agy</code>
+            CLI (the Gemini CLI successor). Resumes the latest session in the launch directory via
+            <code>--continue</code>
+            ; it has no fork, so
+            <code>Ctrl+F</code>
+            starts a fresh session.
+          </p>
+          <p>
+            <span class="badge">Resume: last in dir</span>
+            <span class="badge">Fork: &mdash;</span>
+            <span class="badge badge-green">Status: full (idle/working/blocked/done)</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "antigravity"
+command = "agy"
+resume_args = ["--continue"]
+resume_latest = true</code></pre>
+
+          <h2 id="opencode">
+            opencode
+            <a href="#opencode" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            <a href="https://opencode.ai" target="_blank" rel="noopener">opencode</a>
+            .
+            <code>--continue</code>
+            resumes the last session in the cwd;
+            <code>--fork</code>
+            branches it.
+          </p>
+          <p>
+            <span class="badge">Resume: last in dir</span>
+            <span class="badge">Fork: yes</span>
+            <span class="badge badge-green">Status: full (idle/working/blocked/done)</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "opencode"
+command = "opencode"
+resume_args = ["--continue"]
+fork_args = ["--continue", "--fork"]
+resume_latest = true</code></pre>
+
+          <h2 id="aider">
+            aider
+            <a href="#aider" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            <a href="https://aider.chat" target="_blank" rel="noopener">aider</a>
+            restores the chat-history file in the cwd; it has no separate session id and no fork. Its
+            only lifecycle callback is "waiting for input", so the status dot reflects
+            <strong>blocked</strong>
+            only.
+          </p>
+          <p>
+            <span class="badge">Resume: chat history</span>
+            <span class="badge">Fork: &mdash;</span>
+            <span class="badge badge-yellow">Status: blocked only</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "aider"
+command = "aider"
+resume_args = ["--restore-chat-history"]
+resume_latest = true</code></pre>
+
+          <h2 id="copilot">
+            copilot
+            <a href="#copilot" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            <a href="https://github.com/github/copilot-cli" target="_blank" rel="noopener">GitHub Copilot CLI</a>
+            (the
+            <code>copilot</code>
+            command). Resumes the most recent session in the launch directory via
+            <code>--continue</code>
+            ; it can't pin or report a session id and has no fork.
+          </p>
+          <p>
+            <span class="badge">Resume: last in dir</span>
+            <span class="badge">Fork: &mdash;</span>
+            <span class="badge badge-green">Status: full (experimental)</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "copilot"
+command = "copilot"
+resume_args = ["--continue"]
+resume_latest = true</code></pre>
+
+          <h2 id="vibe">
+            vibe
+            <a href="#vibe" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Mistral's
+            <code>vibe</code>
+            CLI. It declares no resume group, so it always starts
+            <strong>fresh</strong>
+            on restart &mdash; the live tmux process is what carries its state across TUI restarts.
+            No fork.
+          </p>
+          <p>
+            <span class="badge">Resume: &mdash; (fresh)</span>
+            <span class="badge">Fork: &mdash;</span>
+            <span class="badge badge-yellow">Status: no blocked (experimental)</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "vibe"
+command = "vibe"</code></pre>
+
+          <h2 id="pi">
+            pi
+            <a href="#pi" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The
+            <a href="https://pi.dev" target="_blank" rel="noopener">pi.dev</a>
+            CLI. Like claude, it accepts a thurbox-generated session id at creation, so it
+            resumes/forks by that exact id. Sessions live under
+            <code>~/.pi/agent/</code>
+            , organized by working directory.
+          </p>
+          <p>
+            <span class="badge">Resume: by id</span>
+            <span class="badge">Fork: yes</span>
+            <span class="badge badge-green">Status: full (experimental)</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "pi"
+command = "pi"
+resume_args = ["--session-id", "{id}"]
+fork_args = ["--fork", "{id}"]
+new_session_args = ["--session-id", "{id}"]</code></pre>
+
+          <h2 id="omp">
+            omp
+            <a href="#omp" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            <a href="https://github.com/can1357/oh-my-pi" target="_blank" rel="noopener">Oh My Pi</a>
+            (the
+            <code>omp</code>
+            command) is Pi-compatible but generates its
+            <strong>own</strong>
+            internal session id, so it can't accept thurbox's. Instead it takes a session
+            <strong>file path</strong>
+            : thurbox maps its UUID to a deterministic JSONL under OMP's default root
+            (<code>--session &lt;file&gt;</code>
+            on create,
+            <code>--resume</code>
+            on the same path to restore), so restart reattaches the exact session. The
+            <code>{home}</code>
+            token expands to the resolved home dir at spawn time (thurbox, not the shell &mdash;
+            args are POSIX-quoted, so a literal
+            <code>~</code>
+            never expands), and it translates onto a remote/WSL home too. No fork &mdash; OMP can't
+            pin a fork's target file, so
+            <code>Ctrl+F</code>
+            starts fresh.
+          </p>
+          <p>
+            <span class="badge">Resume: by session file</span>
+            <span class="badge">Fork: &mdash;</span>
+            <span class="badge badge-green">Status: full (experimental)</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "omp"
+command = "omp"
+resume_args = ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
+new_session_args = ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]</code></pre>
+
+          <h2 id="adding">
+            Adding your own
+            <a href="#adding" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Any CLI works &mdash; add an
+            <code>[[agents]]</code>
+            entry with a
+            <code>command</code>
+            and whichever
+            <code>*_args</code>
+            groups it supports. No recompile.
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "my-agent"             # shown in the new-session picker
+command = "my-agent-cli"      # the executable on your PATH
+args = []                     # always passed (put a model flag here)
+resume_args = []              # appended on resume, with {id} substituted
+fork_args = []                # appended on Ctrl+F fork, with {id} substituted
+new_session_args = []         # appended on a fresh spawn, with {id} substituted
+resume_latest = false         # true = id-less "resume last session in cwd"
+# hook_schema = "claude"      # optional: name the hook FAMILY this CLI speaks so
+#                             #   the hooks extension wires status under this name</code></pre>
+          <p>
+            Set
+            <code>hook_schema = "claude"</code>
+            on a
+            <strong>rebranded</strong>
+            agent (one whose
+            <code>command</code>
+            runs claude under a different name) so it inherits claude's status-hook wiring. See the
+            <a href="configuration.html#agents-toml"><code>agents.toml</code> reference</a>
+            for the full field list and the
+            <a href="agent-hooks.html">hooks page</a>
+            for how status is wired.
+          </p>

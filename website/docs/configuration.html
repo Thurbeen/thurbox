@@ -219,6 +219,10 @@ thurbox-cli config show       # effective config + where each value came from</c
             <code>copilot</code>
             ,
             <code>vibe</code>
+            ,
+            <code>pi</code>
+            ,
+            <code>omp</code>
             ) on first run; edit or add
             <code>[[agents]]</code>
             entries to support any CLI &mdash; no recompile. A malformed file falls back to the
@@ -239,6 +243,11 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
             <code>{id}</code>
             is substituted with the thurbox-generated session UUID. Groups are emitted only when
             their driving value exists; precedence is fork &gt; resume &gt; new-session.
+          </p>
+          <p>
+            For each built-in's recommended configuration and runtime behavior &mdash; resume/fork
+            semantics, whether it pins a session id, and how it reports status &mdash; see
+            <a href="agents.html">Built-in agents</a>.
           </p>
 
           <h2 id="hosts-toml">

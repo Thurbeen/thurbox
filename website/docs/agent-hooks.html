@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Agent hooks — Thurbox Docs'
-description: 'The built-in hooks extension: wire each coding agent CLI lifecycle hook to thurbox-cli session signal so every session reports working/blocked/done/idle. Per-agent coverage matrix for claude, codex, antigravity, opencode, aider, copilot, and vibe.'
+description: 'The built-in hooks extension: wire each coding agent CLI lifecycle hook to thurbox-cli session signal so every session reports working/blocked/done/idle. Per-agent coverage matrix for claude, codex, antigravity, opencode, aider, copilot, vibe, pi, and omp.'
 currentPage: 'agent-hooks'
 breadcrumb: 'Agent hooks'
 onThisPage:
@@ -191,6 +191,20 @@ onThisPage:
                 <td>vibe <sup>*</sup></td>
                 <td>&mdash;</td>
                 <td>&#x2713;</td>
+                <td>&mdash;</td>
+                <td>&#x2713;</td>
+              </tr>
+              <tr>
+                <td>pi <sup>*</sup></td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+              </tr>
+              <tr>
+                <td>omp <sup>*</sup></td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
                 <td>&#x2713;</td>
                 <td>&#x2713;</td>
               </tr>
@@ -199,8 +213,8 @@ onThisPage:
           <p>
             <sup>*</sup>
             <strong>Experimental</strong>
-            &mdash; the hook schema for codex, copilot, and vibe is newer or not exhaustively
-            verified against the live CLI. If event names differ, the fix is a one-file edit to the
+            &mdash; the hook schema for codex, copilot, vibe, pi, and omp is newer or not
+            exhaustively verified against the live CLI. If event names differ, the fix is a one-file edit to the
             extension payload (no code change), and an unrecognized hook is a fail-open no-op
             (
             <code>|| true</code>
@@ -299,13 +313,19 @@ onThisPage:
               <em>(experimental)</em>
               &mdash; Mistral Vibe loads hooks from
               <code>~/.vibe/hooks.toml</code>
-              ; Thurbox drops a managed file in (only when vibe is installed).
-              <code>before_tool</code>
+              ; Thurbox drops a managed file in (only when vibe is installed). Verified against vibe
+              2.21.0:
+              <code>pre_tool</code>
               &rarr; working,
-              <code>after_turn</code>
-              &rarr; done,
-              <code>notification</code>
-              &rarr; blocked. If you already maintain your own
+              <code>post_agent</code>
+              &rarr; done. No blocked &mdash; vibe's only hook types are
+              <code>pre_tool</code>
+              /
+              <code>post_tool</code>
+              /
+              <code>post_agent</code>
+              (no permission event), so a tool awaiting approval reads as working. If you already
+              maintain your own
               <code>hooks.toml</code>
               the write is
               <strong>refused</strong>
@@ -334,6 +354,39 @@ onThisPage:
               and
               <code>powershell</code>
               commands ship, so status works on Windows too.
+            </li>
+            <li>
+              <strong>pi</strong>
+              <em>(experimental)</em>
+              &mdash; the pi.dev CLI auto-discovers TypeScript extensions from
+              <code>~/.pi/agent/extensions/</code>
+              , so Thurbox drops a managed one in (only when pi is installed).
+              <code>session_start</code>
+              &rarr; idle,
+              <code>agent_start</code>
+              /
+              <code>tool_execution_start</code>
+              &rarr; working,
+              <code>agent_end</code>
+              &rarr; done, and a structured
+              <code>ask_user_question</code>
+              tool call &rarr; blocked (pi has no permission hook, so a turn that ends by asking in
+              prose signals done, not blocked).
+            </li>
+            <li>
+              <strong>omp</strong>
+              <em>(experimental)</em>
+              &mdash; Oh My Pi is Pi-compatible and likewise auto-discovers TypeScript extensions,
+              from
+              <code>~/.omp/agent/extensions/</code>
+              , so Thurbox drops a managed one in (only when omp is installed). It mirrors pi's
+              extension but maps OMP's structured user-question tool &mdash; named
+              <code>ask</code>
+              &mdash; to blocked (it recognizes both
+              <code>ask</code>
+              and pi's
+              <code>ask_user_question</code>
+              ). Verified against OMP 17.0.6.
             </li>
           </ul>
           <p>
@@ -421,6 +474,16 @@ onThisPage:
                 <td>antigravity</td>
                 <td><code>~/.gemini/settings.json</code></td>
                 <td>reversible JSON-merge of our entries</td>
+              </tr>
+              <tr>
+                <td>pi</td>
+                <td><code>~/.pi/agent/extensions/thurbox-status.ts</code></td>
+                <td>managed extension file (refused if you already have one)</td>
+              </tr>
+              <tr>
+                <td>omp</td>
+                <td><code>~/.omp/agent/extensions/thurbox-status.ts</code></td>
+                <td>managed extension file (refused if you already have one)</td>
               </tr>
             </tbody>
           </table>

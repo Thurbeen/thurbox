@@ -12,16 +12,21 @@ use crate::session::{AgentDef, AgentRegistry};
 
 /// Built-in agent definitions, also used to seed `agents.toml` on first run.
 ///
+/// Adding a built-in here is only step 1 — status-hook wiring
+/// (`extensions/hooks/extension.toml`) and the doc lists are **not** updated
+/// automatically. See the checklist in `docs/AGENTS.md`.
+///
 /// Kept deliberately small per agent: just the command, plus resume/fork/
 /// session-id groups. `claude` and `pi` pin a thurbox-generated id
-/// (`--session-id`) so they can resume/fork by that exact id. The other
-/// built-ins can't pin or report their session id, so they use
-/// `resume_latest = true` with id-less,
-/// cwd-scoped flags (`codex resume --last`, `opencode --continue`, …): the agent
-/// resolves "the last session in this directory" itself. Agents without any
-/// resume group simply start fresh on restart. No model is passed — each agent
-/// uses its own default config. Bake extra flags (including a model) into
-/// `args` if you want them.
+/// (`--session-id`) so they can resume/fork by that exact id; `omp` pins the
+/// same id as a session-file path (`--session {home}/…/thurbox-{id}.jsonl`)
+/// since it generates its own id but accepts a file. The other built-ins can't
+/// pin or report their session id, so they use `resume_latest = true` with
+/// id-less, cwd-scoped flags (`codex resume --last`, `opencode --continue`, …):
+/// the agent resolves "the last session in this directory" itself. Agents
+/// without any resume group simply start fresh on restart. No model is passed —
+/// each agent uses its own default config. Bake extra flags (including a model)
+/// into `args` if you want them.
 pub const BUILTIN_AGENTS_TOML: &str = r#"# Thurbox coding-agent definitions.
 #
 # Each [[agents]] entry describes how to launch one coding-agent CLI. The

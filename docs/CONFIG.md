@@ -159,6 +159,11 @@ and **Pin a model** (a `claude-opus` variant baking `--model opus`
 into `args`). Both stay commented, so a fresh install still resolves
 to exactly the nine built-ins.
 
+For **each built-in's** exact config and runtime behavior (resume/fork
+semantics, ID model, and which status-hook mechanism it uses), and the
+checklist for **adding a new built-in**, see
+[AGENTS.md](AGENTS.md).
+
 ## hosts.toml
 
 Declares off-local hosts — **remote SSH machines** and **local WSL

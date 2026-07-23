@@ -447,6 +447,10 @@ Enforced by cocogitto via pre-commit hooks.
 
 ## Agent Definitions
 
+> Per-agent reference + the "adding a new built-in" checklist:
+> `docs/AGENTS.md` (each built-in's exact config, ID model, and status-hook
+> mechanism, plus every file to update when promoting a CLI to a built-in).
+
 The set of launchable coding agents is declared **as data** in
 `~/.config/thurbox/agents.toml`, seeded with built-ins
 (`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`, `omp`) on first run.
@@ -2270,6 +2274,8 @@ For rationale behind decisions, see `docs/`:
 - `docs/ARCHITECTURE.md` — Architectural decisions with rationale
 - `docs/FEATURES.md` — Feature-level design choices
 - `docs/CONFIG.md` — Every config file/env var/DB setting in one place
+- `docs/AGENTS.md` — Each built-in agent's exact config + behavior, and
+  the checklist for adding a new built-in
 - `docs/PERFORMANCE.md` — Render/tick performance: demand-driven redraw,
   perf counters, the session-order cache, and how to measure
 
