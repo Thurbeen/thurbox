@@ -5494,6 +5494,17 @@ impl App {
             return;
         }
 
+        // Resolve the active session's host (an SSH/WSL `HostDef`, or `None`
+        // for a local session) so every git subcommand runs on the host that
+        // actually owns the worktree — a remote worktree path doesn't exist
+        // locally, so syncing it locally failed with "no such file or
+        // directory".
+        let host = self
+            .active_session()
+            .and_then(|s| s.info.remote_host.as_deref())
+            .and_then(|name| self.hosts.get(name))
+            .cloned();
+
         let worktree_sessions: Vec<_> = self
             .active_session()
             .into_iter()
@@ -5524,11 +5535,12 @@ impl App {
 
         for worktrees in by_repo.into_values() {
             let tx = tx.clone();
+            let host = host.clone();
             std::thread::spawn(move || {
                 for (session_id, worktree_path) in worktrees {
                     // base_ref = None: derive the rebase target per-worktree
                     // (upstream → origin/HEAD → origin/main → origin/master).
-                    let result = git::sync_worktree(&worktree_path, None);
+                    let result = git::sync_worktree_on(host.as_ref(), &worktree_path, None);
                     let _ = tx.send((session_id, result));
                 }
             });

@@ -1116,10 +1116,8 @@ pub enum SyncResult {
 }
 
 /// Stash uncommitted changes. Returns `true` if anything was stashed.
-fn git_stash(worktree_path: &Path) -> Result<bool> {
-    let output = git_program()
-        .args(["stash"])
-        .current_dir(worktree_path)
+fn git_stash(host: Option<&HostDef>, worktree_path: &Path) -> Result<bool> {
+    let output = git_command(host, worktree_path, &["stash"])
         .output()
         .context("failed to run git stash")?;
 
@@ -1153,18 +1151,13 @@ pub fn git_fetch_on(host: Option<&HostDef>, worktree_path: &Path) -> Result<()> 
 
 /// Rebase the current branch onto `base_ref`. Returns `Ok(())` on success,
 /// or an error if there are conflicts (rebase is aborted before returning).
-fn git_rebase_onto(worktree_path: &Path, base_ref: &str) -> Result<()> {
-    let output = git_program()
-        .args(["rebase", base_ref])
-        .current_dir(worktree_path)
+fn git_rebase_onto(host: Option<&HostDef>, worktree_path: &Path, base_ref: &str) -> Result<()> {
+    let output = git_command(host, worktree_path, &["rebase", base_ref])
         .output()
         .context("failed to run git rebase")?;
 
     if !output.status.success() {
-        let _ = git_program()
-            .args(["rebase", "--abort"])
-            .current_dir(worktree_path)
-            .output();
+        let _ = git_command(host, worktree_path, &["rebase", "--abort"]).output();
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("rebase conflict: {stderr}");
@@ -1174,10 +1167,8 @@ fn git_rebase_onto(worktree_path: &Path, base_ref: &str) -> Result<()> {
 }
 
 /// Pop the most recent stash entry.
-fn git_stash_pop(worktree_path: &Path) -> Result<()> {
-    let output = git_program()
-        .args(["stash", "pop"])
-        .current_dir(worktree_path)
+fn git_stash_pop(host: Option<&HostDef>, worktree_path: &Path) -> Result<()> {
+    let output = git_command(host, worktree_path, &["stash", "pop"])
         .output()
         .context("failed to run git stash pop")?;
 
@@ -1306,7 +1297,7 @@ const STASH_ATTEMPT_DELAYS: &[Duration] = &[
 /// Run `git stash` with retries on transient index-lock errors.
 ///
 /// Returns `Ok(true)` if changes were stashed, `Ok(false)` if nothing to stash.
-fn stash_with_retry(worktree_path: &Path) -> Result<bool> {
+fn stash_with_retry(host: Option<&HostDef>, worktree_path: &Path) -> Result<bool> {
     let max_retries = STASH_ATTEMPT_DELAYS.len() - 1;
     let mut last_err = String::new();
 
@@ -1319,9 +1310,14 @@ fn stash_with_retry(worktree_path: &Path) -> Result<bool> {
                 worktree_path.display()
             );
             std::thread::sleep(*delay);
-            cleanup_stale_index_lock(worktree_path);
+            // The stale-lock sweep touches the local filesystem (/proc, mtime),
+            // so it only applies to a local worktree — a remote path can't be
+            // stat'd here.
+            if host.is_none() {
+                cleanup_stale_index_lock(worktree_path);
+            }
         }
-        match git_stash(worktree_path) {
+        match git_stash(host, worktree_path) {
             Ok(stashed) => return Ok(stashed),
             Err(e) => {
                 let msg = format!("{e:#}");
@@ -1346,9 +1342,10 @@ fn stash_with_retry(worktree_path: &Path) -> Result<bool> {
 /// possibly-missing `origin/main`. Shared by [`sync_worktree`] (the rebase
 /// target) and [`ahead_behind`] (the comparison base) so the "behind" count is
 /// always measured against the ref sync would rebase onto.
-fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
+fn resolve_base_ref(host: Option<&HostDef>, worktree_path: &Path) -> Option<String> {
     // A branch with an explicit upstream rebases onto exactly that.
-    if run_git_capture(
+    if run_git_capture_on(
+        host,
         &["rev-parse", "--verify", "--quiet", "@{upstream}"],
         worktree_path,
     )
@@ -1358,7 +1355,8 @@ fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
     }
 
     // The remote's advertised HEAD (origin/HEAD → e.g. "origin/main").
-    if let Some(out) = run_git_capture(
+    if let Some(out) = run_git_capture_on(
+        host,
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
         worktree_path,
     ) {
@@ -1372,7 +1370,12 @@ fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
     ["origin/main", "origin/master"]
         .into_iter()
         .find(|r| {
-            run_git_capture(&["rev-parse", "--verify", "--quiet", r], worktree_path).is_some()
+            run_git_capture_on(
+                host,
+                &["rev-parse", "--verify", "--quiet", r],
+                worktree_path,
+            )
+            .is_some()
         })
         .map(str::to_string)
 }
@@ -1385,20 +1388,35 @@ fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
 /// On conflict the rebase is aborted and any stash is restored.
 /// Retries `git stash` on transient index-lock errors.
 pub fn sync_worktree(worktree_path: &Path, base_ref: Option<&str>) -> SyncResult {
-    cleanup_stale_index_lock(worktree_path);
+    sync_worktree_on(None, worktree_path, base_ref)
+}
 
-    let stashed = match stash_with_retry(worktree_path) {
+/// [`sync_worktree`], optionally on a remote `host`. Every git subcommand runs
+/// through the host launcher (`ssh …` / `wsl.exe …`), so `worktree_path` is
+/// interpreted on the host — a remote worktree path never touches the local
+/// filesystem (which was the "no such file or directory" bug).
+pub fn sync_worktree_on(
+    host: Option<&HostDef>,
+    worktree_path: &Path,
+    base_ref: Option<&str>,
+) -> SyncResult {
+    // Local-only stale-lock sweep; a remote worktree can't be stat'd here.
+    if host.is_none() {
+        cleanup_stale_index_lock(worktree_path);
+    }
+
+    let stashed = match stash_with_retry(host, worktree_path) {
         Ok(s) => s,
         Err(e) => return SyncResult::Error(format!("stash: {e:#}")),
     };
 
     let restore_stash = || {
         if stashed {
-            let _ = git_stash_pop(worktree_path);
+            let _ = git_stash_pop(host, worktree_path);
         }
     };
 
-    if let Err(e) = git_fetch(worktree_path) {
+    if let Err(e) = git_fetch_on(host, worktree_path) {
         restore_stash();
         return SyncResult::Error(format!("fetch: {e:#}"));
     }
@@ -1407,7 +1425,7 @@ pub fn sync_worktree(worktree_path: &Path, base_ref: Option<&str>) -> SyncResult
     // origin/main, …) reflect the just-fetched remote state.
     let base_ref = match base_ref
         .map(str::to_string)
-        .or_else(|| resolve_base_ref(worktree_path))
+        .or_else(|| resolve_base_ref(host, worktree_path))
     {
         Some(r) => r,
         None => {
@@ -1420,13 +1438,13 @@ pub fn sync_worktree(worktree_path: &Path, base_ref: Option<&str>) -> SyncResult
         }
     };
 
-    if let Err(e) = git_rebase_onto(worktree_path, &base_ref) {
+    if let Err(e) = git_rebase_onto(host, worktree_path, &base_ref) {
         restore_stash();
         return SyncResult::Conflict(format!("{e:#}"));
     }
 
     if stashed {
-        if let Err(e) = git_stash_pop(worktree_path) {
+        if let Err(e) = git_stash_pop(host, worktree_path) {
             return SyncResult::Error(format!("stash pop: {e:#}"));
         }
     }
@@ -1434,11 +1452,15 @@ pub fn sync_worktree(worktree_path: &Path, base_ref: Option<&str>) -> SyncResult
     SyncResult::Synced
 }
 
-/// Run `git <args>` in `cwd`, returning stdout on success (`None` otherwise).
+/// Run `git <args>` in `cwd` locally, returning stdout on success (`None`
+/// otherwise).
 fn run_git_capture(args: &[&str], cwd: &Path) -> Option<String> {
-    let output = git_program()
-        .args(args)
-        .current_dir(cwd)
+    run_git_capture_on(None, args, cwd)
+}
+
+/// [`run_git_capture`], optionally on a remote `host`.
+fn run_git_capture_on(host: Option<&HostDef>, args: &[&str], cwd: &Path) -> Option<String> {
+    let output = git_command(host, cwd, args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -1478,7 +1500,7 @@ fn parse_numstat(out: &str) -> (usize, usize, usize) {
 /// "behind" count is measured against the ref sync would use. Returns `(0, 0)`
 /// when no base can be resolved.
 pub fn ahead_behind(cwd: &Path) -> (usize, usize) {
-    let Some(base) = resolve_base_ref(cwd) else {
+    let Some(base) = resolve_base_ref(None, cwd) else {
         return (0, 0);
     };
     // `--left-right --count <base>...HEAD` → "<behind>\t<ahead>".
@@ -1759,7 +1781,7 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-qm", "init"]);
 
-        assert_eq!(resolve_base_ref(repo), None);
+        assert_eq!(resolve_base_ref(None, repo), None);
     }
 
     #[test]
@@ -1800,7 +1822,10 @@ mod tests {
         );
         run(&work, &["push", "-q", "-u", "origin", "HEAD"]);
 
-        assert_eq!(resolve_base_ref(&work), Some("@{upstream}".to_string()));
+        assert_eq!(
+            resolve_base_ref(None, &work),
+            Some("@{upstream}".to_string())
+        );
     }
 
     #[test]
