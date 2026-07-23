@@ -425,15 +425,26 @@ package channels (each gated on its secret, skipped on forks):
   PR to `microsoft/winget-pkgs`. Runs on `windows-latest`; needs the
   `WINGET_TOKEN` secret (a `public_repo` PAT owning a fork of
   `microsoft/winget-pkgs`). New versions go through winget-pkgs PR
-  validation + review. Because thurbox releases far faster than that manual
-  moderation merges, each `submit` would otherwise stack another open PR
-  (wingetcreate's `--replace` only supersedes a *published* manifest version,
-  not a pending PR); a follow-up `gh pr close` step therefore closes every
-  older still-open `Thurbeen.thurbox` PR from the token account, keeping only
-  the newest (best-effort, never fails the release). The release zip is a `zip` installer with
+  validation + review.
+  **Throttled to one submission per `THROTTLE_DAYS` (30d) window**, mirroring
+  Chocolatey, because winget-pkgs is a *manually moderated* repo that can't keep
+  up with thurbox's per-`feat`/`fix`/`perf` cadence — each `submit` opens a PR a
+  human must review, so a release every few hours buried the maintainers (30
+  open PRs at once, flagged in
+  [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
+  The throttle step queries our own last thurbox PR on winget-pkgs (via
+  `gh pr list`, merged or open) for its age — the winget analog of the choco
+  feed's Published date; if it's younger than the window it **skips the
+  submission and exits green** with a `::warning::` (patch releases coalesce into
+  the next monthly winget PR — the binary still ships immediately via GitHub
+  Releases + Homebrew/AUR). As a second-line cleanup for any PR that still stacks
+  (e.g. a manual dispatch inside the window), a follow-up `gh pr close` step
+  closes every older still-open `Thurbeen.thurbox` PR from the token account,
+  keeping only the one just opened (wingetcreate's `--replace` only supersedes a
+  *published* manifest version, not a pending PR; best-effort, never fails the
+  release). The release zip is a `zip` installer with
   `NestedInstallerType = portable` (PATH aliases `thurbox`/`thurbox-cli`, no
-  MSI). Install: `winget install Thurbeen.thurbox`. Windows x86_64 only (added
-  as a moderation-independent alternative to the Chocolatey channel).
+  MSI). Install: `winget install Thurbeen.thurbox`. Windows x86_64 only.
 
 See `packaging/README.md` for the full packaging overview.
 

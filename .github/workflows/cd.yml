@@ -553,6 +553,19 @@ jobs:
   # secret (a classic PAT with `public_repo` scope that can fork/PR against
   # microsoft/winget-pkgs); skipped automatically if unset (e.g. on forks).
   # New versions go through winget-pkgs PR review before going live.
+  #
+  # Like Chocolatey, winget-pkgs is a *manually moderated* repo that can't keep
+  # up with thurbox's per-`feat`/`fix`/`perf` cadence — each `submit` opens a PR
+  # a human has to review, so a release every few hours buries the maintainers
+  # (30 open PRs at once, flagged in microsoft/winget-pkgs#405639). So this job
+  # mirrors the Chocolatey throttle: it submits at most once per THROTTLE_DAYS
+  # window, coalescing the intervening patch releases into a single winget
+  # version (the latest binary still ships immediately via GitHub Releases +
+  # Homebrew/AUR, and Chocolatey on its own monthly window). When the window
+  # hasn't elapsed the job records a `::warning::` and exits green — a backed-up
+  # winget channel must never turn the whole release red. The
+  # close-superseded-PRs step below still runs as a second-line cleanup for any
+  # PRs that did stack (e.g. a manual dispatch inside the window).
   publish-winget:
     name: Publish winget manifest
     needs: [check-release, create-tag, publish]
@@ -562,14 +575,66 @@ jobs:
     # (the `secrets` context cannot be used directly in an `if` condition).
     env:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      # Minimum days between winget-pkgs submissions. One PR/month keeps thurbox
+      # well within what the winget moderators can review while still shipping a
+      # recent version. Mirrors the Chocolatey window; tune here.
+      THROTTLE_DAYS: "30"
     steps:
       - name: Checkout code at tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.check-release.outputs.version }}
 
-      - name: Download release checksums
+      # Find the most recent thurbox PR we've submitted to winget-pkgs (merged
+      # = a version went live, or still-open = one is already awaiting review)
+      # and when it was raised. If that is younger than THROTTLE_DAYS, skip this
+      # release (green + warning) so patch releases coalesce into one monthly
+      # winget submission instead of flooding the moderation queue. This is the
+      # winget analog of the Chocolatey feed check (there the signal is the
+      # community feed's Published date; here it is our own last PR's date).
+      - name: Check throttle window
+        id: throttle
         if: env.WINGET_TOKEN != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $throttleDays = [int]$env:THROTTLE_DAYS
+          $shouldPush = $true
+          $reason = ""
+          try {
+            # Newest thurbox PR from the token account in any state (merged or
+            # open) — its creation time is the last time we touched the channel.
+            $prs = gh pr list --repo microsoft/winget-pkgs --author "@me" `
+              --search "Thurbeen.thurbox in:title" --state all `
+              --json createdAt --limit 100 | ConvertFrom-Json
+            $last = $prs | Sort-Object { [datetime]$_.createdAt } -Descending | Select-Object -First 1
+            if (-not $last) {
+              $reason = "no prior thurbox PR on winget-pkgs — first submission"
+            } else {
+              $ageDays = ((Get-Date).ToUniversalTime() - ([datetime]$last.createdAt).ToUniversalTime()).TotalDays
+              if ($ageDays -lt $throttleDays) {
+                $shouldPush = $false
+                $reason = ("last winget submission was {0:N1} days ago (< {1}d throttle)" -f $ageDays, $throttleDays)
+              } else {
+                $reason = ("last winget submission was {0:N1} days ago (>= {1}d throttle)" -f $ageDays, $throttleDays)
+              }
+            }
+          } catch {
+            # A lookup hiccup must not block a legitimate release; err toward submitting.
+            $reason = "could not query winget-pkgs PRs ($($_.Exception.Message)); proceeding with submission"
+          }
+          "should_push=$($shouldPush.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ($shouldPush) {
+            Write-Host "winget throttle: SUBMIT — $reason"
+          } else {
+            Write-Host "::warning title=winget submission throttled::Skipping this release — $reason. It will be coalesced into the next monthly winget submission."
+            "winget submission **throttled** (green): $reason." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+      - name: Download release checksums
+        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         run: |
           $version = "${{ needs.check-release.outputs.version }}"
@@ -580,7 +645,7 @@ jobs:
           Get-Content checksums.txt
 
       - name: Bump manifests to the release version
-        if: env.WINGET_TOKEN != ''
+        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         run: |
           python packaging/winget/bump-manifests.py `
@@ -590,7 +655,7 @@ jobs:
           Get-Content packaging/winget/manifests/Thurbeen.thurbox.installer.yaml
 
       - name: Install wingetcreate
-        if: env.WINGET_TOKEN != ''
+        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         run: |
           Invoke-WebRequest -UseBasicParsing `
@@ -606,25 +671,24 @@ jobs:
       # WINGET_CREATE_GITHUB_TOKEN (Microsoft's recommended CI path) instead of
       # --token, which wingetcreate warns can leak the token into logs.
       - name: Submit manifests to winget-pkgs
-        if: env.WINGET_TOKEN != ''
+        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         env:
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           .\wingetcreate.exe submit packaging/winget/manifests
 
-      # thurbox releases far faster than winget-pkgs' manual moderation merges,
-      # so each `submit` above stacks yet another open PR on top of the prior
-      # ones (wingetcreate has no "supersede the previous open PR" mode —
-      # `--replace` only supersedes a *published* manifest version, not a
-      # pending PR). Left alone they pile up (30 open at once, flagged in
-      # microsoft/winget-pkgs#405639) and annoy the moderators. So right after
-      # submitting the new version, close every *older* still-open
-      # Thurbeen.thurbox PR authored by the token account, keeping only the
-      # newest (the one just opened). Best-effort: never fail the release on a
-      # cleanup hiccup.
+      # Second-line cleanup behind the throttle above: even at one submission per
+      # window, a stray manual dispatch (or a race) can leave more than one open
+      # Thurbeen.thurbox PR. wingetcreate has no "supersede the previous open PR"
+      # mode (`--replace` only supersedes a *published* manifest version, not a
+      # pending PR), so right after submitting the new version, close every
+      # *older* still-open PR authored by the token account, keeping only the one
+      # just opened. Runs only when the throttle let us submit (so it never
+      # closes a pending PR we deliberately coalesced into). Best-effort: never
+      # fail the release on a cleanup hiccup.
       - name: Close superseded winget-pkgs PRs
-        if: env.WINGET_TOKEN != ''
+        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         continue-on-error: true
         env:

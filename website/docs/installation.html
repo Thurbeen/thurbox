@@ -123,9 +123,8 @@ onThisPage:
               <strong>not yet merged</strong>
               , so
               <code>winget install Thurbeen.thurbox</code>
-              will not resolve until the PR is approved. Use
-              <a href="#chocolatey">Chocolatey</a>
-              or the PowerShell installer above in the meantime.
+              will not resolve until the PR is approved. Use the PowerShell
+              installer above in the meantime.
             </p>
           </div>
           <p>
@@ -139,6 +138,19 @@ onThisPage:
             <a href="https://github.com/psmux/psmux">psmux</a>
             as the multiplexer, installed separately.
           </p>
+          <div class="info-box">
+            <p>
+              <strong>Release cadence.</strong>
+              winget-pkgs is manually reviewed, so thurbox submits a new winget
+              version
+              <strong>at most once every 30 days</strong>
+              (intermediate releases are coalesced into the next submission). The
+              latest build always ships immediately via the PowerShell installer
+              above and
+              <a href="https://github.com/Thurbeen/thurbox/releases">GitHub Releases</a>
+              ; the winget channel intentionally trails a little.
+            </p>
+          </div>
 
           <h2 id="chocolatey">
             Chocolatey (Windows)
@@ -162,6 +174,19 @@ onThisPage:
             as the multiplexer, installed separately (there is no Chocolatey package for it).
             New versions go through community-repo moderation before they appear.
           </p>
+          <div class="info-box">
+            <p>
+              <strong>Release cadence.</strong>
+              Like winget, the Chocolatey community repo is moderated and
+              rate-limited, so thurbox pushes a new Chocolatey version
+              <strong>at most once every 30 days</strong>
+              (intermediate releases are coalesced into the next push). The
+              latest build always ships immediately via the PowerShell installer
+              above and
+              <a href="https://github.com/Thurbeen/thurbox/releases">GitHub Releases</a>
+              ; the Chocolatey channel intentionally trails a little.
+            </p>
+          </div>
 
           <h2 id="homebrew">
             Homebrew

@@ -31,12 +31,14 @@ committed here are a last-known-good template — CI overrides them per release.
 
 ## Why winget as well as Chocolatey
 
-The [Chocolatey](../chocolatey/README.md) package sits behind community-repo
-moderation, which can hold a new package (and each new version) for a long time.
-winget is Microsoft's first-party Windows package manager (bundled with Windows
-10/11 via *App Installer*), so this gives Windows users a channel that doesn't
-depend on Chocolatey moderation. Both channels are published from the same
-release; neither replaces the other.
+winget is Microsoft's first-party Windows package manager, bundled with Windows
+10/11 via *App Installer* — so a Windows user can `winget install
+Thurbeen.thurbox` with nothing else installed, whereas Chocolatey must be set up
+first. Both are published from the same release and neither replaces the other.
+Both are also *manually moderated* channels that can't keep pace with thurbox's
+release cadence, so **both are throttled to one submission per 30 days** (see
+[Automated publishing](#automated-publishing-ci)); the newest binary always
+ships immediately via GitHub Releases regardless.
 
 ## Supported platforms
 
@@ -65,16 +67,20 @@ are documented in the package `Description` rather than auto-installed:
 Every release submits to winget-pkgs **automatically** — including the first.
 The `publish-winget` job in
 [`.github/workflows/cd.yml`](../../.github/workflows/cd.yml) runs on
-`windows-latest` after the GitHub Release is created and:
+`windows-latest` after the GitHub Release is created and, **when the throttle
+window has elapsed** (below):
 
 1. downloads the release `thurbox-<version>-checksums.txt`,
 2. runs [`bump-manifests.py`](bump-manifests.py) to set `PackageVersion` across
    the manifests and the installer manifest's `InstallerUrl`/`InstallerSha256`
    (uppercased, as winget-pkgs expects) plus the locale `ReleaseNotesUrl` from
    those checksums,
-3. downloads `wingetcreate` (`https://aka.ms/wingetcreate/latest`), then
+3. downloads `wingetcreate` (`https://aka.ms/wingetcreate/latest`),
 4. `wingetcreate submit`s the manifest set, which validates it and opens a PR
-   against [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs).
+   against [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs),
+   then
+5. closes any *older* still-open `Thurbeen.thurbox` PR from the token account,
+   keeping only the one just opened (second-line cleanup behind the throttle).
 
 The job needs a `WINGET_TOKEN` secret — a classic PAT with the `public_repo`
 scope on the account that owns a fork of `microsoft/winget-pkgs` (wingetcreate
@@ -83,6 +89,24 @@ where the secret is absent (e.g. on forks). The committed template files are not
 modified by CI — they stay as last-known-good, exactly like the Chocolatey /
 Homebrew templates.
 
+> **Throttled to one submission per `THROTTLE_DAYS` (30 days)**, mirroring
+> Chocolatey. winget-pkgs is a *manually moderated* repo — each `submit` opens a
+> PR a human must review — so it can't absorb thurbox's per-`feat`/`fix`/`perf`
+> release cadence: a release every few hours buries the maintainers under stale
+> version-bump PRs (30 open at once, flagged in
+> [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
+> So the job first reads our own last thurbox PR on winget-pkgs (via `gh pr list`,
+> merged or open) for its age — the winget analog of the Chocolatey feed's
+> Published date. If it is younger than `THROTTLE_DAYS` the job **skips the
+> submission and exits green** with a `::warning::`, coalescing the intervening
+> patch releases into the next monthly winget PR. The binary itself always ships
+> immediately via GitHub Releases (and Homebrew/AUR); only the winget channel
+> lags. Tune the cadence via the `THROTTLE_DAYS` env in the job. When the window
+> *has* elapsed and a submission goes out, the follow-up cleanup step closes any
+> older still-open PR (best-effort, never fails the release) — since
+> `wingetcreate` has no supersede-pending-PR mode (`--replace` only affects a
+> *published* manifest version).
+>
 > **Review (winget-pkgs side, not CI).** microsoft/winget-pkgs runs automated
 > validation (manifest schema, installer hash, a sandbox install/uninstall
 > smoke test) and then human review before a version goes live. The
