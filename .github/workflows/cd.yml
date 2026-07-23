@@ -409,10 +409,21 @@ jobs:
           git push origin HEAD
 
   # Publish the Chocolatey package to the community repo.
+  #
+  # Chocolatey's community repo moderates + rate-limits every push, so it can't
+  # keep up with thurbox's per-`feat`/`fix`/`perf` release cadence: versions
+  # pile up in the queue and `choco push` starts returning 403 (rate/quota).
+  # This job therefore *throttles* itself — it pushes at most once per
+  # THROTTLE_DAYS window, coalescing the intervening patch releases into a
+  # single Chocolatey version (the latest binary still ships immediately via
+  # GitHub Releases + Homebrew/AUR/winget). When the window hasn't elapsed (or a
+  # push still 403s despite the throttle), the job records a `::warning::` and
+  # exits green — a backed-up Chocolatey channel must never turn the whole
+  # release red.
+  #
   # Runs after `publish` so the release zip + checksums.txt exist. The choco CLI
   # is Windows-only, so this runs on windows-latest. Requires the
   # CHOCOLATEY_API_KEY secret; skipped automatically if unset (e.g. on forks).
-  # New versions are held for community-repo moderation before going live.
   publish-chocolatey:
     name: Publish Chocolatey package
     needs: [check-release, create-tag, publish]
@@ -422,14 +433,70 @@ jobs:
     # (the `secrets` context cannot be used directly in an `if` condition).
     env:
       CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+      # Minimum days between Chocolatey pushes. One push/month keeps thurbox well
+      # under the community-repo moderation/rate limits while still shipping a
+      # recent version. Tune here if the queue clears faster/slower.
+      THROTTLE_DAYS: "30"
     steps:
       - name: Checkout code at tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.check-release.outputs.version }}
 
-      - name: Download release checksums
+      # Query the community feed for the last-published thurbox version and when
+      # it went up. If that push is younger than THROTTLE_DAYS, skip this
+      # release (green + warning) so patch releases coalesce into one monthly
+      # Chocolatey version instead of hammering the moderation queue.
+      - name: Check throttle window
+        id: throttle
         if: env.CHOCOLATEY_API_KEY != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $throttleDays = [int]$env:THROTTLE_DAYS
+          # OData v2 feed for the latest published thurbox version, as JSON
+          # (`$format=json` → a stable `.d.results` array — far less fragile
+          # than parsing the default Atom/XML shape).
+          $feed = "https://community.chocolatey.org/api/v2/Packages()?" +
+            "`$filter=Id eq 'thurbox' and IsLatestVersion eq true&`$top=1&`$format=json"
+          $shouldPush = $true
+          $reason = ""
+          try {
+            $resp = Invoke-RestMethod -UseBasicParsing -Uri $feed
+            $entry = @($resp.d.results) | Select-Object -First 1
+            if (-not $entry) {
+              $reason = "no published thurbox version found on Chocolatey — first push"
+            } else {
+              # OData dates arrive as ISO-8601 or `/Date(ms)/`; [datetime] parses
+              # the former, so strip the wrapper for the latter.
+              $raw = "$($entry.Published)"
+              if ($raw -match '/Date\((\d+)') {
+                $published = [datetimeoffset]::FromUnixTimeMilliseconds([long]$Matches[1]).UtcDateTime
+              } else {
+                $published = ([datetime]$raw).ToUniversalTime()
+              }
+              $ageDays = ((Get-Date).ToUniversalTime() - $published).TotalDays
+              if ($ageDays -lt $throttleDays) {
+                $shouldPush = $false
+                $reason = ("last Chocolatey push was {0:N1} days ago (< {1}d throttle)" -f $ageDays, $throttleDays)
+              } else {
+                $reason = ("last Chocolatey push was {0:N1} days ago (>= {1}d throttle)" -f $ageDays, $throttleDays)
+              }
+            }
+          } catch {
+            # A feed hiccup must not block a legitimate release; err toward pushing.
+            $reason = "could not read Chocolatey feed ($($_.Exception.Message)); proceeding with push"
+          }
+          "should_push=$($shouldPush.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ($shouldPush) {
+            Write-Host "Chocolatey throttle: PUSH — $reason"
+          } else {
+            Write-Host "::warning title=Chocolatey push throttled::Skipping this release — $reason. It will be coalesced into the next monthly Chocolatey version."
+            "Chocolatey push **throttled** (green): $reason." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+      - name: Download release checksums
+        if: env.CHOCOLATEY_API_KEY != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         run: |
           $version = "${{ needs.check-release.outputs.version }}"
@@ -440,7 +507,7 @@ jobs:
           Get-Content checksums.txt
 
       - name: Bump package to the release version
-        if: env.CHOCOLATEY_API_KEY != ''
+        if: env.CHOCOLATEY_API_KEY != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         run: |
           python packaging/chocolatey/bump-nuspec.py `
@@ -451,18 +518,34 @@ jobs:
           Get-Content packaging/chocolatey/tools/chocolateyinstall.ps1
 
       - name: Pack the package
-        if: env.CHOCOLATEY_API_KEY != ''
+        if: env.CHOCOLATEY_API_KEY != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         run: |
           # Version is read from the bumped nuspec — do not pass --version.
           choco pack packaging/chocolatey/thurbox.nuspec --outputdirectory packaging/chocolatey
 
       - name: Push to the Chocolatey community repo
-        if: env.CHOCOLATEY_API_KEY != ''
+        if: env.CHOCOLATEY_API_KEY != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         run: |
           $nupkg = Get-ChildItem packaging/chocolatey/thurbox.*.nupkg | Select-Object -First 1
-          choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+          $out = choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -eq 0) {
+            "Chocolatey push **succeeded** — held for community moderation." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            exit 0
+          }
+          # Even with the throttle, a residual rate/quota rejection (403) or a
+          # "version already submitted/pending" conflict (409) must stay green —
+          # the version is safely on GitHub Releases and will be retried next
+          # window. Any other failure (bad package, auth) is a real error.
+          if ($out -match '\b(403|409)\b' -or $out -match '(?i)rate limit|too many|already been submitted|pending') {
+            Write-Host "::warning title=Chocolatey push deferred::choco push was rejected (rate limit / already pending). Exiting green; the version stays on GitHub Releases and will retry next window."
+            "Chocolatey push **deferred** (green): rejected by the community repo (rate limit / already pending)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            exit 0
+          }
+          Write-Error "choco push failed for a non-throttle reason (see log above)."
+          exit 1
 
   # Submit the winget manifests to microsoft/winget-pkgs.
   # Runs after `publish` so the release zip + checksums.txt exist. wingetcreate

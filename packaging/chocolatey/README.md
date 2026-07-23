@@ -52,10 +52,10 @@ choco uninstall thurbox -y
 
 ## Automated publishing (CI)
 
-Every release publishes to the Chocolatey community repo **automatically** —
-including the first. The `publish-chocolatey` job in
+The `publish-chocolatey` job in
 [`.github/workflows/cd.yml`](../../.github/workflows/cd.yml) runs on
-`windows-latest` after the GitHub Release is created and:
+`windows-latest` after the GitHub Release is created and, **when the throttle
+window has elapsed** (below):
 
 1. downloads the release `thurbox-<version>-checksums.txt`,
 2. runs [`bump-nuspec.py`](bump-nuspec.py) to set the nuspec `<version>` and the
@@ -64,11 +64,26 @@ including the first. The `publish-chocolatey` job in
 4. `choco push`es the `.nupkg` to `https://push.chocolatey.org/`.
 
 The `CHOCOLATEY_API_KEY` secret is **already configured** on the main thurbox
-repo, so CI pushes on every release — no manual first publish needed. The job is
-skipped only where the secret is absent (e.g. on forks). The committed template
-files are not modified by CI — they stay as last-known-good, exactly like the
-Homebrew formula template.
+repo. The job is skipped only where the secret is absent (e.g. on forks). The
+committed template files are not modified by CI — they stay as last-known-good,
+exactly like the Homebrew formula template.
 
+> **Throttled to one push per `THROTTLE_DAYS` (30 days).** The community repo
+> moderates *and* rate-limits every push, so it can't absorb thurbox's
+> per-`feat`/`fix`/`perf` release cadence — versions pile up in the moderation
+> queue and `choco push` starts returning **403**. So the job first reads the
+> community OData feed
+> (`community.chocolatey.org/api/v2/Packages()`, filtered to the latest
+> `thurbox` version) for the last-published version's age. If it is younger than
+> `THROTTLE_DAYS` the job **skips the push and exits green** with a
+> `::warning::`, coalescing the intervening patch releases into the next monthly
+> Chocolatey version. The binary itself always ships immediately via GitHub
+> Releases (and Homebrew/AUR/winget); only the Chocolatey channel lags. Tune the
+> cadence via the `THROTTLE_DAYS` env in the job. A residual `403`/`409` (rate
+> limit / already-pending) at push time is caught the same way — **green +
+> warning** — so a backed-up channel never turns the whole release red; only a
+> genuine failure (bad package, auth) fails red.
+>
 > **Moderation (chocolatey.org side, not CI).** The Chocolatey community
 > repository holds new packages — and each new version — for human moderation
 > before they go live. The automated `choco push` succeeds, but the package may

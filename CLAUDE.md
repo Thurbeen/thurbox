@@ -406,6 +406,18 @@ package channels (each gated on its secret, skipped on forks):
   community repo. Runs on `windows-latest`; needs the `CHOCOLATEY_API_KEY`
   secret. New versions go through community-repo moderation.
   Install: `choco install thurbox`. Windows x86_64 only.
+  **Throttled to one push per `THROTTLE_DAYS` (30d) window** because the
+  community repo moderates + rate-limits every push and can't keep up with
+  thurbox's per-`feat`/`fix`/`perf` cadence (versions pile up in the queue →
+  `choco push` starts returning **403**). The job queries the community OData
+  feed (`community.chocolatey.org/api/v2/Packages()`) for the last-published
+  version's age; if it's younger than the window it **skips the push and exits
+  green** with a `::warning::` (patch releases coalesce into the next monthly
+  Chocolatey version — the binary still ships immediately via GitHub Releases +
+  Homebrew/AUR/winget). A residual `403`/`409` (rate limit / already-pending) at
+  push time is likewise **caught and exits green**; only a genuine failure (bad
+  package, auth) fails the job red. So a backed-up Chocolatey channel never
+  turns the whole release red.
 - **winget** (`publish-winget`): bumps `PackageVersion`/`InstallerUrl`/
   `InstallerSha256`/`ReleaseNotesUrl` in the three manifests under
   `packaging/winget/manifests/` (via `packaging/winget/bump-manifests.py`,
