@@ -484,6 +484,8 @@ fn footer_line(state: &RepoPickerState<'_>) -> Line<'static> {
             Span::styled(" open/pick  ", Theme::keybind_desc()),
             Span::styled("Tab", Theme::keybind()),
             Span::styled(" refresh  ", Theme::keybind_desc()),
+            Span::styled("S-Tab", Theme::keybind()),
+            Span::styled(" list  ", Theme::keybind_desc()),
             Span::styled("Esc", Theme::keybind()),
             Span::styled(" close", Theme::keybind_desc()),
         ]),
@@ -500,6 +502,8 @@ fn footer_line(state: &RepoPickerState<'_>) -> Line<'static> {
                 Span::styled(" add repo  ", Theme::keybind_desc()),
                 Span::styled("Ctrl+P", Theme::keybind()),
                 Span::styled(" import parent  ", Theme::keybind_desc()),
+                Span::styled("S-Tab", Theme::keybind()),
+                Span::styled(" list  ", Theme::keybind_desc()),
                 Span::styled("Esc", Theme::keybind()),
                 Span::styled(" cancel", Theme::keybind_desc()),
             ])
@@ -620,6 +624,9 @@ mod tests {
         let without_text = span_text(&footer_line(&without).spans);
         assert!(without_text.contains("browse"));
         assert!(!without_text.contains("complete"));
+        // Shift+Tab back to the list is discoverable from the input.
+        assert!(without_text.contains("S-Tab"));
+        assert!(without_text.contains("list"));
     }
 
     #[test]
@@ -636,6 +643,7 @@ mod tests {
         assert!(text.contains("open/pick"));
         assert!(text.contains("refresh"));
         assert!(text.contains("close"));
+        assert!(text.contains("S-Tab"));
     }
 
     #[test]
