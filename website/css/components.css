@@ -536,12 +536,14 @@
   background: var(--green);
   box-shadow: var(--glow-green);
   flex-shrink: 0;
+  animation: led-pulse 2.4s ease-in-out infinite;
 }
 
-/* Video frames get a red REC-style LED */
+/* Video frames get a blinking red REC LED */
 .terminal-frame:has(video) .terminal-header::before {
   background: var(--red);
   box-shadow: var(--glow-red);
+  animation: doom-blink 1.1s steps(1) infinite;
 }
 
 /* Console-style titles */
@@ -556,5 +558,79 @@
   .btn {
     min-height: 44px;
     padding-block: 0.95rem;
+  }
+}
+
+/* ---- Live-terminal animations ----
+   Pulsing power LED + a CRT refresh sweep traveling down each panel,
+   so code/video windows feel alive (retro game-terminal). */
+
+@keyframes led-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    filter: drop-shadow(0 0 4px rgb(110, 255, 110, 0.7));
+  }
+  50% {
+    opacity: 0.4;
+    filter: drop-shadow(0 0 1px rgb(110, 255, 110, 0.3));
+  }
+}
+
+/* CRT refresh sweep — a soft scanning band down each panel */
+.terminal-frame,
+.tui-demo,
+.code-block {
+  position: relative;
+}
+
+.terminal-frame::after,
+.tui-demo::after,
+.code-block::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 40%;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, rgb(255, 255, 255, 0.05), transparent);
+  transform: translateY(-100%);
+  animation: crt-scan 3.4s linear infinite;
+}
+
+@keyframes crt-scan {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(260%);
+  }
+}
+
+/* Panels glow red on hover */
+.terminal-frame:hover,
+.tui-demo:hover,
+.code-block:hover {
+  box-shadow:
+    var(--bevel-glow-red),
+    0 8px 30px rgb(0, 0, 0, 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-header::before,
+  .code-block-header::before,
+  .terminal-frame:has(video) .terminal-header::before,
+  .terminal-frame::after,
+  .tui-demo::after,
+  .code-block::after {
+    animation: none;
+  }
+
+  .terminal-frame::after,
+  .tui-demo::after,
+  .code-block::after {
+    display: none;
   }
 }

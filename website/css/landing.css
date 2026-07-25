@@ -579,26 +579,20 @@ main {
   width: 100%;
   height: 10px;
   margin-top: var(--space-md);
-  background-color: var(--hud-bg-deep);
-  background-image:
-    /* hot comet beam — sweeps across the bar */
-    linear-gradient(
-      90deg,
-      transparent,
-      rgb(255, 51, 38) 35%,
-      rgb(255, 255, 255) 50%,
-      rgb(255, 51, 38) 65%,
-      transparent
-    ),
-    /* bright power-bar cells underneath */
-    repeating-linear-gradient(90deg, rgb(232, 24, 11, 0.6) 0 16px, transparent 16px 26px);
-  background-size:
-    200% 100%,
-    100% 100%;
-  background-repeat: no-repeat, repeat;
+  background-color: var(--doom-red);
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255, 255, 255, 0.85) 48%,
+    rgb(255, 255, 255) 50%,
+    rgb(255, 255, 255, 0.85) 52%,
+    transparent
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
   box-shadow: var(--bevel);
 
-  /* sweeping comet + breathing glow — impossible to miss */
+  /* sweeping glare + breathing glow over a solid red bar */
   animation:
     doom-scan 1.8s linear infinite,
     doom-pulse 1.4s ease-in-out infinite;
@@ -606,14 +600,10 @@ main {
 
 @keyframes doom-scan {
   0% {
-    background-position:
-      -200% 0,
-      0 0;
+    background-position: -200% 0;
   }
   100% {
-    background-position:
-      200% 0,
-      0 0;
+    background-position: 200% 0;
   }
 }
 
@@ -630,13 +620,7 @@ main {
 @media (prefers-reduced-motion: reduce) {
   .section-title::after {
     animation: none;
-    background-image: repeating-linear-gradient(
-      90deg,
-      var(--doom-red) 0 16px,
-      transparent 16px,
-      transparent 26px
-    );
-    background-size: 100% 100%;
+    background-image: none;
   }
 }
 
