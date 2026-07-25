@@ -34,6 +34,9 @@
   font-size: clamp(1.6rem, 5vw, 2.75rem);
   margin-bottom: var(--space-lg);
   letter-spacing: 0.01em;
+  text-shadow:
+    var(--glow-red),
+    0 0 24px rgb(232, 24, 11, 0.55);
   animation: flicker 4.5s infinite steps(1);
 }
 
@@ -50,12 +53,19 @@
 
 .hero-eyebrow {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.2em;
+  color: var(--ember);
+  margin-bottom: var(--space-lg);
+  text-shadow: var(--glow-red);
+}
+
+.hero-eyebrow::before {
+  content: '\25CF\2002';
   color: var(--green);
-  margin-bottom: var(--space-md);
+  text-shadow: var(--glow-green);
 }
 
 .hero .subtitle {
@@ -458,7 +468,7 @@
 /* ---- Back to top ---- */
 .back-to-top {
   position: fixed;
-  bottom: var(--space-lg);
+  bottom: calc(var(--space-lg) + 34px);
   right: var(--space-lg);
   width: 44px;
   height: 44px;
@@ -499,5 +509,198 @@
   .back-to-top {
     transition: opacity var(--transition);
     transform: none;
+  }
+}
+
+/* ============================================================
+   DOOM GAME-UI — title screen + level intermission + HUD bar
+   (landing only; body copy keeps readable Inter + AA contrast)
+   ============================================================ */
+
+/* Reserve room under the fixed HUD status bar */
+body {
+  padding-bottom: 34px;
+}
+
+/* ---- Title-screen "PRESS START" prompt ---- */
+.hero-press-start {
+  font-family: var(--font-display);
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-lg);
+  text-shadow: var(--glow-red);
+  animation: doom-blink 1.1s steps(1) infinite;
+}
+
+.hero-press-start .arrow {
+  color: var(--doom-red-bright);
+}
+
+@keyframes doom-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.12;
+  }
+}
+
+/* ---- Level-intermission section dividers ----
+   Each titled section becomes a "level": MAP 01, MAP 02 … */
+main {
+  counter-reset: level;
+}
+
+.section-title {
+  counter-increment: level;
+  position: relative;
+  padding-bottom: var(--space-md);
+}
+
+.section-title h2::before {
+  content: 'MAP 0' counter(level);
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  color: var(--ember);
+  text-shadow: var(--glow-red);
+  margin-bottom: var(--space-sm);
+}
+
+.section-title::after {
+  content: '';
+  display: block;
+  width: 100%;
+  height: 10px;
+  margin-top: var(--space-md);
+  background-color: var(--hud-bg-deep);
+  background-image:
+    /* hot comet beam — sweeps across the bar */
+    linear-gradient(
+      90deg,
+      transparent,
+      rgb(255, 51, 38) 35%,
+      rgb(255, 255, 255) 50%,
+      rgb(255, 51, 38) 65%,
+      transparent
+    ),
+    /* bright power-bar cells underneath */
+    repeating-linear-gradient(90deg, rgb(232, 24, 11, 0.6) 0 16px, transparent 16px 26px);
+  background-size:
+    200% 100%,
+    100% 100%;
+  background-repeat: no-repeat, repeat;
+  box-shadow: var(--bevel);
+
+  /* sweeping comet + breathing glow — impossible to miss */
+  animation:
+    doom-scan 1.8s linear infinite,
+    doom-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes doom-scan {
+  0% {
+    background-position:
+      -200% 0,
+      0 0;
+  }
+  100% {
+    background-position:
+      200% 0,
+      0 0;
+  }
+}
+
+@keyframes doom-pulse {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 2px rgb(232, 24, 11, 0.3));
+  }
+  50% {
+    filter: drop-shadow(0 0 9px rgb(255, 51, 38, 0.95));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .section-title::after {
+    animation: none;
+    background-image: repeating-linear-gradient(
+      90deg,
+      var(--doom-red) 0 16px,
+      transparent 16px,
+      transparent 26px
+    );
+    background-size: 100% 100%;
+  }
+}
+
+/* ---- HUD status bar (the Doom status-bar flourish) ---- */
+.hud-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-lg);
+  height: 30px;
+  padding: 0 var(--space-lg);
+  background: var(--hud-bg-deep);
+  border-top: 2px solid var(--hud-edge);
+  box-shadow: var(--bevel);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.hud-bar__seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.hud-bar__seg .k {
+  color: var(--ember);
+  text-shadow: var(--glow-red);
+}
+
+.hud-bar__seg .v {
+  color: var(--text-primary);
+}
+
+.hud-bar__live {
+  width: 8px;
+  height: 8px;
+  background: var(--green);
+  box-shadow: var(--glow-green);
+  animation: doom-blink 1.1s steps(1) infinite;
+}
+
+@media (max-width: 639px) {
+  .hud-bar {
+    gap: var(--space-md);
+    font-size: 0.58rem;
+    height: 28px;
+  }
+
+  .hud-bar__seg--hide-sm {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-press-start,
+  .hud-bar__live {
+    animation: none;
   }
 }

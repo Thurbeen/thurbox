@@ -40,6 +40,16 @@ body::after {
   mix-blend-mode: multiply;
 }
 
+/* CRT vignette — faint screen-shell darkening at the edges */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  pointer-events: none;
+  background: var(--vignette);
+}
+
 h1,
 h2,
 h3,

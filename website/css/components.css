@@ -10,16 +10,18 @@
   justify-content: space-between;
   padding: 0 var(--space-lg);
   z-index: 100;
-  border-bottom: 1px solid transparent;
+  border-bottom: 2px solid var(--hud-bg-deep);
+  box-shadow: inset 0 -1px 0 0 rgb(232, 24, 11, 0.45);
   transition:
     background var(--transition),
-    border-color var(--transition);
+    box-shadow var(--transition);
 }
 
 .nav.scrolled {
   background: var(--bg-nav);
-  border-bottom-color: var(--border);
+  border-bottom-color: var(--hud-edge);
   backdrop-filter: blur(12px);
+  box-shadow: var(--bevel);
 }
 
 .nav-brand {
@@ -66,6 +68,30 @@
 
 .nav-links a.active {
   color: var(--cyan);
+  text-shadow: var(--glow-red);
+}
+
+/* Menu selector — a ▶ cursor slides in on hover/active (Doom main-menu) */
+.nav-links a::before {
+  content: '\25B6';
+  display: inline-block;
+  width: 0;
+  margin-right: 0;
+  overflow: hidden;
+  opacity: 0;
+  color: var(--doom-red-bright);
+  font-size: 0.7em;
+  transition:
+    width var(--transition),
+    margin-right var(--transition),
+    opacity var(--transition);
+}
+
+.nav-links a:hover::before,
+.nav-links a.active::before {
+  width: 0.9em;
+  margin-right: 0.4em;
+  opacity: 1;
   text-shadow: var(--glow-red);
 }
 
@@ -155,6 +181,7 @@
   color: #0a2e0a;
   border-color: var(--green);
   box-shadow:
+    var(--bevel),
     0 0 10px rgb(110, 255, 110, 0.5),
     inset 0 0 6px rgb(255, 255, 255, 0.25);
 }
@@ -171,7 +198,8 @@
 .btn-secondary {
   background: transparent;
   color: var(--cyan);
-  border-color: var(--border);
+  border-color: var(--hud-edge);
+  box-shadow: var(--bevel);
 }
 
 .btn-secondary:hover {
@@ -184,8 +212,8 @@
 /* ---- Cards ---- */
 .card {
   background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--border-radius);
+  border: 1px solid var(--hud-edge);
+  box-shadow: var(--bevel);
   padding: var(--space-lg);
   transition:
     border-color var(--transition),
@@ -193,8 +221,10 @@
 }
 
 .card:hover {
-  border-color: var(--text-muted);
-  box-shadow: 0 4px 14px rgb(0, 0, 0, 0.35);
+  border-color: var(--doom-red);
+  box-shadow:
+    var(--bevel-glow-red),
+    0 4px 14px rgb(0, 0, 0, 0.5);
 }
 
 .card-icon {
@@ -238,10 +268,11 @@
 .terminal-frame,
 .tui-demo {
   background: var(--bg-code);
-  border: 1px solid var(--border);
-  border-radius: var(--border-radius);
+  border: 1px solid var(--hud-edge);
   overflow: hidden;
-  box-shadow: 0 8px 30px rgb(0, 0, 0, 0.5);
+  box-shadow:
+    var(--bevel),
+    0 8px 30px rgb(0, 0, 0, 0.5);
 }
 
 .terminal-header {
@@ -251,22 +282,6 @@
   padding: 12px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
-}
-
-.terminal-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-}
-
-.terminal-dot.red {
-  background: var(--term-dot-red);
-}
-.terminal-dot.yellow {
-  background: var(--term-dot-yellow);
-}
-.terminal-dot.green {
-  background: var(--term-dot-green);
 }
 
 .terminal-title {
@@ -297,10 +312,11 @@
 /* ---- Code block (build-time Prism highlighting) ---- */
 .code-block {
   background: var(--bg-code);
-  border: 1px solid var(--border);
-  border-radius: var(--border-radius);
+  border: 1px solid var(--hud-edge);
   overflow: hidden;
-  box-shadow: 0 8px 30px rgb(0, 0, 0, 0.5);
+  box-shadow:
+    var(--bevel),
+    0 8px 30px rgb(0, 0, 0, 0.5);
   margin-bottom: var(--space-md);
 }
 
@@ -424,7 +440,8 @@
 /* ---- Footer ---- */
 .footer {
   padding: var(--space-2xl) 0;
-  border-top: 1px solid var(--border);
+  border-top: 2px solid var(--hud-bg-deep);
+  box-shadow: inset 0 2px 0 0 rgb(232, 24, 11, 0.25);
   text-align: center;
 }
 
@@ -494,4 +511,50 @@
   width: 20px;
   height: 20px;
   fill: currentColor;
+}
+
+/* ============================================================
+   GAME-TERMINAL CHROME — replaces macOS traffic-light window dots.
+   One square status LED (green = power, red = REC for video) + a
+   beveled header bar + uppercase mono title. No macOS vibes.
+   ============================================================ */
+
+/* Beveled header bar with an ember accent edge (matches the HUD nav) */
+.terminal-header,
+.code-block-header {
+  border-bottom: 2px solid var(--hud-bg-deep);
+  box-shadow: inset 0 -1px 0 0 rgb(232, 24, 11, 0.3);
+}
+
+/* Single square status LED — a power / online indicator */
+.terminal-header::before,
+.code-block-header::before {
+  content: '';
+  display: block;
+  width: 9px;
+  height: 9px;
+  background: var(--green);
+  box-shadow: var(--glow-green);
+  flex-shrink: 0;
+}
+
+/* Video frames get a red REC-style LED */
+.terminal-frame:has(video) .terminal-header::before {
+  background: var(--red);
+  box-shadow: var(--glow-red);
+}
+
+/* Console-style titles */
+.terminal-title,
+.code-block-lang {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+/* Touch targets — meet the 44px minimum on phones */
+@media (max-width: 639px) {
+  .btn {
+    min-height: 44px;
+    padding-block: 0.95rem;
+  }
 }

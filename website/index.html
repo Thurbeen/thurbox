@@ -68,6 +68,7 @@ footer: true
           </span>
           <span class="agent-support-any">plus any CLI agent</span>
         </p>
+        <p class="hero-press-start"><span class="arrow">&#9654;</span> Press any key to begin <span class="arrow">&#9654;</span></p>
         <div class="hero-ctas">
           <a href="#installation" class="btn btn-primary">Get Started</a>
           <a href="docs/index.html" class="btn btn-secondary">View Docs</a>
@@ -81,7 +82,7 @@ footer: true
               aria-controls="panel-script"
               aria-selected="true"
             >
-              Install Script
+              Shell Script
             </button>
             <button
               class="install-tab"
@@ -91,7 +92,7 @@ footer: true
               aria-selected="false"
               tabindex="-1"
             >
-              Windows
+              PowerShell
             </button>
             <button
               class="install-tab"
@@ -280,9 +281,6 @@ cargo build --release</code></pre>
         <div class="hero-demo">
           <div class="terminal-frame">
             <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
               <span class="terminal-title">thurbox</span>
             </div>
             <div class="terminal-body">
@@ -493,9 +491,6 @@ cargo build --release</code></pre>
               </p>
               <div class="tui-demo">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">thurbox</span>
                 </div>
                 <div class="terminal-body">
@@ -517,9 +512,6 @@ cargo build --release</code></pre>
               </p>
               <div class="tui-demo">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">thurbox</span>
                 </div>
                 <div class="terminal-body">
@@ -561,9 +553,6 @@ Ctrl+O  Open repos in editor</pre>
             <div class="feature-row-media">
               <div class="terminal-frame">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">Code review</span>
                 </div>
                 <div class="terminal-body">
@@ -590,9 +579,6 @@ Ctrl+O  Open repos in editor</pre>
             <div class="feature-row-media">
               <div class="terminal-frame">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">Automations</span>
                 </div>
                 <div class="terminal-body">
@@ -618,9 +604,6 @@ Ctrl+O  Open repos in editor</pre>
             <div class="feature-row-media">
               <div class="terminal-frame">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">Tasks</span>
                 </div>
                 <div class="terminal-body">
@@ -646,9 +629,6 @@ Ctrl+O  Open repos in editor</pre>
             <div class="feature-row-media">
               <div class="terminal-frame">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">Global search</span>
                 </div>
                 <div class="terminal-body">
@@ -676,9 +656,6 @@ Ctrl+O  Open repos in editor</pre>
             <div class="feature-row-media">
               <div class="terminal-frame">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">Session creation</span>
                 </div>
                 <div class="terminal-body">
@@ -704,9 +681,6 @@ Ctrl+O  Open repos in editor</pre>
             <div class="feature-row-media">
               <div class="terminal-frame">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">File viewer</span>
                 </div>
                 <div class="terminal-body">
@@ -732,9 +706,6 @@ Ctrl+O  Open repos in editor</pre>
             <div class="feature-row-media">
               <div class="terminal-frame">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">Info panel</span>
                 </div>
                 <div class="terminal-body">
@@ -760,9 +731,6 @@ Ctrl+O  Open repos in editor</pre>
             <div class="feature-row-media">
               <div class="terminal-frame">
                 <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
                   <span class="terminal-title">Themes</span>
                 </div>
                 <div class="terminal-body">
@@ -835,3 +803,24 @@ Ctrl+O  Open repos in editor</pre>
     <button class="back-to-top" id="back-to-top" aria-label="Back to top" title="Back to top">
       <span aria-hidden="true">&uarr;</span>
     </button>
+
+    <!-- HUD status bar (decorative game chrome) -->
+    <div class="hud-bar" aria-hidden="true" role="presentation">
+      <span class="hud-bar__seg">
+        <span class="hud-bar__live"></span>
+        <span class="k">System</span>
+        <span class="v">Online</span>
+      </span>
+      <span class="hud-bar__seg hud-bar__seg--hide-sm">
+        <span class="k">Agents</span>
+        <span class="v">8+</span>
+      </span>
+      <span class="hud-bar__seg hud-bar__seg--hide-sm">
+        <span class="k">Backend</span>
+        <span class="v">tmux</span>
+      </span>
+      <span class="hud-bar__seg">
+        <span class="k">License</span>
+        <span class="v">MIT</span>
+      </span>
+    </div>

@@ -24,17 +24,11 @@
   --border: #36302a;
   --border-light: #26211c;
 
-  /* Terminal chrome — classic arcade button colors */
-  --term-dot-red: #ff3b30;
-  --term-dot-yellow: #ffb627;
-  --term-dot-green: #6eff6e;
-  --term-glow: rgb(255, 92, 84, 0.16);
-
   /* Retro neon glows (used sparingly, as a wink to Doom) */
   --glow-red: 0 0 5px rgb(255, 92, 84, 0.7), 0 0 12px rgb(255, 59, 48, 0.4);
   --glow-green: 0 0 5px rgb(110, 255, 110, 0.7), 0 0 12px rgb(110, 255, 110, 0.4);
   --glow-cyan: 0 0 5px rgb(0, 217, 255, 0.7), 0 0 12px rgb(0, 217, 255, 0.4);
-  --scanline: rgb(0, 0, 0, 0.14);
+  --scanline: rgb(0, 0, 0, 0.2);
 
   /* Typography */
   --font-display: 'Press Start 2P', 'JetBrains Mono', monospace;
@@ -59,4 +53,41 @@
 
   /* Transitions */
   --transition: 200ms ease;
+
+  /* ============================================================
+     DOOM GAME-UI — boot-screen treatment (full immersion)
+     Pixel bevels, HUD readouts, blood-red drama. Applied to CHROME
+     only (panels, buttons, bars, headings); body copy keeps its
+     readable Inter + AA contrast untouched.
+     ============================================================ */
+
+  /* Blood-red ramp for title + intermission drama */
+  --doom-red: #e8180b;
+  --doom-red-bright: #ff3326;
+  --ember: #ff5c1f;
+
+  /* Pixel bevel edges — Doom's signature 3D-beveled panels.
+     A light edge top-left, a shadow bottom-right, framed in near-black. */
+  --bevel-light: rgb(255, 255, 255, 0.14);
+  --bevel-dark: rgb(0, 0, 0, 0.62);
+  --bevel-frame: #07060a;
+
+  /* Composite bevel shadows (reusable on any panel / button) */
+  --bevel:
+    0 0 0 2px var(--bevel-frame), inset 2px 2px 0 0 var(--bevel-light),
+    inset -2px -2px 0 0 var(--bevel-dark);
+  --bevel-raised:
+    0 0 0 2px var(--bevel-frame), inset 3px 3px 0 0 var(--bevel-light),
+    inset -3px -3px 0 0 var(--bevel-dark);
+  --bevel-glow-red:
+    0 0 0 2px #07060a, 0 0 12px rgb(232, 24, 11, 0.5), inset 2px 2px 0 0 var(--bevel-light),
+    inset -2px -2px 0 0 var(--bevel-dark);
+
+  /* HUD status-bar surfaces */
+  --hud-bg: #14110e;
+  --hud-bg-deep: #0a0807;
+  --hud-edge: #3a322b;
+
+  /* CRT vignette for the screen-shell feel */
+  --vignette: radial-gradient(ellipse at 50% 50%, transparent 58%, rgb(0, 0, 0, 0.6));
 }

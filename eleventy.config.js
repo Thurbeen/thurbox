@@ -82,9 +82,6 @@ function renderCodeBlock(match, attrs, rawLang, body) {
 
   return `<div class="code-block"${wrapAttr}>
   <div class="code-block-header">
-    <span class="terminal-dot red"></span>
-    <span class="terminal-dot yellow"></span>
-    <span class="terminal-dot green"></span>
     <span class="code-block-lang">${escapeHtml(decodeEntities(label))}</span>
     <button class="copy-btn" type="button" aria-label="Copy code to clipboard">Copy</button>
   </div>
