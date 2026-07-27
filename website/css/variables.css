@@ -1,3 +1,36 @@
+/* ---- Self-hosted fonts ----
+   Served from our own origin instead of fonts.googleapis.com. That removes a
+   16.7 KB stylesheet, two preconnects, and a DNS+TLS round-trip to a third
+   party — and browsers now partition their HTTP cache per-origin, so the old
+   "someone else already cached it from Google" argument no longer holds.
+   Inter and JetBrains Mono are variable fonts: one file each covers 400-700,
+   which is why three files serve seven faces. Latin subset only.
+   font-display: swap keeps text visible while they load. */
+
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('../assets/fonts/inter-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Press Start 2P';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/press-start-2p-400.woff2') format('woff2');
+}
+
 :root {
   /* Backgrounds — neutral warm-charcoal (Doom is an accent, not the whole room) */
   --bg-primary: #15120f;
@@ -10,11 +43,15 @@
   /* Text */
   --text-primary: #e0e0e0;
   --text-secondary: #a0a0a0;
-  --text-muted: #6b6358;
+  --text-muted: #948a7d;
 
-  /* Accents — Doom red is the primary accent slot (was cyan) */
+  /* Accents — Doom red is the primary accent slot.
+     --accent is the semantic name; --cyan is a compat alias kept because the
+     Doom repaint reused the old cyan slot for red and ~14 call sites still
+     reference it. Prefer --accent in new rules. */
   --green: #6eff6e;
-  --cyan: #ff5c54;
+  --accent: #ff5c54;
+  --cyan: var(--accent);
   --yellow: #ffb627;
   --purple: #ff8c8c;
   --red: #ff3b30;
@@ -46,10 +83,29 @@
 
   /* Sizing */
   --container-max: 1200px;
+  --container-wide: 1440px;
   --nav-height: 64px;
   --sidebar-width: 260px;
+  --toc-width: 220px;
+  --hud-height: 30px;
+  --hero-demo-max: 900px;
   --border-radius: 0;
   --border-radius-sm: 0;
+
+  /* The one deliberate exception to the squared pixel-era look: status dots,
+     which read as LEDs rather than panels. Named so it can't drift silently.
+     (Badges and step numbers used to be rounded too — both are squared now.) */
+  --radius-round: 50%;
+
+  /* Breakpoint ladder (media queries can't use custom properties, so these
+     are documentation — keep every @media in the codebase on one of these):
+       480px   xs → sm   phone: scroll rails collapse to wrapped rows
+       640px   sm → md   nav goes inline; panel sweeps switch on; HUD grows
+       768px   md → lg   .feature-row goes side-by-side
+       960px   lg        install tablist stops scrolling and wraps
+       1024px  xl        .grid-3 reaches 3 cols; docs sidebar becomes static
+       1280px  2xl       docs gains the on-this-page rail
+       1440px  3xl       wide container; .grid-3 reaches 5 cols (10 cards = 5+5) */
 
   /* Transitions */
   --transition: 200ms ease;

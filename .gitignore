@@ -56,3 +56,8 @@ thurbox/
 # Python bytecode cache (from the packaging bump scripts)
 __pycache__/
 *.pyc
+
+# Demo videos are copied into website/assets/ from docs/media/ at deploy time
+# (.github/workflows/pages.yml) and for local `npm run dev:website`. They are
+# tracked once, in docs/media/ — never duplicated here.
+website/assets/*.mp4

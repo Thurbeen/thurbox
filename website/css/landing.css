@@ -30,6 +30,45 @@
   z-index: 1;
 }
 
+/* One centered column at every width: headline → install → demo → agents/badges.
+   Install comes first so the command to get thurbox is the thing right under the
+   headline; the demo sits directly below it. `order` drives this while the source
+   keeps the agent chips adjacent to the intro, so the 10 inline agent SVGs don't
+   have to be relocated. */
+.hero-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.hero-grid__intro {
+  order: 1;
+}
+
+.hero-grid__install {
+  order: 2;
+}
+
+.hero-grid__demo {
+  order: 3;
+}
+
+.hero-grid__meta {
+  order: 4;
+}
+
+/* In a flex COLUMN the items size on the cross axis, so `min-width: 0` alone
+   does not stop a wide child (the unwrappable curl command, the agent-chip
+   rail) from stretching the item past the viewport — it needs an explicit
+   max-width. Without this the hero overflowed ~90px horizontally at 390px. */
+.hero-grid__intro,
+.hero-grid__demo,
+.hero-grid__install,
+.hero-grid__meta {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .hero h1 {
   font-size: clamp(1.6rem, 5vw, 2.75rem);
   margin-bottom: var(--space-lg);
@@ -52,8 +91,10 @@
 }
 
 .hero-eyebrow {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+  /* Arcade face for the title-screen strapline. Smaller + tighter than the mono
+     it replaced, since Press Start 2P runs much wider per character. */
+  font-family: var(--font-display);
+  font-size: 0.56rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.2em;
@@ -110,6 +151,56 @@
   border-color: var(--text-secondary);
 }
 
+/* The rule above matches every descendant span, including the leading prose
+   label — undo the chip treatment on it. Resetting is less brittle here than a
+   :not() selector, since the chips contain their own inline SVG spans. */
+.agent-support .agent-support__label {
+  flex: 1 0 100%;
+  padding: 0;
+  border: none;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--text-muted);
+}
+
+.agent-support .agent-support__label:hover {
+  border-color: transparent;
+}
+
+/* Small phones: 10 chips wrap to five rows, so scroll them in one row instead. */
+@media (max-width: 479px) {
+  .agent-support {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+
+    /* max-width + min-width:0 are what actually confine the rail. overflow-x
+       alone scrolls the *content* but still lets this flex item stretch to its
+       content width, pushing the page sideways. */
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    padding-bottom: var(--space-xs);
+  }
+
+  .agent-support::-webkit-scrollbar {
+    display: none;
+  }
+
+  .agent-support .agent-support__label {
+    flex: 0 0 auto;
+    margin-right: var(--space-xs);
+  }
+
+  .agent-support > span {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+  }
+}
+
 .agent-logo {
   width: 14px;
   height: 14px;
@@ -134,11 +225,11 @@
   display: flex;
   gap: var(--space-sm);
   justify-content: center;
-  margin-bottom: var(--space-2xl);
+  margin-bottom: 0;
 }
 
 .hero-demo {
-  max-width: 1100px;
+  max-width: var(--hero-demo-max);
   margin: 0 auto;
 }
 
@@ -231,6 +322,18 @@
   }
 }
 
+/* The walkthrough caps its own width, so it needs its own bump to follow the
+   wider .container at 1440 instead of staying pinned at 1040. */
+@media (min-width: 1440px) {
+  .feature-showcase {
+    max-width: 1200px;
+  }
+
+  .feature-row-media {
+    flex: 1.3 1 0;
+  }
+}
+
 /* ---- Features grid ---- */
 .features {
   background: var(--bg-secondary);
@@ -249,7 +352,17 @@
     transform var(--transition);
 }
 
+/* Feature titles in the arcade face — these read as menu entries on a Doom
+   level select. Sized well below the mono h3 it replaces (Press Start 2P has no
+   descender room and runs ~1.6x wider per character) with extra line-height so
+   two-word titles wrap cleanly inside the tile. */
 .feature-link .card h3 {
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  font-weight: 400;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   color: var(--text-primary);
   transition: color var(--transition);
 }
@@ -267,24 +380,21 @@
   text-shadow: var(--glow-green);
 }
 
-.features .card-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--border-radius-sm);
-  font-size: 1.25rem;
-  background: var(--bg-code);
-  border: 1px solid var(--border);
-  transition:
-    border-color var(--transition),
-    box-shadow var(--transition);
-}
+/* Monochrome terminal glyphs, not emoji. Colour emoji were the only rounded,
+   multi-hue, non-pixel elements on the page and broke the CRT illusion; these
+   are drawn in the mono face on the ember ramp so the board reads as one
+   system. */
 
+/* The glyph tile itself is styled once in components.css (.card-icon), shared
+   with the docs hub. Only the hover state is landing-specific. */
 .feature-link:hover .card-icon {
+  color: var(--green);
   border-color: var(--green);
-  box-shadow: var(--glow-green);
+  text-shadow: var(--glow-green);
+
+  /* Keep the pixel bevel under the glow — dropping it would flatten the tile
+     on hover, which reads as the panel breaking rather than lighting up. */
+  box-shadow: var(--bevel), var(--glow-green);
 }
 
 /* ---- How it works ---- */
@@ -304,6 +414,12 @@
 
 .step-content {
   flex: 1;
+
+  /* A flex item's default min-width:auto refuses to shrink below its content,
+     so the ASCII .tui-demo inside pushed this past the viewport (the step
+     number + gap offset it by 80px). min-width:0 lets it shrink and the
+     .terminal-body's own overflow-x handle the wide ASCII art. */
+  min-width: 0;
 }
 
 .step-content h3 {
@@ -336,21 +452,71 @@
 
 /* ---- Install method tabs ---- */
 .install-tabs {
-  max-width: 780px;
+  /* Wide enough for all 7 tabs on one row (~810px of tabs + gaps). At 780px
+     "From Source" wrapped to a second row, which read as a layout bug. */
+  max-width: 880px;
   margin: 0 auto var(--space-xl);
   text-align: left;
+
+  /* #installation is a jump target from the hero CTA and from all 22 docs
+     pages. It sits high in the hero, so scroll-padding-top alone can't save it
+     — the browser has nowhere left to scroll and the tablist ends up under the
+     fixed nav. scroll-margin-top reserves the room on the element itself. */
+  scroll-margin-top: calc(var(--nav-height) + var(--space-lg));
 }
 
-.install-tablist {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-xs);
+/* 7 tabs are ~620px wide and would stack into 4 rows on a phone, so the rail
+   scrolls them horizontally. The rail — not the [role=tablist] — is the scroll
+   container: making the tablist itself scrollable would turn it into a
+   focusable scroll area and add noise for screen readers. The border lives on
+   the rail too, otherwise it scrolls away with the tabs. */
+.install-tablist-rail {
+  position: relative;
   border-bottom: 1px solid var(--border);
   margin-bottom: var(--space-lg);
 }
 
+/* Fade hinting at more tabs off the right edge */
+.install-tablist-rail::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 1px;
+  width: 2.5rem;
+  pointer-events: none;
+  background: linear-gradient(to right, rgb(21, 18, 15, 0), var(--bg-primary));
+}
+
+.install-tablist {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--space-xs);
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+
+.install-tablist::-webkit-scrollbar {
+  display: none;
+}
+
+/* Wide enough for all 7 — drop the rail affordance entirely. */
+@media (min-width: 960px) {
+  .install-tablist {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .install-tablist-rail::after {
+    display: none;
+  }
+}
+
 .install-tab {
   display: inline-flex;
+  flex: 0 0 auto;
+  scroll-snap-align: start;
   align-items: center;
   gap: var(--space-sm);
   padding: 0.65rem 1.1rem;
@@ -468,7 +634,10 @@
 /* ---- Back to top ---- */
 .back-to-top {
   position: fixed;
-  bottom: calc(var(--space-lg) + 34px);
+
+  /* Clears the HUD bar. landing.css only loads on the landing page, which is
+     the only page that has a HUD — docs pages keep the plain --space-lg gap. */
+  bottom: calc(var(--space-lg) + var(--hud-height));
   right: var(--space-lg);
   width: 44px;
   height: 44px;
@@ -517,35 +686,72 @@
    (landing only; body copy keeps readable Inter + AA contrast)
    ============================================================ */
 
-/* Reserve room under the fixed HUD status bar */
+/* Reserve room under the fixed HUD status bar. Both this and the bar's own
+   height read --hud-height so they can't drift apart. */
 body {
-  padding-bottom: 34px;
+  padding-bottom: calc(var(--hud-height) + var(--space-xs));
 }
 
-/* ---- Title-screen "PRESS START" prompt ---- */
+/* ---- Title-screen "PRESS START" prompt ----
+   A real <button>: click, Enter/Space, and (via main.js) any printable key
+   scroll to the demo. Button chrome is reset so it keeps reading as an arcade
+   attract-mode line rather than a control. */
 .hero-press-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.6rem 0.9rem;
   font-family: var(--font-display);
   font-size: 0.62rem;
+  line-height: 1;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-primary);
-  margin: 0 0 var(--space-lg);
+  background: none;
+  border: 2px solid transparent;
+  cursor: pointer;
   text-shadow: var(--glow-red);
-  animation: doom-blink 1.1s steps(1) infinite;
+  animation: doom-blink 2.4s ease-in-out infinite;
 }
 
 .hero-press-start .arrow {
   color: var(--doom-red-bright);
 }
 
+/* Hovering or focusing stops the pulse and frames it, so the label holds still
+   exactly when the user is aiming at it. */
+.hero-press-start:hover,
+.hero-press-start:focus-visible {
+  animation-play-state: paused;
+  opacity: 1;
+  border-color: var(--doom-red);
+  box-shadow: var(--bevel-glow-red);
+}
+
+/* Fired already — stop competing for attention. */
+.hero-press-start.is-spent {
+  animation: none;
+  opacity: 0.45;
+}
+
+@media (max-width: 639px) {
+  .hero-press-start {
+    min-height: 44px;
+  }
+}
+
+/* Softened arcade pulse. Was 1.1s steps(1) 1 → 0.12: a ~0.9Hz hard strobe at
+   ~8:1 contrast, which is a flash-sensitivity risk. Now a 0.42Hz interpolated
+   fade at ~1.8:1. Shared by .hud-bar__live and the REC LED, which override the
+   duration to keep a quicker blink. */
 @keyframes doom-blink {
   0%,
-  49% {
+  100% {
     opacity: 1;
   }
-  50%,
-  100% {
-    opacity: 0.12;
+
+  50% {
+    opacity: 0.55;
   }
 }
 
@@ -562,12 +768,17 @@ main {
 }
 
 .section-title h2::before {
-  content: 'MAP 0' counter(level);
+  /* decimal-leading-zero keeps the MAP 01 look without hardcoding the '0',
+     so a 10th section reads MAP 10 rather than MAP 010. */
+  content: 'MAP ' counter(level, decimal-leading-zero);
   display: block;
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.28em;
+
+  /* The level number is the most Doom-intermission element on the page, so it
+     gets the arcade face rather than the mono. */
+  font-family: var(--font-display);
+  font-size: 0.55rem;
+  font-weight: 400;
+  letter-spacing: 0.2em;
   color: var(--ember);
   text-shadow: var(--glow-red);
   margin-bottom: var(--space-sm);
@@ -590,12 +801,17 @@ main {
   );
   background-size: 200% 100%;
   background-repeat: no-repeat;
-  box-shadow: var(--bevel);
 
-  /* sweeping glare + breathing glow over a solid red bar */
-  animation:
-    doom-scan 1.8s linear infinite,
-    doom-pulse 1.4s ease-in-out infinite;
+  /* Steady red bloom baked into the box-shadow. This used to be an animated
+     `filter: drop-shadow` (doom-pulse), which repaints the bar and its shadow
+     every frame on all four dividers; the traveling glare below already
+     supplies the life, so the glow is now free. */
+  box-shadow:
+    var(--bevel),
+    0 0 10px rgb(232, 24, 11, 0.55);
+
+  /* sweeping glare over a solid red bar */
+  animation: doom-scan 1.8s linear infinite;
 }
 
 @keyframes doom-scan {
@@ -604,16 +820,6 @@ main {
   }
   100% {
     background-position: 200% 0;
-  }
-}
-
-@keyframes doom-pulse {
-  0%,
-  100% {
-    filter: drop-shadow(0 0 2px rgb(232, 24, 11, 0.3));
-  }
-  50% {
-    filter: drop-shadow(0 0 9px rgb(255, 51, 38, 0.95));
   }
 }
 
@@ -635,14 +841,18 @@ main {
   align-items: center;
   justify-content: center;
   gap: var(--space-md);
-  height: 30px;
+  height: var(--hud-height);
   padding: 0 var(--space-lg);
   background: var(--hud-bg-deep);
   border-top: 2px solid var(--hud-edge);
   box-shadow: var(--bevel);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.14em;
+
+  /* Press Start 2P for the status readouts — this is the Doom status bar, so it
+     should be the arcade face. It is a much wider font than the mono, hence the
+     smaller size and tighter tracking to keep four cells on one line. */
+  font-family: var(--font-display);
+  font-size: 0.5rem;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-secondary);
 }
@@ -672,14 +882,21 @@ main {
   height: 8px;
   background: var(--green);
   box-shadow: var(--glow-green);
-  animation: doom-blink 1.1s steps(1) infinite;
+
+  /* Faster than the press-start prompt — an LED should read as a heartbeat. */
+  animation: doom-blink 1.6s ease-in-out infinite;
 }
 
 @media (max-width: 639px) {
+  /* Redefining the token shrinks the bar, the body padding that reserves room
+     for it, and the back-to-top offset in one move. */
+  :root {
+    --hud-height: 28px;
+  }
+
   .hud-bar {
     gap: var(--space-md);
     font-size: 0.58rem;
-    height: 28px;
   }
 
   .hud-bar__seg--hide-sm {

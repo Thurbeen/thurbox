@@ -10,7 +10,14 @@ hasOwnMain: true
   <div class="docs-layout">
     {% include "sidebar.njk" %}
 
-    <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+    <button
+      class="sidebar-toggle"
+      id="sidebar-toggle"
+      type="button"
+      aria-label="Toggle sidebar"
+      aria-controls="docs-sidebar"
+      aria-expanded="false"
+    >
       &#9776;
     </button>
 
@@ -31,5 +38,10 @@ hasOwnMain: true
 
       {{ content | safe }}
     </main>
+
+    <!-- Replaced at build time by the docs-toc transform (eleventy.config.js)
+         with an "on this page" rail built from the content's h2/h3 ids, or by
+         nothing at all when the page has fewer than two headings. -->
+    <!--TOC-->
   </div>
 </div>

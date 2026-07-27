@@ -54,6 +54,21 @@
   }
 }
 
+/* Wide desktops: use the space instead of leaving dead margins. The features
+   grid holds exactly 10 cards, so 5 columns fills as a clean 5+5 — 4 columns
+   left a 2-card last row with a conspicuous gap beside it. Explicit rather than
+   auto-fit, because the card count is known and auto-fit reintroduces the
+   ragged tail at intermediate widths. */
+@media (min-width: 1440px) {
+  .container {
+    max-width: var(--container-wide);
+  }
+
+  .grid-3 {
+    grid-template-columns: repeat(5, 1fr);
+  }
+}
+
 /* Visibility utilities */
 .hide-mobile {
   display: none;

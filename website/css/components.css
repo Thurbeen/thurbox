@@ -227,9 +227,29 @@
     0 4px 14px rgb(0, 0, 0, 0.5);
 }
 
+/* Monochrome terminal glyph in a beveled tile — shared by the landing feature
+   cards and the docs hub/extension cards so both boards read the same. Colour
+   emoji used to sit here and were the only rounded, multi-hue elements in a
+   squared pixel UI. */
 .card-icon {
-  font-size: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
   margin-bottom: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  line-height: 1;
+  color: var(--ember);
+  text-shadow: var(--glow-red);
+  background: var(--bg-code);
+  border: 1px solid var(--hud-edge);
+  box-shadow: var(--bevel);
+  transition:
+    color var(--transition),
+    border-color var(--transition),
+    box-shadow var(--transition);
 }
 
 .card h3 {
@@ -249,7 +269,10 @@
   padding: 0.25rem 0.75rem;
   font-family: var(--font-mono);
   font-size: 0.75rem;
-  border-radius: 100px;
+
+  /* Squared, like every other surface. A rounded pill fought the pixel-era
+     look it sat next to. */
+  border-radius: var(--border-radius);
   border: 1px solid var(--border);
   color: var(--text-secondary);
 }
@@ -385,6 +408,11 @@
   border-color: var(--green);
 }
 
+.copy-btn.copy-failed {
+  color: var(--red);
+  border-color: var(--red);
+}
+
 /* ---- Prism token theme → Doom palette ---- */
 .code-block .token.comment,
 .code-block .token.prolog,
@@ -461,6 +489,9 @@
 }
 
 /* ---- Step numbers ---- */
+
+/* Squared and beveled like every other panel — a round badge was the one
+   circular element in a UI whose whole premise is --border-radius: 0. */
 .step-number {
   display: inline-flex;
   align-items: center;
@@ -472,8 +503,8 @@
   font-family: var(--font-display);
   font-weight: 400;
   font-size: 0.7rem;
-  border-radius: 50%;
-  box-shadow: var(--glow-green);
+  border-radius: var(--border-radius);
+  box-shadow: var(--bevel), var(--glow-green);
   flex-shrink: 0;
 }
 
@@ -543,7 +574,7 @@
 .terminal-frame:has(video) .terminal-header::before {
   background: var(--red);
   box-shadow: var(--glow-red);
-  animation: doom-blink 1.1s steps(1) infinite;
+  animation: doom-blink 1.6s ease-in-out infinite;
 }
 
 /* Console-style titles */
@@ -558,6 +589,19 @@
   .btn {
     min-height: 44px;
     padding-block: 0.95rem;
+  }
+
+  /* The hero pair ("GET STARTED" 180px + "VIEW DOCS" 157px + 16px gap = 353px)
+     exceeds the available width until ~414px, so flex-wrap dropped them into a
+     ragged 2-row stack on every common phone. Make the stack deliberate:
+     equal-width full-bleed bars. */
+  .hero-ctas {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hero-ctas .btn {
+    justify-content: center;
   }
 }
 
@@ -584,6 +628,12 @@
   position: relative;
 }
 
+/* The sweep is paused by default and resumed per panel by main.js when the
+   panel scrolls into view (or on hover). A landing page has ~12 of these
+   panels; running every sweep at once is a lot of always-on compositing for an
+   effect only the visible panels can be seen doing.
+   `animation-play-state` rather than toggling `animation` so a panel returning
+   to view resumes mid-sweep instead of snapping back to the top. */
 .terminal-frame::after,
 .tui-demo::after,
 .code-block::after {
@@ -598,6 +648,27 @@
   background: linear-gradient(to bottom, transparent, rgb(255, 255, 255, 0.05), transparent);
   transform: translateY(-100%);
   animation: crt-scan 3.4s linear infinite;
+  animation-play-state: paused;
+}
+
+.terminal-frame.is-live::after,
+.tui-demo.is-live::after,
+.code-block.is-live::after,
+.terminal-frame:hover::after,
+.tui-demo:hover::after,
+.code-block:hover::after {
+  animation-play-state: running;
+}
+
+/* Phones: keep the static identity (bevels, LEDs, scanlines) but drop the
+   moving sweep — it is the most expensive decorative effect and the least
+   visible on a small screen. */
+@media (max-width: 639px) {
+  .terminal-frame::after,
+  .tui-demo::after,
+  .code-block::after {
+    display: none;
+  }
 }
 
 @keyframes crt-scan {

@@ -11,6 +11,14 @@ html {
   scroll-padding-top: calc(var(--nav-height) + var(--space-lg));
 }
 
+/* Native anchor scrolling is the only scroll path (there is no JS handler),
+   so the reduced-motion opt-out has to live here. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
 body {
   font-family: var(--font-body);
   font-size: 16px;
@@ -31,11 +39,14 @@ body::after {
   inset: 0;
   z-index: 9999;
   pointer-events: none;
+
+  /* A 1px dark line every 3px. The 2px→3px band is the line itself; a
+     duplicated final stop here would collapse it to zero width. */
   background: repeating-linear-gradient(
     to bottom,
     transparent 0,
     transparent 2px,
-    var(--scanline) 3px,
+    var(--scanline) 2px,
     var(--scanline) 3px
   );
   mix-blend-mode: multiply;

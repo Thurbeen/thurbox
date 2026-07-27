@@ -49,16 +49,32 @@ hasOwnMain: false
     </script>
 
     <link rel="icon" href="{{ root }}/assets/favicon.svg" type="image/svg+xml" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Fonts are self-hosted (@font-face lives in core.css) — no Google Fonts
+         stylesheet, no preconnects, no third-party request. Preload the two
+         faces that paint above the fold so they are in flight alongside the CSS
+         rather than after it: the display face for the headline/nav, and the
+         mono face for the eyebrow, HUD and install tabs. Inter is body copy
+         further down and can wait for the normal CSS-driven fetch. -->
     <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&family=Press+Start+2P&display=swap"
+      rel="preload"
+      href="{{ root }}/assets/fonts/press-start-2p-400.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
     />
-    <link rel="stylesheet" href="{{ root }}/css/variables.css" />
-    <link rel="stylesheet" href="{{ root }}/css/base.css" />
-    <link rel="stylesheet" href="{{ root }}/css/layout.css" />
-    <link rel="stylesheet" href="{{ root }}/css/components.css" />
+    <link
+      rel="preload"
+      href="{{ root }}/assets/fonts/jetbrains-mono-400.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <!-- Core CSS is concatenated at build time into one file (see the css-bundle
+         step in eleventy.config.js), so every page costs one render-blocking
+         request for the shared chrome instead of four. Page-specific sheets
+         (landing / docs / ui-review) still load separately — they are only
+         wanted on the pages that declare them. -->
+    <link rel="stylesheet" href="{{ root }}/css/core.css" />
     {%- for css in extraCss %}
     <link rel="stylesheet" href="{{ root }}/css/{{ css }}" />
     {%- endfor %}
@@ -68,7 +84,14 @@ hasOwnMain: false
     <nav class="nav{% if navScrolled %} scrolled{% endif %}" id="nav">
       <!-- prettier-ignore -->
       <a href="{{ root }}/index.html" class="nav-brand"><img src="{{ root }}/assets/logo-mark.svg" alt="" class="nav-brand-mark" width="26" height="26" />thur<span>box</span></a>
-      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+      <button
+        class="hamburger"
+        id="hamburger"
+        type="button"
+        aria-label="Toggle menu"
+        aria-controls="nav-links"
+        aria-expanded="false"
+      >
         <span></span>
         <span></span>
         <span></span>

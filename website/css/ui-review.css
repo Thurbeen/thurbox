@@ -27,7 +27,7 @@
 .sev-pill .dot {
   width: 9px;
   height: 9px;
-  border-radius: 50%;
+  border-radius: var(--radius-round);
 }
 .review-card {
   border: 1px solid var(--border);

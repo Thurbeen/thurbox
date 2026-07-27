@@ -77,12 +77,7 @@
     {%- endfor %}
   </ul>
   {%- endfor %}
-  {%- if onThisPage and onThisPage.length %}
-  <h4>On This Page</h4>
-  <ul>
-    {%- for item in onThisPage %}
-    <li><a href="#{{ item.id }}">{{ item.label }}</a></li>
-    {%- endfor %}
-  </ul>
-  {%- endif %}
+  {#- The "On This Page" list used to be restated here from each page's
+      `onThisPage` front matter. It is now derived from the content's heading ids
+      by the docs-toc transform and rendered as its own column (.docs-toc). -#}
 </aside>

@@ -4,17 +4,38 @@
   min-height: 100vh;
 }
 
+/* Mobile-first: one column. The sidebar is an off-canvas drawer (below) and the
+   TOC rail is hidden, so the content column owns the full width. Grid rather
+   than flex so the >=1280px three-column layout is a template swap. */
 .docs-layout {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   max-width: var(--container-max);
   margin: 0 auto;
   padding: 0 var(--space-lg);
 }
 
+@media (min-width: 1024px) {
+  .docs-layout {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  }
+}
+
+/* Wide enough for the on-this-page rail to earn its keep. */
+@media (min-width: 1280px) {
+  .docs-layout {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--toc-width);
+  }
+}
+
+@media (min-width: 1440px) {
+  .docs-layout {
+    max-width: var(--container-wide);
+  }
+}
+
 /* ---- Sidebar ---- */
 .docs-sidebar {
-  width: var(--sidebar-width);
-  flex-shrink: 0;
   padding: var(--space-xl) var(--space-lg) var(--space-xl) 0;
   position: sticky;
   top: var(--nav-height);
@@ -121,9 +142,24 @@
 
 /* ---- Content area ---- */
 .docs-content {
-  flex: 1;
   min-width: 0;
-  padding: var(--space-xl) 0 var(--space-3xl) var(--space-xl);
+  padding: var(--space-xl) 0 var(--space-3xl);
+}
+
+/* Gutter between the sidebar rule and the prose, only once the sidebar is a
+   real column rather than a drawer. */
+@media (min-width: 1024px) {
+  .docs-content {
+    padding-left: var(--space-xl);
+  }
+}
+
+/* Long-form prose caps its measure for readability even when the grid track is
+   wider; the rail and sidebar absorb the rest. */
+@media (min-width: 1440px) {
+  .docs-content {
+    padding-right: var(--space-xl);
+  }
 }
 
 /* ---- Breadcrumbs ---- */
@@ -230,6 +266,15 @@ h3:hover .heading-anchor {
   color: var(--cyan);
 }
 
+/* Match the landing board's glyph-tile hover, keeping the bevel under the glow
+   so the tile lights up rather than flattening. */
+.docs-hub-card:hover .card-icon {
+  color: var(--green);
+  border-color: var(--green);
+  text-shadow: var(--glow-green);
+  box-shadow: var(--bevel), var(--glow-green);
+}
+
 /* ---- Docs hub categories ---- */
 .docs-hub-category {
   margin-top: var(--space-2xl);
@@ -290,10 +335,6 @@ h3:hover .heading-anchor {
 
   .sidebar-toggle {
     display: flex;
-  }
-
-  .docs-content {
-    padding-left: 0;
   }
 }
 
@@ -372,5 +413,122 @@ h3:hover .heading-anchor {
   .docs-sidebar {
     box-shadow: var(--bevel);
     border-right: none;
+  }
+}
+
+/* ---- "On this page" rail ----
+   Built at build time by the docs-toc transform. It only exists as a column at
+   >=1280px; below that the sidebar is the single navigation surface and a second
+   list of links would just be noise. */
+.docs-toc {
+  display: none;
+}
+
+@media (min-width: 1280px) {
+  .docs-toc {
+    display: block;
+    position: sticky;
+    top: var(--nav-height);
+    max-height: calc(100vh - var(--nav-height));
+    overflow-y: auto;
+    padding: var(--space-xl) 0 var(--space-xl) var(--space-lg);
+    border-left: 1px solid var(--border);
+  }
+}
+
+.docs-toc__heading {
+  /* An h2 for document outline correctness, styled as a sidebar label rather
+     than inheriting the Press Start 2P display treatment other h2s get. */
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  text-shadow: none;
+  margin-bottom: var(--space-sm);
+}
+
+.docs-toc__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.docs-toc__item {
+  margin: 0;
+}
+
+.docs-toc__item a {
+  display: block;
+  padding: 0.3rem 0 0.3rem var(--space-sm);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  border-left: 2px solid transparent;
+  transition: all var(--transition);
+}
+
+.docs-toc__item a:hover {
+  color: var(--text-primary);
+  border-left-color: var(--text-muted);
+}
+
+/* Scroll-spy shares main.js's .active convention with the sidebar. */
+.docs-toc__item a.active {
+  color: var(--green);
+  border-left-color: var(--green);
+  text-shadow: var(--glow-green);
+}
+
+/* h3s nest one level in under their h2. */
+.docs-toc__item--h3 a {
+  padding-left: var(--space-lg);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* ---- Mobile reading ---- */
+@media (max-width: 639px) {
+  .docs-content {
+    padding-top: var(--space-lg);
+    font-size: 0.95rem;
+  }
+
+  /* Press Start 2P is very wide; docs h2s are prose signposts, not title cards,
+     so drop to the mono face on phones to stop them wrapping to three lines. */
+  .docs-content h2 {
+    font-family: var(--font-mono);
+    letter-spacing: 0;
+    margin-top: var(--space-xl);
+  }
+
+  /* Wide tables scroll in their own box rather than forcing the page sideways. */
+  .docs-content table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    font-size: 0.8rem;
+  }
+
+  .docs-content th,
+  .docs-content td {
+    padding: var(--space-xs) var(--space-sm);
+    white-space: nowrap;
+  }
+
+  /* The hover-reveal "#" affordance can't be hovered on touch, and it pushes
+     long headings wider. */
+  .heading-anchor {
+    display: none;
+  }
+
+  .breadcrumbs {
+    margin-bottom: var(--space-lg);
+    font-size: 0.75rem;
+  }
+
+  .info-box {
+    padding: var(--space-sm) var(--space-md);
   }
 }
