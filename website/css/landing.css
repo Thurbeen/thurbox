@@ -634,7 +634,7 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-lg);
+  gap: var(--space-md);
   height: 30px;
   padding: 0 var(--space-lg);
   background: var(--hud-bg-deep);
@@ -651,6 +651,11 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
+}
+
+.hud-bar__seg + .hud-bar__seg {
+  padding-left: var(--space-md);
+  border-left: 1px solid var(--hud-edge);
 }
 
 .hud-bar__seg .k {

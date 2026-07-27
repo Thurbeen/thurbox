@@ -98,17 +98,25 @@
   z-index: 50;
   width: 48px;
   height: 48px;
-  background: var(--cyan);
-  color: var(--bg-primary);
-  border: none;
-  border-radius: 50%;
+  background: var(--bg-nav);
+  color: var(--cyan);
+  border: 1px solid var(--hud-edge);
+  box-shadow: var(--bevel);
+  border-radius: var(--border-radius);
   font-size: 1.25rem;
   cursor: pointer;
-  box-shadow:
-    0 4px 12px rgb(0, 0, 0, 0.4),
-    0 0 16px rgb(255, 92, 84, 0.6);
   align-items: center;
   justify-content: center;
+  backdrop-filter: blur(12px);
+  transition:
+    box-shadow var(--transition),
+    color var(--transition);
+}
+
+.sidebar-toggle:hover,
+.sidebar-toggle.active {
+  color: var(--text-primary);
+  box-shadow: var(--bevel-glow-red);
 }
 
 /* ---- Content area ---- */
@@ -334,4 +342,35 @@ h3:hover .heading-anchor {
   margin-top: var(--space-sm);
   font-size: 0.8rem;
   color: var(--text-muted);
+}
+
+/* ---- Sidebar backdrop (mobile) — dims content behind the open panel ---- */
+.docs-sidebar-backdrop {
+  display: none;
+}
+
+@media (max-width: 1023px) {
+  .docs-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: var(--nav-height) 0 0 0;
+    background: rgb(0, 0, 0, 0.65);
+    backdrop-filter: blur(2px);
+    z-index: 39;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity var(--transition),
+      visibility var(--transition);
+  }
+
+  .docs-sidebar-backdrop.open {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .docs-sidebar {
+    box-shadow: var(--bevel);
+    border-right: none;
+  }
 }

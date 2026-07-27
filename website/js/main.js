@@ -233,18 +233,28 @@
   // ---- Mobile sidebar toggle (docs pages) ----
   var sidebarToggle = document.getElementById('sidebar-toggle');
   var sidebar = document.querySelector('.docs-sidebar');
+  var backdrop = document.getElementById('docs-sidebar-backdrop');
+  function closeSidebar() {
+    if (!sidebar) return;
+    sidebar.classList.remove('open');
+    if (sidebarToggle) sidebarToggle.classList.remove('active');
+    if (backdrop) backdrop.classList.remove('open');
+  }
+
   if (sidebarToggle && sidebar) {
     sidebarToggle.addEventListener('click', function () {
-      sidebar.classList.toggle('open');
-      sidebarToggle.classList.toggle('active');
+      var open = sidebar.classList.toggle('open');
+      sidebarToggle.classList.toggle('active', open);
+      if (backdrop) backdrop.classList.toggle('open', open);
     });
 
-    // Close sidebar when clicking a link on mobile
+    if (backdrop) {
+      backdrop.addEventListener('click', closeSidebar);
+    }
+
+    // Close sidebar when a link is clicked or the backdrop is tapped
     sidebar.querySelectorAll('a').forEach(function (link) {
-      link.addEventListener('click', function () {
-        sidebar.classList.remove('open');
-        if (sidebarToggle) sidebarToggle.classList.remove('active');
-      });
+      link.addEventListener('click', closeSidebar);
     });
   }
 })();
