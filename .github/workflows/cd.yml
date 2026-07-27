@@ -29,7 +29,11 @@ jobs:
     name: Analyze commits for release
     runs-on: ubuntu-latest
     outputs:
-      should_release: ${{ steps.parse.outputs.should_release }}
+      # Gated by BOTH the commit-type decision (`parse`) and the
+      # artifact-relevance gate (`shipped`): a `feat`/`fix` that touches only
+      # the website, docs, or CI config bumps nothing shippable, so it must not
+      # cut a release. See the `shipped` step for the rationale + path list.
+      should_release: ${{ steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false' }}
       version: ${{ steps.parse.outputs.version }}
       # The exact `cog bump` args create-tag runs. Computed here in bash (not
       # via a YAML `${{ && || }}` ternary in create-tag) so the forced-version
@@ -96,6 +100,50 @@ jobs:
             echo "version=" >> "$GITHUB_OUTPUT"
             echo "bump_args=--auto --disable-bump-commit" >> "$GITHUB_OUTPUT"
             echo "ℹ️  No releasable commits detected"
+          fi
+
+      - name: Check the release touches a shipped artifact
+        id: shipped
+        if: steps.parse.outputs.should_release == 'true' && inputs.version == ''
+        run: |
+          # Commit *type* alone over-releases: cocogitto sees `fix`/`feat` and
+          # bumps, but Renovate labels a GitHub-Actions pin bump `fix(deps)` and
+          # the website is versioned as `feat(ui)`/`fix(ui)`. Those change no
+          # byte of the shipped binary, yet each cut a release (v1.2.13..v1.3.0
+          # were four CSS-only releases, one of them a *minor*). Every such
+          # release also re-runs the 4-platform build and pushes to Homebrew/AUR/
+          # Chocolatey/winget — the moderated channels that then rate-limit us.
+          #
+          # So gate on the diff as well: release only when something a user
+          # actually installs changed. The range is the whole span since the last
+          # tag, NOT this single push — a website-only push landing on top of an
+          # unreleased `src/` commit still owes that release.
+          #
+          # A forced `workflow_dispatch` version skips this gate entirely (the
+          # `if:` above): an explicit human cut is always honoured.
+          SHIPPED_PATHS='^(src/|tests/|build\.rs$|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|extensions/|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
+
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+
+          if [ -z "$LAST_TAG" ]; then
+            # No tag yet: nothing to diff against, so the first release always
+            # ships. Reported as a single pseudo-path so the decision below
+            # stays a plain "is RELEVANT empty?" test for both branches.
+            LAST_TAG="(none)"
+            RELEVANT="(no previous tag — first release)"
+          else
+            echo "Files changed since $LAST_TAG:"
+            git diff --name-only "$LAST_TAG"..HEAD | sed 's/^/  /'
+            RELEVANT="$(git diff --name-only "$LAST_TAG"..HEAD | grep -E "$SHIPPED_PATHS" || true)"
+          fi
+
+          if [ -n "$RELEVANT" ]; then
+            echo "shipped=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Shipped artifact changed — releasing:"
+            printf '%s\n' "$RELEVANT" | sed 's/^/  /'
+          else
+            echo "shipped=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping release ${{ steps.parse.outputs.version }} — no shipped artifact changed since $LAST_TAG (docs/website/CI only). The commits stay in history and ride along with the next real release."
           fi
 
   # Create git tag (only if release needed)

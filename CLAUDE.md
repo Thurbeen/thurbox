@@ -345,9 +345,24 @@ are created - version is determined by git tags only.
 Every push to `main` automatically triggers the release workflow:
 
 1. **Commit Analysis**: Analyzes all commits since last tag using cocogitto
-2. **Release Decision**:
-   - **If** commits include `feat`, `fix`, or `perf` → creates release
-   - **If** only docs/chore/ci commits → no release (workflow exits)
+2. **Release Decision** — a release needs **both** gates to pass:
+   - **Commit type** (`check-release`'s `parse` step): commits must include
+     `feat`, `fix`, or `perf`. Only docs/chore/ci commits → no release.
+   - **Artifact relevance** (`check-release`'s `shipped` step): the diff since
+     the last tag must touch something a user installs (`src/`, `tests/`,
+     `build.rs`, `Cargo.toml`/`Cargo.lock`, `rust-toolchain.toml`, `Cross.toml`,
+     `extensions/`, `packaging/`, `scripts/install.{sh,ps1}`, `cd.yml`).
+     Commit type alone over-releases: Renovate labels a GitHub-Actions pin bump
+     `fix(deps)` and the website is versioned `feat(ui)`/`fix(ui)`, so a
+     CSS-only or lint-action-only change used to cut a real release (v1.2.13
+     through v1.3.0 were four website-only releases, one a *minor*) — burning a
+     4-platform build and pushing to the moderated Chocolatey/winget channels
+     for a no-op binary. Such commits stay in history and ride along in the
+     next real release's changelog.
+   - The gate is evaluated over the **whole span since the last tag**, not the
+     single push, so a website-only push landing on an unreleased `src/` commit
+     still cuts the release it owes. A forced `workflow_dispatch` version
+     **skips** the relevance gate — an explicit human cut is always honoured.
 3. **Automated Release** (if needed):
    - Determines semantic version (feat→minor, fix/perf→patch, breaking→major)
    - Creates lightweight git tag: `v{version}` (e.g., v1.0.0)
