@@ -264,6 +264,15 @@ pub struct PendingSpawn {
     /// picked), then the branch, then the session name.
     pub label: String,
     pub phase: SpawnPhase,
+    /// Display names of the repos the session will span, in the session's
+    /// natural order (primary first) — the same strings
+    /// `SessionInfo::repo_display_names` will carry once it lands. Lets the
+    /// placeholder row render **inside its own repo group** instead of trailing
+    /// the whole list, so a session appears where it will actually live.
+    /// Resolved once when the repo is chosen (`repo_display_name` can shell out
+    /// on a cache miss, so it must not run per frame); empty when no repo is
+    /// known yet, which groups it with `(no repo)` exactly like a real session.
+    pub repo_display_names: Vec<String>,
     started_at: std::time::Instant,
 }
 
@@ -275,13 +284,59 @@ fn spawn_label_for_repo(repo: Option<&std::path::Path>) -> String {
         .unwrap_or_else(|| "new session".to_string())
 }
 
+/// The repo display names a set of chosen repo paths will produce, in order and
+/// de-duplicated — mirroring what `resolve_repo_display_names` derives for a
+/// live session, so a pending row groups with the sessions it will join.
+fn spawn_repo_display_names<'a>(
+    repos: impl IntoIterator<Item = &'a std::path::Path>,
+) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for path in repos {
+        if let Some(name) = git::repo_display_name(path) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// The repo group a spawn config will land in, mirroring the member set
+/// `session_member_dirs` derives for the real session: the worktrees' **source**
+/// repos when the session is worktree-backed (`cwd` is then the checkout, whose
+/// name is the branch, not the repo), otherwise the plain `cwd` repo — plus any
+/// additional dirs, which are members too.
+fn spawn_config_repo_names(
+    config: &SessionConfig,
+    worktrees: &[WorktreeInfo],
+    additional_dirs: &[PathBuf],
+) -> Vec<String> {
+    let roots: Vec<&std::path::Path> = if worktrees.is_empty() {
+        config.cwd.as_deref().into_iter().collect()
+    } else {
+        worktrees.iter().map(|wt| wt.repo_path.as_path()).collect()
+    };
+    spawn_repo_display_names(
+        roots
+            .into_iter()
+            .chain(additional_dirs.iter().map(PathBuf::as_path)),
+    )
+}
+
 impl PendingSpawn {
     fn new(label: impl Into<String>, phase: SpawnPhase) -> Self {
         Self {
             label: label.into(),
             phase,
+            repo_display_names: Vec::new(),
             started_at: clock::now(),
         }
+    }
+
+    /// Place this pending row in the repo group it will land in.
+    fn in_repo_group(mut self, repo_display_names: Vec<String>) -> Self {
+        self.repo_display_names = repo_display_names;
+        self
     }
 
     /// Whole seconds since this phase started — shown so a long wait reads as
@@ -1608,7 +1663,28 @@ impl App {
     /// indicator spins and counts elapsed for as long as it runs.
     fn mark_spawn_working(&mut self, label: impl Into<String>, phase: SpawnPhase) {
         debug_assert!(phase.is_working(), "use mark_spawn_configuring instead");
-        self.pending_spawn = Some(PendingSpawn::new(label, phase));
+        let group = self.pending_spawn_group();
+        self.pending_spawn = Some(PendingSpawn::new(label, phase).in_repo_group(group));
+    }
+
+    /// The repo group the pending row should sit in. Carried over from the
+    /// current indicator when there is one — the wizard's later phases re-mark
+    /// the row on every step, and re-resolving the names there would both hit
+    /// `repo_display_name` again and lose the group once the wizard state that
+    /// named it (`repo_path`) has been consumed.
+    fn pending_spawn_group(&self) -> Vec<String> {
+        match self.pending_spawn.as_ref() {
+            Some(p) if !p.repo_display_names.is_empty() => p.repo_display_names.clone(),
+            _ => spawn_repo_display_names(
+                self.new_session.repo_path.as_deref().into_iter().chain(
+                    self.new_session
+                        .all_repos
+                        .iter()
+                        .flatten()
+                        .map(PathBuf::as_path),
+                ),
+            ),
+        }
     }
 
     /// Hand the "being created" indicator back to the user: a wizard modal is
@@ -1618,7 +1694,9 @@ impl App {
     /// Every step that opens a wizard modal goes through here, so the indicator
     /// survives the modals instead of blinking off between phases.
     fn mark_spawn_configuring(&mut self, label: impl Into<String>) {
-        self.pending_spawn = Some(PendingSpawn::new(label, SpawnPhase::Configuring));
+        let group = self.pending_spawn_group();
+        self.pending_spawn =
+            Some(PendingSpawn::new(label, SpawnPhase::Configuring).in_repo_group(group));
     }
 
     /// The wizard ended — the session landed, the flow errored, or the user Esc'd
@@ -1904,6 +1982,14 @@ impl App {
     /// Shows an empty session-name modal. After the user enters a name, the
     /// agent picker is shown, then spawn.
     pub(crate) fn prepare_spawn(&mut self, config: SessionConfig, worktrees: Vec<WorktreeInfo>) {
+        // Group the placeholder by the repos the session will actually span,
+        // derived from the spawn config itself. The wizard's `repo_path` is not
+        // enough: the non-worktree path (`spawn_repo_picker_normal`) never sets
+        // it, passing the repo through `cwd`/`additional_dirs` instead — reading
+        // only the wizard state filed those rows under `(no repo)`.
+        let names = spawn_config_repo_names(&config, &worktrees, &self.new_session.additional_dirs);
+        self.pending_spawn =
+            Some(PendingSpawn::new(String::new(), SpawnPhase::Configuring).in_repo_group(names));
         // No name yet, so the placeholder row goes by the repo it's being cut
         // from — the same thing the user just picked.
         self.mark_spawn_configuring(spawn_label_for_repo(config.cwd.as_deref()));
@@ -12639,6 +12725,66 @@ mod tests {
             assert_eq!(pending.phase, SpawnPhase::Configuring);
             assert_eq!(pending.label, "my-session");
         }
+    }
+
+    /// A **non-worktree** spawn (repo picker with the worktree toggle off) never
+    /// populates the wizard's `repo_path` — it passes the repo through
+    /// `config.cwd`. Reading only the wizard state filed those rows under
+    /// `(no repo)` instead of the repo the user just picked.
+    #[test]
+    fn non_worktree_spawn_groups_under_its_repo() {
+        let mut app = app_with_sessions(0);
+        assert!(
+            app.new_session.repo_path.is_none(),
+            "precondition: the non-worktree path leaves the wizard repo unset"
+        );
+
+        app.prepare_spawn(
+            SessionConfig {
+                cwd: Some(PathBuf::from("/repos/thurbox")),
+                ..SessionConfig::default()
+            },
+            Vec::new(),
+        );
+
+        let pending = app.pending_spawn.as_ref().expect("indicator is shown");
+        assert_eq!(
+            pending.repo_display_names,
+            vec!["thurbox".to_string()],
+            "grouped by the repo it spawns in, not (no repo)"
+        );
+
+        // …and the group survives the rest of the wizard, which re-marks the row.
+        app.finish_prepare_spawn("my-session".into(), SessionConfig::default(), Vec::new());
+        let pending = app.pending_spawn.as_ref().expect("indicator survives");
+        assert_eq!(pending.repo_display_names, vec!["thurbox".to_string()]);
+    }
+
+    /// A worktree spawn groups by the worktrees' **source** repos — `cwd` is the
+    /// checkout, whose directory name is the branch, not the repo.
+    #[test]
+    fn worktree_spawn_groups_by_source_repo_not_checkout() {
+        let mut app = app_with_sessions(0);
+        let worktrees = vec![WorktreeInfo {
+            repo_path: PathBuf::from("/repos/thurbox"),
+            worktree_path: PathBuf::from("/worktrees/feat-x"),
+            branch: "feat/x".to_string(),
+        }];
+
+        app.prepare_spawn(
+            SessionConfig {
+                cwd: Some(PathBuf::from("/worktrees/feat-x")),
+                ..SessionConfig::default()
+            },
+            worktrees,
+        );
+
+        let pending = app.pending_spawn.as_ref().expect("indicator is shown");
+        assert_eq!(
+            pending.repo_display_names,
+            vec!["thurbox".to_string()],
+            "the source repo, not the `feat-x` checkout directory"
+        );
     }
 
     /// …but an abandoned wizard must not strand a placeholder row forever.

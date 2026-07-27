@@ -152,7 +152,11 @@ connect for a remote host), and `Session::spawn` all run on workers. Because
 those phases can run for tens of seconds on a large repo, progress is carried by
 `App::pending_spawn` (`PendingSpawn`/`SpawnPhase`) rather than a
 `status_message` (which expires after 5 s): it renders a **placeholder row** in
-the session list plus a **status badge**. It lives for the **whole wizard** —
+the session list plus a **status badge**. The row sits **inside the repo group
+the session will land in** (`ui::project_list::pending_spawn_slot`, keyed on
+`PendingSpawn.repo_display_names`), at that group's end — where the real row
+will appear — bringing its own header when the repo has no rows yet.
+It lives for the **whole wizard** —
 background phases *and* the modals between them (`SpawnPhase::Configuring`, a
 static `◌` with no spinner/elapsed, since nothing is running) — and is cleared
 only when the session lands, the flow errors, or the user Escs out

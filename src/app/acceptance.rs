@@ -2741,6 +2741,59 @@ fn spawn_placeholder_row_is_not_selectable() {
     assert_invariants(&h.app, "placeholder row present");
 }
 
+/// A session being created belongs under the header of the repo it is being cut
+/// from — appending it below every group made a new `webapp` session look like
+/// it was landing somewhere else entirely.
+#[test]
+fn spawn_placeholder_renders_inside_its_repo_group() {
+    let mut h = Harness::standard(2);
+    h.app.sessions[0].info.repo_display_names = vec!["webapp".to_string()];
+    h.app.sessions[1].info.repo_display_names = vec!["infra".to_string()];
+
+    let mut pending = PendingSpawn::new("feat/x", SpawnPhase::Spawning);
+    pending.repo_display_names = vec!["webapp".to_string()];
+    h.app.pending_spawn = Some(pending);
+
+    let screen = h.render();
+    let line_of = |needle: &str| {
+        screen
+            .lines()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} missing from:\n{screen}"))
+    };
+
+    // Groups render infra-then-webapp (label order); the placeholder must sit
+    // in the webapp run, i.e. below the webapp header and after its session.
+    assert!(
+        line_of("webapp") < line_of("feat/x"),
+        "placeholder sits under the webapp header:\n{screen}"
+    );
+    assert!(
+        line_of("infra") < line_of("webapp"),
+        "sanity: infra group precedes webapp:\n{screen}"
+    );
+    assert_invariants(&h.app, "placeholder inside its repo group");
+}
+
+/// …and a repo with no sessions yet gets its own header, so the row is filed
+/// under a label rather than floating loose at the bottom.
+#[test]
+fn spawn_placeholder_for_a_new_repo_brings_its_own_header() {
+    let mut h = Harness::standard(1);
+    h.app.sessions[0].info.repo_display_names = vec!["webapp".to_string()];
+
+    let mut pending = PendingSpawn::new("feat/x", SpawnPhase::Spawning);
+    pending.repo_display_names = vec!["brand-new-repo".to_string()];
+    h.app.pending_spawn = Some(pending);
+
+    let screen = h.render();
+    assert!(
+        screen.contains("brand-new-repo"),
+        "the new group is labelled:\n{screen}"
+    );
+    assert_invariants(&h.app, "placeholder opening a new repo group");
+}
+
 /// With no sessions at all, the placeholder must replace the "No sessions yet"
 /// empty state — otherwise the very first `Ctrl+N` shows nothing happening.
 #[test]

@@ -71,10 +71,17 @@ const NO_REPO_GROUP: &str = "(no repo)";
 /// The `\0` join separator can't occur in a repo name, so distinct sets never
 /// collide. This is only a map key — never displayed (see [`group_display`]).
 fn group_key(info: &SessionInfo) -> String {
-    if info.repo_display_names.is_empty() {
+    repo_set_key(&info.repo_display_names)
+}
+
+/// [`group_key`] over bare repo names, for a session that doesn't exist yet (a
+/// pending spawn). Both go through here so a pending row can never be keyed
+/// differently from the real row it becomes.
+fn repo_set_key(repo_names: &[String]) -> String {
+    if repo_names.is_empty() {
         return NO_REPO_GROUP.to_string();
     }
-    let mut names: Vec<&str> = info.repo_display_names.iter().map(String::as_str).collect();
+    let mut names: Vec<&str> = repo_names.iter().map(String::as_str).collect();
     names.sort_unstable();
     names.dedup();
     names.join("\0")
@@ -84,17 +91,72 @@ fn group_key(info: &SessionInfo) -> String {
 /// ` + ` in the session's natural order (primary repo first), de-duplicated.
 /// Falls back to `(no repo)`.
 fn group_display(info: &SessionInfo) -> String {
-    if info.repo_display_names.is_empty() {
+    repo_set_display(&info.repo_display_names)
+}
+
+/// [`group_display`] over bare repo names (see [`repo_set_key`]).
+fn repo_set_display(repo_names: &[String]) -> String {
+    if repo_names.is_empty() {
         return NO_REPO_GROUP.to_string();
     }
     let mut seen = std::collections::HashSet::new();
-    let parts: Vec<&str> = info
-        .repo_display_names
+    let parts: Vec<&str> = repo_names
         .iter()
         .map(String::as_str)
         .filter(|n| seen.insert(*n))
         .collect();
     parts.join(" + ")
+}
+
+/// Where a still-being-created session's placeholder row belongs, and whether it
+/// needs to bring its own repo header along.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSpawnSlot {
+    /// Index into the rendered rows to insert *before*; `rows` (the length) puts
+    /// it last.
+    pub index: usize,
+    /// The group header to draw above the placeholder — `Some` only when the
+    /// session opens a repo group that has no rows yet, so an existing group's
+    /// header is never duplicated.
+    pub header: Option<String>,
+}
+
+/// Place a pending session's placeholder row under the header of the repo group
+/// it will join, rather than trailing the whole list.
+///
+/// It lands at the **end of its group** — the same place the real row will
+/// appear, since a brand-new session has no `display_order` and so sorts after
+/// its ordered siblings (see [`compute_session_order`]). A group that doesn't
+/// exist yet is appended last with its own header, which is exactly where
+/// `compute_session_order` will put it once the session lands (a group's order
+/// key is its lowest member `display_order`, and an unordered one is `i64::MAX`).
+///
+/// `repo_names` is the pending session's repo display names; `sessions`/`headers`
+/// are the already-ordered rows.
+pub fn pending_spawn_slot(
+    sessions: &[&SessionInfo],
+    headers: &[Option<String>],
+    repo_names: &[String],
+) -> PendingSpawnSlot {
+    let key = repo_set_key(repo_names);
+    // Scan for the group's last row: group membership is contiguous in the
+    // rendered order, so the run ends at the next header (or the list's end).
+    let start = sessions.iter().position(|info| group_key(info) == key);
+    match start {
+        Some(start) => {
+            let end = (start + 1..sessions.len())
+                .find(|&i| headers.get(i).is_some_and(Option::is_some))
+                .unwrap_or(sessions.len());
+            PendingSpawnSlot {
+                index: end,
+                header: None,
+            }
+        }
+        None => PendingSpawnSlot {
+            index: sessions.len(),
+            header: Some(repo_set_display(repo_names)),
+        },
+    }
 }
 
 /// Canonical render order for the session list, shared by the rendering widget
@@ -687,17 +749,24 @@ fn render_session_section(
         })
         .collect();
 
-    // The session being created, appended last. It carries no `SessionInfo`, so
-    // it gets no hitbox below and can never be selected — the list's selection
+    // The session being created, slotted into the repo group it will land in
+    // (see `pending_spawn_slot`) so it appears where it will actually live
+    // rather than below every other group. It carries no `SessionInfo`, so it
+    // gets no hitbox below and can never be selected — the list's selection
     // indices stay a valid range over `sessions`.
-    if let Some(pending) = pending_spawn {
-        items.push(ListItem::new(vec![pending_spawn_line(
-            pending,
-            inner_width,
-            spinner,
-        )]));
-        item_heights.push(1);
-    }
+    let pending_row = pending_spawn.map(|pending| {
+        let slot = pending_spawn_slot(sessions, headers, &pending.repo_display_names);
+        let mut lines = Vec::new();
+        // A group with no rows yet brings its own header, so the placeholder is
+        // filed under a label instead of floating loose at the end.
+        if let Some(label) = slot.header.as_deref() {
+            lines.push(group_header_line(label, inner_width));
+        }
+        lines.push(pending_spawn_line(pending, inner_width, spinner));
+        item_heights.insert(slot.index, lines.len() as u16);
+        items.insert(slot.index, ListItem::new(lines));
+        slot.index
+    });
 
     // The active-row selection background is painted by `build_session_line`
     // itself (per-span, full width), *not* by the List's `highlight_style` —
@@ -707,7 +776,10 @@ fn render_session_section(
     // session line only; the header stays muted regardless of selection.
     let list = List::new(items).block(block);
 
-    list_state.select(show_selection.then_some(active_index));
+    // `active_index` indexes `sessions`; the widget's items may carry an extra
+    // placeholder row, which shifts every item at or after it down by one.
+    let selected_item = active_index + usize::from(pending_row.is_some_and(|p| p <= active_index));
+    list_state.select(show_selection.then_some(selected_item));
     frame.render_stateful_widget(list, area, list_state);
 
     render_scroll_indicators_variable(frame, area, list_state, &item_heights);
@@ -730,13 +802,19 @@ fn render_session_section(
             break;
         }
         let height = h.min(bottom - y);
-        // The trailing placeholder row (`i == sessions.len()`) is skipped: its
-        // index isn't a session index, and clicking a session that doesn't exist
-        // yet has nothing to select.
-        if i < sessions.len() {
+        // Map the row back to its session index: the placeholder occupies a row
+        // but is not a session, so rows after it are shifted by one. It gets no
+        // hitbox itself — clicking a session that doesn't exist yet has nothing
+        // to select — and selection indices stay a valid range over `sessions`.
+        let session_index = match pending_row {
+            Some(p) if i == p => None,
+            Some(p) if i > p => Some(i - 1),
+            _ => Some(i),
+        };
+        if let Some(index) = session_index.filter(|&i| i < sessions.len()) {
             hitboxes.push(super::RowHitbox {
                 rect: Rect::new(inner.x, y, inner.width, height),
-                index: i,
+                index,
             });
         }
         y += h;
@@ -1576,6 +1654,108 @@ mod tests {
         let b2 = info_repo("b", "webapp", SessionStatus::Idle);
         let flipped = vec![&a2, &b2, &c];
         assert_eq!(order_names(&flipped), vec!["a", "b", "c"]);
+    }
+
+    /// Build the ordered rows the renderer sees, then place a pending session.
+    fn slot_for(sessions: &[&SessionInfo], repo_names: &[&str]) -> PendingSpawnSlot {
+        let order = compute_session_order(sessions);
+        let ordered: Vec<&SessionInfo> = order.order.iter().map(|&i| sessions[i]).collect();
+        let names: Vec<String> = repo_names.iter().map(|s| s.to_string()).collect();
+        pending_spawn_slot(&ordered, &order.headers, &names)
+    }
+
+    #[test]
+    fn pending_row_lands_at_the_end_of_its_own_repo_group() {
+        // Ordered: infra(c) | webapp(a, b). A session being created for infra
+        // belongs under the infra header, not below webapp.
+        let a = info_repo("a", "webapp", SessionStatus::Working);
+        let b = info_repo("b", "webapp", SessionStatus::Working);
+        let c = info_repo("c", "infra", SessionStatus::Blocked);
+        let sessions = vec![&a, &b, &c];
+
+        assert_eq!(
+            slot_for(&sessions, &["infra"]),
+            PendingSpawnSlot {
+                index: 1,
+                header: None
+            },
+            "slots after infra's last row, reusing the existing header"
+        );
+        assert_eq!(
+            slot_for(&sessions, &["webapp"]),
+            PendingSpawnSlot {
+                index: 3,
+                header: None
+            },
+            "the last group's pending row still goes last"
+        );
+    }
+
+    #[test]
+    fn pending_row_for_a_new_repo_brings_its_own_header() {
+        let a = info_repo("a", "webapp", SessionStatus::Working);
+        let sessions = vec![&a];
+
+        assert_eq!(
+            slot_for(&sessions, &["infra"]),
+            PendingSpawnSlot {
+                index: 1,
+                header: Some("infra".to_string())
+            },
+            "a group with no rows yet is appended, labelled"
+        );
+    }
+
+    /// A pending multi-repo session forms its own group, exactly as the real
+    /// session will — it must not be filed under either constituent repo.
+    #[test]
+    fn pending_multi_repo_row_groups_by_its_repo_set() {
+        let a = info_repo("a", "webapp", SessionStatus::Working);
+        let both = info_repos("both", &["webapp", "infra"], SessionStatus::Working);
+        let sessions = vec![&a, &both];
+
+        // Order is webapp(a) | webapp + infra(both).
+        assert_eq!(
+            slot_for(&sessions, &["webapp", "infra"]),
+            PendingSpawnSlot {
+                index: 2,
+                header: None
+            },
+            "joins the existing multi-repo group"
+        );
+        // Repo-set equality is order-insensitive, matching `group_key`.
+        assert_eq!(
+            slot_for(&sessions, &["infra", "webapp"]).header,
+            None,
+            "the same set in another order is the same group"
+        );
+        assert_eq!(
+            slot_for(&sessions, &["infra"]),
+            PendingSpawnSlot {
+                index: 2,
+                header: Some("infra".to_string())
+            },
+            "a lone infra session is its own group, not the webapp+infra one"
+        );
+    }
+
+    #[test]
+    fn pending_row_with_no_repo_joins_the_no_repo_group() {
+        let a = info_repo("a", "webapp", SessionStatus::Working);
+        let n = info("no-repo");
+        let sessions = vec![&a, &n];
+
+        let slot = slot_for(&sessions, &[]);
+        assert_eq!(slot.header, None, "reuses the existing (no repo) header");
+        let empty: Vec<&SessionInfo> = Vec::new();
+        assert_eq!(
+            pending_spawn_slot(&empty, &[], &[]),
+            PendingSpawnSlot {
+                index: 0,
+                header: Some(NO_REPO_GROUP.to_string())
+            },
+            "the very first session labels its own group"
+        );
     }
 
     #[test]

@@ -529,10 +529,19 @@ strand a placeholder row forever).
 
 - A **placeholder row** in the session list (`ui::project_list`), so the session
   appears the moment the wizard is confirmed rather than after a slow shell-out.
-  It carries no `SessionInfo`, records **no hitbox**, and is appended last — so
-  selection indices stay a valid range over the real sessions and the monkey
-  test's invariants are untouched. Its label upgrades as the wizard learns it:
-  the repo, then the session name.
+  It carries no `SessionInfo` and records **no hitbox** — so selection indices
+  stay a valid range over the real sessions and the monkey test's invariants are
+  untouched. Its label upgrades as the wizard learns it: the repo, then the
+  session name. It renders **inside the repo group it will land in**
+  (`pending_spawn_slot`), at the end of that group — where the real row will
+  appear, since a new session has no `display_order` and sorts after its ordered
+  siblings. A repo with no rows yet brings its own header rather than floating
+  loose at the bottom. `PendingSpawn.repo_display_names` (resolved once when the
+  repo is chosen — `git::repo_display_name` can shell out on a cache miss, so it
+  must not run per frame) mirrors what `SessionInfo::repo_display_names` will
+  carry, so the pending row and the real one group identically. Because the row
+  is inserted rather than appended, the widget's item indices are offset past it
+  when mapping back to session indices (hitboxes and the selected item).
 - An **animated badge** in the status row (`⠹ NEW  Creating worktree(s)… feat/x
   · 14s`), reusing the `Ctrl+S` sync spinner's surface, with an elapsed counter
   so a long wait reads as progressing rather than hung.
