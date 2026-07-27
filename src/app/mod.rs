@@ -300,6 +300,13 @@ type RemoteDiscovery = (String, bool, Vec<crate::agent::backend::DiscoveredSessi
 /// How long to wait between retry sweeps for a still-unreachable remote backend.
 const REMOTE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Total budget for tearing down every backend's control-mode connection at
+/// quit (see [`App::shutdown_backends`]). Shared across the concurrent
+/// teardowns, not per backend. Generous relative to the ~50 ms a healthy
+/// connection needs — it is a backstop against a wedged transport hanging the
+/// process, not the expected cost.
+const BACKEND_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Background restore + reconnect loop for remote-backed sessions. Startup
 /// readies + discovers only *local* backends synchronously; each remote
 /// (`ssh:`/`wsl:`) backend is readied on its own thread, because a single ssh
@@ -5820,18 +5827,76 @@ impl App {
         self.should_quit
     }
 
-    /// Persist state, then detach. The order is forced: `Session::detach`
-    /// consumes the session by value, so `save_state` (which reads
-    /// `session.info`) must run while `self.sessions` is intact. A hung save
-    /// is bounded by the SQLite busy_timeout, after which upsert errors are
-    /// logged and detach still runs.
+    /// Persist state, detach every session, then tear down the backends
+    /// themselves. The order is forced: `Session::detach` consumes the session
+    /// by value, so `save_state` (which reads `session.info`) must run while
+    /// `self.sessions` is intact. A hung save is bounded by the SQLite
+    /// busy_timeout, after which upsert errors are logged and detach still runs.
+    ///
+    /// Backend teardown (`shutdown_backends`) comes last and is what actually
+    /// ends the control-mode connections; without it they would be closed
+    /// one-by-one by `Drop` after `main` returns, which is invisible in the log
+    /// and used to dominate quit.
     pub fn shutdown(mut self) {
         self.finalize_pending_delete();
         self.save_state();
         // Do NOT remove worktrees — they persist for resume.
         // Detach from backend sessions without killing them — they persist in tmux.
-        for session in self.sessions {
+        // `take` rather than consuming `self.sessions`: that would partially move
+        // `self` and make the `shutdown_backends` call below unreachable.
+        for session in std::mem::take(&mut self.sessions) {
             session.detach();
+        }
+        // Sessions first: detach unregisters each pane, so the per-session reader
+        // threads are already unwinding while the connections are torn down.
+        self.shutdown_backends();
+    }
+
+    /// Tear down every backend's control-mode connection, concurrently.
+    ///
+    /// Each connection's teardown blocks on its child exiting, so doing this
+    /// serially cost the sum over backends — and the backend count grows with
+    /// every configured SSH host and auto-discovered WSL distro. One thread per
+    /// backend makes quit cost the slowest connection instead.
+    ///
+    /// Bounded by [`BACKEND_SHUTDOWN_TIMEOUT`]: a wedged transport (an ssh child
+    /// ignoring its kill, say) must not hang the process. Abandoning a straggler
+    /// is safe — these are the last threads doing anything, the agent panes live
+    /// on in tmux regardless, and the process is about to exit.
+    fn shutdown_backends(&self) {
+        let backends: Vec<_> = self.backends.all_backends().cloned().collect();
+        let total = backends.len();
+        if total == 0 {
+            return;
+        }
+
+        // Completion is signalled over a channel rather than by `join`ing the
+        // handles: a `join` on a wedged thread blocks past the deadline, which
+        // is the exact hang this timeout exists to prevent. Each worker sends on
+        // its way out; we wait for `total` sends or the deadline, whichever
+        // comes first, and simply never join — a straggler is left detached and
+        // dies with the process.
+        let (tx, rx) = mpsc::channel();
+        for b in backends {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                b.shutdown();
+                let _ = tx.send(());
+            });
+        }
+        // Drop the extra sender so `recv_timeout` can't wait on a live handle
+        // this thread still owns.
+        drop(tx);
+
+        let deadline = std::time::Instant::now() + BACKEND_SHUTDOWN_TIMEOUT;
+        for _ in 0..total {
+            // A deadline already past yields a zero timeout, which `recv_timeout`
+            // reports as an immediate error — so this needs no separate check.
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if rx.recv_timeout(remaining).is_err() {
+                warn!("backend shutdown timed out; abandoning remaining teardown");
+                return;
+            }
         }
     }
 
@@ -7139,6 +7204,125 @@ mod tests {
 
     fn test_db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    /// Backend whose `shutdown` sleeps, to exercise `shutdown_backends`. With
+    /// `name` unique per instance so several can share one registry (which is
+    /// keyed by name).
+    struct SlowShutdownBackend {
+        backend_name: String,
+        delay: std::time::Duration,
+        done: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl SessionBackend for SlowShutdownBackend {
+        fn name(&self) -> &str {
+            &self.backend_name
+        }
+        fn check_available(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_ready(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&Path>,
+            _: &std::collections::HashMap<String, String>,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+            unimplemented!()
+        }
+        fn adopt(
+            &self,
+            _: &str,
+            _: u16,
+            _: u16,
+            _: Option<Vec<u8>>,
+        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+            unimplemented!()
+        }
+        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+            Ok(vec![])
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn kill(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn detach(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+        fn shutdown(&self) {
+            std::thread::sleep(self.delay);
+            self.done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn slow_backend_app(
+        count: usize,
+        delay: std::time::Duration,
+    ) -> (App, Arc<std::sync::atomic::AtomicUsize>) {
+        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = BackendRegistry::new(stub_backend_arc());
+        for i in 0..count {
+            registry.register(Arc::new(SlowShutdownBackend {
+                backend_name: format!("slow-{i}"),
+                delay,
+                done: Arc::clone(&done),
+            }));
+        }
+        let app = App::new(24, 80, registry, stub_agents(), test_db());
+        (app, done)
+    }
+
+    /// Backends tear down concurrently, so the cost is the slowest connection
+    /// rather than the sum. Serially this would be ~1.2 s; the assertion has
+    /// wide headroom so it fails only on an actual regression to serial.
+    #[test]
+    fn shutdown_backends_runs_concurrently() {
+        let delay = std::time::Duration::from_millis(200);
+        let (app, done) = slow_backend_app(6, delay);
+
+        let start = std::time::Instant::now();
+        app.shutdown_backends();
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            done.load(std::sync::atomic::Ordering::SeqCst),
+            6,
+            "every backend torn down"
+        );
+        assert!(
+            elapsed < delay * 3,
+            "expected concurrent teardown, took {elapsed:?} for 6 × {delay:?}"
+        );
+    }
+
+    /// A wedged backend must not hang quit: `shutdown_backends` gives up at
+    /// `BACKEND_SHUTDOWN_TIMEOUT` and returns, leaving the straggler detached.
+    #[test]
+    fn shutdown_backends_gives_up_on_wedged_backend() {
+        let (app, _done) = slow_backend_app(1, BACKEND_SHUTDOWN_TIMEOUT * 10);
+
+        let start = std::time::Instant::now();
+        app.shutdown_backends();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < BACKEND_SHUTDOWN_TIMEOUT * 3,
+            "expected the timeout to bound teardown, took {elapsed:?}"
+        );
     }
 
     #[test]

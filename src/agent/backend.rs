@@ -265,6 +265,24 @@ pub trait SessionBackend: Send + Sync {
     fn take_hook_state_events(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+
+    /// Tear down the backend's own long-lived resources (for a tmux backend,
+    /// its control-mode connection: child process + reader thread).
+    ///
+    /// Distinct from [`Self::detach`], which retires one *session*'s pane. This
+    /// retires the *connection*, and is called once per backend at quit.
+    ///
+    /// Exists as an explicit method rather than relying on `Drop` so quit can
+    /// run every backend's teardown **concurrently**: the registry holds each
+    /// backend behind an `Arc`, so dropping it is both hard to sequence and
+    /// serial by nature, and each connection's teardown blocks on a child exit.
+    /// Total quit cost is then the slowest connection rather than their sum —
+    /// which matters because the backend count grows with every configured SSH
+    /// host and auto-discovered WSL distro. Must be idempotent: a later `Drop`
+    /// still runs and has to be a no-op.
+    ///
+    /// Default: nothing to tear down.
+    fn shutdown(&self) {}
 }
 
 /// Internal bundle of I/O handles before wiring.

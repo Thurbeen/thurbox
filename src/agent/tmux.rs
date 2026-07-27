@@ -222,6 +222,14 @@ impl Default for TmuxBackend {
     }
 }
 
+/// How many times [`ControlMode::drop`] re-checks for a graceful child exit
+/// before force-killing, and how long it waits between checks. The product is
+/// the per-connection ceiling on a graceful detach (~50 ms); a control-mode
+/// client that has not exited by then is not going to, and killing it is
+/// harmless (see the rationale in `impl Drop for ControlMode`).
+const GRACEFUL_EXIT_POLLS: u32 = 10;
+const GRACEFUL_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+
 /// A live tmux control mode connection.
 ///
 /// Commands are sent serially (stdin lock ensures ordering) and responses arrive
@@ -673,13 +681,20 @@ impl Drop for ControlMode {
 
         // Give the child a moment to exit gracefully, then force-kill so the
         // reader thread gets EOF promptly and we never block indefinitely.
+        //
+        // The check goes *after* the sleep: `try_wait` runs immediately after
+        // `detach-client` is flushed, long before tmux has processed it, so a
+        // leading check never succeeds and only costs a full interval. Every
+        // backend pays this at quit, so the interval is kept short.
+        //
+        // Force-killing is safe: the tmux *server* and the agent panes are
+        // independent processes, so this only tears down the control-mode
+        // client. The graceful `detach-client` above is a courtesy, which is
+        // why the budget can be this aggressive.
         if let Ok(mut child) = self.child.lock() {
-            let exited = (0..3).any(|_| {
-                if matches!(child.try_wait(), Ok(Some(_))) {
-                    return true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                false
+            let exited = (0..GRACEFUL_EXIT_POLLS).any(|_| {
+                std::thread::sleep(GRACEFUL_EXIT_POLL_INTERVAL);
+                matches!(child.try_wait(), Ok(Some(_)))
             });
             if !exited {
                 let _ = child.kill();
@@ -1527,6 +1542,18 @@ impl SessionBackend for TmuxBackend {
             "display-message -t {backend_id} -p '#{{pane_pid}}'"
         ))?;
         Ok(result.trim().parse().ok())
+    }
+
+    fn shutdown(&self) {
+        // Taking the connection out runs `ControlMode::drop` on the calling
+        // thread, which is what lets quit fan the (blocking) teardown out
+        // across backends. Idempotent: the mutex holds `None` afterwards, so
+        // `TmuxBackend`'s own drop later is a no-op.
+        //
+        // `lock()` rather than `try_lock()`: a contended lock means another
+        // thread is mid-command on this connection, and skipping the teardown
+        // would leak the child + reader thread for the process lifetime.
+        drop(self.control.lock().ok().and_then(|mut c| c.take()));
     }
 
     fn take_hook_state_events(&self) -> Vec<(String, String)> {
