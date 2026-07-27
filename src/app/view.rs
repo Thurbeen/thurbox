@@ -197,10 +197,11 @@ impl App {
 
     /// Highlight the clickable element under the mouse pointer so what a click
     /// would hit is visible before clicking. List/selector rows get a subtle
-    /// background band (the theme's `selection_bg`); buttons brighten their
-    /// fill to `accent_bright`. Runs on the recorded click targets, after all
-    /// rendering; the text selection highlight is applied later and wins on
-    /// overlap.
+    /// background band (the theme's `selection_bg`); filled pill buttons
+    /// brighten their fill to `accent_bright`. The collapse chevron is a button
+    /// by action but a bare border glyph by look, so it takes the subtle band
+    /// too. Runs on the recorded click targets, after all rendering; the text
+    /// selection highlight is applied later and wins on overlap.
     fn apply_hover_highlight(&self, frame: &mut Frame) {
         let Some((hx, hy)) = self.mouse_hover else {
             return;
@@ -250,14 +251,22 @@ impl App {
         // chip stays legible regardless of the resting style (primary's accent
         // fill and the neutral selection-filled secondary chip carry different fg
         // colours); for rows we tint only the background, leaving each cell's
-        // fg/modifiers intact.
-        let is_button = matches!(
+        // fg/modifiers intact. The collapse chevron is the one `Global` target
+        // that is *not* a filled pill (see `draw_session_collapse_toggle`) — a
+        // pane-visibility toggle, not a peer of the Shell/Review view tabs — so
+        // it takes the row band and keeps its own accent/muted colouring.
+        let is_collapse_chevron = matches!(
             target.action,
-            ClickAction::Global(_)
-                | ClickAction::ModalButton { .. }
-                | ClickAction::ReviewButton(_)
-                | ClickAction::CentralTab(_)
+            ClickAction::Global(crate::session::Action::ToggleSessionList)
         );
+        let is_button = !is_collapse_chevron
+            && matches!(
+                target.action,
+                ClickAction::Global(_)
+                    | ClickAction::ModalButton { .. }
+                    | ClickAction::ReviewButton(_)
+                    | ClickAction::CentralTab(_)
+            );
         let hover_bg = if is_button {
             Theme::accent_bright()
         } else {
@@ -708,9 +717,12 @@ impl App {
         // an on-border click wins over a plain pane-focus click. The review
         // overlay takes the pane whenever the active session has one open
         // (persisted per session like the shell view, so it survives switches).
+        // One blank border cell after the chevron, matching the gap the tab
+        // strip keeps between its own pills — without it the chevron's hover
+        // fill runs flush into the Agent pill and the two read as one chip.
         let tab_start = chevron
             .as_ref()
-            .map_or(terminal.x + 1, |(r, _)| r.x + r.width);
+            .map_or(terminal.x + 1, |(r, _)| r.x + r.width + 1);
         if let Some((rect, _)) = chevron.as_ref() {
             self.record_click(
                 *rect,

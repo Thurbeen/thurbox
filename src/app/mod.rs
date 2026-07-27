@@ -9890,13 +9890,18 @@ mod tests {
     #[test]
     fn hovering_footer_button_brightens_it() {
         let mut app = app_with_sessions(1);
-        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let (cols, rows) = (120, 30);
+        let backend = ratatui::backend::TestBackend::new(cols, rows);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| app.view(f)).unwrap();
+        // Pick a *footer* pill specifically: the collapse chevron is also a
+        // `Global` target but is deliberately hovered as a subtle band, not a
+        // pill (see `apply_hover_highlight`), and it is recorded first.
+        let footer_y = rows - 1;
         let r = app
             .click_targets
             .iter()
-            .find(|t| matches!(t.action, ClickAction::Global(_)))
+            .find(|t| matches!(t.action, ClickAction::Global(_)) && t.rect.y == footer_y)
             .map(|t| t.rect)
             .expect("footer buttons recorded");
         app.update(AppMessage::MouseMove { x: r.x, y: r.y });

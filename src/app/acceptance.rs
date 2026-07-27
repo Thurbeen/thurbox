@@ -739,6 +739,82 @@ fn session_collapse_chevron_renders_and_toggles() {
     assert!(h.app.show_session_list, "clicking ▶ re-expands the list");
 }
 
+/// Leftmost recorded click-target rect whose action satisfies `pred` — the
+/// on-border chevron/tab lookups both want the first hitbox left-to-right.
+/// Panics when nothing matches, so a test that stops rendering its target
+/// fails loudly instead of silently asserting nothing.
+fn first_target_rect(app: &super::App, pred: impl Fn(&ClickAction) -> bool) -> Rect {
+    app.click_targets
+        .iter()
+        .filter(|t| pred(&t.action))
+        .map(|t| t.rect)
+        .min_by_key(|r| r.x)
+        .expect("click target recorded this frame")
+}
+
+/// The two on-border central-pane hitboxes the collapse-chevron tests compare:
+/// the chevron itself and the leftmost view tab (Agent).
+fn chevron_and_first_tab_rects(app: &super::App) -> (Rect, Rect) {
+    let chevron = first_target_rect(app, |a| {
+        matches!(
+            a,
+            ClickAction::Global(crate::session::Action::ToggleSessionList)
+        )
+    });
+    let tab = first_target_rect(app, |a| matches!(a, ClickAction::CentralTab(_)));
+    (chevron, tab)
+}
+
+#[test]
+fn session_collapse_chevron_keeps_a_gap_before_the_tab_strip() {
+    // The chevron is packed left of the tab strip, but it must keep the same
+    // one-cell gap the pills keep between themselves: their hover fills are
+    // adjacent rects, so a flush chevron/Agent pair lights up as one chip.
+    let mut h = Harness::standard(1);
+    h.render();
+    let (chevron, first_tab) = chevron_and_first_tab_rects(&h.app);
+    assert_eq!(
+        first_tab.x,
+        chevron.right() + 1,
+        "one blank border cell separates the chevron from the first pill \
+         (chevron {chevron:?}, first tab {first_tab:?})"
+    );
+}
+
+#[test]
+fn session_collapse_chevron_hovers_lighter_than_a_pill() {
+    // The chevron is a bare border glyph, not a filled pill, so hovering it must
+    // use the subtle row band (`selection_bg`) rather than the pill's bright
+    // `accent_bright` fill — otherwise hover dresses it up as the peer view-tab
+    // it deliberately isn't. Contrast it against a real pill (the Agent tab),
+    // which keeps the bright treatment.
+    let mut h = Harness::standard(1);
+    h.render();
+    let (chevron, pill) = chevron_and_first_tab_rects(&h.app);
+
+    // Background the hovered cell ends up with, for the target under `rect`.
+    let hovered_bg = |h: &mut Harness, rect: Rect| {
+        h.app.update(AppMessage::MouseMove {
+            x: rect.x,
+            y: rect.y,
+        });
+        h.render();
+        h.terminal.backend().buffer()[(rect.x, rect.y)].bg
+    };
+
+    // Hovering the pill brightens it; hovering the chevron only bands it.
+    assert_eq!(
+        hovered_bg(&mut h, pill),
+        crate::ui::theme::Theme::accent_bright(),
+        "a real tab pill keeps the bright button hover"
+    );
+    assert_eq!(
+        hovered_bg(&mut h, chevron),
+        crate::ui::theme::Theme::selection_bg(),
+        "the collapse chevron gets the subtle row band instead"
+    );
+}
+
 #[test]
 fn ctrl_slash_opens_global_search_strip() {
     let mut h = Harness::standard(2);
