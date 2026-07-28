@@ -29,29 +29,33 @@ Show
 # session list in the left column.
 Sleep 2500ms
 
-# The Automations pane is part of the left column: focus the session list
-# (Ctrl+H from the terminal), then press `j` down past the last session to flow
-# straight into the Automations pane — one continuous list.
+# Reach the Automations surface with Ctrl+P (the OpenAutomations action) rather
+# than walking `j` down past the last session into the pane.
+#
+# The walk is what a user does, but it is NOT recordable: it needs a fixed number
+# of Down presses, and the correct count depends on which row is selected when
+# the tape starts (Ctrl+H only moves focus, it never resets the selection). The
+# combined session+automations column is circular, so one press too many wraps
+# back onto the list — and then `n`, the name and the whole field walk are
+# forwarded to the focused agent's PTY instead of thurbox, recording a broken
+# clip that still exits 0. Ctrl+P is a single keystroke with no row assumption.
+#
+# Ctrl+H first: OpenAutomations is a terminal_passthrough action, so from a
+# focused terminal Ctrl+P would reach the agent (readline history) instead.
 Ctrl+H
 Sleep 1200ms
-Down
-Sleep 400ms
-Down
-Sleep 400ms
-Down
-Sleep 400ms
-Down
-Sleep 400ms
-Down
-Sleep 1600ms
+Ctrl+P
+Sleep 1800ms
 
-# Create a new automation right from the pane (`n`, like Ctrl+N for a session).
-# The editor opens in the central pane — one screen, no separate popup.
+# Create a new automation with `n` (like Ctrl+N for a session). From the Ctrl+P
+# list this closes it and opens the editor as a centered overlay; the in-pane
+# path opens the same editor in the central pane — both share one handler
+# (AutomationEditorModal::handle_key), so the field walk below is identical.
 Type "n"
 Sleep 1800ms
 
 # Name it.
-Type "morning-triage"
+Type "nightly-clippy"
 Sleep 900ms
 
 # Trigger is a selector cycled with the arrows — step through, land on "daily".
@@ -100,11 +104,15 @@ Sleep 900ms
 # The prompt that fires on schedule.
 Tab
 Sleep 600ms
-Type "Triage failing CI and summarize blockers"
+Type "Run cargo clippy --all-targets and triage new warnings"
 Sleep 1200ms
 
 # Save — returns to the pane; the automation shows a live next-run countdown.
-Enter
+# Ctrl+S, not Enter: the prompt is a multi-line TextArea where Enter inserts a
+# newline instead of submitting, so an Enter here leaves the editor open and the
+# automation unsaved (and every following key edits text). Ctrl+S saves from any
+# field.
+Ctrl+S
 Sleep 2000ms
 
 # Toggle enabled off and back on, straight from the pane.

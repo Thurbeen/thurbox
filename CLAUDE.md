@@ -1884,18 +1884,38 @@ the hero, `automations`/`tasks`/`search` map to `<stem>-demo.*`,
 every other stem maps to `thurbox-<stem>.*`).
 
 Every clip uses **real agent CLIs**: the script seeds one session
-per installed CLI (`claude`, `opencode`, `codex`, `antigravity`) in a
-throwaway sample repo and launches them with no prompt. It
+per installed CLI (`claude`, `opencode`, `codex`, `antigravity`) and
+launches them with no prompt. It
 overrides `HOME`, so agents boot with fresh history/config (no
 past conversations leak); CLIs that authenticate via the system
 keyring stay logged in but show no account email on screen. The
 tapes exercise the session list, info panel (`Ctrl+B`), file
 viewer (`Ctrl+E`), native code review (`Ctrl+X`, the default
 `ToggleReview` chord; `F7` alternate), theme picker, session-creation flow, and the
-Automations pane over the seeded sessions and sample tree. The hero
+Automations pane over the seeded sessions and demo tree. The hero
 `agents` demo also opens the code-review view, so it seeds the same
 worktree-with-a-committed-diff session the dedicated `code-review`
 clip uses.
+
+**The demo scenario is a realistic one, not a UI tour.** The repo is a
+**vendored snapshot of thurbox's own tree** (a fixed file list copied into the
+throwaway `HOME` and `git init`ed there — MIT, already on the recording machine,
+so recordings stay hermetic and offline), replacing an older four-file
+`sample-project` stub whose toy `fn add(a, b)` gave viewers nothing to read.
+Sessions are named after the **work**, not the agent running it
+(`fix-osc52-tmux`, `add-wsl-host-tests`, `perf-session-order-cache`,
+`docs-remote-hooks` — see `demo_session_name`), so the list reads as one backlog
+with four branches in flight, which is the actual use case; the agent stays
+visible per session in the info panel and tab title. The code-review clip's diff
+is a real follow-up fix (`posix_quote` rejecting newlines, plus its test) applied
+to the vendored copy only — never your working tree. The seeded tasks/automation
+and the queries in `search.tape`/`tasks.tape` are all keyed to that same
+narrative, so **editing one means editing the others**: the tapes type literal
+queries (`host` must match both a session and a task) and literal names.
+The built-in **hooks extension is deactivated** for recordings — it is
+auto-activated by default and makes claude open a "Hooks need review" modal on
+first launch in a fresh `HOME`, which hides the agent UI and can swallow a tape's
+keystrokes (no tape asserts on the status dots it wires).
 
 It runs fully isolated from your real environment — a dev build
 (`0.0.0-dev` → `dev_build` cfg) uses the `thurbox-dev` socket and

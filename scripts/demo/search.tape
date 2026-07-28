@@ -65,11 +65,20 @@ Sleep 1200ms
 
 # Refine the query — counts and highlights update on every keystroke (the
 # session buffer-content scan kicks in after a short debounce).
+#
+# `host` is a deliberately cross-scope query: it matches the
+# `add-wsl-host-tests` SESSION and the "Triage flaky WSL host discovery" TASK, so
+# the strip shows several scopes at once — the whole point of the feature.
+#
+# It must match the sessions this tape actually has: the `harden-posix-quote`
+# review session is seeded ONLY for the code-review/agents tapes, so a query
+# keyed to it would collapse to a single task result here. Keep this in sync with
+# demo_session_name() and the seeded tasks in record.sh.
 Backspace
 Backspace
 Backspace
 Sleep 600ms
-Type "claude"
+Type "host"
 Sleep 2000ms
 
 # Enter jumps to the selected result and focuses its pane (here, a session's

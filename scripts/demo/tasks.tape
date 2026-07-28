@@ -53,8 +53,9 @@ Sleep 1600ms
 Type "n"
 Sleep 1400ms
 
-# Title it (the Title field is focused first).
-Type "Add integration tests"
+# Title it (the Title field is focused first). A real backlog item for the
+# vendored thurbox tree, matching the seeded tasks and session names.
+Type "Cache the session order signature"
 Sleep 1000ms
 
 # Tab to the multi-line Description: Enter inserts newlines, so you can write
@@ -63,9 +64,9 @@ Tab
 Sleep 800ms
 Type "## Acceptance"
 Enter
-Type "- cover the **parser** edge cases"
+Type "- rebuild only when **grouping inputs** change"
 Enter
-Type "- add a CI gate"
+Type "- add a perf_ counter test"
 Sleep 1400ms
 Ctrl+S
 Sleep 2200ms

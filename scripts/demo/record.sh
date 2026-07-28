@@ -127,6 +127,24 @@ CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"   # dev_build subdir
 DB_FILE="$XDG_DATA_HOME/thurbox-dev/thurbox.db"  # SQLite db (dev_build subdir)
 mkdir -p "$CFG_DIR"
 
+# Hide `wsl.exe` from the demo's PATH. WSL distros are AUTO-discovered (no config
+# to isolate — `host_config::discover_wsl_hosts` shells out to `wsl.exe -l -q`
+# whenever it resolves on PATH), so on a WSL box every discovered distro becomes a
+# host and Ctrl+N opens the "Run On" host picker *before* the repo picker. That
+# extra modal shifts every subsequent keystroke in the spawn tapes by one step, so
+# they record the wrong flow while still exiting 0. Dropping the Windows interop
+# dirs makes discovery return empty -> zero hosts -> Ctrl+N opens the repo picker
+# directly, which is what the tapes are written against (and what a non-WSL
+# recording box produces, so demo output no longer depends on the host OS).
+# Drop the WSL interop dirs only (`/mnt/<drive>/...`) — that is where wsl.exe and
+# every other Windows binary lives. Filtering on the word "windows" instead would
+# also strip a legitimate unix path that merely contains it.
+PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd: -)
+export PATH
+if command -v wsl.exe >/dev/null 2>&1; then
+    echo "warning: wsl.exe still on PATH — the host picker may shift spawn tapes" >&2
+fi
+
 cleanup() {
     # The isolated tmux server (in TMUX_TMPDIR) hosts every agent pane, so the
     # helper's single kill reaps all the real agent processes too — and cannot
@@ -171,39 +189,74 @@ trap cleanup EXIT INT TERM
 printf '{\n  "GlobalSearch": ["ctrl+a"]\n}\n' \
     > "$CFG_DIR/keybindings.json"
 
-# --- A throwaway sample repo so the file viewer shows a realistic tree --------
-DEMO_REPO="$DEMO_HOME/sample-project"
-mkdir -p "$DEMO_REPO/src" "$DEMO_REPO/tests" "$DEMO_REPO/docs"
-cat > "$DEMO_REPO/README.md" <<'EOF'
-# sample-project
+# --- The demo repo: a vendored snapshot of thurbox's own tree ----------------
+# The demo repo is a fixed subset of THIS repository, copied into the throwaway
+# HOME and `git init`ed there.
+#
+# Why thurbox's own code rather than a synthetic "sample-project" (or a cloned
+# third-party repo):
+#   * It shows real work. The old stub was four toy files (`fn add(a, b)`), so
+#     every clip was a UI tour — nothing on screen told a viewer WHY you would
+#     run four agents at once. Real modules, a real test and real docs make the
+#     file viewer, the search results and the review diff legible as actual work.
+#   * It is already on the recording machine, so recordings stay hermetic and
+#     offline (no clone step to slow down or break a re-record), which is the
+#     same property the throwaway HOME/XDG isolation buys elsewhere.
+#   * Licensing is a non-question: thurbox is MIT and we own it. A GPL engine or
+#     any third-party tree would put a license notice into the release pipeline's
+#     demo assets for no benefit.
+#   * It is self-demonstrating — the tool built with the tool.
+#
+# COPIED, not symlinked, and never the live checkout: the recording must not be
+# able to mutate your working tree (the review clip commits into a worktree of
+# this repo), and a fixed file list keeps successive recordings visually stable
+# even as the real repo moves on.
+DEMO_REPO="$DEMO_HOME/thurbox"
+mkdir -p "$DEMO_REPO"
 
-A tiny demo repository used to showcase the Thurbox file viewer.
-EOF
-cat > "$DEMO_REPO/src/main.rs" <<'EOF'
-fn main() {
-    println!("hello from sample-project");
-}
-EOF
-cat > "$DEMO_REPO/src/lib.rs" <<'EOF'
-pub fn add(a: i64, b: i64) -> i64 {
-    a + b
-}
-EOF
-cat > "$DEMO_REPO/tests/basic.rs" <<'EOF'
-#[test]
-fn it_adds() {
-    assert_eq!(sample_project::add(2, 2), 4);
-}
-EOF
-cat > "$DEMO_REPO/docs/ARCHITECTURE.md" <<'EOF'
-# Architecture
+# A curated file list: small enough to render legibly at the tapes' font size,
+# varied enough that the file tree looks like a real project (nested src/,
+# tests/, docs/). Paths are relative to the repo root and keep their layout.
+DEMO_FILES="
+src/shell.rs
+src/workspace.rs
+src/ui/highlight.rs
+src/ui/syntax.rs
+src/session/task.rs
+tests/architecture_rules.rs
+docs/ARCHITECTURE.md
+docs/CONFIG.md
+README.md
+LICENSE
+"
+# shellcheck disable=SC2086 # $DEMO_FILES is a newline-separated list, split on purpose
+for f in $DEMO_FILES; do
+    [ -f "$REPO_ROOT/$f" ] || continue
+    mkdir -p "$DEMO_REPO/$(dirname "$f")"
+    cp "$REPO_ROOT/$f" "$DEMO_REPO/$f"
+done
+# A Cargo.toml so the tree reads as a buildable crate. Hand-written rather than
+# copied: the real one carries the workspace/dependency detail that would only
+# be noise on screen.
+cat > "$DEMO_REPO/Cargo.toml" <<'EOF'
+[package]
+name = "thurbox"
+version = "0.0.0-dev"
+edition = "2021"
+license = "MIT"
 
-Sample document for the file-viewer demo.
+[dependencies]
+ratatui = "0.30"
+tui-term = "0.3"
+vt100 = "0.16"
+rusqlite = { version = "0.40", features = ["bundled"] }
+tokio = { version = "1", features = ["full"] }
 EOF
+
 git init -q "$DEMO_REPO"
 git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo add -A
 git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo \
-    commit -q -m "init sample project"
+    commit -q -m "chore: import thurbox tree"
 # The branch the initial commit landed on (master or main, per the host's git
 # config) — used as the code-review demo's worktree base.
 DEMO_BASE_BRANCH=$(git -C "$DEMO_REPO" symbolic-ref --short HEAD)
@@ -245,10 +298,30 @@ done
 set -- "$DEMO_REPO" "$PROJECTS_DIR" "$PROJECTS_DIR/api-server" \
     "$PROJECTS_DIR/shared-lib" "$PROJECTS_DIR/web-app"
 
+# Suppress every agent's "a new version is available" first-run prompt. These are
+# MODAL in some CLIs (opencode renders a centered Update Available box that
+# swallows arrow keys), so a tape's navigation never reaches thurbox and the
+# following keystrokes are typed into the agent instead — a broken clip that still
+# exits 0. They also date the recording. Env vars are set here rather than in
+# agents.toml so they cover every launch path; opencode's `autoupdate` config key
+# is honoured only at the global path (and was ignored outright in some releases),
+# hence the env var as well.
+export OPENCODE_DISABLE_AUTOUPDATE=true
+export CODEX_DISABLE_UPDATE_CHECK=1
+export npm_config_update_notifier=false      # npm-distributed CLIs (update-notifier)
+export NO_UPDATE_NOTIFIER=1
+
+# opencode: disable the update prompt via config too (belt and braces with the
+# env var above), at the global path the setting is actually read from.
+mkdir -p "$HOME/.config/opencode"
+printf '{\n  "autoupdate": false\n}\n' > "$HOME/.config/opencode/opencode.json"
+
 # codex: auth token + one trusted [projects] table per demo dir
 if [ -f "$REAL_HOME/.codex/auth.json" ]; then
     mkdir -p "$HOME/.codex"
     cp "$REAL_HOME/.codex/auth.json" "$HOME/.codex/auth.json"
+    # Silence codex's release-notes banner ("Update available! x -> y").
+    printf 'hide_update_notice = true\n\n' > "$HOME/.codex/config.toml"
     for p in "$@"; do
         printf '[projects."%s"]\ntrust_level = "trusted"\n\n' "$p" \
             >> "$HOME/.codex/config.toml"
@@ -295,9 +368,37 @@ claude_bin=$(command -v claude 2>/dev/null || true)
 [ -n "$claude_bin" ] && ln -sf "$(readlink -f "$claude_bin")" "$HOME/.local/bin/claude"
 
 # --- Pre-seed one session per agent so the TUI opens populated ---------------
+# Sessions are named after the WORK, not the agent running it. The session list
+# is the demo's headline shot, and `claude`/`codex`/`opencode`/`antigravity` told
+# a viewer nothing except which CLIs are installed — it never answered "why would
+# I run four of these at once?". Task-shaped names make the list read as one
+# backlog with four branches in flight, which is the actual use case. The agent is
+# still visible per session (info panel, tab title), so nothing is lost.
+#
+# Each name is a real item from thurbox's own history, matching the vendored tree.
+demo_session_name() {
+    case "$1" in
+        claude)      echo "fix-osc52-tmux" ;;
+        codex)       echo "add-wsl-host-tests" ;;
+        opencode)    echo "perf-session-order-cache" ;;
+        antigravity) echo "docs-remote-hooks" ;;
+        *)           echo "$1" ;;
+    esac
+}
+
+# Opt out of the built-in hooks extension for the recording. It is auto-activated
+# by default and injects a `--settings` patch into claude, which then asks
+# "Hooks need review / 4 hooks are new or changed" on first launch in the
+# throwaway HOME — a modal that both hides the agent's real UI and can swallow a
+# tape's keystrokes. The status hooks it wires drive the session-list dots, which
+# no tape asserts on (agents are launched with no prompt, so nothing is working),
+# so dropping it costs the demo nothing. Must run BEFORE the sessions spawn.
+"$CLI_BIN" extension deactivate hooks >/dev/null 2>&1 || true
+
 echo "==> Seeding one session per agent:$AGENTS"
 for a in $AGENTS; do
-    "$CLI_BIN" session create --name "$a" --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
+    "$CLI_BIN" session create --name "$(demo_session_name "$a")" \
+        --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
 done
 
 # --- Code-review demo: a worktree session with a real committed diff ---------
@@ -313,37 +414,68 @@ done
 if printf '%s ' $TAPES | grep -Eq '(^| )(code-review|agents)( |$)'; then
     echo "==> Seeding a worktree review session with a committed diff"
     review_agent=$(printf '%s\n' $AGENTS | head -n1)
-    "$CLI_BIN" session create --name "review" --repo-path "$DEMO_REPO" \
-        --agent "$review_agent" --worktree-branch "review/demo" \
+    "$CLI_BIN" session create --name "harden-posix-quote" \
+        --repo-path "$DEMO_REPO" \
+        --agent "$review_agent" --worktree-branch "fix/posix-quote-newline" \
         --base-branch "$DEMO_BASE_BRANCH" >/dev/null
-    # Resolve the worktree path thurbox created for branch review/demo.
+    # Resolve the worktree path thurbox created for the review branch.
     REVIEW_WT=$(git -C "$DEMO_REPO" worktree list --porcelain \
-        | awk '/^worktree /{p=substr($0,10)} $0=="branch refs/heads/review/demo"{print p}')
-    if [ -n "$REVIEW_WT" ]; then
-        cat > "$REVIEW_WT/src/lib.rs" <<'EOF'
-pub fn add(a: i64, b: i64) -> i64 {
-    a.wrapping_add(b)
+        | awk '/^worktree /{p=substr($0,10)}
+               $0=="branch refs/heads/fix/posix-quote-newline"{print p}')
+    if [ -n "$REVIEW_WT" ] && [ -f "$REVIEW_WT/src/shell.rs" ]; then
+        # A REAL, self-explanatory change: `posix_quote`'s own doc comment says it
+        # does not strip newlines and pushes that onto callers, so making it reject
+        # them (plus a test) reads as a genuine follow-up fix rather than demo
+        # filler. It also produces a diff that demonstrates the review view well —
+        # a modified function body, a new doc line, and a new test block, so the
+        # unified/side-by-side layouts and the syntax highlighting all have
+        # something to show. Applied with `patch`-free python so the edit is exact
+        # and fails loudly if the vendored file ever drifts.
+        # Raw strings (r""") so the Rust source's own backslashes need no
+        # re-escaping here: the heredoc is quoted, so python sees these bytes
+        # exactly as written.
+        python3 - "$REVIEW_WT/src/shell.rs" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+anchor = r"""    if !s.is_empty() && s.chars().all(is_safe_shell_char) {"""
+guard = r"""    debug_assert!(
+        !s.contains('\n'),
+        "posix_quote received a newline; quote line-delimited input first"
+    );
+"""
+helper = r"""
+/// Whether `s` is safe to hand to [`posix_quote`] as a single shell word.
+///
+/// A newline would be re-split by a line-delimited protocol before the remote
+/// shell ever sees the quoting, so callers must reject it up front.
+pub fn is_quotable_word(s: &str) -> bool {
+    !s.contains('\n')
 }
+"""
+if anchor not in src:
+    sys.exit("posix_quote body not found - vendored src/shell.rs drifted")
+# Insert the guard at the top of posix_quote's body...
+src = src.replace(anchor, guard + anchor, 1)
+# ...and the new helper right after that function's closing brace.
+end = src.index(anchor)
+close = src.index("\n}\n", end) + len("\n}\n")
+src = src[:close] + helper + src[close:]
+open(path, "w").write(src)
+PY
+        cat >> "$REVIEW_WT/tests/architecture_rules.rs" <<'EOF'
 
-pub fn mul(a: i64, b: i64) -> i64 {
-    a.wrapping_mul(b)
-}
-EOF
-        cat > "$REVIEW_WT/src/greet.rs" <<'EOF'
-pub fn greet(name: &str) -> String {
-    format!("hello, {name}!")
-}
-EOF
-        cat > "$REVIEW_WT/src/main.rs" <<'EOF'
-mod greet;
-
-fn main() {
-    println!("{}", greet::greet("sample-project"));
+#[test]
+fn posix_quote_rejects_newlines() {
+    // A newline survives quoting and would be re-split by tmux control mode,
+    // so callers must screen it out before quoting.
+    assert!(thurbox::shell::is_quotable_word("feat/add-panel"));
+    assert!(!thurbox::shell::is_quotable_word("two\nlines"));
 }
 EOF
         git -C "$REVIEW_WT" -c user.email=demo@thurbox -c user.name=demo add -A
         git -C "$REVIEW_WT" -c user.email=demo@thurbox -c user.name=demo \
-            commit -q -m "feat: add greeting + checked arithmetic"
+            commit -q -m "fix(shell): reject newlines in posix_quote"
     fi
 fi
 
@@ -354,21 +486,29 @@ fi
 # shellcheck disable=SC2086 # $TAPES is a space-separated list, split on purpose
 if printf '%s ' $TAPES | grep -Eq '(^| )(tasks|search)( |$)'; then
     echo "==> Seeding demo tasks + an automation"
+    # Real backlog items from thurbox's own tracker, matching the vendored tree
+    # and the session names — so the tasks panel reads as the same sprint the
+    # sessions are working, not as generic filler.
+    #
+    # NOTE: `search.tape` types the literal queries `tri`, `quote` and `test`, so
+    # at least one task/automation must match each. Keep them in sync when editing.
+    #
     # A plain local todo plus one already in progress, so the checkbox glyphs
     # (todo/in-progress/done) all show in the list.
-    "$CLI_BIN" task create --title "Write integration tests" >/dev/null 2>&1 || true
-    "$CLI_BIN" task create --title "Triage failing CI" --status in_progress \
-        >/dev/null 2>&1 || true
+    "$CLI_BIN" task create --title "Add psmux control-mode tests" >/dev/null 2>&1 || true
+    "$CLI_BIN" task create --title "Triage flaky WSL host discovery" \
+        --status in_progress >/dev/null 2>&1 || true
     # A rich markdown description so the full-screen preview shows headings,
     # bold and lists rendered (the headline of the tasks feature).
-    "$CLI_BIN" task create --title "Document the search feature" \
-        --description "$(printf '## Goal\n\nExplain the **global search** strip.\n\n- matches sessions, tasks & automations\n- fuzzy across *title* and *description*')" \
+    "$CLI_BIN" task create --title "Harden posix_quote against newlines" \
+        --description "$(printf '## Goal\n\nA newline survives `posix_quote` and is re-split by tmux **control mode**.\n\n- reject newlines at the quoting boundary\n- add a regression test\n- audit callers that build *remote* git commands')" \
         >/dev/null 2>&1 || true
     # An automation (spawn action, inferred from --repo) so the search demo has
     # a matching automation result too.
-    "$CLI_BIN" automation create --name "nightly-triage" --trigger daily \
+    "$CLI_BIN" automation create --name "nightly-clippy-triage" --trigger daily \
         --time "09:00" --repo "$DEMO_REPO" \
-        --prompt "Triage failing CI and summarize blockers" >/dev/null 2>&1 || true
+        --prompt "Run cargo clippy --all-targets and triage any new warnings" \
+        >/dev/null 2>&1 || true
 fi
 
 # Give the real CLIs a moment to boot before VHS starts capturing. Each tape
@@ -388,10 +528,32 @@ set_theme() {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 }
 
+# Pin a deterministic session order so the left column is byte-stable across
+# runs. Tapes that walk the list with a FIXED number of Down presses (the
+# `automations` clip steps past the last session to flow into the Automations
+# pane) are only correct if the walk starts on a known row: the combined
+# session+automations column is circular, so one press too many wraps back onto
+# the list and the following keystrokes are forwarded to the focused agent's PTY
+# instead — a broken clip that still exits 0. `display_order` is the authoritative
+# ordering (a NULL sorts after ordered rows, in creation order), so stamping it
+# 0..n-1 by creation time fixes both the order and which row is selected first.
+set_session_order() {
+    sqlite3 "$DB_FILE" <<'SQL'
+UPDATE sessions
+   SET display_order = (
+       SELECT COUNT(*) FROM sessions AS earlier
+        WHERE earlier.deleted_at IS NULL
+          AND earlier.created_at < sessions.created_at
+   )
+ WHERE deleted_at IS NULL;
+SQL
+}
+
 for tape in $TAPES; do
     # Re-apply before every tape: the `theme` clip switches themes (and persists
     # the change), so without this any tape after it would start on the wrong one.
     set_theme "$DEMO_THEME"
+    set_session_order
     echo "==> Recording $tape.tape (theme: $DEMO_THEME) ..."
     vhs "$SCRIPT_DIR/$tape.tape"
 done
