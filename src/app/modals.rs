@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::session::theme_config::ThemeEntry;
 use crate::storage::DeletedSessionInfo;
 
 // ── TextInput Helper ────────────────────────────────────────────────────────
@@ -537,11 +538,85 @@ pub struct SessionNameModal {
 
 #[derive(Debug, Clone)]
 pub struct ThemePickerModal {
+    /// Selection cursor in *filtered* space — an index into
+    /// [`ThemePickerModal::matches`], not into the full entry list. Every
+    /// consumer resolves it through `matches` so a typed filter can never
+    /// apply the wrong theme.
     pub index: usize,
     /// Palette active when the picker opened. The picker live-previews by
     /// mutating the global palette as the selection moves, so cancelling
     /// (`Esc`) restores this snapshot; only confirming (`Enter`) persists.
     pub original: crate::session::ThemePalette,
+    /// The open filter sub-mode, entered with `/` — `None` in normal
+    /// navigation mode, where `j`/`k` select like every other picker.
+    ///
+    /// With 36 built-ins plus custom themes the list is far taller than any
+    /// terminal, so a query narrows it; but it sits behind `/` (mirroring the
+    /// file viewer's and code review's find) rather than swallowing every
+    /// letter, so the picker's keys stay consistent with its siblings. While
+    /// `Some`, letters append to the query and `Esc` closes the sub-mode.
+    pub filter: Option<TextInput>,
+    /// Indices into the full entry list that match `filter`, in list order.
+    /// Recomputed by [`ThemePickerModal::refilter`] on every query change.
+    pub matches: Vec<usize>,
+}
+
+impl ThemePickerModal {
+    /// The active query, or `""` when the filter sub-mode is closed.
+    pub fn filter_query(&self) -> &str {
+        self.filter.as_ref().map_or("", |f| f.value())
+    }
+
+    /// Case-insensitive substring match over a theme's display name and its
+    /// stable id, so both "rose" and "rose-pine-dawn" find the same entry.
+    /// `needle` must already be lowercased. Both sides are lowercased: built-in
+    /// ids are all lowercase, but a custom theme may name itself anything.
+    fn is_match(entry: &ThemeEntry, needle: &str) -> bool {
+        entry.display_name.to_lowercase().contains(needle)
+            || entry.name.to_lowercase().contains(needle)
+    }
+
+    /// All entry indices matching the current query (every index when empty).
+    pub fn compute_matches(entries: &[ThemeEntry], filter: &str) -> Vec<usize> {
+        let needle = filter.trim().to_lowercase();
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| needle.is_empty() || Self::is_match(e, &needle))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Recompute `matches` after a query edit, keeping the cursor on the
+    /// previously selected *entry* when it survives the filter — so refining a
+    /// query never silently previews a different theme. Falls back to the first
+    /// match (the caller then previews it).
+    pub fn refilter(&mut self, entries: &[ThemeEntry]) {
+        let previous = self.selected_entry();
+        self.matches = Self::compute_matches(entries, self.filter_query());
+        self.index = previous
+            .and_then(|entry| self.matches.iter().position(|&i| i == entry))
+            .unwrap_or(0);
+    }
+
+    /// Open the filter sub-mode (`/`). Idempotent — re-pressing `/` while it
+    /// is already open keeps the query rather than clearing it.
+    pub fn open_filter(&mut self) {
+        self.filter.get_or_insert_with(TextInput::new);
+    }
+
+    /// Close the filter sub-mode and restore the full list, keeping the cursor
+    /// on the theme it was on so `Esc` never jumps the selection elsewhere.
+    pub fn close_filter(&mut self, entries: &[ThemeEntry]) {
+        self.filter = None;
+        self.refilter(entries);
+    }
+
+    /// The full-list entry index under the cursor, or `None` when the filter
+    /// matches nothing.
+    pub fn selected_entry(&self) -> Option<usize> {
+        self.matches.get(self.index).copied()
+    }
 }
 
 /// What a hard delete would destroy: uncommitted changes and/or unmerged
@@ -3398,5 +3473,91 @@ mod tests {
                 "{field:?}: restart_required and restart_only_differs disagree",
             );
         }
+    }
+
+    // ── ThemePickerModal filtering ──────────────────────────────────────────
+
+    fn theme_entry(name: &str, display: &str) -> ThemeEntry {
+        ThemeEntry {
+            name: name.to_string(),
+            display_name: display.to_string(),
+            palette: crate::session::ThemePalette::default(),
+            is_light: false,
+        }
+    }
+
+    #[test]
+    fn theme_filter_matches_display_name_and_id_case_insensitively() {
+        // A custom theme may name itself anything, so the *id* side must be
+        // lowercased too — matching on the raw id would make "MyTheme"
+        // unfindable by any lowercase query.
+        let entries = vec![
+            theme_entry("rose-pine-dawn", "Rosé Pine Dawn"),
+            theme_entry("MyTheme", "Custom"),
+            theme_entry("nord", "Nord"),
+        ];
+
+        // By display name, and by id.
+        assert_eq!(ThemePickerModal::compute_matches(&entries, "dawn"), vec![0]);
+        assert_eq!(
+            ThemePickerModal::compute_matches(&entries, "rose-pine"),
+            vec![0]
+        );
+        // Mixed-case id found by a lowercase query, and vice versa.
+        assert_eq!(
+            ThemePickerModal::compute_matches(&entries, "mytheme"),
+            vec![1]
+        );
+        assert_eq!(ThemePickerModal::compute_matches(&entries, "NORD"), vec![2]);
+        // An empty / whitespace query keeps everything.
+        assert_eq!(
+            ThemePickerModal::compute_matches(&entries, "   "),
+            vec![0, 1, 2]
+        );
+        assert!(ThemePickerModal::compute_matches(&entries, "zzz").is_empty());
+    }
+
+    #[test]
+    fn theme_refilter_keeps_the_cursor_on_the_same_theme() {
+        let entries = vec![
+            theme_entry("nord", "Nord"),
+            theme_entry("dracula", "Dracula"),
+            theme_entry("monokai", "Monokai"),
+        ];
+        let mut modal = ThemePickerModal {
+            index: 2, // Monokai
+            original: crate::session::ThemePalette::default(),
+            filter: None,
+            matches: (0..entries.len()).collect(),
+        };
+        modal.open_filter();
+        let query = |modal: &mut ThemePickerModal, q: &str| {
+            modal.filter.as_mut().expect("filter is open").set(q);
+            modal.refilter(&entries);
+        };
+
+        // Narrowing to a set that still contains Monokai must follow it, not
+        // stay on the old ordinal (which would now be a different theme).
+        query(&mut modal, "o");
+        assert_eq!(
+            modal.selected_entry(),
+            Some(2),
+            "cursor should track the theme, not the index"
+        );
+
+        // Narrowing it away falls back to the first match.
+        query(&mut modal, "dracula");
+        assert_eq!(modal.selected_entry(), Some(1));
+
+        // No match at all: nothing selected, and nothing panics.
+        query(&mut modal, "zzz");
+        assert_eq!(modal.selected_entry(), None);
+
+        // Closing the filter restores the whole list, keeping the cursor on a
+        // real theme rather than stranding it on the empty match set.
+        modal.close_filter(&entries);
+        assert_eq!(modal.matches.len(), entries.len());
+        assert!(modal.selected_entry().is_some());
+        assert!(modal.filter.is_none());
     }
 }

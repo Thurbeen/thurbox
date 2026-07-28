@@ -322,7 +322,7 @@ impl App {
             Modal::AutomationsList(_) => self.handle_automations_list_key(code),
             Modal::AgentPicker(_) => self.handle_agent_picker_key(code),
             Modal::HostPicker(_) => self.handle_host_picker_key(code),
-            Modal::ThemePicker(_) => self.handle_theme_picker_key(code),
+            Modal::ThemePicker(_) => self.handle_theme_picker_key(code, mods),
             Modal::RepoPicker(_) => self.handle_repo_picker_key(code, mods),
             Modal::TaskActionPicker(_) => self.handle_task_action_picker_key(code),
             Modal::ConfirmDelete(_) => self.handle_confirm_delete_key(code),
@@ -1385,33 +1385,83 @@ impl App {
         }
     }
 
-    fn handle_theme_picker_key(&mut self, code: KeyCode) {
+    /// Theme-picker input. Two modes, mirroring the file viewer's and code
+    /// review's find: normally `j`/`k` (+ arrows) select like every other
+    /// picker, and `/` opens a filter sub-mode in which letters append to the
+    /// query. Inside the sub-mode `Esc` closes just the filter (the modal stays
+    /// open) and the arrows still navigate, so `j` stays typable.
+    fn handle_theme_picker_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         let entries = crate::ui::theme::all_theme_entries();
-        let entry_count = entries.len();
         let super::modals::Modal::ThemePicker(ref mut tp) = self.modal else {
             return;
         };
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let filtering = tp.filter.is_some();
+        // Page step derives from the last rendered list height so PageUp/Down
+        // move by exactly one visible screenful.
+        let page = self.theme_picker_page.max(1);
+        let last = tp.matches.len().saturating_sub(1);
         match code {
             KeyCode::Esc => {
-                // Cancel: undo the live preview by restoring the palette that
-                // was active when the picker opened (nothing is persisted).
-                crate::ui::theme::set_active(tp.original.clone());
-                self.modal.close();
-            }
-            KeyCode::Char('j') | KeyCode::Down if tp.index + 1 < entry_count => {
-                tp.index += 1;
-                crate::ui::theme::set_active(entries[tp.index].palette.clone());
-            }
-            KeyCode::Char('k') | KeyCode::Up if tp.index > 0 => {
-                tp.index -= 1;
-                crate::ui::theme::set_active(entries[tp.index].palette.clone());
+                if filtering {
+                    // Leave the filter, keep the picker — one Esc per level.
+                    tp.close_filter(&entries);
+                } else {
+                    // Cancel: undo the live preview by restoring the palette
+                    // active when the picker opened (nothing is persisted).
+                    crate::ui::theme::set_active(tp.original.clone());
+                    self.modal.close();
+                    return;
+                }
             }
             KeyCode::Enter => {
-                let idx = tp.index;
+                let selected = tp.selected_entry();
                 self.modal.close();
-                self.commit_theme_selection(entries, idx);
+                if let Some(idx) = selected {
+                    self.commit_theme_selection(entries, idx);
+                }
+                return;
             }
-            _ => {}
+            KeyCode::Down => tp.index = (tp.index + 1).min(last),
+            KeyCode::Up => tp.index = tp.index.saturating_sub(1),
+            KeyCode::PageDown => tp.index = (tp.index + page).min(last),
+            KeyCode::PageUp => tp.index = tp.index.saturating_sub(page),
+            KeyCode::Home => tp.index = 0,
+            KeyCode::End => tp.index = last,
+            // Ctrl+N/Ctrl+P navigate in both modes (global-search parity),
+            // checked before the letter arms so they never reach the query.
+            KeyCode::Char('n') if ctrl => tp.index = (tp.index + 1).min(last),
+            KeyCode::Char('p') if ctrl => tp.index = tp.index.saturating_sub(1),
+            // Any other Ctrl chord is swallowed rather than typed: a stray
+            // `Ctrl+W` must not insert a `w` into the query.
+            KeyCode::Char(_) if ctrl => return,
+            // `/` opens the filter. It is not itself query text: re-pressing it
+            // while filtering is a no-op rather than a literal slash.
+            KeyCode::Char('/') => tp.open_filter(),
+            KeyCode::Backspace if filtering => {
+                if let Some(f) = tp.filter.as_mut() {
+                    f.backspace();
+                }
+                tp.refilter(&entries);
+            }
+            KeyCode::Char(c) if filtering => {
+                if let Some(f) = tp.filter.as_mut() {
+                    f.insert(c);
+                }
+                tp.refilter(&entries);
+            }
+            // Normal mode: vim keys select, matching every other picker.
+            KeyCode::Char('j') => tp.index = (tp.index + 1).min(last),
+            KeyCode::Char('k') => tp.index = tp.index.saturating_sub(1),
+            KeyCode::Char('g') => tp.index = 0,
+            KeyCode::Char('G') => tp.index = last,
+            _ => return,
+        }
+        // Every surviving arm moved the cursor or refiltered — live-preview
+        // whatever it now points at. An empty match set leaves the previous
+        // preview in place (there is nothing to show).
+        if let Some(idx) = tp.selected_entry() {
+            crate::ui::theme::set_active(entries[idx].palette.clone());
         }
     }
 

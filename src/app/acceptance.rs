@@ -438,6 +438,19 @@ fn theme_picker_lists_palettes() {
 }
 
 #[test]
+fn theme_picker_filtered_shows_both_sections() {
+    // A query spanning dark and light themes: pins the `Dark`/`Light` section
+    // headers, the narrowed match count, and the echoed query.
+    let mut h = Harness::snapshot();
+    h.ctrl('y');
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE); // open the filter sub-mode
+    for c in "light".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    insta::assert_snapshot!(h.render());
+}
+
+#[test]
 fn repo_picker_path_browser_snapshot() {
     // The dropdown under the path input: a `●git`-marked repo, a plain dir,
     // and the browser footer hints. Paths are `~`-relative (the guarded test
@@ -3354,4 +3367,245 @@ async fn monkey_random_events_uphold_invariants() {
             assert_invariants(&h.app, &ctx);
         }
     }
+}
+
+#[test]
+fn theme_picker_filter_narrows_the_list_and_previews_a_match() {
+    // Typing filters the list; the selection lands on the first match and is
+    // live-previewed, and `Enter` commits *that* theme (not the entry that
+    // happened to share the pre-filter index).
+    let mut h = Harness::standard(0);
+    h.ctrl('y');
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE); // open the filter sub-mode
+    for c in "gruvbox".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    let entries = crate::ui::theme::all_theme_entries();
+    let names: Vec<&str> = tp
+        .matches
+        .iter()
+        .map(|&i| entries[i].name.as_str())
+        .collect();
+    assert_eq!(names, vec!["gruvbox-dark", "gruvbox-light"]);
+    assert_eq!(tp.index, 0, "selection resets to the first match");
+    assert_eq!(
+        crate::ui::theme::current(),
+        crate::ui::theme::find_theme_entry("gruvbox-dark")
+            .unwrap()
+            .palette,
+        "the first match is previewed"
+    );
+
+    h.key(KeyCode::Down, KeyModifiers::NONE);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        h.app.active_theme.name, "gruvbox-light",
+        "Enter commits the selected *match*, not the same-numbered entry"
+    );
+}
+
+#[test]
+fn theme_picker_filter_matching_nothing_keeps_the_modal_usable() {
+    let mut h = Harness::standard(0);
+    h.ctrl('y');
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE); // open the filter sub-mode
+    for c in "zzzz".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert!(tp.matches.is_empty());
+    assert!(tp.selected_entry().is_none());
+    // Rendering an empty match set must not panic, and Enter must be a no-op
+    // rather than committing a stale index.
+    h.render();
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!h.app.modal.is_open(), "Enter closes the picker");
+    assert_eq!(
+        h.app.active_theme.name, "default",
+        "no match means nothing is committed"
+    );
+
+    // Backspacing back to a real query restores the list.
+    let mut h = Harness::standard(0);
+    h.ctrl('y');
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE); // open the filter sub-mode
+    for c in "nordx".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    h.key(KeyCode::Backspace, KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.matches.len(), 1, "'nord' matches exactly one theme");
+}
+
+#[test]
+fn theme_picker_page_keys_move_by_a_screenful() {
+    // PageDown steps by the rendered list height, so a 36-entry list is
+    // traversable without holding Down.
+    let mut h = Harness::standard(0);
+    h.ctrl('y');
+    h.render(); // establishes the page height
+    let page = h.app.theme_picker_page;
+    assert!(page > 1, "the list should render several rows, got {page}");
+
+    h.key(KeyCode::PageDown, KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.index, page);
+
+    h.key(KeyCode::End, KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(
+        tp.index,
+        crate::ui::theme::all_theme_entries().len() - 1,
+        "End jumps to the last theme"
+    );
+
+    h.key(KeyCode::Home, KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.index, 0, "Home jumps back to the first");
+}
+
+#[test]
+fn theme_picker_ctrl_n_p_navigate_and_other_ctrl_chords_dont_type() {
+    // Parity with the global-search strip: Ctrl+N/Ctrl+P move the selection.
+    // Any *other* Ctrl chord must be swallowed, never inserted as a letter —
+    // a stray Ctrl+W would otherwise silently filter the list down to "w".
+    let mut h = Harness::standard(0);
+    h.ctrl('y');
+
+    h.key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+    h.key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.index, 2, "Ctrl+N moves down");
+    assert!(tp.filter_query().is_empty(), "Ctrl+N must not type");
+
+    h.key(KeyCode::Char('p'), KeyModifiers::CONTROL);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.index, 1, "Ctrl+P moves up");
+
+    h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert!(
+        tp.filter_query().is_empty(),
+        "an unhandled Ctrl chord must not leak into the filter"
+    );
+    assert_eq!(tp.index, 1, "and must not move the selection");
+}
+
+#[test]
+fn theme_picker_jk_navigate_until_slash_opens_the_filter() {
+    // The picker keeps the shared selector keys: `j`/`k` select, and only `/`
+    // starts a query. Letters are literal navigation until then, so typing
+    // `j` can never silently filter the list.
+    let mut h = Harness::standard(0);
+    h.ctrl('y');
+
+    h.key(KeyCode::Char('j'), KeyModifiers::NONE);
+    h.key(KeyCode::Char('j'), KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.index, 2, "j moves down");
+    assert!(tp.filter.is_none(), "j must not open the filter");
+
+    h.key(KeyCode::Char('k'), KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.index, 1, "k moves up");
+
+    // g/G jump to the ends, as in the other list surfaces.
+    h.key(KeyCode::Char('G'), KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.index, crate::ui::theme::all_theme_entries().len() - 1);
+    h.key(KeyCode::Char('g'), KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.index, 0);
+
+    // `/` switches modes; only now do letters become query text.
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE);
+    h.key(KeyCode::Char('j'), KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.filter_query(), "j", "after / a letter types");
+    // No built-in name contains a `j`, so this also shows the letter really
+    // reached the query rather than moving the cursor.
+    assert!(tp.matches.is_empty(), "'j' matches no theme name");
+}
+
+#[test]
+fn theme_picker_esc_closes_filter_first_then_the_modal() {
+    // Two Esc levels, like the code-review find: the first leaves the filter
+    // sub-mode (restoring the full list), the second cancels the picker.
+    let mut h = Harness::standard(0);
+    h.ctrl('y');
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "nord".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.matches.len(), 1, "filtered down to Nord");
+
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("first Esc must keep the picker open");
+    };
+    assert!(tp.filter.is_none(), "first Esc closes the filter");
+    assert_eq!(
+        tp.matches.len(),
+        crate::ui::theme::all_theme_entries().len(),
+        "clearing the filter restores every theme"
+    );
+    // The cursor stayed on the theme the filter had selected, so leaving the
+    // sub-mode doesn't jump the preview somewhere unrelated.
+    assert_eq!(
+        tp.selected_entry()
+            .map(|i| crate::ui::theme::all_theme_entries()[i].name.clone()),
+        Some("nord".to_string())
+    );
+
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!h.app.modal.is_open(), "second Esc closes the picker");
+}
+
+#[test]
+fn theme_picker_slash_is_not_query_text() {
+    // `/` opens the sub-mode; pressing it again keeps the query rather than
+    // inserting a literal slash (no theme name contains one).
+    let mut h = Harness::standard(0);
+    h.ctrl('y');
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "nord".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE);
+    let modals::Modal::ThemePicker(ref tp) = h.app.modal else {
+        panic!("expected the theme picker");
+    };
+    assert_eq!(tp.filter_query(), "nord", "a second / must not type");
 }

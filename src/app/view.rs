@@ -1194,13 +1194,19 @@ impl App {
 
         // Theme picker modal
         if let super::modals::Modal::ThemePicker(ref tp) = self.modal {
-            return Some(theme_picker_modal::render_theme_picker_modal(
+            let (render, visible_rows) = theme_picker_modal::render_theme_picker_modal(
                 frame,
                 &theme_picker_modal::ThemePickerState {
                     entries: &crate::ui::theme::all_theme_entries(),
+                    matches: &tp.matches,
                     selected_index: tp.index,
+                    filter: tp.filter.as_ref().map(|f| f.value()),
                 },
-            ));
+            );
+            // Feed the rendered list height back so PageUp/PageDown step by
+            // exactly one visible screenful.
+            self.theme_picker_page = visible_rows;
+            return Some(render);
         }
 
         // Settings panel (centered overlay). The field hitboxes ride in the

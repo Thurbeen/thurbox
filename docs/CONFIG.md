@@ -443,7 +443,7 @@ per-agent detail: `extensions/hooks/README.md`.
 
 ## themes.toml
 
-User-defined themes, offered in the `Ctrl+Y` picker alongside the fifteen
+User-defined themes, offered in the `Ctrl+Y` picker alongside the thirty-six
 built-in presets and persisted by `name` like any preset. Each
 `[[themes]]` entry starts from a built-in `base` and overrides only the
 colours it names:

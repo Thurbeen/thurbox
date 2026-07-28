@@ -112,6 +112,48 @@ pub enum ThemePreset {
     Everforest,
     /// Kanagawa — muted, ink-wash dark palette inspired by Hokusai.
     Kanagawa,
+    /// Solarized Dark — Ethan Schoonover's classic dark palette.
+    SolarizedDark,
+    /// Monokai — the high-saturation classic from Sublime Text.
+    Monokai,
+    /// Ayu Dark — deep navy with warm orange accents.
+    AyuDark,
+    /// Ayu Mirage — Ayu's mid-tone slate variant.
+    AyuMirage,
+    /// Material — the Material Theme "Darker" palette.
+    Material,
+    /// Rosé Pine — the main (dark) Rosé Pine variant.
+    RosePine,
+    /// Oxocarbon — IBM Carbon-derived dark palette.
+    Oxocarbon,
+    /// GitHub Dark — GitHub's own dark interface palette.
+    GithubDark,
+    /// Nightfox — the Nightfox Neovim colourscheme.
+    Nightfox,
+    /// Sonokai — a vivid Monokai Pro descendant.
+    Sonokai,
+    /// Melange — warm, low-saturation dark palette.
+    Melange,
+    /// Zenburn — the low-contrast classic.
+    Zenburn,
+    /// Iceberg — cool bluish dark palette.
+    Iceberg,
+    /// Vesper — near-monochrome dark palette with amber accents.
+    Vesper,
+    /// Synthwave — neon retrowave palette on deep purple.
+    Synthwave,
+    /// Nightfly — dark navy palette with bright accents.
+    Nightfly,
+    /// Tomorrow Night — the Tomorrow theme's dark variant.
+    TomorrowNight,
+    /// Ayu Light — Ayu's cream-background light variant.
+    AyuLight,
+    /// One Light — Atom's light counterpart to One Dark.
+    OneLight,
+    /// Rosé Pine Dawn — Rosé Pine's light variant.
+    RosePineDawn,
+    /// GitHub Light — GitHub's own light interface palette.
+    GithubLight,
 }
 
 impl ThemePreset {
@@ -133,6 +175,27 @@ impl ThemePreset {
             Self::RosePineMoon => "rose-pine-moon",
             Self::Everforest => "everforest",
             Self::Kanagawa => "kanagawa",
+            Self::SolarizedDark => "solarized-dark",
+            Self::Monokai => "monokai",
+            Self::AyuDark => "ayu-dark",
+            Self::AyuMirage => "ayu-mirage",
+            Self::Material => "material",
+            Self::RosePine => "rose-pine",
+            Self::Oxocarbon => "oxocarbon",
+            Self::GithubDark => "github-dark",
+            Self::Nightfox => "nightfox",
+            Self::Sonokai => "sonokai",
+            Self::Melange => "melange",
+            Self::Zenburn => "zenburn",
+            Self::Iceberg => "iceberg",
+            Self::Vesper => "vesper",
+            Self::Synthwave => "synthwave",
+            Self::Nightfly => "nightfly",
+            Self::TomorrowNight => "tomorrow-night",
+            Self::AyuLight => "ayu-light",
+            Self::OneLight => "one-light",
+            Self::RosePineDawn => "rose-pine-dawn",
+            Self::GithubLight => "github-light",
         }
     }
 
@@ -154,6 +217,27 @@ impl ThemePreset {
             Self::RosePineMoon => "Rosé Pine Moon",
             Self::Everforest => "Everforest",
             Self::Kanagawa => "Kanagawa",
+            Self::SolarizedDark => "Solarized Dark",
+            Self::Monokai => "Monokai",
+            Self::AyuDark => "Ayu Dark",
+            Self::AyuMirage => "Ayu Mirage",
+            Self::Material => "Material",
+            Self::RosePine => "Rosé Pine",
+            Self::Oxocarbon => "Oxocarbon",
+            Self::GithubDark => "GitHub Dark",
+            Self::Nightfox => "Nightfox",
+            Self::Sonokai => "Sonokai",
+            Self::Melange => "Melange",
+            Self::Zenburn => "Zenburn",
+            Self::Iceberg => "Iceberg",
+            Self::Vesper => "Vesper",
+            Self::Synthwave => "Synthwave",
+            Self::Nightfly => "Nightfly",
+            Self::TomorrowNight => "Tomorrow Night",
+            Self::AyuLight => "Ayu Light",
+            Self::OneLight => "One Light",
+            Self::RosePineDawn => "Rosé Pine Dawn",
+            Self::GithubLight => "GitHub Light",
         }
     }
 
@@ -175,6 +259,27 @@ impl ThemePreset {
             "rose-pine-moon" => Some(Self::RosePineMoon),
             "everforest" => Some(Self::Everforest),
             "kanagawa" => Some(Self::Kanagawa),
+            "solarized-dark" => Some(Self::SolarizedDark),
+            "monokai" => Some(Self::Monokai),
+            "ayu-dark" => Some(Self::AyuDark),
+            "ayu-mirage" => Some(Self::AyuMirage),
+            "material" => Some(Self::Material),
+            "rose-pine" => Some(Self::RosePine),
+            "oxocarbon" => Some(Self::Oxocarbon),
+            "github-dark" => Some(Self::GithubDark),
+            "nightfox" => Some(Self::Nightfox),
+            "sonokai" => Some(Self::Sonokai),
+            "melange" => Some(Self::Melange),
+            "zenburn" => Some(Self::Zenburn),
+            "iceberg" => Some(Self::Iceberg),
+            "vesper" => Some(Self::Vesper),
+            "synthwave" => Some(Self::Synthwave),
+            "nightfly" => Some(Self::Nightfly),
+            "tomorrow-night" => Some(Self::TomorrowNight),
+            "ayu-light" => Some(Self::AyuLight),
+            "one-light" => Some(Self::OneLight),
+            "rose-pine-dawn" => Some(Self::RosePineDawn),
+            "github-light" => Some(Self::GithubLight),
             _ => None,
         }
     }
@@ -194,10 +299,31 @@ impl ThemePreset {
             Self::RosePineMoon,
             Self::Everforest,
             Self::Kanagawa,
+            Self::SolarizedDark,
+            Self::Monokai,
+            Self::AyuDark,
+            Self::AyuMirage,
+            Self::Material,
+            Self::RosePine,
+            Self::Oxocarbon,
+            Self::GithubDark,
+            Self::Nightfox,
+            Self::Sonokai,
+            Self::Melange,
+            Self::Zenburn,
+            Self::Iceberg,
+            Self::Vesper,
+            Self::Synthwave,
+            Self::Nightfly,
+            Self::TomorrowNight,
             Self::CatppuccinLatte,
             Self::TokyoNightDay,
             Self::GruvboxLight,
             Self::SolarizedLight,
+            Self::AyuLight,
+            Self::OneLight,
+            Self::RosePineDawn,
+            Self::GithubLight,
         ]
     }
 
@@ -219,6 +345,27 @@ impl ThemePreset {
             Self::RosePineMoon => rose_pine_moon_palette(),
             Self::Everforest => everforest_palette(),
             Self::Kanagawa => kanagawa_palette(),
+            Self::SolarizedDark => solarized_dark_palette(),
+            Self::Monokai => monokai_palette(),
+            Self::AyuDark => ayu_dark_palette(),
+            Self::AyuMirage => ayu_mirage_palette(),
+            Self::Material => material_palette(),
+            Self::RosePine => rose_pine_palette(),
+            Self::Oxocarbon => oxocarbon_palette(),
+            Self::GithubDark => github_dark_palette(),
+            Self::Nightfox => nightfox_palette(),
+            Self::Sonokai => sonokai_palette(),
+            Self::Melange => melange_palette(),
+            Self::Zenburn => zenburn_palette(),
+            Self::Iceberg => iceberg_palette(),
+            Self::Vesper => vesper_palette(),
+            Self::Synthwave => synthwave_palette(),
+            Self::Nightfly => nightfly_palette(),
+            Self::TomorrowNight => tomorrow_night_palette(),
+            Self::AyuLight => ayu_light_palette(),
+            Self::OneLight => one_light_palette(),
+            Self::RosePineDawn => rose_pine_dawn_palette(),
+            Self::GithubLight => github_light_palette(),
         }
     }
 
@@ -227,7 +374,14 @@ impl ThemePreset {
     pub fn is_light(self) -> bool {
         matches!(
             self,
-            Self::CatppuccinLatte | Self::TokyoNightDay | Self::GruvboxLight | Self::SolarizedLight
+            Self::CatppuccinLatte
+                | Self::TokyoNightDay
+                | Self::GruvboxLight
+                | Self::SolarizedLight
+                | Self::AyuLight
+                | Self::OneLight
+                | Self::RosePineDawn
+                | Self::GithubLight
         )
     }
 }
@@ -940,6 +1094,10 @@ fn doom_palette() -> ThemePalette {
     let bright_red = Color::Rgb(0xFF, 0x5C, 0x54);
     let bright_green = Color::Rgb(0x6E, 0xFF, 0x6E);
     let cyan = Color::Rgb(0x00, 0xD9, 0xFF);
+    // Hellfire amber, not `red`: the yellow slot drives `status_working`, and
+    // reusing red there made a working session indistinguishable from a
+    // blocked one (both `status_blocked` and `status_error` are red).
+    let amber = Color::Rgb(0xFF, 0xA5, 0x00);
     let text = Color::Rgb(0xE0, 0xE0, 0xE0);
     let subtext = Color::Rgb(0xA0, 0xA0, 0xA0);
     let muted = Color::Rgb(0x60, 0x60, 0x60);
@@ -950,7 +1108,7 @@ fn doom_palette() -> ThemePalette {
         accent: bright_red,
         accent_bright: bright_green,
         green: bright_green,
-        yellow: red,
+        yellow: amber,
         red,
         blue: cyan,
         text_primary: text,
@@ -960,7 +1118,7 @@ fn doom_palette() -> ThemePalette {
         role_name: bright_red,
         branch_name: bright_green,
         search_bar: cyan,
-        keybind_hint: red,
+        keybind_hint: amber,
         selection_bg: highlight,
         selection_fg: bright_green,
         modal_dim_bg: bg_dark,
@@ -1205,6 +1363,816 @@ fn kanagawa_palette() -> ThemePalette {
     .build()
 }
 
+fn solarized_dark_palette() -> ThemePalette {
+    let yellow = Color::Rgb(0xB5, 0x89, 0x00);
+    let orange = Color::Rgb(0xCB, 0x4B, 0x16);
+    let red = Color::Rgb(0xDC, 0x32, 0x2F);
+    let magenta = Color::Rgb(0xD3, 0x36, 0x82);
+    let violet = Color::Rgb(0x6C, 0x71, 0xC4);
+    let blue = Color::Rgb(0x26, 0x8B, 0xD2);
+    let cyan = Color::Rgb(0x2A, 0xA1, 0x98);
+    let green = Color::Rgb(0x85, 0x99, 0x00);
+    let base03 = Color::Rgb(0x00, 0x2B, 0x36);
+    let base02 = Color::Rgb(0x07, 0x36, 0x42);
+    let base01 = Color::Rgb(0x58, 0x6E, 0x75);
+    let base0 = Color::Rgb(0x83, 0x94, 0x96);
+    let base1 = Color::Rgb(0x93, 0xA1, 0xA1);
+    PaletteSlots {
+        // Cyan accent keeps Solarized Dark distinct from Solarized Light,
+        // which takes the blue.
+        accent: cyan,
+        accent_bright: blue,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: base1,
+        text_secondary: base0,
+        text_muted: base01,
+        border_unfocused: base02,
+        role_name: magenta,
+        branch_name: green,
+        search_bar: violet,
+        keybind_hint: orange,
+        selection_bg: base02,
+        selection_fg: base1,
+        modal_dim_bg: base03,
+        modal_bg: base02,
+        modal_border: cyan,
+        base_bg: base03,
+    }
+    .build()
+}
+
+fn monokai_palette() -> ThemePalette {
+    let pink = Color::Rgb(0xF9, 0x26, 0x72);
+    let green = Color::Rgb(0xA6, 0xE2, 0x2E);
+    let yellow = Color::Rgb(0xE6, 0xDB, 0x74);
+    let orange = Color::Rgb(0xFD, 0x97, 0x1F);
+    let purple = Color::Rgb(0xAE, 0x81, 0xFF);
+    let cyan = Color::Rgb(0x66, 0xD9, 0xEF);
+    let fg = Color::Rgb(0xF8, 0xF8, 0xF2);
+    let fg_dim = Color::Rgb(0xCF, 0xCF, 0xC2);
+    let comment = Color::Rgb(0x75, 0x71, 0x5E);
+    let bg_light = Color::Rgb(0x3E, 0x3D, 0x32);
+    let bg = Color::Rgb(0x27, 0x28, 0x22);
+    let bg_dark = Color::Rgb(0x1D, 0x1E, 0x19);
+    PaletteSlots {
+        accent: pink,
+        accent_bright: orange,
+        green,
+        yellow,
+        red: pink,
+        blue: cyan,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: comment,
+        border_unfocused: bg_light,
+        role_name: purple,
+        branch_name: green,
+        search_bar: cyan,
+        keybind_hint: yellow,
+        selection_bg: bg_light,
+        selection_fg: fg,
+        modal_dim_bg: bg_dark,
+        modal_bg: bg_light,
+        modal_border: pink,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn ayu_dark_palette() -> ThemePalette {
+    let orange = Color::Rgb(0xFF, 0xB4, 0x54);
+    let amber = Color::Rgb(0xE6, 0xB4, 0x50);
+    let green = Color::Rgb(0xAA, 0xD9, 0x4C);
+    let red = Color::Rgb(0xF0, 0x71, 0x78);
+    let blue = Color::Rgb(0x59, 0xC2, 0xFF);
+    let purple = Color::Rgb(0xD2, 0xA6, 0xFF);
+    let fg = Color::Rgb(0xBF, 0xBD, 0xB6);
+    let fg_dim = Color::Rgb(0x9B, 0x99, 0x93);
+    let muted = Color::Rgb(0x5C, 0x61, 0x66);
+    let panel = Color::Rgb(0x1F, 0x24, 0x30);
+    let line = Color::Rgb(0x25, 0x2B, 0x38);
+    let bg = Color::Rgb(0x0B, 0x0E, 0x14);
+    PaletteSlots {
+        accent: orange,
+        accent_bright: amber,
+        green,
+        yellow: amber,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: line,
+        role_name: purple,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: amber,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: bg,
+        modal_bg: panel,
+        modal_border: orange,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn ayu_mirage_palette() -> ThemePalette {
+    let orange = Color::Rgb(0xFF, 0xCC, 0x66);
+    let amber = Color::Rgb(0xFF, 0xD1, 0x73);
+    let green = Color::Rgb(0xD5, 0xFF, 0x80);
+    let red = Color::Rgb(0xF2, 0x87, 0x79);
+    let blue = Color::Rgb(0x73, 0xD0, 0xFF);
+    let purple = Color::Rgb(0xDF, 0xBF, 0xFF);
+    let fg = Color::Rgb(0xCC, 0xCA, 0xC2);
+    let fg_dim = Color::Rgb(0xA6, 0xAC, 0xB9);
+    let muted = Color::Rgb(0x70, 0x76, 0x84);
+    let panel = Color::Rgb(0x1F, 0x24, 0x30);
+    let line = Color::Rgb(0x2D, 0x34, 0x40);
+    let bg = Color::Rgb(0x24, 0x29, 0x36);
+    PaletteSlots {
+        accent: amber,
+        accent_bright: green,
+        green,
+        yellow: orange,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: line,
+        role_name: purple,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: orange,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: panel,
+        modal_bg: line,
+        modal_border: amber,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn material_palette() -> ThemePalette {
+    let cyan = Color::Rgb(0x89, 0xDD, 0xFF);
+    let teal = Color::Rgb(0x80, 0xCB, 0xC4);
+    let green = Color::Rgb(0xC3, 0xE8, 0x8D);
+    let yellow = Color::Rgb(0xFF, 0xCB, 0x6B);
+    let red = Color::Rgb(0xF0, 0x71, 0x78);
+    let blue = Color::Rgb(0x82, 0xAA, 0xFF);
+    let purple = Color::Rgb(0xC7, 0x92, 0xEA);
+    let fg = Color::Rgb(0xEE, 0xFF, 0xFF);
+    let fg_dim = Color::Rgb(0xB2, 0xCC, 0xD6);
+    let comment = Color::Rgb(0x54, 0x6E, 0x7A);
+    let line = Color::Rgb(0x31, 0x36, 0x3B);
+    let surface = Color::Rgb(0x26, 0x2A, 0x2E);
+    let bg = Color::Rgb(0x21, 0x25, 0x29);
+    PaletteSlots {
+        accent: teal,
+        accent_bright: cyan,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: comment,
+        border_unfocused: line,
+        role_name: purple,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: yellow,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: bg,
+        modal_bg: surface,
+        modal_border: teal,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn rose_pine_palette() -> ThemePalette {
+    let iris = Color::Rgb(0xC4, 0xA7, 0xE7);
+    let rose = Color::Rgb(0xEB, 0xBC, 0xBA);
+    let foam = Color::Rgb(0x9C, 0xCF, 0xD8);
+    let gold = Color::Rgb(0xF6, 0xC1, 0x77);
+    let love = Color::Rgb(0xEB, 0x6F, 0x92);
+    let pine = Color::Rgb(0x31, 0x74, 0x8F);
+    let text = Color::Rgb(0xE0, 0xDE, 0xF4);
+    let subtle = Color::Rgb(0x90, 0x8C, 0xAA);
+    let muted = Color::Rgb(0x6E, 0x6A, 0x86);
+    let highlight_med = Color::Rgb(0x40, 0x3D, 0x52);
+    let surface = Color::Rgb(0x1F, 0x1D, 0x2E);
+    let base = Color::Rgb(0x19, 0x17, 0x24);
+    PaletteSlots {
+        // The Moon variant already takes iris; use rose here so the two
+        // Rosé Pine flavours read differently in the picker swatch.
+        accent: rose,
+        accent_bright: iris,
+        green: foam,
+        yellow: gold,
+        red: love,
+        blue: pine,
+        text_primary: text,
+        text_secondary: subtle,
+        text_muted: muted,
+        border_unfocused: highlight_med,
+        role_name: iris,
+        branch_name: foam,
+        search_bar: pine,
+        keybind_hint: gold,
+        selection_bg: highlight_med,
+        selection_fg: text,
+        modal_dim_bg: base,
+        modal_bg: surface,
+        modal_border: rose,
+        base_bg: base,
+    }
+    .build()
+}
+
+fn oxocarbon_palette() -> ThemePalette {
+    let cyan = Color::Rgb(0x3D, 0xDB, 0xD9);
+    let blue = Color::Rgb(0x78, 0xA9, 0xFF);
+    let purple = Color::Rgb(0xBE, 0x95, 0xFF);
+    let magenta = Color::Rgb(0xFF, 0x7E, 0xB6);
+    let green = Color::Rgb(0x42, 0xBE, 0x65);
+    let yellow = Color::Rgb(0xFF, 0xE9, 0x7C);
+    let red = Color::Rgb(0xEE, 0x53, 0x96);
+    let fg = Color::Rgb(0xF2, 0xF4, 0xF8);
+    let fg_dim = Color::Rgb(0xC6, 0xC6, 0xC6);
+    let muted = Color::Rgb(0x6F, 0x6F, 0x6F);
+    let gray80 = Color::Rgb(0x39, 0x39, 0x39);
+    let gray90 = Color::Rgb(0x26, 0x26, 0x26);
+    let gray100 = Color::Rgb(0x16, 0x16, 0x16);
+    PaletteSlots {
+        accent: cyan,
+        accent_bright: magenta,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: gray80,
+        role_name: purple,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: yellow,
+        selection_bg: gray80,
+        selection_fg: fg,
+        modal_dim_bg: gray100,
+        modal_bg: gray90,
+        modal_border: cyan,
+        base_bg: gray100,
+    }
+    .build()
+}
+
+fn github_dark_palette() -> ThemePalette {
+    let blue = Color::Rgb(0x58, 0xA6, 0xFF);
+    let cyan = Color::Rgb(0x76, 0xE3, 0xEA);
+    let green = Color::Rgb(0x3F, 0xB9, 0x50);
+    let yellow = Color::Rgb(0xD2, 0x99, 0x22);
+    let red = Color::Rgb(0xF8, 0x51, 0x49);
+    let purple = Color::Rgb(0xBC, 0x8C, 0xFF);
+    let fg = Color::Rgb(0xC9, 0xD1, 0xD9);
+    let fg_dim = Color::Rgb(0xB1, 0xBA, 0xC4);
+    let muted = Color::Rgb(0x6E, 0x76, 0x81);
+    let border = Color::Rgb(0x30, 0x36, 0x3D);
+    let canvas_subtle = Color::Rgb(0x16, 0x1B, 0x22);
+    let canvas = Color::Rgb(0x0D, 0x11, 0x17);
+    PaletteSlots {
+        accent: blue,
+        accent_bright: cyan,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: border,
+        role_name: purple,
+        branch_name: green,
+        search_bar: cyan,
+        keybind_hint: yellow,
+        selection_bg: border,
+        selection_fg: fg,
+        modal_dim_bg: canvas,
+        modal_bg: canvas_subtle,
+        modal_border: blue,
+        base_bg: canvas,
+    }
+    .build()
+}
+
+fn nightfox_palette() -> ThemePalette {
+    let blue = Color::Rgb(0x71, 0x9C, 0xD6);
+    let cyan = Color::Rgb(0x63, 0xCD, 0xCF);
+    let green = Color::Rgb(0x81, 0xB2, 0x9A);
+    let yellow = Color::Rgb(0xDB, 0xC0, 0x74);
+    let red = Color::Rgb(0xC9, 0x4F, 0x6D);
+    let magenta = Color::Rgb(0x9D, 0x79, 0xD6);
+    let fg = Color::Rgb(0xCD, 0xCE, 0xCF);
+    let fg_dim = Color::Rgb(0xAE, 0xAF, 0xB0);
+    let muted = Color::Rgb(0x73, 0x82, 0x91);
+    let sel = Color::Rgb(0x2B, 0x3B, 0x51);
+    let bg1 = Color::Rgb(0x19, 0x24, 0x30);
+    let bg0 = Color::Rgb(0x13, 0x1A, 0x24);
+    PaletteSlots {
+        accent: cyan,
+        accent_bright: blue,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: sel,
+        role_name: magenta,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: yellow,
+        selection_bg: sel,
+        selection_fg: fg,
+        modal_dim_bg: bg0,
+        modal_bg: bg1,
+        modal_border: cyan,
+        base_bg: bg0,
+    }
+    .build()
+}
+
+fn sonokai_palette() -> ThemePalette {
+    let red = Color::Rgb(0xFC, 0x5D, 0x7C);
+    let orange = Color::Rgb(0xF3, 0x96, 0x60);
+    let yellow = Color::Rgb(0xE7, 0xC6, 0x64);
+    let green = Color::Rgb(0x9E, 0xD0, 0x72);
+    let blue = Color::Rgb(0x76, 0xCC, 0xE0);
+    let purple = Color::Rgb(0xB3, 0x9D, 0xF3);
+    let fg = Color::Rgb(0xE2, 0xE2, 0xE3);
+    let fg_dim = Color::Rgb(0xC1, 0xC1, 0xC3);
+    let grey = Color::Rgb(0x7F, 0x84, 0x90);
+    let bg4 = Color::Rgb(0x3B, 0x3E, 0x48);
+    let bg2 = Color::Rgb(0x33, 0x35, 0x3F);
+    let bg0 = Color::Rgb(0x2C, 0x2E, 0x34);
+    PaletteSlots {
+        accent: orange,
+        accent_bright: yellow,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: grey,
+        border_unfocused: bg4,
+        role_name: purple,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: yellow,
+        selection_bg: bg4,
+        selection_fg: fg,
+        modal_dim_bg: bg0,
+        modal_bg: bg2,
+        modal_border: orange,
+        base_bg: bg0,
+    }
+    .build()
+}
+
+fn melange_palette() -> ThemePalette {
+    let tan = Color::Rgb(0xEB, 0xC0, 0x6D);
+    let peach = Color::Rgb(0xD4, 0x77, 0x66);
+    let green = Color::Rgb(0x85, 0xB6, 0x95);
+    let yellow = Color::Rgb(0xEB, 0xC0, 0x6D);
+    let red = Color::Rgb(0xD4, 0x73, 0x66);
+    let blue = Color::Rgb(0xA3, 0xA9, 0xCE);
+    let purple = Color::Rgb(0xCF, 0x9B, 0xC2);
+    let fg = Color::Rgb(0xEC, 0xE1, 0xD7);
+    let fg_dim = Color::Rgb(0xC1, 0xB2, 0xA4);
+    let muted = Color::Rgb(0x86, 0x78, 0x6D);
+    let sel = Color::Rgb(0x40, 0x36, 0x30);
+    let surface = Color::Rgb(0x33, 0x2C, 0x28);
+    let bg = Color::Rgb(0x29, 0x24, 0x22);
+    PaletteSlots {
+        accent: tan,
+        accent_bright: peach,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: sel,
+        role_name: purple,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: peach,
+        selection_bg: sel,
+        selection_fg: fg,
+        modal_dim_bg: bg,
+        modal_bg: surface,
+        modal_border: tan,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn zenburn_palette() -> ThemePalette {
+    let sand = Color::Rgb(0xF0, 0xDF, 0xAF);
+    let orange = Color::Rgb(0xDF, 0xAF, 0x8F);
+    let green = Color::Rgb(0x7F, 0x9F, 0x7F);
+    let yellow = Color::Rgb(0xE3, 0xCE, 0xAB);
+    let red = Color::Rgb(0xCC, 0x93, 0x93);
+    let blue = Color::Rgb(0x8C, 0xD0, 0xD3);
+    let purple = Color::Rgb(0xDC, 0x8C, 0xC3);
+    let fg = Color::Rgb(0xDC, 0xDC, 0xCC);
+    let fg_dim = Color::Rgb(0xC0, 0xC0, 0xB0);
+    let muted = Color::Rgb(0x70, 0x80, 0x70);
+    let bg_plus2 = Color::Rgb(0x4F, 0x4F, 0x4F);
+    let bg_plus1 = Color::Rgb(0x40, 0x40, 0x40);
+    let bg = Color::Rgb(0x3F, 0x3F, 0x3F);
+    let bg_minus = Color::Rgb(0x2B, 0x2B, 0x2B);
+    PaletteSlots {
+        accent: sand,
+        accent_bright: orange,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: bg_plus2,
+        role_name: purple,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: yellow,
+        selection_bg: bg_plus2,
+        selection_fg: fg,
+        modal_dim_bg: bg_minus,
+        modal_bg: bg_plus1,
+        modal_border: sand,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn iceberg_palette() -> ThemePalette {
+    let blue = Color::Rgb(0x84, 0xA0, 0xC6);
+    let cyan = Color::Rgb(0x89, 0xB8, 0xC2);
+    let green = Color::Rgb(0xB4, 0xBE, 0x82);
+    let yellow = Color::Rgb(0xE2, 0xA4, 0x78);
+    let red = Color::Rgb(0xE2, 0x78, 0x78);
+    let purple = Color::Rgb(0xA0, 0x93, 0xC7);
+    let fg = Color::Rgb(0xC6, 0xC8, 0xD1);
+    let fg_dim = Color::Rgb(0xAD, 0xB1, 0xC4);
+    let muted = Color::Rgb(0x6B, 0x70, 0x89);
+    let line = Color::Rgb(0x3E, 0x44, 0x51);
+    let surface = Color::Rgb(0x1E, 0x21, 0x32);
+    let bg = Color::Rgb(0x16, 0x18, 0x21);
+    PaletteSlots {
+        accent: blue,
+        accent_bright: cyan,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: line,
+        role_name: purple,
+        branch_name: green,
+        search_bar: cyan,
+        keybind_hint: yellow,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: bg,
+        modal_bg: surface,
+        modal_border: blue,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn vesper_palette() -> ThemePalette {
+    let amber = Color::Rgb(0xFF, 0xC7, 0x7B);
+    let peach = Color::Rgb(0xFF, 0xA8, 0x5C);
+    let green = Color::Rgb(0x99, 0xFF, 0xE4);
+    let yellow = Color::Rgb(0xFF, 0xCF, 0xA8);
+    let red = Color::Rgb(0xFF, 0x80, 0x80);
+    let blue = Color::Rgb(0xA0, 0xA0, 0xA0);
+    let fg = Color::Rgb(0xFF, 0xFF, 0xFF);
+    let fg_dim = Color::Rgb(0xA0, 0xA0, 0xA0);
+    let muted = Color::Rgb(0x50, 0x50, 0x50);
+    let line = Color::Rgb(0x2A, 0x2A, 0x2A);
+    let surface = Color::Rgb(0x18, 0x18, 0x18);
+    let bg = Color::Rgb(0x10, 0x10, 0x10);
+    PaletteSlots {
+        accent: amber,
+        accent_bright: peach,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: line,
+        role_name: peach,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: yellow,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: bg,
+        modal_bg: surface,
+        modal_border: amber,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn synthwave_palette() -> ThemePalette {
+    let magenta = Color::Rgb(0xFF, 0x7E, 0xDB);
+    let cyan = Color::Rgb(0x36, 0xF9, 0xF6);
+    let green = Color::Rgb(0x72, 0xF1, 0xB8);
+    let yellow = Color::Rgb(0xFE, 0xDE, 0x5D);
+    let red = Color::Rgb(0xFE, 0x44, 0x50);
+    let orange = Color::Rgb(0xFF, 0x8B, 0x39);
+    let fg = Color::Rgb(0xF9, 0xF9, 0xF9);
+    let fg_dim = Color::Rgb(0xD3, 0xC5, 0xE8);
+    let muted = Color::Rgb(0x84, 0x8B, 0xBD);
+    let line = Color::Rgb(0x34, 0x29, 0x4F);
+    let surface = Color::Rgb(0x26, 0x1E, 0x3C);
+    let bg = Color::Rgb(0x26, 0x22, 0x35);
+    PaletteSlots {
+        accent: magenta,
+        accent_bright: cyan,
+        green,
+        yellow,
+        red,
+        blue: cyan,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: line,
+        role_name: orange,
+        branch_name: green,
+        search_bar: cyan,
+        keybind_hint: yellow,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: surface,
+        modal_bg: line,
+        modal_border: magenta,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn nightfly_palette() -> ThemePalette {
+    let blue = Color::Rgb(0x82, 0xAA, 0xFF);
+    let cyan = Color::Rgb(0x7F, 0xDB, 0xCA);
+    let green = Color::Rgb(0xA1, 0xCD, 0x5E);
+    let yellow = Color::Rgb(0xE3, 0xD1, 0x8A);
+    let red = Color::Rgb(0xFC, 0x51, 0x4E);
+    let purple = Color::Rgb(0xAE, 0x81, 0xFF);
+    let fg = Color::Rgb(0xBD, 0xC1, 0xC6);
+    let fg_dim = Color::Rgb(0xA1, 0xAA, 0xB8);
+    let muted = Color::Rgb(0x63, 0x6D, 0x83);
+    let line = Color::Rgb(0x2F, 0x3B, 0x54);
+    let surface = Color::Rgb(0x1D, 0x30, 0x43);
+    let bg = Color::Rgb(0x01, 0x16, 0x27);
+    PaletteSlots {
+        accent: cyan,
+        accent_bright: blue,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: line,
+        role_name: purple,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: yellow,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: bg,
+        modal_bg: surface,
+        modal_border: cyan,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn tomorrow_night_palette() -> ThemePalette {
+    let blue = Color::Rgb(0x81, 0xA2, 0xBE);
+    let aqua = Color::Rgb(0x8A, 0xBE, 0xB7);
+    let green = Color::Rgb(0xB5, 0xBD, 0x68);
+    let yellow = Color::Rgb(0xF0, 0xC6, 0x74);
+    let red = Color::Rgb(0xCC, 0x66, 0x66);
+    let purple = Color::Rgb(0xB2, 0x94, 0xBB);
+    let orange = Color::Rgb(0xDE, 0x93, 0x5F);
+    let fg = Color::Rgb(0xC5, 0xC8, 0xC6);
+    let fg_dim = Color::Rgb(0xB4, 0xB7, 0xB4);
+    let comment = Color::Rgb(0x96, 0x98, 0x96);
+    let line = Color::Rgb(0x37, 0x3B, 0x41);
+    let surface = Color::Rgb(0x28, 0x2A, 0x2E);
+    let bg = Color::Rgb(0x1D, 0x1F, 0x21);
+    PaletteSlots {
+        accent: blue,
+        accent_bright: aqua,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: comment,
+        border_unfocused: line,
+        role_name: purple,
+        branch_name: green,
+        search_bar: aqua,
+        keybind_hint: orange,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: bg,
+        modal_bg: surface,
+        modal_border: blue,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn ayu_light_palette() -> ThemePalette {
+    let orange = Color::Rgb(0xFA, 0x8D, 0x3E);
+    let amber = Color::Rgb(0xE6, 0xBA, 0x7E);
+    let green = Color::Rgb(0x6C, 0xA3, 0x00);
+    let yellow = Color::Rgb(0xA3, 0x71, 0x00);
+    let red = Color::Rgb(0xF0, 0x71, 0x71);
+    let blue = Color::Rgb(0x39, 0x9E, 0xE6);
+    let purple = Color::Rgb(0xA3, 0x7A, 0xCC);
+    let fg = Color::Rgb(0x5C, 0x61, 0x66);
+    let fg_dim = Color::Rgb(0x78, 0x7B, 0x80);
+    let muted = Color::Rgb(0x8A, 0x91, 0x99);
+    let line = Color::Rgb(0xE7, 0xE8, 0xE9);
+    let panel = Color::Rgb(0xF3, 0xF4, 0xF5);
+    let bg = Color::Rgb(0xFC, 0xFC, 0xFC);
+    PaletteSlots {
+        accent: orange,
+        accent_bright: amber,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: line,
+        role_name: purple,
+        branch_name: green,
+        search_bar: blue,
+        keybind_hint: yellow,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: panel,
+        modal_bg: bg,
+        modal_border: orange,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn one_light_palette() -> ThemePalette {
+    let blue = Color::Rgb(0x40, 0x78, 0xF2);
+    let cyan = Color::Rgb(0x01, 0x84, 0xBC);
+    let green = Color::Rgb(0x50, 0xA1, 0x4F);
+    let yellow = Color::Rgb(0xC1, 0x84, 0x01);
+    let red = Color::Rgb(0xE4, 0x56, 0x49);
+    let purple = Color::Rgb(0xA6, 0x26, 0xA4);
+    let fg = Color::Rgb(0x38, 0x3A, 0x42);
+    let fg_dim = Color::Rgb(0x50, 0x53, 0x5C);
+    let muted = Color::Rgb(0x9D, 0xA5, 0xB4);
+    let line = Color::Rgb(0xE5, 0xE5, 0xE6);
+    let panel = Color::Rgb(0xEA, 0xEA, 0xEB);
+    let bg = Color::Rgb(0xFA, 0xFA, 0xFA);
+    PaletteSlots {
+        accent: blue,
+        accent_bright: cyan,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: line,
+        role_name: purple,
+        branch_name: green,
+        search_bar: cyan,
+        keybind_hint: yellow,
+        selection_bg: line,
+        selection_fg: fg,
+        modal_dim_bg: panel,
+        modal_bg: bg,
+        modal_border: blue,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn rose_pine_dawn_palette() -> ThemePalette {
+    let iris = Color::Rgb(0x90, 0x7A, 0xA9);
+    let rose = Color::Rgb(0xD7, 0x82, 0x7E);
+    let foam = Color::Rgb(0x56, 0x94, 0x9F);
+    let gold = Color::Rgb(0xEA, 0x9D, 0x34);
+    let love = Color::Rgb(0xB4, 0x63, 0x7A);
+    let pine = Color::Rgb(0x28, 0x69, 0x83);
+    let text = Color::Rgb(0x57, 0x52, 0x79);
+    let subtle = Color::Rgb(0x79, 0x75, 0x93);
+    let muted = Color::Rgb(0x98, 0x93, 0xA5);
+    let highlight_med = Color::Rgb(0xDF, 0xDA, 0xD9);
+    let surface = Color::Rgb(0xFF, 0xFA, 0xF3);
+    let base = Color::Rgb(0xFA, 0xF4, 0xED);
+    PaletteSlots {
+        accent: iris,
+        accent_bright: rose,
+        green: foam,
+        yellow: gold,
+        red: love,
+        blue: pine,
+        text_primary: text,
+        text_secondary: subtle,
+        text_muted: muted,
+        border_unfocused: highlight_med,
+        role_name: iris,
+        branch_name: foam,
+        search_bar: pine,
+        keybind_hint: gold,
+        selection_bg: highlight_med,
+        selection_fg: text,
+        modal_dim_bg: highlight_med,
+        modal_bg: surface,
+        modal_border: iris,
+        base_bg: base,
+    }
+    .build()
+}
+
+fn github_light_palette() -> ThemePalette {
+    let blue = Color::Rgb(0x09, 0x69, 0xDA);
+    let cyan = Color::Rgb(0x1B, 0x7C, 0x83);
+    let green = Color::Rgb(0x1A, 0x7F, 0x37);
+    let yellow = Color::Rgb(0x95, 0x6C, 0x05);
+    let red = Color::Rgb(0xCF, 0x22, 0x2E);
+    let purple = Color::Rgb(0x82, 0x50, 0xDF);
+    let fg = Color::Rgb(0x1F, 0x23, 0x28);
+    let fg_dim = Color::Rgb(0x42, 0x4A, 0x53);
+    let muted = Color::Rgb(0x6E, 0x77, 0x81);
+    let border = Color::Rgb(0xD0, 0xD7, 0xDE);
+    let canvas_subtle = Color::Rgb(0xF6, 0xF8, 0xFA);
+    let canvas = Color::Rgb(0xFF, 0xFF, 0xFF);
+    PaletteSlots {
+        accent: blue,
+        accent_bright: cyan,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: muted,
+        border_unfocused: border,
+        role_name: purple,
+        branch_name: green,
+        search_bar: cyan,
+        keybind_hint: yellow,
+        selection_bg: border,
+        selection_fg: fg,
+        modal_dim_bg: canvas_subtle,
+        modal_bg: canvas,
+        modal_border: blue,
+        base_bg: canvas,
+    }
+    .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1271,9 +2239,30 @@ mod tests {
                 ThemePreset::RosePineMoon => 0,
                 ThemePreset::Everforest => 0,
                 ThemePreset::Kanagawa => 0,
+                ThemePreset::SolarizedDark => 0,
+                ThemePreset::Monokai => 0,
+                ThemePreset::AyuDark => 0,
+                ThemePreset::AyuMirage => 0,
+                ThemePreset::Material => 0,
+                ThemePreset::RosePine => 0,
+                ThemePreset::Oxocarbon => 0,
+                ThemePreset::GithubDark => 0,
+                ThemePreset::Nightfox => 0,
+                ThemePreset::Sonokai => 0,
+                ThemePreset::Melange => 0,
+                ThemePreset::Zenburn => 0,
+                ThemePreset::Iceberg => 0,
+                ThemePreset::Vesper => 0,
+                ThemePreset::Synthwave => 0,
+                ThemePreset::Nightfly => 0,
+                ThemePreset::TomorrowNight => 0,
+                ThemePreset::AyuLight => 0,
+                ThemePreset::OneLight => 0,
+                ThemePreset::RosePineDawn => 0,
+                ThemePreset::GithubLight => 0,
             }
         }
-        const EXPECTED: usize = 15;
+        const EXPECTED: usize = 36;
         assert_eq!(ThemePreset::all().len(), EXPECTED);
         for p in ThemePreset::all() {
             classify(*p);
@@ -1348,5 +2337,72 @@ mod tests {
         let (entry, warnings) = def.resolve();
         assert!(warnings.is_empty());
         assert_eq!(entry.palette.diff_added, Color::Rgb(0, 0xff, 0));
+    }
+
+    #[test]
+    fn every_preset_distinguishes_its_semantic_slots() {
+        // Cross-preset coherence: a copy-paste slip while adding a palette
+        // (leaving accent == accent_bright, or a status trio collapsed onto one
+        // colour) makes the UI read as broken rather than themed. Assert the
+        // pairs that must stay visually distinct in *every* preset.
+        for preset in ThemePreset::all() {
+            let p = preset.palette();
+            assert_ne!(
+                p.accent, p.accent_bright,
+                "{preset:?}: accent and accent_bright must differ"
+            );
+            assert_ne!(
+                p.status_working, p.status_blocked,
+                "{preset:?}: working and blocked must be tellable apart"
+            );
+            assert_ne!(
+                p.status_done, p.status_idle,
+                "{preset:?}: done and idle are the done-vs-seen pair"
+            );
+            assert_ne!(
+                p.text_primary, p.text_muted,
+                "{preset:?}: primary and muted text must differ"
+            );
+            // The palette must actually contrast with its own background.
+            assert_ne!(
+                p.text_primary, p.app_bg,
+                "{preset:?}: primary text is invisible on the app background"
+            );
+            assert_ne!(
+                p.selection_fg, p.selection_bg,
+                "{preset:?}: selected text is invisible on the selection band"
+            );
+        }
+    }
+
+    #[test]
+    fn light_presets_are_light_and_dark_presets_are_dark() {
+        // `is_light` drives the picker's Dark/Light sections, so it must agree
+        // with the palette's actual background luminance — a mislabeled preset
+        // would sort into the wrong section and break the ordering invariant
+        // `dark_presets_precede_light_presets_in_all` relies on.
+        fn luminance(c: Color) -> Option<f32> {
+            match c {
+                // Rec. 601 luma, good enough to separate light from dark bg.
+                Color::Rgb(r, g, b) => Some(0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32),
+                _ => None,
+            }
+        }
+        for preset in ThemePreset::all() {
+            let Some(luma) = luminance(preset.palette().app_bg) else {
+                continue; // the Default preset keeps app_bg = Reset
+            };
+            if preset.is_light() {
+                assert!(
+                    luma > 128.0,
+                    "{preset:?} is marked light but its background is dark (luma {luma:.0})"
+                );
+            } else {
+                assert!(
+                    luma < 128.0,
+                    "{preset:?} is marked dark but its background is light (luma {luma:.0})"
+                );
+            }
+        }
     }
 }

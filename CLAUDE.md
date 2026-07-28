@@ -2266,11 +2266,16 @@ exists). On top of that:
 
 ## Themes
 
-The TUI ships with fifteen palettes — eleven dark (**Default**, **Catppuccin
-Mocha**, **Tokyo Night**, **Gruvbox Dark**, **Doom**, **Nord**, **Dracula**,
-**One Dark**, **Rosé Pine Moon**, **Everforest**, **Kanagawa**) and four light
-(**Catppuccin Latte**, **Tokyo Night Day**, **Gruvbox Light**,
-**Solarized Light**). Users can add **custom themes** in
+The TUI ships with thirty-six palettes — twenty-eight dark (**Default**,
+**Catppuccin Mocha**, **Tokyo Night**, **Gruvbox Dark**, **Doom**, **Nord**,
+**Dracula**, **One Dark**, **Rosé Pine Moon**, **Everforest**, **Kanagawa**,
+**Solarized Dark**, **Monokai**, **Ayu Dark**, **Ayu Mirage**, **Material**,
+**Rosé Pine**, **Oxocarbon**, **GitHub Dark**, **Nightfox**, **Sonokai**,
+**Melange**, **Zenburn**, **Iceberg**, **Vesper**, **Synthwave**,
+**Nightfly**, **Tomorrow Night**) and eight light (**Catppuccin Latte**,
+**Tokyo Night Day**, **Gruvbox Light**, **Solarized Light**, **Ayu Light**,
+**One Light**, **Rosé Pine Dawn**, **GitHub Light**). Users can add
+**custom themes** in
 `~/.config/thurbox/themes.toml` (a built-in `base` plus per-colour
 overrides — see `docs/CONFIG.md`); they appear in the picker after the
 built-ins and persist by name exactly like a preset
@@ -2282,6 +2287,25 @@ which avoids terminals that intercept Ctrl+Y as DSUSP); the choice
 is persisted in SQLite under `metadata.active_theme` and survives
 restarts. Other thurbox processes pick up theme changes within one
 tick via `PRAGMA data_version` polling.
+
+Because the list is long, the picker (`ui::theme_picker_modal`) can
+**filter**, but behind `/` (mirroring the file viewer's and code
+review's find) so its keys stay consistent with the other selectors:
+`j`/`k` (+ `↑`/`↓`, `PageUp`/`PageDown` by the rendered list height via
+`App::theme_picker_page`, `g`/`G`, `Home`/`End`, `Ctrl+N`/`Ctrl+P`)
+navigate, and only after `/` do letters append to a query — matched
+against each theme's display name *and* its stable id, with a live
+`matched/total` count. `ThemePickerModal::filter` is `Option<TextInput>`
+(`None` = navigation mode); `Esc` closes the filter first (restoring the
+full list, cursor kept on the same theme) and the picker second.
+Entries group under `Dark`/`Light` headers that are drawn *inside*
+their entry's row, so selection, hitboxes, and the scrollbar all stay
+in entry space (a header is never selectable) and a header disappears
+with its section when filtered out. `ThemePickerModal::index` indexes
+the **match** list, not the entry list, and every consumer resolves it
+through `matches` — refining a query keeps the cursor on the same
+theme when it survives, so narrowing can't apply a palette other than
+the previewed one. See `docs/FEATURES.md`.
 
 ## Settings panel
 

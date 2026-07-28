@@ -20,9 +20,15 @@ pub const SEED_THEMES_TOML: &str = r##"# Thurbox custom themes  —  ~/.config/t
 #
 # Colours accept anything ratatui parses: "#rrggbb", ANSI names ("red",
 # "lightcyan"), indexed ("14"), or "reset" (terminal default — useful for
-# app_bg). Bases: default, catppuccin-mocha, tokyo-night, gruvbox-dark, doom,
+# app_bg).
+#
+# Dark bases: default, catppuccin-mocha, tokyo-night, gruvbox-dark, doom,
 # nord, dracula, one-dark, rose-pine-moon, everforest, kanagawa,
-# catppuccin-latte, tokyo-night-day, gruvbox-light, solarized-light.
+# solarized-dark, monokai, ayu-dark, ayu-mirage, material, rose-pine,
+# oxocarbon, github-dark, nightfox, sonokai, melange, zenburn, iceberg,
+# vesper, synthwave, nightfly, tomorrow-night.
+# Light bases: catppuccin-latte, tokyo-night-day, gruvbox-light,
+# solarized-light, ayu-light, one-light, rose-pine-dawn, github-light.
 #
 # Overridable colour keys: accent, accent_bright, status_working,
 # status_blocked, status_done, status_idle, status_error, status_unreachable,

@@ -934,6 +934,11 @@ pub struct App {
     /// (if any) is reached via [`Self::active_review`] / [`Self::active_review_mut`].
     pub(crate) code_reviews: std::collections::HashMap<SessionId, code_review::CodeReviewState>,
     pub(crate) modal: modals::Modal,
+    /// Height (rows) of the theme picker's list as last rendered, so
+    /// `PageUp`/`PageDown` step by exactly one visible screenful. Written by
+    /// the view each frame; `0` before the first render, hence the `max(1)` at
+    /// the use site.
+    pub(crate) theme_picker_page: usize,
     /// A terminal-editor run staged for the main loop to execute with a real
     /// TTY (set by `Ctrl+O` when the editor is a terminal one). Drained each
     /// iteration by `run_loop` via [`Self::take_pending_editor_run`]; GUI
@@ -1307,6 +1312,7 @@ impl App {
             file_viewer: crate::ui::file_viewer::FileViewerState::new(),
             code_reviews: std::collections::HashMap::new(),
             modal: modals::Modal::None,
+            theme_picker_page: 0,
             pending_editor_run: None,
             new_session: new_session_state::NewSessionWizardState::default(),
             sync_state,
@@ -2546,7 +2552,14 @@ impl App {
             .and_then(|name| entries.iter().position(|e| e.name == name))
             .unwrap_or(0);
         let original = crate::ui::theme::current();
-        self.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index, original });
+        // Opens in navigation mode (no filter), so the match list is every
+        // entry and the filtered index equals the full-list index.
+        self.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
+            index,
+            original,
+            filter: None,
+            matches: (0..entries.len()).collect(),
+        });
     }
 
     /// Open the Settings panel. The draft reflects the live source of truth:
@@ -7615,6 +7628,19 @@ mod tests {
     }
 
     /// Create an App with N stub sessions.
+    /// An unfiltered theme picker selecting `index`, as `open_theme_picker`
+    /// would build it (match list = every entry, so filtered index == entry
+    /// index).
+    fn theme_picker_at(index: usize) -> modals::ThemePickerModal {
+        let count = crate::ui::theme::all_theme_entries().len();
+        modals::ThemePickerModal {
+            index,
+            original: crate::ui::theme::current(),
+            filter: None,
+            matches: (0..count).collect(),
+        }
+    }
+
     fn app_with_sessions(count: usize) -> App {
         let backend_arc = stub_backend_arc();
         let provider = stub_provider();
@@ -9770,10 +9796,7 @@ mod tests {
     #[test]
     fn click_with_modal_open_is_swallowed() {
         let mut app = app_with_sessions(1);
-        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
-            index: 0,
-            original: crate::ui::theme::current(),
-        });
+        app.modal = modals::Modal::ThemePicker(theme_picker_at(0));
         // A scrollbar track and a pane target beneath the overlay must both
         // be unreachable while the modal is open.
         app.scrollbar_hits.push(ScrollbarHit {
@@ -9799,10 +9822,7 @@ mod tests {
     #[test]
     fn click_theme_picker_row_confirms_theme() {
         let mut app = app_with_sessions(1);
-        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
-            index: 2,
-            original: crate::ui::theme::current(),
-        });
+        app.modal = modals::Modal::ThemePicker(theme_picker_at(2));
         // As in a real frame: the pane targets beneath the overlay are
         // recorded first and overlap the modal — the modal row must still
         // win while a modal is open.
@@ -9932,10 +9952,7 @@ mod tests {
         // targets *and* the theme-picker rows; clicking a rendered row must
         // reach the modal, not the pane beneath it.
         let mut app = app_with_sessions(1);
-        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
-            index: 1,
-            original: crate::ui::theme::current(),
-        });
+        app.modal = modals::Modal::ThemePicker(theme_picker_at(1));
         let backend = ratatui::backend::TestBackend::new(120, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| app.view(f)).unwrap();
@@ -10021,10 +10038,7 @@ mod tests {
     #[test]
     fn footer_button_swallowed_while_modal_open() {
         let mut app = app_with_sessions(1);
-        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
-            index: 0,
-            original: crate::ui::theme::current(),
-        });
+        app.modal = modals::Modal::ThemePicker(theme_picker_at(0));
         // The footer still renders its buttons beneath the overlay.
         let r = rendered_target(&mut app, |a| {
             *a == ClickAction::Global(crate::session::Action::QuitApp)
@@ -14336,10 +14350,7 @@ mod tests {
     #[test]
     fn paste_into_selector_only_modal_is_swallowed_not_sent_to_terminal() {
         let mut app = app_with_sessions(1);
-        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
-            index: 0,
-            original: crate::ui::theme::current(),
-        });
+        app.modal = modals::Modal::ThemePicker(theme_picker_at(0));
 
         // A theme picker has no text field, but the paste must still be
         // consumed so it can't leak into the terminal behind the overlay.

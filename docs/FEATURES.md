@@ -1631,15 +1631,57 @@ palette. Widget files reference named colors (accent, text, status,
 border) rather than hard-coded `Color::*` values, so the whole UI
 can be re-skinned by swapping the active palette.
 
-Thurbox ships fifteen built-in presets — eleven dark (Default,
-Catppuccin Mocha, Tokyo Night, Gruvbox Dark, Doom, Nord, Dracula,
-One Dark, Rosé Pine Moon, Everforest, Kanagawa) and four light
-(Catppuccin Latte, Tokyo Night Day, Gruvbox Light, Solarized
-Light). Press `Ctrl+Y` (or `F4`, which avoids terminals that
+Thurbox ships thirty-six built-in presets — twenty-eight dark
+(Default, Catppuccin Mocha, Tokyo Night, Gruvbox Dark, Doom, Nord,
+Dracula, One Dark, Rosé Pine Moon, Everforest, Kanagawa, Solarized
+Dark, Monokai, Ayu Dark, Ayu Mirage, Material, Rosé Pine, Oxocarbon,
+GitHub Dark, Nightfox, Sonokai, Melange, Zenburn, Iceberg, Vesper,
+Synthwave, Nightfly, Tomorrow Night) and eight light (Catppuccin
+Latte, Tokyo Night Day, Gruvbox Light, Solarized Light, Ayu Light,
+One Light, Rosé Pine Dawn, GitHub Light). Press `Ctrl+Y` (or `F4`,
+which avoids terminals that
 intercept `Ctrl+Y` as DSUSP) to pick one. The choice is persisted
 in SQLite under `metadata.active_theme` and survives restarts;
 other Thurbox processes pick it up within one tick via
 `PRAGMA data_version` polling.
+
+### The picker at this list length
+
+Thirty-six presets (plus any custom themes) is far more than fits on
+one screen, so the picker (`ui::theme_picker_modal`) is built around
+the long list rather than scrolling a flat one:
+
+- **Filter behind `/`.** The picker keeps the shared selector keys —
+  `j`/`k` (plus `↑`/`↓`, `PageUp`/`PageDown`, `g`/`G`, `Home`/`End`)
+  select, and `Ctrl+N`/`Ctrl+P` are accepted as alternates. Only `/`
+  opens a filter sub-mode, in which letters append to a query matched
+  against each theme's display name *and* its stable id (so both `rose`
+  and `rose-pine-dawn` find the same entry). This mirrors the file
+  viewer's and code review's find rather than swallowing every letter,
+  so no key means something different here than in the other pickers.
+  `PageUp`/`PageDown` step by the list's *rendered* height, fed back
+  from the view each frame (`App::theme_picker_page`).
+- **Two `Esc` levels.** While filtering, `Esc` closes just the filter
+  and restores the full list — keeping the cursor on the theme it was
+  on, so leaving the sub-mode never jumps the preview elsewhere. A
+  second `Esc` cancels the picker. The header line shows the live query
+  (with a block cursor) or, in navigation mode, a `/ filter themes`
+  hint; either way it carries a `matched/total themes` count, so a
+  query that narrows to nothing is legible instead of an unexplained
+  empty list.
+- **`Dark` / `Light` section headers.** Emitted at the first entry of
+  each run, so filtering away every light theme also drops the `Light`
+  header. Headers are rendering decoration drawn *within* their entry's
+  row, which keeps selection indices, click hitboxes, and the scrollbar
+  all in plain entry space — a header is never separately selectable.
+- **Filtered-space selection.** `ThemePickerModal::index` indexes the
+  *match* list, not the full entry list, and every consumer resolves it
+  through `matches`. Refining a query keeps the cursor on the same
+  *theme* when it survives the filter, so narrowing can never silently
+  apply a different palette than the one previewed.
+- The modal grows with its content up to ~85% of the frame, then
+  scroll-windows with a scrollbar. The live swatch also previews text,
+  diff, border and modal-background colours, not just the accent.
 
 ### Why centralized?
 
