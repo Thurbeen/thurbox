@@ -3351,6 +3351,19 @@ impl App {
         true
     }
 
+    /// The terminal pane's content area (borders excluded).
+    ///
+    /// Selection code compares a [`Selection`]'s pane against this to decide
+    /// whether the vt100 grid is the right source for the selected text (and
+    /// whether a drag past the edge should scroll it). `handle_mouse_click`
+    /// derives the anchoring pane the same way, so both must stay in step —
+    /// hence one helper rather than three reconstructions of the block.
+    pub(crate) fn terminal_inner_rect(&self) -> Rect {
+        Block::default()
+            .borders(Borders::ALL)
+            .inner(self.screen_layout().terminal)
+    }
+
     fn handle_mouse_drag(&mut self, x: u16, y: u16) {
         // A scrollbar drag takes precedence: keep driving the grabbed pane's
         // scroll state (y can leave the track — `position_for_y` clamps it).
@@ -3363,12 +3376,38 @@ impl App {
             return;
         }
 
+        // Only the terminal pane has a scrollable grid behind it; a drag out of
+        // the session list must not scroll the terminal's scrollback.
+        let terminal_inner = self.terminal_inner_rect();
+
         if let Some(ref mut sel) = self.text_selection {
+            let rect = sel.pane.rect();
+            // Dragging past the top/bottom edge scrolls the grid under the
+            // selection, so a selection can run past what one screen shows —
+            // the behaviour a native terminal gives. One line per drag event
+            // (which arrive continuously while the button is held) keeps it
+            // proportional to how long the user holds outside the pane.
+            let in_terminal = rect == terminal_inner;
+            let scroll_up = in_terminal && y < rect.y;
+            let scroll_down = in_terminal && y >= rect.y + rect.height;
+
             let (cx, cy) = sel.pane.clamp(x, y);
             sel.cursor = TermPos {
                 row: cy as usize,
                 col: cx as usize,
             };
+
+            if scroll_up || scroll_down {
+                self.with_active_parser(|parser| {
+                    let cur = parser.screen().scrollback();
+                    let next = if scroll_up {
+                        cur + 1
+                    } else {
+                        cur.saturating_sub(1)
+                    };
+                    parser.screen_mut().set_scrollback(next);
+                });
+            }
         }
     }
 
@@ -3668,19 +3707,27 @@ impl App {
             _ => return,
         };
 
-        let Some(clipboard) = &mut self.clipboard else {
-            self.set_error("Clipboard not available");
-            return;
-        };
-
-        if let Err(e) = clipboard.set_text(&text) {
-            self.set_error(format!("Clipboard write failed: {e}"));
-            return;
+        match self.write_clipboard(&text) {
+            Ok(route) => {
+                self.text_selection = None;
+                self.selected_text_cache = None;
+                let msg = format!("Copied to clipboard{}", route.toast_suffix());
+                self.set_status(StatusLevel::Info, msg);
+            }
+            Err(e) => self.set_error(e.to_string()),
         }
+    }
 
-        self.text_selection = None;
-        self.selected_text_cache = None;
-        self.set_status(StatusLevel::Info, "Copied to clipboard");
+    /// Write `text` to the clipboard over the configured transport, returning
+    /// which one carried it. Centralises the native/OSC 52 fallback so every
+    /// copy path (selection, status line, code review) behaves identically —
+    /// notably including the OSC 52 leg that makes copy work over SSH.
+    pub(crate) fn write_clipboard(
+        &mut self,
+        text: &str,
+    ) -> Result<crate::clipboard::CopyRoute, crate::clipboard::CopyError> {
+        let provider = crate::session::settings::global().clipboard.provider;
+        crate::clipboard::copy(text, self.clipboard.as_mut(), provider)
     }
 
     /// Copy the current status-bar message (info / error / …) to the clipboard.
@@ -3697,17 +3744,13 @@ impl App {
             return; // nothing shown → no-op (no "copied" toast to overwrite it)
         };
 
-        let Some(clipboard) = &mut self.clipboard else {
-            self.set_error("Clipboard not available");
-            return;
-        };
-
-        if let Err(e) = clipboard.set_text(&text) {
-            self.set_error(format!("Clipboard write failed: {e}"));
-            return;
+        match self.write_clipboard(&text) {
+            Ok(route) => {
+                let msg = format!("Status message copied to clipboard{}", route.toast_suffix());
+                self.set_status(StatusLevel::Info, msg);
+            }
+            Err(e) => self.set_error(e.to_string()),
         }
-
-        self.set_status(StatusLevel::Info, "Status message copied to clipboard");
     }
 
     /// Wrap text in bracketed paste escape sequences and send it to the
@@ -3747,17 +3790,17 @@ impl App {
         self.text_selection = None;
         self.selected_text_cache = None;
 
-        let Some(clipboard) = &mut self.clipboard else {
-            self.set_error("Clipboard not available");
+        // No OSC 52 read fallback: terminals disable clipboard *reads* by
+        // default (an exfiltration risk) and probing for one can stall for
+        // seconds. Over SSH the working path is the terminal's own paste, which
+        // arrives as a bracketed paste through `handle_paste` — so point at it
+        // rather than reporting a failure the user cannot act on.
+        let Some(text) = crate::clipboard::paste(self.clipboard.as_mut()) else {
+            self.set_status(
+                StatusLevel::Info,
+                crate::clipboard::PASTE_UNAVAILABLE_HINT.to_string(),
+            );
             return;
-        };
-
-        let text = match clipboard.get_text() {
-            Ok(t) => t,
-            Err(e) => {
-                self.set_error(format!("Clipboard read failed: {e}"));
-                return;
-            }
         };
 
         if self.try_paste_into_modal_input(&text) {
@@ -7104,8 +7147,7 @@ impl App {
     }
 
     pub(crate) fn content_area_size(&self) -> (u16, u16) {
-        let terminal = self.screen_layout().terminal;
-        let inner = Block::default().borders(Borders::ALL).inner(terminal);
+        let inner = self.terminal_inner_rect();
         (inner.height, inner.width)
     }
 }
@@ -8787,6 +8829,39 @@ mod tests {
 
         app.scroll_terminal_up(1);
         assert!(app.text_selection.is_none());
+    }
+
+    /// Dragging out of a pane that has no vt100 grid behind it (the session
+    /// list) must not scroll the terminal's scrollback — the autoscroll is
+    /// scoped to the terminal pane, whose grid the selection is actually
+    /// reading from.
+    #[test]
+    fn drag_out_of_non_terminal_pane_does_not_scroll_terminal() {
+        let mut app = app_with_sessions(1);
+        // A pane deliberately unlike the terminal's inner rect.
+        let list_pane = ratatui::layout::Rect::new(0, 0, 20, 10);
+        app.text_selection = Some(Selection::new(
+            TermPos { row: 5, col: 0 },
+            PaneBounds::from_rect(list_pane),
+        ));
+
+        let before = {
+            let mut sb = 0;
+            app.with_active_parser(|p| sb = p.screen().scrollback());
+            sb
+        };
+
+        // Drag well above the pane's top edge — the direction that would
+        // scroll back if the gate were missing.
+        app.handle_mouse_drag(5, 0);
+        app.handle_mouse_drag(5, 0);
+
+        let after = {
+            let mut sb = 0;
+            app.with_active_parser(|p| sb = p.screen().scrollback());
+            sb
+        };
+        assert_eq!(before, after, "session-list drag scrolled the terminal");
     }
 
     #[test]

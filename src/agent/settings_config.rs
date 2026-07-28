@@ -76,6 +76,17 @@ config_version = 1
 # min_interval_secs = 5         # per-session dedup floor (seconds)
 # backend = "auto"              # delivery backend: auto | dbus | windows | off
 
+# Clipboard transport for copy (Ctrl+C). `auto` writes to the local clipboard
+# when one is reachable and otherwise emits an OSC 52 escape sequence, which
+# your *terminal emulator* turns into a clipboard write — so copy works over
+# SSH, including nested SSH, with no setup on either end. Force `native` if
+# your terminal mangles OSC 52, `osc52` to always target the terminal you're
+# looking at, or `none` to disable copy. Pasting never uses OSC 52 (terminals
+# disable clipboard reads for security) — over SSH use your terminal's own
+# paste, usually Ctrl+Shift+V.
+# [clipboard]
+# provider = "auto"             # auto | native | osc52 | none
+
 # ──────────────────────────────────────────────────────────────────────────
 # Common recipes (uncomment the lines under the recipe you want)
 # ──────────────────────────────────────────────────────────────────────────

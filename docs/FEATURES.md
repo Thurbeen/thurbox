@@ -1828,12 +1828,17 @@ Mouse drag selects text in the terminal panel. The selection is
 confined to the active pane bounds.
 
 - **Mouse drag**: Select text (anchor at press, cursor follows
-  drag).
-- **`Ctrl+C`** (with active selection): Copies selected text to
-  the system clipboard via `arboard`. Trailing whitespace is
-  trimmed per line.
+  drag). Dragging past the top/bottom edge scrolls the grid, so a
+  selection can extend beyond one screenful.
+- **`Shift`+drag**: Bypasses thurbox entirely and uses your
+  **terminal's own** selection. Most emulators reserve Shift for this
+  while an application holds the mouse; use it when you want the
+  terminal's native copy behaviour (including its own clipboard
+  integration) instead of thurbox's.
+- **`Ctrl+C`** (with active selection): Copies the selection. See
+  the transport section below.
 - **`Ctrl+C`** (no selection): Forwarded to the terminal as SIGINT.
-- **`Ctrl+V`**: Pastes from the system clipboard. When a modal text
+- **`Ctrl+V`**: Pastes from the local clipboard. When a modal text
   input (worktree/session name, repo-picker path or search,
   automation editor) or an in-pane editor (task/automation) is
   focused, the text is inserted into that field instead of the PTY
@@ -1842,11 +1847,76 @@ confined to the active pane bounds.
   modal is open the paste is swallowed so it can never leak into the
   terminal in the pane behind the overlay; otherwise it pastes into
   the active PTY.
+- **`Ctrl+Shift+V`** (your terminal's paste): the way to paste when
+  thurbox runs over SSH — see "Pasting over SSH" below.
 - Any other keypress clears the selection.
 
 Selection is highlighted in the terminal render buffer using
-inverted colors. The clipboard handle is kept alive for the app
-lifetime to avoid Linux-specific "dropped too quickly" issues.
+inverted colors.
+
+### What gets copied
+
+For a selection in the **terminal pane**, the text is read from the
+session's vt100 grid rather than the painted cells
+(`selection::extract_text_from_screen`). Two consequences:
+
+- **Scrollback is selectable.** The grid resolves through the current
+  scroll offset, so text you scrolled back to copies correctly.
+- **Soft-wrapped lines are rejoined.** A line longer than the pane is
+  stored as several rows with a wrap flag; those are one logical line,
+  so they copy without a newline at the pane edge. A wrapped URL or
+  code line pastes intact.
+
+Trailing whitespace is trimmed per logical line; interior spacing is
+preserved so column alignment survives. Other panes (session list,
+info panel) have no grid behind them and are read from the frame
+buffer as before.
+
+### Copying over SSH (OSC 52)
+
+Copy uses two transports, in order — configured by `[clipboard]
+provider` in settings.toml (`auto` | `native` | `osc52` | `none`):
+
+1. **Native** (`arboard`) — the local display server. Reports real
+   success or failure, but only exists on the machine holding the
+   clipboard. The handle is kept alive for the app lifetime to avoid
+   Linux-specific "dropped too quickly" issues.
+2. **OSC 52** — an escape sequence your *terminal emulator*
+   interprets, so it reaches the clipboard of whoever is looking at
+   the screen regardless of how many SSH hops are in between. Written
+   to `/dev/tty` rather than stdout, because a multiplexer intercepts
+   OSC 52 arriving on a child's stdout.
+
+`auto` tries native first (it is the only one that can confirm it
+worked) and falls back to OSC 52. There is deliberately **no**
+`$SSH_TTY` check: the SSH env vars are only a proxy for "no local
+clipboard", trying the local clipboard answers that directly, and
+under tmux those vars are frequently stale (the server daemonizes with
+its first client's environment). Neovim shipped SSH detection here and
+removed it in 0.11 for the same reason.
+
+The toast names the transport (`Copied to clipboard (OSC 52)`) so a
+terminal that silently ignores the sequence is diagnosable. Text over
+~74 KB is refused with an explicit error rather than written, because
+tmux discards an oversized OSC 52 sequence **entirely**.
+
+thurbox sets `set-clipboard on` and `terminal-features ,*:clipboard`
+on its own tmux server (`TmuxBackend::apply_clipboard_config`). Both
+are required: tmux's default `set-clipboard external` **silently
+discards** an OSC 52 originating inside a pane, and a missing `Ms`
+terminfo capability drops it again at a second gate. Note the
+tradeoff — `set-clipboard on` lets any process in a pane write your
+system clipboard, which is why tmux's own default is more
+conservative.
+
+### Pasting over SSH
+
+Paste never uses OSC 52. Terminals disable clipboard *reads* by
+default (a remote host could exfiltrate your clipboard), and probing
+for one can stall for seconds. When no local clipboard is reachable,
+`Ctrl+V` shows a hint pointing at your terminal's own paste
+(usually **`Ctrl+Shift+V`**), which delivers the text as an ordinary
+bracketed paste that thurbox routes exactly like `Ctrl+V`.
 
 ---
 

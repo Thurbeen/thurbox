@@ -867,12 +867,52 @@ impl TmuxBackend {
             debug!("extended-keys-format=csi-u not set (likely tmux < 3.3): {e}");
         }
 
+        self.apply_clipboard_config();
+
         // Session-level options
         for (key, val) in SESSION_OPTS {
             self.tmux_run(&["set-option", "-t", &self.session, key, val])?;
         }
 
         Ok(())
+    }
+
+    /// Open the two silent gates that would otherwise drop an OSC 52 clipboard
+    /// write originating **inside** a pane (thurbox's own copy, or an agent's).
+    ///
+    /// Both are no-ops-on-failure by design, hence best-effort:
+    ///
+    /// 1. `set-clipboard` must be exactly `on`. tmux's `input_osc_52_parse`
+    ///    bails on `!= 2`, and the shipped default is `external` (1) — which
+    ///    forwards tmux's *own* copy-mode yanks but **discards** an
+    ///    application's OSC 52 with no error and no visual artifact. This is
+    ///    the default-broken case: without it every other part of the
+    ///    clipboard path is dead under tmux.
+    /// 2. The `Ms` terminfo capability must be present, or `tty_set_selection`
+    ///    returns early — a second, independent silent drop. `terminal-features
+    ///    ,*:clipboard` injects it for every terminal (tmux 3.2+, matching
+    ///    thurbox's floor; the pre-3.2 form was a raw `terminal-overrides` Ms=
+    ///    string).
+    ///
+    /// Security tradeoff: `set-clipboard on` lets any process in a pane set the
+    /// user's system clipboard — an exfiltration channel, and why tmux moved
+    /// the default to `external` in 2.6. Scoped here to thurbox's own socket,
+    /// and the price of copy working at all over SSH.
+    ///
+    /// Skipped on psmux, which has no OSC 52 clipboard forwarding (a local
+    /// Windows session copies via the native clipboard path instead).
+    fn apply_clipboard_config(&self) {
+        if self.transport.uses_psmux() {
+            return;
+        }
+        for args in [
+            ["set-option", "-s", "set-clipboard", "on"],
+            ["set-option", "-as", "terminal-features", ",*:clipboard"],
+        ] {
+            if let Err(e) = self.tmux_run(&args) {
+                debug!("clipboard option {} not set: {e}", args[2]);
+            }
+        }
     }
 
     /// Ensure the thurbox tmux session exists and its options are applied,

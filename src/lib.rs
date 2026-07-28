@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod app;
 pub mod cli;
+pub mod clipboard;
 pub(crate) mod fuzzy;
 pub mod git;
 pub mod notifications;

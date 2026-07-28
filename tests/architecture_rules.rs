@@ -126,6 +126,14 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session", "paths"],
         allowed_path_only: &[],
     },
+    // Leaf side-effect module: clipboard writes (native + OSC 52). Knows
+    // `session` only for the `ClipboardProvider` setting; writes to the tty
+    // and never reaches into agent / ui / app / storage.
+    ModuleRules {
+        name: "clipboard",
+        allowed: &["session"],
+        allowed_path_only: &[],
+    },
 ];
 
 /// Modules exempt from the allowlist: `app` is the coordinator (imports

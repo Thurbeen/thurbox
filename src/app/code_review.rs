@@ -1367,12 +1367,12 @@ impl App {
             self.set_status(StatusLevel::Info, "No review comments yet");
             return;
         };
-        match self.clipboard.as_mut() {
-            Some(cb) => match cb.set_text(&md) {
-                Ok(_) => self.set_status(StatusLevel::Success, "Review copied to clipboard"),
-                Err(e) => self.set_error(format!("Clipboard write failed: {e}")),
-            },
-            None => self.set_error("Clipboard not available"),
+        match self.write_clipboard(&md) {
+            Ok(route) => {
+                let msg = format!("Review copied to clipboard{}", route.toast_suffix());
+                self.set_status(StatusLevel::Success, msg);
+            }
+            Err(e) => self.set_error(e.to_string()),
         }
     }
 

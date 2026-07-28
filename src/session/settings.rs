@@ -43,6 +43,9 @@ pub struct Settings {
     /// per-session dedup).
     #[serde(default)]
     pub notifications: NotificationSettings,
+    /// Clipboard transport settings (`[clipboard]` table). Absent = `auto`.
+    #[serde(default)]
+    pub clipboard: ClipboardSettings,
 }
 
 /// Whole-feature switches (`[features]` in settings.toml). Each flag hides the
@@ -135,6 +138,37 @@ pub enum NotificationBackend {
     /// Disable delivery (the dispatcher still starts but drops every
     /// notification — a soft off-switch distinct from `[features]`).
     Off,
+}
+
+/// Which clipboard transport to use (`[clipboard] provider`). `Auto` (the
+/// default) tries the local display server first and falls back to OSC 52,
+/// which reaches the terminal emulator's clipboard through any number of SSH
+/// hops. The forcing variants exist because no auto-detection is right for
+/// everyone: `Native` suits a local desktop whose terminal mangles OSC 52,
+/// `Osc52` suits a machine with a stale/unwanted local clipboard, and `None`
+/// disables writes entirely.
+///
+/// Copy only — clipboard *reads* never use OSC 52 (see [`crate::clipboard`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ClipboardProvider {
+    /// Native clipboard when it works, OSC 52 otherwise.
+    #[default]
+    Auto,
+    /// Local display server only; never emit OSC 52.
+    Native,
+    /// OSC 52 only; skip the native clipboard.
+    Osc52,
+    /// Disable clipboard writes.
+    None,
+}
+
+/// Clipboard settings (`[clipboard]` in settings.toml).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ClipboardSettings {
+    /// Transport selection. See [`ClipboardProvider`].
+    #[serde(default)]
+    pub provider: ClipboardProvider,
 }
 
 /// How `Ctrl+O` launches the editor (the DB `editor_mode` key, set via
@@ -299,6 +333,7 @@ impl Default for Settings {
             audit_retention_days: default_audit_retention_days(),
             features: FeatureFlags::default(),
             notifications: NotificationSettings::default(),
+            clipboard: ClipboardSettings::default(),
         }
     }
 }

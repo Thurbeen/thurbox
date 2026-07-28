@@ -128,7 +128,94 @@ pub fn highlight_buffer(
     }
 }
 
+/// Extract selected text from a vt100 screen (the terminal pane's own grid)
+/// rather than the rendered frame buffer.
+///
+/// Two things this buys over [`extract_text_from_buffer`], which reads the
+/// painted cells:
+///
+/// - **Scrollback.** [`vt100::Screen::cell`] resolves through the current
+///   scrollback offset, so a selection made after scrolling up copies the
+///   history the user is actually looking at.
+/// - **Soft-wrap joining.** A line longer than the pane is stored by vt100 as
+///   several rows with the wrap flag set on all but the last. Those are one
+///   logical line, so they are rejoined with no `\n` — a wrapped URL or code
+///   line pastes intact instead of acquiring a break at the pane edge.
+///
+/// `pane_origin` is the top-left of the pane's *inner* (border-excluded) area;
+/// `PseudoTerminal` paints the screen 1:1 there, so subtracting it converts a
+/// screen position to a parser position. A selection reaching past the last
+/// grid row stops there.
+///
+/// A hard newline still separates logical lines, and trailing whitespace is
+/// trimmed per logical line (not per visual row — trimming a wrapped row's tail
+/// would eat the space that belongs mid-line). Wholly-blank trailing lines are
+/// dropped.
+pub fn extract_text_from_screen(
+    screen: &vt100::Screen,
+    selection: &Selection,
+    pane_origin: (u16, u16),
+) -> String {
+    let (grid_rows, grid_cols) = screen.size();
+    let (ox, oy) = pane_origin;
+
+    // Logical lines, each possibly assembled from several wrapped grid rows.
+    let mut lines: Vec<String> = Vec::new();
+    // Whether the previous row soft-wrapped, i.e. this row continues it.
+    let mut continues_previous = false;
+
+    for (row, col_start, col_end) in selection.row_spans() {
+        // A selection may extend past the grid (a short session in a tall
+        // pane). Rows are yielded in ascending order, so nothing further can
+        // be in range.
+        let Some(grid_row) = (row as u16).checked_sub(oy).filter(|r| *r < grid_rows) else {
+            break;
+        };
+
+        let lo = (col_start as u16).saturating_sub(ox);
+        let hi = (col_end as u16).saturating_sub(ox).min(grid_cols);
+
+        let mut text = String::new();
+        for col in lo..hi {
+            if let Some(cell) = screen.cell(grid_row, col) {
+                // A blank cell has no contents; the visual equivalent is a
+                // space, and dropping it would collapse column alignment.
+                if cell.has_contents() {
+                    text.push_str(cell.contents());
+                } else {
+                    text.push(' ');
+                }
+            }
+        }
+
+        match lines.last_mut() {
+            Some(last) if continues_previous => last.push_str(&text),
+            _ => lines.push(text),
+        }
+
+        // Only a span reaching the grid's right edge can be a wrap
+        // continuation; a selection ending mid-row is a deliberate stop.
+        continues_previous = screen.row_wrapped(grid_row) && hi >= grid_cols;
+    }
+
+    // Trim per logical line, then drop trailing blanks so a selection dragged
+    // past the last line of output doesn't carry empty rows with it.
+    while lines.last().is_some_and(|l| l.trim_end().is_empty()) {
+        lines.pop();
+    }
+
+    lines
+        .iter()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Extract selected text from a ratatui frame buffer.
+///
+/// Used for non-terminal panes (session list, info panel), which have no vt100
+/// grid behind them. Terminal panes go through [`extract_text_from_screen`],
+/// which also sees scrollback and rejoins soft-wrapped lines.
 ///
 /// Reads cell symbols within the selection, clamped to pane bounds.
 /// Trailing whitespace is trimmed per line, lines joined with `\n`.
@@ -350,6 +437,87 @@ mod tests {
         // Row 1: cols 10..25 (full pane width) = "content here..."
         // Row 2: cols 10..23 = "more content!"
         assert_eq!(text, "content here...\nmore content!");
+    }
+
+    /// Feed `input` to a fresh parser sized `rows`x`cols` with scrollback.
+    fn screen_with(rows: u16, cols: u16, scrollback: usize, input: &str) -> vt100::Parser {
+        let mut p = vt100::Parser::new(rows, cols, scrollback);
+        p.process(input.as_bytes());
+        p
+    }
+
+    #[test]
+    fn screen_extract_reads_grid_at_pane_origin() {
+        let p = screen_with(5, 20, 0, "hello world");
+        // Pane inner area starts at (10, 3): screen col 10 == grid col 0.
+        let pane = PaneBounds::from_rect(Rect::new(10, 3, 20, 5));
+        let sel = make_sel((3, 10), (3, 14), pane);
+        assert_eq!(extract_text_from_screen(p.screen(), &sel, (10, 3)), "hello");
+    }
+
+    #[test]
+    fn screen_extract_joins_soft_wrapped_rows() {
+        // 10 cols; the URL is longer, so vt100 wraps it and flags the seam.
+        let url = "https://example.com/a/b";
+        let p = screen_with(5, 10, 0, url);
+        let pane = PaneBounds::from_rect(Rect::new(0, 0, 10, 5));
+        // Select every row the wrapped line occupies.
+        let sel = make_sel((0, 0), (2, 9), pane);
+        // Rejoined with no newline at the wrap seams.
+        assert_eq!(extract_text_from_screen(p.screen(), &sel, (0, 0)), url);
+    }
+
+    #[test]
+    fn screen_extract_keeps_hard_newlines_between_logical_lines() {
+        let p = screen_with(5, 20, 0, "first\r\nsecond");
+        let pane = PaneBounds::from_rect(Rect::new(0, 0, 20, 5));
+        let sel = make_sel((0, 0), (1, 19), pane);
+        assert_eq!(
+            extract_text_from_screen(p.screen(), &sel, (0, 0)),
+            "first\nsecond"
+        );
+    }
+
+    #[test]
+    fn screen_extract_follows_scrollback() {
+        // 3 visible rows, 10 lines of history: "line0".."line9".
+        let input: String = (0..10).map(|i| format!("line{i}\r\n")).collect();
+        let mut p = screen_with(3, 20, 20, &input);
+        let pane = PaneBounds::from_rect(Rect::new(0, 0, 20, 3));
+        let sel = make_sel((0, 0), (0, 19), pane);
+
+        // At the bottom, the top visible row is recent history.
+        let bottom = extract_text_from_screen(p.screen(), &sel, (0, 0));
+
+        // Scrolled up, the same screen position resolves to older content —
+        // the whole point of reading the grid rather than the painted cells.
+        p.screen_mut().set_scrollback(5);
+        let scrolled = extract_text_from_screen(p.screen(), &sel, (0, 0));
+
+        assert_ne!(bottom, scrolled);
+        // Offset 5 puts "line3" at the top of the 3-row viewport (the last
+        // lines written are "line8"/"line9"), so the same screen row now
+        // resolves to older history.
+        assert_eq!(scrolled.trim(), "line3");
+    }
+
+    #[test]
+    fn screen_extract_skips_rows_outside_the_grid() {
+        let p = screen_with(2, 10, 0, "ab");
+        let pane = PaneBounds::from_rect(Rect::new(0, 0, 10, 8));
+        // Rows 0..7 selected, but the grid only has 2 — the rest are skipped
+        // rather than panicking or emitting blank lines.
+        let sel = make_sel((0, 0), (7, 9), pane);
+        assert_eq!(extract_text_from_screen(p.screen(), &sel, (0, 0)), "ab");
+    }
+
+    #[test]
+    fn screen_extract_preserves_interior_blanks() {
+        let p = screen_with(2, 20, 0, "a    b");
+        let pane = PaneBounds::from_rect(Rect::new(0, 0, 20, 2));
+        let sel = make_sel((0, 0), (0, 19), pane);
+        // Interior spacing kept (column alignment), trailing trimmed.
+        assert_eq!(extract_text_from_screen(p.screen(), &sel, (0, 0)), "a    b");
     }
 
     #[test]

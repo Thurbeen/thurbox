@@ -192,7 +192,7 @@ impl App {
         }
         self.repaint_theme_background(frame);
         self.apply_hover_highlight(frame);
-        self.apply_selection_highlight(frame);
+        self.apply_selection_highlight(frame, areas.terminal);
     }
 
     /// Highlight the clickable element under the mouse pointer so what a click
@@ -1396,7 +1396,13 @@ impl App {
 
     /// Apply the selection highlight and refresh the selected-text cache —
     /// runs after all rendering.
-    fn apply_selection_highlight(&mut self, frame: &mut Frame) {
+    ///
+    /// The highlight is always painted on the frame buffer (it is a visual
+    /// effect on what was drawn), but the *text* is read from the session's
+    /// vt100 grid when the selection lies in the terminal pane — that grid, not
+    /// the painted cells, is what holds scrollback and the soft-wrap flags. Any
+    /// other pane has no grid behind it and falls back to the buffer.
+    fn apply_selection_highlight(&mut self, frame: &mut Frame, terminal_area: Rect) {
         let Some(ref sel) = self.text_selection else {
             self.selected_text_cache = None;
             return;
@@ -1408,7 +1414,34 @@ impl App {
 
         selection::highlight_buffer(frame.buffer_mut(), &sel_clone, sel_style);
 
-        let text = selection::extract_text_from_buffer(frame.buffer_mut(), &sel_clone);
+        // Derived from this frame's rect rather than `App::terminal_inner_rect`
+        // (which reads the cached size) so a resize frame compares against what
+        // was actually painted. Must match how `handle_mouse_click` derives the
+        // pane it anchors a selection to, or the rects never compare equal.
+        let inner = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .inner(terminal_area);
+        let in_terminal = sel_clone.pane.rect() == inner;
+
+        let text = if in_terminal {
+            let origin = (inner.x, inner.y);
+            let mut from_grid = None;
+            self.with_active_parser(|parser| {
+                from_grid = Some(selection::extract_text_from_screen(
+                    parser.screen(),
+                    &sel_clone,
+                    origin,
+                ));
+            });
+            // No active parser (welcome screen, placeholder session) → nothing
+            // was painted from a grid either, so the buffer read is correct.
+            from_grid.unwrap_or_else(|| {
+                selection::extract_text_from_buffer(frame.buffer_mut(), &sel_clone)
+            })
+        } else {
+            selection::extract_text_from_buffer(frame.buffer_mut(), &sel_clone)
+        };
+
         self.selected_text_cache = if text.is_empty() { None } else { Some(text) };
     }
 
@@ -1831,7 +1864,14 @@ fn render_help_overlay(
         "Mouse wheel".into(),
         "Terminal: scroll three lines",
     ));
-    help_lines.push(help_line("Click+drag".into(), "Select text"));
+    help_lines.push(help_line(
+        "Click+drag".into(),
+        "Select text (drag past the edge scrolls; wrapped lines copy rejoined)",
+    ));
+    help_lines.push(help_line(
+        "Shift+drag".into(),
+        "Select using your terminal's own selection instead of thurbox's",
+    ));
     help_lines.push(help_line(
         "Click".into(),
         "Select row / focus pane; pickers: confirm row; footer & modal buttons",
