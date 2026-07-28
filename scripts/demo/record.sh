@@ -499,9 +499,12 @@ if printf '%s ' $TAPES | grep -Eq '(^| )(tasks|search)( |$)'; then
     "$CLI_BIN" task create --title "Triage flaky WSL host discovery" \
         --status in_progress >/dev/null 2>&1 || true
     # A rich markdown description so the full-screen preview shows headings,
-    # bold and lists rendered (the headline of the tasks feature).
+    # bold and lists rendered (the headline of the tasks feature). Uses **bold**
+    # rather than backtick code spans: a backtick inside single quotes reads as an
+    # unexpanded command substitution to shellcheck (SC2016), and the preview
+    # renders bold just as legibly.
     "$CLI_BIN" task create --title "Harden posix_quote against newlines" \
-        --description "$(printf '## Goal\n\nA newline survives `posix_quote` and is re-split by tmux **control mode**.\n\n- reject newlines at the quoting boundary\n- add a regression test\n- audit callers that build *remote* git commands')" \
+        --description "$(printf '## Goal\n\nA newline survives **posix_quote** and is re-split by tmux **control mode**.\n\n- reject newlines at the quoting boundary\n- add a regression test\n- audit callers that build *remote* git commands')" \
         >/dev/null 2>&1 || true
     # An automation (spawn action, inferred from --repo) so the search demo has
     # a matching automation result too.
