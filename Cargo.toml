@@ -32,7 +32,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 
 # Base64 payload framing for the Windows-host remote file copy (already in the
 # dependency tree transitively; pinned to the same resolved version)
-base64 = "0.22"
+base64 = "0.23"
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "signal", "net"] }
