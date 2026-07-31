@@ -497,6 +497,17 @@
   opacity: 0.75;
 }
 
+/* The egg is keyboard-only (a keydown sequence — see js/main.js), and a phone
+   has no keyboard and no text field on this page to summon one, so the clue
+   would invite something impossible. Hidden at the same 639px the HUD bar's
+   "God Mode" segment uses, so both hints appear and disappear together.
+   Anyone who pairs a physical keyboard is above this breakpoint anyway. */
+@media (max-width: 639px) {
+  .footer-secret {
+    display: none;
+  }
+}
+
 /* ---- God-mode overlay (typing the Doom cheat; see js/main.js) ---- */
 
 /* Locks the page behind the modal so a wheel scroll does not move it. */
