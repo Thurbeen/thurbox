@@ -7,6 +7,18 @@
     return !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   }
 
+  // Only true text-entry contexts. Deliberately excludes A/BUTTON/VIDEO: those
+  // are merely focusable, and treating them as typing contexts meant a couple
+  // of Tab presses (focus lands on a nav link) silently killed press-to-begin.
+  // Printable keys do nothing on a focused link anyway. Shared by every
+  // document-level printable-key listener below (press-to-begin, god mode).
+  function isTypingContext(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    var tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  }
+
   // ---- Mobile nav toggle ----
   var hamburger = document.getElementById('hamburger');
   var navLinks = document.getElementById('nav-links');
@@ -83,17 +95,6 @@
       ArrowDown: 1,
       ArrowLeft: 1,
       ArrowRight: 1,
-    };
-
-    // Only true text-entry contexts. Deliberately excludes A/BUTTON/VIDEO: those
-    // are merely focusable, and treating them as typing contexts meant a couple
-    // of Tab presses (focus lands on a nav link) silently killed the feature.
-    // Printable keys do nothing on a focused link anyway.
-    var isTypingContext = function (el) {
-      if (!el) return false;
-      if (el.isContentEditable) return true;
-      var tag = el.tagName;
-      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
     };
 
     var onAnyKey = function (e) {
@@ -464,5 +465,158 @@
       closeSidebar();
       sidebarToggle.focus();
     });
+  }
+
+  // ---- God mode: typing the 1993 Doom cheat plays a clip of Doom in a pane ----
+  // The clue is the footer's .footer-secret line plus the HUD bar's "God Mode /
+  // 5 keys" segment; the code itself is never written on the page.
+  //
+  // The overlay and its <video> are built on first trigger, so the several-MB
+  // clip and its poster cost nothing for the overwhelming majority of visitors
+  // who never type it. Regenerate the media with scripts/demo/record-doom.sh.
+  //
+  // Note this shares the document with press-to-begin, which fires on any
+  // printable key: from the top of the landing page the leading "i" scrolls to
+  // the demo section before the overlay opens. Left deliberately uncoupled —
+  // suppressing that would mean breaking "press any key" for the letter i.
+  var CHEAT_CODE = 'iddqd';
+  var assetsDir = document.body && document.body.getAttribute('data-assets');
+
+  if (assetsDir) {
+    var cheatBuffer = '';
+    var doomOverlay = null;
+    var doomVideo = null;
+    var doomClose = null;
+    var doomReturnFocus = null;
+
+    var closeDoom = function () {
+      if (!doomOverlay || doomOverlay.hidden) return;
+      doomOverlay.hidden = true;
+      document.documentElement.classList.remove('doom-open');
+      // Drop the source so an in-flight download stops and the decoder is
+      // released; reopening re-attaches it.
+      doomVideo.pause();
+      doomVideo.removeAttribute('src');
+      doomVideo.load();
+      if (doomReturnFocus && doomReturnFocus.focus) doomReturnFocus.focus();
+      doomReturnFocus = null;
+    };
+
+    // The overlay is a modal dialog, so Tab must not walk out of it into the
+    // page behind. Only the close button and the video's controls are focusable.
+    var trapDoomTab = function (e) {
+      if (e.key !== 'Tab') return;
+      var focusable = doomOverlay.querySelectorAll('button, video');
+      if (focusable.length === 0) return;
+      var first = focusable[0];
+      var last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    var buildDoom = function () {
+      var overlay = document.createElement('div');
+      overlay.className = 'doom-overlay';
+      overlay.hidden = true;
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label', 'God mode: Doom running inside a thurbox pane');
+
+      var frame = document.createElement('div');
+      frame.className = 'doom-overlay__frame';
+
+      var bar = document.createElement('div');
+      bar.className = 'doom-overlay__bar';
+
+      var label = document.createElement('span');
+      label.className = 'doom-overlay__label';
+      label.textContent = 'Degreelessness Mode On';
+
+      doomClose = document.createElement('button');
+      doomClose.type = 'button';
+      doomClose.className = 'doom-overlay__close';
+      doomClose.setAttribute('aria-label', 'Close');
+      doomClose.textContent = 'Esc';
+
+      bar.appendChild(label);
+      bar.appendChild(doomClose);
+
+      doomVideo = document.createElement('video');
+      doomVideo.className = 'doom-overlay__video';
+      // Intrinsic size reserves the aspect ratio so opening the overlay does not
+      // reflow once the first frame arrives. Matches what record-doom.sh emits
+      // (a 160x44 terminal rasterised at font-size 20), not the 1920x1080 the
+      // VHS demos use — keep the two in sync.
+      doomVideo.width = 1944;
+      doomVideo.height = 1260;
+      doomVideo.loop = true;
+      doomVideo.muted = true;
+      doomVideo.setAttribute('playsinline', '');
+      doomVideo.setAttribute('controls', '');
+      doomVideo.setAttribute('poster', assetsDir + '/doom-easter-egg-poster.webp');
+
+      var caption = document.createElement('p');
+      caption.className = 'doom-overlay__caption';
+      caption.textContent =
+        'Doom inside a thurbox pane — a pi session running the pi-doom extension.';
+
+      frame.appendChild(bar);
+      frame.appendChild(doomVideo);
+      frame.appendChild(caption);
+      overlay.appendChild(frame);
+
+      doomClose.addEventListener('click', closeDoom);
+      // A click on the backdrop dismisses; one inside the frame must not.
+      overlay.addEventListener('click', function (e) {
+        if (e.target === overlay) closeDoom();
+      });
+      overlay.addEventListener('keydown', trapDoomTab);
+
+      document.body.appendChild(overlay);
+      return overlay;
+    };
+
+    var openDoom = function () {
+      if (!doomOverlay) doomOverlay = buildDoom();
+      if (!doomOverlay.hidden) return;
+      doomReturnFocus = document.activeElement;
+      doomVideo.setAttribute('src', assetsDir + '/doom-easter-egg.mp4');
+      doomOverlay.hidden = false;
+      document.documentElement.classList.add('doom-open');
+      // Reduced motion: show the poster frame and let the controls opt in,
+      // rather than starting a 21-second loop unasked.
+      if (!prefersReducedMotion()) {
+        var played = doomVideo.play();
+        if (played && played.catch) played.catch(function () {});
+      }
+      doomClose.focus();
+    };
+
+    // Capture phase, like press-to-begin, so nothing on the page can swallow the
+    // sequence. A rolling buffer of the last few printable keys means a typo just
+    // shifts the window instead of needing an explicit reset.
+    document.addEventListener(
+      'keydown',
+      function (e) {
+        if (e.key === 'Escape') {
+          closeDoom();
+          return;
+        }
+        if (e.metaKey || e.ctrlKey || e.altKey) return; // Ctrl+D is not a cheat
+        if (!e.key || e.key.length !== 1) return;
+        if (isTypingContext(e.target) || isTypingContext(document.activeElement)) return;
+        cheatBuffer = (cheatBuffer + e.key.toLowerCase()).slice(-CHEAT_CODE.length);
+        if (cheatBuffer === CHEAT_CODE) {
+          cheatBuffer = '';
+          openDoom();
+        }
+      },
+      true,
+    );
   }
 })();

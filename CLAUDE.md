@@ -1934,6 +1934,50 @@ single real-agents script and has been removed from the binary.
 `website/assets/` at deploy time and `README.md` embeds the gifs,
 so regenerating these files propagates everywhere.
 
+### The `iddqd` easter egg (website)
+
+Typing **`iddqd`** — Doom's god-mode cheat — anywhere on the website
+opens a modal playing `doom-easter-egg.mp4`: Doom running **inside a
+thurbox pane**, in a session on the **pi** agent with the
+[pi-doom](https://github.com/badlogic/pi-doom) extension. It fits the
+landing page's existing Doom-arcade art direction (`--doom-red`, the HUD
+bar, the `Doom` theme preset). Two clues, neither spelling the code: the
+footer's `.footer-secret` line (also the accessible one — it names the
+game, the year and the mode) and the HUD bar's `God Mode / 5 keys`
+segment (that bar is `aria-hidden` decoration).
+
+Implementation is `website/js/main.js` (sequence detection + the modal,
+built on first trigger so the several-MB clip costs nothing until someone
+knows the code) plus `.doom-overlay*` in `website/css/components.css`.
+The clip URL is resolved from `body[data-assets]`, set by `base.njk`,
+because one shared `main.js` is served to pages at different depths.
+
+**Running Doom in thurbox** needs no thurbox change: `pi` is already a
+built-in agent, so with the CLI and extension installed
+(`npm i -g --ignore-scripts @earendil-works/pi-coding-agent`, then
+`pi install git:github.com/badlogic/pi-doom`; pi needs **node ≥ 22.19**)
+typing `/doom` in a pi session plays it in the pane. Truecolour and the
+half-block glyphs round-trip through `vt100` + `tui-term` intact.
+One real limit: thurbox forwards key **presses** but not **releases**
+(`main.rs` requests only `DISAMBIGUATE_ESCAPE_CODES`, and `run_loop`
+matches `KeyEventKind::Press`), and pi-doom opts into key-release events
+for held movement — so tap-driven input (menus, cheats) works while a
+held key latches. Lifting that means requesting `REPORT_EVENT_TYPES` and
+encoding kitty press/release to the pty, which changes input for *every*
+agent; it is deliberately not done.
+
+The media is **not** a VHS tape: VHS drives a TUI through ttyd + a
+headless browser, and this clip is a *nested* TUI (thurbox rendering pi
+rendering Doom). `scripts/demo/record-doom.sh` instead records the real
+binary with **asciinema** (in a fully isolated `THURBOX_CONFIG_DIR` /
+`THURBOX_DATA_DIR` / `TMUX_TMPDIR`, so it never touches your sessions),
+trims the cast to the Doom window with `scripts/demo/trim-cast.mjs`, and
+rasterises it with **agg** — no browser. agg ships **no font**, so point
+`FONT_DIR` at a monospace TTF with box-drawing, block *and* braille
+coverage (a Nerd Font works; braille is thurbox's spinner). The clip is
+Doom's **attract demo**, which is self-playing and so sidesteps the
+key-release limit above. agg is slow (~8 min for 20 s).
+
 ## Architecture (TEA Pattern)
 
 The app follows **The Elm Architecture**:

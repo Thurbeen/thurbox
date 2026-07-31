@@ -79,7 +79,10 @@ hasOwnMain: false
     <link rel="stylesheet" href="{{ root }}/css/{{ css }}" />
     {%- endfor %}
   </head>
-  <body>
+  <!-- data-assets is how main.js resolves media paths: it is one shared script
+       served to pages at different depths, so a hardcoded "assets/…" would 404
+       from /docs/. Used by the god-mode easter egg to fetch its clip on demand. -->
+  <body data-assets="{{ root }}/assets">
     <a class="skip-link" href="#main-content">Skip to content</a>
     <nav class="nav{% if navScrolled %} scrolled{% endif %}" id="nav">
       <!-- prettier-ignore -->
@@ -145,6 +148,15 @@ hasOwnMain: false
         <p>
           <a href="https://github.com/Thurbeen/thurbox" target="_blank" rel="noopener">GitHub</a>
           &middot; Built with Rust
+        </p>
+        <!-- The clue. Deliberately names the game, the year and the mode but not
+             the code itself, so it reads as flavour text to everyone else. The
+             HUD bar's "God Mode" segment is the second, subtler half of the hint
+             (it is aria-hidden, so this line is what carries it to a screen
+             reader). Payoff lives in main.js. -->
+        <p class="footer-secret">
+          Ships with a Doom palette &mdash; and the 1993 god-mode cheat still works. Type it
+          anywhere.
         </p>
       </div>
     </footer>

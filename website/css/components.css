@@ -488,6 +488,102 @@
   text-shadow: var(--glow-red);
 }
 
+/* The easter-egg clue. Muted and mono so it reads as a build-stamp footnote
+   rather than a call to action. */
+.footer-secret {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
+/* ---- God-mode overlay (typing the Doom cheat; see js/main.js) ---- */
+
+/* Locks the page behind the modal so a wheel scroll does not move it. */
+.doom-open {
+  overflow: hidden;
+}
+
+.doom-overlay {
+  position: fixed;
+  inset: 0;
+
+  /* Above the nav (100), back-to-top (90) and HUD bar (80) — it is modal. */
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-md);
+  background: rgb(0 0 0 / 88%);
+  backdrop-filter: blur(6px);
+}
+
+/* [hidden] alone loses to display:flex, so restate it after. */
+.doom-overlay[hidden] {
+  display: none;
+}
+
+.doom-overlay__frame {
+  width: min(100%, 1100px);
+  border: 2px solid var(--doom-red);
+  background: var(--bg-primary);
+  box-shadow: 0 0 60px rgb(232 24 11 / 25%);
+}
+
+.doom-overlay__bar {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.doom-overlay__label {
+  font-family: var(--font-display);
+  font-size: 0.55rem;
+  line-height: 1.6;
+  color: var(--doom-red-bright);
+  text-transform: uppercase;
+}
+
+.doom-overlay__close {
+  padding: 0.2rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.doom-overlay__close:hover,
+.doom-overlay__close:focus-visible {
+  color: var(--doom-red-bright);
+  border-color: var(--doom-red);
+}
+
+.doom-overlay__video {
+  display: block;
+  width: 100%;
+  height: auto;
+
+  /* The clip is a rasterised terminal wider than this modal, so it is always
+     scaled *down* — leave smoothing on (image-rendering: pixelated aliases the
+     TUI's 1px borders and text into a mess at non-integer ratios). */
+  background: #000;
+}
+
+.doom-overlay__caption {
+  padding: 0.55rem 0.75rem;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+}
+
 /* ---- Step numbers ---- */
 
 /* Squared and beveled like every other panel — a round badge was the one
