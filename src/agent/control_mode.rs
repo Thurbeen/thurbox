@@ -179,8 +179,8 @@ fn psmux_key_name(b: u8) -> Option<String> {
 /// tokenizer cannot read back, so any `'` in the text arrived in the pane as
 /// `\` (`it's` was typed as `it\s`), regardless of how the client framed it.
 /// The decoder bails on a `-N` flag, letting the original line reach the
-/// direct send-keys handler, whose single parse handles the double-quote
-/// framing of [`psmux_quote`] correctly. Verified against psmux 3.3.6.
+/// direct send-keys handler, whose single parse handles the argument encoding
+/// of [`psmux_literal_args`] correctly. Verified against psmux 3.3.6.
 fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<String>) {
     if literal.is_empty() {
         return;
@@ -189,7 +189,7 @@ fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<Stri
     let emit = |chunk: &str, cmds: &mut Vec<String>| {
         cmds.push(format!(
             "send-keys -t {pane_id} -l -N 1 {}\n",
-            psmux_quote(chunk)
+            psmux_literal_args(chunk)
         ));
     };
     let mut chunk = String::new();
@@ -206,10 +206,53 @@ fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<Stri
     literal.clear();
 }
 
-/// Double-quote `s` for a psmux `send-keys -l` argument. Always quotes (even a
-/// bare word) so a leading `-` is never read as a flag. Double quotes — not
-/// POSIX single quotes — because psmux's tokenizer has no working escape for a
-/// `'` inside `'…'`, but inside `"…"` it passes `'` through untouched and
+/// Encode one printable run as the argument list of a psmux `send-keys -l`
+/// command.
+///
+/// Quoting alone is not enough, because psmux classifies arguments *after*
+/// tokenizing (which strips the quotes) and drops every one that
+/// `starts_with('-')` as an unknown flag — so a typed `-` never reached the
+/// pane (issue #920). It also rewrites any argument shaped like tmux's `0xNN`
+/// hex codepoint (the encoding iTerm2's gateway sends) into the character it
+/// names, so a run literally spelling `0x41` would arrive as `A`.
+///
+/// Both are escaped by emitting the offending *leading* character as its own
+/// `0xNN` argument: psmux converts that back to the same character and, in
+/// literal mode, joins the arguments with no separator, so the run is
+/// reassembled exactly. Escaping repeats until the remainder is safe — `--x`
+/// needs both hyphens escaped, and `-0x41` needs the hyphen and then the `0`.
+fn psmux_literal_args(run: &str) -> String {
+    let mut args: Vec<String> = Vec::new();
+    let mut rest = run;
+    while let Some(ch) = rest.chars().next() {
+        if !psmux_arg_is_reinterpreted(rest) {
+            break;
+        }
+        args.push(format!("0x{:x}", ch as u32));
+        rest = &rest[ch.len_utf8()..];
+    }
+    if !rest.is_empty() {
+        args.push(psmux_quote(rest));
+    }
+    args.join(" ")
+}
+
+/// Whether psmux would read `arg` as anything other than the literal text it
+/// spells: a flag (any leading `-`, quoted or not) or a `0xNN` hex codepoint.
+fn psmux_arg_is_reinterpreted(arg: &str) -> bool {
+    if arg.starts_with('-') {
+        return true;
+    }
+    arg.strip_prefix("0x")
+        .or_else(|| arg.strip_prefix("0X"))
+        .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Double-quote `s` for a psmux `send-keys -l` argument. Always quotes, even a
+/// bare word, so whitespace never splits the run into several arguments (a
+/// leading `-` needs more than quoting — see [`psmux_literal_args`]). Double
+/// quotes — not POSIX single quotes — because psmux's tokenizer has no working
+/// escape for a `'` inside `'…'`, but inside `"…"` it passes `'` through and
 /// reads exactly two escapes: `\"` (literal quote) and `\\` (literal
 /// backslash); any other backslash stays literal, so both are escaped here. A
 /// literal run never contains a newline (LF and CR map to key-names), but the
@@ -1176,6 +1219,49 @@ mod tests {
             send_keys_commands("%1", br#"say "hi" C:\p"#, true),
             vec!["send-keys -t %1 -l -N 1 \"say \\\"hi\\\" C:\\\\p\"\n".to_string()]
         );
+    }
+
+    #[test]
+    fn psmux_literal_escapes_a_leading_hyphen() {
+        // Regression (#920): psmux classifies arguments after tokenizing, so
+        // the quotes are gone by the time it drops everything starting with
+        // `-` as a flag — a typed `-` was silently swallowed. It comes back as
+        // psmux's own `0xNN` codepoint form, which decodes to the same char.
+        assert_eq!(
+            send_keys_commands("%1", b"-", true),
+            vec!["send-keys -t %1 -l -N 1 0x2d\n".to_string()]
+        );
+        // Only the leading hyphens need escaping; the rest stays one literal.
+        assert_eq!(
+            send_keys_commands("%1", b"--flag=a-b", true),
+            vec!["send-keys -t %1 -l -N 1 0x2d 0x2d \"flag=a-b\"\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_literal_escapes_a_hex_codepoint_lookalike() {
+        // psmux rewrites a `0xNN` argument into the character it names, so a
+        // run literally spelling `0x41` would have arrived as `A`.
+        assert_eq!(
+            send_keys_commands("%1", b"0x41", true),
+            vec!["send-keys -t %1 -l -N 1 0x30 \"x41\"\n".to_string()]
+        );
+        // A hyphen ahead of one still leaves a lookalike behind it.
+        assert_eq!(
+            send_keys_commands("%1", b"-0x41", true),
+            vec!["send-keys -t %1 -l -N 1 0x2d 0x30 \"x41\"\n".to_string()]
+        );
+        // Not a lookalike: text past the hex digits is ordinary literal text.
+        assert_eq!(
+            send_keys_commands("%1", b"0x41z", true),
+            vec!["send-keys -t %1 -l -N 1 \"0x41z\"\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_literal_args_escapes_an_all_hyphen_run() {
+        assert_eq!(psmux_literal_args("---"), "0x2d 0x2d 0x2d");
+        assert_eq!(psmux_literal_args(""), "");
     }
 
     #[test]

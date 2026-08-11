@@ -354,6 +354,38 @@ cmd_test() {
   fi
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
 
+  # --- literal-hyphen probe (evidence, not verdict) -------------------------
+  # psmux classifies a send-keys argument only *after* tokenizing it, dropping
+  # every one that starts with `-` as an unknown flag — so a quoted literal `-`
+  # never reached the pane and hyphens could not be typed on Windows (issue
+  # #920). thurbox escapes such a run into psmux's own `0xNN` codepoint form
+  # (`control_mode::psmux_literal_args`). The psmux CLI forwards both encodings
+  # to the same server-side classifier thurbox's control-mode line hits, so
+  # typing them into one prompt line is evidence about that rule: the old
+  # encoding must lose its hyphen, the new one must keep it.
+  log "probing psmux literal-hyphen delivery (keystroke encoding evidence)"
+  local hpane hcontent
+  ssh_vm "psmux -L $SOCKET new-session -d -s hyphenprobe" >/dev/null 2>&1 || true
+  hpane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t hyphenprobe -F '#{pane_id}'" 2>/dev/null | tr -d '\r' | head -n1)"
+  if [ -n "$hpane" ]; then
+    ssh_vm "psmux -L $SOCKET send-keys -t $hpane -l -N 1 'HYPA' '-'" >/dev/null 2>&1 || true
+    ssh_vm "psmux -L $SOCKET send-keys -t $hpane -l -N 1 'HYPB' '0x2d'" >/dev/null 2>&1 || true
+    sleep 2
+    hcontent="$(ssh_vm "psmux -L $SOCKET capture-pane -p -t $hpane" 2>/dev/null | tr -d '\r')"
+    case "$hcontent" in
+      *HYPA-*) info "probe D: a quoted literal '-' survives — the #920 escape is no longer needed" ;;
+      *HYPA*) ok "probe D: a quoted literal '-' is dropped as a flag (the #920 bug, as encoded for)" ;;
+      *) info "probe D: nothing delivered (got: ${hcontent:-<none>})" ;;
+    esac
+    case "$hcontent" in
+      *HYPB-*) ok "probe D: the 0xNN escape delivers a hyphen into the pane" ;;
+      *) info "probe D: the 0xNN escape delivered no hyphen (got: ${hcontent:-<none>})" ;;
+    esac
+  else
+    info "hyphen probe skipped: could not resolve a probe pane id"
+  fi
+  ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
+
   echo
   if printf '%s\n' "$sessions" | grep -qx smoke; then
     pass "psmux is installed and a -L $SOCKET session round-tripped"

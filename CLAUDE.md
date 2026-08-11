@@ -712,6 +712,15 @@ control-mode protocol is byte-identical over either transport/binary, with
   `'` typed arrived in the pane as `\` (`it's` → `it\s`) — the `-N` flag makes
   psmux's coalescing decoder bail, and its direct handler reads the
   double-quote framing correctly (`flush_psmux_literal` / `psmux_quote`).
+  Quoting alone can't carry every run, because psmux classifies arguments
+  *after* tokenizing (the quotes are gone by then): it drops each one starting
+  with `-` as an unknown flag, so a typed hyphen never reached the pane (issue
+  #920), and it rewrites a `0xNN`-shaped argument into the character it names,
+  so a run spelling `0x41` would arrive as `A`. `psmux_literal_args` escapes
+  both by re-emitting the offending leading character *as* a `0xNN` argument —
+  psmux decodes it back and, in literal mode, joins the arguments with no
+  separator, so the run is reassembled exactly. Delivery is probed by
+  `scripts/dev/e2e/windows-vm.sh test` (probe D).
 - **`new-window` trailing tokens are not joined** — tmux joins them into one
   shell command; psmux keeps only the *first* token and silently drops the
   rest, so the agent launched with **no args**. And **`new-window -e` is
