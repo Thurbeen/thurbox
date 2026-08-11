@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::{bail, Context, Result};
+use base64::Engine as _;
 use tracing::{debug, warn};
 
 use crate::agent::backend::{AdoptedSession, DiscoveredSession, SessionBackend, SpawnedSession};
@@ -1223,13 +1224,17 @@ impl TmuxBackend {
     /// Create a writer for a specific pane.
     fn pane_writer(&self, pane_id: &str) -> Result<ControlModeWriter> {
         // psmux lacks tmux's `send-keys -H`, so the writer encodes keystrokes
-        // differently for it (see `control_mode::send_keys_commands`).
+        // differently for it (see `control_mode::send_keys_commands`) and routes
+        // a paste out of band (see `control_mode::PsmuxPaste`).
         let psmux = self.transport.uses_psmux();
+        let paste = psmux
+            .then(|| control_mode::PsmuxPaste::new(self.transport.clone(), self.socket.clone()));
         self.with_control(|ctrl| {
             Ok(ControlModeWriter {
                 stdin: Arc::clone(&ctrl.stdin),
                 pane_id: pane_id.to_string(),
                 psmux,
+                paste: paste.clone(),
             })
         })
     }
@@ -1652,6 +1657,32 @@ fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~")
 }
 
+/// The one-shot argv that delivers `text` into `target` as one paste.
+///
+/// tmux takes the bracketed-paste-wrapped bytes literally (`send-keys -l`).
+/// psmux instead gets its own `send-paste`, which wraps and writes the payload
+/// itself (see [`control_mode::PsmuxPaste`] for why key-encoded markers do not
+/// survive there): a raw newline inside a psmux command argument is cut by the
+/// server's line-oriented read, so a multi-line prompt arrived truncated *and*
+/// its tail ran as a psmux command (psmux #560).
+fn paste_prompt_args(target: &str, text: &str, psmux: bool) -> Vec<String> {
+    if psmux {
+        return vec![
+            "send-paste".to_string(),
+            "-t".to_string(),
+            target.to_string(),
+            base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
+        ];
+    }
+    vec![
+        "send-keys".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "-l".to_string(),
+        bracketed_paste(text),
+    ]
+}
+
 /// Whether a `#{pane_dead}` format string reports an exited pane.
 ///
 /// Only the literal `1` means dead: `display-message` against a *missing*
@@ -1693,22 +1724,22 @@ pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
     if pane_is_dead(&target) {
         bail!("session '{session_name}' has exited; its pane accepts no input");
     }
-    let payload = bracketed_paste(text);
-
-    let status = local_mux_command(&["send-keys", "-t", &target, "-l", &payload])
+    let paste = paste_prompt_args(&target, text, DEFAULT_MUX == "psmux");
+    let paste_argv: Vec<&str> = paste.iter().map(String::as_str).collect();
+    let status = local_mux_command(&paste_argv)
         .status()
-        .context("Failed to run tmux send-keys for prompt text")?;
+        .context("Failed to paste prompt text into the session pane")?;
     if !status.success() {
-        bail!("tmux send-keys (text) exited with status {status}");
+        bail!("{DEFAULT_MUX} {} exited with status {status}", paste[0]);
     }
 
     std::thread::sleep(SEND_KEYS_ENTER_DELAY);
 
     let status = local_mux_command(&["send-keys", "-t", &target, "Enter"])
         .status()
-        .context("Failed to run tmux send-keys for Enter")?;
+        .context("Failed to send Enter to the session pane")?;
     if !status.success() {
-        bail!("tmux send-keys (Enter) exited with status {status}");
+        bail!("{DEFAULT_MUX} send-keys (Enter) exited with status {status}");
     }
     Ok(())
 }
@@ -1787,13 +1818,17 @@ fn deferred_prompt_script(target: &str, text: &str) -> String {
 /// Windows path (`psmux`): psmux's `run-shell` is not a POSIX shell, so drive the
 /// sequence through PowerShell explicitly (`Start-Sleep` for the sub-second beat).
 /// PowerShell single-quoted literals escape an embedded `'` by doubling it.
+///
+/// The prompt travels as psmux's own base64 `send-paste` payload (see
+/// [`paste_prompt_args`]) — which also keeps the script free of the prompt's
+/// newlines and quotes.
 #[cfg(windows)]
 fn deferred_prompt_script(target: &str, text: &str) -> String {
     let t = ps_single_quote(target);
     let socket = local_socket();
-    let body = ps_single_quote(&bracketed_paste(text));
+    let payload = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
     format!(
-        "powershell -NoProfile -Command \"{DEFAULT_MUX} -L {socket} send-keys -t {t} -l {body}; \
+        "powershell -NoProfile -Command \"{DEFAULT_MUX} -L {socket} send-paste -t {t} {payload}; \
          Start-Sleep -Milliseconds 200; \
          {DEFAULT_MUX} -L {socket} send-keys -t {t} Enter\""
     )
@@ -2354,6 +2389,40 @@ mod tests {
         // Local backends inherit the user's interactive PATH — no wrap needed.
         let backend = TmuxBackend::local();
         assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
+    }
+
+    // --- one-shot prompt delivery ---
+
+    #[test]
+    fn paste_prompt_args_wraps_literally_for_tmux() {
+        assert_eq!(
+            paste_prompt_args("thurbox:tb-demo", "line one\nline two", false),
+            vec![
+                "send-keys",
+                "-t",
+                "thurbox:tb-demo",
+                "-l",
+                "\x1b[200~line one\nline two\x1b[201~",
+            ]
+        );
+    }
+
+    /// psmux gets its own `send-paste`: the bracketed markers are psmux's to add,
+    /// and the base64 payload keeps the prompt's newlines off a command wire that
+    /// would otherwise cut the line and run the tail as a command (psmux #560).
+    #[test]
+    fn paste_prompt_args_uses_send_paste_for_psmux() {
+        let args = paste_prompt_args("thurbox:tb-demo", "line one\nline two", true);
+        assert_eq!(
+            args,
+            vec![
+                "send-paste",
+                "-t",
+                "thurbox:tb-demo",
+                "bGluZSBvbmUKbGluZSB0d28=",
+            ]
+        );
+        assert!(!args.iter().any(|a| a.contains('\n') || a.contains('\x1b')));
     }
 
     // --- psmux_window_command tests ---

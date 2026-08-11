@@ -9,6 +9,12 @@ use std::io::{Read, Write};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
+use anyhow::{bail, Context, Result};
+use base64::Engine as _;
+use tracing::warn;
+
+use super::transport::TmuxTransport;
+
 /// Per-pane output channel capacity. Sized large enough to buffer heavy output
 /// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
 pub const PANE_CHANNEL_CAPACITY: usize = 4096;
@@ -220,19 +226,164 @@ pub(crate) fn psmux_quote(s: &str) -> String {
     )
 }
 
+/// The bracketed-paste markers a paste payload is wrapped in.
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// The pasted text inside a bracketed-paste payload (`ESC[200~ … ESC[201~`), or
+/// `None` when `buf` is not exactly one such payload — ordinary keystrokes, a
+/// payload split across writes, a marker in the middle (two pastes, or pasted
+/// marker text), or non-UTF-8 bytes. Those keep the key encoding.
+///
+/// The markers are stripped: [`PsmuxPaste`] hands psmux the bare text and psmux
+/// re-adds them itself, only when the receiving app has bracketed paste on.
+fn bracketed_paste_text(buf: &[u8]) -> Option<&str> {
+    let inner = buf.strip_prefix(PASTE_START)?.strip_suffix(PASTE_END)?;
+    let has_marker = |m: &[u8]| inner.windows(m.len()).any(|w| w == m);
+    if has_marker(PASTE_START) || has_marker(PASTE_END) {
+        return None;
+    }
+    std::str::from_utf8(inner).ok()
+}
+
+/// Max text bytes per `send-paste` command. The base64 payload travels as a
+/// process argument, and Windows caps a whole command line at ~32,767 chars —
+/// which base64 reaches at ~24 KB of text. 8 KB leaves generous headroom for
+/// the rest of the argv while keeping an ordinary paste a single command.
+const PASTE_CHUNK_BYTES: usize = 8 * 1024;
+
+/// Split `text` into `send-paste`-sized pieces on **char** boundaries: psmux
+/// decodes the payload as UTF-8 and drops it whole if that fails, so a
+/// multi-byte character must never straddle two chunks.
+fn paste_chunks(text: &str) -> Vec<&str> {
+    if text.len() <= PASTE_CHUNK_BYTES {
+        return vec![text];
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = (start + PASTE_CHUNK_BYTES).min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        chunks.push(&text[start..end]);
+        start = end;
+    }
+    chunks
+}
+
+/// The `send-paste` argv delivering `text` into `pane_id`.
+///
+/// The payload is standard base64 — psmux's own client encodes a paste the same
+/// way, and it is what the server decodes. It also keeps CR/LF off the wire: a
+/// raw newline inside a psmux command argument is cut by the server's
+/// line-oriented read, which delivers a truncated payload and then executes the
+/// tail as a psmux command (psmux #560).
+fn psmux_send_paste_args(pane_id: &str, text: &str) -> Vec<String> {
+    vec![
+        "send-paste".to_string(),
+        "-t".to_string(),
+        pane_id.to_string(),
+        base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
+    ]
+}
+
+/// Out-of-band paste channel for a psmux backend.
+///
+/// psmux's control-mode dispatcher implements no paste command at all
+/// (`paste-buffer`, `set-buffer` and psmux's own `send-paste` are CLI/server
+/// only), and its `send-keys` encoding cannot carry a paste: an ESC byte has to
+/// go out as its own `Escape` key-name, which reaches the pane as a standalone
+/// PTY write, so the agent sees a bare Escape keypress instead of the
+/// `ESC[200~` opening marker and then reads every embedded CR that follows as
+/// Enter — a pasted stack trace was submitted one line at a time (issue #916).
+///
+/// So a paste is handed to psmux's *own* paste path with a one-shot
+/// `psmux send-paste` (the same command psmux's client uses for a Ctrl+Shift+V):
+/// it normalizes CRLF for ConPTY, writes the markers contiguously with the text,
+/// and adds them only when the pane's app actually enabled bracketed paste.
+/// Verified present since psmux 3.3.6.
+#[derive(Debug, Clone)]
+pub struct PsmuxPaste {
+    transport: TmuxTransport,
+    socket: String,
+}
+
+impl PsmuxPaste {
+    pub fn new(transport: TmuxTransport, socket: String) -> Self {
+        Self { transport, socket }
+    }
+
+    /// Deliver `text` to `pane_id` as a paste. Blocks until psmux has applied it
+    /// (the psmux CLI round-trips a barrier before exiting), so a keystroke
+    /// written to control mode afterwards cannot overtake it. Callers reach this
+    /// through the session's writer task, never the UI thread, so the wait only
+    /// holds back that session's own later input — the ordering we want.
+    ///
+    /// A paste past [`PASTE_CHUNK_BYTES`] goes out as several commands, each its
+    /// own paste — the text still arrives whole and no CR submits. An error on a
+    /// *later* chunk is reported but not returned: the caller's fallback would
+    /// re-send text the pane already has.
+    fn send(&self, pane_id: &str, text: &str) -> Result<()> {
+        for (i, chunk) in paste_chunks(text).into_iter().enumerate() {
+            if let Err(e) = self.send_one(pane_id, chunk) {
+                if i == 0 {
+                    return Err(e);
+                }
+                warn!("psmux send-paste truncated after {i} chunk(s): {e:#}");
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn send_one(&self, pane_id: &str, text: &str) -> Result<()> {
+        let args = psmux_send_paste_args(pane_id, text);
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = self
+            .transport
+            .tmux_command(&self.socket, &argv)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .context("failed to run psmux send-paste")?;
+        if !out.status.success() {
+            bail!(
+                "psmux send-paste exited with {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Per-pane writer that sends input via control-mode `send-keys` through the
 /// shared control stdin. `psmux` selects the key-name/literal encoding when the
-/// backend is psmux instead of tmux's `-H` hex (see [`send_keys_commands`]).
+/// backend is psmux instead of tmux's `-H` hex (see [`send_keys_commands`]), and
+/// `paste` carries that backend's out-of-band paste channel ([`PsmuxPaste`]).
 pub struct ControlModeWriter {
     pub stdin: Arc<Mutex<std::process::ChildStdin>>,
     pub pane_id: String,
     pub psmux: bool,
+    pub paste: Option<PsmuxPaste>,
 }
 
 impl Write for ControlModeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
+        }
+        // A paste cannot be encoded as psmux key-names (see `PsmuxPaste`), so it
+        // goes out of band. A failure falls through to the key encoding: a
+        // degraded paste beats a dropped one.
+        if let Some(paste) = self.paste.as_ref() {
+            if let Some(text) = bracketed_paste_text(buf) {
+                match paste.send(&self.pane_id, text) {
+                    Ok(()) => return Ok(buf.len()),
+                    Err(e) => warn!("psmux send-paste failed, falling back to send-keys: {e:#}"),
+                }
+            }
         }
         let mut stdin = self
             .stdin
@@ -1043,6 +1194,9 @@ mod tests {
     fn psmux_bracketed_paste_splits_markers_from_text() {
         // A paste arrives wrapped in `\x1b[200~ … \x1b[201~`; the ESC bytes
         // become `Escape`, the rest stays literal — reconstructing the wrapper.
+        // This encoding is only the *fallback* for a psmux pane (the split ESC
+        // reaches the pane as a bare Escape keypress, so the marker is lost);
+        // the live path is `PsmuxPaste`.
         assert_eq!(
             send_keys_commands("%1", b"\x1b[200~hi\x1b[201~", true),
             vec![
@@ -1051,6 +1205,91 @@ mod tests {
                 "send-keys -t %1 Escape\n".to_string(),
                 "send-keys -t %1 -l -N 1 \"[201~\"\n".to_string(),
             ]
+        );
+    }
+
+    // --- psmux out-of-band paste (`PsmuxPaste`) ---
+
+    #[test]
+    fn bracketed_paste_text_unwraps_a_whole_payload() {
+        assert_eq!(
+            bracketed_paste_text(b"\x1b[200~line one\nline two\r\x1b[201~"),
+            Some("line one\nline two\r")
+        );
+        // Empty paste is still a paste.
+        assert_eq!(bracketed_paste_text(b"\x1b[200~\x1b[201~"), Some(""));
+    }
+
+    #[test]
+    fn bracketed_paste_text_rejects_non_paste_input() {
+        // Ordinary keystrokes, and each half of a payload on its own.
+        assert_eq!(bracketed_paste_text(b"ls\r"), None);
+        assert_eq!(bracketed_paste_text(b"\x1b[200~partial"), None);
+        assert_eq!(bracketed_paste_text(b"tail\x1b[201~"), None);
+        // Trailing keystroke past the closing marker: not one clean paste.
+        assert_eq!(bracketed_paste_text(b"\x1b[200~hi\x1b[201~\r"), None);
+    }
+
+    #[test]
+    fn bracketed_paste_text_rejects_nested_markers() {
+        // Two coalesced pastes, or pasted marker text: the key encoding keeps
+        // the bytes verbatim rather than flattening them into one paste.
+        assert_eq!(
+            bracketed_paste_text(b"\x1b[200~a\x1b[201~\x1b[200~b\x1b[201~"),
+            None
+        );
+        assert_eq!(bracketed_paste_text(b"\x1b[200~a\x1b[200~b\x1b[201~"), None);
+    }
+
+    #[test]
+    fn bracketed_paste_text_rejects_invalid_utf8() {
+        // psmux's `send-paste` payload is text; a byte run that is not UTF-8
+        // (e.g. a paste chunked mid-character) falls back to the key encoding.
+        assert_eq!(bracketed_paste_text(b"\x1b[200~\xff\x1b[201~"), None);
+    }
+
+    #[test]
+    fn paste_chunks_keeps_an_ordinary_paste_whole() {
+        assert_eq!(paste_chunks("one\ntwo"), vec!["one\ntwo"]);
+        let exact = "x".repeat(PASTE_CHUNK_BYTES);
+        assert_eq!(paste_chunks(&exact), vec![exact.as_str()]);
+    }
+
+    /// A huge paste is split so no single command line exceeds Windows' ~32 KB
+    /// cap — losslessly, and never mid-character (psmux drops a payload that
+    /// isn't valid UTF-8).
+    #[test]
+    fn paste_chunks_splits_large_input_on_char_boundaries() {
+        // Multi-byte chars straddling the cut: 2 bytes each, odd-sized prefix.
+        let text = format!("{}{}", "a", "é".repeat(PASTE_CHUNK_BYTES));
+        let chunks = paste_chunks(&text);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| c.len() <= PASTE_CHUNK_BYTES));
+        assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn send_paste_args_targets_the_pane_with_a_base64_payload() {
+        assert_eq!(
+            psmux_send_paste_args("%7", "hi\nthere"),
+            vec!["send-paste", "-t", "%7", "aGkKdGhlcmU="]
+        );
+    }
+
+    /// The payload must never put a raw CR/LF (or a quote) on psmux's
+    /// line-oriented command wire — base64 is what keeps it off (psmux #560).
+    #[test]
+    fn send_paste_args_payload_is_wire_safe() {
+        let args = psmux_send_paste_args("%1", "first\r\nsecond \"quoted\" \\ '");
+        let payload = args.last().unwrap();
+        assert!(!payload
+            .bytes()
+            .any(|b| matches!(b, b'\r' | b'\n' | b'"' | b'\\' | b'\'' | b' ')));
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(payload)
+                .unwrap(),
+            b"first\r\nsecond \"quoted\" \\ '"
         );
     }
 

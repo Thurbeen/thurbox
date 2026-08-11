@@ -374,7 +374,11 @@ by the existing `Session::reader_loop`. This allows multiple instances
 to independently parse and render terminal state in real-time.
 
 **Input**: `send-keys -H <hex>` through the shared control mode
-stdin, wrapped in a `ControlModeWriter` (implements `Write`).
+stdin, wrapped in a `ControlModeWriter` (implements `Write`). On a
+**psmux** backend, which has no `-H`, the same writer encodes the byte
+stream from the primitives psmux does support, and a **paste** leaves
+control mode entirely for psmux's own `send-paste` — see the psmux
+divergences in `CLAUDE.md` and `control_mode::PsmuxPaste`.
 
 **Command synchronization**: All commands that precede a
 `send_command` (waited) call must themselves be waited. A

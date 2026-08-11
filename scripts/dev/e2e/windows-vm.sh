@@ -321,6 +321,39 @@ cmd_test() {
   fi
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
 
+  # --- paste-delivery probe (evidence, not verdict) -------------------------
+  # A paste cannot be key-encoded for psmux (a split ESC arrives as a bare
+  # Escape keypress, losing the ESC[200~ marker, and every embedded CR then
+  # submits — issue #916), so thurbox hands pastes to psmux's own
+  # `send-paste` (see `control_mode::PsmuxPaste`). This probes the two
+  # properties that path relies on: the payload is standard **base64**, and a
+  # multi-line payload keeps its newlines instead of being cut on the wire with
+  # its tail executed as a psmux command (psmux #560). `rename-window` is the
+  # observable, harmless injection canary, exactly as in that report.
+  log "probing psmux send-paste multi-line delivery (paste path evidence)"
+  local ppane pcontent pname
+  # base64 of: PASTE_HEAD_916\nrename-window pastePWNED
+  local payload="UEFTVEVfSEVBRF85MTYKcmVuYW1lLXdpbmRvdyBwYXN0ZVBXTkVE"
+  ssh_vm "psmux -L $SOCKET new-session -d -s pasteprobe" >/dev/null 2>&1 || true
+  ppane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t pasteprobe -F '#{pane_id}'" 2>/dev/null | tr -d '\r' | head -n1)"
+  if [ -n "$ppane" ]; then
+    ssh_vm "psmux -L $SOCKET send-paste -t $ppane $payload" >/dev/null 2>&1 || true
+    sleep 2
+    pcontent="$(ssh_vm "psmux -L $SOCKET capture-pane -p -t $ppane" 2>/dev/null | tr -d '\r')"
+    pname="$(ssh_vm "psmux -L $SOCKET display-message -p -t pasteprobe '#{window_name}'" 2>/dev/null | tr -d '\r')"
+    case "$pcontent" in
+      *PASTE_HEAD_916*) ok "probe C: send-paste delivers a base64 payload into the pane" ;;
+      *) info "probe C: send-paste delivered nothing (got: ${pcontent:-<none>})" ;;
+    esac
+    case "$pname" in
+      *pastePWNED*) info "probe C: the payload tail RAN as a psmux command (psmux #560 reaches send-paste too)" ;;
+      *) ok "probe C: a multi-line payload executes nothing (no wire-cut injection)" ;;
+    esac
+  else
+    info "paste probe skipped: could not resolve a probe pane id"
+  fi
+  ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
+
   echo
   if printf '%s\n' "$sessions" | grep -qx smoke; then
     pass "psmux is installed and a -L $SOCKET session round-tripped"

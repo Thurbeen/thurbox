@@ -728,6 +728,27 @@ control-mode protocol is byte-identical over either transport/binary, with
   arg. The local socket honors the `THURBOX_SOCKET` env override
   (`local_socket()`) so test/sandbox tooling can scope an instance on Windows,
   where every `-L <name>` resolves machine-wide (no `TMUX_TMPDIR`).
+- **A paste cannot be key-encoded at all**, so it goes **out of band** through
+  psmux's own paste command (`control_mode::PsmuxPaste`, issue #916). The key
+  encoding above has to emit an ESC byte as its own `Escape` key-name, which
+  reaches the pane as a standalone PTY write: the agent read a bare Escape
+  keypress instead of the `ESC[200~` opening marker and then took every
+  embedded CR as Enter, so a pasted stack trace was submitted one line at a
+  time. psmux's control-mode dispatcher implements **no** paste command
+  (`paste-buffer`/`set-buffer`/`send-paste` are CLI/server-only), so a
+  bracketed-paste payload (`bracketed_paste_text` unwraps one; anything else
+  keeps the key encoding) is handed to the one-shot CLI `psmux send-paste -t
+  <pane> <base64>` — the same command psmux's own client uses for a
+  Ctrl+Shift+V, so psmux normalizes CRLF for ConPTY, writes the markers
+  contiguously, and adds them **only** when the pane's app enabled bracketed
+  paste. A failure falls back to the key encoding (degraded beats dropped).
+  The payload is base64 because a raw newline in a psmux command argument is
+  cut by the server's line-oriented read, which truncates the payload *and*
+  executes its tail as a psmux command (psmux #560) — the same reason the
+  headless one-shot prompt path (`paste_prompt_args`, feeding
+  `send_prompt_now` / `deferred_prompt_script`) sends `send-paste` instead of
+  the `send-keys -l <ESC[200~…>` that tmux still gets. Delivery is probed by
+  `scripts/dev/e2e/windows-vm.sh test` (probe C).
 
 Each host registers a backend named
 `ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`, registered lazily in
