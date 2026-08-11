@@ -604,7 +604,14 @@ async fn run_loop(
 
         if app.should_redraw() {
             let draw_start = timing.then(std::time::Instant::now);
-            terminal.draw(|f| app.view(f))?;
+            // ratatui knows nothing about hyperlinks, so a rich-text link in an
+            // agent's output reaches the outer terminal as a plain label. Hand
+            // the links back to it once the frame is flushed, by re-printing
+            // exactly the cells it just drew wrapped in OSC 8 — invisible, but
+            // it lets the terminal open the user's own browser (the only route
+            // to one when thurbox runs on a remote host).
+            let frame = terminal.draw(|f| app.view(f))?;
+            app.paint_terminal_hyperlinks(frame.buffer);
             if let Some(start) = draw_start {
                 app.record_frame_time(start.elapsed());
             }

@@ -1,22 +1,153 @@
 //! Miscellaneous helper functions used by the app module.
 
+use std::io::Write;
 use std::path::PathBuf;
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
+use ratatui::prelude::IntoCrossterm;
+use ratatui::style::Style;
+use unicode_width::UnicodeWidthChar;
+
+use crate::session::hyperlink;
 use crate::session::settings::EditorMode;
 
-pub(super) fn open_url(url: &str) {
-    let cmd = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
+/// One drawn hyperlink run to re-emit to the outer terminal: where it sits on
+/// screen, what it points at, and the exact cells the frame painted there (so
+/// re-printing them changes nothing visible).
+pub(super) struct HyperlinkPaint {
+    pub x: u16,
+    pub y: u16,
+    pub url: String,
+    pub cells: Vec<(String, Style)>,
+}
+
+/// The cells `label` occupies in the frame just drawn, or `None` when the pane
+/// no longer prints it there.
+///
+/// The check is what makes the re-paint safe: a modal, the review view, a
+/// scrolled pane or a repainted row all fail it, so nothing is written over
+/// content that has moved on. A label running past the pane's right edge is
+/// linked as far as it is visible.
+pub(super) fn drawn_label_cells(
+    buf: &Buffer,
+    inner: Rect,
+    x: u16,
+    y: u16,
+    label: &str,
+) -> Option<Vec<(String, Style)>> {
+    let mut cells = Vec::new();
+    let mut cx = x;
+    for ch in label.chars() {
+        // A wide glyph owns two cells: advancing by its width skips ratatui's
+        // filler cell, matching what re-printing the glyph does to the cursor.
+        let width = UnicodeWidthChar::width(ch).unwrap_or(1).max(1) as u16;
+        if cx.saturating_add(width) > inner.right() {
+            break;
+        }
+        let cell = buf.cell(Position::new(cx, y))?;
+        if !cell.symbol().starts_with(ch) {
+            return None;
+        }
+        cells.push((
+            cell.symbol().to_string(),
+            Style::new()
+                .fg(cell.fg)
+                .bg(cell.bg)
+                .add_modifier(cell.modifier),
+        ));
+        cx += width;
+    }
+    (!cells.is_empty()).then_some(cells)
+}
+
+/// Re-print each run wrapped in OSC 8, so the terminal thurbox runs in knows
+/// those cells are a link and can offer its own open-link gesture (in Windows
+/// Terminal, kitty, WezTerm, iTerm2 …, a `Ctrl`/`Cmd`+click that opens the
+/// user's own browser — the only route to a browser when thurbox runs on a
+/// remote host).
+///
+/// Called after the frame is flushed and re-prints the *same* glyphs with the
+/// *same* styles, so nothing changes visually; only the terminal's hyperlink
+/// state is added. Writes go to `stdout` after the backend's flush, so they
+/// cannot interleave with the frame.
+pub(super) fn paint_hyperlinks(paints: &[HyperlinkPaint]) -> std::io::Result<()> {
+    use crossterm::cursor::MoveTo;
+    use crossterm::queue;
+    use crossterm::style::{Print, PrintStyledContent, ResetColor};
+
+    let mut out = std::io::stdout();
+    for paint in paints {
+        queue!(
+            out,
+            MoveTo(paint.x, paint.y),
+            Print(hyperlink::osc8_open(&paint.url))
+        )?;
+        for (symbol, style) in &paint.cells {
+            let content = (*style).into_crossterm();
+            queue!(out, PrintStyledContent(content.apply(symbol.as_str())))?;
+        }
+        queue!(out, Print(hyperlink::OSC8_CLOSE), ResetColor)?;
+    }
+    out.flush()
+}
+
+/// Hand `url` to the platform's URL opener.
+///
+/// `Err` carries a short, user-facing reason the machine can't open a browser —
+/// the common case being a thurbox running on a headless or SSH host, where the
+/// caller falls back to putting the URL on the clipboard instead. The child is
+/// **not** waited on (a browser launcher can take seconds, and the render loop
+/// must not park), so a spawn that succeeds is reported as opened.
+pub(super) fn open_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let (program, args): (&str, Vec<&str>) = ("open", vec![url]);
+    #[cfg(target_os = "windows")]
+    // `start` is a cmd builtin; its first quoted argument is the window title,
+    // so an empty one keeps the URL from being eaten as one.
+    let (program, args): (&str, Vec<&str>) = ("cmd", vec!["/C", "start", "", url]);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let (program, args): (&str, Vec<&str>) = {
+        // Spawning `xdg-open` with nothing to open into either fails or, worse,
+        // succeeds and does nothing — so decide up front rather than report a
+        // browser that never appeared.
+        if !has_browser_target(
+            std::env::var("DISPLAY").ok().as_deref(),
+            std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+            std::env::var("BROWSER").ok().as_deref(),
+        ) {
+            return Err("No display to open a browser on".into());
+        }
+        ("xdg-open", vec![url])
     };
-    std::process::Command::new(cmd)
-        .arg(url)
+
+    std::process::Command::new(program)
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .ok();
+        .map(|_| ())
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => format!("No URL opener ({program} not installed)"),
+            _ => format!("Could not run {program}: {e}"),
+        })
+}
+
+/// Whether anything on this machine could show a URL: a display server, or a
+/// `BROWSER` the user set themselves (which overrides the display check — they
+/// have told us how to open a URL, e.g. a terminal browser).
+///
+/// Unused on macOS/Windows, whose openers need no display server.
+#[cfg_attr(any(target_os = "macos", target_os = "windows"), allow(dead_code))]
+fn has_browser_target(
+    display: Option<&str>,
+    wayland_display: Option<&str>,
+    browser: Option<&str>,
+) -> bool {
+    [display, wayland_display, browser]
+        .iter()
+        .any(|value| value.is_some_and(|v| !v.trim().is_empty()))
 }
 
 /// Spawn `editor_cmd` with `worktree` appended as the final argument.
@@ -249,6 +380,20 @@ pub(super) fn resolve_editor_mode(db: &crate::storage::Database) -> EditorMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_target_needs_a_display_or_an_explicit_browser() {
+        // The SSH / headless case: nothing to open into, so the caller falls
+        // back to the clipboard instead of spawning an opener that goes nowhere.
+        assert!(!has_browser_target(None, None, None));
+        // An empty var is as good as unset (a stripped SSH environment).
+        assert!(!has_browser_target(Some(""), Some(" "), Some("")));
+
+        assert!(has_browser_target(Some(":0"), None, None));
+        assert!(has_browser_target(None, Some("wayland-0"), None));
+        // `BROWSER` is the user telling us how to open a URL without a display.
+        assert!(has_browser_target(None, None, Some("firefox")));
+    }
 
     #[test]
     fn open_in_editor_rejects_empty_paths() {

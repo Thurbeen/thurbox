@@ -2062,7 +2062,21 @@ backend dependency stays visible at each call site.
   `terminal_view`, `info_panel`,
   `status_bar`, `repo_picker_modal` (repo selection with
   worktree toggle). `selection.rs` handles mouse-drag text
-  selection, `links.rs` detects clickable URLs for Ctrl+Click.
+  selection, `links.rs` detects plain-text URLs in the rendered rows
+  for Ctrl+Click — while a **rich-text link** (OSC 8) prints only its
+  label, so its target is captured from the escape at parse time
+  (`agent::osc8` → `session::hyperlink`) and wins over a plain-text
+  match at the same cell (`App::url_at_click`). Because ratatui knows
+  nothing about hyperlinks, each painted frame is followed by
+  `App::paint_terminal_hyperlinks`, which re-prints the visible runs
+  wrapped in OSC 8 (same glyphs, same styles, read back out of the drawn
+  frame) so the **outer** terminal can open the user's own browser — the
+  only route to one when thurbox runs on a remote host. The click always toasts
+  its outcome, and on a host with no browser (headless / SSH — no
+  `DISPLAY`, no `BROWSER`) it **copies** the URL instead of spawning an
+  opener that goes nowhere, riding the same OSC 52 leg as `Ctrl+C` so
+  the URL reaches the user's own clipboard. See the Clickable URLs
+  section of `docs/FEATURES.md`.
   Mouse clicks are routed through a per-frame registry
   (`App::click_targets`, mirroring `scrollbar_hits`): list/modal
   renderers return `ui::RowHitbox`es, `App::view` records them as

@@ -11,8 +11,9 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
+use crate::agent::osc8;
 use crate::agent::provider::AgentProvider;
-use crate::session::{SessionConfig, SessionInfo};
+use crate::session::{HyperlinkTable, SessionConfig, SessionInfo};
 
 pub(crate) fn now_millis() -> u64 {
     SystemTime::now()
@@ -69,6 +70,8 @@ fn utf8_ready_prefix_len(buf: &[u8]) -> usize {
 ///   the time of the latest such signal, plus its message text when the OSC
 ///   carries one. This is how we surface a real "needs attention" state instead
 ///   of timing-only Busy/Waiting.
+/// - **Hyperlinks** (OSC `8`) → the target of each rich-text link the agent
+///   printed, which `vt100` itself discards (see the `osc8` module).
 #[derive(Clone, Default)]
 pub struct TermSignals {
     title: Arc<Mutex<Option<String>>>,
@@ -80,6 +83,12 @@ pub struct TermSignals {
     /// per-tick status refresh can skip the mutex locks + String clones while
     /// nothing changed (ADR-P10; see [`Session::sync_agent_meta`]).
     meta_gen: Arc<AtomicU64>,
+    /// OSC 8 hyperlink runs the agent printed. Unlike the cells above this is
+    /// not shared state: readers reach it through the parser lock they already
+    /// take to read the screen ([`Self::hyperlink_at`]).
+    hyperlinks: HyperlinkTable,
+    /// The OSC 8 run whose closing sequence has not arrived yet.
+    pending_link: Option<osc8::PendingHyperlink>,
 }
 
 impl TermSignals {
@@ -91,6 +100,14 @@ impl TermSignals {
         // After the write, so a reader that observes the new generation also
         // observes the new value.
         self.meta_gen.fetch_add(1, Ordering::Release);
+    }
+
+    /// The OSC 8 runs captured from the agent's output — the targets of its
+    /// rich-text links, of which the screen holds only the labels. Resolve a
+    /// clicked cell against it with [`HyperlinkTable::resolve`], or list what is
+    /// on screen with [`HyperlinkTable::visible_runs`].
+    pub fn hyperlinks(&self) -> &HyperlinkTable {
+        &self.hyperlinks
     }
 
     /// Mark an attention signal, optionally with notification message text.
@@ -122,10 +139,12 @@ impl vt100::Callbacks for TermSignals {
         self.signal_attention(None);
     }
 
-    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+    fn unhandled_osc(&mut self, screen: &mut vt100::Screen, params: &[&[u8]]) {
         // Desktop-notification escapes carry the agent's status message.
         //   OSC 9 ; <message>
         //   OSC 777 ; notify ; <title> ; <body>
+        // A hyperlink pair brackets its label's glyphs.
+        //   OSC 8 ; <params> ; <uri>   …label…   OSC 8 ; ;
         match params {
             [b"9", msg] => self.signal_attention(Some(String::from_utf8_lossy(msg).into_owned())),
             [b"777", kind, rest @ ..] if kind.eq_ignore_ascii_case(b"notify") => {
@@ -135,6 +154,10 @@ impl vt100::Callbacks for TermSignals {
                     .collect::<Vec<_>>()
                     .join(": ");
                 self.signal_attention(Some(msg));
+            }
+            [b"8", fields @ ..] => {
+                let uri = osc8::uri_from_fields(fields);
+                osc8::handle(screen, &mut self.pending_link, &mut self.hyperlinks, &uri);
             }
             _ => {}
         }
@@ -539,6 +562,7 @@ impl Session {
                 attention_at: Arc::clone(&attention_at),
                 notification: Arc::clone(&notification),
                 meta_gen: Arc::clone(&meta_gen),
+                ..Default::default()
             },
         )));
 
@@ -632,6 +656,7 @@ impl Session {
                 attention_at: Arc::clone(&attention_at),
                 notification: Arc::clone(&notification),
                 meta_gen: Arc::clone(&meta_gen),
+                ..Default::default()
             },
         )));
         let host = info.remote_host.clone().unwrap_or_else(|| "?".into());
@@ -1097,6 +1122,7 @@ impl Session {
                     attention_at: Arc::clone(&attention_at),
                     notification: Arc::clone(&notification),
                     meta_gen: Arc::clone(&meta_gen),
+                    ..Default::default()
                 },
             ))),
             input_tx,

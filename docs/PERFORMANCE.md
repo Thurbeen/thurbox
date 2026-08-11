@@ -58,6 +58,17 @@ stays stale longer than a blink. The black-box smoke test
 (`scripts/dev/smoke/tui-smoke.sh`) still asserts the first frame and every
 post-keystroke frame paint.
 
+**One pass rides along after each paint**:
+`App::paint_terminal_hyperlinks` re-emits the frame's OSC 8 hyperlinks so the
+outer terminal can offer its own open-link gesture (see the Clickable URLs
+section of `docs/FEATURES.md`). It is bound to the *painted* frames — ratatui
+rewrites the cells, so the escapes must follow each draw — and is gated on
+`HyperlinkTable::is_empty()` **before** it computes layout or extracts screen
+rows, so a session whose agent never printed a link pays a single emptiness
+check per frame. When links are present the scan is bounded (the newest 128
+runs × the visible rows) and the writes are a handful of short `queue!`s per
+visible run.
+
 ---
 
 ## ADR-P2: Deterministic perf counters as the regression gate

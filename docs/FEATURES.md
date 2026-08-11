@@ -1995,11 +1995,90 @@ other panel toggles' F-keys.
 
 ## Clickable URLs
 
-URLs (`https://`, `http://`, `file://`) in terminal output are
-detected via regex at click time and opened on `Ctrl+Click`.
-Trailing punctuation (`.`, `,`, `;`, `:`, `)`, `]`) is stripped
-from detected URLs. Character-based column offsets ensure correct
-positioning with multibyte characters.
+`Ctrl+Click` in the terminal pane opens the link under the cursor.
+Two kinds resolve, and an **OSC 8 hyperlink wins** where both cover
+a cell (`App::url_at_click`):
+
+- **OSC 8 hyperlinks** — an agent renders a markdown link as
+  `OSC 8 ; ; <url>` + label + `OSC 8 ; ;`, so the screen holds only
+  the label (`Github`, never `https://github.com`) and the URL exists
+  *solely* in the escape, which `vt100` discards. The parser callbacks
+  capture each run instead (`agent::osc8` → `session::hyperlink`): the
+  label is read off the screen between the cursor position at the open
+  and the one at the close (the closing escape arrives after its label
+  printed), and stored with its **start column**, not its row — the row
+  moves every time the transcript scrolls, the printed glyphs and their
+  column survive it. A click resolves only if that label is still on
+  screen at that column, so a row whose content has moved on resolves
+  to nothing rather than to a stale URL. A run the screen scrolled
+  under mid-print is dropped for the same reason (agents redraw and
+  re-emit the escape); a run long enough to wrap contributes one entry
+  per row. The table is bounded at 512 runs per session.
+- **Plain-text URLs** (`https://`, `http://`, `file://`) are scanned
+  out of the rendered rows at click time (`ui::links`). Trailing
+  punctuation (`.`, `,`, `;`, `:`, `)`, `]`) is stripped.
+  Display-width column offsets keep positioning correct on rows with
+  wide (CJK/emoji) glyphs.
+
+### Handing links back to the outer terminal
+
+thurbox re-renders the agent's screen through ratatui, which has no
+notion of a hyperlink — so the terminal **thurbox itself runs in** only
+ever receives a plain label and can't offer its own open-link gesture.
+That gesture matters: no escape sequence says "open this URL", so a
+terminal-side click is the *only* way a thurbox on a remote host can open
+a browser on the machine the user is sitting at.
+
+So after each frame is flushed, `App::paint_terminal_hyperlinks`
+re-prints the visible runs wrapped in OSC 8 — the same glyphs with the
+same styles, read back out of the drawn frame, so nothing changes
+visually and only the terminal's hyperlink state is added. Windows
+Terminal, kitty, WezTerm and iTerm2 then underline the label on hover and
+open the user's own browser on Ctrl/Cmd+Click.
+
+Two properties keep this safe and cheap:
+
+- **Validated against what was drawn** (`helpers::drawn_label_cells`): a
+  candidate is emitted only if the frame's cells still print that label
+  there, so a covering overlay, a scrolled pane, or a repainted row
+  yields nothing instead of escapes written over current content. A label
+  clipped by the pane's right edge is linked as far as it is visible.
+- **Off the hot path when unused**: the pass bails on
+  `HyperlinkTable::is_empty()` before computing layout or scanning the
+  screen, so a session whose agent never printed a link pays one check
+  per frame. Only the newest `VISIBLE_SCAN_LIMIT` (128) runs are scanned.
+
+The URL is stripped of control characters before it goes out
+(`hyperlink::osc8_open`): it is agent-controlled text being written back
+to the user's terminal, and an embedded `ESC` would end the sequence
+early and let the rest be interpreted as escapes of its own.
+
+**Caveat:** while thurbox has mouse capture on (`[features] mouse`), a
+terminal that forwards Ctrl+Click to the application instead of handling
+its own hyperlink will land on thurbox's own click path (which opens, or
+falls back to copying, per below). Setting `mouse = false` gives all
+clicks back to the terminal.
+
+### Where the URL goes
+
+The click **always toasts its outcome**, so a resolved link that
+couldn't be acted on is never indistinguishable from a click on plain
+text (it used to be: the opener was spawned with its result discarded).
+
+`helpers::open_url` hands the URL to the platform opener — `open` on
+macOS, `cmd /C start` on Windows, `xdg-open` elsewhere. On Linux/BSD it
+first checks there is something to open *into* (`DISPLAY`,
+`WAYLAND_DISPLAY`, or a `BROWSER` the user set): a thurbox running on a
+headless or SSH host has none, where spawning `xdg-open` either fails or
+— worse — succeeds and does nothing.
+
+With no browser reachable the URL goes to the **clipboard** instead
+(`App::write_clipboard`, the same native → OSC 52 path `Ctrl+C` uses).
+That is what makes the feature work over SSH at all: the OSC 52 leg
+travels to the terminal the user is sitting at, so the URL lands in
+*their* clipboard, ready to paste into a real browser. The toast names
+the route (`(OSC 52)`) so a terminal that drops the sequence is
+diagnosable.
 
 ---
 

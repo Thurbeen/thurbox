@@ -3052,6 +3052,76 @@ fn osc_title_and_bell_reach_the_session() {
 }
 
 #[test]
+fn ctrl_click_resolves_a_rich_text_link_to_its_real_target() {
+    let mut h = Harness::standard(1);
+    // What an agent emits for `[Github](https://github.com)`: an OSC 8 pair
+    // around a label, so the screen holds "Github" and nothing else.
+    h.feed_output(
+        0,
+        b"see \x1b]8;;https://github.com\x07Github\x1b]8;;\x07 and https://example.com/x\r\n",
+    );
+    let screen = h.render();
+    assert!(
+        screen.contains("see Github and"),
+        "the terminal prints the label, not the URL:\n{screen}"
+    );
+
+    // The pane rect the click maps through; row/col 0 is the first output line.
+    let pane = ratatui::layout::Rect::new(0, 0, STD_COLS, STD_ROWS);
+    let click = |col: u16| h.app.url_at_click(pane, col, 0);
+
+    // Every cell of the label opens the escape's target…
+    assert_eq!(click(4).as_deref(), Some("https://github.com"));
+    assert_eq!(click(9).as_deref(), Some("https://github.com"));
+    // …and only those cells.
+    assert_eq!(click(3), None);
+    assert_eq!(click(10), None);
+    // A plain-text URL on the same row still resolves the old way.
+    assert_eq!(click(19).as_deref(), Some("https://example.com/x"));
+}
+
+#[test]
+fn a_rendered_rich_text_link_is_handed_to_the_outer_terminal() {
+    // The link the terminal thurbox runs in never saw: thurbox re-renders the
+    // agent's screen through ratatui, so the OSC 8 has to be re-emitted around
+    // the cells that were actually drawn.
+    let mut h = Harness::standard(1);
+    h.feed_output(
+        0,
+        b"see \x1b]8;;https://github.com\x07Github\x1b]8;;\x07\r\n",
+    );
+    h.render();
+
+    let paints = h
+        .app
+        .terminal_hyperlink_paints(h.terminal.backend().buffer());
+    assert_eq!(paints.len(), 1, "one link on screen ⇒ one run to re-emit");
+    let paint = &paints[0];
+    assert_eq!(paint.url, "https://github.com");
+    // The label's own glyphs, taken from the drawn frame so the re-print is a
+    // no-op visually.
+    let painted: String = paint.cells.iter().map(|(sym, _)| sym.as_str()).collect();
+    assert_eq!(painted, "Github");
+    // Positioned inside the terminal pane, offset by the label's column.
+    let inner = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .inner(h.app.screen_layout().terminal);
+    assert_eq!((paint.x, paint.y), (inner.x + 4, inner.y));
+
+    // The candidate is validated against the cells that were drawn, so once the
+    // agent repaints that row over the label there is nothing left to link —
+    // rather than escapes written over whatever text is there now.
+    h.feed_output(0, b"\x1b[H\x1b[2Ka plain line now\r\n");
+    h.render();
+    assert!(
+        h.app
+            .terminal_hyperlink_paints(h.terminal.backend().buffer())
+            .is_empty(),
+        "a repainted row hands over no links"
+    );
+}
+
+#[test]
 fn split_utf8_output_chunks_render_intact() {
     // The reader loop protects vt100 from mid-codepoint chunks with a carry
     // buffer; `feed_output` bypasses the reader, so this documents that a test

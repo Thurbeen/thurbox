@@ -24,6 +24,7 @@ use std::sync::{mpsc, Arc};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
+    buffer::Buffer,
     layout::{Position, Rect},
     widgets::{Block, Borders},
 };
@@ -3035,23 +3036,122 @@ impl App {
     }
 
     /// Open the URL under a Ctrl+Click inside the terminal pane, if any.
-    /// `inner` is the terminal's content area (borders excluded); a click
-    /// outside it (or with no URL at that cell) is a no-op.
+    ///
+    /// Always toasts the outcome: a click that resolved a link but couldn't act
+    /// on it used to be indistinguishable from a click that hit plain text.
     fn open_ctrl_clicked_url(&mut self, inner: Rect, x: u16, y: u16) {
+        let Some(url) = self.url_at_click(inner, x, y) else {
+            return;
+        };
+        match helpers::open_url(&url) {
+            Ok(()) => self.set_status(StatusLevel::Info, format!("Opening {url}")),
+            // No browser reachable — the normal state for a thurbox running on a
+            // headless or SSH host. The clipboard still reaches the user: its
+            // OSC 52 leg travels to the terminal they are sitting at, so the URL
+            // lands in *their* clipboard, ready to paste into a real browser.
+            Err(reason) => match self.write_clipboard(&url) {
+                Ok(route) => self.set_status(
+                    StatusLevel::Info,
+                    format!(
+                        "{reason} — copied {url} to clipboard{}",
+                        route.toast_suffix()
+                    ),
+                ),
+                Err(err) => self.set_error(format!("{reason}, and the clipboard failed: {err}")),
+            },
+        }
+    }
+
+    /// The URL under a click inside the terminal pane. `inner` is the pane's
+    /// content area (borders excluded); a click outside it, or on a cell with no
+    /// link, resolves to `None`.
+    ///
+    /// Two kinds of link resolve here, and an **OSC 8 hyperlink wins**: an agent
+    /// rendering a markdown link prints only the label (`Github`), so the escape
+    /// is the sole place its target exists — and where it wraps a bare URL, the
+    /// escape's target is what a terminal honours anyway.
+    fn url_at_click(&self, inner: Rect, x: u16, y: u16) -> Option<String> {
         use crate::ui::links;
 
         if !inner.contains(Position::new(x, y)) {
-            return;
+            return None;
         }
         let screen_col = (x - inner.x) as usize;
         let screen_row = (y - inner.y) as usize;
+        let mut url = None;
         self.with_active_parser(|parser| {
             let rows = links::extract_screen_rows(parser.screen());
-            let detected = links::detect_urls(&rows);
-            if let Some(url) = links::url_at_position(&detected, screen_row, screen_col) {
-                helpers::open_url(url);
+            url = rows
+                .get(screen_row)
+                .and_then(|row| parser.callbacks().hyperlinks().resolve(row, screen_col))
+                .map(str::to_string)
+                .or_else(|| {
+                    let detected = links::detect_urls(&rows);
+                    links::url_at_position(&detected, screen_row, screen_col).map(str::to_string)
+                });
+        });
+        url
+    }
+
+    /// Hand the hyperlinks of the frame just drawn to the terminal thurbox runs
+    /// in, by re-printing their cells wrapped in OSC 8 (see
+    /// `Self::terminal_hyperlink_paints` for why, and
+    /// `helpers::paint_hyperlinks` for how).
+    ///
+    /// Called by the render loop immediately after the frame is flushed. A write
+    /// failure is ignored: a terminal that drops the escape just gets no links.
+    pub fn paint_terminal_hyperlinks(&self, buf: &Buffer) {
+        let paints = self.terminal_hyperlink_paints(buf);
+        if !paints.is_empty() {
+            let _ = helpers::paint_hyperlinks(&paints);
+        }
+    }
+
+    /// Hyperlink runs visible in the terminal pane of the frame just drawn.
+    ///
+    /// thurbox re-renders the agent's screen through ratatui, which has no
+    /// notion of a hyperlink — so the terminal thurbox itself runs in only ever
+    /// receives a plain label and cannot offer its own "open link" gesture. That
+    /// gesture is the *only* way a thurbox on a remote host can open a browser
+    /// on the machine the user is sitting at: no escape sequence says "open this
+    /// URL", so the link has to be handed to the terminal as a link.
+    ///
+    /// Every candidate is validated against `buf` — the cells actually drawn —
+    /// so a covering modal, the review view, a scrolled pane, or a clipped label
+    /// yields nothing instead of painting stale text over whatever is there now.
+    fn terminal_hyperlink_paints(&self, buf: &Buffer) -> Vec<helpers::HyperlinkPaint> {
+        let mut paints = Vec::new();
+        self.with_active_parser(|parser| {
+            // Most sessions never print a link. Bail before the layout and the
+            // screen scan, so a frame of a link-free session pays one emptiness
+            // check for the whole pass.
+            if parser.callbacks().hyperlinks().is_empty() {
+                return;
+            }
+            let inner = Block::default()
+                .borders(Borders::ALL)
+                .inner(self.screen_layout().terminal);
+            if inner.width == 0 || inner.height == 0 {
+                return;
+            }
+            let rows = crate::ui::links::extract_screen_rows(parser.screen());
+            for run in parser.callbacks().hyperlinks().visible_runs(&rows) {
+                if run.row >= inner.height as usize || run.col >= inner.width as usize {
+                    continue;
+                }
+                let y = inner.y + run.row as u16;
+                let x = inner.x + run.col as u16;
+                if let Some(cells) = helpers::drawn_label_cells(buf, inner, x, y, run.label) {
+                    paints.push(helpers::HyperlinkPaint {
+                        x,
+                        y,
+                        url: run.url.to_string(),
+                        cells,
+                    });
+                }
             }
         });
+        paints
     }
 
     /// Route a click while a modal is open: a hit on a recorded row selects

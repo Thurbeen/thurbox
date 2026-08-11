@@ -2,6 +2,7 @@ pub mod agent_def;
 pub mod automation;
 pub mod extension_def;
 pub mod host_def;
+pub mod hyperlink;
 pub mod keybindings;
 pub mod message;
 pub mod review;
@@ -22,6 +23,7 @@ pub use host_def::{
     is_remote_backend, is_ssh_backend, is_wsl_backend, HostDef, HostKind, HostRegistry,
     SSH_BACKEND_PREFIX, WSL_BACKEND_PREFIX,
 };
+pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use keybindings::{compact_shortcut, Action, KeyBindings, KeyChord, KeyContext};
 pub use message::SessionMessage;
 pub use review::{
