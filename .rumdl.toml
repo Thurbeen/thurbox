@@ -1,5 +1,8 @@
 [global]
-exclude = [".git", ".claude", ".pi"]
+# The agent-tooling dirs plus "openspec": both the OpenSpec skills/commands and
+# the change artifacts are generated from the CLI's own templates, so linting
+# them would block commits on prose we don't author.
+exclude = [".git", ".claude", ".pi", ".opencode", "openspec"]
 
 [MD013]
 line_length = 100

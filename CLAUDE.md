@@ -2461,6 +2461,45 @@ The renderer is `ui::settings_modal::render_settings_modal` (modeled on
 Notifications / Scalars sections, an aligned value column, and
 scroll-windowing for short terminals).
 
+## OpenSpec (spec-driven changes)
+
+Non-trivial changes can be planned through
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) before any code is written.
+It is **tooling, not a gate** — small fixes still go straight to a commit.
+
+Six skills drive the loop: **propose** (draft `proposal.md` → `specs/` deltas →
+`design.md` → `tasks.md`) → **apply** (implement the tasks) → **archive** (fold
+the deltas into `openspec/specs/`, move the change to
+`openspec/changes/archive/<date>-<name>/`). `explore` (think first), `update`
+(revise artifacts), and `sync` (merge deltas without archiving) fill the gaps.
+
+They are installed for the three agents this repo already configures, each in
+that agent's own layout (the skills are identical; only the command alias and
+its spelling differ):
+
+| Agent | Skills | Commands | Invoked as |
+|-------|--------|----------|------------|
+| claude | `.claude/skills/openspec-*/` | `.claude/commands/opsx/` | `/opsx:propose` |
+| pi | `.pi/skills/openspec-*/` | `.pi/prompts/opsx-*.md` | `/opsx-propose` |
+| opencode | `.opencode/skills/openspec-*/` | `.opencode/commands/opsx-*.md` | `/opsx-propose` |
+
+- **Layout**: `openspec/config.yaml` (schema `spec-driven`, plus optional
+  project `context` and per-artifact `rules`), `openspec/specs/` (current
+  requirements), `openspec/changes/<name>/` (in-flight work). One shared
+  `openspec/` tree serves all three agents.
+- **CLI**: `npm install -g @fission-ai/openspec`. The skills are restricted to
+  `Bash(openspec:*)`, so the binary must be on PATH — an `npx` fallback will
+  not work. `openspec update` refreshes the skills after a CLI upgrade;
+  regenerate them with `openspec init --tools claude,pi,opencode` (re-running
+  `init` is additive — it leaves already-configured agents intact).
+- Skill and command files are generated — edit `openspec/config.yaml` to shape
+  the workflow rather than hand-patching them, since `update` overwrites them.
+- `.opencode` joins `.claude`/`.pi`/`openspec` in `rumdl`'s exclude list
+  (`.rumdl.toml`). The generated skills and change artifacts would otherwise
+  block commits on prose we don't author; excluding the whole agent dir (rather
+  than the generated files inside it) is how `.claude`/`.pi` were already
+  treated.
+
 ## Design Documentation
 
 For rationale behind decisions, see `docs/`:
