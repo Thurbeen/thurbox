@@ -377,8 +377,8 @@ to independently parse and render terminal state in real-time.
 stdin, wrapped in a `ControlModeWriter` (implements `Write`). On a
 **psmux** backend, which has no `-H`, the same writer encodes the byte
 stream from the primitives psmux does support, and a **paste** leaves
-control mode entirely for psmux's own `send-paste` — see the psmux
-divergences in `CLAUDE.md` and `control_mode::PsmuxPaste`.
+control mode entirely for psmux's own `send-paste` — see "psmux divergences
+from tmux" under ADR-13 below, and `control_mode::PsmuxPaste`.
 
 **Command synchronization**: All commands that precede a
 `send_command` (waited) call must themselves be waited. A
@@ -495,6 +495,64 @@ stalls. Worth the most manual testing.
 - *Embedded SSH library (russh, etc.)* — reimplements `~/.ssh/config`,
   agent forwarding, and multiplexing that the system `ssh` already
   provides.
+
+### psmux divergences from tmux
+
+The control-mode protocol is byte-identical over either transport, but the
+**psmux** binary diverges from tmux in three places (all verified against psmux
+3.3.6, each branched on `TmuxTransport::uses_psmux()`). `CLAUDE.md` keeps a
+summary; this is the reference to read before touching that path.
+
+- **`send-keys -H`** is not implemented (it injects the hex digits as literal
+  text). `send_keys_commands` rebuilds the same PTY byte stream from the
+  primitives psmux does support (`send-keys -l` literal runs +
+  `Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names); tmux (incl. a WSL
+  distro's tmux) keeps the byte-exact `-H` path. Literal runs go out as
+  `-l -N 1 "…"` (double-quoted, `\"`/`\\` escaped): `-N` makes psmux's
+  send-coalescing decoder — which re-quotes with a POSIX `'\''` escape its own
+  parser can't read back (`it's` → `it\s`) — bail to the direct handler, which
+  reads double-quote framing correctly (`flush_psmux_literal`/`psmux_quote`).
+  Quoting alone isn't enough: psmux classifies arguments *after* tokenizing, so
+  it drops any starting with `-` as an unknown flag (a typed hyphen never
+  arrived, issue #920) and rewrites a `0xNN`-shaped argument into the character
+  it names. `psmux_literal_args` re-emits such a leading character *as* a
+  `0xNN` argument — psmux decodes it back and, in literal mode, joins arguments
+  with no separator, reassembling the run exactly. Probed by
+  `scripts/dev/e2e/windows-vm.sh test` (probe D).
+- **`new-window` trailing tokens are not joined** (psmux keeps only the first
+  and drops the rest — the agent launched with **no args**) and **`new-window
+  -e` is ignored** (on the argv path too — no `THURBOX_SESSION` identity).
+  `TmuxBackend::psmux_window_powershell` folds env + command into **one token**
+  of PowerShell (`Set-Item Env:K 'v'; & 'claude' '--session-id' …` — psmux runs
+  it via `powershell -NoLogo -Command`, whose Win32 command line strips
+  unescaped double quotes, hence PowerShell single-quoting throughout;
+  backslash is literal in psmux's parser, so `C:\` paths survive). Control-mode
+  spawns (`psmux_window_command`) frame it in double quotes (psmux's tokenizer
+  concatenates adjacent `'…'` segments but passes `'` through `"…"` tokens); the
+  headless local `spawn_window` passes it as a single argv arg. The local socket
+  honors the `THURBOX_SOCKET` env override (`local_socket()`) so test/sandbox
+  tooling can scope an instance on Windows, where every `-L <name>` resolves
+  machine-wide (no `TMUX_TMPDIR`).
+- **A paste cannot be key-encoded at all** (the encoding above emits ESC as its
+  own `Escape` key-name, so the agent saw a bare Escape instead of the
+  `ESC[200~` marker and took each embedded CR as Enter — a pasted stack trace
+  submitted line by line). It goes **out of band** through psmux's own paste
+  command (`control_mode::PsmuxPaste`, issue #916): psmux's control-mode
+  dispatcher implements no paste command (`paste-buffer`/`set-buffer`/
+  `send-paste` are CLI/server-only), so a bracketed-paste payload
+  (`bracketed_paste_text` unwraps one; anything else keeps the key encoding)
+  goes to the one-shot CLI `psmux send-paste -t <pane> <base64>` — the same
+  command psmux's client uses for Ctrl+Shift+V, so CRLF is normalized for
+  ConPTY, markers are written contiguously and **only** when the pane's app
+  enabled bracketed paste. A failure falls back to the key encoding (degraded
+  beats dropped). Base64 because a raw newline in a psmux command argument is
+  cut by the server's line-oriented read, truncating the payload *and*
+  executing its tail as a command (psmux #560) — the same reason the headless
+  prompt path (`paste_prompt_args`, feeding `send_prompt_now`/
+  `deferred_prompt_script`) sends `send-paste` where tmux gets
+  `send-keys -l <ESC[200~…>`. Probed by `windows-vm.sh test` (probe C).
+
+---
 
 ---
 
@@ -757,6 +815,104 @@ in sync with the binary that reads it.
 - *Re-serializing `agents.toml` to add/remove agents* — would drop user
   comments/formatting; the installer edits text (append on install,
   block-removal by name on uninstall) instead.
+
+### Install and lifecycle mechanics
+
+The capabilities that reach outside the extension home, the installer's
+resolution order, the `extension` CLI surface, versioning/staleness, and the
+self-heal pass. `CLAUDE.md` keeps a summary and points here.
+
+Three install-spec capabilities exist for reaching **outside** the extension
+home (added for the built-in hooks extension): `[[external_files]]` places
+a file into an agent's own config dir (absolute / `~` / `{home}` path,
+guarded by `requires_dir` so it's skipped when that agent isn't installed);
+`[[agent_patches]]` appends args to an **existing** agent in
+agents.toml (`apply_agent_patches` via `toml_edit`, reversible — uninstall
+removes exactly the injected subsequence); and `[[config_merges]]`
+**reversibly deep-merges** shipped JSON into an agent's own *shared* config
+file (`{path, source, requires_dir}`) — for agents whose hooks live in a
+file that would be clobbered by `[[external_files]]` (antigravity's
+`settings.json`). The merge (`agent::json_merge`) recurses objects, unions
+arrays by deep-equality, and leaves a user's conflicting value untouched;
+uninstall **prunes by marker** (every shipped hook command contains
+`thurbox-cli session signal`), so removal stays correct even after the
+payload's schema changes across an update — no orphans. Writes are skipped
+when unchanged (it re-runs every startup + heartbeat tick). All three are
+honoured by `session_ops::install_extension` / `session_ops::uninstall_extension`.
+
+`thurbox-cli extension install <name|url|dir> [--home <dir>] [--force]`
+(`session_ops::install_extension`) is the one-command installer: it
+resolves the source (`agent::extension_config::resolve_source` — a bare
+name → the official source `official_base()/<name>` over curl/wget,
+**pinned to the binary's release tag** (`main` for dev builds) so a
+fetched extension matches the binary; a path → a local dir), fetches + lays
+down the payload files (`executable`/`if_absent`/`substitute` flags; paths
+validated against traversal — no absolute/`..`), creates the symlinks, registers
+the agents (`ensure_agents_registered` appends to agents.toml, preserving
+existing entries), writes the home-resolved manifest to the discovery dir, and
+activates. A `substitute` file the user edited (managed marker removed) is not
+clobbered on reinstall unless `--force`. A **bare-name** install that can't fetch
+its manifest becomes a discovery error
+(`agent::extension_config::unknown_extension_help`: names `OFFICIAL_EXTENSIONS`,
+offers a Levenshtein "did you mean?", points at `extension available`).
+`uninstall <name> [--purge]` reverses install: tear down session + automation,
+remove the extension's agents (`remove_agents_from_toml`, text-edit to preserve
+comments), delete the manifest, `--purge` also the home dir. `reinstall <name>
+[--purge]` (`session_ops::reinstall_extension`) is the clean-slate hammer —
+uninstall + fresh `install --force` from the recorded source (rewriting even
+user-edited seed/`substitute` files) — heavier than `update --force`, which only
+refreshes payload files in place. Flow's
+`install.sh` is a thin shim over `install`.
+
+`thurbox-cli extension` (alias `ext`) — `install` / `uninstall <name>
+[--purge]` / `reinstall <name> [--purge]` / `list` / `available [<query>]`
+(alias `search`) / `update [<name>] [--all] [--force]` (no name ⇒ all) /
+`activate <name>` / `deactivate <name> [--force] [--purge]` / `status [<name>]`
+— wraps `session_ops::extensions`: `ensure_extension` idempotently (re)creates
+any missing declared resource (reusing `spawn_session_headless` +
+`db.create_automation`, matching by name so existing ones are reused);
+`activate_extension` also records the name in the SQLite `metadata`
+`active_extensions` JSON set; `deactivate_extension` tears the resources
+down and clears the set. The CLI layer arms the tmux automation heartbeat
+on activate so a `Send` automation actually fires headlessly. `available`
+lists the official extensions (`OFFICIAL_EXTENSIONS`) for discovery — offline,
+with an `installed` flag and ready-to-run `install_command` per entry. Every
+mutating subcommand's JSON carries a human-readable `summary` line (and
+`list`/`status` surface each extension's `description`).
+
+**Versioning + update.** A manifest declares its own `version` and a
+`min_thurbox_version` (soft compat gate — install/activate/heal *warn*,
+never block, if the binary is older). The installer stamps two provenance
+fields into the discovery-dir copy: `installed_with` (the thurbox version that
+installed it) and `source` (the resolved install target). After a thurbox upgrade
+the on-disk copy is older than the binary, so `ExtensionDef::is_stale` flags it
+(`extension list`/`status`, plus a self-heal nudge). With `[features] auto_update`
+on (the same flag that self-updates the binary), the self-heal pass —
+`heal_one_extension`, run on TUI startup **and** the headless `automation tick` —
+goes past the nudge and **refreshes the stale extension in place** (calls
+`update_extension`); the `is_stale` gate is local/network-free, so a refresh
+fetches at most once per extension per binary version. `update_extension` re-runs
+`install_extension` from the recorded `source` — a bare name re-resolves against
+the *new* binary's release tag — preserving user-edited files unless `--force`;
+`update_all_extensions` does every installed one. Version helpers
+(`compare_versions`, `is_dev_version`, `is_stale`, `compat_warning`) are pure
+functions in `session::extension_def`; dev builds (`0.0.0-dev`) skip
+staleness/compat since their version doesn't order against tags. No
+version-snapshot store: rollback = pin a tagged install URL or downgrade the
+binary + `update`.
+
+**Self-heal**: `session_ops::heal_active_extensions` re-ensures every active
+extension, called at **TUI startup** (`main.rs`, before session restore so healed
+sessions are adopted normally) and at the top of the headless **`automation
+tick`** (`cli/automations.rs`, so healing works with the TUI closed via the
+heartbeat keeper). Consequence: while an extension is active, deleting its
+session/automation is a no-op — they're recreated (a startup toast says so);
+`extension deactivate` is the real off-switch. Headless healing requires
+`[features] automations = true` (the heartbeat); with it off, healing happens only
+at TUI startup. The flow installer delegates its bootstrap to `extension activate
+flow` (with an inline fallback for older thurbox).
+
+---
 
 ## ADR-22: `App` decomposition — coordinator + per-domain sub-modules
 

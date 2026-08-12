@@ -122,7 +122,8 @@ embedded hook assets live in
     (idle/working/blocked/done).
   - `copilot`: `~/.copilot/hooks/thurbox-status.json`
     (sessionStart→idle, userPromptSubmitted/preToolUse→working, agentStop→done,
-    notification→blocked). Ships both `bash` and `powershell` commands.
+    notification matched to `permission_prompt`→blocked). Ships both `bash` and
+    `powershell` commands.
     *Experimental.*
   - `vibe`: a managed `~/.vibe/hooks.toml` (pre_tool→working, post_agent→done;
     **no blocked** — vibe has no permission/notification hook). Verified against

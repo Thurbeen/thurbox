@@ -736,6 +736,136 @@ to address, and `Copy` yields markdown. Diff data types + the unified-diff
 parser live in `session::review` (pure, so `ui` renders them without
 importing `git`); persistence in `storage::review`.
 
+### Implementation reference: surface, layout, and helpers
+
+The full surface — every key, the layout invariants, and the named helper behind
+each part. `CLAUDE.md` keeps a summary and points here.
+
+- **Surface (tuicr-like).** A continuous diff stream in the central pane (its own
+  `InputFocus::CodeReview` — unlike the shell pane's `TerminalView`, it *captures*
+  keys), plus a **changed-files list in the file-viewer column** (forced visible
+  via `layout_for`) that tracks the current file; clicking a row jumps the diff to
+  it (`ui::code_review::render_files_list` → `ClickAction::ReviewFile` →
+  `cr_jump_to_file`). That list is itself a **focusable pane**
+  (`InputFocus::ReviewFiles`, the ring stop replacing `FileViewer` while a review
+  owns the column): `j`/`k` (+ arrows) walk file→file with the diff following,
+  `g`/`G` first/last *file*, `Ctrl+D`/`U` + PageUp/Down half-page, `Enter`/`l`
+  drop into the diff at that file, `r`/`R` toggle the file/hunk reviewed mark,
+  `Esc` closes the review (`App::handle_review_files_key`, captured before the
+  global lookup like the diff pane). `Esc`/`Ctrl+X` (or `F7`) close the view.
+  Rendered by `ui::code_review`, reusing `scrollbar`/`focus_block`/
+  `render_button_bar`/theme. **Unified or true paired side-by-side** layout,
+  toggled with `v` / the footer button (`side_by_side`): a deletion (left) and its
+  aligned addition (right) share **one** screen row (positional `del[k] ↔ add[k]`
+  via the pure `session::review::pair_hunk`; unpaired remainders get a blank
+  half-cell). Pairing is rendering-only — `ReviewRow::Line` stays row-granular, so
+  a paired row is one selectable unit and every `match` on it is unchanged;
+  `push_file_rows` just emits one row per pair. Which side a comment attaches to
+  resolves at compose time (`CodeReviewState::selected_anchor`): keyboard defaults
+  to New, a mouse click uses the column it hit (`App::cr_click_row` →
+  `click_side`; left = Old, right = New). **Mouse-first** (no vim modal): click a
+  line to select/comment, click footer buttons, drag the scrollbar, wheel-scroll.
+  **tuicr nav keys**: `j`/`k` + arrows, PageUp/Down + `Ctrl+D`/`U`, `g`/`G`,
+  `{`/`}` (or Tab) next/prev file, `[`/`]` next/prev hunk. Every footer button is
+  labelled with its key (`Comment·c`, `Send→Agent·e`, `Find·/`, …); the
+  changed-files column shows a nav-key legend.
+- **Long lines: horizontal scroll + wrap toggle.** By default the body scrolls
+  horizontally with `Left`/`Right` (or `h`/`l`) while the line-number gutter stays
+  pinned (`CodeReviewState::h_scroll`, stepped by `App::cr_scroll_h`, clamped to
+  the longest line). A **wrap toggle** (`w` / the `Wrap`/`NoWrap` footer pill,
+  `CodeReviewState::wrap`, `App::cr_toggle_wrap`) soft-wraps instead. **Wrap works
+  in both layouts** — a paired row wraps each half independently and the taller
+  half drives the visual-row count (the shorter pads blank); horizontal scroll
+  stays unified-only (side-by-side pins `h_scroll = 0`). The invariant **1 logical
+  diff row = 1 selectable unit** holds: selection, comment anchoring, click
+  hitboxes, and the `selected`-primary scrollbar stay logical, while wrapping only
+  expands the *visual* rows in `render_rows` and every sub-row carries its parent's
+  logical index (a click on a continuation selects the whole line; compose anchors
+  to the first visual row). Rendering: `unified_diff_line` (h-scroll) /
+  `unified_diff_line_wrapped` / `paired_diff_line` (wrap-aware), with row counts
+  mirrored by `visual_line_count` / `paired_visual_count` for the scroll walk.
+- **Find in diff (`/`).** A `/`-triggered find sub-mode (also the `Find·/` button,
+  and `/` from the changed-files pane) searches every visible row's text — file
+  paths, hunk headings, diff line bodies, comment bodies (case-insensitive literal
+  substring) — via the pure `CodeReviewState::{row_text,search_matches}`. It
+  **mirrors the file viewer's find**: a bar atop the diff shows the query, match
+  position/count and hints; typing is incremental, `Enter`/`↓`/`Ctrl+N` and
+  `↑`/`Ctrl+P` step matches while staying in the input, `Tab` commits (the bar
+  stays for highlighting), then `n`/`N` step relative to the cursor
+  (`cr_search_step` scans from the selection + wraps, like `next_match`). `Esc`
+  clears the search (a second `Esc` closes the review). Matched runs highlight in
+  place via `ui::highlight` (on a matched diff line the hit replaces syntax colour
+  for that line). State is `CodeReviewState::search: Option<ReviewSearch>` (the
+  position is derived from the selection, not stored), captured before the global
+  lookup like compose / the target picker. Side-by-side rows navigate but aren't
+  substring-highlighted (a v1 follow-up); folded (reviewed) files contribute only
+  their header until expanded.
+- **Colours.** Dedicated theme keys `diff_added`/`diff_removed` (line fg) and
+  `diff_added_bg`/`diff_removed_bg` (a subtle full-row tint) — added to
+  `ThemePalette` (all 15 presets derive them; bg blended toward `app_bg` via
+  `blend_rgb`) and overridable per custom theme. Classification badges reuse the
+  status/accent/danger palette colours, so the whole view is theme-aware.
+- **Review targets** (`t` / the Target footer button). The diff can show the
+  whole branch (`<base>..HEAD`, the default), the **uncommitted working changes**
+  (`git diff HEAD`), or a **single commit** (`git show`) — mirroring tuicr's
+  `-r`/`-w`/commit targets. An in-view picker lists Working, Branch, and each
+  commit in `<base>..HEAD` (`git log`); selecting one (keyboard ↑/↓/Enter **or a
+  mouse click** on the entry — `render_target_picker` returns a `RowHitbox` per
+  entry, recorded as `ClickAction::ReviewTarget(i)` → `App::cr_select_target`)
+  recomputes the diff (`ReviewTarget`, `build_target_diff`,
+  `git::{diff_working_on,show_commit_on, list_commits_on}`). A session with no
+  resolvable base defaults to the working-changes target.
+- **Multi-repo sessions.** A multi-repo session reviews **all** its worktrees at
+  once: the diff is built per repo and concatenated, with each file path
+  namespaced `"<repo>/<path>"` so files, comments, and "reviewed" marks stay
+  unambiguous; the changed-files column shows the repo-qualified paths. Each repo
+  resolves its own base (the session base if that branch exists there, else that
+  repo's default branch); the commit picker lists commits across every repo,
+  repo-tagged. A commit target scopes to its one repo. State is
+  `Vec<ReviewRepo>` on `CodeReviewState`; the diff is assembled by `build_files`.
+- **Diff model + parser.** Pure data in `session::review` (`DiffFile`/`DiffHunk`/
+  `DiffLine`, `Classification`, `CommentAnchor`, `ReviewComment`) with a
+  unit-tested `parse_unified_diff`. `git::diff_against{,_on}` runs `git diff`
+  (local or over SSH). The diff types live in `session` so `ui` can render them
+  without importing `git` (architecture rule).
+- **Syntax highlighting.** The unified diff body is syntax-highlighted by a
+  small dependency-free lexer (`ui::syntax`: comments / strings / numbers /
+  keywords / capitalised types), themed from the palette. Add/remove stays on the
+  gutter `+`/`-` sign + the row tint, so the code text itself carries the syntax
+  colours (GitHub-style). Side-by-side keeps plain add/remove colouring.
+- **Comments.** Line / file / review-summary level, each with a classification
+  (issue / suggestion / note / praise, colored badges). Composed in an **in-view
+  box that floats inline at the selected line** (`render_compose_inline` anchors
+  it to the line's screen row, falling back above/below as room allows) — a
+  `ComposeState` sub-mode, not a separate modal. State lives in
+  `app::code_review::CodeReviewState`.
+- **Reviewed marks.** `r` / `R` toggle a file / hunk as reviewed (`✓`); `r`
+  resolves the file from **any** row inside it (line, hunk, header, or a comment),
+  not just the file header.
+- **Persistence.** `review_comments` + `review_marks` tables (schema v38) keyed by
+  session id (`storage::review`); the worktree's fork point is the write-once
+  `sessions.base_branch` column (targeted accessors, like `hook_state`), set at
+  spawn. Reviews are kept open per session across switches (like the shell view).
+  Legacy/NULL base falls back to the repo's default branch.
+- **Export.** No GitHub/GitLab submit (intentionally out of scope). Instead:
+  `y` copies the review as markdown to the clipboard, and `e` (Send→Agent) pastes
+  the compiled review into the session's agent as a prompt to address it — the
+  review → agent → re-review loop, the orchestrator-native equivalent of submit.
+- **Async diff build.** Opening/retargeting a review runs its git pipeline
+  (base resolution, commit listing, the diffs — over SSH for a remote session)
+  on a background worker with a "Building diff…" loading state, applied by
+  `App::poll_review_build` per tick — the pane opens instantly (ADR-P8,
+  `docs/PERFORMANCE.md`).
+- **v1 follow-ups** (named, not silently dropped): range/multi-line comments,
+  token-level intra-line word diffs on a paired row (v1 aligns whole lines
+  positionally, not sub-line), grammar-aware syntax
+  highlighting (v1's lexer is heuristic + language-agnostic), horizontal
+  scroll in the **side-by-side** layout (wrap now works there; paired rows still
+  pin `h_scroll = 0`), per-side search-match highlighting in
+  side-by-side (v1 navigates but doesn't substring-highlight paired rows),
+  auto-revealing a horizontally-scrolled-off search match, and
+  search-match highlight across a wrap-boundary seam.
+
 ---
 
 ## Automations
@@ -1577,6 +1707,47 @@ pruning. The table is intentionally **not** audited — it is high-churn and
 ephemeral. The same `PRAGMA data_version` polling that backs every other
 table lets a future TUI inbox surface unread counts with no schema change.
 
+### Implementation reference: storage, delivery, and CLI
+
+The data/storage shape, delivery + backpressure guarantees, and the full CLI
+surface. `CLAUDE.md` keeps the identity contract and points here.
+
+- **Data**: `session::SessionMessage` (pure data, `session/message.rs`;
+  `validate_kind_body` bounds `kind`≤32 B / `body`≤64 KiB). **Storage**:
+  `session_messages` table (schema **v32**, plain-TEXT uuids, no FK — mirrors
+  `tasks.target_session`), with a partial unread index + a `created_at` index.
+  CRUD in `storage/messages.rs`.
+- **Exactly-once delivery**: `Database::claim_messages` is a single
+  `UPDATE … WHERE read_at IS NULL … RETURNING` — SQLite serializes writers, so
+  the TUI, a cron tick, and a worker's wake nudge drain concurrently without
+  double-processing or dropping. `list_messages` peeks without consuming.
+- **Bounded growth**: `enqueue_message` enforces a per-recipient unread cap
+  (`MAX_UNREAD_PER_RECIPIENT`, backpressure not silent loss) + the body/kind
+  limits; `prune_messages`/`prune_old_messages` (read messages older than
+  `DEFAULT_RETENTION_DAYS`) run at DB open and on every `automation tick`,
+  mirroring audit-log pruning. The mailbox is **not** audited (high-churn).
+- **CLI** (`thurbox-cli message`, alias `msg`) — identity-aware:
+  - `send --to <uuid|name> --kind <k> [--task <id>] [--from <uuid|name>] --body
+    <text> [--no-wake]` enqueues and, unless `--no-wake`, types a short `inbox`
+    token into the recipient's pane (`agent::tmux::send_prompt_now`) to nudge a
+    drain. **Provenance + task tag default to the caller's injected identity**
+    (`THURBOX_SESSION`/`THURBOX_TASK`) so an agent passes **no ids**; `--from`/
+    `--task` override.
+  - `reply <message_id> --body <text> [--kind k] [--from …] [--no-wake]` —
+    enqueues back to the *original message's sender* (looked up via
+    `get_message`) and wakes them, carrying the original `from_task_id`. The
+    replier handles only the opaque message id — never a peer's session id. This
+    is how flow relays the user's answer without name-scraping.
+  - `inbox [--for <uuid|name>] [--claim] [--all] [--limit N]` reads it (`--claim`
+    = atomic drain); **`--for` defaults to the calling session** so an agent
+    reads its own mail with no id.
+  - `prune [--older-than-days N] [--read-only]`.
+  - `cli::messages` resolves a session by UUID **or** name (`resolve_uuid_or_name`
+    → `Database::get_session_by_name`); a `send`/`reply` with a wake also arms the
+    automation heartbeat (`cli::automations::arm_heartbeat`) so a missed wake is
+    still drained headless. `PRAGMA data_version` already surfaces writes to the
+    TUI — no sync/`SharedState` change.
+
 ---
 
 ## Terminal Scrollback
@@ -1964,6 +2135,86 @@ click targets → text selection arming.
 The whole subsystem is gated by `[features] mouse` in settings.toml
 (default `true`): when disabled, mouse capture is never enabled, so
 the terminal keeps its native mouse behavior.
+
+### Click registry, pills, collapse chevron, and the central tab strip
+
+One per-frame click-target registry backs every clickable surface — rows, footer
+pills, modal buttons and fields, the collapse chevron, and the central-pane tabs:
+
+Mouse clicks route through a per-frame registry (`App::click_targets`,
+mirroring `scrollbar_hits`): list/modal renderers return `ui::RowHitbox`es,
+`App::view` records them as `ClickAction`s, and `handle_mouse_click` hit-tests
+them (rows select/confirm, panes focus, modals swallow everything else; the
+hovered row is underlined via mouse-move events). **Clickable buttons** reuse
+the registry: `ui::render_button_bar` draws filled "pill" buttons (` Label ` on
+a solid accent/gray fill, no brackets) returning `ui::ButtonHit`es. The footer
+renders Help/Info/Files/Theme/Tasks/Settings/Quit pills ordered by F-key
+(`Help · F1` … `Settings · F6`) with `Quit` last, each suffixed with its live
+(rebindable) shortcut (an F-key alternate where one exists, else the caret-ctrl
+chord `Quit · ^Q`). Panel toggles are feature-gated (Info/Files/Tasks dropped
+when their feature is off; dropped *together* when the footer can't fit the
+full set — `pill_block_width` vs footer width — so Help/Theme/Settings/Quit
+never fall off); with the file viewer open its hints fill the space to their
+left. Pills are `ClickAction::Global(Action)` (a click runs `dispatch_action`,
+ignored while a modal is open). Every modal footer renders action buttons
+(Save/Cancel/Select/…) as `ui::ModalButtons` (each `ButtonHit` paired with the
+key it replays), recorded as `ClickAction::ModalButton { code, mods }`;
+`handle_modal_click` replays that key through the modal's own handler so a click
+matches the keyboard path. **Clicking a field** selects it: editor modals
+(Settings/Automation) ship per-field hitboxes as `ClickAction::ModalField(i)`
+(→ `select_modal_field`, like Tab/↑↓) — and in **Settings** a click on a
+boolean row also **toggles** it (scalar rows only select, so a stray click never
+changes a number); the in-pane automation/task editors record
+`ClickAction::PaneField { focus, index }` (→ focus + `select_pane_field`), and
+the repo picker
+`ClickAction::RepoFocus(..)` for its path-input/search sub-fields. Hovering a
+button reverses its fill (`Modifier::REVERSED`), distinct from the row
+underline. With a modal open the wheel steps its selection and overflowing
+picker lists render a draggable scrollbar (`ScrollTarget::Modal`, drag replayed
+as Up/Down through the modal's key handler). All gated by `[features] mouse` —
+disabled, mouse capture is never enabled and the terminal keeps native mouse
+behavior. `agent_picker_modal` drives the new-session flow.
+
+- **Session-list collapse chevron.** A collapse/expand affordance toggles the
+left session-list pane (`ToggleSessionList`, F9 — hides the list for a
+full-width main pane). It sits at the **central pane's top-left border** in
+*both* states — ` ◀ F9 ` while shown, ` ▶ F9 ` while hidden — so the control
+that folds the list away also brings it back. It is deliberately **not** a pill
+in the tab strip: those select a central *view* (one is always
+accent-highlighted), whereas this is a binary pane-*visibility* toggle, and two
+accent-filled pills conflated the two meanings. So it renders as an accent
+chevron + muted F9 hint (bare chevron on a pane < 40 cols; suppressed on the
+empty welcome screen).
+`App::session_collapse_toggle_label` builds it, its hitbox is recorded as
+`ClickAction::Global(ToggleSessionList)` **before** the pane's whole-rect focus
+fallback (so the on-border click wins, sharing the F9 keypath), and the tab
+strip packs to its right (`central_tab_cells(area, start_x)`);
+`App::draw_session_collapse_toggle` paints it.
+- **Central-pane tab strip.** The agent terminal, the per-session shell, and the
+code-review view share the central pane, surfaced as a clickable tab strip
+(`Agent · Review · F7 · Shell · F8`, packed right of the collapse chevron) on
+the pane's **top border** by `App::draw_central_tabs`, each tab a filled **pill
+button** (`ui::render_pill`, the standalone form of the footer's
+`render_button_bar` chips) so it reads as clickable like the footer pills — the
+active view accent-filled "primary", the rest neutral "secondary" (hover
+reverses the fill via the shared `is_button` path). Each tab carries its
+toggle's live shortcut hint, preferring the **F-key** alternate
+(`tab_shortcut`) — a focused agent terminal passes `Ctrl+<letter>` through to
+the CLI (`Ctrl+X` is emacs's prefix key, so it never reaches `ToggleReview`)
+whereas the F-key dispatches in every pane; Agent has no dedicated key (the
+Shell toggle returns to it), so it shows no hint. Shell/Review tabs are gated by
+their feature flags. `central_tab_cells` lays out the on-border hitboxes
+(recorded as `ClickAction::CentralTab(CentralTab::{Agent,Shell,Review})`
+**before** the pane's whole-rect focus fallback so a tab click wins); a click
+runs `App::select_central_tab`, which *selects* the view (closing any open
+review when switching to Agent/Shell, opening it for Review) — distinct from the
+keyboard `Ctrl+T`/`Ctrl+X` *toggles*. So the central pane's session-info title
+(`terminal_view`/`code_review`) is **right-aligned** (via `title_top` +
+`ui::title_style`) to leave the border's left free for the tabs. The F-keys
+switch views from **any** view: `ToggleShell` is a `review_escape_chord` (so an
+open review lets F8 fall through to the global binding instead of swallowing
+it), and `toggle_shell_view` is review-aware — with a review open it closes it
+and lands on the shell, mirroring the Shell tab.
 
 ---
 
