@@ -369,15 +369,16 @@ pub(crate) fn build_multi_repo_workspace(
 /// host errors out and the pane dies instantly (claude: "Settings file not
 /// found"), so an unresolvable path must never reach the remote launch:
 ///
-/// - **Translate + materialize** (POSIX remotes): rewrite a home-anchored
-///   config path onto the *remote* home (identity when the homes agree), copy
-///   the local file to that remote path, and substitute the rewritten arg.
-/// - **Strip as fallback**: on a `psmux` host (native Windows — no POSIX side
-///   to copy to and hook commands are `sh` syntax anyway), a non-POSIX local
-///   config root, a config path outside the local home that a home-translation
-///   can't map, or a failed remote copy/home lookup, drop the path **and its
-///   preceding flag** (e.g. the whole `--settings <path>` pair) with a warning
-///   so the agent launches clean instead of dead.
+/// - **Translate + materialize** (POSIX remotes): rewrite the config path onto
+///   a location the host can hold ([`remote_config_root`] — the *remote* home
+///   for a home-anchored POSIX root, `$HOME/.config/<root-name>` for a Windows
+///   one), copy the local file there, and substitute the rewritten arg.
+/// - **Strip as fallback**: on a `psmux` host (native Windows, while
+///   [`psmux_hook_rewrite_supported`] stays off), a POSIX config path outside
+///   the local home that a home-translation can't map, or a failed remote
+///   copy/home lookup, drop the path **and its preceding flag** (e.g. the whole
+///   `--settings <path>` pair) with a warning so the agent launches clean
+///   instead of dead.
 ///
 /// Scope is deliberately narrow: only paths under the **thurbox config dir**
 /// are touched (and only existing local files are copied), so an arbitrary
@@ -429,7 +430,7 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
             let root = remote_root
                 .get_or_insert_with(|| remote_config_root(host, &config_root))
                 .clone()?;
-            let remote_path = format!("{root}{}", &local_path[config_root.len()..]);
+            let remote_path = remote_config_path(&root, &config_root, local_path);
             // Read failure (missing/unreadable/non-file) → strip, as before.
             let contents = std::fs::read_to_string(local_path).ok()?;
             let contents =
@@ -540,14 +541,18 @@ fn def_references_home(def: &crate::session::AgentDef) -> bool {
 
 /// Where the local thurbox config root lands on `host`, or `None` when no
 /// remote location can hold it (→ strip the args instead):
-/// - a non-POSIX (Windows `C:\…`) local root can't take a POSIX copy at all;
 /// - a `psmux` (native-Windows) host maps onto
 ///   `%USERPROFILE%/.config/<root-name>` — dev/release isolation carries over
 ///   via the root's final component — but only once
 ///   [`psmux_hook_rewrite_supported`] is flipped;
-/// - a home-anchored root translates onto the **remote** home (identity when
-///   local and remote `$HOME` agree — the common same-user WSL/devbox case);
-/// - a root outside the local home is mirrored at the same absolute path.
+/// - a **Windows-local** root (`C:\Users\me\AppData\Roaming\thurbox`, a Windows
+///   TUI driving a POSIX host) has no absolute counterpart to mirror, so it
+///   maps onto `$HOME/.config/<root-name>` there — same shape as the psmux
+///   branch, and the case a WSL session on Windows always hits;
+/// - a home-anchored POSIX root translates onto the **remote** home (identity
+///   when local and remote `$HOME` agree — the common same-user WSL/devbox
+///   case);
+/// - a POSIX root outside the local home is mirrored at the same absolute path.
 fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
     if host.mux() == "psmux" {
         if !psmux_hook_rewrite_supported() {
@@ -558,12 +563,8 @@ fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
             );
             return None;
         }
-        let name = std::path::Path::new(config_root)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("thurbox");
         return match crate::git::remote_home_windows(host) {
-            Ok(home) => Some(format!("{home}/.config/{name}")),
+            Ok(home) => Some(format!("{home}/.config/{}", root_leaf_name(config_root))),
             Err(e) => {
                 tracing::warn!(
                     "stripping local agent-config args for host '{}': cannot resolve \
@@ -574,13 +575,24 @@ fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
             }
         };
     }
-    if !config_root.starts_with('/') {
-        tracing::warn!(
-            "stripping local agent-config args for host '{}': no POSIX path for the \
-             thurbox config dir there",
-            host.name
-        );
-        return None;
+    // A Windows local root on a POSIX host: nothing to mirror or home-translate
+    // (`C:\…` shares no prefix with the local home), so land it under the remote
+    // home the way the psmux branch does. Before this, such a root was stripped —
+    // and, because `path_under_root` only knew `/`, the `--settings` arg wasn't
+    // even recognized as a config path, so claude launched inside WSL against a
+    // literal `C:\…` path and died on "Settings file not found" (issue #933).
+    if !is_posix_root(config_root) {
+        return match crate::git::remote_home(host) {
+            Ok(home) => Some(format!("{home}/.config/{}", root_leaf_name(config_root))),
+            Err(e) => {
+                tracing::warn!(
+                    "stripping local agent-config args for host '{}': cannot resolve \
+                     remote home for the Windows config dir: {e:#}",
+                    host.name
+                );
+                None
+            }
+        };
     }
     let Some(local_home) = crate::paths::home_dir() else {
         return Some(config_root.to_string());
@@ -608,12 +620,52 @@ fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
     }
 }
 
+/// Whether the *local* config root is a POSIX absolute path. A root that isn't
+/// (a Windows `C:\…` one) separates components with `\` as well as `/`
+/// ([`path_under_root`], [`remote_config_path`]) and has no absolute
+/// counterpart on a POSIX host ([`remote_config_root`]).
+fn is_posix_root(root: &str) -> bool {
+    root.starts_with('/')
+}
+
+/// The final component of a local config root (`thurbox` / `thurbox-dev`, which
+/// carries dev/release isolation), split on either separator so a Windows root
+/// resolves the same when the code runs on a POSIX host (tests) as on Windows —
+/// `Path::file_name` would return the whole `C:\…` string there.
+fn root_leaf_name(root: &str) -> &str {
+    root.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|n| !n.is_empty())
+        .unwrap_or("thurbox")
+}
+
 /// True when `path` is `root` itself or a descendant — a plain
 /// `starts_with` would also claim sibling dirs sharing the prefix
-/// (`…/thurbox-backup` under root `…/thurbox`).
+/// (`…/thurbox-backup` under root `…/thurbox`). A Windows root also accepts `\`
+/// as the boundary (thurbox's own args mix them: `{home}/claude.json` appended
+/// to a `C:\…` home); on a POSIX root it can't, since `\` is a legal filename
+/// character there.
 fn path_under_root(path: &str, root: &str) -> bool {
-    path.strip_prefix(root)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    let windows_root = !is_posix_root(root);
+    path.strip_prefix(root).is_some_and(|rest| {
+        rest.is_empty() || rest.starts_with('/') || (windows_root && rest.starts_with('\\'))
+    })
+}
+
+/// Splice `local_path`'s tail (relative to the local `config_root`) onto the
+/// resolved `remote_root`. A Windows local root's `\` separators are normalized
+/// to `/` — the tail has to be a path on the *host* (POSIX, or PowerShell,
+/// which accepts `/`); a POSIX root's tail is passed through byte-identical
+/// (a `\` there is part of a filename).
+fn remote_config_path(remote_root: &str, config_root: &str, local_path: &str) -> String {
+    // Callers reach here only for a path [`path_under_root`] accepted, so the
+    // prefix always strips; `unwrap_or_default` keeps it panic-free either way.
+    let tail = local_path.strip_prefix(config_root).unwrap_or_default();
+    if is_posix_root(config_root) {
+        return format!("{remote_root}{tail}");
+    }
+    format!("{remote_root}{}", tail.replace('\\', "/"))
 }
 
 /// Pure arg-rewriting core of [`adapt_agent_args_for_remote`]: every arg (or
@@ -903,6 +955,65 @@ mod tests {
             panic!("map must not be called for a sibling-prefixed path")
         });
         assert_eq!(out, args);
+    }
+
+    #[test]
+    fn windows_config_root_arg_is_recognized_and_normalized() {
+        // Regression, issue #933: a Windows TUI spawning a WSL/SSH session. The
+        // hooks patch appends `{home}/claude.json` to a `C:\…` extension home,
+        // so the arg mixes separators — it must still be seen as a config path
+        // (it was not, so the literal `C:\…` reached claude inside the distro
+        // and the pane died on "Settings file not found") and the shipped
+        // remote path must come out fully POSIX.
+        let root = r"C:\Users\me\AppData\Roaming\thurbox";
+        let local = r"C:\Users\me\AppData\Roaming\thurbox\hooks/claude.json";
+        assert!(path_under_root(local, root));
+        assert_eq!(
+            remote_config_path("/home/me/.config/thurbox", root, local),
+            "/home/me/.config/thurbox/hooks/claude.json"
+        );
+
+        let args: Vec<String> = ["--settings", local].map(String::from).into();
+        let out = rewrite_config_path_args(args, root, |p| {
+            Some(remote_config_path("/home/me/.config/thurbox", root, p))
+        });
+        assert_eq!(
+            out,
+            ["--settings", "/home/me/.config/thurbox/hooks/claude.json"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn windows_config_root_ignores_sibling_and_keeps_dev_isolation() {
+        let root = r"C:\Users\me\AppData\Roaming\thurbox";
+        // Sibling dirs sharing the string prefix are not under the root.
+        assert!(!path_under_root(
+            r"C:\Users\me\AppData\Roaming\thurbox-backup\x.json",
+            root
+        ));
+        // The leaf name carries dev/release isolation into the remote root, on
+        // either separator (and whatever platform the test runs on).
+        assert_eq!(root_leaf_name(root), "thurbox");
+        assert_eq!(
+            root_leaf_name(r"C:\Users\me\AppData\Roaming\thurbox-dev"),
+            "thurbox-dev"
+        );
+        assert_eq!(
+            root_leaf_name("/home/me/.config/thurbox-dev"),
+            "thurbox-dev"
+        );
+    }
+
+    #[test]
+    fn posix_root_treats_backslash_as_a_filename_char() {
+        // `\` is legal in a POSIX filename, so it must not act as a boundary
+        // (that would ship/strip an unrelated sibling file) nor be rewritten in
+        // a translated path.
+        assert!(!path_under_root(r"/cfg\backup/x.json", "/cfg"));
+        assert_eq!(
+            remote_config_path("/rem/cfg", "/cfg", r"/cfg/we\ird.json"),
+            r"/rem/cfg/we\ird.json"
+        );
     }
 
     #[test]

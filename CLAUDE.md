@@ -715,10 +715,15 @@ not block startup, so `check_available`/`ensure_ready` are deferred to first use
   found"). `session_ops::spawn::adapt_def_for_launch` (shared by headless
   spawn and the TUI, run on the spawn worker — never the UI thread) rewrites
   them per host: on a POSIX remote the home-anchored path is **translated to
-  the remote home**, the file copied there, and the arg substituted; on a
-  psmux host (while `psmux_hook_rewrite_supported` stays off) / non-POSIX
-  config root / failed copy the **flag+path pair is stripped** so the agent
-  launches clean — surfaced as a `Hooks: degraded` row in the info panel
+  the remote home**, the file copied there, and the arg substituted. A
+  **Windows-local** config root (`C:\…` — the Windows TUI driving a WSL distro)
+  has no absolute counterpart to mirror, so it lands under the remote
+  `$HOME/.config/<root-name>` (final component = dev/release isolation), with
+  `\` honoured as a separator **only** for such a root (it is a legal POSIX
+  filename char) since the injected arg mixes them (`C:\…\hooks/claude.json`).
+  On a psmux host (while `psmux_hook_rewrite_supported` stays off) or a failed
+  home lookup/copy the **flag+path pair is stripped** so the agent launches
+  clean — surfaced as a `Hooks: degraded` row in the info panel
   (`SessionInfo.hook_wiring`). Literal signal commands carried directly in
   args (aider's `--notifications-command`) are rewritten too.
   The local-path env hints
