@@ -39,7 +39,7 @@ INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen
 VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell) — recommended:**
 
 > [!NOTE]
 > Windows support is **experimental** for now. The core works (psmux as the
@@ -66,12 +66,8 @@ winget install Thurbeen.thurbox
 Installs the prebuilt x86_64 Windows binaries (`thurbox.exe` +
 `thurbox-cli.exe`) from the GitHub Release as portable commands on your `PATH`.
 Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
-separately).
-
-> **⚠️ Pending review.** The winget package has been submitted to
-> `microsoft/winget-pkgs` but is **not yet merged/live**, so `winget install
-> Thurbeen.thurbox` won't resolve it until the PR is approved. Use
-> **Chocolatey** or the PowerShell installer (both below) in the meantime.
+separately). Live on
+[`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs).
 
 **Chocolatey (Windows):**
 
@@ -83,6 +79,15 @@ Installs the prebuilt x86_64 Windows binaries (`thurbox.exe` +
 `thurbox-cli.exe`) from the GitHub Release and shims them onto your `PATH`.
 Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
 separately — there is no Chocolatey package for it).
+
+> [!TIP]
+> **On Windows, `irm … install.ps1 | iex` is the recommended route.** Both
+> winget-pkgs and the Chocolatey community repo are *manually moderated* and
+> rate-limited, so thurbox publishes to each **at most once every 30 days**
+> (intermediate releases are coalesced into the next submission). Those channels
+> therefore lag the newest build; the PowerShell installer and
+> [GitHub Releases](https://github.com/Thurbeen/thurbox/releases) always have it
+> immediately.
 
 **Homebrew (macOS / Linux):**
 

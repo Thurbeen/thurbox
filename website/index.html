@@ -125,7 +125,10 @@ footer: true
             hidden
           >
             <p>
-              Native Windows (PowerShell 5.1+). Verifies checksums and installs the latest release to
+              Native Windows (PowerShell 5.1+), and the
+              <strong>recommended route</strong>
+              &mdash; unlike winget and Chocolatey it always has the newest
+              release. Verifies checksums and installs to
               <code>%LOCALAPPDATA%\Programs\thurbox</code>
               (added to your user
               <code>PATH</code>
@@ -151,14 +154,12 @@ footer: true
               as the multiplexer (installed separately).
             </p>
             <p>
-              <strong>Pending review:</strong>
-              the package is submitted to
-              <code>microsoft/winget-pkgs</code>
-              but not yet merged, so
-              <code>winget install Thurbeen.thurbox</code>
-              won't resolve until the PR is approved &mdash; use
-              <strong>Chocolatey</strong>
-              or the install script meanwhile.
+              <strong>Heads-up:</strong>
+              winget-pkgs is manually moderated, so thurbox submits a new version
+              there at most once every 30 days &mdash; this channel trails the
+              newest build. For the latest release right away, use the
+              <strong>PowerShell</strong>
+              installer.
             </p>
             <pre><code class="language-powershell">winget install Thurbeen.thurbox</code></pre>
           </div>
@@ -178,6 +179,15 @@ footer: true
               . Needs
               <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
               as the multiplexer (installed separately).
+            </p>
+            <p>
+              <strong>Heads-up:</strong>
+              the Chocolatey community repo is moderated and rate-limited, so
+              thurbox pushes a new version there at most once every 30 days
+              &mdash; this channel trails the newest build. For the latest
+              release right away, use the
+              <strong>PowerShell</strong>
+              installer.
             </p>
             <pre><code class="language-powershell">choco install thurbox</code></pre>
           </div>

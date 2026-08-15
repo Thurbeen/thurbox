@@ -9,14 +9,14 @@ commands on your `PATH`.
 winget install Thurbeen.thurbox
 ```
 
-> **Status: pending review.** The package has been submitted to
-> [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs) but the PR
-> has **not yet merged**, so `winget install Thurbeen.thurbox` will not resolve
-> until it goes live (see [Automated publishing](#automated-publishing-ci)
-> below). Until then,
-> install with the approved [Chocolatey](../chocolatey/README.md) package,
-> [`scripts/install.ps1`](../../scripts/install.ps1), or validate the local
-> manifest (see [Manual publishing](#manual-publishing--initial-import)).
+> **Status: live.** The package is published on
+> [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs), so
+> `winget install Thurbeen.thurbox` resolves. Each *new version* still goes
+> through PR review there, and submissions are throttled to one per 30 days (see
+> [Automated publishing](#automated-publishing-ci) below) — so the winget
+> channel trails the newest release. For the latest build immediately, use
+> [`scripts/install.ps1`](../../scripts/install.ps1)
+> (`irm … | iex`) or the GitHub Release zip.
 
 The canonical manifest set lives here under [`manifests/`](manifests/):
 

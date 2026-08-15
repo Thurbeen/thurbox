@@ -53,7 +53,10 @@ breadcrumb: 'Installation'
             </p>
           </div>
           <p>
-            On native Windows the install script is PowerShell. It installs to
+            On native Windows the install script is PowerShell, and it is the
+            <strong>recommended route</strong>
+            &mdash; unlike the winget and Chocolatey packages below, it always
+            carries the newest release. It installs to
             <code>%LOCALAPPDATA%\Programs\thurbox</code>
             (added to your user
             <code>PATH</code>) and uses
@@ -105,19 +108,6 @@ breadcrumb: 'Installation'
             (Microsoft's package manager, bundled with Windows 10/11):
           </p>
           <pre><code class="language-powershell">winget install Thurbeen.thurbox</code></pre>
-          <div class="info-box warning">
-            <p>
-              <strong>Pending review.</strong>
-              The winget package has been submitted to
-              <code>microsoft/winget-pkgs</code>
-              but is
-              <strong>not yet merged</strong>
-              , so
-              <code>winget install Thurbeen.thurbox</code>
-              will not resolve until the PR is approved. Use the PowerShell
-              installer above in the meantime.
-            </p>
-          </div>
           <p>
             Installs
             <code>thurbox.exe</code>
@@ -135,11 +125,15 @@ breadcrumb: 'Installation'
               winget-pkgs is manually reviewed, so thurbox submits a new winget
               version
               <strong>at most once every 30 days</strong>
-              (intermediate releases are coalesced into the next submission). The
-              latest build always ships immediately via the PowerShell installer
-              above and
+              (intermediate releases are coalesced into the next submission), and
+              each submission waits on PR review before it goes live. The latest
+              build always ships immediately via the PowerShell installer above
+              and
               <a href="https://github.com/Thurbeen/thurbox/releases">GitHub Releases</a>
-              ; the winget channel intentionally trails a little.
+              , so
+              <code>irm &hellip; install.ps1 | iex</code>
+              stays the recommended route on Windows; the winget channel
+              intentionally trails a little.
             </p>
           </div>
 
@@ -175,7 +169,10 @@ breadcrumb: 'Installation'
               latest build always ships immediately via the PowerShell installer
               above and
               <a href="https://github.com/Thurbeen/thurbox/releases">GitHub Releases</a>
-              ; the Chocolatey channel intentionally trails a little.
+              , so
+              <code>irm &hellip; install.ps1 | iex</code>
+              stays the recommended route on Windows; the Chocolatey channel
+              intentionally trails a little.
             </p>
           </div>
 
