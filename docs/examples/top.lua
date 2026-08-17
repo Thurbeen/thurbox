@@ -94,10 +94,13 @@ local function load_of(out)
   return { one, five, fifteen }
 end
 
---- `15603.1` MiB as `15.2 GiB`, because four significant figures of mebibytes is
---- not a number anybody reads.
-local function gib(mib)
-  return string.format("%.1f GiB", (mib or 0) / 1024)
+--- `15603.1 / 32017.1` MiB as `15.2/31.3 GiB`.
+---
+--- One unit for the pair, not two: `17.9 GiB / 31.3 GiB` is nineteen columns for
+--- thirteen columns of information, and in a 30%-wide side column that difference
+--- is the whole reason it did not fit.
+local function gib_pair(used, total)
+  return string.format("%.1f/%.1f GiB", (used or 0) / 1024, (total or 0) / 1024)
 end
 
 --- The process rows: procps and BSD both end with COMMAND, so the last field is
@@ -133,8 +136,34 @@ local function processes(out)
 end
 
 --- A labelled gauge on one line: `CPU  ████░░░░  38%  11.2/15.9 GiB`.
+---
+--- The bar is sized from what is actually left after the label, the percentage AND
+--- the detail — budgeting for the first two only is how `17.5 GiB /` ended up
+--- clipped at the pane edge in a 30%-wide column. When there is not room for both,
+--- the DETAIL goes: a percentage you cannot read is useless, and the gauge beside
+--- it already carries the same number approximately.
 local function meter(label, ratio, detail, width)
-  local bar = math.max(6, math.min(width - 28, 28))
+  local LABEL, PCT, GAP, INDENT, BORDERS = 5, 6, 3, 2, 2
+  -- Truncated to what is LEFT rather than dropped when the arithmetic says it
+  -- will not fit. Budgeting by subtraction is how `31.3 GiB` became `31.3 Gi` at
+  -- the pane edge twice: every fix is one column short of the next terminal
+  -- width. Deciding the bar first and handing the detail exactly the remainder
+  -- cannot overflow, whatever the width turns out to be.
+  local inner = math.max(0, width - BORDERS)
+  local fixed = INDENT + LABEL + PCT
+  -- The DETAIL is served first and the bar takes what is left, which is the
+  -- opposite of the obvious order and the right one: a bar is legible at any
+  -- length above a handful of columns, and a number truncated to `17.… GiB` is
+  -- legible at none. Sizing the bar first gave it twenty-six columns and the
+  -- detail eight, which is how that string reached the screen.
+  local shown = nil
+  if detail then
+    local wanted = GAP + widgets.len(detail)
+    if inner - fixed - wanted >= 6 then
+      shown = detail
+    end
+  end
+  local bar = math.max(4, math.min(inner - fixed - (shown and (GAP + widgets.len(shown)) or 0), 28))
   local filled = math.floor(ratio * bar + 0.5)
   return {
     type = "text",
@@ -148,7 +177,7 @@ local function meter(label, ratio, detail, width)
           text = string.format("  %3d%%", math.floor(ratio * 100 + 0.5)),
           style = { fg = theme.text, bold = true },
         },
-        { text = detail and ("   " .. detail) or "", style = { fg = theme.muted } },
+        { text = shown and ("   " .. shown) or "", style = { fg = theme.muted } },
       },
     },
   }
@@ -267,8 +296,7 @@ return {
       children[#children + 1] = meter("CPU", cpu, nil, ctx.width)
     end
     if used and total and total > 0 then
-      children[#children + 1] =
-        meter("MEM", used / total, gib(used) .. " / " .. gib(total), ctx.width)
+      children[#children + 1] = meter("MEM", used / total, gib_pair(used, total), ctx.width)
     end
 
     local load = load_of(out)

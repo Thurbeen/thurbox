@@ -188,8 +188,59 @@ trap cleanup EXIT INT TERM
 # the same file that carries trust and the disabled set, because those are all
 # *user decisions* (v1 used a separate keybindings.json with arrays of chords).
 # Written before first launch so the registry picks it up on the first frame.
-printf '{\n  "bindings": {\n    "search.open": "ctrl+a",\n    "settings.open": "ctrl+b"\n  }\n}\n' \
-    > "$CFG_DIR/ui.json"
+#
+# The two example panes are rebound for the same reason: they declare F5 and F7.
+#
+# --- The example plugins, so the main clip shows them ------------------------
+# `docs/examples/` is not bundled, and the demo it forms is the clearest thing
+# thurbox has to show: two panes nobody shipped, stacked beside the agent by an
+# arrangement anybody can copy. Installed here so the recording is of the real
+# files rather than a mock-up of them — if an example stops loading, the clip
+# breaks and somebody notices.
+#
+# `layout.lua` IS bundled, so this copy has to happen BEFORE the first launch:
+# `materialize` preserves a file that differs from the shipped one with no
+# manifest record, which is exactly this case. Copied after, it would be
+# overwritten on the run that mattered.
+UI_DIR="$CFG_DIR/ui"
+mkdir -p "$UI_DIR/plugins"
+cp "$REPO_ROOT/docs/examples/layout.lua" "$UI_DIR/layout.lua"
+cp "$REPO_ROOT/docs/examples/tasks.lua" "$UI_DIR/plugins/80_tasks.lua"
+cp "$REPO_ROOT/docs/examples/top.lua" "$UI_DIR/plugins/85_top.lua"
+
+# `top.lua` asks to run a program, and declaring that is not being granted it —
+# untrusted it draws "not trusted yet" instead of gauges, which is correct and
+# makes for a poor demo. Trust is keyed by ABSOLUTE path (so two interface
+# directories cannot share it) with a digest of the contents, and the digest is
+# what tells `trusted` from `trusted · modified`. FNV-1a 64, matching
+# `kernel::bundled::digest`.
+TOP_PLUGIN="$UI_DIR/plugins/85_top.lua"
+TOP_DIGEST=$(python3 - "$TOP_PLUGIN" <<'PYDIGEST'
+import sys
+h = 0xcbf29ce484222325
+for b in open(sys.argv[1], "rb").read():
+    h = ((h ^ b) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+print(f"{h:016x}")
+PYDIGEST
+)
+
+python3 - "$CFG_DIR/ui.json" "$TOP_PLUGIN" "$TOP_DIGEST" <<'PYUI'
+import json, sys
+path, top, digest = sys.argv[1], sys.argv[2], sys.argv[3]
+json.dump(
+    {
+        "bindings": {
+            "search.open": "ctrl+a",
+            "settings.open": "ctrl+b",
+            "tasks.open": "ctrl+e",
+            "top.open": "ctrl+w",
+        },
+        "trusted": {top: digest},
+    },
+    open(path, "w"),
+    indent=2,
+)
+PYUI
 
 # --- The demo repo: a vendored snapshot of thurbox's own tree ----------------
 # The demo repo is a fixed subset of THIS repository, copied into the throwaway
@@ -489,39 +540,37 @@ EOF
 fi
 
 # --- Pre-seed a few tasks + an automation -----------------------------------
-# These give the `tasks` and `search` clips real content to render (the search
-# strip searches across sessions, tasks AND automations at once). Only needed
-# for those two tapes, but seeding is cheap and harmless for the others.
-# shellcheck disable=SC2086 # $TAPES is a space-separated list, split on purpose
-if printf '%s ' $TAPES | grep -Eq '(^| )(tasks|search)( |$)'; then
-    echo "==> Seeding demo tasks + an automation"
-    # Real backlog items from thurbox's own tracker, matching the vendored tree
-    # and the session names — so the tasks panel reads as the same sprint the
-    # sessions are working, not as generic filler.
-    #
-    # NOTE: `search.tape` types the literal queries `tri`, `quote` and `test`, so
-    # at least one task/automation must match each. Keep them in sync when editing.
-    #
-    # A plain local todo plus one already in progress, so the checkbox glyphs
-    # (todo/in-progress/done) all show in the list.
-    "$CLI_BIN" task create --title "Add psmux control-mode tests" >/dev/null 2>&1 || true
-    "$CLI_BIN" task create --title "Triage flaky WSL host discovery" \
-        --status in_progress >/dev/null 2>&1 || true
-    # A rich markdown description so the full-screen preview shows headings,
-    # bold and lists rendered (the headline of the tasks feature). Uses **bold**
-    # rather than backtick code spans: a backtick inside single quotes reads as an
-    # unexpanded command substitution to shellcheck (SC2016), and the preview
-    # renders bold just as legibly.
-    "$CLI_BIN" task create --title "Harden posix_quote against newlines" \
-        --description "$(printf '## Goal\n\nA newline survives **posix_quote** and is re-split by tmux **control mode**.\n\n- reject newlines at the quoting boundary\n- add a regression test\n- audit callers that build *remote* git commands')" \
-        >/dev/null 2>&1 || true
-    # An automation (spawn action, inferred from --repo) so the search demo has
-    # a matching automation result too.
-    "$CLI_BIN" automation create --name "nightly-clippy-triage" --trigger daily \
-        --time "09:00" --repo "$DEMO_REPO" \
-        --prompt "Run cargo clippy --all-targets and triage any new warnings" \
-        >/dev/null 2>&1 || true
-fi
+# Unconditional, because the demo interface installed above puts the tasks pane
+# on screen in EVERY clip. It used to be gated on the `tasks` and `search` tapes,
+# which is how the main demo came to be recorded with an empty tasks pane reading
+# "nothing on the list" — the pane was working and had simply been given nothing.
+echo "==> Seeding demo tasks + an automation"
+# Real backlog items from thurbox's own tracker, matching the vendored tree
+# and the session names — so the tasks panel reads as the same sprint the
+# sessions are working, not as generic filler.
+#
+# NOTE: `search.tape` types the literal queries `tri`, `quote` and `test`, so
+# at least one task/automation must match each. Keep them in sync when editing.
+#
+# A plain local todo plus one already in progress, so the checkbox glyphs
+# (todo/in-progress/done) all show in the list.
+"$CLI_BIN" task create --title "Add psmux control-mode tests" >/dev/null 2>&1 || true
+"$CLI_BIN" task create --title "Triage flaky WSL host discovery" \
+    --status in_progress >/dev/null 2>&1 || true
+# A rich markdown description so the full-screen preview shows headings,
+# bold and lists rendered (the headline of the tasks feature). Uses **bold**
+# rather than backtick code spans: a backtick inside single quotes reads as an
+# unexpanded command substitution to shellcheck (SC2016), and the preview
+# renders bold just as legibly.
+"$CLI_BIN" task create --title "Harden posix_quote against newlines" \
+    --description "$(printf '## Goal\n\nA newline survives **posix_quote** and is re-split by tmux **control mode**.\n\n- reject newlines at the quoting boundary\n- add a regression test\n- audit callers that build *remote* git commands')" \
+    >/dev/null 2>&1 || true
+# An automation (spawn action, inferred from --repo) so the search demo has
+# a matching automation result too.
+"$CLI_BIN" automation create --name "nightly-clippy-triage" --trigger daily \
+    --time "09:00" --repo "$DEMO_REPO" \
+    --prompt "Run cargo clippy --all-targets and triage any new warnings" \
+    >/dev/null 2>&1 || true
 
 # Give the real CLIs a moment to boot before VHS starts capturing. Each tape
 # relaunches the TUI against the same seeded sessions, so they only need to be
