@@ -36,11 +36,28 @@ breadcrumb: 'Installation'
             <li>Post-install instructions</li>
           </ul>
 
+          <div class="info-box">
+            <p>
+              <strong><code>export</code> is not optional here.</strong>
+              In <code>VAR=x curl … | sh</code> the assignment binds to
+              <code>curl</code>, and the <code>sh</code> reading from the pipe never sees it &mdash;
+              so the setting is silently ignored. Export it on its own line first.
+            </p>
+          </div>
+
           <h3>Custom install directory</h3>
-          <pre data-wrap><code class="language-bash">INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+          <pre data-wrap><code class="language-bash">export INSTALL_DIR=/usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
           <h3>Specific version</h3>
-          <pre data-wrap><code class="language-bash">VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+          <pre data-wrap><code class="language-bash">export VERSION=v1.8.6
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+          <p>
+            Pinning is also how you
+            <a href="v1.html">stay on 1.x</a>
+            &mdash; the newest patch is on the
+            <a href="https://github.com/Thurbeen/thurbox/releases">releases page</a>.
+          </p>
 
           <h3>Windows (PowerShell)</h3>
           <div class="info-box warning">

@@ -142,31 +142,26 @@ breadcrumb: 'Features'
 
           <div class="info-box">
             <p>
-              <strong>CLI only.</strong>
-              Automations still fire &mdash; the tmux heartbeat keeper runs them whether or not
-              thurbox is open &mdash; but there is no pane for them yet. Author and inspect them
-              with <code>thurbox-cli automation</code>.
+              <strong>No pane, but they still fire.</strong>
+              Scheduling never lived in the interface, so automations run exactly as before &mdash;
+              what the current interface lacks is the editor. Author and inspect them with
+              <code>thurbox-cli automation</code>; the pane is documented under
+              <a href="deprecated.html#automations">deprecated surfaces</a>.
             </p>
           </div>
           <h2 id="automations">
             Automations
             <a href="#automations" class="heading-anchor">#</a>
           </h2>
-          <div class="info-box">
-            <p>
-              <strong>Note:</strong>
-              Automations are stable and good enough for daily use today, but the feature may still
-              evolve.
-            </p>
-          </div>
           <p>
             Named, scheduled agent runs. An automation fires on a schedule and either
             <strong>sends</strong>
-            a prompt to a running session or
+            a prompt to a running session,
             <strong>spawns</strong>
-            a fresh session (optionally on a new git worktree) and prompts it. Press
-            <code>Ctrl+P</code>
-            for the full list, or use the always-present Automations pane beneath the session list.
+            a fresh session (optionally on a new git worktree) and prompts it, or
+            <strong>runs a shell command</strong>
+            headlessly with no agent at all &mdash; the deterministic scheduled job the
+            issue-tracker extensions are built on.
           </p>
           <ul>
             <li>
@@ -178,29 +173,7 @@ breadcrumb: 'Features'
               <code>weekdays</code>
               /
               <code>weekly</code>
-              presets and an optional timezone. The editor needs no cron knowledge: the trigger is a
-              selector, the time is set with steppers, and a live preview shows the next fire.
-            </li>
-            <li>
-              The Automations pane joins the
-              <code>Ctrl+H</code>
-              /
-              <code>Ctrl+L</code>
-              focus cycle; once focused,
-              <code>Ctrl+N</code>
-              creates and
-              <code>j</code>
-              /
-              <code>k</code>
-              /
-              <code>Space</code>
-              /
-              <code>r</code>
-              /
-              <code>e</code>
-              /
-              <code>d</code>
-              select / toggle / run / edit / delete.
+              presets and an optional timezone.
             </li>
             <li>
               Automations fire even when the TUI is closed &mdash; a detached tmux heartbeat keeper
@@ -221,22 +194,16 @@ breadcrumb: 'Features'
 
           <div class="info-box">
             <p>
-              <strong>CLI only.</strong>
-              Tasks have no pane in the current interface. Everything below works through
-              <code>thurbox-cli task</code>, and the data is the same.
+              <strong>No pane.</strong>
+              Tasks work through <code>thurbox-cli task</code>, against the same records the pane
+              edited; the pane itself is documented under
+              <a href="deprecated.html#tasks">deprecated surfaces</a>.
             </p>
           </div>
           <h2 id="tasks">
             Tasks
             <a href="#tasks" class="heading-anchor">#</a>
           </h2>
-          <div class="info-box warning">
-            <p>
-              <strong>Heads up:</strong>
-              Tasks are a new feature &mdash; expect the UX and UI to keep evolving in upcoming
-              releases.
-            </p>
-          </div>
           <p>
             A built-in todo list whose items can be
             <strong>connected to a coding agent</strong>
@@ -252,36 +219,35 @@ breadcrumb: 'Features'
           </p>
           <ul>
             <li>
-              Tasks render in a toggleable right-side column (
-              <code>Ctrl+W</code>
-              /
-              <code>F5</code>
-              ) that behaves like the file viewer and joins the
-              <code>Ctrl+H</code>
-              /
-              <code>Ctrl+L</code>
-              focus cycle. Once focused,
-              <code>n</code>
-              creates,
-              <code>e</code>
-              /
-              <code>Enter</code>
-              opens an in-pane editor (no popup),
-              <code>Space</code>
-              cycles status (&#9744; todo &middot; &#9680; in progress &middot; &#9745; done),
-              <code>r</code>
-              runs the action, and
-              <code>d</code>
-              deletes.
+              A task carries a title, a markdown description, and a status (&#9744; todo &middot;
+              &#9680; in progress &middot; &#9745; done). Triggering one runs its action and advances
+              it to
+              <em>in progress</em>
+              .
             </li>
             <li>
-              Persisted in SQLite and scriptable headlessly via
+              Persisted in SQLite and driven from
               <code>thurbox-cli task</code>
               (alias
               <code>todo</code>
               ):
               <code>create/list/show/edit/remove/run</code>
-              . External issue-tracker sync (Jira, GitHub Issues) is scaffolded for a later release.
+              .
+            </li>
+            <li>
+              <strong>Two-way issue-tracker sync</strong>
+              is shipped as per-provider extensions &mdash;
+              <a href="extension-github-issues.html">GitHub Issues</a>
+              ,
+              <a href="extension-gitlab-issues.html">GitLab Issues</a>
+              ,
+              <a href="extension-linear.html">Linear</a>
+              and
+              <a href="extension-jira.html">Jira</a>
+              &mdash; each a deterministic scheduled command with no agent involved. Imported items
+              dedup on
+              <code>(source, external_id)</code>
+              , and closing a task closes the issue.
             </li>
           </ul>
 
@@ -565,183 +531,110 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
                   playsinline
                   preload="none"
                 >
-                  Searching sessions, tasks, automations and files at once with live in-panel
-                  highlighting
+                  Searching sessions from the strip, with matches highlighted live in the session
+                  list and the rest dimmed
                 </video>
               </div>
             </div>
             <figcaption>
-              One strip,
               <code>Ctrl+/</code>
-              , searching every scope at once.
+              &mdash; matches highlight in the pane rather than being reprinted in the strip.
             </figcaption>
           </figure>
           <p>
             Press
             <code>Ctrl+/</code>
-            to open a non-modal search strip that searches
-            <strong>every scope at once</strong>
-            &mdash; sessions, tasks, automations, and the active session's file tree. It is the one
-            search: the old per-pane
-            <code>/</code>
-            filters were folded into it.
+            to open a non-modal search strip across the top of the interface. A result carries the
+            pane it belongs to, so
+            <strong>search grows a scope whenever a pane returns</strong>
+            &mdash; sessions is the scope that has a pane today.
           </p>
           <ul>
             <li>
               <strong>Sessions</strong>
-              match on name, agent, and worktree branch
+              match on name, agent, worktree branch and repository
               <em>and</em>
-              on live terminal-buffer content;
-              <strong>tasks</strong>
-              match on title,
-              <strong>automations</strong>
-              on name, and
-              <strong>files</strong>
-              on path.
+              on the
+              <strong>text on the agent's screen</strong>
+              &mdash; the half that finds a session by the error in it.
             </li>
             <li>
               Matches highlight
-              <strong>live in the panels themselves</strong>
-              &mdash; matching rows are accented, the rest dimmed &mdash; with per-scope match
-              counts and a grouped result list.
+              <strong>live in the pane itself</strong>
+              &mdash; matching rows accented, the rest dimmed &mdash; rather than being reprinted in
+              the strip. Moving the selection previews it in the list; <code>Esc</code> puts back
+              exactly what you were looking at.
             </li>
             <li>
-              <code>&uarr;</code>
-              /
-              <code>&darr;</code>
-              move the selection (previewing the owning panel),
-              <code>Enter</code>
-              jumps to the result and focuses its pane, and
-              <code>Esc</code>
-              restores exactly what you had before searching.
+              Metadata matching is subsequence (typing
+              <code>oc52</code>
+              finds
+              <code>fix-osc52</code>
+              ); screen text is matched as a substring, because fuzzy matching against a whole
+              terminal screen matches everything. A session whose metadata already matched is not
+              scanned twice.
+            </li>
+            <li>
+              <strong>Nobody pays for it while it is closed.</strong>
+              Reading every agent's screen every frame would be a permanent cost for a feature in
+              occasional use, so the strip leaves its query where the kernel can see it and the screen
+              text is served only while it is actually asking.
             </li>
           </ul>
-
-          <div class="info-box">
-            <p>
-              <strong>Removed.</strong>
-              The native review view is not part of the current interface and has no replacement
-              yet. It is tracked with the other gaps in
-              <code>openspec/changes/v2-parity-gaps/</code>; v1 keeps it on the
-              <code>1.x</code> branch.
-            </p>
-          </div>
-          <h2 id="code-review">
-            Code Review
-            <a href="#code-review" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Every session is a git worktree on a branch forked from a base, so &ldquo;review what
-            this agent built&rdquo; maps cleanly onto the session model. Press
-            <code>Ctrl+X</code>
-            (or <code>F7</code>) in 1.x to open a native diff reviewer in the central pane &mdash; rendered by Thurbox itself,
-            with no external binary.
-          </p>
-          <ul>
-            <li>
-              <strong>What to review.</strong>
-              The whole branch (<code>&lt;base&gt;..HEAD</code>), a single commit, or the uncommitted
-              working changes &mdash; switch targets with
-              <code>t</code>
-              .
-            </li>
-            <li>
-              <strong>Changed-files tree.</strong>
-              The file-viewer column lists changes as a
-              <strong>folder tree</strong>
-              with colored status glyphs (<code>M</code>/<code>A</code>/<code>D</code>/<code>R</code>)
-              and per-file
-              <code>+</code>/<code>-</code>
-              counts; the diff body is syntax-highlighted, unified or
-              <strong>side-by-side</strong>
-              (<code>v</code>).
-            </li>
-            <li>
-              <strong>Comments.</strong>
-              Leave line, file, or review-summary comments classified as
-              <em>issue / suggestion / note / praise</em>
-              , composed inline at the line.
-            </li>
-            <li>
-              <strong>Mark reviewed &amp; fold.</strong>
-              Mark a file (or hunk) reviewed with
-              <code>r</code>
-              /
-              <code>R</code>
-              ; a reviewed file
-              <strong>folds</strong>
-              to just its header, tree-style (<code>Enter</code> expands/collapses any file).
-            </li>
-            <li>
-              <strong>Persistent per session.</strong>
-              An open review stays open as you switch sessions and come back &mdash; exactly like the
-              shell view.
-            </li>
-            <li>
-              <strong>Feedback loop.</strong>
-              <code>y</code>
-              copies the review as markdown;
-              <code>e</code>
-              sends the whole review back into the agent as a prompt to address it. (Submitting to
-              GitHub/GitLab is intentionally out of scope.)
-            </li>
-          </ul>
-          <p>
-            Comments and reviewed-marks persist in SQLite, keyed per session. The review command is
-            native; gate the whole feature with
-            <code>[features] code_review</code>
-            .
-          </p>
 
           <h2 id="responsive-ui">
-            Responsive UI
+            Responsive layout
             <a href="#responsive-ui" class="heading-anchor">#</a>
           </h2>
-          <p>Three layout tiers adapt to your terminal width:</p>
+          <p>
+            The arrangement adapts to the terminal size, and
+            <strong>the thresholds are a file you can edit</strong>
+            &mdash;
+            <code>ui/layout.lua</code>
+            , not a breakpoint compiled into the binary. It ships arranging two panes between three
+            chrome bands:
+          </p>
           <table>
             <thead>
               <tr>
-                <th>Width</th>
-                <th>Layout</th>
+                <th>Terminal size</th>
+                <th>Arrangement</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td>&lt; 80 cols</td>
-                <td>Terminal only</td>
+                <td>Centre pane only &mdash; the session column is dropped</td>
               </tr>
               <tr>
                 <td>&gt;= 80 cols</td>
-                <td>Session sidebar + terminal</td>
+                <td>Session column (25%, min 20 cols) + centre pane</td>
               </tr>
               <tr>
-                <td>&gt;= 120 cols</td>
-                <td>Sidebar + terminal + info panel</td>
+                <td>&lt; 20 rows</td>
+                <td>The header band is dropped to keep the panes usable</td>
               </tr>
             </tbody>
           </table>
-          <ul>
-            <li>
-              Scrollback with
-              <code>Shift+arrows</code>
-              /
-              <code>PageUp</code>
-              /
-              <code>PageDown</code>
-              / mouse wheel
-            </li>
-            <li>Non-modal error messages in the status bar</li>
-            <li>Vim-inspired keybindings throughout</li>
-            <li>Tri-state focus system (Focused, Active, Inactive) with visual border feedback</li>
-          </ul>
+          <p>
+            The centre pane is never dropped &mdash; it takes whatever the session column leaves.
+            Everything else is yours: change a percentage, reorder the bands, or delete a line to drop
+            one. The function only
+            <em>arranges</em>
+            , so it never calls a plugin and a mistake in it cannot break one. See
+            <a href="v2-interface.html">the interface</a>
+            for how it is resolved before any plugin draws.
+          </p>
           <h2 id="themes">
             Themes
             <a href="#themes" class="heading-anchor">#</a>
           </h2>
           <p>
-            Nine built-in palettes (five dark, four light) switch live with
+            Thirty-six built-in palettes (twenty-eight dark, eight light) switch live with
             <code>Ctrl+Y</code>
-            and persist across restarts.
+            (or
+            <code>F4</code>
+            ) and persist across restarts.
           </p>
           <figure class="video-card">
             <div class="terminal-frame">
@@ -824,8 +717,8 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
           <ul>
             <li>
               <strong>Click a row</strong>
-              in the session list, tasks panel, automations pane, or file viewer to select it and
-              focus that pane. File rows also open the file or toggle the directory.
+              in any pane to select it and focus that pane. A plugin gets the hit for free: it
+              returns the rects it drew, and the kernel matches the click against them.
             </li>
             <li>
               <strong>Click a picker row</strong>
@@ -856,7 +749,7 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             <a href="#feature-flags" class="heading-anchor">#</a>
           </h2>
           <p>
-            Whole TUI features can be switched off in
+            Behaviour that reaches outside the interface is switched in
             <code>~/.config/thurbox/settings.toml</code>
             under
             <code>[features]</code>
@@ -866,31 +759,46 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             <code>version_check</code>
             and
             <code>auto_update</code>
-            , which are opt-in because they reach the network). A disabled feature hides its pane
-            and turns its keybinding into an explanatory toast,
-            but its data and the
-            <code>thurbox-cli</code>
-            surface keep working &mdash; so flipping a flag back on is lossless.
+            , which are opt-in because they reach the network).
           </p>
+          <div class="info-box">
+            <p>
+              <strong>A pane is no longer switched off here.</strong>
+              Panes are files, so turning one off is
+              <code>space</code>
+              on its row in the Interface tab &mdash; a decision recorded in
+              <code>ui.json</code>
+              beside your rebindings. That is strictly more than a flag could do: it works for a
+              plugin you wrote, which no compiled-in flag could ever have known about.
+            </p>
+          </div>
           <pre data-title="settings.toml"><code class="language-toml">[features]
-tasks = true          # F5/Ctrl+W tasks panel
-automations = true    # automations pane, Ctrl+P, schedule firing
-file_viewer = true    # F3/Ctrl+E file viewer
-global_search = true  # Ctrl+/ search strip
-info_panel = true     # F2/Ctrl+B info panel
 shell_pane = true     # Ctrl+T per-session shell
+soft_delete = true    # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard-delete behind a confirm
+automations = true    # schedule firing + arming the tmux heartbeat
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
 notifications = true  # OS desktop alerts when a session needs attention
-soft_delete = true    # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard-delete behind a confirm
+perf_hud = false      # F12 live counters
 version_check = false # opt-in GitHub update check (makes a network call)
-auto_update = false   # opt-in: silently download+verify+replace binaries on startup</code></pre>
+auto_update = false   # opt-in: download+verify+replace the binaries on startup</code></pre>
           <p>
             <code>automations = false</code>
-            is the one flag with teeth beyond the UI: it also stops the TUI from firing due
-            schedules and arming the tmux heartbeat at startup (explicit
+            is the flag with teeth beyond the interface: it also stops due schedules from firing and
+            stops the tmux heartbeat being armed at startup (explicit
             <code>thurbox-cli automation</code>
             commands still work).
           </p>
+          <div class="info-box">
+            <p>
+              <strong>Five keys are accepted and ignored.</strong>
+              <code>tasks</code>, <code>file_viewer</code>, <code>info_panel</code>,
+              <code>code_review</code> and <code>global_search</code> gated
+              <a href="deprecated.html">panes that no longer exist</a>, and nothing reads them now.
+              They are still parsed rather than rejected, so an existing
+              <code>settings.toml</code> keeps loading instead of failing on an unknown key &mdash;
+              but setting one has no effect, in either direction.
+            </p>
+          </div>
           <p>
             You don't have to hand-edit the file: press
             <code>Ctrl+,</code>
@@ -1177,11 +1085,10 @@ thurbox-cli message inbox --for flow --claim</code></pre>
             any pending scheduled commands are left untouched &mdash; the running TUI cleans those
             up on its next sync, and the session stays recoverable with
             <code>session restore &lt;uuid&gt;</code>
-            (the TUI's
-            <code>Ctrl+U</code>
-            /
+            (or
             <code>Ctrl+Z</code>
-            undo). Restore revives the metadata; the TUI re-spawns a fresh window for it.
+            in the interface, which undoes the delete you just made). Restore revives the metadata;
+            the interface re-spawns a fresh window for it.
           </p>
           <p>
             Pass

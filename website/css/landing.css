@@ -1130,3 +1130,164 @@ main {
     transition: opacity 1ms linear;
   }
 }
+
+/* The hero's second claim: what the product is, after what it runs. Weighted
+   below the first subtitle so the pair reads as lede-then-thesis. */
+.subtitle--thesis {
+  border-left: 2px solid var(--accent);
+  color: var(--text-secondary);
+  padding-left: 0.85rem;
+}
+
+.subtitle--thesis strong {
+  color: var(--text-primary);
+}
+
+/* Feature bands.
+   The grid is split because the architecture is: band 1 is compiled and fixed,
+   band 2 is Lua you own. The rule down the left is the whole encoding — muted
+   and static for the engine, accent and lit for the interface — so the boundary
+   is visible before either heading is read. */
+.feature-band {
+  border-left: 2px solid var(--border);
+  margin-top: 2.5rem;
+  padding-left: clamp(0.85rem, 2vw, 1.75rem);
+}
+
+.feature-band--yours {
+  border-left-color: var(--accent);
+  box-shadow: -2px 0 12px -6px var(--accent);
+}
+
+.feature-band__head {
+  margin-bottom: 1.5rem;
+  max-width: 62ch;
+}
+
+.feature-band__title {
+  font-family: var(--font-display);
+  font-size: clamp(1rem, 2.4vw, 1.35rem);
+  line-height: 1.5;
+  margin: 0 0 0.6rem;
+}
+
+.feature-band--yours .feature-band__title {
+  color: var(--accent);
+  text-shadow: var(--glow-red);
+}
+
+.feature-band__lede {
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* The diptych: the file on the left is what draws the pane on the right. */
+.diptych {
+  align-items: start;
+  display: grid;
+  gap: clamp(1.25rem, 3vw, 2.5rem);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-top: 2rem;
+}
+
+.diptych__code {
+  margin: 0;
+  min-width: 0;
+}
+
+.diptych__code figcaption {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  margin-bottom: 0.5rem;
+}
+
+.diptych__code pre {
+  margin: 0;
+  max-height: 34rem;
+  overflow: auto;
+}
+
+.diptych__code code {
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.diptych__result {
+  min-width: 0;
+}
+
+.diptych__label {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  margin: 0 0 0.5rem;
+}
+
+/* Two panes side by side, sized in rows rather than absolutely: this one does
+   not animate, so it needs none of the lab's rect machinery. */
+.diptych__screen {
+  background: var(--bg-code);
+  display: grid;
+  gap: 1px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+  min-height: 11rem;
+  padding: 1px;
+}
+
+.diptych__pane {
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.5rem 0.6rem;
+}
+
+.diptych__pane.is-muted {
+  opacity: 0.5;
+}
+
+.diptych__pane.is-live {
+  border-color: var(--accent);
+}
+
+.diptych__pane-foot {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  margin-top: auto;
+  text-align: right;
+}
+
+.diptych__pane .ui-pane__row.warn {
+  color: var(--yellow);
+}
+
+.diptych__notes {
+  list-style: none;
+  margin: 1.25rem 0 0;
+  padding: 0;
+}
+
+.diptych__notes li {
+  border-left: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  margin-bottom: 0.85rem;
+  padding-left: 0.75rem;
+}
+
+.diptych__notes strong {
+  color: var(--text-primary);
+}
+
+@media (width <= 900px) {
+  .diptych {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .diptych__code pre {
+    max-height: 24rem;
+  }
+}

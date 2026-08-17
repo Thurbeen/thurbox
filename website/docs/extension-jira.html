@@ -209,15 +209,8 @@ EOF
             <a href="#sync" class="heading-anchor">#</a>
           </h2>
           <p>
-            The automation fires every 15&nbsp;min. To run it now, trigger it from the
-            <strong>Automations</strong>
-            pane (
-            <code>Ctrl+P</code>
-            &rarr; select
-            <code>jira-tick</code>
-            &rarr;
-            <code>r</code>
-            ) or headless:
+            The automation fires every 15&nbsp;min &mdash; whether or not thurbox is open, since a
+            detached tmux keeper runs the schedule. To run it now:
           </p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> automation run &lt;id&gt;     <span class="syn-comment"># id from: thurbox-cli automation list</span>
 <span class="syn-prompt">$</span> <span class="syn-cmd">~/.config/thurbox/extensions/jira/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>

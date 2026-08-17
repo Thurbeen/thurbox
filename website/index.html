@@ -18,12 +18,17 @@ footer: true
             </h1>
             <p class="subtitle">
               Run Claude Code, Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe, pi, Oh
-              My Pi — or any CLI you define — side by side in persistent tmux panes that survive
-              crashes and restarts.
+              My Pi &mdash; or any CLI you define &mdash; side by side in persistent tmux panes that
+              survive crashes and restarts.
+            </p>
+            <p class="subtitle subtitle--thesis">
+              And every pane you see is a
+              <strong>Lua file in a directory you own</strong>
+              &mdash; the session list included. Turn one off, reorder them, or write your own.
             </p>
             <div class="hero-ctas">
               <a href="#installation" class="btn btn-primary">Get Started</a>
-              <a href="docs/index.html" class="btn btn-secondary">View Docs</a>
+              <a href="#customizable" class="btn btn-secondary">See it move</a>
             </div>
             <button class="hero-press-start" id="press-start" type="button">
               <span class="arrow" aria-hidden="true">&#9654;</span>
@@ -432,12 +437,152 @@ cargo build --release</code></pre>
       </div>
     </section>
 
+    <!-- The claim above, made checkable: the file on the left is what draws the
+         pane on the right. Keep the two in step if either is edited. -->
+    <section class="section diptych-section" id="a-pane-is-a-file">
+      <div class="container">
+        <p class="section-eyebrow">Not a config format</p>
+        <h2>This is the whole plugin</h2>
+        <p class="section-lede">
+          A plugin is a table. It names a slot to occupy, declares the chords it wants, and returns
+          what it drew &mdash; and there are only ever
+          <strong>four node kinds</strong>
+          (<code>text</code>, <code>box</code>, <code>input</code>, <code>surface</code>). Lists,
+          panels and tables are not kinds; they compose from those, in Lua, in
+          <code>ui/lib/</code>.
+        </p>
+
+        <div class="diptych">
+          <figure class="diptych__code">
+            <figcaption><code>ui/plugins/90_git.lua</code></figcaption>
+            <pre><code class="language-lua">local theme = require("lib.theme")
+local widgets = require("lib.widgets")
+
+return {
+  name  = "git",
+  slot  = "center",
+  order = 90,
+  focusable = true,
+
+  -- Declaring it is not being granted it: until you
+  -- trust this file, the `run` global is *absent*.
+  capabilities = { "run" },
+
+  keys = {
+    { key = "f8", action = "git.open",
+      desc = "repo at a glance", scope = "global" },
+  },
+
+  render = function(ctx)
+    -- `run` is nil until the file is trusted, so this
+    -- checks rather than assuming.
+    if not run then
+      return { type = "text", text = theme.dim("  not trusted") }
+    end
+
+    local id = store.selected
+    if not id then
+      return { type = "text", text = theme.dim("  no session") }
+    end
+
+    -- Asked every frame, on purpose. A worker answers;
+    -- a fresh answer is a map lookup, not a process.
+    run("status", "git status --porcelain",
+        { session = id, ttl = 2 })
+
+    local got  = thurbox.runs["status"]
+    local rows = {}
+
+    if got and got.ok then
+      for line in got.stdout:gmatch("[^\n]+") do
+        rows[#rows + 1] = { spans = { {
+          text  = "  " .. widgets.truncate(line, ctx.width - 4),
+          style = { fg = line:find("^%s*M") and theme.warn
+                        or theme.secondary },
+        } } }
+      end
+    end
+
+    return {
+      type  = "box",
+      frame = widgets.panel("git", ctx.focused),
+      children = {
+        widgets.list({ rows = rows, height = ctx.height - 2 }),
+      },
+    }
+  end,
+}</code></pre>
+          </figure>
+
+          <div class="diptych__result">
+            <p class="diptych__label">&rarr; and that is a pane</p>
+            <div class="terminal-frame">
+              <div class="terminal-header">
+                <div class="terminal-dot red"></div>
+                <div class="terminal-dot yellow"></div>
+                <div class="terminal-dot green"></div>
+                <span class="terminal-title">thurbox</span>
+              </div>
+              <div class="diptych__screen" aria-hidden="true">
+                <div class="diptych__pane is-muted">
+                  <span class="ui-pane__title">Sessions</span>
+                  <span class="ui-pane__row"><i class="dot working"></i>fix-osc52</span>
+                  <span class="ui-pane__row"><i class="dot idle"></i>docs-hooks</span>
+                </div>
+                <div class="diptych__pane is-live">
+                  <span class="ui-pane__title">git</span>
+                  <span class="ui-pane__row mono warn">&nbsp;M src/kernel/runs.rs</span>
+                  <span class="ui-pane__row mono warn">&nbsp;M ui/layout.lua</span>
+                  <span class="ui-pane__row mono">?? notes.md</span>
+                  <span class="diptych__pane-foot">ctrl+g</span>
+                </div>
+              </div>
+            </div>
+            <ul class="diptych__notes">
+              <li>
+                <strong>It never blocks.</strong>
+                <code>ctx.run</code>
+                asks; a worker answers next frame. Calling it every frame is the intended pattern,
+                because a fresh answer is a map lookup rather than a process.
+              </li>
+              <li>
+                <strong>It gets no more than it asked for.</strong>
+                No filesystem, no network, no
+                <code>os</code>
+                or
+                <code>io</code>
+                &mdash; those are
+                <em>absent</em>
+                from the sandbox, not blocked in it. Running a program is a capability, and it stays
+                inert until you trust the file.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features, in two bands.
+         The split is not decoration: the engine is compiled and fixed, the
+         interface is Lua you edit. Grouping the cards that way is the same
+         boundary the architecture draws, so the grid teaches it. -->
     <section class="features section" id="features">
       <div class="container">
         <div class="section-title">
           <h2>Features</h2>
-          <p>Everything you need to run coding agents at scale</p>
+          <p>A fixed engine under an interface that is entirely yours</p>
         </div>
+
+        <div class="feature-band">
+          <div class="feature-band__head">
+            <p class="section-eyebrow">Band 1 &mdash; compiled, fixed</p>
+            <h3 class="feature-band__title">The engine</h3>
+            <p class="feature-band__lede">
+              Processes, git, hosts, schedules, the database. This half is Rust and it is not
+              yours to edit &mdash; which is the point: it is what a plugin is allowed to be
+              careless in front of.
+            </p>
+          </div>
         <div class="grid grid-3">
           <a href="docs/features.html#session-orchestration" class="feature-link">
             <div class="card">
@@ -490,51 +635,37 @@ cargo build --release</code></pre>
               <div class="card-icon" aria-hidden="true">&#x21BB;</div>
               <h3>Automations</h3>
               <p>
-                Named, scheduled agent runs &mdash; one-shot or recurring (cron, with
-                <code>daily</code>
-                /
-                <code>weekly</code>
-                presets). On schedule they
+                Named, scheduled agent runs &mdash; one-shot or recurring cron. On schedule they
                 <strong>send</strong>
-                a prompt to a session or
+                a prompt to a session,
                 <strong>spawn</strong>
-                a fresh one. Manage them from the always-on
-                <code>Ctrl+P</code>
-                pane (or the
-                <code>thurbox-cli</code>
-                headless binary); they fire even when the TUI is closed.
+                a fresh one, or run a plain shell command. A detached tmux keeper fires them
+                <strong>whether or not thurbox is open</strong>
+                .
               </p>
             </div>
           </a>
           <a href="docs/features.html#tasks" class="feature-link">
             <div class="card">
               <div class="card-icon" aria-hidden="true">&#x2611;&#xFE0E;</div>
-              <h3>Tasks</h3>
+              <h3>Tasks &amp; issue sync</h3>
               <p>
-                A built-in todo list whose items
+                A todo list whose items
                 <strong>connect to a coding agent</strong>
-                &mdash;
-                <strong>send</strong>
-                the title to a session or
-                <strong>spawn</strong>
-                a fresh one. Toggle the panel with
-                <code>Ctrl+W</code>
-                ; edit in place, cycle status, and trigger the action with
-                <code>r</code>
-                .
+                &mdash; send one into a running session or spawn a fresh one seeded with it. Syncs
+                two-way with GitHub, GitLab, Linear and Jira, with no agent in the loop.
               </p>
             </div>
           </a>
-          <a href="docs/v2-interface.html" class="feature-link">
+          <a href="docs/features.html#remote-ssh-sessions" class="feature-link">
             <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x2732;&#xFE0E;</div>
-              <h3>Editable Interface</h3>
+              <div class="card-icon" aria-hidden="true">&#x21C4;</div>
+              <h3>Remote &amp; WSL Hosts</h3>
               <p>
-                Every pane is a
-                <strong>Lua file under <code>ui/plugins/</code></strong>
-                &mdash; the session list included. Move one, turn it off, delete it, or write your
-                own, and the arrangement closes up around what is left. No recompile and no
-                restart: a plugin gets no filesystem and no network, it just draws.
+                Run an agent on another machine while the interface stays local &mdash; over SSH, or
+                in a WSL distro that is
+                <strong>discovered with no config</strong>
+                . The agent, its tmux window and its worktrees all live on that host.
               </p>
             </div>
           </a>
@@ -547,26 +678,10 @@ cargo build --release</code></pre>
                 <strong>agent-agnostic</strong>
                 add-ons that compose Thurbox through
                 <code>thurbox-cli</code>
-                &mdash; never the binary. Install each from a declarative manifest in one command (
-                <code>thurbox-cli extension install &lt;name&gt;</code>
-                ), and Thurbox keeps its session and automation
+                &mdash; never the binary. Install one from a declarative manifest in a single
+                command, and Thurbox keeps its session and automation
                 <strong>self-healed</strong>
-                . Ships flow, forge, ci-shepherd, renovate, and task integrations
-                for GitHub / GitLab / Linear / Jira (all experimental).
-              </p>
-            </div>
-          </a>
-          <a href="docs/features.html#global-search" class="feature-link">
-            <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x2315;</div>
-              <h3>Global Search</h3>
-              <p>
-                One key (
-                <code>Ctrl+/</code>
-                ) searches
-                <strong>every scope at once</strong>
-                &mdash; sessions (incl. live terminal content), tasks, automations, and files
-                &mdash; with matches highlighted live in the panels themselves.
+                . Ships flow, forge, ci-shepherd, renovate and four issue-tracker syncs.
               </p>
             </div>
           </a>
@@ -577,11 +692,106 @@ cargo build --release</code></pre>
               <p>
                 The
                 <code>thurbox-cli</code>
-                binary scripts everything from the terminal: create and drive sessions and schedule
-                commands, all sharing the TUI's SQLite database.
+                binary scripts everything from the terminal: create and drive sessions, schedule
+                commands, pass messages between agents &mdash; all against the same SQLite database
+                the interface reads.
               </p>
             </div>
           </a>
+        </div>
+        </div>
+
+        <div class="feature-band feature-band--yours">
+          <div class="feature-band__head">
+            <p class="section-eyebrow">Band 2 &mdash; Lua, yours</p>
+            <h3 class="feature-band__title">The interface</h3>
+            <p class="feature-band__lede">
+              Everything you look at. Not a theme layer over fixed panes &mdash; the panes
+              themselves, the arrangement that places them, and the keys that reach them are
+              files in a directory you own.
+            </p>
+          </div>
+          <div class="grid grid-3">
+            <a href="docs/v2-interface.html" class="feature-link">
+              <div class="card">
+                <div class="card-icon" aria-hidden="true">&#x2732;&#xFE0E;</div>
+                <h3>Every pane is a file</h3>
+                <p>
+                  The session list included. Move one, turn it off, delete it, or write your own
+                  &mdash; and the arrangement
+                  <strong>closes up around what is left</strong>
+                  rather than leaving a hole. No recompile, no restart.
+                </p>
+              </div>
+            </a>
+            <a href="docs/features.html#responsive-ui" class="feature-link">
+              <div class="card">
+                <div class="card-icon" aria-hidden="true">&#x229E;</div>
+                <h3>The arrangement is a file</h3>
+                <p>
+                  v1 compiled its breakpoints into the binary.
+                  <code>ui/layout.lua</code>
+                  is a function of the available size, so the thresholds, the split, and the order
+                  of the bands are yours to change.
+                </p>
+              </div>
+            </a>
+            <a href="docs/v2-interface.html#running-programs" class="feature-link">
+              <div class="card">
+                <div class="card-icon" aria-hidden="true">&#x25B8;</div>
+                <h3>A pane can run a program</h3>
+                <p>
+                  <code>git status</code>
+                  ,
+                  <code>docker compose ps</code>
+                  ,
+                  <code>npm outdated</code>
+                  &mdash; in the session's own directory, on the session's own host. Bounded by the
+                  kernel and granted only to a plugin
+                  <strong>you have trusted</strong>
+                  .
+                </p>
+              </div>
+            </a>
+            <a href="docs/keybindings.html" class="feature-link">
+              <div class="card">
+                <div class="card-icon" aria-hidden="true">&#x2328;&#xFE0E;</div>
+                <h3>Keys are declared, not fixed</h3>
+                <p>
+                  A plugin declares the chords it wants and they appear in help. Rebind any of them
+                  live from the help screen; a pane that is turned off
+                  <strong>declares nothing</strong>
+                  , so its chord goes quiet instead of lingering.
+                </p>
+              </div>
+            </a>
+            <a href="docs/features.html#global-search" class="feature-link">
+              <div class="card">
+                <div class="card-icon" aria-hidden="true">&#x2315;</div>
+                <h3>Search that reads screens</h3>
+                <p>
+                  <code>Ctrl+/</code>
+                  finds a session by its name, branch, repo &mdash;
+                  <strong>or by the error on its screen</strong>
+                  . Matches highlight in the pane itself, and nothing pays for it while the strip is
+                  closed.
+                </p>
+              </div>
+            </a>
+            <a href="docs/features.html#themes" class="feature-link">
+              <div class="card">
+                <div class="card-icon" aria-hidden="true">&#x25D0;</div>
+                <h3>Thirty-six palettes</h3>
+                <p>
+                  Twenty-eight dark and eight light, switched live with
+                  <code>Ctrl+Y</code>
+                  and persisted. Add your own in
+                  <code>themes.toml</code>
+                  from a base plus the colours you want to override.
+                </p>
+              </div>
+            </a>
+          </div>
         </div>
       </div>
     </section>
@@ -638,14 +848,14 @@ cargo build --release</code></pre>
                   <span class="terminal-title">thurbox</span>
                 </div>
                 <div class="terminal-body">
-                  <pre>Ctrl+N  New session (select mode)
-Ctrl+L  Cycle focus to terminal
-Ctrl+J  Switch between sessions
+                  <pre>Ctrl+N  New session
+Ctrl+J  Next session      Ctrl+K  Previous
+Ctrl+/  Search sessions and their screens
 Ctrl+S  Sync worktrees with origin/main
-Ctrl+P  Automations (scheduled agent runs)
 Ctrl+R  Restart active session
 Ctrl+F  Fork active session
-Ctrl+O  Open repos in editor</pre>
+Ctrl+O  Open repos in editor
+Ctrl+,  Settings, incl. the Interface tab</pre>
                 </div>
               </div>
             </div>
@@ -664,12 +874,45 @@ Ctrl+O  Open repos in editor</pre>
         <div class="feature-showcase">
           <div class="feature-row">
             <div class="feature-row-text">
-              <p class="feature-row-eyebrow">Ctrl+/</p>
-              <h3>Global search</h3>
+              <p class="feature-row-eyebrow">Ctrl+, &rarr; Interface</p>
+              <h3>The interface, editing itself</h3>
               <p>
-                One strip searches every scope at once &mdash; sessions (including live terminal
-                content), tasks, automations, and files &mdash; with matches highlighted live in the
-                panels themselves.
+                The Interface tab lists every file that makes up what you are looking at &mdash;
+                where each came from, and whether it is on screen right now. Here
+                <code>10_sessions.lua</code>
+                is switched off with
+                <code>space</code>
+                : the file stays on disk, intact, and the agent simply takes the space.
+              </p>
+              <a class="feature-row-link" href="docs/v2-interface.html">Learn more &rarr;</a>
+            </div>
+            <div class="feature-row-media">
+              <div class="terminal-frame">
+                <div class="terminal-header">
+                  <span class="terminal-title">Interface</span>
+                </div>
+                <div class="terminal-body">
+                  <!-- prettier-ignore -->
+                  <video src="assets/thurbox-interface.mp4" width="1920" height="1080" autoplay loop muted playsinline preload="none">
+                    Turning the session-list plugin off from the Interface tab and watching the
+                    arrangement close up around it
+                  </video>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="feature-row">
+            <div class="feature-row-text">
+              <p class="feature-row-eyebrow">Ctrl+/</p>
+              <h3>Search that reads screens</h3>
+              <p>
+                Find a session by its name, agent, branch or repo &mdash; or by the error printed on
+                its screen. Matches highlight
+                <strong>in the session list itself</strong>
+                rather than being reprinted in the strip, and
+                <code>Esc</code>
+                puts back exactly what you were looking at.
               </p>
               <a class="feature-row-link" href="docs/features.html#global-search">Learn more &rarr;</a>
             </div>
@@ -680,8 +923,8 @@ Ctrl+O  Open repos in editor</pre>
                 </div>
                 <div class="terminal-body">
                   <video src="assets/search-demo.mp4" data-poster="assets/search-demo-poster.webp" width="1920" height="1080" autoplay loop muted playsinline preload="none">
-                    Searching sessions, tasks, automations and files at once with live in-panel
-                    highlighting
+                    Searching sessions from the strip, with matches highlighted live in the session
+                    list and the rest dimmed
                   </video>
                 </div>
               </div>
@@ -720,8 +963,10 @@ Ctrl+O  Open repos in editor</pre>
               <p class="feature-row-eyebrow">Ctrl+Y</p>
               <h3>Themes</h3>
               <p>
-                Nine built-in palettes &mdash; five dark, four light &mdash; switch live with a
-                keystroke and persist across restarts. Bring your own in themes.toml.
+                Thirty-six built-in palettes &mdash; twenty-eight dark, eight light &mdash; switch
+                live with a keystroke and persist across restarts. Bring your own in
+                <code>themes.toml</code>
+                : pick a base, override the colours you care about.
               </p>
               <a class="feature-row-link" href="docs/features.html#themes">Learn more &rarr;</a>
             </div>
@@ -754,11 +999,11 @@ Ctrl+O  Open repos in editor</pre>
           <div class="install-alt">
             <div class="install-alt-item">
               <h4>Custom Directory</h4>
-              <p><code>INSTALL_DIR=/usr/local/bin curl ...</code></p>
+              <p><code>export INSTALL_DIR=/usr/local/bin</code></p>
             </div>
             <div class="install-alt-item">
-              <h4>Specific Version</h4>
-              <p><code>VERSION=v1.0.0 curl ...</code></p>
+              <h4>Pin a Version</h4>
+              <p><code>export VERSION=v1.8.6</code></p>
             </div>
             <div class="install-alt-item">
               <h4>Full Guide</h4>

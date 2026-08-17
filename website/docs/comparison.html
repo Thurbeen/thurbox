@@ -209,10 +209,15 @@ breadcrumb: 'Comparison'
             <strong>and</strong>
             over SSH, and it ships a full headless CLI (
             <code>thurbox-cli</code>
-            ) plus cron-like automations to drive and schedule fleets of agents with no GUI at all
-            &mdash; now with its own native code-review view, so the click-to-review visual diff is no
-            longer a GUI-only trade-off. The GUI tools still trade footprint and that scriptability
-            for a gentler on-ramp &mdash; and the most polished of them,
+            ) plus cron-like automations to drive and schedule fleets of agents with no GUI at all.
+            It is also the only one whose
+            <strong>interface is data rather than product</strong>
+            &mdash; every pane is a Lua file you can move, disable or replace, which is a kind of
+            extensibility a packaged GUI cannot offer at all. What the GUI tools still have is a
+            click-to-review visual diff, which
+            <a href="deprecated.html#code-review">thurbox 1.x had and 2.x has not replaced yet</a>
+            . They also trade footprint and scriptability for a gentler on-ramp &mdash; and the most
+            polished of them,
             <a href="https://github.com/github/app" target="_blank" rel="noopener">GitHub&rsquo;s Copilot App</a>,
             also ties you to a single vendor&rsquo;s agent and a paid subscription, where Thurbox stays
             agent-neutral and runs whatever CLI you already pay for.
