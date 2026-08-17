@@ -527,3 +527,49 @@ fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
         "an open float is on screen"
     );
 }
+
+/// The interface ships its own README, and the inventory accounts for it.
+///
+/// This directory is the working copy an agent is pointed at when someone asks it
+/// to change a pane, and the rules that matter there — four node kinds, asking
+/// every frame being correct, `run` being absent rather than failing — are not
+/// guessable from the Lua beside it.
+#[test]
+fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
+    let dir = interface();
+    let readme = dir.path().join("README.md");
+    assert!(readme.is_file(), "delivery writes it like any other file");
+    let text = fs::read_to_string(&readme).expect("read");
+    assert!(
+        text.contains("plugin check"),
+        "it points at the command that catches a broken edit"
+    );
+
+    let host = loaded(dir.path());
+    let rows = inventory::rows(
+        &host.plugins,
+        &sources(dir.path()),
+        &HashSet::new(),
+        &HashSet::new(),
+        None,
+        &|_| inventory::Trust::NotAsked,
+        &|_| false,
+    );
+    let row = rows
+        .iter()
+        .find(|row| row.path == "README.md")
+        .expect("a shipped file the inventory cannot see is one it cannot restore");
+    assert_eq!(row.kind, inventory::Kind::Doc);
+    assert_eq!(
+        row.source,
+        Source::Bundled,
+        "unedited, so delivery owns it and may update it"
+    );
+    // Emphatically not `Failed`: it is not a pane that would not load, and the
+    // loader never offers it the chance — it reads `*.lua` only.
+    assert_eq!(row.state, State::Present, "prose does not draw");
+
+    // And an edit to it is preserved, like an edit to any other shipped file.
+    fs::write(&readme, "# mine\n").expect("edit");
+    assert_eq!(sources(dir.path())["README.md"], Source::Edited);
+}

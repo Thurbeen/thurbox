@@ -29,9 +29,22 @@ use crate::session::settings::{NotificationBackend, Settings};
 
 /// v1's `settings_modal::MODAL_WIDTH` pair: the wide layout once a terminal has
 /// room for the longest description, the compact default otherwise.
+/// Marks a row that will not take effect until thurbox restarts.
+///
+/// ASCII on purpose. This was `⟳`, which rendered as a replacement box: no
+/// monospace family installed here covers U+27F3, and none covers the arrows
+/// (U+21BB, U+2B06) either — `fc-list ':charset=21BB'` finds none against
+/// fourteen for Geometric Shapes. A marker nobody can see is worse than a plain
+/// one, and the footer carries its legend.
+const RESTART_MARK: &str = "*";
+
 const MODAL_WIDTH: u16 = 66;
-const MODAL_WIDTH_WIDE: u16 = 84;
-const WIDE_TERMINAL: u16 = 120;
+/// The most this modal will take, however wide the terminal or long a plugin's
+/// description. Past this, lines are too long to scan as a table.
+const MODAL_WIDTH_MAX: u16 = 108;
+/// Columns left to the interface either side, so the modal always reads as a
+/// modal rather than as the whole screen.
+const MODAL_MARGIN: u16 = 8;
 
 /// How much a `←`/`→` moves a number. v1 steps its scalars by one and clamps
 /// per field; the registry carries no bounds, so the step is all there is.
@@ -144,7 +157,7 @@ const CORE_FIELDS: &[CoreField] = &[
     },
     CoreField {
         id: "features.version_check",
-        description: "⬆ tell me when a newer release exists",
+        description: "tell me when a newer release exists",
         get: |s| Value::Bool(s.features.version_check),
         set: |s, v| {
             if let Value::Bool(on) = v {
@@ -234,16 +247,11 @@ const CORE_FIELDS: &[CoreField] = &[
             }
         },
     },
-    CoreField {
-        id: "three_panel_min_cols",
-        description: "width at which a third column becomes available",
-        get: |s| Value::Number(s.three_panel_min_cols as f64),
-        set: |s, v| {
-            if let Value::Number(n) = v {
-                s.three_panel_min_cols = n.max(0.0) as u16;
-            }
-        },
-    },
+    // `three_panel_min_cols` is deliberately absent. It sized v1's third column
+    // (info panel / tasks / files) and the interface has no third column, so
+    // offering the row promised a control that could not do anything. The field
+    // is still parsed — an existing `settings.toml` must keep loading rather than
+    // fail on an unknown key — it simply has no reader and no UI.
     CoreField {
         id: "audit_retention_days",
         description: "days of audit history kept",
@@ -312,7 +320,7 @@ fn core_rows(draft: &Settings) -> Vec<Setting> {
             // The marker rides in the description because a row is one line and
             // this is the same information v1 puts in its own column.
             description: if field.restart_required() {
-                format!("⟳ {}", field.description)
+                format!("{RESTART_MARK} {}", field.description)
             } else {
                 field.description.to_string()
             },
@@ -663,17 +671,24 @@ impl SettingsModal {
         chrome: Chrome,
     ) {
         self.hits.clear();
-        let width = if area.width >= WIDE_TERMINAL {
-            MODAL_WIDTH_WIDE
-        } else {
-            MODAL_WIDTH
-        };
+        let rows_data = self.rows(registry, in_force);
+        let settings = rows_data.as_slice();
+        // Sized to what the rows need, then clamped to the screen — the same rule
+        // the height below already follows. Two fixed widths could not do this:
+        // the description column is what is left after the widest id and the
+        // widest value, so one long id starved every description of ~40 columns
+        // and the wide tier was already in force when it happened. Deriving it
+        // also means a plugin declaring a long description widens the modal
+        // instead of being quietly cut off.
+        let cap = area
+            .width
+            .saturating_sub(MODAL_MARGIN)
+            .clamp(MODAL_WIDTH, MODAL_WIDTH_MAX);
+        let width = desired_width(settings).clamp(MODAL_WIDTH, cap);
         if self.tab == Tab::Interface {
             self.render_interface(frame, area, width, files, chrome);
             return;
         }
-        let rows_data = self.rows(registry, in_force);
-        let settings = rows_data.as_slice();
         let inner_width = usize::from(width.saturating_sub(2));
 
         let (lines, rows) = self.build_rows(settings, inner_width, chrome);
@@ -827,6 +842,7 @@ impl SettingsModal {
 
     /// One line per section header and per setting, plus the row map the
     /// window and the hitboxes are built from.
+    #[allow(clippy::wrong_self_convention)]
     fn build_rows<'a>(
         &self,
         settings: &[Setting],
@@ -886,6 +902,10 @@ impl SettingsModal {
             Some(setting) if setting.plugin == CORE_OWNER => footer.push(Line::from(vec![
                 Span::styled("  settings.toml  ", chrome.muted()),
                 Span::styled(setting.id.clone(), chrome.muted()),
+                // Said here rather than left to be inferred: the mark is the only
+                // thing distinguishing a row that applies now from one that waits,
+                // and an unexplained glyph carries none of that.
+                Span::styled(format!("   {RESTART_MARK} needs restart"), chrome.muted()),
             ])),
             Some(setting) => footer.push(Line::from(vec![
                 Span::styled("  key  ", chrome.muted()),
@@ -903,7 +923,7 @@ impl SettingsModal {
                 ("Esc", " discard"),
             ]
         } else if dirty {
-            // ⟳ is on the rows themselves; this says what the key is.
+            // The restart mark is on the rows themselves; this says what the key is.
             &[
                 ("j/k", " move  "),
                 ("Space", " toggle  "),
@@ -959,6 +979,25 @@ fn value_text(value: &Value) -> String {
 /// One setting row, in fixed columns so the values line up:
 /// `▸ <id (bold)> <description (dimmed)> … <value right-justified>`.
 ///
+/// The width the rows would like: the widest id, the longest description and the
+/// widest value side by side, plus the frame, the pointer and the gaps between
+/// them.
+///
+/// Mirrors the arithmetic in [`setting_line`] rather than guessing at it, so a row
+/// that fits here fits there. Kept as its own function because the caller needs
+/// the answer *before* it can build a row.
+fn desired_width(settings: &[Setting]) -> u16 {
+    let longest = |f: fn(&Setting) -> usize| settings.iter().map(f).max().unwrap_or(0);
+    let id = longest(|s| s.id.chars().count());
+    let value = longest(|s| value_text(&s.value).chars().count()).max(3);
+    // The restart mark rides in the description of a restart-only row, so the
+    // column has to allow for it or the mark is what pushes a description over
+    // the edge.
+    let description = longest(|s| s.description.chars().count()) + 2;
+    // 2 frame + 2 pointer + id + 1 + description + 1 gap + value.
+    u16::try_from(2 + 2 + id + 1 + description + 1 + value).unwrap_or(MODAL_WIDTH_MAX)
+}
+
 /// v1's `settings_modal::field_line`, minus the restart marker — a v2 setting
 /// is read live by the plugin that declared it, so none of them can require a
 /// restart.
@@ -1154,9 +1193,17 @@ mod tests {
     fn a_restart_only_row_says_so_before_it_is_changed() {
         let rows = core_rows(&Settings::default());
         let mouse = &rows[core_row("features.mouse")];
-        assert!(mouse.description.starts_with('⟳'), "{}", mouse.description);
+        assert!(
+            mouse.description.starts_with(RESTART_MARK),
+            "{}",
+            mouse.description
+        );
         let soft = &rows[core_row("features.soft_delete")];
-        assert!(!soft.description.starts_with('⟳'), "{}", soft.description);
+        assert!(
+            !soft.description.starts_with(RESTART_MARK),
+            "{}",
+            soft.description
+        );
     }
 
     #[test]
@@ -1382,12 +1429,18 @@ mod tests {
                 .restart_required()
         };
 
-        for id in ["two_panel_min_cols", "three_panel_min_cols"] {
-            assert!(
-                marker(id),
-                "{id} is frozen at startup, so it needs a restart"
-            );
-        }
+        assert!(
+            marker("two_panel_min_cols"),
+            "the panel width is frozen at startup, so it needs a restart"
+        );
+        // `three_panel_min_cols` is not offered at all: there is no third column
+        // for it to size, and a control that cannot act is worse than none.
+        assert!(
+            !CORE_FIELDS
+                .iter()
+                .any(|field| field.id == "three_panel_min_cols"),
+            "a setting for a column the interface does not have must not be offered"
+        );
         for id in ["features.shell_pane", "features.soft_delete"] {
             assert!(!marker(id), "{id} is read every frame, so it applies live");
         }

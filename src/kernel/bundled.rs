@@ -28,6 +28,11 @@ use std::path::{Component, Path, PathBuf};
 /// stops shipping is worse than one that fails to compile, and `include_str!`
 /// gives the latter.
 pub const BUNDLED: &[(&str, &str)] = &[
+    // Not code. It is here because this directory is the working copy an agent is
+    // pointed at when someone asks it to change a pane, and the rules that matter
+    // — four node kinds, ask-every-frame, `run` absent until trusted — are not
+    // guessable from the Lua beside it.
+    ("README.md", include_str!("../../ui/README.md")),
     ("layout.lua", include_str!("../../ui/layout.lua")),
     ("lib/theme.lua", include_str!("../../ui/lib/theme.lua")),
     ("lib/widgets.lua", include_str!("../../ui/lib/widgets.lua")),
@@ -299,9 +304,17 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
         out.insert(relative, source);
     };
 
-    let arrangement = dir.join("layout.lua");
-    if arrangement.is_file() {
-        classify("layout.lua".to_string(), &arrangement);
+    // Every top-level file we ship, not `layout.lua` by name: a shipped file the
+    // inventory cannot see is one the Interface tab cannot restore, and the tab's
+    // whole claim is that it lists every file.
+    for (relative, _) in BUNDLED {
+        if relative.contains('/') {
+            continue;
+        }
+        let path = dir.join(relative);
+        if path.is_file() {
+            classify((*relative).to_string(), &path);
+        }
     }
     for folder in ["lib", "plugins"] {
         let Ok(entries) = std::fs::read_dir(dir.join(folder)) else {

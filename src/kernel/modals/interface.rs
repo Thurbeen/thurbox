@@ -460,6 +460,61 @@ mod tests {
         }
     }
 
+    /// Every cell of one rendered row, as a string.
+    fn rendered(row: &Row) -> String {
+        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        InterfaceTab::line(row, 78, Chrome::new(&palette), false)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn a_row_names_its_provenance_and_where_its_trust_stands() {
+        // Both are on the row already; what they are NOT is stated on every row.
+        // A UI review read a default install — fourteen bundled files, none asking
+        // for a capability — and concluded the columns were missing, so this pins
+        // that they appear when there is something to say.
+        let mut edited = row(
+            "plugins/10_sessions.lua",
+            Source::Edited,
+            FileState::Visible,
+        );
+        assert!(
+            rendered(&edited).contains("edited"),
+            "{}",
+            rendered(&edited)
+        );
+
+        let mine = row("plugins/90_mine.lua", Source::User, FileState::Visible);
+        assert!(rendered(&mine).contains("yours"), "{}", rendered(&mine));
+
+        // A file asking to run programs is the whole security surface, so where it
+        // stands has to be legible in the list rather than found by pressing keys.
+        edited.capabilities = vec![crate::kernel::host::Capability::Run];
+        edited.trust = FileTrust::Untrusted;
+        assert!(
+            rendered(&edited).contains("untrusted"),
+            "{}",
+            rendered(&edited)
+        );
+        edited.trust = FileTrust::Drifted;
+        let drifted = rendered(&edited);
+        assert!(
+            drifted.contains("trusted") && drifted.contains("modified"),
+            "a trusted file that changed says both: {drifted}"
+        );
+
+        // And silence is the right answer for the shipped, unmodified default:
+        // saying `bundled · asks nothing` on all fourteen rows would bury the one
+        // row that differs.
+        let plain = row("plugins/20_agent.lua", Source::Bundled, FileState::Visible);
+        let text = rendered(&plain);
+        assert!(!text.contains("bundled"), "{text}");
+        assert!(!text.contains("trust"), "{text}");
+    }
+
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
     }

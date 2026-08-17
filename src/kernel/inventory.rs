@@ -24,6 +24,8 @@ pub enum Kind {
     Module,
     /// `layout.lua`.
     Arrangement,
+    /// Prose, not code: shipped guidance for whoever edits this directory.
+    Doc,
 }
 
 impl Kind {
@@ -32,12 +34,17 @@ impl Kind {
             Kind::Pane => "pane",
             Kind::Module => "module",
             Kind::Arrangement => "arrangement",
+            Kind::Doc => "doc",
         }
     }
 
     fn of(relative: &str) -> Self {
         if relative == "layout.lua" {
             Kind::Arrangement
+        } else if relative.ends_with(".md") {
+            // Before the `plugins/` fallthrough: a doc is not a pane that failed
+            // to load, and the loader never offers it one (it reads `*.lua` only).
+            Kind::Doc
         } else if relative.starts_with("lib/") {
             Kind::Module
         } else {
@@ -209,6 +216,8 @@ pub fn rows(
             // arrangement it is the normal case — nothing loads a `lib/` file
             // until a pane requires it.
             (_, None) if kind == Kind::Pane => State::Failed,
+            // A doc and a `lib/` module are both "on disk, nothing loads it until
+            // something asks" — neither is a fault.
             (_, None) => State::Present,
         };
 

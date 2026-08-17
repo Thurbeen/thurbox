@@ -27,8 +27,9 @@ config_version = 1
 # Terminal width (columns) below which only the terminal pane renders.
 # two_panel_min_cols = 80
 
-# Terminal width (columns) at which the optional third column
-# (info panel / tasks / file viewer) becomes available.
+# Accepted and ignored: this sized v1's third column (info panel /
+# tasks / file viewer), and the current interface has no third column.
+# Kept so an existing settings.toml still loads.
 # three_panel_min_cols = 120
 
 # Days of audit-log history kept (pruned on startup).
