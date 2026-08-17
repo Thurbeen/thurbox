@@ -60,6 +60,7 @@ fn bookmark(path: &str, is_git: Option<bool>) -> BookmarkRow {
         parent: None,
         is_parent: false,
         is_git,
+        label: None,
     }
 }
 
@@ -87,6 +88,7 @@ fn folder_rows() -> Vec<BookmarkRow> {
             parent: None,
             is_parent: true,
             is_git: None,
+            label: None,
         },
         BookmarkRow {
             path: "/src/thurbox".into(),
@@ -94,6 +96,7 @@ fn folder_rows() -> Vec<BookmarkRow> {
             parent: Some("/src".into()),
             is_parent: false,
             is_git: Some(true),
+            label: None,
         },
     ]
 }

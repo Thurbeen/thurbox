@@ -203,6 +203,14 @@ local function rows_for(flow)
     local matched
     if searching then
       matched = fuzzy(query, row.path)
+      -- A labelled row is findable by its label too, and the label is what the
+      -- reader sees: typing `interface` must reach the interface directory even
+      -- though that word appears nowhere in its path. Highlighting stays over the
+      -- path, so a label-only hit shows as an unhighlighted match rather than
+      -- accenting characters at positions that mean nothing there.
+      if not matched and row.label and fuzzy(query, row.label) then
+        matched = {}
+      end
     else
       matched = {}
     end
@@ -415,6 +423,11 @@ local function repo_row(entry, selected, flow, is_cursor)
     spans[#spans + 1] = { text = "  ", style = style }
   end
   spans[#spans + 1] = { text = selected and "[x] " or "[ ] ", style = style }
+  -- The label leads, because it is the answer to "what would picking this do";
+  -- the path still follows it, muted, because it is the answer to "where".
+  if row.label then
+    spans[#spans + 1] = { text = row.label .. "  ", style = style }
+  end
   -- Matched characters accented, as v1 accents them; the rest keeps the row's
   -- own style so the cursor row still reads as the cursor row.
   if #entry.matched > 0 then
@@ -437,7 +450,7 @@ local function repo_row(entry, selected, flow, is_cursor)
       spans[#spans + 1] = { text = string.sub(row.path, last + 1), style = style }
     end
   else
-    spans[#spans + 1] = { text = row.path, style = style }
+    spans[#spans + 1] = { text = row.path, style = row.label and { fg = theme.muted } or style }
   end
 
   if selected and flow.worktree[row.path] then

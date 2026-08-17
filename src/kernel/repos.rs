@@ -50,6 +50,14 @@ pub struct BookmarkRow {
     /// Whether the path is a git repo. `None` = never established, which stays
     /// selectable *and* worktree-capable — creation reports the truth.
     pub is_git: Option<bool>,
+    /// A name to lead the row with instead of the path.
+    ///
+    /// `None` for anything the user bookmarked: they chose that path and it is
+    /// how they think of the repository. Set for a row the flow *offers* on its
+    /// own, where the path is an implementation detail the reader never typed —
+    /// the interface directory is a long, install-specific path whose leaf
+    /// (`ui`) says nothing about what picking it would do.
+    pub label: Option<String>,
 }
 
 /// One entry of the browse dropdown.
@@ -523,7 +531,12 @@ fn offer_interface_dir(rows: &mut Vec<BookmarkRow>) {
     // repository under a default install, and the flow needs to know — a
     // worktree cannot be cut from something that is not one.
     let is_git = Some(dir.join(".git").exists());
-    rows.insert(0, row(&dir, None, false, is_git));
+    let mut offered = row(&dir, None, false, is_git);
+    // Named for what picking it does, not for where it happens to live. Its leaf
+    // is usually `ui`, which tells a reader nothing, and the rest of the path is
+    // install-specific boilerplate that the row was truncating anyway.
+    offered.label = Some("Thurbox interface — edit your panes".to_string());
+    rows.insert(0, offered);
 }
 
 /// Turn persisted bookmarks into the flat row list a flow renders.
@@ -553,14 +566,18 @@ fn flatten(bookmarks: &[Bookmark], local: bool) -> Vec<BookmarkRow> {
         if !bookmark.is_parent {
             if !covered.contains(&bookmark.repo_path) && emitted.insert(bookmark.repo_path.clone())
             {
-                rows.push(row(&bookmark.repo_path, None, false, bookmark.is_git));
+                let mut it = row(&bookmark.repo_path, None, false, bookmark.is_git);
+                it.label = bookmark.label.clone();
+                rows.push(it);
             }
             continue;
         }
         if !emitted.insert(bookmark.repo_path.clone()) {
             continue;
         }
-        rows.push(row(&bookmark.repo_path, None, true, None));
+        let mut header = row(&bookmark.repo_path, None, true, None);
+        header.label = bookmark.label.clone();
+        rows.push(header);
         let parent = display(&bookmark.repo_path);
         // Live-scanned members are repositories by construction; persisted ones
         // carry whatever was established when they were imported.
@@ -632,6 +649,7 @@ fn row(path: &Path, parent: Option<String>, is_parent: bool, is_git: Option<bool
         parent,
         is_parent,
         is_git,
+        label: None,
     }
 }
 
@@ -1035,7 +1053,38 @@ mod tests {
             Some(false),
             "a default install is not a repository, and the flow has to know"
         );
+        // The path is a long install-specific string whose leaf is `ui`, which
+        // says nothing about what picking the row would do. A row the flow offers
+        // on its own account names itself.
+        let label = rows[0].label.as_deref().expect("the offered row is named");
+        assert!(
+            label.contains("interface"),
+            "the name says what it is: {label}"
+        );
         std::env::remove_var("THURBOX_UI_DIR");
+    }
+
+    #[test]
+    fn a_bookmark_keeps_the_label_it_was_saved_with() {
+        // The column has been in `repo_bookmarks` and read into `Bookmark` all
+        // along, and nothing ever surfaced it — so a label was write-only in a
+        // table nothing wrote to. It travels with the row now, by the same field
+        // the offered interface row uses.
+        let mut saved = saved("/src/thurbox", false, None);
+        saved.label = Some("the orchestrator".into());
+        let rows = flatten(&[saved], true);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].label.as_deref(), Some("the orchestrator"));
+
+        // Unlabelled stays unlabelled: a path the user chose is how they think of
+        // it, and inventing a name for it would be worse than none.
+        let plain = flatten(&[saved_plain("/src/other")], true);
+        assert_eq!(plain[0].label, None);
+    }
+
+    /// A bookmark with no label, for the contrast above.
+    fn saved_plain(path: &str) -> Bookmark {
+        saved(path, false, None)
     }
 
     #[test]

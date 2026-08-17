@@ -770,6 +770,11 @@ impl LuaHost {
                     .map_err(|e| e.to_string())?;
                 item.set("parent", opt_lua_string(&self.lua, row.parent.as_deref())?)
                     .map_err(|e| e.to_string())?;
+                // `nil` unless the row carries a name of its own: a bookmark the
+                // user labelled, or one the flow offers where the path is an
+                // implementation detail rather than something they typed.
+                item.set("label", opt_lua_string(&self.lua, row.label.as_deref())?)
+                    .map_err(|e| e.to_string())?;
                 item.set("is_parent", row.is_parent)
                     .map_err(|e| e.to_string())?;
                 // `nil` means never established, which is a third state beside
