@@ -92,6 +92,34 @@ function widgets.truncate(text, width)
   return string.sub(text, 1, offset(text, width - 1)) .. "…"
 end
 
+--- Truncate in the MIDDLE, keeping both ends.
+---
+--- For a path, the head says where you are and the leaf says which one it is, and
+--- the leaf is the half an end-truncation throws away: a repo picker offering
+--- `/home/me/.local/share/thurbox/worktrees/e854f81b/thurb` has spent every
+--- column it had on boilerplate and cut off the only part that identifies the
+--- repository. Falls back to end-truncation below eight columns, where there is
+--- not room for two halves and an ellipsis.
+function widgets.middle_truncate(text, width)
+  if width <= 0 then
+    return ""
+  end
+  if widgets.len(text) <= width then
+    return text
+  end
+  if width < 8 then
+    return widgets.truncate(text, width)
+  end
+  -- The tail gets the larger share of an odd remainder: it carries the leaf.
+  local keep = width - 1
+  local head = math.floor(keep / 2)
+  local tail = keep - head
+  local len = widgets.len(text)
+  return string.sub(text, 1, offset(text, head))
+    .. "…"
+    .. string.sub(text, offset(text, len - tail) + 1)
+end
+
 --- Pad `text` out to `width` characters.
 function widgets.pad(text, width)
   local short = width - widgets.len(text)

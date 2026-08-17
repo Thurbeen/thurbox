@@ -807,11 +807,53 @@ fn a_plain_selection_names_the_session_then_the_agent() {
 }
 
 #[test]
-fn an_empty_name_is_refused_rather_than_creating_something_unnamed() {
+fn an_untouched_name_takes_the_repository_it_just_picked() {
+    // The step used to open on an empty field with no default and no placeholder,
+    // one step after the repository — the obvious answer — had been chosen. Enter
+    // straight through now uses the repository's own leaf, and the placeholder
+    // shows what that will be before the key is pressed.
     let host = host();
     let world = World::default();
     open(&host, &world);
     press(&host, &world, "space");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("thurbox"),
+        "the suggestion is visible while the field is empty: {screen}"
+    );
+
+    press(&host, &world, "enter");
+    assert!(
+        drawn(&host, &world).contains("Coding Agent"),
+        "an untouched field is a valid answer, so the flow advances"
+    );
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Create {
+            // Named after the repository rather than left unnamed.
+            name: "thurbox".into(),
+            repo: "/src/thurbox".into(),
+            branch: None,
+            base: None,
+            agent: Some("claude".into()),
+            host: None,
+            extras: Vec::new(),
+        }]
+    );
+}
+
+#[test]
+fn a_name_is_still_refused_when_there_is_nothing_to_name_it_after() {
+    // The guarantee the old test was really protecting: nothing is ever created
+    // unnamed. With no repository selected the flow falls back to the home
+    // directory, which is no kind of session name, so there is no default to take
+    // and the refusal stands.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    // No `space`: nothing is selected, so `enter` takes the home-directory path.
     press(&host, &world, "enter");
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);

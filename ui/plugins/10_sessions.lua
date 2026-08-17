@@ -500,8 +500,15 @@ local function name_hits(session, text)
   if positions then
     return positions
   end
-  for _, field in ipairs({ session.agent, session.branch, session.repo }) do
-    if field and fuzzy.match(text, field) then
+  -- `or ""` on every element, because `ipairs` STOPS AT THE FIRST NIL. A session
+  -- with no worktree has `session.branch == nil` in the middle of this list, so
+  -- the scan halted after `agent` and its repository was never tested — the row
+  -- was then dimmed as a non-match while the search strip counted it as a match
+  -- and annotated it `repo: …`. The two halves of one feature disagreed on the
+  -- same frame, and only for sessions without a branch, which is why the one
+  -- worktree session in a review capture looked like the only correct row.
+  for _, field in ipairs({ session.agent or "", session.branch or "", session.repo or "" }) do
+    if field ~= "" and fuzzy.match(text, field) then
       return false
     end
   end

@@ -295,12 +295,56 @@ end
 
 -- ── Rendering: the pieces every step shares ────────────────────────────────
 
-local function modal(title, rows_height, children)
+--- The float's width, and the columns a list row inside it actually gets: the
+--- modal's own border, then the border of the panel the list sits in.
+local MODAL_COLS = 60
+local ROW_COLS = MODAL_COLS - 4
+
+--- The last component of a path, which is how people name a repository.
+local function leaf(path)
+  if not path or path == "" then
+    return ""
+  end
+  return (path:gsub("/+$", ""):match("[^/]+$")) or path
+end
+
+--- What has been decided so far, for the title's trail.
+---
+--- A breadcrumb rather than `step 2 of 4`, because the flow is CONDITIONAL: the
+--- host step is skipped when no host is configured, and the branch steps only
+--- happen for a worktree. A count would have to lie about one of those.
+local function trail(flow)
+  if not flow then
+    return ""
+  end
+  local parts = {}
+  if (flow.host or "") ~= "" then
+    parts[#parts + 1] = flow.host
+  end
+  if (flow.primary or "") ~= "" then
+    local extra = #(flow.extras or {})
+    parts[#parts + 1] = leaf(flow.primary) .. (extra > 0 and (" +" .. extra) or "")
+  end
+  if #parts == 0 then
+    return ""
+  end
+  return table.concat(parts, " › ")
+end
+
+local function modal(title, rows_height, children, flow)
+  local title_runs = { { text = " " .. title .. " " } }
+  local crumbs = trail(flow)
+  if crumbs ~= "" then
+    -- Muted, and in the title, so the step says where you are without spending a
+    -- row on it. Titles carry runs, so this keeps its own colour while the rest of
+    -- the title inherits the border's.
+    title_runs[#title_runs + 1] = { text = crumbs .. " ", style = { fg = theme.muted } }
+  end
   return {
-    float = { width = 60, rows = rows_height },
+    float = { width = MODAL_COLS, rows = rows_height },
     type = "box",
     frame = {
-      title = " " .. title .. " ",
+      title = title_runs,
       borders = "all",
       border_style = { fg = theme.role("modal_border") },
       style = { bg = theme.role("modal_bg") },
@@ -319,6 +363,16 @@ local function footer(hints, primary)
     spans[#spans + 1] = { text = pair[1], style = { fg = theme.hint } }
     spans[#spans + 1] = { text = " " .. pair[2] .. "  ", style = { fg = theme.muted } }
   end
+  -- Both pills carry a LEADING space and are measured from the string itself.
+  --
+  -- `" [ Cancel ]"` is eleven columns and the slot was hard-coded to ten, so the
+  -- closing bracket was clipped off at every step of the flow. And the leading
+  -- space belongs to the pill rather than to the hints: the hints take `fill = 1`,
+  -- so once they are long enough to use their whole share their own trailing
+  -- padding is what gets truncated — which is how `d forget[ Done ]` ran together
+  -- with no gap at all.
+  local done = " [ " .. primary .. " ]"
+  local cancel = " [ Cancel ]"
   return {
     type = "box",
     axis = "horizontal",
@@ -327,16 +381,14 @@ local function footer(hints, primary)
       { type = "text", fill = 1, text = { spans } },
       {
         type = "text",
-        len = widgets.len(primary) + 4,
-        text = {
-          { { text = "[ " .. primary .. " ]", style = { fg = theme.accent, bold = true } } },
-        },
+        len = widgets.len(done),
+        text = { { { text = done, style = { fg = theme.accent, bold = true } } } },
         role = "key:enter",
       },
       {
         type = "text",
-        len = 10,
-        text = { { { text = " [ Cancel ]", style = { fg = theme.muted } } } },
+        len = widgets.len(cancel),
+        text = { { { text = cancel, style = { fg = theme.muted } } } },
         role = "key:esc",
       },
     },
@@ -450,7 +502,15 @@ local function repo_row(entry, selected, flow, is_cursor)
       spans[#spans + 1] = { text = string.sub(row.path, last + 1), style = style }
     end
   else
-    spans[#spans + 1] = { text = row.path, style = row.label and { fg = theme.muted } or style }
+    -- Middle-truncated: the leaf is what identifies a repository, and it is the
+    -- half an end-truncation drops. `avail` is what the row has left after the
+    -- indent, the checkbox, and any label ahead of the path.
+    local used = 4 + (row.parent and 2 or 0) + (row.label and (widgets.len(row.label) + 2) or 0)
+    local avail = math.max(8, ROW_COLS - used)
+    spans[#spans + 1] = {
+      text = widgets.middle_truncate(row.path, avail),
+      style = row.label and { fg = theme.muted } or style,
+    }
   end
 
   if selected and flow.worktree[row.path] then
@@ -698,12 +758,16 @@ local function render_branch(flow)
   })
 end
 
-local function render_field(title, label, field, flow)
+local function render_field(title, label, field, flow, placeholder)
   return modal(title, 7, {
-    textinput.node(field, { label = label, focused = true }),
+    textinput.node(field, {
+      label = label,
+      focused = true,
+      placeholder = placeholder,
+    }),
     message_row(flow),
     footer({ { "enter", "confirm" }, { "esc", "cancel" } }, "OK"),
-  })
+  }, flow)
 end
 
 local function render_agent(flow)
@@ -746,6 +810,23 @@ end
 --- Where the flow goes after the repositories are chosen. v1's three-way split
 --- in `submit_repo_picker`, with its ordering: worktrees first, then plain
 --- directories, then nothing at all.
+--- The name to use when the field is left empty: the repository's own.
+---
+--- Shown as a PLACEHOLDER rather than written into the field. Prefilling the value
+--- would have been worse than the empty field it replaced: `{ value, cursor }` has
+--- no selection, so there is no "typing replaces the suggestion" — the first
+--- keystroke would have appended, and picking `thurbox` then typing `fix` would
+--- have produced `thurboxfix`. As a placeholder the field is genuinely empty, so
+--- typing behaves normally, and `Enter` on an untouched field is a valid answer
+--- with the answer visible before you press it.
+local function suggested_name(flow)
+  local name = leaf(flow and flow.primary)
+  if name == "" or name == "~" then
+    return ""
+  end
+  return name
+end
+
 local function after_repos(flow)
   local worktrees, plain = chosen(flow)
   flow.extras = {}
@@ -952,7 +1033,7 @@ return {
     elseif flow.step == "branch" then
       return render_branch(flow)
     elseif flow.step == "name" then
-      return render_field("Session Name", "Name", flow.name, flow)
+      return render_field("Session Name", "Name", flow.name, flow, suggested_name(flow))
     elseif flow.step == "worktree" then
       return render_field("Branch Name", "Branch", flow.branch, flow)
     end
@@ -1161,6 +1242,15 @@ return {
       local field = flow.step == "name" and flow.name or flow.branch
       if name == "enter" then
         local value = (field.value or ""):match("^%s*(.-)%s*$")
+        -- An untouched name field takes the suggestion the placeholder was
+        -- showing, so `Enter` straight through is a valid answer and the answer
+        -- was visible before the key was pressed. A branch has no such default:
+        -- there is no obvious name for a branch that does not exist yet.
+        if value == "" and flow.step == "name" then
+          value = suggested_name(flow)
+          field.value = value
+          field.cursor = #value
+        end
         if value == "" then
           flow.message = flow.step == "name" and "Session name cannot be empty"
             or "Branch name cannot be empty"

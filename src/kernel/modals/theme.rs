@@ -616,13 +616,15 @@ fn render_preview(frame: &mut Frame, area: Rect, palette: &ThemePalette, chrome:
             space(),
             chip("█████", palette.border_focused, None),
         ]),
-        // Painted as INK, not as ground. This was spaces with `bg = modal_bg`,
-        // drawn onto the modal whose background is `modal_bg` — invisible by
-        // construction rather than by bad luck, in every one of the thirty-six
-        // palettes.
+        // Shown against a CONTRASTING ground, which is the only way this row can
+        // work. It was spaces whose background was `modal_bg`, drawn onto the modal
+        // whose background is `modal_bg` — invisible by construction rather than by
+        // bad luck. Painting it as ink instead is no better: the ink is the same
+        // colour as what is behind it. So the swatch sits on the palette's own text
+        // colour, where a dark ground reads as dark and a light one as light.
         Line::from(vec![
             label("  Modal bg    "),
-            chip("█████", palette.modal_bg, None),
+            chip("█████", palette.modal_bg, Some(palette.text_primary)),
         ]),
     ];
     frame.render_widget(Paragraph::new(swatch), area);
