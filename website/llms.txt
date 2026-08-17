@@ -19,6 +19,7 @@
 - [Comparison](https://thurbox.thurbeen.eu/docs/comparison.html): how Thurbox compares to Conductor, Claude Squad, Cursor, and other parallel coding-agent tools.
 - [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, winget, Chocolatey, or from source; prerequisites.
 - [Configuration](https://thurbox.thurbeen.eu/docs/configuration.html): every config file and knob — agents.toml, hosts.toml, settings.toml, themes, keybindings.
+- [The Interface](https://thurbox.thurbeen.eu/docs/v2-interface.html): every pane is an editable Lua plugin — how to move, disable, replace or write one, and what the kernel refuses a plugin.
 - [Architecture](https://thurbox.thurbeen.eu/docs/architecture.html): the Elm Architecture, module isolation, the tmux session backend, and design decisions.
 
 ## Extensions

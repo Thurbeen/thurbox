@@ -140,6 +140,14 @@ breadcrumb: 'Features'
             </li>
           </ul>
 
+          <div class="info-box">
+            <p>
+              <strong>CLI only.</strong>
+              Automations still fire &mdash; the tmux heartbeat keeper runs them whether or not
+              thurbox is open &mdash; but there is no pane for them yet. Author and inspect them
+              with <code>thurbox-cli automation</code>.
+            </p>
+          </div>
           <h2 id="automations">
             Automations
             <a href="#automations" class="heading-anchor">#</a>
@@ -211,6 +219,13 @@ breadcrumb: 'Features'
             </li>
           </ul>
 
+          <div class="info-box">
+            <p>
+              <strong>CLI only.</strong>
+              Tasks have no pane in the current interface. Everything below works through
+              <code>thurbox-cli task</code>, and the data is the same.
+            </p>
+          </div>
           <h2 id="tasks">
             Tasks
             <a href="#tasks" class="heading-anchor">#</a>
@@ -623,6 +638,15 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             </li>
           </ul>
 
+          <div class="info-box">
+            <p>
+              <strong>Removed.</strong>
+              The native review view is not part of the current interface and has no replacement
+              yet. It is tracked with the other gaps in
+              <code>openspec/changes/v2-parity-gaps/</code>; v1 keeps it on the
+              <code>1.x</code> branch.
+            </p>
+          </div>
           <h2 id="code-review">
             Code Review
             <a href="#code-review" class="heading-anchor">#</a>

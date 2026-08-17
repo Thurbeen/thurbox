@@ -332,6 +332,106 @@ cargo build --release</code></pre>
     </section>
 
     <!-- Features -->
+    <!-- The thesis: every pane is a file you can move, turn off or replace. The
+         lab autoplays a short arrangement sequence on scroll so the movement is
+         seen without being asked for, then hands control over on first input. -->
+    <section class="section ui-lab-section" id="customizable">
+      <div class="container">
+        <p class="section-eyebrow">Every pane is a plugin</p>
+        <h2>The interface is a directory you can edit</h2>
+        <p class="section-lede">
+          The session list, the agent terminal, the search strip &mdash; each one is a Lua file
+          under <code>ui/plugins/</code>. Move it, turn it off, replace it with your own, and the
+          arrangement closes up around what is left. No recompile, no restart.
+        </p>
+
+        <div class="ui-lab">
+          <div class="ui-lab__stage">
+            <div class="terminal-frame">
+              <div class="terminal-header">
+                <div class="terminal-dot red"></div>
+                <div class="terminal-dot yellow"></div>
+                <div class="terminal-dot green"></div>
+                <span class="terminal-title">thurbox</span>
+              </div>
+              <div class="ui-lab__screen" id="ui-lab-screen" aria-hidden="true">
+                <div class="ui-pane" data-pane="sessions">
+                  <span class="ui-pane__title">Sessions</span>
+                  <span class="ui-pane__row"><i class="dot working"></i>fix-osc52</span>
+                  <span class="ui-pane__row"><i class="dot done"></i>add-wsl-tests</span>
+                  <span class="ui-pane__row"><i class="dot idle"></i>docs-hooks</span>
+                  <span class="ui-pane__file">10_sessions.lua</span>
+                </div>
+                <div class="ui-pane" data-pane="agent">
+                  <span class="ui-pane__title">Agent</span>
+                  <span class="ui-pane__row mono">$ claude</span>
+                  <span class="ui-pane__row mono dim">&gt; rebasing feat/osc52&hellip;</span>
+                  <span class="ui-pane__row mono dim">&nbsp;&nbsp;3 files changed</span>
+                  <span class="ui-pane__file">20_agent.lua</span>
+                </div>
+                <div class="ui-pane" data-pane="yours">
+                  <span class="ui-pane__title">git status</span>
+                  <span class="ui-pane__row mono">M src/main.rs</span>
+                  <span class="ui-pane__row mono">M ui/layout.lua</span>
+                  <span class="ui-pane__file">90_yours.lua</span>
+                </div>
+                <div class="ui-pane" data-pane="search">
+                  <span class="ui-pane__title">Search</span>
+                  <span class="ui-pane__row mono">/ osc</span>
+                  <span class="ui-pane__file">65_search.lua</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ui-lab__controls">
+            <div class="ui-lab__group">
+              <p class="ui-lab__label"><code>ui/layout.lua</code> &mdash; arrangement</p>
+              <div class="ui-lab__buttons" role="group" aria-label="Arrangement">
+                <button class="ui-lab__btn" type="button" data-arrangement="columns" aria-pressed="true">
+                  columns
+                </button>
+                <button class="ui-lab__btn" type="button" data-arrangement="rows" aria-pressed="false">
+                  rows
+                </button>
+                <button class="ui-lab__btn" type="button" data-arrangement="focus" aria-pressed="false">
+                  focus
+                </button>
+              </div>
+            </div>
+
+            <div class="ui-lab__group">
+              <p class="ui-lab__label"><code>ui/plugins/</code> &mdash; click to turn off</p>
+              <div class="ui-lab__buttons" role="group" aria-label="Plugins">
+                <button class="ui-lab__chip" type="button" data-toggle="sessions" aria-pressed="true">
+                  10_sessions.lua
+                </button>
+                <button class="ui-lab__chip" type="button" data-toggle="agent" aria-pressed="true">
+                  20_agent.lua
+                </button>
+                <button class="ui-lab__chip" type="button" data-toggle="search" aria-pressed="true">
+                  65_search.lua
+                </button>
+                <button class="ui-lab__chip is-yours" type="button" data-toggle="yours" aria-pressed="false">
+                  90_yours.lua
+                </button>
+              </div>
+              <p class="ui-lab__hint">
+                <span class="ui-lab__hint-mark">&#9656;</span>
+                <span id="ui-lab-hint">Autoplaying &mdash; click anything to take over.</span>
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <p class="ui-lab__foot">
+          That last one is not shipped. <code>thurbox-cli plugin new git-status</code> writes a file
+          that already loads, and it is a pane the moment you save it. A plugin gets no filesystem
+          and no network &mdash; it draws, and the kernel does the rest.
+        </p>
+      </div>
+    </section>
+
     <section class="features section" id="features">
       <div class="container">
         <div class="section-title">
@@ -425,18 +525,16 @@ cargo build --release</code></pre>
               </p>
             </div>
           </a>
-          <a href="docs/features.html#code-review" class="feature-link">
+          <a href="docs/v2-interface.html" class="feature-link">
             <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x00B1;</div>
-              <h3>Code Review</h3>
+              <div class="card-icon" aria-hidden="true">&#x2732;&#xFE0E;</div>
+              <h3>Editable Interface</h3>
               <p>
-                A native, GitHub-style diff reviewer (
-                <code>Ctrl+X</code>
-                ) &mdash; no external tool. Browse the branch, a commit, or working changes in a
-                <strong>folder tree</strong>
-                , leave classified comments, fold reviewed files, then
-                <strong>send the review back to the agent</strong>
-                to address. Stays open per session, like the shell view.
+                Every pane is a
+                <strong>Lua file under <code>ui/plugins/</code></strong>
+                &mdash; the session list included. Move one, turn it off, delete it, or write your
+                own, and the arrangement closes up around what is left. No recompile and no
+                restart: a plugin gets no filesystem and no network, it just draws.
               </p>
             </div>
           </a>

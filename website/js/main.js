@@ -619,4 +619,187 @@
       true,
     );
   }
+
+  /* ── The panel lab ────────────────────────────────────────────────────────
+   *
+   * Demonstrates the one claim the page rests on: a pane is a file, and the
+   * arrangement closes up around whichever files are loaded. So the rects are
+   * COMPUTED from the enabled set rather than picked from a table of finished
+   * layouts -- a table would have to enumerate every combination, and would let
+   * a hole appear where a turned-off pane used to be, which is exactly the
+   * behaviour being claimed not to happen.
+   */
+  (function panelLab() {
+    var screen = document.getElementById('ui-lab-screen');
+    if (!screen) return;
+
+    var COLUMNS = ['sessions', 'agent', 'yours'];
+    var WEIGHT = { sessions: 1, agent: 2.4, yours: 1 };
+    var FOOTER = 18;
+
+    var panes = {};
+    Array.prototype.forEach.call(screen.querySelectorAll('.ui-pane'), function (el) {
+      panes[el.getAttribute('data-pane')] = el;
+    });
+
+    var on = { sessions: true, agent: true, search: true, yours: false };
+    var mode = 'columns';
+
+    function place(el, x, y, w, h) {
+      el.style.left = x + '%';
+      el.style.top = y + '%';
+      el.style.width = w + '%';
+      el.style.height = h + '%';
+    }
+
+    function render() {
+      var live = COLUMNS.filter(function (id) {
+        return on[id];
+      });
+      var footer = on.search ? FOOTER : 0;
+      var bodyH = 100 - footer;
+
+      Object.keys(panes).forEach(function (id) {
+        panes[id].setAttribute('data-off', on[id] ? 'false' : 'true');
+      });
+
+      if (on.search) place(panes.search, 0, bodyH, 100, footer);
+
+      // Focus gives the whole body to the agent when it is loaded; the others
+      // keep their rect so they fade rather than jump on the way back.
+      if (mode === 'focus' && on.agent) {
+        place(panes.agent, 0, 0, 100, bodyH);
+        live
+          .filter(function (id) {
+            return id !== 'agent';
+          })
+          .forEach(function (id) {
+            panes[id].setAttribute('data-off', 'true');
+          });
+        return;
+      }
+
+      var total = live.reduce(function (sum, id) {
+        return sum + WEIGHT[id];
+      }, 0);
+      if (!total) return;
+
+      var offset = 0;
+      live.forEach(function (id) {
+        var share = (WEIGHT[id] / total) * 100;
+        if (mode === 'rows') {
+          place(panes[id], 0, (offset / 100) * bodyH, 100, (share / 100) * bodyH);
+        } else {
+          place(panes[id], offset, 0, share, bodyH);
+        }
+        offset += share;
+      });
+    }
+
+    var hint = document.getElementById('ui-lab-hint');
+    var timer = null;
+    var taken = false;
+
+    function takeOver() {
+      if (taken) return;
+      taken = true;
+      if (timer) window.clearInterval(timer);
+      timer = null;
+      if (hint) hint.textContent = 'Yours now. Every pane above is one file.';
+    }
+
+    function setMode(next) {
+      mode = next;
+      Array.prototype.forEach.call(document.querySelectorAll('.ui-lab__btn'), function (btn) {
+        btn.setAttribute(
+          'aria-pressed',
+          btn.getAttribute('data-arrangement') === next ? 'true' : 'false',
+        );
+      });
+      render();
+    }
+
+    function setPane(id, enabled) {
+      on[id] = enabled;
+      var chip = document.querySelector('.ui-lab__chip[data-toggle="' + id + '"]');
+      if (chip) chip.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      render();
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('.ui-lab__btn'), function (btn) {
+      btn.addEventListener('click', function () {
+        takeOver();
+        setMode(btn.getAttribute('data-arrangement'));
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.ui-lab__chip'), function (chip) {
+      chip.addEventListener('click', function () {
+        takeOver();
+        var id = chip.getAttribute('data-toggle');
+        setPane(id, chip.getAttribute('aria-pressed') !== 'true');
+      });
+    });
+
+    render();
+
+    // Autoplay so the movement is seen without being asked for. Skipped
+    // entirely when motion is not wanted, and stopped for good on first input.
+    var still = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (still.matches) {
+      if (hint) hint.textContent = 'Click a layout or a file to rearrange it.';
+      return;
+    }
+
+    var SCRIPT = [
+      function () {
+        setPane('yours', true);
+      },
+      function () {
+        setMode('rows');
+      },
+      function () {
+        setPane('search', false);
+      },
+      function () {
+        setMode('columns');
+      },
+      function () {
+        setPane('sessions', false);
+      },
+      function () {
+        setMode('focus');
+      },
+      function () {
+        setMode('columns');
+        setPane('sessions', true);
+        setPane('search', true);
+        setPane('yours', false);
+      },
+    ];
+    var step = 0;
+
+    function play() {
+      if (taken) return;
+      SCRIPT[step % SCRIPT.length]();
+      step += 1;
+    }
+
+    if (!('IntersectionObserver' in window)) return;
+    var watcher = new IntersectionObserver(
+      function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting && !taken && !timer) {
+            timer = window.setInterval(play, 2300);
+          } else if (!entry.isIntersecting && timer) {
+            // Off screen is not "taken over": stop the work, keep the offer.
+            window.clearInterval(timer);
+            timer = null;
+          }
+        });
+      },
+      { threshold: 0.35 },
+    );
+    watcher.observe(screen);
+  })();
 })();

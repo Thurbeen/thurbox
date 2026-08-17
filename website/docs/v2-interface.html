@@ -1,0 +1,167 @@
+---
+layout: docs.njk
+title: 'The Interface — Thurbox Docs'
+description: 'Every thurbox pane is a Lua plugin you can edit, move, turn off, delete or replace. What the kernel guarantees, and what it will not let a plugin do.'
+currentPage: 'v2-interface'
+breadcrumb: 'Interface'
+---
+<h1>The Interface</h1>
+<p>
+  Alongside
+  <code>thurbox</code>
+  there is
+  <code>thurbox</code>: the same session engine behind a Lua-driven renderer, where every pane
+  &mdash; the session list included &mdash; is a plugin under
+  <code>ui/</code>. You can edit one, replace one with a file of your own, turn one off, or delete
+  it.
+</p>
+
+<div class="info-box">
+  <p>
+    <strong>Moved from v1?</strong>
+    Several panes have no equivalent here yet &mdash; code review, the file viewer and the info
+    panel are gone, and tasks, automations, the restore list and the perf HUD moved to
+    <code>thurbox-cli</code>. thurbox asks once, on the first launch after the upgrade, before
+    changing anything. v1 stays maintained on the <code>1.x</code> branch.
+  </p>
+</div>
+
+<h2 id="a-directory">
+  The interface is a directory
+  <a href="#a-directory" class="heading-anchor">#</a>
+</h2>
+<p>
+  Not a setting, and not a theme: the panes themselves are files. thurbox ships a small set and
+  reads whatever is in the directory, so adding one is adding a file and removing one is deleting
+  it. Your sessions, worktrees, tasks and automations are untouched by any of it &mdash; they live
+  in the database, not the interface.
+</p>
+
+<h2 id="every-pane-is-a-plugin">
+  Every pane is a plugin
+  <a href="#every-pane-is-a-plugin" class="heading-anchor">#</a>
+</h2>
+<p>
+  The kernel owns no pane. What you see is Lua, in files you can open:
+</p>
+<div class="tui-demo">
+  <div class="terminal-header">
+    <div class="terminal-dot red"></div>
+    <div class="terminal-dot yellow"></div>
+    <div class="terminal-dot green"></div>
+    <span class="terminal-title">the interface directory</span>
+  </div>
+  <div class="terminal-body">
+    <pre>ui/
+├── layout.lua              the arrangement: which slot goes where
+├── lib/                    widgets, theme roles, fuzzy match, text input
+└── plugins/
+    ├── 10_sessions.lua     the session list
+    ├── 20_agent.lua        the agent terminal
+    ├── 65_search.lua       global search
+    ├── 60_confirm.lua      the confirm float
+    └── 70_new_session.lua  the new-session flow</pre>
+  </div>
+</div>
+<p>
+  Drop a file in and it is a pane. Delete a bundled one and it is gone for good &mdash; delivery
+  records the removal and never writes it back, so a pane can be
+  <em>replaced</em>
+  by a differently named file of your own on equal terms. A file can also simply be turned off:
+  present on disk, intact, and not loaded.
+</p>
+<p>
+  The one thing a plugin cannot do is surprise you. It gets no filesystem, no network, and no
+  process &mdash;
+  <code>io</code>,
+  <code>os</code>,
+  <code>debug</code>
+  and the loaders are not in its world at all, and a lint enforces their absence. Reads are served
+  from a snapshot and return instantly; writes are commands the kernel performs. So no plugin,
+  including one nobody has written yet, can freeze the interface on a slow git fetch or an
+  unreachable host.
+</p>
+
+<h2 id="running-programs">
+  Running programs, and trust
+  <a href="#running-programs" class="heading-anchor">#</a>
+</h2>
+<p>
+  One capability reaches outside thurbox: a plugin can run a program &mdash;
+  <code>git status</code>,
+  <code>docker compose ps</code>,
+  <code>npm outdated</code>
+  &mdash; in a session's working directory, and on that session's own host for a remote session.
+</p>
+<p>
+  It is granted per plugin, and only after you trust that plugin: settings
+  (<code>Ctrl+,</code>) &rarr;
+  <code>]</code>
+  &rarr; select it &rarr;
+  <code>t</code>. Trust is keyed to the file's absolute path with a digest recorded, so a trusted
+  file that changes afterwards is shown as
+  <code>trusted &middot; modified</code>. Revoking takes effect on the next frame.
+</p>
+<p>
+  This is not a sandbox and does not pretend to be one. A program thurbox runs for you has your
+  authority, and no gate here changes that. What trust buys is that nothing runs
+  <em>unasked</em>. Treat a plugin you did not write the way you would treat a shell profile
+  someone sent you.
+</p>
+
+<h2 id="writing-one">
+  Writing one
+  <a href="#writing-one" class="heading-anchor">#</a>
+</h2>
+<p>
+  Four commands, no terminal required &mdash; useful from a script or an agent as much as by hand:
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Command</th>
+      <th>What it answers</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>thurbox-cli plugin dir</code></td>
+      <td>Which interface directory is live, and which rule chose it</td>
+    </tr>
+    <tr>
+      <td><code>thurbox-cli plugin new &lt;name&gt;</code></td>
+      <td>Writes a starter that already loads</td>
+    </tr>
+    <tr>
+      <td><code>thurbox-cli plugin check</code></td>
+      <td>Loads the interface the way <code>thurbox</code> does; non-zero on a failure</td>
+    </tr>
+    <tr>
+      <td><code>thurbox-cli plugin list</code></td>
+      <td>The same inventory the settings Interface tab shows</td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  A broken plugin does not cost you the interface: the error is reported in place, and the bundled
+  copy stands in until the file loads again. The full author's guide, including the mistakes that
+  are invisible until runtime, is
+  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/PLUGINS.md">docs/PLUGINS.md</a>; the
+  kernel's own shape and constraints are in
+  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/V2-KERNEL.md">docs/V2-KERNEL.md</a>.
+</p>
+
+<h2 id="v1">
+  If you need v1 back
+  <a href="#v1" class="heading-anchor">#</a>
+</h2>
+<p>
+  It is maintained on the <code>1.x</code> branch and still gets patch releases. The first-launch
+  prompt prints the exact command; the short version is to pin a 1.x version and turn auto-update
+  off so nothing moves you again:
+</p>
+<pre><code class="language-bash">export VERSION=v1.8.6
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+<p>
+  Declining the prompt does both of those for you and tells you what it did.
+</p>

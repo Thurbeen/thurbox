@@ -917,6 +917,30 @@ These rules are enforced by `tests/architecture_rules.rs`.
 For the full set of architectural decisions with rationale,
 see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+### The interface is a directory you can edit
+
+Every pane — the session list included — is a Lua file under `ui/`.
+Move one, turn it off, delete it, or write your own, and the
+arrangement closes up around what is left. No recompile, no restart.
+
+```bash
+thurbox-cli plugin dir          # which interface directory is live
+thurbox-cli plugin new notes    # a starter that already loads
+thurbox-cli plugin check        # load it the way thurbox does
+```
+
+A plugin is handed a snapshot and returns a tree; it gets no
+filesystem, no network and no process. Running a program is one
+capability, granted per plugin and only after you trust it.
+See [docs/PLUGINS.md](docs/PLUGINS.md) and
+[docs/V2-KERNEL.md](docs/V2-KERNEL.md).
+
+**Moving from v1?** Code review, the file viewer and the info panel
+have no equivalent yet; tasks, automations, the restore list and the
+perf HUD moved to `thurbox-cli`. thurbox asks once on the first
+launch after the upgrade before changing anything, and v1 is
+maintained on the `1.x` branch.
+
 ## Documentation
 
 - [docs/CONSTITUTION.md](docs/CONSTITUTION.md) — Core principles
@@ -927,6 +951,12 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   choices (including agent definitions)
 - [docs/CONFIG.md](docs/CONFIG.md) — Every config file, env var,
   and DB setting in one place (settings.toml, feature flags, …)
+- [docs/V2-KERNEL.md](docs/V2-KERNEL.md) — The plugin kernel: its
+  shape, its five rules, and the traps in changing it
+- [docs/PLUGINS.md](docs/PLUGINS.md) — Writing an interface plugin
+- [docs/RELEASING.md](docs/RELEASING.md) — What a release may and may
+  not change about the artifacts (and why removing a binary silently
+  breaks auto-update)
 
 ## Development
 

@@ -14,9 +14,22 @@ want to *write* a plugin, read `docs/PLUGINS.md`.
 Writing a plugin starts at `docs/PLUGINS.md` — **Start here**, which is four
 `thurbox-cli plugin` commands and needs no terminal.
 
-Runs as `thurbox2`, alongside v1. Nothing in `src/app/` or `src/ui/` is touched
-until every v1 surface has a plugin equivalent — see
-`openspec/changes/v2-retire-v1`.
+Runs as `thurbox`. It **is** the interface now: `src/app/` and `src/ui/` were
+deleted when the kernel took the binary name, so there is no second interface to
+fall back to inside the process. v1 is maintained on the `1.x` branch and still
+takes patch releases.
+
+The name matters more than it looks. The updater in an already-installed binary
+hard-fails on a known binary missing from a release archive and swallows the
+error, so an archive that dropped the name `thurbox` would end auto-update for
+every install already out there, silently and unfixably. Inheriting the name was
+the only safe direction — see `docs/RELEASING.md`.
+
+A profile with v1 history is asked once, before the interface takes the terminal
+(`kernel::consent`): it names every surface that is gone, says the database is
+shared and unmigrated, and declining turns auto-update off and prints how to
+reinstall 1.x. What is still owed to v1 is listed in
+`openspec/changes/v2-parity-gaps/`.
 
 ## Shape
 
@@ -150,7 +163,7 @@ and v1, and it stays that way: it is what makes those callers safe. The live hal
 lives in `kernel::config` instead. Publishing at startup is load-bearing rather
 than tidy — `Database::open` prunes the audit log to `audit_retention_days`, so a
 kernel that has not published its settings prunes to the default. (v2 shipped
-that way for a while: `thurbox2` never called `settings::init`, so the whole file
+that way for a while: the kernel's `main` never called `settings::init`, so the whole file
 was silently ignored while every switch looked honoured, because every default
 matched.)
 
@@ -210,10 +223,11 @@ only — enforced by `tests/architecture_rules.rs`. It may never reference `ui` 
   fails if either breaks.
 - `tests/kernel_limits.rs` — the instruction and memory bounds, in their own
   file because they mutate process-wide limits.
-- `tests/v1_recordings.rs` — golden recordings of what v1 draws, taken while
-  `src/ui/` still exists. **These are the contract v2 must reproduce**, and they
-  record to files rather than comparing against a live v1 builder, because a
-  differential oracle cannot license a deletion.
+- `tests/v1_recordings.rs` — *removed with v1*. It held golden recordings of what
+  v1 drew, recorded to files rather than compared against a live v1 builder
+  because a differential oracle cannot license a deletion. It served its purpose:
+  the deletion happened, and the recordings had nothing left to be the contract
+  for. `git log -- tests/v1_recordings.rs` is where they went.
 
 ## What a frame costs
 
@@ -269,8 +283,8 @@ conversion less often:
   come back.
 
 Dependencies are built with `opt-level = 3` even in dev builds
-(`[profile.dev.package."*"]`), because `cargo run --bin thurbox2` is the
-documented way to run v2 and an unoptimised Lua VM is felt in the UI.
+(`[profile.dev.package."*"]`), because `cargo run` is the documented way to run
+thurbox from a checkout and an unoptimised Lua VM is felt in the UI.
 
 ## The gap to v1
 
