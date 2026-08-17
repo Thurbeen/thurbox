@@ -175,10 +175,11 @@ thurbox-cli task list
 thurbox-cli task run &lt;id&gt;          # send or spawn, and advance to in-progress
 thurbox-cli task edit &lt;id&gt; --status done</code></pre>
 <p>
-  The issue-tracker sync extensions &mdash;
-  <a href="extension-github-issues.html">GitHub</a>, <a href="extension-gitlab-issues.html">GitLab</a>,
-  <a href="extension-linear.html">Linear</a>, <a href="extension-jira.html">Jira</a> &mdash; are
-  unaffected: they never used the pane, only the same table.
+  Tracker sync is unaffected by the pane's removal, because it never used the pane:
+  <code>tasks</code> rows carry a <code>source</code> and an external id, and
+  <code>task create --source … --external-id …</code> upserts against them. thurbox ships no
+  provider integration &mdash; that is a script you write, or one somebody publishes as an
+  extension.
 </p>
 
 <h3 id="automations">Automations</h3>

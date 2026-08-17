@@ -717,7 +717,10 @@ return {
                 A todo list whose items
                 <strong>connect to a coding agent</strong>
                 &mdash; send one into a running session or spawn a fresh one seeded with it. Syncs
-                two-way with GitHub, GitLab, Linear and Jira, with no agent in the loop.
+                Records carry a
+                <code>source</code>
+                and an external id, so a sync script of your own can import from a tracker
+                without thurbox knowing which one.
               </p>
             </div>
           </a>
@@ -745,7 +748,7 @@ return {
                 &mdash; never the binary. Install one from a declarative manifest in a single
                 command, and Thurbox keeps its session and automation
                 <strong>self-healed</strong>
-                . Ships flow, forge, ci-shepherd, renovate and four issue-tracker syncs.
+                . Ships flow, forge, ci-shepherd and renovate.
               </p>
             </div>
           </a>

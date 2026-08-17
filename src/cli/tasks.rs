@@ -53,7 +53,7 @@ pub enum Action {
         #[arg(long = "add-dir")]
         add_dir: Vec<String>,
         /// Origin tracker (default `local`); set by sync extensions to e.g.
-        /// `github`, `gitlab`, `linear`, `jira`.
+        /// Any tag your importer chooses; `local` for a task made here.
         #[arg(long)]
         source: Option<String>,
         /// Identifier in the external tracker (the dedup/upsert key).
@@ -81,7 +81,7 @@ pub enum Action {
         description: Option<String>,
         #[arg(long)]
         status: Option<String>,
-        /// Origin tracker (e.g. `github`, `linear`); unchanged when omitted.
+        /// Origin tracker tag; unchanged when omitted.
         #[arg(long)]
         source: Option<String>,
         /// External tracker id; `--external-id ""` clears it.

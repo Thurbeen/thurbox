@@ -1137,7 +1137,7 @@ have **no** run-history table.
 ### External sync (deferred)
 
 The `source`/`external_id`/`external_url` columns are scaffolding for a
-future sync with external trackers (Jira, GitHub Issues, …). Local
+sync with an external tracker via your own importer. Local
 tasks use `source = "local"`; imported tasks will slot in with no
 migration. No fetch logic ships yet.
 
@@ -1232,21 +1232,16 @@ Two more ship in `extensions/`, both built the same agent-agnostic way
   tests the bumps, commits to a fresh `renovate/updates-<ts>` branch, and
   opens a review PR. Per-repo `strategy` (patch/minor/major/all) layers onto a
   global `renovate-config.json`. `thurbox-cli extension install renovate`.
-- **Task integrations** (`github-issues`, `gitlab-issues`, `linear`, `jira`) —
-  one per provider, each **bidirectionally** syncing an external issue tracker
-  with the thurbox task list. **No agent/LLM**: a `*-tick` automation (every
-  15 min) is a deterministic `Exec` action that runs `{home}/scripts/sync.sh`,
-  which pulls the tracker's issues in as tasks (dedup by `(source, external_id)`)
-  and pushes thurbox status changes back — a task marked `done` closes/completes
-  the issue, reopening it on revert (push-then-pull). Watch lists live in a
-  `trackers.md` seed (query = `owner/repo` for github, `group/project` for
-  gitlab, a team key for linear, a JQL for jira); Linear/Jira keys go in
-  `{home}/credentials.env` so the headless run can read them. Backends are
-  `gh`/`glab` (github/gitlab) and `curl` GraphQL/REST (linear/jira); the only
-  Rust support is the generic, tracker-neutral
-  `task --source/--external-id/--external-url` flags, `get_task_by_external_id`,
-  and the `Exec` automation action (no provider name in the binary).
-  `thurbox-cli extension install <provider>`.
+- **Tracker import** — no longer an extension. Four per-provider trees
+  (`github-issues`, `gitlab-issues`, `linear`, `jira`) were removed: they were
+  near-identical, each carrying one provider's API shape, for a job that is a
+  `curl` and an upsert. The support that made them work is generic and stays —
+  `task --source/--external-id/--external-url`, `get_task_by_external_id`, the
+  `idx_tasks_external` index, and the `Exec` automation action — so a scheduled
+  `Exec` running your own script does the same thing. Dedup is on
+  `(source, external_id)` and only open-vs-done is authoritative on the way in, so
+  a local `in_progress` is never clobbered. No provider name is in the binary, by
+  design (ADR-20).
 
 ---
 

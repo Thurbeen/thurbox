@@ -86,22 +86,6 @@ pub const OFFICIAL_EXTENSIONS: &[OfficialExtension] = &[
         name: "renovate",
         description: "Keeps local repos on up-to-date dependencies via Renovate's local platform",
     },
-    OfficialExtension {
-        name: "github-issues",
-        description: "Syncs GitHub issues bidirectionally with the thurbox task list",
-    },
-    OfficialExtension {
-        name: "gitlab-issues",
-        description: "Syncs GitLab issues bidirectionally with the thurbox task list",
-    },
-    OfficialExtension {
-        name: "linear",
-        description: "Syncs Linear issues bidirectionally with the thurbox task list",
-    },
-    OfficialExtension {
-        name: "jira",
-        description: "Syncs Jira issues bidirectionally with the thurbox task list",
-    },
 ];
 
 /// Whether an install `target` is a **bare name** (not a URL or path) — i.e. it

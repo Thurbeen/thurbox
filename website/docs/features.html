@@ -235,19 +235,20 @@ breadcrumb: 'Features'
               .
             </li>
             <li>
-              <strong>Two-way issue-tracker sync</strong>
-              is shipped as per-provider extensions &mdash;
-              <a href="extension-github-issues.html">GitHub Issues</a>
-              ,
-              <a href="extension-gitlab-issues.html">GitLab Issues</a>
-              ,
-              <a href="extension-linear.html">Linear</a>
-              and
-              <a href="extension-jira.html">Jira</a>
-              &mdash; each a deterministic scheduled command with no agent involved. Imported items
-              dedup on
+              <strong>Importable from a tracker, without thurbox knowing which one.</strong>
+              A task carries a
+              <code>source</code>
+              tag and an external id and url, and
+              <code>task create --source … --external-id …</code>
+              upserts on
               <code>(source, external_id)</code>
-              , and closing a task closes the issue.
+              &mdash; so a scheduled
+              <code>Exec</code>
+              automation running your own script keeps a tracker and this list in step. Only
+              open-vs-done is authoritative on the way in, so a local
+              <em>in progress</em>
+              is never clobbered. thurbox ships no provider integration: keeping the binary free of
+              provider names is the point (ADR-20).
             </li>
           </ul>
 

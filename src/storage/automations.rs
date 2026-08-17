@@ -433,7 +433,7 @@ mod tests {
             },
             timezone: None,
             action: AutomationAction::Exec {
-                command: "~/github-issues/sync.sh".into(),
+                command: "~/tracker-sync/sync.sh".into(),
             },
             prompt: String::new(),
             next_run_at: Some(42),
@@ -442,7 +442,7 @@ mod tests {
         let got = db.get_automation(id).unwrap().unwrap();
         match got.action {
             AutomationAction::Exec { command } => {
-                assert_eq!(command, "~/github-issues/sync.sh");
+                assert_eq!(command, "~/tracker-sync/sync.sh");
             }
             other => panic!("expected exec, got {other:?}"),
         }

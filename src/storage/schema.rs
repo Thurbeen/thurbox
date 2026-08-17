@@ -1047,7 +1047,7 @@ fn migrate_v34_hook_status(conn: &Connection) -> rusqlite::Result<()> {
 
 /// v34 → v35: index `tasks(source, external_id)` for external-tracker sync.
 ///
-/// The task-integration extensions (linear/jira/github-issues/gitlab-issues)
+/// A task imported from an external tracker
 /// look up a task by its `(source, external_id)` natural key on every sync tick
 /// (`Database::get_task_by_external_id`) to dedup/upsert imported issues. The
 /// columns exist since v25; this only adds the partial index (matching the

@@ -1087,26 +1087,14 @@ close it), and `task run` sends or spawns. Triggering advances `Todo → InProgr
   adoption). Version strategy is per-repo (`strategy` column: `patch`/`minor`/
   `major`/`all`, layered as a `RENOVATE_CONFIG` overlay) plus a global
   `renovate-config.json`. Spec: `RENOVATE.md`.
-- **`extensions/{github-issues,gitlab-issues,linear,jira}/`** *(experimental)* —
-  per-provider **task-integration** extensions that sync an external issue
-  tracker **bidirectionally** with the thurbox task list. **No agent/LLM** — each
-  ships a `*-tick` automation (every 15 min) that is a deterministic
-  `AutomationAction::Exec` running `{home}/scripts/sync.sh`; thurbox's scheduler
-  runs it (TUI or headless heartbeat) and records the output in the run history.
-  `sync.sh` (identical across all four bar the `SOURCE` tag) sources
-  `{home}/credentials.env` (how Linear/Jira keys reach the headless run), then
-  push-then-pull: `push-status.sh` (`done` closes the issue, reopening on revert;
-  only `push_back=yes` rows), then per `trackers.md` row `fetch.sh "<query>"`
-  (provider API → normalized JSON) `| upsert.sh --source <tag>` (dedup by
-  `(source, external_id)`; only open-vs-done is authoritative, so a local
-  `in_progress` is never clobbered; `upsert.sh` is byte-identical across all
-  four). Watch list is a `trackers.md` seed (`| name | query | push_back |`,
-  `query` per provider: `owner/repo` flags for github, project for gitlab, team
-  key for linear, JQL for jira). Backends: `gh`/`glab` CLIs, `curl` GraphQL
-  (linear), `curl` REST v3 (jira). The only Rust support is the tracker-neutral
-  `task --source/--external-id/--external-url` flags, `get_task_by_external_id`,
-  and the `Exec` automation action (ADR-20: no provider name in the binary). See
-  each extension's `README.md`.
+> **Removed.** Four per-provider task-integration extensions
+> (`github-issues`, `gitlab-issues`, `linear`, `jira`) lived here and were deleted:
+> four near-identical trees, each carrying a provider's API shape, for a job that is
+> a `curl` and an `upsert`. What made them possible is still in the binary and is
+> deliberately provider-neutral (ADR-20 — no provider name in the binary): the
+> `task --source/--external-id/--external-url` flags, `get_task_by_external_id`,
+> the `idx_tasks_external` index, and the `Exec` automation action. A scheduled
+> `Exec` running a script of your own does what they did.
 
 ### Extension manifests + self-heal (`thurbox-cli extension`)
 
