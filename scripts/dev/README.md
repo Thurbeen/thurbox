@@ -40,7 +40,7 @@ theme → quit). Runs in CI as the `tui-smoke` job; also `just smoke`.
 
 | Script | What it does |
 |---|---|
-| `sandbox.sh` | run the dev TUI/CLI against an isolated sandbox (`just sandbox*`); `--v2` runs the v2 kernel (`thurbox2`) from the sandbox root, so its interface directory is isolated too |
+| `sandbox.sh` | run the dev TUI/CLI against an isolated sandbox (`just sandbox*`); launched from the sandbox root so the interface directory is isolated too, not just the database |
 | `render-og-image.sh` | rasterize the website OpenGraph card |
 | `lib/sandbox-env.sh` | shared isolation helper sourced by `sandbox.sh`, `smoke/tui-smoke.sh`, and `scripts/demo/record.sh` |
 

@@ -3,6 +3,17 @@
 Design rationale for user-facing behavior.
 For architectural choices, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
+> **Read this first.** Much of the reasoning below was written while the interface
+> was Rust (v1). The interface is now a Lua plugin kernel (ADR-23), so a section may
+> describe a surface that no longer exists, or one that still exists in a plugin
+> rather than in `src/ui`. Sections in the first case say so at the top; the
+> *rationale* is kept either way, because it is what a plugin rebuilding that
+> surface needs and it is not recoverable from the code.
+>
+> The engine below the interface — sessions, worktrees, agents, hosts, storage,
+> extensions, the CLI — is unchanged, and so are those sections.
+> What is owed to v1: `openspec/changes/v2-parity-gaps/`.
+
 ---
 
 ## Session Sidebar
@@ -636,6 +647,13 @@ editor of choice can open them as a workspace.
 
 ## Code Review (native)
 
+> **Not in the interface.** The view was deleted with `src/ui`; there is no
+> replacement yet, and this is the largest thing owed to v1. The data layer
+> survived and is waiting for a plugin: `session::review` (pure diff types +
+> `parse_unified_diff`), `storage::review` (`review_comments` + `review_marks`,
+> schema v38), and `kernel::diff` (diffs on a worker, published into the snapshot).
+> `openspec/changes/v2-code-review/` has the design. v1 keeps the view on `1.x`.
+
 Thurbox ships a **native, built-in** tuicr-like review view (`Ctrl+X`, `F7` alternate): a
 GitHub-style continuous diff of the active session's worktree
 (`<base>..HEAD`) with classified comments (issue / suggestion / note /
@@ -870,6 +888,12 @@ each part. `CLAUDE.md` keeps a summary and points here.
 
 ## Automations
 
+> **CLI only, but they still fire.** There is no automations pane, and the
+> interface has no in-TUI scheduler — the tmux heartbeat keeper runs due
+> automations whether or not thurbox is open, which is what keeps every extension
+> working. Author and inspect them with `thurbox-cli automation`. The keeper's 60 s
+> cadence is the current resolution; a ~1 s in-TUI pass is owed.
+
 `Ctrl+P` opens the automations list. An **automation** is a named,
 enable/disable-able task that fires on a schedule (one-shot or
 recurring) and, when it fires, either pastes a prompt into an
@@ -1048,6 +1072,10 @@ the tmux keeper and the optional OS timers invoke).
 ---
 
 ## Tasks (todo list)
+
+> **CLI only.** There is no tasks pane. The data, the storage and the agent
+> linkage are unchanged, so `thurbox-cli task` does everything below and scripts
+> and extensions that used tasks still work. A pane is Tier 2 in the parity gaps.
 
 A **task list** of todo items that can be **connected to a coding
 agent**. Tasks deliberately reuse the automation **Send/Spawn** action
@@ -1305,6 +1333,11 @@ viewer's `/` is an unrelated in-file text search and is unchanged.
 
 ## Feature Flags (`[features]` in settings.toml)
 
+> `code_review`, `file_viewer`, `info_panel` and `tasks` gate surfaces the interface
+> no longer draws (`tasks` still gates its CLI). They are accepted and preserved so
+> an existing file does not fail `thurbox-cli config validate`, and are not listed
+> in the settings panel, since a row that gates nothing reads as broken.
+
 Whole features can be switched off declaratively: `tasks`,
 `automations`, `file_viewer`, `global_search`, `info_panel`,
 `shell_pane`, `mouse`, `notifications`, `soft_delete` — all default
@@ -1340,6 +1373,11 @@ chord did nothing.
 ---
 
 ## Settings Panel (`Ctrl+,` / `F6`)
+
+> Now `kernel::modals::settings` — kernel-owned chrome that plugins contribute rows
+> to. Core settings still write `settings.toml` through `toml_edit`, and whether a
+> row applies live is *asked of* `Settings::restart_only_differs` rather than
+> recorded beside the field.
 
 `Ctrl+,` (rebindable `Action::OpenSettings`; `F6` alternate) opens a
 centered Settings modal that views and edits **all of settings.toml** —
@@ -1409,6 +1447,10 @@ auto-clear after a timeout or on the next successful action.
 ---
 
 ## Responsive Layout
+
+> Breakpoints are no longer compiled in: `ui/layout.lua` decides the arrangement and
+> may branch on width however it likes. The tiers below are what the shipped
+> `layout.lua` still does, so they remain what a user sees.
 
 The info panel (`Ctrl+B`) and file viewer (`Ctrl+E`) are the
 optional columns that appear at wider widths:
@@ -1878,6 +1920,11 @@ the long list rather than scrolling a flat one:
 
 ## Focus Levels
 
+> **Reshaped.** The kernel owns one focus ring over whatever panes are loaded, and
+> the trap it has to keep apart is `is_drawn` vs `can_focus`: a `switch` slot draws
+> one occupant, so focusing an alternate is *what brings it forward*, and gating
+> focus on "is it drawn?" makes an alternate unreachable. See `docs/V2-KERNEL.md`.
+
 Panels use a tri-state focus system (`Focused`, `Active`,
 `Inactive`) for clear navigation feedback.
 
@@ -1987,6 +2034,10 @@ active terminal can also briefly be empty during spawn.
 ---
 
 ## Info Panel Separators
+
+> **Not in the interface.** The info panel went with `src/ui` and has no
+> replacement yet. Kept because the grouping it argues for is what a plugin
+> rebuilding it should reproduce.
 
 Section boundaries in the info panel use styled `──────` separator
 lines instead of blank lines, improving visual structure.

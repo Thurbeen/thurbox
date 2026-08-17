@@ -114,7 +114,7 @@ rumdl = "0.1.19"
 #
 # v2 renders through an embedded Lua VM, so a dev build runs interpreter-heavy
 # work on every frame in a way v1 never did. At opt-level 0 that is felt as lag
-# in the TUI itself, and `cargo run --bin thurbox2` is the documented way to
+# in the TUI itself, and `cargo run` is the documented way to
 # run it -- so the dev profile is part of how fast thurbox v2 *is*, not just
 # how fast it builds.
 opt-level = 1

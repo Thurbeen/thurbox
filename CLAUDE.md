@@ -47,19 +47,17 @@ so your authenticated agent CLIs (claude/codex/…) work — and puts dev
 ```bash
 scripts/dev/sandbox.sh               # persistent "default" profile, launch the TUI
 scripts/dev/sandbox.sh --fresh       # throwaway env, wiped on exit
-scripts/dev/sandbox.sh --v2          # launch the v2 kernel (thurbox2) instead of v1
 scripts/dev/sandbox.sh --isolate-home    # full hermetic isolation (fresh HOME; agents have no creds)
 scripts/dev/sandbox.sh --shell       # shell with the sandbox env (run thurbox-cli by hand)
 scripts/dev/sandbox.sh -- session list   # run a thurbox-cli command in the sandbox
 scripts/dev/sandbox.sh --clean       # wipe the persistent profile
 ```
 
-`--v2` builds and launches `thurbox2`, **from the sandbox root rather than the
-repo**: `resolve_ui_dir` prefers a `./ui` in the working directory, so started
-from the repo it would load the repo's `ui/` and the sandbox would isolate the
-database but not the interface. From the sandbox root it materializes
-`<sandbox>/thurbox-config/ui/` instead, which is what `--fresh` (`just
-sandbox-v2`) then gives you a clean one of per run.
+The TUI is launched **from the sandbox root rather than the repo**:
+`resolve_ui_dir` prefers a `./ui` in the working directory, so started from the repo
+it would load the repo's `ui/` and the sandbox would isolate the database but not
+the interface. From the sandbox root it materializes `<sandbox>/thurbox-config/ui/`
+instead, which `--fresh` then gives you a clean one of per run.
 
 The isolation lives in one helper, `scripts/dev/lib/sandbox-env.sh`
 (`tbx_sandbox_init` = thurbox-only, `tbx_sandbox_init_full` = full HOME/XDG),
@@ -73,172 +71,90 @@ truth for the `thurbox-dev` sandbox pattern.
 cargo nextest run --all              # Run all tests (preferred runner)
 cargo nextest run -E 'test(name)'    # Run a single test by name
 cargo nextest run --all --profile ci # Run with CI profile
-cargo test test_name                 # Run single test via cargo test
 bats scripts/install.bats            # Test install script (requires bats-core)
 ```
 
-### TUI acceptance (e2e) tests
+### Kernel and interface tests
 
-The TUI has two layers of end-to-end coverage:
+The interface is Lua on a Rust kernel, so most coverage drives the **real
+kernel over the real `ui/`** rather than a harness that imitates either:
 
-- **In-process driver + snapshots** (`src/app/acceptance.rs`, a `#[cfg(test)]`
-  module). A `Harness` builds a real `App` on a no-op `StubBackend` +
-  `Database::open_in_memory()` + a `TestPathGuard` tempdir (fully hermetic),
-  feeds `AppMessage::KeyPress` events exactly as `main.rs`'s loop does, and
-  renders to a headless ratatui `TestBackend`. It also drives the loop's
-  **tick**: `App::tick` is split into a deterministic `tick_core` (status
-  derivation, timer expiry, search debounce, automation firing, external-change
-  polling — what `Harness::tick` runs, hermetic and runtime-free) and a
-  spawning `tick_background` (sysinfo/git/usage shell-outs, update checks —
-  `main` only). Wall-clock-gated behavior is fast-forwarded via
-  `Harness::advance` (the `app::clock` test clock — a thread-local offset every
-  UI-thread timer reads through), and agent output is injected per session via
-  `Harness::feed_output` (same vt100 + `TermSignals` path as the PTY reader),
-  so redraw detection, OSC title/bell signals, buffer-content search, and
-  terminal rendering are all testable. Stable screens (welcome state,
-  F1 help, theme picker) are pinned with **`insta`** snapshots
-  (`src/app/snapshots/`); dynamic flows (navigation, modals, panel toggles,
-  quit) assert on `App` state instead, so live metrics/clock never make them
-  flaky. Runs in the normal `cargo nextest --all` — no tmux/TTY needed. Update
-  snapshots with `INSTA_UPDATE=always cargo test` (or `cargo insta review`).
-- **Invariant monkey test** (`monkey_random_events_uphold_invariants` in
-  `src/app/acceptance.rs`). Seeded pseudo-random event streams (keys, chords,
-  mouse, ticks, clock jumps, resizes, injected agent output) against the
-  harness, rendering after **every** step and checking `assert_invariants`
-  (selection indices in bounds, focus never on a hidden surface, panels never
-  outlive their feature flag). A failure prints the seed + step for exact
-  replay. When a "weird TUI behavior" reduces to a rule, add it to
-  `assert_invariants` and let the monkey hunt for a violating sequence.
-- **Black-box smoke test** (`scripts/dev/smoke/tui-smoke.sh`). Launches the real
-  `thurbox` binary inside a throwaway tmux pane (isolated `HOME`/XDG/
-  `TMUX_TMPDIR`, mirroring `scripts/demo/record.sh`), drives it with
-  `tmux send-keys`, and asserts on captured frames (boot → F1 → theme → quit).
-  Gated behind the `tui-smoke` CI job (needs tmux).
-- **Performance counter tests** (`perf_*` in `src/app/acceptance.rs`). Assert on
-  `App::perf_counters()` — wall-clock-free `u64` counters bumped at the
-  render/tick hot paths (`MetricsState::perf`) — to gate the perf optimizations
-  without flaky timing: e.g. idle iterations skip the paint, the session order
-  is rebuilt only when its inputs change. Run with `cargo nextest run -E
-  'test(perf_)'`. See `docs/PERFORMANCE.md`.
+- **`tests/kernel_mvp.rs`** — the kernel's contract: the four node kinds and their
+  count, the plugin environment enumerated global-by-global (no blanket exemption
+  for a leading underscore — that is how a capability once hid under `__run_impl`),
+  the instruction/memory bounds, snapshot reads, and painting a plugin to a
+  `TestBackend`.
+- **`tests/v2_*.rs`** — one file per surface or contract: `v2_session_list`,
+  `v2_search`, `v2_new_session`, `v2_terminal_pane`, `v2_session_lifetime`,
+  `v2_keymap`, `v2_focus`, `v2_modals`, `v2_chrome`, `v2_mouse`, `v2_hover`,
+  `v2_decoration`, `v2_plugin_{authoring,commands,lifecycle,settings,switching}`,
+  `v2_repo_memory`, `v2_remote_status`, `v2_core_settings`, `v2_attach_by_name`.
+  Several build an interface in a tempdir from the embedded copy, so delivery and
+  loading are exercised together.
+- **`tests/kernel_limits.rs`** — instruction and memory ceilings, in their own file
+  because they mutate process-wide limits.
+- **Lua statics** — `selene ui` (undefined names + the sandbox, via `thurbox.yml`),
+  `lua-language-server --check` (types + withheld libraries), `stylua` (format).
+  The three cover different halves; see **Linting & Formatting**.
+- **Black-box smoke test** (`scripts/dev/smoke/tui-smoke.sh`) — launches the real
+  binary in a throwaway tmux pane with isolated `HOME`/XDG/`TMUX_TMPDIR` and
+  asserts on captured frames. Gated behind the `tui-smoke` CI job (needs tmux).
 
-### Dev harness layout (`scripts/dev/`)
+Tests that shell out to `git` **must scrub the `GIT_*` location variables**
+(`git::GIT_LOCATION_ENV`): git exports them to hook processes, so the suite running
+under this project's own pre-commit `cargo nextest` inherits a `GIT_DIR` pointing at
+the real repository. `tests/v2_repo_memory.rs` and `tests/create_e2e.rs` show the
+shape.
 
-The session-backend e2e harnesses form one family under `scripts/dev/e2e/`
-(`linux-container.sh` = ephemeral Podman, `windows-vm.sh` = ephemeral dockur
-Windows VM, `real-host.sh` = a machine you own) sharing one sourced library,
-`e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL result contract (`pass`/
-`fail`, `E2E_JSON=1` for a machine-readable line), an in-shell `json_field`
-extractor (**no `python3`**), the `hosts_block` `[[hosts]]` emitter, and the
-`session create → get → assert` core (`e2e_create_and_get`/`e2e_assert`). The TUI
-smoke test lives at `scripts/dev/smoke/tui-smoke.sh`. `scripts/dev/README.md` is
-the newcomer index (which script for which job) and carries the old→new path
-map (the flat `remote-ssh-test.sh`/`windows-test.sh`/`lab-test.sh`/
-`tui-smoke-test.sh` names were renamed, not kept as shims).
+> v1's in-process acceptance harness, its `insta` snapshots, its invariant monkey
+> test and `tests/v1_recordings.rs` were deleted with `src/app`. They are in the
+> history if a behaviour needs archaeology.
+
+### Session-backend e2e harnesses
+
+One family under `scripts/dev/e2e/` (`linux-container.sh` = ephemeral Podman,
+`windows-vm.sh` = ephemeral dockur Windows VM, `real-host.sh` = a machine you own)
+sharing `e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL contract
+(`E2E_JSON=1` for a machine-readable line), an in-shell `json_field` extractor (no
+`python3`), the `[[hosts]]` emitter, and the `session create → get → assert` core.
+`scripts/dev/README.md` is the newcomer index and carries the old→new path map.
 
 ## Performance (render loop)
 
-The render loop is **demand-driven** (`run_loop` in `src/main.rs`): it paints a
-frame only when the UI is dirty (`App::needs_redraw`) or the 250 ms forced-redraw
-floor (`FORCE_REDRAW_INTERVAL`) elapsed, not on every ~10 ms iteration.
-`App::update` marks dirty on any input; `App::detect_output_redraw` on new agent
-output (lock-free, via each session's `last_output_at` atomic);
-`refresh_session_statuses` on a status change; the floor covers time-driven UI
-(clock/metrics/cursor blink). Idle paints drop ~100 fps → ~4 fps with
-input/output latency unchanged. The session-list ordering is cached keyed by a
-content signature (`App::session_order_signature`), rebuilt only when its
-grouping/nesting inputs change. The per-tick session-status read is likewise
-cached (`App::cached_hook_states`), reloaded only when `PRAGMA data_version`
-moves — so an idle `tick` no longer rescans the `sessions` table (ADR-P6), with
-the `PRAGMA` throttled to ~100 ms and the per-session OSC title/notification
-re-read gated on a reader-thread generation counter (ADR-P10). Restore prefetches
-all history captures in parallel (ADR-P9) and code-review diffs build off the UI
-thread with a loading state (ADR-P8). The **whole new-session flow is
-non-blocking** (ADR-P12): the branch `git fetch` + listing (`App::branch_list` →
-`poll_branch_list`), `git worktree add` (`worktree_create`), the backend ready-up
-(`ensure_backend_ready`, an ssh connect for a remote host), and `Session::spawn`
-all run on workers. Because those phases can run for tens of seconds on a large
-repo, progress is carried by `App::pending_spawn` (`PendingSpawn`/`SpawnPhase`)
-rather than a `status_message` (which expires after 5 s): it renders a
-**placeholder row** in the session list plus a **status badge**. The row sits
-**inside the repo group the session will land in**
-(`ui::project_list::pending_spawn_slot`, keyed on
-`PendingSpawn.repo_display_names`), at that group's end — where the real row will
-appear — bringing its own header when the repo has no rows yet. It lives for the
-**whole wizard** — background phases *and* the modals between them
-(`SpawnPhase::Configuring`, a static `◌` with no spinner/elapsed) — cleared only
-when the session lands, the flow errors, or the user Escs out
-(`abandon_pending_spawn`). **Observability**:
-`F12` toggles a live perf HUD (counters + frame/tick percentiles + slow ops;
-`[features] perf_hud`); launching with `THURBOX_PERF_LOG=1` logs a `startup`
-line (phase breakdown + `first_frame_ms`, plus `restore_discover`/
-`restore_adopt`/`adopt_split`/`restore_capture_prefetch`), steady-state
-`perf_window` lines (~10 s), and `slow op` warnings to `thurbox.log`; while
-either is active the TUI publishes a JSON snapshot read by `thurbox-cli perf`.
-Full rationale + intentionally-skipped optimizations: `docs/PERFORMANCE.md`.
+The loop is **demand-driven**: it paints when something changed or when the 250 ms
+forced-redraw floor (`FORCE_REDRAW_INTERVAL`) elapses, never on every iteration.
+`MIN_FRAME_INTERVAL` is the floor between two paints. What marks the screen dirty:
+any input, a resize, a reload, a worker result, and **new agent output** —
+`Terminals::output_generation` is summed each iteration, which is what stops a
+printing agent being drawn at 4 fps.
 
-### Windows test environment (VM)
+A frame is more expensive than v1's, structurally: every pane is a Lua call
+returning a table that is converted to nodes and painted. So the loop settles
+aggressively. `draw` compares each plugin's returned tree against the last one and
+only marks the frame changed when it differs; a float does the same against its own
+last tree and rect. Neither an open float nor a live text selection marks the frame
+changed by itself — both used to, which pinned the loop at the frame cap for as
+long as the creation wizard was open. The perf HUD is the deliberate exception: its
+counters move every iteration, so it says so.
 
-`scripts/dev/e2e/windows-vm.sh` provisions a throwaway **Windows VM** to exercise
-thurbox's Windows support, where the session backend is
-[psmux](https://github.com/psmux/psmux) (a native-Windows tmux clone — same
-command language, `-L` sockets, and `-C`/`-CC` control mode that `TmuxBackend`
-drives, so it installs a `tmux.exe`). Mirroring `e2e/linux-container.sh`, it runs a
-real KVM-accelerated Windows VM inside a single Podman container via
-[`dockur/windows`](https://github.com/dockur/windows), with an unattended
-first-boot `/oem` payload that installs psmux + OpenSSH + `cargo-nextest.exe` so
-the harness drives the VM **headlessly over SSH**. Default edition is **Windows
-11** (`VERSION=11`); dockur has no "tiny" edition token, so override
-`THURBOX_WIN_VERSION` only with values dockur recognizes (`11`, `10`, `2025`, …).
+Everything that touches the world runs on a worker and publishes back (rule 5):
+`kernel::terminal` (attach — the sharpest teeth, since a down host runs out its ssh
+timeout and adopting a pane needs the runtime *entered* on the worker),
+`kernel::command`, `kernel::diff`, `kernel::metrics` (three cadences, one published
+result — the clearest one to copy), `kernel::repos` (the only *parameterised* reads,
+asked for by leaving a key in `store`), `kernel::runs`, `kernel::updates`.
 
-```bash
-scripts/dev/e2e/windows-vm.sh up         # build /oem payload + boot the VM (first run installs Windows, ~10-20 min)
-scripts/dev/e2e/windows-vm.sh wait       # block until the VM's SSH is reachable
-scripts/dev/e2e/windows-vm.sh test       # headless smoke test (psmux/tmux + a -L control session round-trip)
-scripts/dev/e2e/windows-vm.sh test-suite # run the FULL nextest suite inside the VM (see below)
-scripts/dev/e2e/windows-vm.sh deploy     # cross-build thurbox for x86_64-pc-windows-gnu + copy the .exe in
-scripts/dev/e2e/windows-vm.sh ssh        # PowerShell shell in the VM; `web`/`rdp` for eyes-on; `down`/`clean` to tear down
-```
+Cached answers carry an **age**, not just a value. The mistake this repeatedly
+invited was storing "we have an answer" where "the answer is current" was needed:
+git stats froze at their first reading, a `run` refresh started a process per frame,
+a failed branch fetch stuck for the process lifetime, and a backend surveyed once
+was treated as surveyed since. Each is now a TTL, an in-flight marker, or a
+generation counter — if you add a cache here, give it one.
 
-`test-suite` runs the **entire `cargo nextest` suite** inside the VM. The VM has
-**no Rust toolchain**, so the host cross-builds a self-contained **nextest
-archive** (`cargo nextest archive --target x86_64-pc-windows-gnu`), ships it plus a
-tarball of the working tree (uncommitted changes included, so insta snapshots /
-fixtures resolve), and runs `cargo-nextest.exe --archive-file … --workspace-remap
-…`. CI runs the same suite natively in the `windows` job (`ci.yml`,
-`windows-latest`); the VM is the local/offline mirror. Tests that genuinely assume
-Unix are `#[cfg(unix)]`-gated; the rest source the home dir from the platform var
-(`USERPROFILE`/`HOME`) and use `tempfile`/`std::env::temp_dir()` rather than
-hardcoded `/tmp`.
-
-All state lives under `target/windows-test/` (gitignored): the throwaway SSH
-keypair, the cached psmux + nextest zips, the generated `/oem` payload, the
-cross-built test archive, and the VM disk image. Needs `/dev/kvm` +
-`/dev/net/tun`. **Gotcha:** dockur forwards only `3389` to a Windows guest by
-default, so the script sets `USER_PORTS=22` to push the published SSH port
-through qemu's host-forward into the VM.
-
-### Lab (real-host) test environment
-
-`scripts/dev/e2e/real-host.sh <host> <verb>` (or `just lab <host> <verb>`) drives
-the same checks against **any real machine over SSH** — a `~/.ssh/config` alias or
-`user@address`, Linux/Windows auto-detected. Because lab machines may also run
-*regular* thurbox sessions, the e2e test is fully scoped: a private
-`-L thurbox-lab-test` socket + session, all remote state under one
-`thurbox-lab-test` directory (repo + `worktrees_dir`), and an isolated local
-`THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` — the release socket (`thurbox`), the dev
-socket (`thurbox-dev`), and real config/DB are never touched. Verbs: `check`
-(readiness probe), `hosts` (print the `hosts.toml` block), `test` (headless
-ssh-backend e2e, mirrors `e2e/linux-container.sh test`), `tui` (wire the host into
-the persistent `lab` sandbox profile + launch), `ssh`, `clean`; Windows-only:
-`deploy` (cross-build + install to `C:\Tools\thurbox`), `run` (the deployed TUI
-over `ssh -t`), `test-suite` (nextest archive, mirrors `e2e/windows-vm.sh`),
-`wsl-setup`/`wsl-check` (provision + verify a WSL distro as a target),
-`native-test [agent]` (headless e2e of the **deployed** binaries natively:
-`thurbox-cli.exe` creates a local psmux session — agent argv + `THURBOX_*` env
-asserted intact — and `thurbox.exe` boots inside a scoped psmux pane and must
-show/adopt it; isolated via `THURBOX_SOCKET`, since psmux has no
-`TMUX_TMPDIR`-style socket-dir isolation). Local state: `target/lab-test/`
-(gitignored).
+**Observability**: `F12` toggles the perf HUD (`[features] perf_hud`); launching with
+`THURBOX_PERF_LOG=1` writes `startup`, `perf_window` and `slow op` lines to
+`thurbox.log`; while either is active a JSON snapshot is published for
+`thurbox-cli perf`. Full rationale: `docs/PERFORMANCE.md`.
 
 ## Installation Script
 
@@ -879,7 +795,7 @@ and last error; `--test` fires a sample — see OS notifications below), `perf`
 or its perf HUD is active — see `docs/PERFORMANCE.md`), `plugin`
 (v2 interface plugins without a TTY: `dir` reports the directory in force and
 which of the three rules chose it, `new <name>` writes a starter that already
-loads, `check` loads the interface the way `thurbox2` does and exits non-zero on
+loads, `check` loads the interface the way `thurbox` does and exits non-zero on
 a failure, `list` is the same inventory the settings modal's Interface tab shows
 — see `docs/PLUGINS.md`).
 Output is
@@ -1054,94 +970,31 @@ editor as a centered overlay (`Modal::AutomationEditor`); both share
 
 ## Tasks (todo list)
 
-Thurbox has a **task list**: todo items (title + markdown description +
-status). The whole TUI surface is gated by `[features] tasks` in
-settings.toml (disabled: F5/Ctrl+W toasts, no task search results; the
-CLI stays functional). A task can be **acted on by a coding agent** via a **trigger-time
-picker** (`r`): you choose *Send → a running session* or *Spawn new session…*
-(the normal repo→agent flow) at the moment you act — the action is **not**
-authored into the task. Either way the agent is seeded with a **full context
-prompt**, not the bare title: `Task::agent_prompt()` builds an `id + # title +
-markdown description` block plus self-service hints (`thurbox-cli task show
-<id>` to read the full record, `thurbox-cli task edit <id> --status done` to
-close it out). The TUI seeds it via `App::task_agent_prompt` (bracketed-paste
-safe, so the multi-line body never submits early); the headless `task run` path
-builds the same string. Triggering advances the task `Todo → InProgress` (TUI:
-`App::advance_task_to_in_progress`; CLI: `mark_in_progress`).
-(`Task.action: Option<AutomationAction>` still exists for the CLI / external
-sync, but the TUI editor never sets it.)
+Todo items (title + markdown description + status), **CLI-only**: the interface has
+no tasks pane. The data, the storage and the agent linkage are unchanged, so
+extensions and scripts that used them still work.
+
+A task can be **acted on by a coding agent**: `Task::agent_prompt()` builds an
+`id + # title + markdown description` block plus self-service hints (`thurbox-cli
+task show <id>` to read the record, `thurbox-cli task edit <id> --status done` to
+close it), and `task run` sends or spawns. Triggering advances `Todo → InProgress`.
 
 - **Data** (`session/task.rs`): `Task` (`id`, `title`, `description:
-  Option<String>` (markdown, `None` when blank), `status: TaskStatus`
-  {`Todo`/`InProgress`/`Done`}, `action: Option<AutomationAction>`, plus
-  `source`/`external_id`/`external_url` for external-tracker sync — `source =
-  "local"` for native todos, or a tracker tag (`github`/`gitlab`/`linear`/`jira`)
-  for items imported by the task-integration extensions. `(source, external_id)`
-  is the natural dedup key.
-- **Storage** (`storage/tasks.rs`, schema v25): `tasks` table mirroring the
-  automation action columns (`action_kind` nullable) plus a nullable
-  `description` (v26 migration), soft-delete via `deleted_at`, audited under
-  `EntityType::Task`. `idx_tasks_external` on `(source, external_id)` (v35) backs
-  the `get_task_by_external_id` upsert lookup. CRUD: `create_task`, `get_task`,
-  `get_task_by_external_id`, `list_tasks`, `update_task`, `set_task_status`,
-  `soft_delete_task`.
-- **UI** — tasks render in a **toggleable right-side column** between the
-  terminal and the file viewer, behaving exactly like the file viewer:
-  **F5**/`Ctrl+W` (`Action::FocusTasks`) shows **and** focuses it (and hides it
-  again), and `Ctrl+L`/`Ctrl+H` cycle in/out of it as part of the session ring
-  (`SessionList → Terminal → TaskList → FileViewer`, each a cycle stop only while
-  visible). Layout: `compute_layout`'s `show_tasks_panel` flag adds a 20% column
-  (`PanelAreas::tasks_panel`) at width ≥ 120. Rendered by `ui/tasks_panel.rs`
-  (checkbox glyphs ☐/◐/☑) with the shared `ui::focus_block`, matching the session
-  list / file viewer; `InputFocus::TaskList` is the panel focus. Rows whose task
-  has an **open related session** get a trailing accent `⇄`
-  (`TaskPaneEntry::linked`).
-- **Full-screen preview / edit toggle** (`view::render_task_workspace`): while the
-  panel is focused (`InputFocus::TaskList`) the central pane shows the selected
-  task's **full-screen, scrollable** read-only **details + markdown preview**
-  (`ui/task_detail`: agent linkage, **related session(s)**, status, source,
-  created/updated, then the description via `ui/markdown::render_markdown`);
-  `PageUp`/`PageDown` scroll it (`App::task_preview_scroll`, reset on selection
-  change). Entering the central pane (`Enter`/`e` → `InputFocus::TaskEditor`)
-  swaps to the **full-screen editor**
-  (`ui/task_editor_modal::render_task_editor_into`); `Esc` returns to the
-  preview/panel. Helpers: `sync_task_editor`, `new_task_in_pane`,
-  `enter_task_editor`, `refresh_task_view`, `build_task_editor`.
-- **Editor fields** — a task is just **title + description + status**
-  (`TaskField`); the agent action is chosen at trigger time, not here. The
-  `description` is a **multi-line** `modals::TextArea` (newline +
-  vertical-cursor, distinct from single-line `TextInput`): **`Enter` inserts a
-  newline** and `Up`/`Down` move within the text (field nav is `Tab`);
-  **`Ctrl+S` saves from any field**.
-- **Keys** (focused panel): `j`/`k` select (live-preview), `PageUp`/`PageDown`
-  scroll the preview, `n` new, `e`/`Enter` open the central-pane editor,
-  `Space` cycle status, `r` open the **trigger-time action picker**, `o` **open
-  the task's related session** (`App::open_task_related_session` — jumps to the
-  spawned `<title> · #<id>` window or a Send target, else a status hint), `d`/`Ctrl+D`
-  delete, `Esc` back to the session list. In the editor: field nav +
-  `Enter`/`Ctrl+S` save (→ back to panel), `Esc` discard; the editor captures
-  its keys before global bindings (so `e`/`d` edit text) via
-  `handle_automation_pane_capture`.
-- **Trigger-time action picker** (`r`) — `Modal::TaskActionPicker`
-  (`App::open_task_action_picker`, rendered by `ui/task_action_picker_modal`,
-  modeled on the theme picker): one **Send → <session>** per running session
-  plus **Spawn new session…**. *Send* runs immediately
-  (`App::send_task_to_session`); *Spawn* stashes `App::pending_task_prompt =
-  (task_id, title)` and reuses the normal `open_repo_picker` →
-  `do_spawn_session` flow, whose success tail delivers the title (after
-  `AGENT_BOOT_DELAY_TICKS`) and advances the task. The pending prompt is
-  cleared on a manual `Ctrl+N` so a cancelled task-spawn can't leak into it.
-  Both paths call `App::advance_task_to_in_progress`.
+  Option<String>`, `status: TaskStatus` {`Todo`/`InProgress`/`Done`}, `action:
+  Option<AutomationAction>`, plus `source`/`external_id`/`external_url` for
+  tracker sync — `source = "local"` for native todos, a tracker tag for imported
+  ones. `(source, external_id)` is the dedup key.
+- **Storage** (`storage/tasks.rs`, schema v25/v26): `tasks` mirroring the automation
+  action columns plus a nullable `description`, soft-delete via `deleted_at`,
+  audited under `EntityType::Task`, `idx_tasks_external` on `(source,
+  external_id)` (v35) backing the upsert lookup.
 - **CLI**: `thurbox-cli task` (alias `todo`) —
-  `create`/`list`/`show`/`edit`/`remove`/`run`. `create`/`edit` take an
-  optional `--description` (markdown; `edit --description ""` clears it) and
-  the external-sync fields `--source` / `--external-id` / `--external-url`
-  (used by the task-integration extensions; an empty `--external-id`/
-  `--external-url` clears it, `create` defaults `source` to `local`), and
-  `task_to_json` emits a `description` field. `create` with neither
-  `--session` nor `--repo` is a plain local todo; `run` triggers the
-  Send/Spawn action headlessly. Tasks do **not** participate in sync
-  (`SharedState`) and have no run-history table (audited via `audit_log`).
+  `create`/`list`/`show`/`edit`/`remove`/`run`, with `--description` (markdown) and
+  the external-sync flags. `[features] tasks` still gates the CLI surface.
+
+> A pane is owed. It is Tier 2 in `openspec/changes/v2-parity-gaps/`, and the shape
+> a plugin would take is the same one `10_sessions.lua` uses: read the snapshot,
+> return a tree, send a command.
 
 ## Extensions
 
@@ -1302,62 +1155,32 @@ healing needs `[features] automations = true`.
 (`installed_with`/`is_stale`), and the full self-heal contract are in ADR-21 of
 `docs/ARCHITECTURE.md`.**
 
-## Global search (`Ctrl+/`)
+## Global search
 
-A **non-modal bottom strip** (`Ctrl+/`, rebindable) searches **every scope at once**:
-**sessions** (name/agent/branch + live vt100 **buffer content**), **tasks**
-(title + description, with a description snippet when only the description
-matched), **automations** (name), and **files** (the active session's file
-tree). `Enter` jumps to the selected result and focuses its pane —
-switching to a session's terminal, the tasks panel, the automations pane,
-or the file viewer (revealing the path). Gated by `[features]
-global_search` in settings.toml; scopes whose feature is disabled
-(tasks/automations/file viewer) contribute no results.
+`ui/plugins/65_search.lua` — a full-width strip above the chrome bands (v1 floated
+it). It searches sessions by name, agent, branch and repo, **and by the text on
+their screens**, which is the half that finds a session by the error in it.
 
-- **Live in-place highlighting**: rather than reprinting results in the strip,
-  matched characters highlight **in the panels themselves** (session list, tasks,
-  automations) — accent+bold+underline on matching rows, dim on the rest — via
-  the shared `src/ui/highlight.rs`. The view feeds each panel renderer the query
-  through `App::global_search_query()` (`Some` only while the strip is open with a
-  non-empty query). The strip shows the query, per-scope match counts, the grouped
-  scrollable result list (selected row `▸`/highlighted, snippets dimmed), and key
-  hints (`src/ui/global_search.rs`).
-- **Live preview + cancel-restore**: moving the selection
-  (`App::preview_global_search_result`, from `move_global_search_selection` and on
-  query change) moves the owning panel's cursor — `active_index` /
-  `task_panel_index` / `automation_panel_index` — so the previewed row is visible
-  while focus stays in the strip (files are *not* previewed; they open only on
-  `Enter`). `global_search_preview_kind()` tells the view which panel owns the
-  preview so it force-shows that row
-  (`TaskPaneState`/`AutomationsPaneState::preview_selected`). `open_global_search`
-  captures a `SearchSnapshot` (focus + the three indices + `show_tasks_panel`/
-  `show_file_viewer`); `Esc`/`close_global_search` restores it, `Enter`/
-  `activate_global_search_result` drops it (keeps the jump).
-- **State** lives in `src/app/search.rs` (`GlobalSearchState`,
-  `GlobalSearchResult`, `SearchTarget`/`SearchKind`); building results +
-  dispatching a selection live on `App` (`build_global_search_results`,
-  `session_content_match`, `activate_global_search_result`,
-  `open/close_global_search`). `InputFocus::GlobalSearch` captures all
-  input before the global keybinding lookup.
-- **Debounce**: cheap metadata results recompute on every keystroke; the
-  expensive per-session buffer-content scan runs only after the query is
-  idle for ~150 ms (`Instant`-based, driven from `tick()`), capped at
-  `MAX_PER_GROUP` results and `CONTENT_LINE_CAP` lines per session.
-- **Keys**: type to filter; `Up`/`Down` or `Ctrl+P`/`Ctrl+N` move the
-  selection (so plain `j`/`k` still type); `Enter` activates; `Esc` closes
-  and restores the prior focus.
-- **Layout**: `compute_layout`'s `show_global_search` carves a full-width
-  `PanelAreas::global_search` strip above the footer (shrinking the content
-  area like the side panels). Rendered by `src/ui/global_search.rs`.
-- **Binding**: `Action::GlobalSearch` defaults to `Ctrl+/` (the near-universal
-  "search" chord), bound to all three encodings terminals deliver it as
-  (`Ctrl+/` under the kitty protocol; `Ctrl+7`/`Ctrl+_` from the raw 0x1F byte
-  on legacy terminals). It isn't a bare `Ctrl+<letter>`, so it never defers to
-  the PTY — search opens from a focused terminal too. Fully rebindable from the
-  F1 editor like any other action (there is no separate hardcoded opener).
-  Global search is the **only** search: the per-pane local `/` filters
-  (session list, tasks panel) were removed in favour of it. The file
-  viewer's `/` (in-file text search) is unrelated and stays.
+- **Matching**: subsequence via `ui/lib/fuzzy.lua`, shared with the session list so
+  the two cannot disagree. Screen text is matched as a **substring**, not a
+  subsequence — fuzzy over a whole screen matches nearly everything — and is
+  skipped for a session whose metadata already matched.
+- **Terminal text is a *want***: the pane leaves its query in `store` under
+  `want_content` and the kernel serves `thurbox.content` only while it is asking, so
+  no interface pays for every agent's screen on every frame
+  (`kernel::terminal::WANT_CONTENT`, capped at `CONTENT_LINE_CAP` = 500 lines, the
+  same bound v1 used).
+- **Highlighting is in place**: matches highlight *inside* the panes being searched
+  and non-matching rows dim, rather than being reprinted in the strip. Moving the
+  selection previews it in the owning pane; `Esc` puts back what you were looking
+  at.
+- Sessions is the only scope with a pane today. A result carries the pane it
+  belongs to, so a returning surface is a scope added and nothing else changed.
+- One deliberate divergence, recorded in `tests/v2_parity.rs`'s successor notes: v1
+  also took `Ctrl+P`/`Ctrl+N` inside the strip because its search focus captured
+  input ahead of the keybinding table. Here every chord goes through one registry
+  where a plugin-scoped claim does not outrank a global one, so declaring them
+  would take `Ctrl+N` from new-session everywhere.
 
 ## Session status (hooks-driven)
 
@@ -1423,14 +1246,14 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
   fresh spawn seeds **nothing** — a never-reported session is `Idle`, and the
   agent's hooks drive it from there (so an idle, just-booted agent doesn't look
   stuck working).
-- **Derivation.** `App::refresh_session_statuses` (`src/app/mod.rs`) derives
-  each session's status every tick from the hook rows — exited → `Idle`; else
-  the persisted state (`working`/`blocked`; `idle`/none → `Idle`). The rows are
-  **cached** (`App::cached_hook_states`) and reloaded from the DB only when
-  `PRAGMA data_version` moves (an external `session signal`), not on every tick;
-  same-connection writes (`seen_at`, restart's `clear_hook_state`) are applied
-  write-through / via `invalidate_hook_state_cache` (see `docs/PERFORMANCE.md`
-  ADR-P6). `done` shows as `Done` (blue)
+- **Derivation.** The snapshot carries each session's `hook_state` and
+  `SnapshotStore` folds attach state into the published status
+  (`with_reachability`) — exited → `Idle`; a *remote* session with no live pane →
+  `Unreachable`; else the persisted state (`working`/`blocked`; `idle`/none →
+  `Idle`). A local session is never unreachable: this is its machine, and a missing
+  pane there means the agent was not launched. The rows are read on the snapshot's
+  own schedule rather than per frame, gated on `PRAGMA data_version` moving (see
+  `docs/PERFORMANCE.md` ADR-P6). `done` shows as `Done` (blue)
   **whether focused or not** — so a turn you're watching visibly completes — and
   becomes `Idle` only when you **move focus off it** (acknowledge it): the focus
   change vs. `last_active_session_id` marks the just-left `done` session `seen`
@@ -1460,320 +1283,183 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
 
 ## OS notifications
 
-When a session transitions to `SessionStatus::Blocked` (the agent needs
-the user, reported by a hook) thurbox fires an OS desktop notification so
-the user can react without watching the TUI.
-The trigger is the block edge by default; an opt-in
-`also_on_waiting` extends it to the `Working → Done` (finished) edge
-(the field name is historical). The transition is observed once per
-tick in `App::refresh_session_statuses` (the *same* place
-`SessionStatus` is computed, so the rule never drifts from the icon
-in the list), dedup'd per session by `min_interval_secs`, and skipped
-when the target session is the one in focus (`suppress_for_active`).
+When a session goes to `SessionStatus::Blocked` (the agent needs you, reported by a
+hook) thurbox fires an OS desktop notification. `kernel::notify` owns the
+per-session bookkeeping and the edge detection; `src/notifications.rs` is still the
+leaf side-effect layer that knows only `session` + `paths`.
 
-- **Delivery backend** (auto-detected). `notifications::detect_backend`
-  resolves the configured `[notifications] backend` (`auto` by default)
-  plus host probing (`probe_host`) into a concrete `DeliveryBackend`
-  (`Dbus` / `WindowsToast` / `Macos` / `None`) via the pure, table-driven
-  `resolve_backend`. `auto` picks **dbus** on a normal Linux desktop
-  (a session-bus `org.freedesktop.Notifications` socket is reachable),
-  the **Windows toast** path on **native Windows** (`HostProbe.is_windows`)
-  and under WSL when no dbus daemon answers (`/proc/version` carries the
-  Microsoft marker and `powershell.exe` is on PATH — we shell out a WinRT toast
-  script, `build_powershell_toast_script`, single-quote-escaped), and the
-  **macOS** native banner. Delivery errors are recorded in a process-wide
-  `LAST_ERROR` slot (`notifications::last_error`) and surfaced by the diagnostic
-  — under WSL the dbus path used to error on connect and only `warn!`, so the
-  user saw nothing.
-- **Diagnostic**: `thurbox-cli notify` (`cli/notify.rs`) prints the
-  detected backend, whether it can deliver, click-to-focus support, and
-  the last delivery error; `--test` fires a sample notification
-  *synchronously* (`notifications::send_blocking`, since the short-lived
-  CLI has no dispatcher thread) so the user can confirm end-to-end.
-- **Click-to-focus** (dbus + macOS `terminal-notifier` paths). The dbus action
-  callback writes a session UUID to the SQLite `metadata` row keyed by
-  [`PENDING_FOCUS_SESSION_ID_KEY`](src/session/mod.rs) (the single source of
-  truth shared by writer and reader). The TUI's external-state poll
-  (`App::poll_external_changes` → `apply_pending_focus_request`) reads + deletes
-  the row atomically (`Database::take_pending_focus_session_id`, one
-  `DELETE … RETURNING`) and switches `active_index` + `InputFocus::Terminal`. On
-  macOS the same row is written by `terminal-notifier`'s `-execute` flag (which
-  shells back into `thurbox-cli session focus <id>`), so click-to-focus works
-  wherever `terminal-notifier` is installed. The Windows-toast path and macOS's
-  `osascript` fallback show the banner but ignore clicks (a Windows toast can't
-  call back into WSL; the `osascript`/`UNUserNotificationCenter` callbacks need a
-  signed app bundle, which thurbox is not). **Terminal window-raising is
-  deliberately not implemented**: thurbox runs inside an arbitrary terminal
-  emulator it doesn't own and per-emulator window control is fragile (especially
-  on Wayland). The session is pre-selected; the user alt-tabs back themselves.
-- **TUI-only lifecycle**. The PTY parser that observes the bell only runs while
-  the TUI is alive, so notifications don't fire from headless `automation tick`.
-  The dispatcher thread (`crate::notifications::start`) only starts when
-  `[features] notifications = true` — zero overhead when disabled.
-- **Gated by `[features] notifications`** (default on); knobs in
-  `[notifications]` (also_on_waiting / suppress_for_active / sound /
-  min_interval_secs / backend). `backend = "off"` is a soft delivery
-  switch distinct from the `[features]` flag (the dispatcher still runs
-  but drops everything). Settings live in `session::settings`
-  (`NotificationBackend` enum); loader in `agent::settings_config`; full
-  doc in `docs/CONFIG.md`.
-- **Code shape**. `src/notifications.rs` is the leaf side-effect layer (knows only
-  `session` + `paths`) — one background thread reads a per-process mpsc channel
-  and dispatches over the resolved backend (`notify-rust` for dbus,
-  `terminal-notifier`/`osascript` for macOS, `powershell.exe` for the WSL toast).
-  The body is bounded to 200 chars (`notify_state::truncate_body`) so a huge OSC
-  message can't overflow the banner. Per-session bookkeeping (prior status, dedup
-  timestamps) lives in `src/app/notify_state.rs` as a pure struct owned by `App`,
-  constructed only when the feature is enabled. Backend selection
-  (`resolve_backend`), the WSL marker check, powershell escaping, and body
-  truncation are pure functions with table-driven tests.
+The trigger is the block edge by default; `also_on_waiting` extends it to
+`Working → Done`. Observed once per tick in the same place status is derived, so the
+rule cannot drift from the dot in the list. Deduped per session by
+`min_interval_secs`, skipped when the session is the focused one
+(`suppress_for_active`), body bounded to 200 chars so a huge OSC message cannot
+overflow the banner.
 
-## Code review (native, tuicr-like)
+- **Backend** (auto-detected): `notifications::detect_backend` resolves
+  `[notifications] backend` plus host probing into `Dbus` / `WindowsToast` /
+  `Macos` / `None` via the pure, table-driven `resolve_backend`. `auto` picks dbus on
+  a Linux desktop, the Windows toast path on native Windows and under WSL when no
+  dbus answers (`/proc/version` carries the Microsoft marker and `powershell.exe`
+  is on PATH), the macOS banner otherwise. Delivery errors land in a process-wide
+  `LAST_ERROR` and are surfaced by the diagnostic — under WSL the dbus path used to
+  fail on connect and only `warn!`, so the user saw nothing.
+- **Diagnostic**: `thurbox-cli notify` prints the detected backend, whether it can
+  deliver, click-to-focus support and the last error; `--test` fires a sample
+  *synchronously* (`send_blocking`, since the short-lived CLI has no dispatcher).
+- **Click-to-focus** (dbus + macOS `terminal-notifier`): the callback writes a
+  session id to the `metadata` row keyed by `PENDING_FOCUS_SESSION_ID_KEY`, and the
+  loop reads-and-deletes it atomically (`take_pending_focus_session_id`, one
+  `DELETE … RETURNING`) then focuses that session. The Windows toast and macOS
+  `osascript` fallback show the banner but ignore clicks. **Raising the terminal
+  window is deliberately not implemented** — thurbox runs inside an emulator it does
+  not own, and per-emulator window control is fragile, especially on Wayland.
+- **Gated by `[features] notifications`** (default on); knobs in `[notifications]`.
+  `backend = "off"` is a soft delivery switch distinct from the feature flag.
 
-Thurbox has a **built-in, natively-rendered** code-review view (no external
-binary, no nested TUI) — a tuicr-like GitHub-style continuous diff with
-classified comments and a review summary — targeting the active session's
-worktree (`<base>..HEAD`), which maps cleanly onto thurbox's model (every session
-is a worktree on a branch forked from a base). Toggle with `Ctrl+X` (`F7`
-alternate; rebindable `Action::ToggleReview`): `Ctrl+X` is in
-`terminal_passthrough` (the emacs prefix key), so in a focused terminal it
-reaches the agent and `F7` opens the review. Gated by `[features] code_review`.
+## Code review
 
-Shape, in one pass: it owns the central pane with its own
-`InputFocus::CodeReview` (it *captures* keys, unlike the shell pane's
-`TerminalView`) plus a focusable changed-files list in the file-viewer column
-(`InputFocus::ReviewFiles`); **unified or true paired side-by-side** layout
-(`v`), horizontal scroll or a **wrap toggle** (`w`) for long lines, find-in-diff
-(`/`), retargetable to Working / Branch / a single commit (`t`), multi-repo aware
-(repo-qualified paths), syntax-highlighted, mouse-first, and persisted per
-session. Export is agent-native: `y` copies markdown, `e` pastes the review into
-the session's agent to address it.
+**The view is gone.** v1's native diff reviewer (`ui/code_review.rs` +
+`app/code_review.rs`) went with `src/ui`; there is no replacement yet, and it is the
+largest single thing v2 owes v1 (`openspec/changes/v2-code-review/` has the design,
+`v2-parity-gaps` tracks it). v1 keeps it on the `1.x` branch.
 
-Where the code lives: `ui::code_review` (render) + `ui::syntax`,
-`app::code_review::CodeReviewState` (state), `session::review` (pure diff types +
-`parse_unified_diff`, so `ui` renders without importing `git`),
-`storage::review` (`review_comments` + `review_marks`, schema v38, keyed on the
-write-once `sessions.base_branch`), `git::diff_against{,_on}` (local or SSH). The
-diff pipeline runs on a worker with a loading state (ADR-P8).
+What survived, because it is not view code:
 
-**Full detail — every key, layout invariant, helper name, and the named v1
-follow-ups — is in the Code Review section of `docs/FEATURES.md`.** Two rules to
-keep in mind when touching it: **1 logical diff row = 1 selectable unit**
-(wrapping expands only *visual* rows; selection, comment anchoring, and hitboxes
-stay logical), and the diff types stay in `session` (architecture rule).
+- **`session::review`** — the pure diff types and `parse_unified_diff`, which is
+  why they live in `session` rather than beside a renderer.
+- **`storage::review`** — `review_comments` + `review_marks` (schema v38), keyed on
+  the write-once `sessions.base_branch`. Comments already written are still there.
+- **`git::diff_against{,_on}`** and **`kernel::diff`** — diffs are produced on a
+  worker and published into the snapshot, bounded at `MAX_DIFF_BYTES`.
+
+So a review plugin has its data layer waiting for it. Two rules from the v1 design
+still apply if you build one: **1 logical diff row = 1 selectable unit** (wrapping
+expands only *visual* rows; selection and comment anchoring stay logical), and the
+diff types stay in `session` (architecture rule).
 
 ## Demo Video
 
-The demo media is **generated**, not hand-recorded. A single
-script drives the *real* TUI via
-[VHS](https://github.com/charmbracelet/vhs) (needs `vhs` +
-`ffmpeg` + `ttyd` + `tmux`) and writes GIF **and** MP4 straight
-into `docs/media/`:
+> **The recordings are stale.** Every clip under `docs/media/` was recorded against
+> v1 and shows panes the interface no longer has — code review, the file viewer, the
+> tasks and automations panels. The tapes themselves drive v1 chords, so they need
+> rewriting before re-recording is worth doing. Until then the website and README
+> advertise an interface that is gone. This is the most visible inaccuracy left.
+
+The media is **generated**, not hand-recorded. One script drives the *real* TUI via
+[VHS](https://github.com/charmbracelet/vhs) (needs `vhs` + `ffmpeg` + `ttyd` +
+`tmux`) and writes GIF **and** MP4 into `docs/media/`:
 
 ```bash
 scripts/demo/record.sh                 # regenerate ALL demo videos
-scripts/demo/record.sh theme automations   # re-record a subset
+scripts/demo/record.sh theme search    # re-record a subset
 ```
 
-`record.sh` records every video pair in one pass, one VHS tape each
-(`scripts/demo/<feature>.tape`): the hero demo (`thurbox-demo.*` via
-`agents.tape`), one clip per feature
-(`thurbox-{file-manager,info-panel,theme,session-creation,fork}.*`), and the
-`automations`/`tasks`/`search` demos (`<stem>-demo.*`). No args = all; pass tape
-stems for a subset (`agents` is the hero, `automations`/`tasks`/`search` map to
-`<stem>-demo.*`, every other stem to `thurbox-<stem>.*`).
+One VHS tape each (`scripts/demo/<feature>.tape`); no args = all, otherwise tape
+stems. Every clip uses **real agent CLIs**, one session per installed CLI, with
+`HOME` overridden so agents boot with fresh history (keyring-authenticated CLIs stay
+logged in but show no account email).
 
-Every clip uses **real agent CLIs**: one session per installed CLI (`claude`,
-`opencode`, `codex`, `antigravity`), launched with no prompt. `HOME` is
-overridden so agents boot with fresh history/config (keyring-authenticated CLIs
-stay logged in but show no account email). The tapes exercise the session list,
-info panel (`Ctrl+B`), file viewer (`Ctrl+E`), native code review (`Ctrl+X`;
-`F7` alternate), theme picker, session-creation flow, and the Automations pane;
-the hero `agents` demo also opens the review, seeding the same
-worktree-with-a-committed-diff session the dedicated `code-review` clip uses.
+**The scenario is a realistic one, not a UI tour.** The repo is a vendored snapshot
+of thurbox's own tree (a fixed file list copied into the throwaway `HOME` and `git
+init`ed there — MIT, already local, so recordings stay hermetic and offline).
+Sessions are named after the *work*, not the agent (`fix-osc52-tmux`,
+`add-wsl-host-tests`, `perf-session-order-cache`, `docs-remote-hooks`), so the list
+reads as one backlog with four branches in flight. The seeded tasks/automation and
+the queries typed in the tapes are keyed to that same narrative, so **editing one
+means editing the others**.
 
-**The demo scenario is a realistic one, not a UI tour.** The repo is a
-**vendored snapshot of thurbox's own tree** (a fixed file list copied into the
-throwaway `HOME` and `git init`ed there — MIT, already on the recording machine,
-so recordings stay hermetic and offline). Sessions are named after the **work**,
-not the agent running it (`fix-osc52-tmux`, `add-wsl-host-tests`,
-`perf-session-order-cache`, `docs-remote-hooks` — see `demo_session_name`), so
-the list reads as one backlog with four branches in flight; the agent stays
-visible per session in the info panel and tab title. The code-review clip's diff
-is a real follow-up fix (`posix_quote` rejecting newlines, plus its test) applied
-to the vendored copy only — never your working tree. The seeded tasks/automation
-and the queries in `search.tape`/`tasks.tape` are keyed to that same narrative,
-so **editing one means editing the others** (the tapes type literal queries —
-`host` must match both a session and a task — and literal names).
-The built-in **hooks extension is deactivated** for recordings: it is
-auto-activated by default and makes claude open a "Hooks need review" modal on
-first launch in a fresh `HOME`, hiding the agent UI and swallowing keystrokes
-(no tape asserts on the status dots it wires).
-
-It runs fully isolated from your real environment — a dev build
-(`0.0.0-dev` → `dev_build` cfg) uses the `thurbox-dev` socket and XDG subdirs,
+It runs fully isolated: a dev build uses the `thurbox-dev` socket and XDG subdirs,
 and the script points `TMUX_TMPDIR` + `XDG_{DATA,CONFIG,STATE,CACHE}_HOME` at a
-throwaway temp dir. **`TMUX_TMPDIR` is essential**: the `thurbox-dev` socket
-*name* is shared by every dev build, so without a private socket directory the
-cleanup `kill-server` would tear down dev sessions you have running.
+throwaway temp dir. **`TMUX_TMPDIR` is essential** — the `thurbox-dev` socket *name*
+is shared by every dev build, so without a private socket directory the cleanup
+`kill-server` would tear down dev sessions you have running.
 
-`.github/workflows/pages.yml` copies the mp4s into `website/assets/` at deploy
-time and `README.md` embeds the gifs, so regenerating them propagates everywhere.
+`.github/workflows/pages.yml` copies the mp4s into `website/assets/` at deploy time
+and `README.md` embeds the gifs, so regenerating them propagates everywhere.
 
-### The `iddqd` easter egg (website)
+## Architecture (plugin kernel)
 
-Typing **`iddqd`** — Doom's god-mode cheat — anywhere on the website
-opens a modal playing `doom-easter-egg.mp4`: Doom running **inside a
-thurbox pane**, in a session on the **pi** agent with the
-[pi-doom](https://github.com/badlogic/pi-doom) extension. It fits the
-landing page's existing Doom-arcade art direction (`--doom-red`, the HUD
-bar, the `Doom` theme preset). Two clues, neither spelling the code: the
-footer's `.footer-secret` line (also the accessible one — it names the
-game, the year and the mode) and the HUD bar's `God Mode / 5 keys`
-segment (that bar is `aria-hidden` decoration).
+The interface is **Lua running on a Rust kernel**. `thurbox` boots the kernel,
+which reads `ui/` and renders whatever plugins it finds; there is no built-in
+pane. v1's `src/app` (TEA model/update/view) and `src/ui` (35 render modules) were
+deleted when the kernel took the binary name — v1 lives on the `1.x` branch.
 
-Implementation is `website/js/main.js` (sequence detection + the modal, built on
-first trigger so the several-MB clip costs nothing until someone knows the code)
-plus `.doom-overlay*` in `website/css/components.css`. The clip URL is resolved
-from `body[data-assets]` (set by `base.njk`), because one shared `main.js` is
-served to pages at different depths.
+### The five rules
 
-**Running Doom in thurbox** needs no thurbox change: `pi` is already a built-in
-agent, so with the CLI and extension installed
-(`npm i -g --ignore-scripts @earendil-works/pi-coding-agent`, then
-`pi install git:github.com/badlogic/pi-doom`; pi needs **node ≥ 22.19**) typing
-`/doom` in a pi session plays it in the pane — truecolour and half-block glyphs
-round-trip through `vt100` + `tui-term` intact. One limit: thurbox forwards key
-**presses** but not **releases** (`main.rs` requests only
-`DISAMBIGUATE_ESCAPE_CODES`, `run_loop` matches `KeyEventKind::Press`) while
-pi-doom opts into key-release events for held movement — so tap input (menus,
-cheats) works and a held key latches. Lifting that means `REPORT_EVENT_TYPES` +
-encoding kitty press/release to the pty, changing input for *every* agent;
-deliberately not done.
-
-The media is **not** a VHS tape (VHS drives a TUI through ttyd + a headless
-browser; this is a *nested* TUI — thurbox rendering pi rendering Doom).
-`scripts/demo/record-doom.sh` records the real binary with **asciinema** (fully
-isolated `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR`/`TMUX_TMPDIR`, so it never
-touches your sessions), trims the cast with `scripts/demo/trim-cast.mjs`, and
-rasterises with **agg** — no browser. agg ships **no font**, so point `FONT_DIR`
-at a monospace TTF with box-drawing, block *and* braille coverage (a Nerd Font
-works; braille is thurbox's spinner). The clip is Doom's self-playing **attract
-demo**, sidestepping the key-release limit. agg is slow (~8 min for 20 s).
-
-## Architecture (TEA Pattern)
-
-The app follows **The Elm Architecture**:
-`Event → Message → update(model, msg) → view(model) → Frame`
+1. **Four node kinds, forever** — `text`, `box`, `input`, `surface`. Everything
+   else composes in `ui/lib/widgets.lua`. `tests/kernel_mvp.rs` asserts the count.
+2. **Layout resolves before render** — rects are computed first, then each plugin
+   is called with its own. Plugins declare size *statically*, in their declaration
+   table, which is what breaks the circularity.
+3. **Snapshot-read, command-write** — reads come from an in-memory snapshot and
+   return instantly; writes are commands accepted now and surfaced later. Lua never
+   blocks, so no plugin can stall the loop on SQLite, git or an unreachable host.
+4. **Capabilities by absence** — an ungranted capability is *not in the
+   environment*. `io`, `os`, `debug`, `package` and the loaders are withheld, and
+   `thurbox.yml` makes selene enforce that statically.
+5. **Anything touching the world runs on a worker** — terminal attach, commands,
+   diffs, metrics, git stats, repository reads, update checks, and programs a
+   plugin asked for.
 
 ### Module Dependency Rules (enforced by tests/architecture_rules.rs)
 
 ```text
 session  ← pure data types, no crate-internal references
-agent    ← session (+ paths/shell utils; NEVER ui, git, app)
-ui       ← session + app model/view state (+ fuzzy/paths;
-           NEVER agent or git)
-app      ← coordinator, imports all modules
+agent    ← session (+ paths/shell utils; NEVER git)
+kernel   ← session + storage + sync + paths + session_ops + git
+           (+ agent/usage by fully-qualified path only)
+main     ← the coordinator: the loop, the workers, the chrome
 ```
 
-Enforcement is an **allowlist**: every module under `src/` must
-have a `ModuleRules` entry in `tests/architecture_rules.rs`
-naming the crate modules it may reference — in *any* form (`use`,
-`pub use`, brace groups, and fully-qualified `crate::…` paths) —
-and a new module fails the test until its place in the
-architecture is declared. `ui → app` is the TEA `view(model)`
-coupling: ui renders state types owned by `app` (modal structs,
-status messages) but never triggers side effects. `session_ops`
-and `cli` may reach `crate::agent::…` (the narrow tmux helpers)
-via fully-qualified paths only — never `use` — so the headless →
-backend dependency stays visible at each call site.
+Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
+entry naming what it may reference in *any* form (`use`, `pub use`, brace groups,
+fully-qualified `crate::…`), so a new module fails the test until its place is
+declared. `main` is `EXEMPT`, as `app` was before v1 was retired. `kernel` reaches
+`agent`/`usage` by fully-qualified path only — never `use` — so every crossing into
+the side-effect layer is visible at its call site, the rule `session_ops` and `cli`
+already follow.
 
 ### Module Responsibilities
 
-- **`app/`** — Model (`App` struct) + Update
-  (`AppMessage` enum + `handle_key/resize`) + View.
-  Owns all state, coordinates side effects.
-- **`agent/`** — Side-effect layer. `AgentProvider` trait
-  abstracts CLI command + arg construction; `GenericProvider`
-  implements it from a declarative `AgentDef` (loaded via
-  `agent_config`). `Session` wraps a `SessionBackend`
-  trait. `BackendRegistry` holds the backends, keyed by name.
-  `TmuxBackend` runs tmux over a `TmuxTransport` (`transport.rs`):
-  `Local` (`tmux -L thurbox`) for the default `local-tmux`
-  backend, or `Ssh` (`ssh <dest> tmux …`) for each remote host
-  in `hosts.toml` (registered as `ssh:<host>`, loaded via
-  `host_config`). The control-mode protocol (`control_mode.rs`)
-  is identical over either transport. Reads output into
-  `Arc<Mutex<vt100::Parser>>`, writes input via mpsc channel.
-  `input.rs` translates crossterm `KeyCode` → xterm ANSI bytes.
-- **`session/`** — Plain data: `SessionId`, `SessionStatus`,
-  `SessionInfo` (with `agent` name), `SessionConfig` (agent
-  name, backend name, ids, cwd, env), `AgentDef`/`AgentRegistry`,
-  `HostDef`/`HostRegistry` (remote SSH hosts).
-  Mostly Display/Default impls plus the agent-arg
-  substitution logic.
-- **`ui/`** — Pure rendering functions. `layout.rs` computes
-  panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
-  >=120 = optional 3-panel). Widgets: `project_list` (session
-  list with repo/branch display; `compute_session_order` is the
-  single comparator that orders sessions by manual order
-  (`display_order`, never by status) and groups them by repo
-  under headers — shared with `App`'s `Ctrl+J/K` navigation so
-  the two never drift; `move_in_order` is the pure reorder step
-  behind `Shift+J`/`Shift+K`),
-  `terminal_view`, `info_panel`,
-  `status_bar`, `repo_picker_modal` (repo selection with
-  worktree toggle). `selection.rs` handles mouse-drag text
-  selection, `links.rs` detects plain-text URLs in the rendered rows
-  for Ctrl+Click — while a **rich-text link** (OSC 8) prints only its
-  label, so its target is captured from the escape at parse time
-  (`agent::osc8` → `session::hyperlink`) and wins over a plain-text
-  match at the same cell (`App::url_at_click`). Because ratatui knows
-  nothing about hyperlinks, each painted frame is followed by
-  `App::paint_terminal_hyperlinks`, which re-prints the visible runs
-  wrapped in OSC 8 (same glyphs, same styles, read back out of the drawn
-  frame) so the **outer** terminal can open the user's own browser — the
-  only route to one when thurbox runs on a remote host. The click always toasts
-  its outcome, and on a host with no browser (headless / SSH — no
-  `DISPLAY`, no `BROWSER`) it **copies** the URL instead of spawning an
-  opener that goes nowhere, riding the same OSC 52 leg as `Ctrl+C` so
-  the URL reaches the user's own clipboard. See the Clickable URLs
-  section of `docs/FEATURES.md`.
-  Mouse clicks, buttons, and both on-border affordances all route through one
-  per-frame **click-target registry** (`App::click_targets`, mirroring
-  `scrollbar_hits`): renderers return `ui::RowHitbox`/`ui::ButtonHit`es,
-  `App::view` records them as `ClickAction`s, and `handle_mouse_click` hit-tests
-  them — rows select/confirm, panes focus, footer pills replay their `Action`,
-  modal buttons/fields replay the matching key so a click always matches the
-  keyboard path. That registry also carries the **session-list collapse chevron**
-  (`◀`/`▶` + F9 at the central pane's top-left border) and the **central-pane tab
-  strip** (`Agent · Review · F7 · Shell · F8`, packed to its right), both recorded
-  *before* the pane's whole-rect focus fallback so an on-border click wins. Tabs
-  *select* a view (`App::select_central_tab`), distinct from the keyboard
-  `Ctrl+T`/`Ctrl+X` *toggles*, and prefer the **F-key** hint since a focused
-  terminal passes `Ctrl+<letter>` through to the agent. All gated by `[features]
-  mouse` — disabled, mouse capture is never enabled and the terminal keeps native
-  mouse behavior. **Every hitbox kind, the pill/hover styling, the feature-gated
-  footer packing, and the tab/chevron rendering helpers are in the Mouse
-  Navigation section of `docs/FEATURES.md`.**
-  `agent_picker_modal` drives the new-session flow.
-- **`cli/`** — `thurbox-cli` subcommand dispatch (headless
-  session ops + scheduling + editor command).
+- **`kernel/`** — the interface. `node` (four primitives), `layout` (rects before
+  render), `convert` (Lua table ↔ node), `paint` (node → ratatui), `host` (the VM,
+  reload, isolation, capability grants), `registry` (keys + settings plugins
+  declare), `modals/` (help, settings, theme picker — chrome about thurbox itself,
+  which plugins contribute *data* to rather than replace), `bands` (the top/bottom
+  bars), `snapshot` (the read side), `command` (the write side), `terminal` (live
+  PTY surfaces), `consent` (the one-time v1→v2 gate), plus the worker-backed
+  stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
+  `theme`, `perf`, `bundled`, `inventory`.
+- **`agent/`** — side-effect layer, unchanged by the retirement. `AgentProvider`
+  - `GenericProvider` build the CLI invocation from a declarative `AgentDef`;
+  `Session` wraps a `SessionBackend`; `TmuxBackend` runs tmux over a
+  `TmuxTransport` (`Local` / `Ssh` / `Wsl`). Output is read into
+  `Arc<Mutex<vt100::Parser>>`, input written over an mpsc channel.
+- **`session/`** — plain data: `SessionId`, `SessionStatus`, `SessionInfo`,
+  `SessionConfig`, `AgentDef`/`AgentRegistry`, `HostDef`/`HostRegistry`, plus the
+  logic the kernel needs and cannot import `agent` for (`links`, `selection`,
+  `review`, `editor`, `hyperlink`, `theme_config`).
+- **`ui/`** (Lua, not Rust) — `layout.lua` is the arrangement; `lib/` holds
+  widgets, theme roles, fuzzy match, text input, trees; `plugins/` holds the panes.
+- **`cli/`** — `thurbox-cli` subcommands, including `plugin dir|new|check|list`
+  for writing an interface with no TTY.
 
-### Event Loop (main.rs)
+### Event Loop (src/main.rs)
 
 ```text
-tokio::main → load AgentRegistry (agents.toml)
-  → init BackendRegistry (local-tmux)
-  → open SQLite DB → init terminal → spawn/restore sessions → loop {
-    draw frame → poll crossterm events (10ms)
-    → convert to AppMessage → app.update() → app.tick()
-} → app.shutdown() (detach sessions) → restore terminal
+tokio::main → load config + settings → heal extensions → arm the heartbeat
+  → the v1→v2 consent gate (kernel::consent, before the terminal is taken)
+  → resolve ui/ → build the Lua host → open SQLite → init terminal → loop {
+    resolve layout → call each plugin with its rect → paint
+    → poll workers (terminals, commands, diffs, metrics, repos, runs, updates)
+    → drain Lua's command queue → dispatch keys through the registry
+} → restore terminal
 ```
 
-- Logging goes to `~/.local/share/thurbox/thurbox.log`
-  (file-based, since stdout is owned by the TUI)
-- Panic hook restores terminal before printing
+- Logging goes to `~/.local/share/thurbox/thurbox.log` (stdout is the TUI's)
+- A panic hook restores the terminal, pops the kitty flags and disables mouse
+  reporting before printing — otherwise the shell inherits a raw-mode terminal
+  streaming mouse reports
 
 ## Pre-commit Hooks
 
@@ -1808,230 +1494,115 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
   remote SSH hosts in `~/.config/thurbox/hosts.toml`
 - Requires tmux >= 3.2
 
-## Keybindings (Vim-Inspired)
+## Keybindings
 
-Global keys use `Ctrl` + semantic Vim conventions:
+Every chord goes through **one registry** (`kernel::registry`). Plugins *declare*
+keys in their declaration table; the kernel resolves a press to an action and hands
+it back to the plugin that claimed it. There is no hardcoded table to keep in step
+with a help screen, because the help modal renders the registry.
 
-| Key | Action | Mnemonic |
-|-----|--------|----------|
-| `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
-| `Ctrl+N` | New session (opens repo picker) | **N**ew |
-| `Ctrl+C` | Copy selection, else status message; SIGINT in a focused terminal | **C**opy |
-| `Ctrl+V` | Paste from clipboard | Paste |
-| `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
-| `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | Work items |
-| `Ctrl+/` | Global search (sessions/tasks/automations/files) | **/** = search |
-| `Ctrl+T` / `F8` | Toggle shell pane | **T**erminal |
-| `Ctrl+X` / `F7` | Toggle native code-review view | Review |
-| `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
-| `Ctrl+J` | Select next session | Vim: **j** = down |
-| `Ctrl+K` | Select previous session | Vim: **k** = up |
-| `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
-| `Ctrl+D` | Delete session | Vim: **d** = delete |
-| `Ctrl+O` | Open active session's working dirs in editor | **O**pen |
-| `Ctrl+R` | Restart active session | **R**estart |
-| `Ctrl+F` | Fork active session | **F**ork |
-| `Ctrl+S` | Sync worktrees with their base branch | **S**ync |
-| `Ctrl+Z` | Undo session delete | **Z** = undo |
-| `Ctrl+U` | Restore deleted sessions | **U**ndelete |
-| `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
-| `Ctrl+,` / `F6` | Settings panel (edit settings.toml) | **,** = preferences |
-| `Ctrl+B` / `F2` | Toggle info panel (visible at width >= 120) | Info **b**ox |
-| `Ctrl+E` / `F3` | Toggle file viewer | **E**xplore files |
-| `F9` | Toggle session-list pane (hide for full-width terminal) | Sessions list |
-| `F12` | Toggle perf HUD (live counters + frame/tick timing) | Diagnostics |
-| `F1` / `Ctrl+G` | Keybindings help + interactive editor | Universal |
+Global chords (kernel-owned):
 
-List contexts use plain `j`/`k`/`Enter` for navigation.
-In the focused session list, `Shift+J`/`Shift+K` move the selected
-session down/up (manual reordering; whole groups move past a group
-edge). Terminal forwards all non-Ctrl keys to the PTY.
-`Shift+arrows/PageUp/PageDown` for scrollback; `Alt+PageUp/PageDown`
-also page (fallback for terminals that claim `Shift+Page` for their
-own scrollback, e.g. Terminal.app/iTerm2).
+| Key | Action |
+|-----|--------|
+| `Ctrl+Q` | Quit (detach sessions) |
+| `Ctrl+N` | New session (the creation flow) |
+| `Ctrl+H` / `Ctrl+L` | Focus previous / next pane |
+| `Ctrl+J` / `Ctrl+K` | Select next / previous session |
+| `Ctrl+,` / `F6` | Settings (`]` for the Interface tab) |
+| `Ctrl+Y` / `F4` | Theme picker |
+| `F1` / `Ctrl+G` | Keybindings help |
+| `F10` | Reload the interface from disk |
+| `F12` | Perf HUD |
 
-These defaults can be overridden two ways, both writing the same
-`~/.config/thurbox/keybindings.json` (an `Action` name → one or more
-chord strings, e.g. `{ "QuitApp": ["ctrl+a"] }`):
+Everything else belongs to a plugin and is listed in `F1`. Rebindings persist to
+`ui.json` beside trust and the disabled set — a *user decision*, distinct from the
+delivery facts in `.bundled.json`.
 
-- **Interactively** from the F1 panel, a live editor rather than a read-only
-  overlay: `j`/`k` select an action, `Enter`/`r` starts capture (the **next
-  physical keypress** — including chords like `ctrl+q` — becomes that action's sole
-  binding), `d` resets the selected action to its default, `Shift+D` resets **all**
-  (via `App::reset_all_keybindings`, which deletes the override file so defaults
-  stay authoritative). A captured chord already bound elsewhere is reassigned
-  (stolen) and a toast reports the move. Each change persists immediately via
-  `KeyBindings::{rebind,reset}` + `storage::keybindings::save_keybindings_json` and
-  takes effect on the next keystroke — no restart. The editor lives in
-  `Modal::Help(HelpModal { selected, capturing })`; capture input routes through
-  `App::handle_help_key` inside `handle_priority_key` (**before** the global
-  `keybindings.lookup`, so capturing `ctrl+q` rebinds instead of quitting).
-  Selection indices match `Action::rebindable_in_order()` — the flattened
-  `keybindings::help_sections()`, shared with `render_help_overlay`.
-- **By hand-editing** the JSON file (e.g. via `$EDITOR`); reloaded live
-  (mtime poll — see `docs/CONFIG.md`).
+Two properties the registry holds and `tests/v2_keymap.rs` asserts:
 
-**Context-scoped bindings.** Each `Action` has a `KeyContext` (`Global`,
-`SessionList`, `Automations`, `Tasks`, `FileViewer`, `Terminal`). Global
-actions are active everywhere; scoped actions fire only while their pane is
-focused, so a single-letter key like `j` can drive the file viewer, session
-list, automations pane, and tasks pane independently (and the terminal still
-forwards it to the PTY). `handle_key` resolves
-keys via `KeyBindings::lookup_in(App::focus_key_context(), …)`, dispatched
-through `dispatch_action`. Conflict detection (`KeyBindings::rebind`) only
-steals a chord between actions whose scopes overlap (`contexts_overlap`) —
-global-vs-anything, or same scope. Capital/shift-letter chords are
-canonicalized via `KeyChord::normalized` (e.g. `Shift+N` → `{shift, n}`) so
-capture, lookup, and the JSON round-trip agree regardless of how the
-terminal encodes them. **Copy/Paste** are global rebindable actions handled
-early in `handle_priority_key` (so Paste reaches modal text inputs).
+- **A plugin-scoped claim does not outrank a global one.** This is why search does
+  not take `Ctrl+P`/`Ctrl+N`: doing so would take `Ctrl+N` from new-session
+  everywhere.
+- **A chord freed by a removed pane stays unbound** rather than being silently
+  reused by whatever loads next.
 
-**Terminal PTY passthrough.** thurbox's global chords share the
-`Ctrl+<letter>` namespace with readline / shell line editing (`Ctrl+A` =
-start-of-line, `Ctrl+E` = end-of-line, `Ctrl+W` = delete-word, `Ctrl+U` =
-kill-line, `Ctrl+R` = reverse-search, `Ctrl+D` = EOF, …). So when a session
-**terminal is focused**, the actions flagged by `Action::terminal_passthrough`
-(`ToggleInfoPanel`/`DeleteSession`/`ToggleFileViewer`/
-`ForkSession`/`OpenInEditor`/`OpenAutomations`/`RestartSession`/`StartSync`/
-`OpenRestoreSessions`/`FocusTasks`/`ToggleReview`) **defer to the agent CLI**
-instead of running the thurbox command — `handle_key` skips `dispatch_action`
-and falls through to `handle_terminal_key`, which forwards the bytes to the PTY
-(so e.g. `Ctrl+X` reaches emacs's prefix key in a focused terminal). The
-thurbox command stays reachable from the **session list** (and via its `F`-key
-alternate where one exists — `F2`/`F3`/`F5`/`F7`). The deferral is gated on the
-bound chord still being a bare `Ctrl+<letter>` (`is_ctrl_letter_chord`), so
-rebinding a passthrough action to a non-conflicting key keeps it working in the
-terminal. Navigation / app-control chords (`Ctrl+H/J/K/L` focus + session nav,
-`Ctrl+Q` quit, `Ctrl+N` new, …) are **not** deferred — they are the keyboard
-escape route out of the terminal, so they must keep working there even though a
-few collide with readline.
+**Terminal passthrough.** thurbox's chords share the `Ctrl+<letter>` namespace with
+readline (`Ctrl+A`, `Ctrl+E`, `Ctrl+W`, `Ctrl+U`, `Ctrl+R`, `Ctrl+D`, …). While a
+session terminal is focused, a chord a plugin flags as passthrough reaches the agent
+instead. Navigation and app-control chords (`Ctrl+H/J/K/L`, `Ctrl+Q`, `Ctrl+N`) are
+**never** deferred — they are the way out of a focused terminal.
 
-**Readline editing in modal text fields.** thurbox's own text inputs (session /
-branch name, repo-picker path & search, automation editor, task title /
-description) accept the standard emacs/readline chords: `Ctrl+A`/`Ctrl+E` line
-start/end, `Ctrl+B`/`Ctrl+F` by char, `Ctrl+H`/`Ctrl+D` delete before/under the
-cursor, `Ctrl+W` delete word, `Ctrl+U`/`Ctrl+K` kill to line start/end. Dispatch
-lives in one place — `modals::apply_ctrl_line_edit` over the `LineEdit` trait
-(implemented by both `TextInput` and `TextArea`) — and **every** `Ctrl`+letter is
-consumed (mapped or swallowed) so a bare control letter never leaks into the
-field. A `Ctrl` chord with a non-letter key (arrows, Home/End) falls through to
-normal cursor handling.
-
-A few stateful keys stay literal (the F1 panel lists them under
-**Fixed (not rebindable)**): modal selectors (j/k/Enter/Esc), the
-automation **run-history** sub-mode, the file-viewer **search sub-mode**, and
-the terminal's catch-all PTY forwarding. The automations and tasks panes
-themselves are **rebindable** scoped contexts (`KeyContext::Automations` /
-`KeyContext::Tasks`), mirroring the session list.
-
-### macOS
-
-Ctrl chords work unchanged in macOS terminals (raw mode bypasses
-flow control; `Ctrl+Y`'s DSUSP quirk is why the `F4` alternate
-exists). On top of that:
-
-- **Cmd chords.** `main.rs` enables the kitty keyboard protocol
-  (`PushKeyboardEnhancementFlags(DISAMBIGUATE_ESCAPE_CODES)`, gated
-  on `supports_keyboard_enhancement()`, popped on shutdown and in
-  the panic hook) so the Command key can be bound like any modifier:
-  `cmd+j` in `keybindings.json` (`super`/`command`/`win` are parse
-  aliases; `cmd` is the canonical display form) or captured live in
-  the F1 editor. Delivered by iTerm2 3.5+, kitty, WezTerm, Ghostty;
-  **not** Terminal.app (no kitty protocol — everything else still
-  works there). The emulator's own Cmd shortcuts (`Cmd+Q/W/N/T/C/V`,
-  `Cmd+K` clears, `Cmd+H` hides, `Cmd+digits` switch tabs) are
-  consumed at the GUI level and can never reach the TUI — only bind
-  what the terminal leaves free.
-- **macOS-only default alternates** — appended after the Ctrl
-  primaries via `Action::default_chords_for(macos)` (the
-  `cfg!(target_os = "macos")` decision lives in `default_chords()`;
-  Linux defaults are byte-identical): `Cmd+J`/`Cmd+Shift+J` =
-  next/previous session, `Cmd+L`/`Cmd+Shift+L` = focus
-  next/previous pane.
-- **Unbound Cmd chords are swallowed**, never forwarded to the PTY
-  (`agent::input::key_to_bytes` returns `None` for SUPER).
-- **F-keys** (`F1`–`F5` alternates) need `Fn` on Mac laptops unless
-  "Use F1, F2, etc. keys as standard function keys" is enabled;
-  `Cmd+V` pastes via the terminal's native paste (bracketed paste),
-  no binding needed.
+**macOS.** The kitty keyboard protocol is pushed at startup
+(`PushKeyboardEnhancementFlags(DISAMBIGUATE_ESCAPE_CODES)`, gated on
+`supports_keyboard_enhancement()`, popped in `restore_terminal` and the panic hook
+because `ratatui::restore()` does not). That is what makes `cmd+…` bindable at all
+(iTerm2 3.5+, kitty, WezTerm, Ghostty — not Terminal.app) and what separates
+`Ctrl+/` from the bytes a legacy terminal sends for it. Emulator-level shortcuts
+(`Cmd+Q/W/N/T/C/V`, `Cmd+K`, …) never reach the TUI; only bind what the terminal
+leaves free. F-keys need `Fn` on Mac laptops unless "Use F1, F2, etc. as standard
+function keys" is on.
 
 ## Themes
 
-The TUI ships with **thirty-six palettes** — twenty-eight dark (**Default**,
-**Catppuccin Mocha**, **Tokyo Night**, **Gruvbox Dark**, **Doom**, **Nord**, …)
-and eight light (**Catppuccin Latte**, **Tokyo Night Day**, **Solarized Light**,
-…); the full enumeration lives in `docs/FEATURES.md` and
-`session::theme_config`. Users can add **custom themes** in
-`~/.config/thurbox/themes.toml` (a built-in `base` plus per-colour
-overrides — see `docs/CONFIG.md`); they appear in the picker after the built-ins
-and persist by name exactly like a preset
-(`session::theme_config::CustomThemeDef` → `ThemeEntry`, loaded by
-`agent::themes_config::load_or_seed_with_warnings`, published via
-`ui::theme::set_custom_themes`). Pick one with `Ctrl+Y` (or `F4`, which avoids
-terminals that intercept Ctrl+Y as DSUSP); the choice persists in SQLite under
-`metadata.active_theme`, and other thurbox processes pick up theme changes within
-one tick via `PRAGMA data_version` polling.
+Thirty-six palettes — twenty-eight dark, eight light; the enumeration is in
+`session::theme_config` and `docs/FEATURES.md`. Users add their own in
+`~/.config/thurbox/themes.toml` (a built-in `base` plus per-colour overrides); they
+appear in the picker after the built-ins and persist by name exactly like a preset.
 
-Because the list is long, the picker (`ui::theme_picker_modal`) can **filter**,
-but behind `/` (mirroring the file viewer's and code review's find) so its keys
-stay consistent with the other selectors: `j`/`k` (+ `↑`/`↓`, `PageUp`/`PageDown`
-by the rendered list height via `App::theme_picker_page`, `g`/`G`, `Home`/`End`,
-`Ctrl+N`/`Ctrl+P`) navigate, and only after `/` do letters append to a query —
-matched against each theme's display name *and* stable id, with a live
-`matched/total` count. `ThemePickerModal::filter` is `Option<TextInput>` (`None` =
-navigation mode); `Esc` closes the filter first (full list restored, cursor kept)
-then the picker. Entries group under `Dark`/`Light` headers drawn *inside* their
-entry's row, so selection, hitboxes, and the scrollbar stay in entry space (a
-header is never selectable) and a header disappears with its filtered-out
-section. `ThemePickerModal::index` indexes the **match** list, not the entry list,
-and every consumer resolves it through `matches` — refining a query keeps the
-cursor on the same theme when it survives, so narrowing can't apply a palette
-other than the previewed one. See `docs/FEATURES.md`.
+`kernel::theme::Themes` resolves them and publishes **roles** to Lua
+(`ui/lib/theme.lua`), so a plugin asks for `theme.accent` or `theme.muted` rather
+than a colour — which is what lets one plugin look right under all thirty-six. Pick
+one with `Ctrl+Y` (or `F4`, avoiding terminals that take Ctrl+Y as DSUSP); the choice
+persists in SQLite under `metadata.active_theme`, and other thurbox processes pick it
+up within a tick via `PRAGMA data_version`.
+
+The picker (`kernel::modals::theme`) filters behind `/`, mirroring the file-viewer
+and review find so its keys stay consistent: `j`/`k` (+ arrows, `PageUp`/`PageDown`,
+`g`/`G`, `Home`/`End`) navigate, and only after `/` do letters append to a query —
+matched against display name *and* stable id with a live `matched/total` count.
+Entries group under `Dark`/`Light` headers drawn *inside* their entry's row, so
+selection, hitboxes and the scrollbar stay in entry space and a header disappears
+with its filtered-out section. The index addresses the **match** list, so refining a
+query keeps the cursor on the same theme when it survives — narrowing cannot apply a
+palette other than the previewed one.
+
+The v1→v2 consent gate paints itself from the user's active palette for the same
+reason (`kernel::consent::Skin`): a gate in somebody else's colours reads like a
+different program.
 
 ## Settings panel
 
-`Ctrl+,` (rebindable `Action::OpenSettings`; `F6` alternate) opens a
-centered **Settings modal** (`Modal::Settings(SettingsModal)`) that views
-and edits **all of settings.toml** — the `[features]` toggles, 4
-`[notifications]` knobs, and 4 scalars — without hand-editing the file.
-Persistence stays in `settings.toml`: `agent::settings_config::save_settings`
-writes it back through a `toml_edit::DocumentMut` so the seed's
-documentation comments survive (the first save adds real uncommented keys
-below the commented examples). The modal edits a working-copy `draft` and
-applies **only on `Ctrl+S`** (`Esc` discards — there is no live preview).
+`Ctrl+,` (or `F6`) opens a **kernel-owned modal** (`kernel::modals::settings`) —
+chrome about thurbox itself, so it overlays the arrangement, captures input and
+stays out of the focus ring. Plugins contribute *data* to it: declare
+`{ id, desc, default }` and the modal grows a row.
 
-Feature flags that gate UI panels (`tasks`, `file_viewer`, `info_panel`,
-`global_search`, `shell_pane`, `code_review`, `soft_delete`) are read from
-`App.features` every frame, so `submit_settings_panel` copies the draft's flags
-into `self.features` (via `App::apply_live_settings`) and they take effect
-immediately. `apply_live_settings` also runs `enforce_feature_visibility`, which
-tears down any surface a now-disabled live flag left open (the `show_*` panel
-toggles, an open shell view or code review) and moves focus off it — otherwise the
-panel would keep rendering with its tab/footer affordance gone; each branch only
-forces the *hidden* state, so re-enabling never re-opens anything. Everything else
-is read once at startup from the write-once `settings::global()` `OnceLock`: those
-rows are marked `⟳`, and a save that changes one toasts "some changes apply after
-restart".
+Two halves on one screen:
 
-`settings.toml` is **live-reloaded** like `agents.toml`/`keybindings.json`:
-`App::poll_config_reload` watches its mtime and, on any external change (a
-hand-edit, the panel in another instance), re-applies the live feature flags
-via the same `apply_live_settings` and toasts (noting a restart when
-`Settings::restart_only_differs` vs the global). The panel's own write calls
-`mark_settings_saved` so the poll doesn't re-toast it.
+- **Plugin settings** go through `Registry::set_setting` — in-process, effective on
+  the next frame. Nothing to save, no Cancel.
+- **Core settings** are `settings.toml`, written back through a `toml_edit`
+  `DocumentMut` so the seed's documentation comments survive.
 
-`SettingsField` (in `app/modals.rs`) owns the field order, labels, short
-scannable keywords and descriptions (both avoid naming key chords, since those
-are rebindable; each row renders the bold `keyword` then the dimmed
-`description`, via the single `meta()` table so the parallel lookups never
-drift), scalar-vs-bool/step logic (`adjust` with per-field clamping), and the
-per-row live/restart marker (`restart_required`); the canonical
-live/restart comparison is `Settings::restart_only_differs`
-(`session/settings.rs`), reused by both the panel toast and the reload path.
-The renderer is `ui::settings_modal::render_settings_modal` (modeled on
-`automation_editor_modal`, with blank separators between the Features /
-Notifications / Scalars sections, an aligned value column, and
-scroll-windowing for short terminals).
+Whether a core row applies live or waits for a restart is **asked of
+`Settings::restart_only_differs`**, the same function `Config::adopt` consults —
+never a second list beside the field. A hand-written copy had already drifted from
+it, promising both panel-width scalars applied live while `adopt` froze them and
+reported `NeedsRestart`. Restart-only rows are marked `⟳`.
+
+`]` switches to the **Interface tab** (`kernel::modals::interface`): every file, where
+it came from (bundled / edited / yours / removed), whether it is on screen, and
+`r` restore · `d` delete · `space` turn off · `t` trust. It was a pane once — an
+honest test of whether the plugin API could build a pane that lists panes — and is
+chrome now because a recovery tool must not be the thing that is broken.
+
+`settings.toml` is **live-reloaded** (mtime poll): an outside edit re-applies the
+live half and toasts, noting a restart when `restart_only_differs` says so.
+
+> `[features] code_review`, `file_viewer`, `tasks` and `info_panel` gated surfaces
+> the interface no longer draws. They are still accepted so existing files do not
+> fail `thurbox-cli config validate`; `tasks` still gates its CLI.
 
 ## OpenSpec (spec-driven changes)
 
@@ -2072,132 +1643,67 @@ its spelling differ):
   than the generated files inside it) is how `.claude`/`.pi` were already
   treated.
 
-## thurbox v2 (plugin kernel)
+## Writing an interface plugin
 
-A second binary, `thurbox2`, runs the v2 architecture alongside v1: a session
-engine with a Lua-driven renderer, where **every** pane — the session list
-included — is a plugin under `ui/`. The bundled set is currently **three panes**
-(`10_sessions`, `20_agent`, `65_search`) plus the **new-session flow**
-(`70_new_session`, a float that occupies no slot): the interface was cut back to
-its core, and v1's other surfaces are tracked with their gaps in
-`openspec/changes/v2-parity-gaps/`. `65_search` is v1's **global search**, back as
-a full-width strip above the chrome bands rather than a float — it highlights
-matches *inside* the panes it searches (subsequence matching via `ui/lib/fuzzy.lua`,
-shared with the session list, which dims what did not match), moving the selection
-previews it in the list, and `Esc` puts back what you were looking at. It searches
-a session's **terminal text** as well as its metadata — the half that finds a
-session by the error in it — as a *want*: the pane leaves its query in `store`
-under `want_content` and the kernel serves `thurbox.content` only while it is
-asking, so no interface pays for every agent's screen on every frame. Content
-matching is substring, not subsequence (fuzzy over a whole screen matches
-everything), and is skipped for a session whose metadata already matched.
-
-**The interface looking at itself** — every file, where it came from (bundled /
-edited / yours / removed), whether it is actually on screen, with restore and
-remove — is the **Interface tab of the settings modal**
-(`src/kernel/modals/interface.rs`), reached with `Ctrl+,`/`F6` then `]`. It was a
-pane once, deliberately: a pane that lists panes is an honest test of whether the
-plugin API can build a pane with. It is chrome now because it is a *recovery*
-tool, and a recovery tool that is itself a plugin can be the thing that is broken
-— the same argument that made help, settings and the theme picker kernel-owned.
-Being chrome also removes its reachability problem: as a centre-slot pane it
-needed an opening chord of its own, and no chord is safe from a terminal that
-claims it. A file can also be **turned off** (`space`) — present on disk, intact, and not
-loaded. That is a third thing distinct from adding and removing, and it exists
-because the only key that read like "not right now" used to delete: a plugin the
-user wrote has no embedded copy, so `restore` refuses it and the work was gone.
-Disabling is a *user decision* in `ui.json` beside trust and the rebindings, not
-a delivery fact in `.bundled.json` — a disabled bundled file is still one
-delivery should keep up to date. It is implemented by `build` not reading the
-file, so a disabled plugin declares no keys, occupies no slot and is granted no
-capability, and a broken one can be switched off to get a working interface back.
-**Deleting a bundled
-file is how you remove it**: delivery records the removal and never writes it
-again, which is what makes "replaceable on the same terms as any other plugin"
-true for a *differently named* replacement (`src/kernel/bundled.rs`,
-`src/kernel/inventory.rs`). A removed pane takes its slot, its keys and
-its affordances with it — `tests/v2_keymap.rs` asserts a freed chord stays
-*unbound* rather than being reused, and `tests/v2_parity.rs` counts which panes
-are still owed. The rest of **system chrome**: help,
-settings and the theme picker are kernel-owned modals (`src/kernel/modals/`)
-that overlay the arrangement, capture input, and stay out of the focus ring —
-plugins contribute *data* to them (a declared key, a declared setting) rather
-than replacing them. Nothing in `src/app/` or `src/ui/` is
-touched until v2 reaches feature parity; retiring v1 is its own gated change.
+The bundled set is deliberately small: `10_sessions`, `20_agent`, `65_search`, plus
+the creation flow (`70_new_session`, a float that occupies no slot) and
+`60_confirm`. What v1 had and this does not is listed in
+`openspec/changes/v2-parity-gaps/`.
 
 ```bash
-cargo run --bin thurbox2      # from the repo root
+thurbox-cli plugin dir            # which directory is live, and which rule chose it
+thurbox-cli plugin new notes      # a starter that already loads
+thurbox-cli plugin check          # load it the way thurbox does; non-zero on failure
+thurbox-cli plugin list           # the inventory the Interface tab shows
 ```
 
-- `docs/V2-KERNEL.md` — the kernel's shape, its five rules, and the two traps
-  that will bite you when changing it
-- `docs/PLUGINS.md` — writing a plugin; its **Start here** is the fast path
-  (`thurbox-cli plugin dir | new | check | list` — no TTY needed), and its
-  **Traps** section lists the mistakes that are invisible until runtime
-- `openspec/changes/v2-*` — the changes, their specs, and the decisions
-  (with what each one got wrong, under "Findings from implementing")
-**Global search** (`ui/plugins/65_search.lua`) searches sessions by name, agent,
-branch and repo. Sessions is the only scope with a pane today; a result carries
-the pane it belongs to, so a returning pane is a scope added and nothing else
-changed. One divergence from v1 is deliberate and recorded in
-`KNOWN_DIVERGENCES`: v1 also takes `Ctrl+P`/`Ctrl+N` inside the strip because its
-search focus captures input before the keybinding table, while v2 routes every
-chord through one registry where a plugin-scoped claim does not outrank a global
-one — declaring them would take `Ctrl+N` from new-session everywhere.
+Three rules pick the directory, in order: `THURBOX_UI_DIR`, a `./ui` beside the
+working directory, then the user's copy (`~/.config/thurbox/ui/`, materialised from
+the embedded interface on first run, preserving edits). The resolved directory is
+made **absolute** — trust, the disabled set and rebindings are keyed by
+`ui_dir.join(file)` and compared verbatim, so a relative `ui` would be shared by
+every checkout on the machine. It is *not* canonicalised: that would return a
+`\\?\D:\…` extended-length path on Windows and resolve `/var` to `/private/var` on
+macOS, and this path is shown to people.
 
-**Sessions outlive thurbox and tmux**, as they do in v1. A session whose window
-is gone when the interface starts — after a reboot, or a dead tmux server — has
-its agent **relaunched** under the same `SessionId`, resuming the conversation
-where the agent supports it (`Terminals::missing_agents` asks v1's restore-time
-question; the loop answers it through `restart`, once per session per run). The
-question needs the backend to have been *surveyed* first: "we have not looked
-yet" and "we looked and it is gone" are the same silence, and relaunching on the
-first would start a second agent beside a good one. A restart likewise clears the
-pane it killed, so the interface re-resolves the new window rather than staying
-attached to a dead one.
+**Delivery vs. decision.** `.bundled.json` records what delivery did (bundled /
+edited / yours / removed); `ui.json` records what the *user* decided (disabled,
+trust, rebindings). Deleting a bundled file is how you remove it — delivery records
+the removal and never writes it back, which is what makes a differently-named
+replacement possible on equal terms. Turning one **off** is a third thing: present on
+disk, intact, not loaded — implemented by `build` not reading the file, so a disabled
+plugin declares no keys, occupies no slot and is granted no capability. A broken one
+can be switched off to get a working interface back.
 
-**The new-session flow** (`ui/plugins/70_new_session.lua`) mirrors v1's wizard
-step for step — host → repositories → base branch → name → branch name → agent —
-and is one floating plugin rather than v1's five modals. The three reads it needs
-are worker-served like every other read that touches the world
-(`src/kernel/repos.rs`: host-scoped repository memory with its folders,
-directory listings for the browse dropdown, and a fetched base-branch list), and
-it asks for them by leaving a key in `store` (`want_bookmarks` /
-`want_browse` / `want_branches`) which the loop reads — a *parameterised* read
-has no other home under "snapshot-read, command-write". Writes are commands:
-`bookmark` (add/remove/import-parent, validated on the target machine, so a typo
-is refused before any git work) and one `create` carrying every member with its
-worktree flag.
+**A plugin can run a program** (`kernel::runs`) — `git status`, `docker compose ps` —
+in the session's working directory, and on that session's own host for a remote
+session. `run(key, program, opts)`; the answer arrives next frame as
+`thurbox.runs[key]`, so Lua still never blocks, and asking **every frame is the
+intended pattern** because a fresh answer is a map lookup rather than a process
+(`request` refuses a duplicate while the answer is fresh *or* while a run for that
+key is in flight). Bounds are the kernel's: output capped with truncation flagged, a
+timeout, four at a time with the rest queued.
 
-- `openspec/changes/v2-parity-gaps/` — **the ledger of what v2 still owes v1**,
-  from a surface-by-surface audit of each v1 pane against its plugin. Tier 0 is
-  what `v2-retire-v1` is actually waiting on (a v2-created session that never
-  attaches a terminal, automations that never fire, restore that only clears a
-  flag). `tests/v2_parity.rs::KNOWN_DIVERGENCES` is the narrower companion: what
-  v2 *draws* differently, with its count asserted so a new one cannot slip in.
+This is the first capability that reaches outside thurbox, so it is granted **per
+plugin**: declare `capabilities = { "run" }` and get nothing until the user trusts
+the file (settings → Interface → `t`). Trust is keyed by absolute path with the
+digest recorded, so a changed trusted file reads `trusted · modified`. It is
+deliberately **not a sandbox** — a program thurbox spawns has the user's authority —
+and the position is that thurbox can only refuse to run things unasked.
+`docs/examples/composite.lua` is the worked example.
 
-The load-bearing constraints, in one line each: **four node kinds** and
-everything else composes in Lua; **layout resolves before render**, so a plugin
-knows its own rect; **reads are snapshots, writes are commands**, so Lua never
-blocks; **capabilities are absent rather than blocked**; and anything touching
-the world **runs on a worker** (eight of them now: terminal attach, commands,
-diffs, metrics, git stats, repository reads, update checks, and **programs a
-plugin asked for**).
+The implementation lives per-call: `LuaHost::enter` stamps the current plugin and, in
+the same breath, binds `run` to the implementation or to nil, and `enter_nothing` is
+the other half for Lua that belongs to no plugin (`layout.lua` declares no
+capabilities). The implementation itself is held in the VM's **registry**, never its
+globals, because a plugin chunk's `_ENV` *is* the globals table — it sat there as
+`__run_impl` once, which handed every untrusted plugin the capability under a second
+name.
 
-**A plugin can run a third-party program** (`kernel::runs`) — `git status`,
-`docker compose ps`, `npm outdated` — in the session's working directory and, for
-a remote session, on that session's own host. The ask is `run(key, program, opts)`
-and the answer arrives next frame as `thurbox.runs[key]`, so Lua still never
-blocks; asking every frame is the intended pattern, because a fresh answer is a
-map lookup rather than a process. Bounds are the kernel's, not the plugin's:
-output capped and truncation flagged, a timeout, four runs at once with the rest
-queued. **This is the first capability that reaches outside thurbox**, so it is
-granted per plugin: a plugin declares `capabilities = { "run" }` and gets nothing
-until the user *trusts* it (settings → Interface → `t`). Trust is keyed by
-absolute path with the trusted digest recorded, so a changed trusted file reads
-`trusted · modified`. It is deliberately **not a sandbox** — a program thurbox
-spawns has the user's authority — and the position is that thurbox can only
-refuse to run things unasked. `docs/examples/composite.lua` is the worked example.
+- `docs/V2-KERNEL.md` — the kernel's shape, its five rules, and the traps
+- `docs/PLUGINS.md` — writing a plugin; **Start here** needs no TTY, and **Traps**
+  lists the mistakes that are invisible until runtime
+- `openspec/changes/v2-*` — the changes, their specs, and what each got wrong
 
 ## Design Documentation
 

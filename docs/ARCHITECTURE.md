@@ -7,6 +7,12 @@ Each decision follows a mini-ADR format:
 
 ## ADR-1: The Elm Architecture (TEA)
 
+> **Superseded by ADR-23.** This described v1's interface, which was retired when
+> the plugin kernel took the `thurbox` binary name. The reasoning below is why the
+> kernel keeps a single source of truth and one direction of data flow — reads are
+> snapshots, writes are commands — rather than letting each pane own state. v1 is
+> maintained on the `1.x` branch.
+
 **Choice**: All state lives in a single `App` model.
 Events become messages, `update()` applies them,
 `view()` renders the result.
@@ -121,6 +127,11 @@ are handled in one place.
 ---
 
 ## ADR-5: Responsive layout breakpoints
+
+> **Superseded by ADR-23.** Breakpoints are no longer compiled in: `ui/layout.lua`
+> decides the arrangement and can branch on width however it likes, and the kernel
+> resolves rects before calling any plugin. The tiers below are what the shipped
+> `layout.lua` still does by default, so they remain the behaviour a user sees.
 
 **Choice**: Three layout tiers based on terminal width:
 
@@ -663,7 +674,8 @@ without a terminal UI.
 ## ADR-14: Centralized Theme Module
 
 **Choice**: All UI colors are defined as associated constants on a
-`Theme` struct in `src/ui/theme.rs`. Widget files import `Theme::*`
+`Theme` struct in `kernel::theme` (v1 kept it in `src/ui/theme.rs`).
+Plugins receive **roles** rather than colours
 instead of using `Color::Cyan`, `Color::Gray`, etc. directly.
 
 **Why**: ~50 hard-coded color values were scattered across 13+ widget
@@ -916,6 +928,11 @@ flow` (with an inline fallback for older thurbox).
 
 ## ADR-22: `App` decomposition — coordinator + per-domain sub-modules
 
+> **Superseded by ADR-23.** `src/app/` was deleted with v1. The pressure it
+> answered was real and recurs: the kernel's `main.rs` is the coordinator now, and
+> the same rule applies — cohesive clusters move out, the coordinator stays
+> `EXEMPT` in `tests/architecture_rules.rs`, and governance is directory-level.
+
 **Choice**: Keep the single `App` model (ADR-1, TEA) but split its
 ~11.7k-line `app/mod.rs` into per-domain sub-files under `src/app/`,
 relocating cohesive `impl App` method clusters out of `mod.rs` while the
@@ -997,3 +1014,57 @@ readability gain.
   coupling; behavior stays `impl App`, only pure logic moves.
 - *One big relocation PR* — unreviewable and merge-hostile; the value is
   in independently-reviewable, test-green increments.
+
+---
+
+## ADR-23: The interface is a Lua plugin kernel
+
+**Choice**: `thurbox` boots a Rust kernel that renders whatever Lua plugins it
+finds under `ui/`. There is no built-in pane — the session list, the agent
+terminal and the search strip are files a user can edit, move, turn off, delete or
+replace. v1's `src/app` (TEA) and `src/ui` (35 render modules) were deleted;
+`session`, `agent`, `storage`, `git`, `session_ops` and `cli` are unchanged.
+
+**Why**: every surface v1 grew had to be built, styled, keybound and tested in
+Rust, so the interface was the bottleneck on its own evolution and a user who
+wanted a different pane had no move available short of a fork. Making panes data
+moves that cost to a file, and the constraint that makes it safe is that a plugin
+is handed a snapshot and returns a tree — it never gets the world.
+
+Five rules carry it, each load-bearing:
+
+1. **Four node kinds** — `text`, `box`, `input`, `surface`; everything else
+   composes in Lua. A prior attempt froze its catalog at six and reached sixteen,
+   because it never built the userland layer.
+2. **Layout resolves before render**, so a plugin knows its own rect and can wrap,
+   truncate and window. Sizes are declared *statically*, which breaks the
+   circularity.
+3. **Snapshot-read, command-write** — Lua never blocks, so no plugin, including
+   one nobody has written, can stall the loop on SQLite, git or a dead host.
+4. **Capabilities by absence** — an ungranted capability is not in the
+   environment. Enforced statically by `thurbox.yml` as well as at runtime.
+5. **Anything touching the world runs on a worker.**
+
+**The name is the constraint on how this shipped.** The updater in an installed
+binary hard-fails on a known binary missing from a release archive and swallows the
+error, so an archive that dropped the name `thurbox` would silently end auto-update
+for every install already out there, unfixably. The kernel therefore inherited the
+name rather than shipping beside it, and a profile with v1 history meets a one-time
+gate (`kernel::consent`) before anything changes. See `docs/RELEASING.md`.
+
+**Cost, accepted**: a frame is more expensive — every pane is a Lua call returning a
+table that is converted and painted — so the loop settles aggressively and every
+cached answer carries an age. And v1 surfaces are owed rather than ported: code
+review, the file viewer and the info panel have no equivalent, and tasks,
+automations, the restore list and the perf HUD are `thurbox-cli` only. Tracked in
+`openspec/changes/v2-parity-gaps/`.
+
+**Rejected**:
+
+- *A config file describing panes* — expressive enough for arrangement, never for
+  behaviour; every new interaction would have become a new key.
+- *Shipping v2 beside v1 as a second binary* — auto-update never introduces a new
+  binary, so it would have reached almost nobody, and two interfaces on one
+  database doubles the surface every engine change has to satisfy.
+- *An embedded scripting language with the host's capabilities* — the point of
+  rule 4 is that a plugin someone else wrote is safe to load.

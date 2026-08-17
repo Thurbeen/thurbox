@@ -11,7 +11,6 @@
 #
 # Usage:
 #   scripts/dev/sandbox.sh                 # persistent "default" profile, launch the TUI
-#   scripts/dev/sandbox.sh --v2            # launch the v2 kernel (thurbox2) instead
 #   scripts/dev/sandbox.sh --fresh         # throwaway env, wiped on exit
 #   scripts/dev/sandbox.sh --profile foo   # named persistent profile
 #   scripts/dev/sandbox.sh --isolate-home  # full isolation (fresh HOME; no agent creds)
@@ -20,8 +19,8 @@
 #   scripts/dev/sandbox.sh -- session list # run `thurbox-cli <args>` in the sandbox
 #   scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile, then exit
 #
-# --v2 launches `thurbox2` FROM THE SANDBOX ROOT rather than the repo, because
-# thurbox2 prefers a `./ui` in the working directory over the user's own copy —
+# The TUI is launched FROM THE SANDBOX ROOT rather than the repo, because thurbox
+# prefers a `./ui` in the working directory over the user's own copy —
 # started from the repo it would load the repo's `ui/`, so the sandbox would
 # isolate the database and not the interface. From the sandbox root it
 # materializes `<sandbox>/thurbox-config/ui/` instead, which is what `--fresh`
@@ -50,7 +49,6 @@ mode="persistent"
 profile="default"
 isolation="thurbox" # thurbox | full
 action="tui"        # tui | shell | cli | clean
-kernel="v1"         # v1 (thurbox) | v2 (thurbox2)
 cli_args=()
 
 while [ $# -gt 0 ]; do
@@ -58,7 +56,6 @@ while [ $# -gt 0 ]; do
         --fresh) mode="fresh"; shift ;;
         --profile) profile="${2:?--profile needs a name}"; shift 2 ;;
         --isolate-home) isolation="full"; shift ;;
-        --v2) kernel="v2"; shift ;;
         --shell) action="shell"; shift ;;
         --clean) action="clean"; shift; case "${1:-}" in ""|-*) ;; *) profile="$1"; shift ;; esac ;;
         --) shift; action="cli"; cli_args=("$@"); break ;;
@@ -78,11 +75,7 @@ fi
 # Build the dev binaries BEFORE the HOME override (so cargo finds ~/.cargo).
 # thurbox-cli is built either way: it drives the same database and is what an
 # agent hook inside a session calls.
-if [ "$kernel" = "v2" ]; then
-    tui_binary="thurbox2"
-else
-    tui_binary="thurbox"
-fi
+tui_binary="thurbox"
 log "building $tui_binary + thurbox-cli (dev)"
 ( cd "$TBX_REPO_ROOT" && cargo build --bin "$tui_binary" --bin thurbox-cli >&2 )
 
@@ -103,8 +96,8 @@ run_in_sandbox() {
             "${SHELL:-bash}" -i
             ;;
         cli) "$TBX_REPO_ROOT/target/debug/thurbox-cli" "${cli_args[@]}" ;;
-        # Run from the sandbox root, not the repo: see the --v2 note in the
-        # header. Harmless for v1, which resolves no paths from the cwd.
+        # Run from the sandbox root, not the repo: see the note in the header.
+        # Otherwise the sandbox isolates the database but not the interface.
         tui) ( cd "$TBX_SANDBOX_ROOT" && "$TBX_REPO_ROOT/target/debug/$tui_binary" ) ;;
     esac
 }

@@ -70,9 +70,9 @@ sandbox *ARGS:
 sandbox-fresh:
     scripts/dev/sandbox.sh --fresh
 
-# Run the v2 kernel (thurbox2) in a throwaway sandbox (fresh interface each time).
-sandbox-v2:
-    scripts/dev/sandbox.sh --v2 --fresh
+# Throwaway sandbox with a clean interface directory each run.
+sandbox-fresh-ui:
+    scripts/dev/sandbox.sh --fresh
 
 # Drop into a shell with the sandbox env (run `thurbox-cli …` by hand).
 sandbox-shell:

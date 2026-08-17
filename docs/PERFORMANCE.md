@@ -1,5 +1,14 @@
 # Performance
 
+> **Read this first.** The ADR-P decisions below were measured against v1's Rust
+> interface, and many cite `src/app/*` or `src/ui/*` — both deleted when the plugin
+> kernel took the binary name (ADR-23). The *findings* still hold and several
+> were carried across: demand-driven redraw, the 250 ms floor, output-driven dirty
+> marking, and reading the hook rows only when `PRAGMA data_version` moves are all
+> in the kernel's loop. What changed is where the code lives, and that a frame is
+> now a Lua call per pane — so the loop settles harder and every cached answer
+> carries an age. Current shape: the **Performance** section of `CLAUDE.md`.
+
 How thurbox stays responsive and light, and how to measure it. The focus areas
 are **input latency**, **runtime CPU / render cost**, **startup time**, and
 **memory / binary size**. Decisions below follow the mini-ADR format

@@ -63,7 +63,6 @@ the dev `target/debug` first on `PATH`, so an agent's status hook calls *this*
 ```bash
 scripts/dev/sandbox.sh                 # persistent "default" profile, launch the TUI
 scripts/dev/sandbox.sh --fresh         # throwaway env, wiped on exit
-scripts/dev/sandbox.sh --v2            # launch the v2 kernel (thurbox2) instead of v1
 scripts/dev/sandbox.sh --profile foo   # a named persistent profile
 scripts/dev/sandbox.sh --isolate-home  # full hermetic isolation (fresh HOME; agents have NO creds)
 scripts/dev/sandbox.sh --shell         # a shell with the sandbox env (run thurbox-cli by hand)
@@ -71,15 +70,15 @@ scripts/dev/sandbox.sh -- session list # run a thurbox-cli command in the sandbo
 scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile
 ```
 
-Or via `just`: `just sandbox`, `just sandbox-fresh`, `just sandbox-v2`,
+Or via `just`: `just sandbox`, `just sandbox-fresh`,
 `just sandbox-shell`, `just sandbox-clean [profile]`.
 
-`--v2` launches `thurbox2` **from the sandbox root rather than the repo**, and
-that detail is the point: `resolve_ui_dir` prefers a `./ui` in the working
-directory, so starting it from the repo would load the repo's own `ui/` and the
-sandbox would isolate the database but not the interface. From the sandbox root
-it materializes `<sandbox>/thurbox-config/ui/`, so `--v2 --fresh` is a clean
-first-run interface every time — which is how the plugin lifecycle (delivery,
+The TUI launches **from the sandbox root rather than the repo**, and that detail is
+the point: `resolve_ui_dir` prefers a `./ui` in the working directory, so starting
+it from the repo would load the repo's own `ui/` and the sandbox would isolate the
+database but not the interface. From the sandbox root it materializes
+`<sandbox>/thurbox-config/ui/`, so `--fresh` is a clean first-run interface every
+time — which is how the plugin lifecycle (delivery,
 removal, restore) is exercised without touching your real one.
 
 **Isolation flavors:**
