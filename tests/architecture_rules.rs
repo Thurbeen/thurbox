@@ -44,13 +44,6 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session", "paths", "shell"],
         allowed_path_only: &[],
     },
-    // Rendering. `app` is allowed read-only model/view state (TEA
-    // `view(model)`); never agent or git (no side effects from the view).
-    ModuleRules {
-        name: "ui",
-        allowed: &["session", "app", "fuzzy", "paths"],
-        allowed_path_only: &[],
-    },
     ModuleRules {
         name: "git",
         allowed: &["session", "paths", "shell"],
@@ -127,11 +120,6 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     // Leaf utilities.
     ModuleRules {
-        name: "fuzzy",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
         name: "paths",
         allowed: &[],
         allowed_path_only: &[],
@@ -168,7 +156,8 @@ const MODULE_RULES: &[ModuleRules] = &[
 /// Modules exempt from the allowlist: `app` is the coordinator (imports
 /// everything by design); `bin`, `lib`, and `main` are crate roots, not
 /// architecture modules.
-const EXEMPT: &[&str] = &["app", "bin", "lib", "main"];
+// `main` is the coordinator, as `app` was before v1 was retired.
+const EXEMPT: &[&str] = &["bin", "lib", "main"];
 
 /// A single architecture violation: a forbidden crate-module reference.
 struct Violation {
@@ -537,11 +526,6 @@ fn agent_module_isolation() {
 }
 
 #[test]
-fn ui_layer_isolation() {
-    assert_module_clean("ui");
-}
-
-#[test]
 fn git_module_independence() {
     assert_module_clean("git");
 }
@@ -573,7 +557,7 @@ fn cli_module_isolation() {
 
 #[test]
 fn util_modules_are_leaves() {
-    for name in ["fuzzy", "paths", "shell", "workspace"] {
+    for name in ["paths", "shell", "workspace"] {
         assert_module_clean(name);
     }
 }

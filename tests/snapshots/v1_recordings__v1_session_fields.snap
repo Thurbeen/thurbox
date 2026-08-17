@@ -1,6 +1,0 @@
----
-source: tests/v1_recordings.rs
-expression: "described.join(\"\\n\")"
----
-name=one status=Working agent=claude has_id=true worktrees=1 agent_session_id=None cwd=Some("/src/thurbox") additional_dirs=[] backend_id=None shell_backend_id=None remote_host=None has_metrics=false activity=None notification=None has_git_stats=false repos=["thurbox"] parent=None order=None hooks=None
-name=two status=Unreachable agent=claude has_id=true worktrees=1 agent_session_id=None cwd=Some("/src/remote") additional_dirs=[] backend_id=None shell_backend_id=None remote_host=None has_metrics=false activity=None notification=None has_git_stats=false repos=["remote"] parent=None order=None hooks=None

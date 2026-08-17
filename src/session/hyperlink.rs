@@ -2,7 +2,7 @@
 //!
 //! Agent CLIs render a markdown link as an OSC 8 hyperlink: the escape carries
 //! the target and only the *label* is printed (`Github`, never
-//! `https://github.com`). The plain-text scan in [`crate::ui::links`] therefore
+//! `https://github.com`). The plain-text scan in [`crate::session::links`] therefore
 //! finds nothing on such a row and a `Ctrl+Click` has no target at all — the
 //! URL exists only in the escape sequence, which `vt100` discards. The parser
 //! callbacks record each run here instead (see `crate::agent::osc8`), and a
@@ -100,7 +100,7 @@ impl HyperlinkTable {
 
     /// Target of the hyperlink under display column `col` of `row_text`, if
     /// any. `row_text` is one screen row as
-    /// [`crate::ui::links::extract_screen_rows`] renders it (one char per
+    /// [`crate::session::links::extract_screen_rows`] renders it (one char per
     /// glyph), so columns compare directly against a click's cell column.
     ///
     /// Newest run first, so a redrawn row resolves against what it prints now.
@@ -129,7 +129,7 @@ impl HyperlinkTable {
 
     /// Every run currently on screen, so the renderer can hand them to the
     /// outer terminal (see [`osc8_open`]). `rows` is one screenful as
-    /// [`crate::ui::links::extract_screen_rows`] renders it.
+    /// [`crate::session::links::extract_screen_rows`] renders it.
     ///
     /// Newest first, at most one run per starting cell — the same
     /// "what does this cell print *now*" rule [`Self::resolve`] applies, so a

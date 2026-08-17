@@ -9,6 +9,10 @@ use crate::session::{SessionId, PENDING_FOCUS_SESSION_ID_KEY};
 const EDITOR_COMMAND_KEY: &str = "editor_command";
 const EDITOR_MODE_KEY: &str = "editor_mode";
 const THEME_KEY: &str = "active_theme";
+/// Set once a profile has answered the v2 interface gate. Owned here because
+/// `storage` owns the `metadata` table; the kernel reads it through the
+/// accessors below rather than the other way round.
+const V2_ACK_KEY: &str = "v2_interface_acknowledged";
 const ACTIVE_EXTENSIONS_KEY: &str = "active_extensions";
 const BUILTIN_HOOKS_OPTOUT_KEY: &str = "builtin_hooks_optout";
 const PERF_SNAPSHOT_KEY: &str = "perf_snapshot";
@@ -88,6 +92,45 @@ impl Database {
                 |row| row.get::<_, String>(0),
             )
             .optional()
+    }
+
+    /// Whether this profile has answered the v2 interface gate.
+    ///
+    /// Asked by the v2 interface gate. Recorded in `metadata` rather than
+    /// `settings.toml` because it is a fact about this machine's history, not a
+    /// preference the user would edit or copy between machines.
+    pub fn v2_acknowledged(&self) -> rusqlite::Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![V2_ACK_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Record that the gate has been answered, so it is asked once.
+    pub fn acknowledge_v2(&self) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![V2_ACK_KEY, "1"],
+        )?;
+        Ok(())
+    }
+
+    /// Whether this profile has ever had a session.
+    ///
+    /// The test for "came from v1" rather than "fresh install": soft-deleted rows
+    /// count, because having deleted a session is still history. A profile with
+    /// none has nothing to be warned about losing.
+    pub fn has_session_history(&self) -> rusqlite::Result<bool> {
+        self.conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM sessions)", [], |row| {
+                row.get::<_, bool>(0)
+            })
     }
 
     /// Set the active theme preset name. Pass an empty string to reset to default.
@@ -276,6 +319,25 @@ mod tests {
 
         db.set_editor_command("").unwrap();
         assert_eq!(db.get_editor_command().unwrap(), None);
+    }
+
+    #[test]
+    fn the_v2_gate_answer_round_trips_and_history_is_detected() {
+        let db = Database::open_in_memory().expect("in-memory");
+        assert!(
+            !db.v2_acknowledged().expect("read"),
+            "a fresh profile has not answered"
+        );
+        assert!(
+            !db.has_session_history().expect("read"),
+            "a fresh profile has no history, so it must not be prompted"
+        );
+
+        db.acknowledge_v2().expect("write");
+        assert!(
+            db.v2_acknowledged().expect("read"),
+            "the answer has to persist, or the gate asks on every launch"
+        );
     }
 
     #[test]

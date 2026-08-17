@@ -12,6 +12,7 @@ pub mod bands;
 pub mod bundled;
 pub mod command;
 pub mod config;
+pub mod consent;
 pub mod convert;
 pub mod diff;
 pub mod files;

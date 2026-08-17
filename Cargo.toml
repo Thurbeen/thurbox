@@ -100,13 +100,6 @@ notify-rust = "4"
 name = "thurbox-cli"
 path = "src/bin/thurbox-cli.rs"
 
-# v2 plugin-kernel binary. Runs alongside v1 while v2 is built out; nothing in
-# the v1 TUI is touched until every pane has a plugin equivalent proven against
-# its golden recording (see openspec/changes/v2-plugin-kernel).
-[[bin]]
-name = "thurbox2"
-path = "src/bin/thurbox2.rs"
-
 # Development tool requirements (install with `cargo binstall` or `cargo install`)
 [package.metadata.dev-tools]
 prek = "0.2.0"

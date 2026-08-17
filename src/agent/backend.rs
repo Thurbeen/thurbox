@@ -844,7 +844,7 @@ impl Session {
     /// Raw monotonic timestamp (epoch millis) of the session's last output.
     /// Monotonic non-decreasing — the reader thread only ever stores `now`.
     /// Used by the render loop's cheap output-change detector
-    /// ([`crate::app::App::detect_output_redraw`]) so it can spot new output
+    /// ([`crate::kernel::terminal::Terminals::output_generation`]) so it can spot new output
     /// without locking the vt100 parser.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
@@ -872,16 +872,6 @@ impl Session {
         Some((self.agent_title(), self.notification()))
     }
 
-    /// Simulate a reader-thread title/notification write for the ADR-P10
-    /// perf tests (mirrors [`Self::mark_exited_for_test`]).
-    #[cfg(test)]
-    pub(crate) fn bump_meta_gen_for_test(&self, title: &str) {
-        if let Ok(mut guard) = self.last_title.lock() {
-            *guard = Some(title.to_string());
-        }
-        self.meta_gen.fetch_add(1, Ordering::Release);
-    }
-
     /// Whether the agent has signalled for attention (bell / OSC 9 / OSC 777)
     /// since it was last acknowledged. Cleared via [`Self::acknowledge_attention`].
     pub fn needs_attention(&self) -> bool {
@@ -907,14 +897,6 @@ impl Session {
     /// Return the backend name.
     pub fn backend_name(&self) -> &str {
         self.backend.name()
-    }
-
-    /// The session's current environment — the env it was last (re)spawned
-    /// with. Used by acceptance tests to assert the identity env (`THURBOX_*`)
-    /// is preserved across a restart.
-    #[cfg(test)]
-    pub(crate) fn env(&self) -> &HashMap<String, String> {
-        &self.env
     }
 
     /// Return the PID of the process running in this session's backend pane.

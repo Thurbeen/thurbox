@@ -1,7 +1,7 @@
 //! Theme palettes for the Thurbox TUI.
 //!
 //! A `ThemePalette` is the runtime, swappable palette. Widgets read the active
-//! palette via `crate::ui::theme::current()`; users pick one via the theme
+//! palette via `crate::kernel::theme`; users pick one via the theme
 //! picker modal or by setting `active_theme` in the SQLite metadata table.
 
 use ratatui::style::Color;

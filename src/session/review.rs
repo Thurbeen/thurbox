@@ -421,7 +421,7 @@ pub struct SidePair {
 /// Collapse a hunk into paired side-by-side rows (see [`SidePair`]). Positional
 /// alignment — cheap, deterministic, and dependency-free (matching the
 /// heuristic, language-agnostic stance already taken for syntax highlighting).
-/// Pure so the row builder ([`crate::app`]) and the renderer ([`crate::ui`])
+/// Pure so the row builder ([`crate::kernel`]) and the plugin that renders it
 /// derive the exact same pairing and never disagree on which lines share a row.
 pub fn pair_hunk(hunk: &DiffHunk) -> Vec<SidePair> {
     let lines = &hunk.lines;

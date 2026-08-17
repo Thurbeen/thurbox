@@ -522,10 +522,6 @@ pub fn existing_launch_cwd(
 ///
 /// Shared by the headless spawn and the TUI (`App::build_spawn_inputs`) so
 /// both paths launch a remote session with the same args.
-pub(crate) fn adapt_agent_args_for_remote(host: &HostDef, args: Vec<String>) -> Vec<String> {
-    adapt_agent_args_for_remote_with_report(host, args).0
-}
-
 /// [`adapt_agent_args_for_remote`] plus the list of local config paths that
 /// were **stripped** (no remote location could hold them) — the caller
 /// surfaces those as a hook-wiring degradation, since a stripped hooks config
@@ -961,7 +957,10 @@ mod tests {
         let args: Vec<String> = ["--session-id", "abc", "--model", "opus"]
             .map(String::from)
             .into();
-        assert_eq!(adapt_agent_args_for_remote(&host, args.clone()), args);
+        assert_eq!(
+            adapt_agent_args_for_remote_with_report(&host, args.clone()).0,
+            args
+        );
     }
 
     #[test]
@@ -984,7 +983,7 @@ mod tests {
         ]
         .map(String::from)
         .into();
-        let out = adapt_agent_args_for_remote(&host, args.clone());
+        let out = adapt_agent_args_for_remote_with_report(&host, args.clone()).0;
         assert_eq!(
             out,
             [
@@ -1004,7 +1003,7 @@ mod tests {
             socket: Some("tb".into()),
             ..Default::default()
         };
-        let out = adapt_agent_args_for_remote(&psmux_host, args);
+        let out = adapt_agent_args_for_remote_with_report(&psmux_host, args).0;
         assert_eq!(out[2], "psmux -L tb set-option -p @thurbox_state blocked");
     }
 

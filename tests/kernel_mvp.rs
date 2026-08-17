@@ -1807,7 +1807,7 @@ fn link_detection_is_shared_with_v1_not_duplicated() {
     assert_eq!(found[0].url, "https://example.com/x");
 
     // And v1's path still resolves to the same function.
-    let via_ui = thurbox::ui::links::detect_urls(&rows);
+    let via_ui = thurbox::session::links::detect_urls(&rows);
     assert_eq!(via_ui.len(), 1);
     assert_eq!(via_ui[0].url, found[0].url);
 }
