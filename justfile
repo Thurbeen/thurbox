@@ -62,6 +62,14 @@ dev-tools:
 hooks-install:
     prek install
 
+# `cargo run` alone reads `~/.config/thurbox-dev/ui`, like every other config a dev
+# build reads. Editing the interface in the repository is a different request, so it
+# is stated here rather than inferred from the working directory.
+#
+# Run the dev TUI against THIS checkout's ui/ instead of your own copy.
+tui-ui *ARGS:
+    THURBOX_UI_DIR="{{justfile_directory()}}/ui" cargo run --bin thurbox -- {{ARGS}}
+
 # Run the dev TUI in the persistent default sandbox.
 sandbox *ARGS:
     scripts/dev/sandbox.sh {{ARGS}}

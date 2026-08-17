@@ -9,7 +9,7 @@
 //! See `openspec/changes/v2-plugin-kernel/`.
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -145,8 +145,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let (ui_dir, delivery_notice) = resolve_ui_dir()?;
-    startup_notices.extend(delivery_notice);
+    let (ui_dir, ui_notices) = resolve_ui_dir()?;
+    startup_notices.extend(ui_notices);
 
     // A user copy that will not load must not cost the interface, but the falling
     // back lives in `App::reload_interface` — called once below and on every
@@ -601,12 +601,41 @@ fn focus_index_of(host: &LuaHost, name: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn resolve_ui_dir() -> Result<(PathBuf, Option<String>), Box<dyn Error>> {
+fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
     // The resolution itself lives in the library, so `thurbox-cli plugin dir`
     // reports the directory this will actually load. Writing the user's copy is
     // the interface's business, which is why it asks for it.
-    let (dir, _chosen, report) = thurbox::kernel::bundled::resolve(true)?;
-    Ok((dir, delivery_notice(&report)))
+    let (dir, chosen, report) = thurbox::kernel::bundled::resolve(true)?;
+    let mut notices = Vec::new();
+    notices.extend(directory_notice(&dir, chosen));
+    notices.extend(delivery_notice(&report));
+    Ok((dir, notices))
+}
+
+/// Which interface just loaded — said only when there is a question.
+///
+/// Silent for a release build on its own copy, because there is nothing to
+/// disambiguate and a greeting on every launch is noise. It speaks when an
+/// override is in force (that is somebody's deliberate redirection, and the most
+/// likely thing to have been forgotten), when the embedded fallback had to be
+/// used, and on a **dev build** — where "which interface am I running" is a real
+/// question, since the checkout beside you contains one too.
+fn directory_notice(dir: &Path, chosen: thurbox::kernel::bundled::Chosen) -> Option<String> {
+    use thurbox::kernel::bundled::Chosen;
+    let shown = thurbox::paths::display_path(dir);
+    match chosen {
+        Chosen::UserCopy if cfg!(dev_build) => Some(format!(
+            "interface from {shown} · set THURBOX_UI_DIR to use a checkout"
+        )),
+        Chosen::UserCopy => None,
+        Chosen::Override => Some(format!("interface from {shown} (THURBOX_UI_DIR)")),
+        Chosen::Checkout => Some(format!("interface from {shown} (checkout)")),
+        // Not a preference: the user's copy could not be written, so the panes
+        // are the embedded ones in a directory that will not survive the process.
+        Chosen::Fallback => Some(format!(
+            "interface from {shown} — your copy could not be written"
+        )),
+    }
 }
 
 /// What an upgrade did that the user did not ask for and should know about.
@@ -3443,6 +3472,47 @@ fn to_press(key: &KeyEvent) -> KeyPress {
 mod tests {
     use super::*;
     use thurbox::kernel::host::Float;
+
+    /// Startup says which interface loaded, but only when there is a question.
+    ///
+    /// The silent case is the one that matters: a release build on its own copy has
+    /// nothing to disambiguate, and a greeting on every launch is noise. Everything
+    /// else speaks, because it is either somebody's deliberate redirection (the most
+    /// likely thing to have been forgotten), a fallback the user did not choose, or
+    /// a dev build — where the checkout beside you contains an interface too and
+    /// "which one am I running" is a real question.
+    #[test]
+    fn the_interface_directory_is_announced_only_when_it_is_in_doubt() {
+        use thurbox::kernel::bundled::Chosen;
+        let dir = Path::new("/home/me/.config/thurbox/ui");
+
+        let own = directory_notice(dir, Chosen::UserCopy);
+        if cfg!(dev_build) {
+            let said = own.expect("a dev build says which interface it loaded");
+            assert!(
+                said.contains("THURBOX_UI_DIR"),
+                "and how to change it: {said}"
+            );
+        } else {
+            assert!(own.is_none(), "a release build on its own copy stays quiet");
+        }
+
+        // These three speak on any build.
+        for chosen in [Chosen::Override, Chosen::Checkout, Chosen::Fallback] {
+            let said = directory_notice(dir, chosen)
+                .unwrap_or_else(|| panic!("{chosen:?} must be announced"));
+            assert!(
+                said.contains("interface from"),
+                "{chosen:?} names the directory: {said}"
+            );
+        }
+        // The fallback is not a preference and must not read like one.
+        let fallback = directory_notice(dir, Chosen::Fallback).expect("announced");
+        assert!(
+            fallback.contains("could not be written"),
+            "it says why, or it reads as a choice: {fallback}"
+        );
+    }
 
     /// Every chrome rect is derived from the space available, so each one has to
     /// hold at a size smaller than its own content floor. The error panel matters

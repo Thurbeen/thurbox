@@ -435,7 +435,14 @@ fn write_manifest(dir: &Path, manifest: &BTreeMap<String, Record>) -> Result<(),
 pub enum Chosen {
     /// `THURBOX_UI_DIR` named it.
     Override,
-    /// A `ui` directory beside the working directory — a dev checkout.
+    /// A `ui` directory beside the working directory, named by `THURBOX_UI_DIR`.
+    ///
+    /// Kept as a distinct reason from [`Chosen::Override`] purely so the report can
+    /// say "the checkout" when the override happens to point at one. It is no
+    /// longer reachable without the variable: an automatic `./ui` rule made the
+    /// interface the one config that ignored the `thurbox` / `thurbox-dev` split,
+    /// so `cargo run` in the repository read `~/.config/thurbox-dev` for agents,
+    /// settings, themes and the database and the *checkout* for its panes.
     Checkout,
     /// The user's own copy, materialized from the embedded interface.
     UserCopy,
@@ -459,7 +466,7 @@ impl Chosen {
     pub fn reason(self) -> &'static str {
         match self {
             Chosen::Override => "THURBOX_UI_DIR names it",
-            Chosen::Checkout => "a ./ui directory beside the working directory",
+            Chosen::Checkout => "THURBOX_UI_DIR pointing at a checkout's ./ui",
             Chosen::UserCopy => "your own copy of the interface",
             Chosen::Fallback => "the embedded interface — your copy could not be written",
         }
@@ -482,17 +489,31 @@ pub fn resolve(materialize_user_copy: bool) -> Result<(PathBuf, Chosen, Report),
     if let Some(dir) = std::env::var_os("THURBOX_UI_DIR") {
         let dir = PathBuf::from(dir);
         if dir.is_dir() {
-            return Ok((absolute(dir), Chosen::Override, Report::default()));
+            // Reported as the checkout when that is plainly what it is, so the
+            // answer to "which interface am I running" names the thing the reader
+            // recognises rather than just the mechanism.
+            let chosen = if dir.file_name().is_some_and(|name| name == "ui")
+                && dir.join("plugins").is_dir()
+                && Path::new("Cargo.toml").is_file()
+            {
+                Chosen::Checkout
+            } else {
+                Chosen::Override
+            };
+            return Ok((absolute(dir), chosen, Report::default()));
         }
         return Err(format!(
             "THURBOX_UI_DIR is not a directory: {}",
             dir.display()
         ));
     }
-    let local = PathBuf::from("ui");
-    if local.is_dir() {
-        return Ok((absolute(local), Chosen::Checkout, Report::default()));
-    }
+    // No automatic `./ui` rule. It existed so a checkout could edit its own
+    // interface, and the cost was that the interface stopped following the config
+    // path every other setting follows: `cargo run` from the repository loaded the
+    // repository's panes while reading `~/.config/thurbox-dev` for everything else,
+    // silently, with nothing on screen to say which. Editing a checkout's interface
+    // is now an explicit `THURBOX_UI_DIR=ui` (see `just tui-ui`), which is the same
+    // request stated out loud.
     if let Some(dir) = user_ui_dir() {
         // Only the interface writes; a report is a read, and must not create a
         // profile as a side effect of being asked a question.

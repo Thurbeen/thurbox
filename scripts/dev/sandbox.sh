@@ -19,12 +19,15 @@
 #   scripts/dev/sandbox.sh -- session list # run `thurbox-cli <args>` in the sandbox
 #   scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile, then exit
 #
-# The TUI is launched FROM THE SANDBOX ROOT rather than the repo, because thurbox
-# prefers a `./ui` in the working directory over the user's own copy —
-# started from the repo it would load the repo's `ui/`, so the sandbox would
-# isolate the database and not the interface. From the sandbox root it
-# materializes `<sandbox>/thurbox-config/ui/` instead, which is what `--fresh`
-# then gives you a clean one of.
+# The interface materializes at `<sandbox>/thurbox-config/ui/` along with agents,
+# settings and the database, because THURBOX_CONFIG_DIR points there — which is
+# what `--fresh` then gives you a clean one of.
+#
+# The TUI is still launched FROM THE SANDBOX ROOT rather than the repo. That used
+# to be load-bearing: thurbox preferred a `./ui` in the working directory over the
+# user's own copy, so starting from the repo isolated the database and not the
+# interface. That rule is gone (standing somewhere no longer decides which
+# interface loads), and the cd is kept as belt-and-braces.
 #
 # State (persistent mode): target/dev-sandbox/<profile>/ (gitignored). Sessions
 # survive across runs — its tmux-dev server is left alive on exit. `--clean`

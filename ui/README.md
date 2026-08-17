@@ -30,12 +30,20 @@ thurbox-cli plugin dir       # which directory is live, and which rule chose it
 In a running thurbox, `F10` reloads from disk and `Ctrl+,` → `]` shows the same
 inventory `plugin list` prints.
 
-Three rules pick the directory, in order: `THURBOX_UI_DIR`, a `./ui` beside the
-working directory, then the user's own copy — `~/.config/thurbox/ui`, or
-`~/.config/thurbox-dev/ui` for a dev build, which sits beside that build's own
-`settings.toml` exactly as every other config path does. `plugin dir` says which
-rule won, and `thurbox-cli config show` prints the resolved `ui_dir` beside the
-rest of the config: worth checking before concluding an edit did nothing.
+Two rules pick the directory: `THURBOX_UI_DIR` if set, otherwise your own copy —
+`~/.config/thurbox/ui`, or `~/.config/thurbox-dev/ui` for a dev build, which sits
+beside that build's own `settings.toml` exactly as every other config path does.
+`plugin dir` says which rule won, and `thurbox-cli config show` prints the resolved
+`ui_dir` beside the rest of the config: worth checking before concluding an edit did
+nothing.
+
+Standing in a checkout does **not** change which interface loads. There used to be a
+third rule — a `./ui` beside the working directory won automatically — and it made
+the interface the one config that ignored the dev/release split: `cargo run` in the
+repository read `~/.config/thurbox-dev` for agents, settings and the database, and
+the checkout for its panes. Editing a checkout's interface is
+`THURBOX_UI_DIR=ui` now (`just tui-ui` in the repository), which is the same request
+said out loud.
 
 ## The five rules
 

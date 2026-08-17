@@ -51,25 +51,63 @@ fn the_directory_report_names_the_rule_that_chose_it() {
 }
 
 #[test]
-fn a_checkout_is_told_apart_from_the_users_own_copy() {
-    // The mistake this exists to prevent: editing `~/.config/thurbox/ui` while a
-    // `./ui` in the working directory is what the interface actually loads.
+fn standing_in_a_checkout_does_not_silently_load_its_interface() {
+    // There used to be an automatic rule: a `./ui` beside the working directory
+    // won. It made the interface the ONE config that ignored the
+    // `thurbox`/`thurbox-dev` split — `cargo run` in the repository read
+    // `~/.config/thurbox-dev` for agents, settings, themes and the database, and
+    // the checkout for its panes, with nothing on screen saying which. Editing a
+    // checkout's interface is an explicit `THURBOX_UI_DIR` now.
     std::env::remove_var("THURBOX_UI_DIR");
+    // Point the CONFIG dir at a tempdir, not `THURBOX_UI_DIR` — the whole claim is
+    // that the user's copy is what resolves, so the override must stay unset.
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
     let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(&repo).expect("cd");
+    assert!(
+        repo.join("ui").is_dir(),
+        "the checkout really does have one"
+    );
+
+    let report = json(Action::Dir);
+    std::env::remove_var("THURBOX_CONFIG_DIR");
+    assert_eq!(
+        report["chosen"], "user-copy",
+        "standing in the repository must not change which interface loads: {report}"
+    );
+    let dir = report["dir"].as_str().unwrap_or_default();
+    assert!(
+        dir.starts_with(&home.path().display().to_string()),
+        "it resolves under the config dir, not the checkout: {report}"
+    );
+    assert!(
+        !dir.starts_with(&repo.display().to_string()),
+        "emphatically not the checkout: {report}"
+    );
+}
+
+#[test]
+fn an_override_at_a_checkout_is_reported_as_the_checkout() {
+    // Asking for it explicitly is honoured, and named for what a reader
+    // recognises rather than for the mechanism that delivered it.
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    std::env::set_current_dir(&repo).expect("cd");
+    std::env::set_var("THURBOX_UI_DIR", repo.join("ui"));
 
     let report = json(Action::Dir);
     assert_eq!(report["chosen"], "checkout", "{report}");
-    // Absolute, not the bare `ui` it is found by. Trust, the disabled set and
-    // every rebinding are keyed by this directory joined with a filename and
-    // compared verbatim, so a relative one is not an identity: every checkout on
-    // the machine shares it, and trusting a plugin in one worktree would grant
+    // Absolute, not the bare `ui` it may have been named by. Trust, the disabled
+    // set and every rebinding are keyed by this directory joined with a filename
+    // and compared verbatim, so a relative one is not an identity: every checkout
+    // on the machine shares it, and trusting a plugin in one worktree would grant
     // `run` to a same-named file in another.
     assert_eq!(
         report["dir"],
         repo.join("ui").display().to_string(),
         "{report}"
     );
+    std::env::remove_var("THURBOX_UI_DIR");
 }
 
 #[test]

@@ -73,13 +73,20 @@ scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile
 Or via `just`: `just sandbox`, `just sandbox-fresh`,
 `just sandbox-shell`, `just sandbox-clean [profile]`.
 
-The TUI launches **from the sandbox root rather than the repo**, and that detail is
-the point: `resolve_ui_dir` prefers a `./ui` in the working directory, so starting
-it from the repo would load the repo's own `ui/` and the sandbox would isolate the
-database but not the interface. From the sandbox root it materializes
-`<sandbox>/thurbox-config/ui/`, so `--fresh` is a clean first-run interface every
-time — which is how the plugin lifecycle (delivery,
-removal, restore) is exercised without touching your real one.
+The sandbox points `THURBOX_CONFIG_DIR` at its own root, so the interface
+materialises at `<sandbox>/thurbox-config/ui/` along with agents, settings and the
+database. `--fresh` is therefore a clean first-run interface every time — which is
+how the plugin lifecycle (delivery, removal, restore) is exercised without touching
+your real one.
+
+The TUI is still launched **from the sandbox root rather than the repo**, which used
+to be load-bearing: `resolve_ui_dir` preferred a `./ui` in the working directory, so
+starting it from the repo isolated the database and not the interface. That rule is
+gone — standing somewhere no longer decides which interface loads — and the `cd` is
+kept as belt-and-braces.
+
+To run the dev TUI against **this checkout's** `ui/` instead of a copy, ask for it:
+`just tui-ui` (which sets `THURBOX_UI_DIR`).
 
 **Isolation flavors:**
 

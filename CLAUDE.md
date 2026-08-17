@@ -54,10 +54,11 @@ scripts/dev/sandbox.sh --clean       # wipe the persistent profile
 ```
 
 The TUI is launched **from the sandbox root rather than the repo**:
-`resolve_ui_dir` prefers a `./ui` in the working directory, so started from the repo
-it would load the repo's `ui/` and the sandbox would isolate the database but not
-the interface. From the sandbox root it materializes `<sandbox>/thurbox-config/ui/`
-instead, which `--fresh` then gives you a clean one of per run.
+the sandbox sets `THURBOX_CONFIG_DIR`, so the interface materialises at
+`<sandbox>/thurbox-config/ui/` along with everything else and `--fresh` gives you a
+clean one per run. (This used to matter more: `resolve_ui_dir` preferred a `./ui` in
+the working directory, so a sandbox started from the repo isolated the database but
+not the interface. That rule is gone, and the `cd` is now belt-and-braces.)
 
 The isolation lives in one helper, `scripts/dev/lib/sandbox-env.sh`
 (`tbx_sandbox_init` = thurbox-only, `tbx_sandbox_init_full` = full HOME/XDG),
@@ -1661,9 +1662,16 @@ thurbox-cli plugin check          # load it the way thurbox does; non-zero on fa
 thurbox-cli plugin list           # the inventory the Interface tab shows
 ```
 
-Three rules pick the directory, in order: `THURBOX_UI_DIR`, a `./ui` beside the
-working directory, then the user's copy (`~/.config/thurbox/ui/`, materialised from
-the embedded interface on first run, preserving edits). That third path is derived
+Two rules pick the directory: `THURBOX_UI_DIR` if set, otherwise the user's copy
+(`~/.config/thurbox/ui/`, materialised from the embedded interface on first run,
+preserving edits). A third rule — a `./ui` beside the working directory, winning
+automatically — was removed: it made the interface the one config that ignored the
+dev/release split, so `cargo run` in the repository read `~/.config/thurbox-dev` for
+agents, settings, themes and the database and the *checkout* for its panes, silently.
+Editing a checkout's interface is now an explicit `THURBOX_UI_DIR` (`just tui-ui`),
+and startup reports the directory whenever there is a question about it — an override
+is in force, the fallback was used, or this is a dev build. The user-copy path is
+derived
 from `paths::config_file()` like every other config path — `agents.toml`,
 `hosts.toml`, `settings.toml`, `themes.toml`, `extensions/`, `ui.json` — so a **dev
 build reads `~/.config/thurbox-dev/ui`** and cannot touch the release copy.

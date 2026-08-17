@@ -26,10 +26,9 @@ chosen name — a pane that renders, declares a key and a setting, and comments 
 one rule that catches everybody (see **Traps**). Edit it, run `check`, and it is
 live on the next save: the interface watches the directory.
 
-**Which directory?** Three rules, in order — `THURBOX_UI_DIR`, a `./ui` beside
-the working directory (a dev checkout), then your own copy at
-`~/.config/thurbox/ui`. `plugin dir` reports the one in force *and why*, because
-"my edit did nothing" is almost always a file in one of the other two.
+**Which directory?** Two rules — `THURBOX_UI_DIR` if it is set, otherwise your own
+copy at `~/.config/thurbox/ui`. `plugin dir` reports the one in force *and why*,
+because "my edit did nothing" is almost always the other one.
 
 That third path follows the same rule every other config path does: a **dev
 build** (version `0.0.0-dev`) reads `~/.config/thurbox-dev/ui` instead, beside its
@@ -41,8 +40,10 @@ misread, and both are worth knowing before you conclude a path is wrong:
   session it spawns*. So a `thurbox-cli` run from inside a thurbox session
   resolves against **that session's** config dir, not the dev default — a dev
   binary invoked there will correctly report the release `ui` directory.
-- **A `./ui` beside the working directory beats the config copy**, so `plugin dir`
-  run from the repository reports the repository's own `ui/`.
+- **Standing in a checkout changes nothing.** A `./ui` beside the working directory
+  used to win automatically, which is what made the interface the one config that
+  ignored the dev/release split. To work on a checkout's interface, ask for it:
+  `THURBOX_UI_DIR=ui`, or `just tui-ui` in the repository.
 
 `thurbox-cli config show` prints the resolved `ui_dir` and `ui_json` alongside
 every other config path, which is the quickest way to see which set is in play.
@@ -511,7 +512,7 @@ Three escape hatches, in increasing order of how much you give up:
 - **Settings → Interface** lists every file with its state, and restores one at a time. It also
   names the directory in use — if your edits appear to do nothing, they are
   probably to a file that is not the one loaded (a `./ui` beside the working
-  directory wins over your own copy). Outside the interface,
+  directory is only used when `THURBOX_UI_DIR` names it). Outside the interface,
   `thurbox-cli plugin list` and `thurbox-cli plugin dir` answer the same two
   questions, and `thurbox-cli plugin check` reports a load failure without
   starting anything.
