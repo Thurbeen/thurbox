@@ -145,11 +145,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Auto-update, ported from v1's `main`: without it a user who was moved here
-    // by an update would never receive another one, silently. Off-thread, so a
-    // slow download never delays the first frame; the result is toasted.
-    let auto_update = spawn_auto_update();
-
     let (ui_dir, delivery_notice) = resolve_ui_dir()?;
     startup_notices.extend(delivery_notice);
 
@@ -182,7 +177,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         themes: Themes::load(snapshots_db().as_ref()),
         updates: thurbox::kernel::updates::Updates::start(config.features()),
-        auto_update,
         slot_selection: std::collections::HashMap::new(),
         visible_slots: std::collections::HashSet::new(),
         click_targets: Vec::new(),
@@ -706,10 +700,6 @@ struct App {
     slot_selection: std::collections::HashMap<String, usize>,
     /// Whether a newer release exists, and the silent update if it was allowed.
     updates: thurbox::kernel::updates::Updates,
-    /// The background auto-update's one-shot report, so "Updated to vX" reaches
-    /// the user rather than only `thurbox.log`. `None` when auto-update is off or
-    /// this is a dev build.
-    auto_update: Option<std::sync::mpsc::Receiver<String>>,
     /// The user's settings: the live half re-read when the file changes, the
     /// restart-only half as published at startup. See `kernel::config`.
     config: thurbox::kernel::config::Config,
@@ -1112,14 +1102,6 @@ impl App {
             // An update that replaced binaries is worth saying once; a check that
             // merely found a release shows up in the header instead.
             if let Some(message) = self.updates.poll() {
-                self.toast(message);
-            }
-
-            // The auto-update's own report: it replaced the binaries on disk, which
-            // only takes effect on the next launch, so it is said once rather than
-            // acted on. Dropped after it arrives -- there is nothing more coming.
-            if let Some(message) = self.auto_update.as_ref().and_then(|rx| rx.try_recv().ok()) {
-                self.auto_update = None;
                 self.toast(message);
             }
 
@@ -3422,42 +3404,6 @@ fn render_hud(frame: &mut Frame, area: Rect, counters: &thurbox::kernel::perf::S
         Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
         inner,
     );
-}
-
-/// Start the background auto-update, or nothing when it is off.
-///
-/// Ported from v1's `main` unchanged, including both opt-outs: the feature flag,
-/// and dev builds (which must not replace themselves with a release).
-fn spawn_auto_update() -> Option<std::sync::mpsc::Receiver<String>> {
-    let features = &thurbox::session::settings::global().features;
-    if !features.auto_update {
-        return None;
-    }
-    if thurbox::agent::extension_config::is_dev_build() {
-        return None;
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || run_auto_update(&tx));
-    Some(rx)
-}
-
-/// Download + install the latest release, freshen the version-check cache, and
-/// report an "Updated …" message only when binaries were actually replaced.
-///
-/// Best-effort: failures are logged and swallowed. A send error means the
-/// interface already exited, so there is nothing to surface.
-fn run_auto_update(tx: &std::sync::mpsc::Sender<String>) {
-    match thurbox::agent::self_update::perform_update(false) {
-        Ok(outcome) => {
-            let _ = thurbox::agent::version_check::refresh_cache();
-            if let thurbox::agent::self_update::UpdateOutcome::Updated { to, .. } = outcome {
-                let msg = format!("Updated to v{to} — restart thurbox to apply.");
-                tracing::info!("{msg}");
-                let _ = tx.send(msg);
-            }
-        }
-        Err(e) => tracing::warn!("auto-update failed: {e}"),
-    }
 }
 
 /// Flatten a crossterm key into what Lua is told about it.

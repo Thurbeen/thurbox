@@ -79,14 +79,16 @@ pub fn notice(version: &str) -> String {
 /// `auto_update` is turned off by the caller before this is shown, so the two
 /// halves match: reinstalling 1.x is pointless while something will replace it
 /// again on the next launch.
+///
+/// The command exports `VERSION` rather than prefixing the pipeline because a
+/// prefix binds to `curl`, not to the `sh` reading from it. That is the reason,
+/// not something the prompt explains -- a person at a gate wants the command.
 pub fn downgrade_instructions(last_v1: &str) -> String {
     format!(
         "\n  Staying on v1. Auto-update has been turned off so nothing moves you\n\
          \x20 again. To reinstall it:\n\n\
          \x20   export VERSION={last_v1}\n\
          \x20   curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh\n\n\
-         \x20 `export` is required -- in `VERSION=x curl ... | sh` the assignment\n\
-         \x20 applies to curl, and the sh on the right of the pipe never sees it.\n\n\
          \x20 Newer 1.x patches: https://github.com/Thurbeen/thurbox/releases\n\
          \x20 To come back to v2 later, run thurbox again and answer yes.\n\n"
     )

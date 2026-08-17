@@ -116,6 +116,55 @@ impl Updates {
 
 #[cfg(test)]
 mod tests {
+    /// Exactly one place in the interface installs a release.
+    ///
+    /// Not a style rule. `self_update::install_binaries` stages each binary and
+    /// then commits it with an atomic rename, so two updates running at once race
+    /// over the same files -- and both would toast the same "Updated to v…". A
+    /// duplicate is easy to add by accident, because v1 did this in `main` under a
+    /// different name and porting it here looks like filling a gap rather than
+    /// doubling one.
+    ///
+    /// `cli::update` is the deliberate other caller: a person typing
+    /// `thurbox-cli update` is not the interface updating itself.
+    #[test]
+    fn only_this_module_installs_a_release() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let allowed = ["kernel/updates.rs", "cli/update.rs", "agent/self_update.rs"];
+        let mut offenders = Vec::new();
+
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read src") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&root)
+                    .expect("under src")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if allowed.contains(&rel.as_str()) {
+                    continue;
+                }
+                let body = std::fs::read_to_string(&path).expect("read");
+                if body.contains("perform_update(") {
+                    offenders.push(rel);
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "these install releases besides kernel::updates, which races it: {offenders:?}"
+        );
+    }
+
     use super::*;
 
     fn features(version_check: bool, auto_update: bool) -> FeatureFlags {
