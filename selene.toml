@@ -1,0 +1,20 @@
+# Static analysis for the Lua interface (`ui/`).
+#
+# `std` names `thurbox.yml`, which declares the plugin VM's real standard
+# library — the five stdlib tables the kernel grants plus its six injected
+# globals, with everything it withholds marked removed. So this checks two
+# things at once: that the Lua is sound, and that it stays inside the sandbox.
+std = "thurbox"
+
+[lints]
+# A plugin is one file returning one table; the kernel calls its fields. Nothing
+# else references them, which is not "unused".
+unused_variable = "warn"
+# Shadowing is how the bundled panes narrow a name deliberately
+# (`local session = item.session`), and every case is local to a few lines.
+shadowing = "allow"
+# The kernel interrupts a plugin that never returns, so an infinite loop is a
+# bounded failure rather than a hang — but it is still almost certainly a bug.
+almost_swapped = "deny"
+undefined_variable = "deny"
+unscoped_variables = "deny"

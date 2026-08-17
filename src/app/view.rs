@@ -498,7 +498,7 @@ impl App {
                 let remaining = a.next_run_at.unwrap_or(now).saturating_sub(now);
                 info_panel::AutomationEntry {
                     label: truncate_str(&a.name, 30),
-                    countdown: format_countdown(remaining),
+                    countdown: crate::ui::format_countdown(remaining / 1_000),
                 }
             })
             .collect();
@@ -1732,7 +1732,7 @@ fn task_linkage(task: &crate::session::Task) -> String {
 fn editor_preview(m: &super::modals::AutomationEditorModal, now: u64) -> String {
     match m.build_schedule(now) {
         Ok(sched) => match sched.next_after(now, m.timezone().as_deref()) {
-            Some(next) => format_countdown(next.saturating_sub(now)),
+            Some(next) => crate::ui::format_countdown(next.saturating_sub(now) / 1_000),
             None => "never (check schedule)".to_string(),
         },
         Err(e) => e,
@@ -2055,32 +2055,6 @@ pub(super) fn format_time_ago(millis: u64) -> String {
     }
 }
 
-/// Format a remaining-milliseconds value as a human-readable countdown.
-pub(super) fn format_countdown(remaining_ms: u64) -> String {
-    let secs = remaining_ms / 1000;
-    if secs == 0 {
-        "due".to_string()
-    } else if secs < 60 {
-        format!("in {secs}s")
-    } else if secs < 3600 {
-        let m = secs / 60;
-        let s = secs % 60;
-        if s == 0 {
-            format!("in {m}m")
-        } else {
-            format!("in {m}m {s}s")
-        }
-    } else {
-        let h = secs / 3600;
-        let m = (secs % 3600) / 60;
-        if m == 0 {
-            format!("in {h}h")
-        } else {
-            format!("in {h}h {m}m")
-        }
-    }
-}
-
 /// Truncate a string to `max_len` characters, appending "..." if truncated.
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
@@ -2115,34 +2089,6 @@ fn session_fuzzy(query: &str, info: &SessionInfo) -> Option<project_list::Sessio
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_countdown_zero() {
-        assert_eq!(format_countdown(0), "due");
-    }
-
-    #[test]
-    fn format_countdown_sub_minute() {
-        assert_eq!(format_countdown(999), "due");
-        assert_eq!(format_countdown(1_000), "in 1s");
-        assert_eq!(format_countdown(45_000), "in 45s");
-        assert_eq!(format_countdown(59_999), "in 59s");
-    }
-
-    #[test]
-    fn format_countdown_minutes() {
-        assert_eq!(format_countdown(60_000), "in 1m");
-        assert_eq!(format_countdown(90_000), "in 1m 30s");
-        assert_eq!(format_countdown(300_000), "in 5m");
-        assert_eq!(format_countdown(3_599_000), "in 59m 59s");
-    }
-
-    #[test]
-    fn format_countdown_hours() {
-        assert_eq!(format_countdown(3_600_000), "in 1h");
-        assert_eq!(format_countdown(5_400_000), "in 1h 30m");
-        assert_eq!(format_countdown(7_200_000), "in 2h");
-    }
 
     #[test]
     fn truncate_str_short() {

@@ -34,6 +34,14 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # dependency tree transitively; pinned to the same resolved version)
 base64 = "0.23"
 
+# v2 plugin kernel: the Lua runtime plugins are written in, and the filesystem
+# watch that reloads them on save. Lua 5.4 is vendored so no system Lua is
+# needed; the `send` feature is deliberately NOT enabled, which makes "plugins
+# never touch the render thread" a compile error rather than a review rule
+# (design.md D10).
+mlua = { version = "0.12", default-features = false, features = ["lua54", "vendored"] }
+notify = "8.2"
+
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "signal", "net"] }
 
@@ -92,6 +100,13 @@ notify-rust = "4"
 name = "thurbox-cli"
 path = "src/bin/thurbox-cli.rs"
 
+# v2 plugin-kernel binary. Runs alongside v1 while v2 is built out; nothing in
+# the v1 TUI is touched until every pane has a plugin equivalent proven against
+# its golden recording (see openspec/changes/v2-plugin-kernel).
+[[bin]]
+name = "thurbox2"
+path = "src/bin/thurbox2.rs"
+
 # Development tool requirements (install with `cargo binstall` or `cargo install`)
 [package.metadata.dev-tools]
 prek = "0.2.0"
@@ -102,7 +117,22 @@ cargo-audit = "0.21.0"
 rumdl = "0.1.19"
 
 [profile.dev]
-opt-level = 0
+# Our own crate: enough optimisation to be usable, still quick to rebuild.
+#
+# v2 renders through an embedded Lua VM, so a dev build runs interpreter-heavy
+# work on every frame in a way v1 never did. At opt-level 0 that is felt as lag
+# in the TUI itself, and `cargo run --bin thurbox2` is the documented way to
+# run it -- so the dev profile is part of how fast thurbox v2 *is*, not just
+# how fast it builds.
+opt-level = 1
+
+# Dependencies: fully optimised even in a dev build.
+#
+# These are compiled once and then cached, so the build-time cost is paid on
+# the first build and never again, while every frame pays the runtime cost.
+# mlua (and its vendored Lua C), ratatui and vt100 are all on the render path.
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.test]
 opt-level = 1

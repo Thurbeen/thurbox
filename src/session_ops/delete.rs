@@ -116,6 +116,63 @@ pub fn teardown_runtime_resources(
     }
 }
 
+/// Release what a *soft*-deleted session is still holding: its agent, its
+/// metrics file and its symlink workspace.
+///
+/// Deleting softly is meant to be undoable, so the row is kept and the worktrees
+/// stay on disk — but the agent process is not part of what an undo restores, and
+/// leaving it running means a deleted session keeps working, keeps writing, and
+/// keeps its tmux window forever. v1 kills it once the undo window closes
+/// (`App::finalize_pending_delete`); this is that, callable without a TUI.
+///
+/// Worktrees are deliberately untouched: they are what makes the undo lossless.
+///
+/// Returns whether anything was reaped — `false` when the row came back (the
+/// user undid it) or was force-deleted (already torn down), both of which are
+/// ordinary races rather than failures.
+pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
+    let Some(row) = db
+        .get_deleted_session_by_id(id)
+        .map_err(|e| format!("get deleted session: {e}"))?
+    else {
+        // Restored between the delete and the reap: the session is alive again,
+        // and killing its agent now would be the bug this guard exists to avoid.
+        return Ok(false);
+    };
+    if row.force_deleted {
+        return Ok(false);
+    }
+
+    // A remote session's window lives on its host and its pane id is not carried
+    // on a deleted row, so there is nothing here that could kill it correctly.
+    // Left running and reported rather than half-killed.
+    if crate::session::is_remote_backend(&row.backend_type) {
+        tracing::warn!(
+            "'{}' was soft-deleted on {}; its remote window is left running",
+            row.name,
+            row.backend_type
+        );
+        return Ok(false);
+    }
+
+    if let Err(e) = crate::agent::tmux::kill_window(&row.name) {
+        // The window may already be gone — the agent exited, or a previous reap
+        // got there first. Not worth failing a cleanup over.
+        tracing::debug!("kill_window({}) during reap: {e}", row.name);
+    }
+
+    // Derived per-session artifacts, both rebuilt on restore.
+    if let Some(asid) = &row.agent_session_id {
+        if let Some(dir) = crate::paths::metrics_directory() {
+            let _ = std::fs::remove_file(dir.join(format!("{asid}.json")));
+        }
+        if let Err(e) = crate::workspace::remove_workspace(asid) {
+            tracing::warn!("remove_workspace({asid}) during reap: {e}");
+        }
+    }
+    Ok(true)
+}
+
 /// Kill the session's window on the local tmux server, reaping the pane's child
 /// process on Windows (where a live process's cwd blocks the later rmdir).
 fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDeleteReport) {

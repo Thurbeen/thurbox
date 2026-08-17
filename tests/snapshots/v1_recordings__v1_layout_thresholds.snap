@@ -1,0 +1,7 @@
+---
+source: tests/v1_recordings.rs
+expression: "described.join(\"\\n\")"
+---
+width=60 header=w60 sessions=- automations=- info=- tasks=- files=- search=-
+width=100 header=w100 sessions=w25 automations=w25 info=- tasks=- files=- search=-
+width=160 header=w160 sessions=w29 automations=w29 info=w24 tasks=w32 files=w32 search=-

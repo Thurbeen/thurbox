@@ -1,0 +1,961 @@
+-- The central terminal pane: the agent's terminal and a shell, as two TABS of
+-- one pane.
+--
+-- This is the pane that made "everything is a plugin" worth arguing about: it
+-- shows a LIVE terminal, which cannot round-trip through Lua tables at 20fps.
+--
+-- The resolution is that `surface` is a NODE KIND, not a kernel pane. This
+-- plugin places and frames it, decides which session it shows, and owns the key
+-- rules; the kernel only fills the rect with cells. Lua does not paint a
+-- `list`'s glyphs either — same deal.
+--
+-- The two views are ONE plugin because that is what v1 is: `CentralTab` selects
+-- a view of a single pane, and the strip that selects it is drawn on that
+-- pane's border. Modelling them as two plugins taking turns in the `switch`
+-- slot cost the strip on every tab but the agent's, a second stop in the focus
+-- ring, and a slot arbitration that existed only to referee them
+-- (v2-system-modals D4).
+--
+-- Replace this file and you have replaced the central pane.
+--
+-- The chrome here is drawn BY HAND rather than with `widgets.panel`, because
+-- v1's terminal pane needs three things the kernel's `frame` cannot express:
+-- a RIGHT-aligned border title, a STYLED one (the focused badge is
+-- inverted_fg-on-accent), and a scrollbar overlaid on the right border column
+-- so it costs zero content columns. A framed node hands its whole inner rect to
+-- one child, which forecloses all three. Composing the border out of `text`
+-- nodes keeps every one of them and still uses only the four primitives.
+
+local panels = require("lib.panels")
+local hover = require("lib.hover")
+local theme = require("lib.theme")
+local widgets = require("lib.widgets")
+
+--- What this plugin is called. Declared once because the pane has to name
+--- ITSELF to bring itself forward (`command("focus", …)`).
+local NAME = "agent"
+
+--- The tabs this pane owns, and the actions that select each. The chips select
+--- (v1 `select_central_tab`, idempotent); the `shell.open` chord toggles (v1
+--- `toggle_shell_view`) — two behaviours, so two entry points.
+---
+--- v1 has a third view here, the code review. Adding it back is a `REVIEW_TAB`
+--- value, a chip naming its select action, and a branch beside the surface in
+--- `render` returning the diff body — after which the strip covers it for the
+--- same reason it now covers the shell.
+--- Is the companion shell available at all?
+---
+--- v1 gates the pane, its chord and its tab on `[features] shell_pane`; this pane
+--- owns all three in v2, so it is the thing that has to ask.
+local function shell_enabled()
+  local settings = thurbox and thurbox.settings
+  if not settings or not settings.features then
+    return true
+  end
+  return settings.features.shell_pane ~= false
+end
+
+local AGENT_TAB, SHELL_TAB = "agent", "shell"
+local SELECT_AGENT, SELECT_SHELL = "terminal.agent", "terminal.shell"
+
+--- The session the list published, resolved against the current snapshot.
+local function selected()
+  local id = store.selected
+  if not id then
+    return nil
+  end
+  for _, session in ipairs(thurbox and thurbox.sessions or {}) do
+    if session.id == id then
+      return session
+    end
+  end
+  return nil
+end
+
+--- The tab a session is showing.
+---
+--- Keyed per session because v1 keys it per session
+--- (`App::session_terminal_views`): flipping to the shell on one session must
+--- not flip it on the next one you select. Absent = the agent, so a session
+--- that never switched costs no state at all.
+local function tab_of(id)
+  if not id then
+    return AGENT_TAB
+  end
+  return state["tab:" .. id] or AGENT_TAB
+end
+
+local function set_tab(id, tab)
+  state["tab:" .. id] = tab ~= AGENT_TAB and tab or nil
+end
+
+--- How far back a session is scrolled, and the deepest it has ever been.
+---
+--- Keyed per session for the same reason the tab is: these are a property of the
+--- screen you are looking at, not of the pane looking at it. Shared, selecting
+--- another session carried your offset onto it -- and the kernel writes the offset
+--- into whichever session's parser it is drawing, so the next session opened
+--- scrolled back with no way to tell why.
+local function scroll_of(id)
+  if not id then
+    return 0, 0
+  end
+  return state["scroll:" .. id] or 0, state["scrollmax:" .. id] or 0
+end
+
+local function set_scroll(id, scroll, scroll_max)
+  if not id then
+    return
+  end
+  state["scroll:" .. id] = scroll ~= 0 and scroll or nil
+  state["scrollmax:" .. id] = scroll_max ~= 0 and scroll_max or nil
+end
+
+-- --- text measurement ------------------------------------------------------
+--
+-- `widgets.len`/`pad` are utf8-aware; `#` is not, and every glyph below is
+-- multi-byte.
+
+--- Keep the FIRST `max` characters, clipping the rest with no marker.
+---
+--- What a left-aligned border title does when it overruns its area: ratatui
+--- truncates the far side and adds nothing.
+local function keep_left(text, max)
+  if max <= 0 then
+    return ""
+  end
+  if widgets.len(text) <= max then
+    return text
+  end
+  local cut = utf8 and utf8.offset(text, max + 1) or (max + 1)
+  return string.sub(text, 1, (cut or (#text + 1)) - 1)
+end
+
+--- Keep the LAST `max` characters.
+---
+--- What a right-aligned border title does when it overruns: ratatui's
+--- `Line::render_with_alignment` skips from the left, so the title shrinks
+--- toward the right edge. v1's recorded frame shows exactly this — a 42-char
+--- title in a 40-wide pane renders as `╭-osc52 (claude) …`.
+local function keep_right(text, max)
+  if max <= 0 then
+    return ""
+  end
+  local count = widgets.len(text)
+  if count <= max then
+    return text
+  end
+  local skip = count - max
+  local at = utf8 and utf8.offset(text, skip + 1) or (skip + 1)
+  return string.sub(text, at or (#text + 1))
+end
+
+--- v1's `ui::truncate_ellipsis`: keep `max - 1` characters plus `…`, and return
+--- NOTHING at `max <= 1` because a lone ellipsis carries no information.
+---
+--- Deliberately not `widgets.truncate`, which returns `"…"` at width 1.
+local function truncate_hard(text, max)
+  if widgets.len(text) <= max then
+    return text
+  end
+  if max <= 1 then
+    return ""
+  end
+  local cut = utf8 and utf8.offset(text, max) or max
+  return string.sub(text, 1, (cut or (#text + 1)) - 1) .. "…"
+end
+
+--- v1's `ui::fit_right_title`: clamp a right-aligned title to what the tab strip
+--- on the left of the same border leaves it — the border minus its two corners,
+--- minus the reserved block, minus a one-cell gap.
+local function fit_right_title(title, border_width, reserved_left)
+  reserved_left = reserved_left or 0
+  if reserved_left == 0 then
+    return title
+  end
+  local available = math.max(0, (border_width or 0) - 2 - reserved_left - 1)
+  return truncate_hard(title, available)
+end
+
+-- --- the title -------------------------------------------------------------
+
+--- The status as v1's `SessionStatus` Display writes it: capitalised, spelled
+--- out, never a glyph. The snapshot hands Lua the lowercase state name.
+local function status_word(status)
+  local word = status or "idle"
+  return (word:gsub("^%l", string.upper))
+end
+
+--- v1's terminal-pane title, exactly.
+---
+---     " name (agent) [branch] [Status] "
+---     " name (agent) [Status] "          -- no worktree, so no branch bracket
+---     " name (shell) "
+---
+--- plus, when scrolled back, ` [N↑] ` appended AFTER trimming the base title's
+--- trailing space. The branch bracket is absent rather than empty when the
+--- session has no worktree, and the leading/trailing spaces keep the title off
+--- the rounded corners.
+local function terminal_title(session, opts)
+  opts = opts or {}
+  local name = session.name or ""
+  local base
+  if opts.shell then
+    base = " " .. name .. " (shell) "
+  elseif session.branch then
+    base = " "
+      .. name
+      .. " ("
+      .. (session.agent or "")
+      .. ") ["
+      .. session.branch
+      .. "] ["
+      .. status_word(session.status)
+      .. "] "
+  else
+    base = " "
+      .. name
+      .. " ("
+      .. (session.agent or "")
+      .. ") ["
+      .. status_word(session.status)
+      .. "] "
+  end
+
+  local scroll = opts.scroll or 0
+  if scroll > 0 then
+    base = (base:gsub("%s+$", "")) .. " [" .. scroll .. "↑] "
+  end
+  return base
+end
+
+-- --- focus -----------------------------------------------------------------
+--
+-- v1 has THREE levels (`ui::FocusLevel`); this pane's caller only ever produces
+-- two, so `inactive` is carried for completeness rather than reached. Focus is
+-- communicated by COLOUR, never by a marker glyph or a heavier border — which
+-- is why nothing below prefixes the title.
+
+local function border_style_for(level)
+  if level == "focused" then
+    return { fg = theme.accent_bright }
+  elseif level == "inactive" then
+    return { fg = theme.border }
+  end
+  return { fg = theme.accent }
+end
+
+--- v1's `ui::title_style`. Focused is a BADGE — inverted foreground on an
+--- accent field, bold — not merely a brighter text colour.
+local function title_style_for(level)
+  if level == "focused" then
+    return { fg = theme.role("inverted_fg"), bg = theme.accent, bold = true }
+  elseif level == "inactive" then
+    return { fg = theme.border }
+  end
+  return { fg = theme.accent }
+end
+
+-- --- the scrollbar ---------------------------------------------------------
+
+local SCROLLBAR = { begin_ = "▲", end_ = "▼", track = "║", thumb = "█" }
+
+--- Integer divide, rounding to nearest — ratatui's `rounding_divide`.
+local function rounding_divide(numerator, denominator)
+  return math.floor((numerator + math.floor(denominator / 2)) / denominator)
+end
+
+--- One run per row of a vertical scrollbar, mirroring ratatui's
+--- `Scrollbar::part_lengths` arithmetic so the thumb lands where v1's does.
+---
+--- Returns nil when there is nothing to draw, and the caller falls back to a
+--- plain border column — v1 skips the bar entirely when no scrollback exists.
+local function scrollbar_rows(height, content_len, viewport, position)
+  local track_length = height - 2
+  if content_len <= 0 or track_length <= 0 then
+    return nil
+  end
+
+  local max_position = math.max(0, content_len - 1)
+  local start_position = math.max(0, math.min(position, max_position))
+  local max_viewport_position = max_position + viewport
+  if max_viewport_position == 0 then
+    return nil
+  end
+
+  local thumb_length = rounding_divide(viewport * track_length, max_viewport_position)
+  thumb_length = math.max(1, math.min(thumb_length, track_length))
+
+  local thumb_start = rounding_divide(start_position * track_length, max_viewport_position)
+  thumb_start = math.max(0, math.min(thumb_start, track_length - thumb_length))
+
+  local track_end = track_length - (thumb_start + thumb_length)
+
+  -- The caps carry no style in v1 (ratatui leaves begin/end unstyled); the
+  -- track and thumb do.
+  local track_run = { text = SCROLLBAR.track, style = { fg = theme.muted } }
+  local thumb_run = { text = SCROLLBAR.thumb, style = { fg = theme.accent } }
+
+  local rows = { { text = SCROLLBAR.begin_ } }
+  for _ = 1, thumb_start do
+    rows[#rows + 1] = track_run
+  end
+  for _ = 1, thumb_length do
+    rows[#rows + 1] = thumb_run
+  end
+  for _ = 1, track_end do
+    rows[#rows + 1] = track_run
+  end
+  rows[#rows + 1] = { text = SCROLLBAR.end_ }
+  return rows
+end
+
+-- --- the border strip ------------------------------------------------------
+--
+-- v1 packs the session-list collapse chevron and the view tabs into the LEFT of
+-- this pane's top border (`App::render_central_pane` → `session_collapse_
+-- toggle_label` / `central_tab_cells` / `draw_central_tabs`), leaving the
+-- right-aligned session title on the same row:
+--
+--   ╭ ◀ F9 ─ Agent ─ Shell · F8 ───────────────── add-wsl (idle) [Idle] ╮
+--
+-- The one-cell gaps between chips are border cells, not spaces, which is what
+-- makes the chips read as sitting ON the border rather than in a strip of their
+-- own. Rendering only: clicking them is the mouse layer's business.
+
+--- Cells the padded chevron segment (` ◀ `) occupies, so the accent chevron and
+--- the muted ` F9 ` hint are styled apart — v1 `COLLAPSE_CHEVRON_CELLS`.
+local COLLAPSE_CHEVRON_CELLS = 3
+--- v1 `COLLAPSE_TOGGLE_MIN_WIDTH`: narrower than this and even a bare chevron
+--- has nowhere to go.
+local COLLAPSE_TOGGLE_MIN_WIDTH = 5
+--- v1 `COLLAPSE_HINT_MIN_WIDTH`: below it the toggle is chevron-only, to save
+--- border space for the tabs.
+local COLLAPSE_HINT_MIN_WIDTH = 40
+
+--- v1 renders a chord compactly: `^Q`, `⇧J`, `F7`. Mirrors `KeyChord::compact`.
+---
+--- Duplicated from `90_footer` rather than shared: a plugin is meant to be
+--- replaceable on its own, and a `lib` entry read by two panes would make
+--- swapping either one a two-file edit.
+local function compact_chord(chord)
+  local modifiers, key = "", chord
+  while true do
+    local prefix, rest = string.match(key, "^(%a+)%+(.*)$")
+    if not prefix then
+      break
+    end
+    local symbol = ({ ctrl = "^", shift = "⇧", alt = "⌥", cmd = "⌘" })[prefix]
+    if not symbol then
+      break
+    end
+    modifiers = modifiers .. symbol
+    key = rest
+  end
+  if widgets.len(key) == 1 then
+    key = string.upper(key)
+  elseif widgets.len(key) > 1 then
+    key = string.upper(string.sub(key, 1, 1)) .. string.sub(key, 2)
+  end
+  return modifiers .. key
+end
+
+--- v1 `compact_shortcut`: prefer a bare F-key over a chord, because a focused
+--- terminal passes bare `Ctrl+<letter>` through to the agent — so the F-key is
+--- the hint that works from where the user is standing.
+local function shortcut_for(action)
+  local first
+  for _, binding in ipairs((thurbox and thurbox.registry and thurbox.registry.keys) or {}) do
+    if binding.action == action and binding.key then
+      if string.match(binding.key, "^f%d+$") then
+        return compact_chord(binding.key)
+      end
+      first = first or binding.key
+    end
+  end
+  return first and compact_chord(first) or nil
+end
+
+--- v1 `button_style`: the active view is the accent-filled "primary" chip, the
+--- rest the neutral selection pair every palette guarantees is legible.
+local function chip_style(primary)
+  if primary then
+    return { fg = theme.role("inverted_fg"), bg = theme.role("accent"), bold = true }
+  end
+  return { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
+end
+
+--- The hovered chip.
+---
+--- `accent_bright` rather than `accent`, so hovering the chip that is ALREADY
+--- active still reads as a response — filling it with the colour it already has
+--- would look like nothing happened.
+local function chip_hover_style()
+  return { fg = theme.role("inverted_fg"), bg = theme.role("accent_bright"), bold = true }
+end
+
+--- v1 `session_collapse_toggle_label`: ` ◀ F9 ` while the list is shown
+--- (collapse it leftward), ` ▶ F9 ` while hidden (expand it back). The chevron
+--- points the way the list will move; the hint is dropped on a narrow pane.
+local function collapse_label(width)
+  if width < COLLAPSE_TOGGLE_MIN_WIDTH then
+    return nil
+  end
+  local chevron = panels.shown("sessions") and "◀" or "▶"
+  local hint = width >= COLLAPSE_HINT_MIN_WIDTH and shortcut_for("sessions.toggle_panel") or nil
+  if hint then
+    return " " .. chevron .. " " .. hint .. " "
+  end
+  return " " .. chevron .. " "
+end
+
+--- v1 `central_tab_cells`' candidate list. Agent has no dedicated key — the
+--- Shell toggle returns to it — so it shows no hint.
+---
+--- `role` is what a CLICK on the chip does: both tabs name their own select
+--- action, so a chip and the keyboard agree by construction.
+---
+--- v1 lists a third chip here, `Review · F7`. It is absent because the review
+--- plugin is: a chip whose `focus:review` role names a plugin that does not
+--- exist would light up and then do nothing, which is worse than not offering
+--- it. Re-adding the pane means re-adding its chip.
+local function tab_specs(active)
+  local specs = {
+    { name = "Agent", active = active == AGENT_TAB, role = "action:" .. SELECT_AGENT },
+  }
+  -- `[features] shell_pane` off means there is no second view, so there is no
+  -- chip for one either: an affordance for a disabled feature is the clutter the
+  -- switch was flipped to avoid.
+  if shell_enabled() then
+    specs[#specs + 1] = {
+      name = "Shell",
+      active = active == SHELL_TAB,
+      shortcut = shortcut_for("shell.open"),
+      role = "action:" .. SELECT_SHELL,
+    }
+  end
+  return specs
+end
+
+--- `Name` alone, or `Name · <shortcut>` while the suffix is still shown.
+local function tab_label(spec)
+  if spec.shortcut then
+    return spec.name .. " · " .. spec.shortcut
+  end
+  return spec.name
+end
+
+--- v1 `central_tabs_block_width`: each chip is ` label `, chips joined by one
+--- cell — mirrors the footer's packing so the trim agrees with what paints.
+local function tabs_block_width(specs)
+  if #specs == 0 then
+    return 0
+  end
+  local total = 0
+  for _, spec in ipairs(specs) do
+    total = total + widgets.len(tab_label(spec)) + 2
+  end
+  return total + #specs - 1
+end
+
+--- v1 `trim_central_tabs`, escalating until the block fits:
+---
+---   1. strip the `· shortcut` suffix from every label (~4 cols/chip);
+---   2. drop the lowest-priority tab — Shell — but never Agent (the fallback
+---      view) nor the active one, which must stay visible.
+local function trim_tabs(specs, usable)
+  while #specs > 1 and tabs_block_width(specs) > usable do
+    local stripped = false
+    for _, spec in ipairs(specs) do
+      if spec.shortcut then
+        spec.shortcut = nil
+        stripped = true
+      end
+    end
+    if not stripped then
+      local victim
+      for _, name in ipairs({ "Shell" }) do
+        for index, spec in ipairs(specs) do
+          if not victim and spec.name == name and not spec.active then
+            victim = index
+          end
+        end
+      end
+      if not victim then
+        return specs
+      end
+      table.remove(specs, victim)
+    end
+  end
+  return specs
+end
+
+--- The runs painted over the top border's left half, plus the column the
+--- rightmost of them ends at — v1's `reserved_left`, which is what the
+--- right-aligned title is then fitted against.
+---
+--- Columns are pane-local and 0-based: the corner sits at 0 and the strip starts
+--- at 1, exactly where v1 puts the chevron rect (`terminal.x + 1`).
+local function border_strip(width, border_style, active)
+  local runs, cursor = {}, 1
+  --- `role`, when given, is the kernel's click verb for this run. It only
+  --- reaches the hit registry if the run becomes a node of its own, which is
+  --- what `chrome` does with a tagged run -- identity is per NODE, so a chip
+  --- painted as one span among many is unclickable however it is styled.
+  local function put(at, text, style, role)
+    if at > cursor then
+      runs[#runs + 1] = { text = string.rep("─", at - cursor), style = border_style }
+    end
+    runs[#runs + 1] = { text = text, style = style, role = role }
+    cursor = at + widgets.len(text)
+  end
+
+  local label = collapse_label(width)
+  if label then
+    -- The chevron and its ` F9 ` hint are ONE affordance in two colours: the
+    -- chevron reads accent, the hint muted.
+    --
+    -- They are two runs — a run is one node and a node has one style — but both
+    -- carry the SAME role, so the kernel hit-tests them as one target. Without
+    -- that the hint was inert: not clickable, and not lit when the pointer was
+    -- over it, which made the button feel like it had a three-cell hitbox in the
+    -- middle of a six-cell label.
+    local toggle = "action:sessions.toggle_panel"
+    -- v1: "a button by action but a bare border glyph by look, so it takes the
+    -- subtle band too" — a filled pill here would invent a chip on the border
+    -- where v1 draws none. Both runs take the band together, or half the button
+    -- would light.
+    local lit = hover.role(toggle)
+    local band = lit and theme.role("selection_bg") or nil
+    put(1, keep_left(label, COLLAPSE_CHEVRON_CELLS), { fg = theme.accent, bg = band }, toggle)
+    local hint = keep_right(label, widgets.len(label) - COLLAPSE_CHEVRON_CELLS)
+    if hint ~= "" then
+      put(cursor, hint, { fg = theme.muted, bg = band }, toggle)
+    end
+  end
+
+  -- One blank border cell after the chevron, matching the gap the strip keeps
+  -- between its own chips — without it the two would read as one chip.
+  local start = label and (cursor + 1) or 1
+  -- The run of border cells the chips may use: up to one shy of the right
+  -- corner, which is never painted over.
+  local specs = trim_tabs(tab_specs(active), math.max(0, (width - 1) - start))
+  local limit = width - 1
+  local x = start
+  for index, spec in ipairs(specs) do
+    local gap = (index > 1) and 1 or 0
+    local chip = widgets.len(tab_label(spec)) + 2
+    if x + gap + chip > limit then
+      break
+    end
+    x = x + gap
+    put(
+      x,
+      " " .. tab_label(spec) .. " ",
+      hover.style(spec.role, chip_hover_style(), chip_style(spec.active)),
+      spec.role
+    )
+    x = x + chip
+  end
+
+  return runs, cursor
+end
+
+-- --- hand-drawn chrome -----------------------------------------------------
+
+local ROUNDED = { tl = "╭", tr = "╮", bl = "╰", br = "╯", h = "─", v = "│" }
+local SQUARE = { tl = "┌", tr = "┐", bl = "└", br = "┘", h = "─", v = "│" }
+
+--- The top border as a NODE, not a run list.
+---
+--- Identity is per node, so a chip painted as one span among many can never be
+--- a click target however it is styled. When any run carries a `role`, the row
+--- becomes a horizontal box of one text node per run, each with an exact `len`
+--- so the geometry is bit-identical to the single-node form.
+local function top_row_node(runs)
+  local clickable = false
+  for _, run in ipairs(runs) do
+    if run.role then
+      clickable = true
+      break
+    end
+  end
+  if not clickable then
+    return { type = "text", len = 1, text = { runs } }
+  end
+
+  local children = {}
+  for _, run in ipairs(runs) do
+    local width = widgets.len(run.text)
+    if width > 0 then
+      children[#children + 1] = {
+        type = "text",
+        len = width,
+        role = run.role,
+        text = { { { text = run.text, style = run.style } } },
+      }
+    end
+  end
+  return { type = "box", axis = "horizontal", len = 1, children = children }
+end
+
+--- A bordered pane whose title can be right-aligned and styled, and whose right
+--- border column can be replaced row-by-row (that is where the scrollbar goes).
+---
+--- opts: width, height, title, title_style, title_align, border_style, square,
+---       left (runs painted over the top border's left half),
+---       right_column (runs, one per inner row), body (node)
+local function chrome(opts)
+  local width, height = opts.width or 0, opts.height or 0
+  if width < 2 or height < 2 then
+    return opts.body
+  end
+
+  local set = opts.square and SQUARE or ROUNDED
+  local border = opts.border_style
+  local inner_w, inner_h = width - 2, height - 2
+
+  local title = opts.title or ""
+  local top
+  if opts.title_align == "right" then
+    -- The strip is painted first and the title fills what it leaves, so the two
+    -- share one row without either being drawn over the other.
+    local left, left_w = opts.left or {}, 0
+    for _, run in ipairs(left) do
+      left_w = left_w + widgets.len(run.text)
+    end
+    title = keep_right(title, math.max(0, inner_w - left_w))
+    top = { { text = set.tl, style = border } }
+    for _, run in ipairs(left) do
+      top[#top + 1] = run
+    end
+    top[#top + 1] = {
+      text = string.rep(set.h, math.max(0, inner_w - left_w - widgets.len(title))),
+      style = border,
+    }
+    top[#top + 1] = { text = title, style = opts.title_style }
+    top[#top + 1] = { text = set.tr, style = border }
+  else
+    title = keep_left(title, inner_w)
+    top = {
+      { text = set.tl, style = border },
+      { text = title, style = opts.title_style },
+      { text = string.rep(set.h, inner_w - widgets.len(title)), style = border },
+      { text = set.tr, style = border },
+    }
+  end
+
+  local edge = { text = set.v, style = border }
+  local function column(rows)
+    local lines = {}
+    for row = 1, inner_h do
+      lines[row] = { (rows and rows[row]) or edge }
+    end
+    return { type = "text", len = 1, text = lines }
+  end
+
+  return {
+    type = "box",
+    axis = "vertical",
+    children = {
+      top_row_node(top),
+      {
+        type = "box",
+        axis = "horizontal",
+        fill = 1,
+        children = {
+          column(nil),
+          opts.body,
+          column(opts.right_column),
+        },
+      },
+      {
+        type = "text",
+        len = 1,
+        text = {
+          {
+            { text = set.bl, style = border },
+            { text = string.rep(set.h, inner_w), style = border },
+            { text = set.br, style = border },
+          },
+        },
+      },
+    },
+  }
+end
+
+-- --- the empty pane --------------------------------------------------------
+
+local HINT_W, HINT_H = 33, 5
+
+--- v1's hint box: a SQUARE box (no title) holding left-aligned lines, the key
+--- column padded to 8 so the keys line up.
+---
+--- v1 opens with `Ctrl+N  New session`. It is absent because the new-session
+--- plugin is: advertising a chord that resolves to nothing is worse than
+--- advertising nothing, and `tests/v2_keymap.rs` asserts that chord stays
+--- unbound rather than being reused. Re-adding the wizard means re-adding its
+--- line here.
+local function hint_box_lines()
+  local border = { fg = theme.border }
+  local inner = HINT_W - 2
+
+  local function row(runs)
+    local width = 0
+    for _, run in ipairs(runs) do
+      width = width + widgets.len(run.text)
+    end
+    local line = { { text = SQUARE.v, style = border } }
+    for _, run in ipairs(runs) do
+      line[#line + 1] = run
+    end
+    line[#line + 1] = { text = string.rep(" ", math.max(0, inner - width)) }
+    line[#line + 1] = { text = SQUARE.v, style = border }
+    return line
+  end
+
+  local rule = string.rep(SQUARE.h, inner)
+  return {
+    { { text = SQUARE.tl .. rule .. SQUARE.tr, style = border } },
+    row({ { text = "No active sessions", style = { fg = theme.secondary } } }),
+    row({}),
+    row({
+      { text = "  F1    ", style = { fg = theme.hint } },
+      { text = "  Help", style = { fg = theme.muted } },
+    }),
+    { { text = SQUARE.bl .. rule .. SQUARE.br, style = border } },
+  }
+end
+
+--- The hint box centred in the pane's inner rect, or nothing at all when the
+--- pane is too small — v1 draws the bare frame rather than a squeezed box.
+local function empty_body(inner_w, inner_h)
+  if inner_w < HINT_W or inner_h < HINT_H then
+    return { type = "text", fill = 1, text = "" }
+  end
+  return {
+    type = "box",
+    axis = "vertical",
+    fill = 1,
+    children = {
+      { type = "text", len = math.floor((inner_h - HINT_H) / 2), text = "" },
+      {
+        type = "box",
+        axis = "horizontal",
+        len = HINT_H,
+        children = {
+          { type = "text", len = math.floor((inner_w - HINT_W) / 2), text = "" },
+          { type = "text", len = HINT_W, text = hint_box_lines() },
+          { type = "text", fill = 1, text = "" },
+        },
+      },
+      { type = "text", fill = 1, text = "" },
+    },
+  }
+end
+
+--- A centred stack of lines, for the states that have something to say.
+local function centered(lines)
+  local children = { { type = "text", fill = 1, text = "" } }
+  for _, line in ipairs(lines) do
+    children[#children + 1] = { type = "text", len = 1, align = "center", text = { line } }
+  end
+  children[#children + 1] = { type = "text", fill = 1, text = "" }
+  return { type = "box", axis = "vertical", fill = 1, children = children }
+end
+
+-- --- selecting a tab -------------------------------------------------------
+
+--- Show a tab, bringing the pane forward with it.
+---
+--- v1 `select_central_tab` focuses the centre for both terminal tabs, so the
+--- chord works from wherever you were standing. The shell is opened on first
+--- use (v1 `show_shell_view`); `ensure_shell_pane` behind the command is
+--- idempotent, so asking again on every switch costs nothing.
+local function show_tab(id, tab)
+  set_tab(id, tab)
+  if tab == SHELL_TAB then
+    command("shell", { session = id })
+  end
+  command("focus", { text = NAME })
+end
+
+return {
+  name = NAME,
+  slot = "center",
+  slot_mode = "switch", -- review is still an occupant of its own
+  -- Keys this plugin does not handle go straight to the pty of whichever view
+  -- is showing. That is what makes this an ordinary plugin rather than a kernel
+  -- special case: replace the file and the terminal behaviour goes with it.
+  input = "session",
+  order = 20,
+  focusable = true,
+
+  -- No `pills` here on purpose. This pane's shell view is already offered by the
+  -- tab strip on its own border, and v1's footer never carried it either — a
+  -- second affordance for one action is clutter, not discoverability. A pane that
+  -- does want an entry declares `pills = { { action, label, priority } }` beside
+  -- these keys and the action band grows a row for it.
+  keys = {
+    {
+      key = "ctrl+t",
+      action = "shell.open",
+      desc = "open a shell here",
+      scope = "global",
+      group = "UI",
+    },
+    -- F8 alternate: Ctrl+T reaches the agent when a terminal has focus.
+    {
+      key = "f8",
+      action = "shell.open",
+      desc = "open a shell here",
+      scope = "global",
+      group = "UI",
+    },
+  },
+
+  render = function(ctx)
+    local width, height = ctx.width or 0, ctx.height or 0
+    local level = ctx.focused and "focused" or "active"
+    local border = border_style_for(level)
+    local session = selected()
+
+    -- No session: v1 switches to a different frame entirely — SQUARE borders,
+    -- a muted left-aligned " No Session " title, and the hint box.
+    if not session then
+      return chrome({
+        width = width,
+        height = height,
+        square = true,
+        title = " No Session ",
+        title_align = "left",
+        border_style = { fg = theme.muted },
+        body = empty_body(math.max(0, width - 2), math.max(0, height - 2)),
+      })
+    end
+
+    -- v1 draws neither the chevron nor the tabs on the empty welcome screen, so
+    -- the strip is built only once a session exists — after the branch above.
+    -- It carries the active tab, so it is the SAME strip on every tab; that is
+    -- the whole reason the views share one plugin.
+    local tab = tab_of(session.id)
+    local strip, reserved_left = border_strip(width, border, tab)
+    -- Scrollback belongs to the agent view: the shell surface has none to
+    -- offer (the kernel reads only the agent's parser back), so claiming an
+    -- offset there would put a `[N↑]` marker on a title that cannot move.
+    local session_scroll, session_scroll_max = scroll_of(session.id)
+    local scroll = tab == AGENT_TAB and session_scroll or 0
+    local title = fit_right_title(
+      terminal_title(session, { shell = tab == SHELL_TAB, scroll = scroll }),
+      width,
+      reserved_left
+    )
+
+    -- A dead pane explains itself. "not attached" with no reason is the least
+    -- useful thing a terminal can say. v1 has no such state, so this is a
+    -- deliberate v2 addition — styled `danger`, the role for a thing that is
+    -- broken, rather than the working-yellow it used to borrow.
+    if session.attach_error then
+      return chrome({
+        width = width,
+        height = height,
+        title = title,
+        title_align = "right",
+        title_style = title_style_for(level),
+        border_style = border,
+        left = strip,
+        body = centered({
+          { { text = "no live terminal", style = { fg = theme.bad, bold = true } } },
+          { { text = session.attach_error, style = { fg = theme.muted } } },
+        }),
+      })
+    end
+
+    -- The bar overlays the right border column, so the terminal grid keeps the
+    -- full inner width — v1 draws it into the pane rect inset vertically only.
+    -- Its extent is the inner rows exactly, hence `height - 2`.
+    local rows = nil
+    local depth = tab == AGENT_TAB and session_scroll_max or 0
+    if depth > 0 then
+      rows = scrollbar_rows(
+        math.max(0, height - 2),
+        depth,
+        math.max(0, height - 2),
+        -- Inverted, as in v1: offset 0 (live, at the bottom) puts the thumb at
+        -- the end of the track; the deepest offset puts it at the start.
+        depth - scroll
+      )
+    end
+
+    return chrome({
+      width = width,
+      height = height,
+      title = title,
+      title_align = "right",
+      title_style = title_style_for(level),
+      border_style = border,
+      left = strip,
+      right_column = rows,
+      -- The shell is a second surface over the same primitive, addressed as
+      -- `<id>#shell` — no new node kind, and the kernel resolves the suffix.
+      body = {
+        type = "surface",
+        session = tab == SHELL_TAB and (session.id .. "#shell") or session.id,
+        scroll = scroll,
+        fill = 1,
+      },
+    })
+  end,
+
+  on_key = function(key)
+    -- Scrollback stays here rather than in the kernel: it is this pane's
+    -- policy, so a replacement pane can choose differently. On the shell tab a
+    -- page key is left to the pty, where whatever is running (a pager, an
+    -- editor) has its own idea of what it means.
+    if tab_of(store.selected) ~= AGENT_TAB then
+      return false
+    end
+    local id = store.selected
+    local scroll, scroll_max = scroll_of(id)
+    if key.key == "pageup" then
+      scroll = scroll + 10
+      -- How far back the user has ever gone. The snapshot carries no total
+      -- scrollback (v1 probes the vt100 screen for it), so this high-water mark
+      -- is what the scrollbar is scaled against — see the report accompanying
+      -- this port.
+      set_scroll(id, scroll, math.max(scroll_max, scroll))
+      return true
+    elseif key.key == "pagedown" then
+      set_scroll(id, math.max(0, scroll - 10), scroll_max)
+      return true
+    end
+    return false
+  end,
+
+  on_action = function(action)
+    local id = store.selected
+    if action == "shell.open" then
+      -- v1 `toggle_shell_view`: the chord flips between the two views, where
+      -- the chips select outright. Swallowed without a session, because there
+      -- is no terminal for anything else to do it to either.
+      if id and shell_enabled() then
+        show_tab(id, tab_of(id) == SHELL_TAB and AGENT_TAB or SHELL_TAB)
+      end
+      return true
+    end
+    if not id then
+      return false
+    end
+    if action == SELECT_AGENT then
+      show_tab(id, AGENT_TAB)
+    elseif action == SELECT_SHELL then
+      if not shell_enabled() then
+        return true
+      end
+      show_tab(id, SHELL_TAB)
+    else
+      return false
+    end
+    return true
+  end,
+}

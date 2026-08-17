@@ -10,10 +10,11 @@ pub mod delete;
 pub mod extensions;
 pub mod remote_hooks;
 pub mod restart;
+pub mod restore;
 pub mod spawn;
 
 pub use builtin_hooks::{ensure_builtin_hooks_extension, HOOKS_EXTENSION_NAME};
-pub use delete::{delete_session_headless, ForceDeleteReport};
+pub use delete::{delete_session_headless, reap_soft_deleted, ForceDeleteReport};
 pub use extensions::{
     activate_extension, deactivate_extension, ensure_extension, extension_health,
     heal_active_extensions, install_extension, reinstall_extension, uninstall_extension,
@@ -21,6 +22,7 @@ pub use extensions::{
     InstallReport, ReinstallReport, UninstallReport, UpdateReport,
 };
 pub use restart::restart_session_headless;
+pub use restore::{restore_session_headless, RestoreReport};
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 
 use std::collections::HashMap;
@@ -240,6 +242,22 @@ fn build_agent_invocation(
         &provider, config,
     );
     (command, args)
+}
+
+/// The machine a session runs on: `Some(None)` for local, `Some(Some(host))` for
+/// a remote backend we can resolve, and `None` when the backend names a host
+/// `hosts.toml` no longer describes.
+///
+/// The distinction is the whole point. Anything that drives a session's window
+/// or its worktrees has to do it *where they are*, and doing it locally instead
+/// is not a degraded version of that — it acts on the wrong machine. So an
+/// unresolvable host is a refusal, never a fallback to local.
+pub fn resolve_host(backend_type: &str) -> Option<Option<crate::session::HostDef>> {
+    if !crate::session::is_remote_backend(backend_type) {
+        return Some(None);
+    }
+    let (registry, _warnings) = crate::agent::host_config::load_all_with_warnings();
+    registry.get_by_backend(backend_type).cloned().map(Some)
 }
 
 /// Inject the standard thurbox env hints into a session config so a

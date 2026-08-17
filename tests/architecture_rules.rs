@@ -94,7 +94,36 @@ const MODULE_RULES: &[ModuleRules] = &[
             "paths",
             "notifications",
         ],
-        allowed_path_only: &["agent"],
+        // `kernel` for `plugin check`, which loads the *real* host: the failures
+        // worth reporting are declaration-shaped (no `render`, an unplaced slot, a
+        // clashing key) and a syntax check passes all of them. Path-only, like
+        // `agent`, so the crossing stays visible at each call site.
+        allowed_path_only: &["agent", "kernel"],
+    },
+    // v2 plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
+    // session engine to build the snapshot plugins render from (`storage` +
+    // `sync` for the rows, `session` for the types, `paths` for the DB and
+    // plugin directories). Never `ui` or `app` — it is their replacement, not
+    // their peer — and never `git`/`agent` directly: side effects reach it as
+    // commands, not as calls from a render path.
+    ModuleRules {
+        name: "kernel",
+        allowed: &[
+            "session",
+            "storage",
+            "sync",
+            "paths",
+            "session_ops",
+            "git",
+            "notifications",
+            "clipboard",
+        ],
+        // Live agent terminals: `kernel::terminal` adopts a session's real pane
+        // and paints its vt100 screen. `kernel::metrics` fetches account usage
+        // through `usage`. Both are reachable by fully-qualified path only
+        // (never `use`), the same rule `session_ops` and `cli` follow, so every
+        // crossing into the side-effect layer is visible at its call site.
+        allowed_path_only: &["agent", "usage"],
     },
     // Leaf utilities.
     ModuleRules {

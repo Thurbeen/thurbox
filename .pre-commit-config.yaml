@@ -95,6 +95,24 @@ repos:
         types: [markdown]
         pass_filenames: false
 
+      # The plugin interface. `selene` also enforces the VM's sandbox: its
+      # standard library (`thurbox.yml`) declares only what `plugin_stdlib`
+      # grants, so a plugin reaching for `os` or `io` fails here rather than at
+      # runtime.
+      - id: selene
+        name: Lua lint
+        entry: selene ui
+        language: system
+        types: [lua]
+        pass_filenames: false
+
+      - id: stylua
+        name: Lua format check
+        entry: stylua --check ui
+        language: system
+        types: [lua]
+        pass_filenames: false
+
       # Website linting (pre-commit stage)
       # Page .html files carry YAML front matter and are partial templates, so
       # Prettier/HTMLHint run on the CSS/JS sources and on the *built* _site

@@ -57,6 +57,11 @@ thurbox/
 __pycache__/
 *.pyc
 
+# What the v2 interface delivery last wrote. Only appears in the repo's own
+# ui/ when a dev build restores or removes a file from inside the running TUI;
+# it describes one directory's state and belongs to nobody else.
+ui/.bundled.json
+
 # Demo videos are copied into website/assets/ from docs/media/ at deploy time
 # (.github/workflows/pages.yml) and for local `npm run dev:website`. They are
 # tracked once, in docs/media/ — never duplicated here.

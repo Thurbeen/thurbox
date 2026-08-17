@@ -44,6 +44,9 @@
           tmux # session backend (CLAUDE.md: >= 3.2)
           git
           shellcheck # shell linter (pre-commit + CI)
+          selene # Lua linter for ui/ (pre-commit + CI); enforces the plugin sandbox
+          stylua # Lua formatter for ui/ (pre-commit + CI)
+          lua-language-server # Lua type checker for ui/ (CI; `just lint`)
           bats # install-script tests
           nodejs_22 # website linters (CI uses 26; 22 runs eleventy/eslint/etc.)
           just # task runner (see justfile)

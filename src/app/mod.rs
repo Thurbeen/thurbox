@@ -612,59 +612,7 @@ fn directory_size(root: &Path) -> u64 {
 
 /// Parse agent metrics from a Claude CLI statusline JSON value.
 fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics {
-    use crate::session::AgentMetrics;
-    AgentMetrics {
-        model_id: raw
-            .pointer("/model/id")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        model_display_name: raw
-            .pointer("/model/display_name")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        total_cost_usd: raw.pointer("/cost/total_cost_usd").and_then(|v| v.as_f64()),
-        total_duration_ms: raw
-            .pointer("/cost/total_duration_ms")
-            .and_then(|v| v.as_u64()),
-        total_api_duration_ms: raw
-            .pointer("/cost/total_api_duration_ms")
-            .and_then(|v| v.as_u64()),
-        total_lines_added: raw
-            .pointer("/cost/total_lines_added")
-            .and_then(|v| v.as_u64()),
-        total_lines_removed: raw
-            .pointer("/cost/total_lines_removed")
-            .and_then(|v| v.as_u64()),
-        total_input_tokens: raw
-            .pointer("/context_window/total_input_tokens")
-            .and_then(|v| v.as_u64()),
-        total_output_tokens: raw
-            .pointer("/context_window/total_output_tokens")
-            .and_then(|v| v.as_u64()),
-        context_window_size: raw
-            .pointer("/context_window/context_window_size")
-            .and_then(|v| v.as_u64()),
-        used_percentage: raw
-            .pointer("/context_window/used_percentage")
-            .and_then(|v| v.as_u64())
-            .map(|v| v.min(100) as u8),
-        current_input_tokens: raw
-            .pointer("/context_window/current_usage/input_tokens")
-            .and_then(|v| v.as_u64()),
-        current_output_tokens: raw
-            .pointer("/context_window/current_usage/output_tokens")
-            .and_then(|v| v.as_u64()),
-        cache_creation_input_tokens: raw
-            .pointer("/context_window/current_usage/cache_creation_input_tokens")
-            .and_then(|v| v.as_u64()),
-        cache_read_input_tokens: raw
-            .pointer("/context_window/current_usage/cache_read_input_tokens")
-            .and_then(|v| v.as_u64()),
-        cli_version: raw
-            .get("version")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-    }
+    crate::session::AgentMetrics::from_statusline_json(raw)
 }
 
 pub use modals::{AutomationActionKind, AutomationField, TaskField, TriggerKind};
@@ -12064,6 +12012,7 @@ mod tests {
         git(&["init", "-q", "-b", "main"]);
         git(&["config", "user.email", "t@example.com"]);
         git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(dir.join("file.txt"), "hi").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "init"]);

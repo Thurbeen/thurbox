@@ -47,6 +47,20 @@ pub struct SpawnRequest {
     /// as-is as an additional directory. When any extra is non-empty the agent
     /// launches in a per-session symlink workspace gathering every member.
     pub extra_repos: Vec<ExtraRepo>,
+    /// The agent conversation this session forks from.
+    ///
+    /// Set only by a fork: it drives the agent's `fork_args`
+    /// (`--resume {id} --fork-session`), which is what makes the new session
+    /// start from the parent's conversation rather than an empty one. Without
+    /// it a "fork" is just a second session in the same directory.
+    pub fork_session_id: Option<String>,
+    /// Worktrees the new session **shares** with another rather than creating.
+    ///
+    /// A fork launches in its parent's worktree, so no checkout is made — but the
+    /// row still has to list it, or the fork shows no branch, offers nothing to
+    /// sync, and looks like a session with no work in it. v1 carries the parent's
+    /// worktree list onto the fork for the same reason.
+    pub inherit_worktrees: Vec<SharedWorktree>,
 }
 
 /// Result returned on successful headless spawn.
@@ -63,7 +77,60 @@ pub struct SpawnResult {
 
 /// Spawn a new session inside `tmux -L thurbox`, persisting its state to the
 /// shared SQLite database.
+/// A stage of the spawn pipeline, for callers that want to render progress.
+///
+/// Creating a session runs for tens of seconds on a large repository, and the
+/// slow part is not always the same one — a stalled fetch and a stalled ssh
+/// connect look identical from outside. Naming the stage is what lets a caller
+/// say *which*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnPhase {
+    /// Resolving the agent definition and the host.
+    Resolving,
+    /// Creating or attaching worktrees — the `git fetch` and checkout.
+    Worktrees,
+    /// Readying the backend: for a remote host, the ssh connect.
+    Backend,
+    /// Launching the agent process.
+    Launching,
+    /// Persisting the session row.
+    Persisting,
+}
+
+impl SpawnPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SpawnPhase::Resolving => "resolving",
+            SpawnPhase::Worktrees => "worktrees",
+            SpawnPhase::Backend => "backend",
+            SpawnPhase::Launching => "launching",
+            SpawnPhase::Persisting => "persisting",
+        }
+    }
+}
+
+/// Told which stage the pipeline has reached. Called on the spawning thread.
+pub type ProgressFn<'a> = &'a (dyn Fn(SpawnPhase) + Send + Sync);
+
 pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnResult, String> {
+    spawn_session_headless_with_progress(db, req, None)
+}
+
+/// [`spawn_session_headless`], reporting each stage as it is reached.
+///
+/// The reporting form is separate so every existing caller — `thurbox-cli`, the
+/// automation runner — is untouched and keeps its signature.
+pub fn spawn_session_headless_with_progress(
+    db: &Database,
+    req: SpawnRequest,
+    progress: Option<ProgressFn<'_>>,
+) -> Result<SpawnResult, String> {
+    let report = |phase: SpawnPhase| {
+        if let Some(progress) = progress {
+            progress(phase);
+        }
+    };
+    report(SpawnPhase::Resolving);
     crate::paths::validate_safe_name(&req.name)?;
     validate_parent_session(db, req.parent_session_id)?;
 
@@ -91,6 +158,7 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
     if let Some(reason) = hook_degraded {
         tracing::warn!("remote hook wiring degraded for '{}': {reason}", req.name);
     }
+    report(SpawnPhase::Worktrees);
     let (primary_cwd, worktrees, additional_dirs) = resolve_dirs(&req, host.as_ref())?;
 
     let agent_session_id = req
@@ -121,12 +189,17 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         cwd: Some(launch_cwd.clone()),
         agent: agent_name.clone(),
         backend: (backend_type != LOCAL_TMUX_BACKEND_TYPE).then(|| backend_type.clone()),
+        // What makes a fork a fork: the agent is told to resume the parent's
+        // conversation into a new one.
+        fork_session_id: req.fork_session_id.clone(),
         ..SessionConfig::default()
     };
     super::inject_thurbox_env(&mut config, &agent_session_id, req.task_id);
 
+    report(SpawnPhase::Backend);
     let (command, args) = super::build_agent_invocation(&agent_def, &config);
 
+    report(SpawnPhase::Launching);
     // Remote spawns drive the SSH backend's control mode to learn the real pane
     // id; local spawns leave `backend_id` empty for the TUI to resolve by name.
     let backend_id = match host.as_ref() {
@@ -152,6 +225,7 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         }
     };
 
+    report(SpawnPhase::Persisting);
     let shared = SharedSession {
         id: session_id,
         name: req.name.clone(),
@@ -290,6 +364,17 @@ fn resolve_dirs(
         }
     }
 
+    // Shared, not created: a fork's worktree already exists and belongs to its
+    // parent. Appended last so the primary stays first.
+    for inherited in &req.inherit_worktrees {
+        if !worktrees
+            .iter()
+            .any(|existing| existing.worktree_path == inherited.worktree_path)
+        {
+            worktrees.push(inherited.clone());
+        }
+    }
+
     Ok((primary_cwd, worktrees, additional_dirs))
 }
 
@@ -361,6 +446,45 @@ pub(crate) fn build_multi_repo_workspace(
             None
         }
     }
+}
+
+/// Where an **already-running** session's processes live: the same answer
+/// `resolve_launch_cwd` gives, without building anything.
+///
+/// The non-building half of the pair, and the distinction is load-bearing: the
+/// agent is *in* the workspace, and the ensure-style rebuild would `rm -rf` its
+/// cwd out from under it. So this only ever names the directory. Wanted when
+/// something joins a session that is already running — opening its companion
+/// shell, which is `kernel::terminal`'s caller. v1 answers the same question in
+/// `App::session_process_cwd_existing`; folding that one in here is left for
+/// when `src/app/` is next opened, which parity has not reached yet.
+///
+/// `members` is the count, not the list, because every caller has already built
+/// the member set for its own reasons and only the ≥2 test is wanted here.
+/// Falls back to `primary_cwd` whenever the workspace cannot be named.
+pub fn existing_launch_cwd(
+    agent_session_id: Option<&str>,
+    primary_cwd: Option<&std::path::Path>,
+    members: usize,
+    host: Option<&HostDef>,
+) -> Option<PathBuf> {
+    let primary = || primary_cwd.map(std::path::Path::to_path_buf);
+    if members < 2 {
+        return primary();
+    }
+    let Some(id) = agent_session_id else {
+        return primary();
+    };
+    let named = match host {
+        // Pure string work unless the host has no `worktrees_dir`, and then it
+        // is the `$HOME` lookup every other remote path already caches.
+        Some(host) => crate::git::remote_workspace_dir(host, id)
+            .map(PathBuf::from)
+            .map_err(|e| tracing::error!("could not name the remote workspace: {e:#}")),
+        None => crate::workspace::workspace_path(id)
+            .map_err(|e| tracing::error!("could not name the workspace: {e}")),
+    };
+    named.ok().or_else(primary)
 }
 
 /// Adapt agent `args` that reference thurbox-managed config files (by their
@@ -765,6 +889,8 @@ mod tests {
             parent_session_id: None,
             task_id: None,
             extra_repos: Vec::new(),
+            fork_session_id: None,
+            inherit_worktrees: Vec::new(),
         }
     }
 
@@ -1156,5 +1282,42 @@ mod tests {
         // Two members → a symlink workspace, not the primary itself.
         assert_ne!(got, primary);
         assert!(got.join("primary").exists() || got.exists());
+    }
+
+    #[test]
+    fn existing_launch_cwd_names_the_workspace_without_building_it() {
+        // The property that separates it from its twin: the agent is already in
+        // that directory, so naming it must not touch the filesystem.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let primary = temp.path().join("primary");
+
+        let got = existing_launch_cwd(Some("sid-multi"), Some(&primary), 2, None)
+            .expect("a directory to launch in");
+        assert_ne!(
+            got, primary,
+            "a multi-repo session launches in its workspace"
+        );
+        assert!(
+            !got.exists(),
+            "naming it must not create it: {}",
+            got.display()
+        );
+    }
+
+    #[test]
+    fn existing_launch_cwd_falls_back_when_the_workspace_cannot_be_named() {
+        // No agent session id, so there is no workspace to name — and a shell in
+        // the primary repository still beats one wherever the multiplexer was.
+        let primary = PathBuf::from("/tmp/primary");
+        let got = existing_launch_cwd(None, Some(&primary), 2, None);
+        assert_eq!(got, Some(primary));
+    }
+
+    #[test]
+    fn existing_launch_cwd_for_one_repository_is_that_repository() {
+        let primary = PathBuf::from("/tmp/primary");
+        let got = existing_launch_cwd(Some("sid-1"), Some(&primary), 1, None);
+        assert_eq!(got, Some(primary));
     }
 }

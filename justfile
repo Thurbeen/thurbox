@@ -1,7 +1,8 @@
 # thurbox dev task runner. Run `just` (or `just --list`) to see tasks.
 #
 # Enter the pinned toolchain first with `nix develop` (or `direnv allow`); these
-# tasks assume the dev tools (cargo-nextest, cargo-deny, rumdl, shellcheck, …)
+# tasks assume the dev tools (cargo-nextest, cargo-deny, rumdl, shellcheck, selene,
+# stylua, …)
 # are on PATH. See docs/DEVELOPMENT.md.
 
 # Default: show the task list.
@@ -29,7 +30,7 @@ fmt:
     cargo fmt --all
     npm run fmt:website
 
-# Lint everything CI lints (Rust + deny + markdown + shell).
+# Lint everything CI lints (Rust + deny + markdown + shell + Lua).
 lint:
     cargo fmt --all -- --check
     cargo clippy --all-targets --all-features -- -D warnings
@@ -37,6 +38,16 @@ lint:
     cargo deny check bans licenses sources
     rumdl check .
     git ls-files -z '*.sh' | xargs -0 shellcheck
+    selene ui docs/examples
+    stylua --check ui docs/examples
+    # Absolute path required: a relative --configpath resolves against the
+    # server's install dir, and a missed config reports every injected global as
+    # undefined instead of erroring.
+    lua-language-server --check ui --configpath "{{ justfile_directory() }}/.luarc.json" --checklevel=Warning
+
+# Format the Lua interface in place (the counterpart to `cargo fmt`).
+fmt-lua:
+    stylua ui docs/examples
 
 # Architecture-rule + doc checks.
 arch:
@@ -58,6 +69,10 @@ sandbox *ARGS:
 # Run the dev TUI in a throwaway sandbox (wiped on exit).
 sandbox-fresh:
     scripts/dev/sandbox.sh --fresh
+
+# Run the v2 kernel (thurbox2) in a throwaway sandbox (fresh interface each time).
+sandbox-v2:
+    scripts/dev/sandbox.sh --v2 --fresh
 
 # Drop into a shell with the sandbox env (run `thurbox-cli …` by hand).
 sandbox-shell:

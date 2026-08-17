@@ -21,6 +21,9 @@ allow = [
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
+    # `notify`, the file watcher behind the v2 plugin directory's auto-reload.
+    # A public-domain dedication, so at least as permissive as everything above.
+    "CC0-1.0",
 ]
 
 [bans]

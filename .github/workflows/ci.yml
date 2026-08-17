@@ -34,6 +34,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust || steps.all.outputs.all }}
       shell: ${{ steps.filter.outputs.shell || steps.all.outputs.all }}
       markdown: ${{ steps.filter.outputs.markdown || steps.all.outputs.all }}
+      lua: ${{ steps.filter.outputs.lua || steps.all.outputs.all }}
       website: ${{ steps.filter.outputs.website || steps.all.outputs.all }}
       install_sh: ${{ steps.filter.outputs.install_sh || steps.all.outputs.all }}
       install_ps: ${{ steps.filter.outputs.install_ps || steps.all.outputs.all }}
@@ -70,6 +71,16 @@ jobs:
             markdown:
               - '**/*.md'
               - '.rumdl.toml'
+              - '.github/workflows/ci.yml'
+            lua:
+              - 'ui/**'
+              # The starter is Lua that ships: it is embedded in the binary and is
+              # what `thurbox-cli plugin new` writes, so it is linted like a pane.
+              - 'docs/examples/**'
+              - 'selene.toml'
+              - 'thurbox.yml'
+              - 'stylua.toml'
+              - '.luarc.json'
               - '.github/workflows/ci.yml'
             website:
               - 'website/**'
@@ -330,6 +341,49 @@ jobs:
       - name: Run shellcheck
         run: git ls-files -z '*.sh' | xargs -0 shellcheck
 
+  lua:
+    name: Lua Lint
+    needs: changes
+    if: needs.changes.outputs.lua == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install selene and stylua
+        # Both are single Rust binaries, so this needs no Lua toolchain — which
+        # is why they were chosen over luacheck (LuaRocks) for CI.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: selene,stylua
+      - name: Lint the plugin interface
+        # `selene.toml` points at `thurbox.yml`, the plugin VM's real standard
+        # library — so this also checks that no plugin reaches for a capability
+        # the kernel withholds.
+        run: selene ui docs/examples
+      - name: Check formatting
+        run: stylua --check ui docs/examples
+      - name: Install lua-language-server
+        # Fetched from the release like neovim's own lint job does; there is no
+        # pinned action for it. Version is explicit so a new release cannot change
+        # what CI enforces without a commit.
+        env:
+          LUALS_VERSION: 3.19.1
+        run: |
+          curl -fsSL -o luals.tar.gz \
+            "https://github.com/LuaLS/lua-language-server/releases/download/${LUALS_VERSION}/lua-language-server-${LUALS_VERSION}-linux-x64.tar.gz"
+          mkdir -p "$HOME/.luals" && tar -xzf luals.tar.gz -C "$HOME/.luals"
+          echo "$HOME/.luals/bin" >> "$GITHUB_PATH"
+      - name: Type-check the plugin interface
+        # The deeper pass, and what neovim gates its own Lua on. `.luarc.json`
+        # disables the libraries the plugin VM withholds, so this catches an
+        # `os.`/`io.`/`debug.`/`package.` reach as well as a type error.
+        # Exits non-zero on any finding at Warning or above.
+        #
+        # `--configpath` must be ABSOLUTE: a relative one is resolved against the
+        # server's own install directory, not the working directory, so it is
+        # silently not found and every injected global reads as undefined — 79
+        # phantom findings rather than an error saying the config was missed.
+        run: lua-language-server --check ui --configpath "$PWD/.luarc.json" --checklevel=Warning
+
   website-lint:
     name: Website Lint
     needs: changes
@@ -427,6 +481,7 @@ jobs:
       - install-script
       - install-script-ps
       - shellcheck
+      - lua
       - website-lint
       - sonarqube
     runs-on: ubuntu-latest

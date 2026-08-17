@@ -8,7 +8,6 @@
 //! as `App::automation_ui`; this module only operates on it.
 
 use super::modals;
-use super::view;
 use super::{App, InputFocus, StatusLevel};
 use crate::session::{
     Automation, AutomationAction, AutomationRunStatus, AutomationSchedule, SessionId,
@@ -1044,7 +1043,8 @@ pub(crate) fn format_automation_summary(auto: &Automation, now: u64) -> String {
         "disabled".to_string()
     } else if let Some(next) = auto.next_run_at {
         // `format_countdown` already includes the "in " prefix.
-        view::format_countdown(next.saturating_sub(now))
+        // Moved to `ui` (presentation), so a pane builder can share it.
+        crate::ui::format_countdown(next.saturating_sub(now))
     } else {
         "—".to_string()
     };

@@ -69,6 +69,10 @@ fn init_git_repo(dir: &Path, dirty: bool) {
     git(&["init", "-q"]);
     git(&["config", "user.email", "t@example.com"]);
     git(&["config", "user.name", "thurbox-test"]);
+    // A user whose global config signs every commit would otherwise need a key
+    // loaded in their agent for these tests to pass. `git_program` scrubs `GIT_*`
+    // env vars but cannot scrub `~/.gitconfig`, so signing is disabled per repo.
+    git(&["config", "commit.gpgsign", "false"]);
     std::fs::write(dir.join("f.txt"), "hello\n").unwrap();
     git(&["add", "."]);
     git(&["commit", "-qm", "init"]);

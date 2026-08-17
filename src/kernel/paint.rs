@@ -1,0 +1,440 @@
+//! Paint a resolved [`Node`] tree into a ratatui frame.
+//!
+//! Everything here is arithmetic plus ratatui calls — no Lua is touched, which
+//! is what lets a plugin's tree be rendered after its VM has been thrown away.
+//!
+//! The tree arriving here has already been through the layout pass, so this
+//! walks it with rects rather than computing them: a `box` divides its own
+//! rect among children ([`super::node::divide`]) and recurses.
+
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, BorderType, Borders as RatBorders, Clear, Paragraph, Wrap};
+use ratatui::Frame;
+
+use super::node::{
+    divide, to_line, Align, Axis, Borders, Frame as NodeFrame, Identity, Node, SurfaceSource,
+};
+
+/// A painted node that carried identity, and the rect it went into.
+///
+/// v1 built the same registry by hand, one `record_click` per renderer
+/// (`App::click_targets`); here it falls out of the paint walk, so a hitbox
+/// cannot drift from the cells it covers and a plugin nobody has written yet is
+/// clickable the moment it gives a node an `id`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hit {
+    pub rect: Rect,
+    pub identity: Identity,
+}
+
+/// Fills a session-backed surface.
+///
+/// The kernel owns this because a live terminal grid cannot round-trip through
+/// Lua tables at 20 fps — see design.md D3. A plugin *places and frames* a
+/// surface; the provider paints inside the rect it was given.
+///
+/// Painting into the frame rather than returning lines is deliberate: a live
+/// terminal is rendered by `tui_term` straight off the vt100 screen, which
+/// preserves colour, wide characters and the cursor. Flattening to `Line`s
+/// first would mean reimplementing that badly.
+pub trait SurfaceProvider {
+    /// Paint `session` into `area`. Return `false` when there is nothing live
+    /// behind it, and the caller draws a placeholder instead.
+    fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool;
+}
+
+/// A provider with nothing behind it — every surface falls back to the
+/// placeholder.
+///
+/// Used by tests, so the arrangement, framing and sizing of a surface stay
+/// testable without a tmux server.
+pub struct PlaceholderSurfaces;
+
+impl SurfaceProvider for PlaceholderSurfaces {
+    fn render_session(
+        &self,
+        _frame: &mut Frame,
+        _area: Rect,
+        _session: &str,
+        _scroll: u16,
+    ) -> bool {
+        false
+    }
+}
+
+/// What a session-backed surface shows when nothing live is behind it.
+fn render_detached(frame: &mut Frame, area: Rect, session: &str) {
+    let mut lines = Vec::new();
+    let blank = usize::from(area.height).saturating_sub(3) / 2;
+    for _ in 0..blank {
+        lines.push(Line::default());
+    }
+    lines.push(
+        Line::from("terminal surface")
+            .style(Style::default().add_modifier(Modifier::BOLD))
+            .centered(),
+    );
+    lines.push(
+        Line::from(short_id(session))
+            .style(Style::default().add_modifier(Modifier::DIM))
+            .centered(),
+    );
+    lines.push(
+        Line::from("not attached")
+            .style(Style::default().add_modifier(Modifier::DIM))
+            .centered(),
+    );
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn short_id(id: &str) -> String {
+    id.split('-').next().unwrap_or(id).to_string()
+}
+
+/// Paint `node` into `area`.
+pub fn render(frame: &mut Frame, area: Rect, node: &Node, surfaces: &dyn SurfaceProvider) {
+    render_recording(frame, area, node, surfaces, &mut Vec::new());
+}
+
+/// Paint `node` into `area`, appending a [`Hit`] for every identified node.
+///
+/// Hits are appended **pre-order** — a parent before its children — so a caller
+/// scanning in reverse finds the innermost node under a point first, and finds
+/// a whole-pane fallback recorded before the tree only when nothing inside
+/// matched. That is v1's ordering rule (specific targets recorded before the
+/// pane's own rect, first match wins) read backwards.
+pub fn render_recording(
+    frame: &mut Frame,
+    area: Rect,
+    node: &Node,
+    surfaces: &dyn SurfaceProvider,
+    hits: &mut Vec<Hit>,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // The OUTER rect, before any border is subtracted: v1's on-border
+    // affordances (the collapse chevron, the tab strip) are painted on the
+    // frame's own cells, so a hitbox that stopped at the inner rect could never
+    // catch them.
+    if !node.identity().is_empty() {
+        hits.push(Hit {
+            rect: area,
+            identity: node.identity().clone(),
+        });
+    }
+    let inner = match node.frame() {
+        Some(spec) => {
+            let block = build_block(spec);
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            pad(inner, spec.padding)
+        }
+        None => area,
+    };
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    match node {
+        Node::Text {
+            lines,
+            align,
+            wrap,
+            scroll,
+            ..
+        } => {
+            let text: Vec<Line> = lines.iter().map(|runs| to_line(runs)).collect();
+            let mut paragraph = Paragraph::new(text).scroll((*scroll, 0));
+            paragraph = match align {
+                Align::Left => paragraph.left_aligned(),
+                Align::Center => paragraph.centered(),
+                Align::Right => paragraph.right_aligned(),
+            };
+            if *wrap {
+                paragraph = paragraph.wrap(Wrap { trim: false });
+            }
+            frame.render_widget(paragraph, inner);
+        }
+
+        Node::Box {
+            axis,
+            gap,
+            children,
+            ..
+        } => {
+            if children.is_empty() {
+                return;
+            }
+            let sizes: Vec<_> = children.iter().map(Node::size).collect();
+            let total = match axis {
+                Axis::Vertical => inner.height,
+                Axis::Horizontal => inner.width,
+            };
+            let lengths = divide(total, &sizes, *gap);
+            let mut cursor = match axis {
+                Axis::Vertical => inner.y,
+                Axis::Horizontal => inner.x,
+            };
+            for (child, length) in children.iter().zip(lengths) {
+                let rect = match axis {
+                    Axis::Vertical => Rect {
+                        x: inner.x,
+                        y: cursor,
+                        width: inner.width,
+                        height: length,
+                    },
+                    Axis::Horizontal => Rect {
+                        x: cursor,
+                        y: inner.y,
+                        width: length,
+                        height: inner.height,
+                    },
+                };
+                render_recording(frame, rect, child, surfaces, hits);
+                cursor = cursor.saturating_add(length).saturating_add(*gap);
+            }
+        }
+
+        Node::Input {
+            value,
+            cursor,
+            placeholder,
+            style,
+            ..
+        } => {
+            let showing_placeholder = value.is_empty();
+            let text = if showing_placeholder {
+                placeholder
+            } else {
+                value
+            };
+            let mut line_style = *style;
+            if showing_placeholder {
+                line_style = line_style.add_modifier(Modifier::DIM);
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(text.clone()).style(line_style)),
+                inner,
+            );
+            // A real caret, so a focused field reads as focused. Clamped into
+            // the rect so a cursor past the end cannot paint outside it.
+            if !showing_placeholder {
+                let offset = (*cursor).min(value.chars().count());
+                let column = inner
+                    .x
+                    .saturating_add(offset.min(usize::from(inner.width)) as u16);
+                if column < inner.x.saturating_add(inner.width) {
+                    frame.set_cursor_position((column, inner.y));
+                }
+            }
+        }
+
+        Node::Surface { source, scroll, .. } => {
+            // A surface is opaque: clear first, so whatever it paints is not
+            // composited over a sibling's leftovers.
+            frame.render_widget(Clear, inner);
+            match source {
+                SurfaceSource::Cells(cells) => {
+                    let lines: Vec<Line> = cells.iter().map(|runs| to_line(runs)).collect();
+                    frame.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), inner);
+                }
+                SurfaceSource::Session(id) => {
+                    if !surfaces.render_session(frame, inner, id, *scroll) {
+                        render_detached(frame, inner, id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Paint an error panel for a plugin that failed, in that plugin's own rect.
+///
+/// The isolation rule made visible: the neighbours around this rect are painted
+/// normally and keep their state.
+pub fn render_error(frame: &mut Frame, area: Rect, title: &str, message: &str) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let block = Block::default()
+        .borders(RatBorders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ratatui::style::Color::Red))
+        .title(format!(" {title} "));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(message.trim().to_string())
+            .style(Style::default().fg(ratatui::style::Color::Red))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn build_block(spec: &NodeFrame) -> Block<'static> {
+    let mut block = Block::default().style(spec.style);
+    block = match spec.borders {
+        Borders::All => block
+            .borders(RatBorders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(spec.border_style),
+        Borders::None => block.borders(RatBorders::NONE),
+    };
+    if let Some(title) = &spec.title {
+        block = block.title(title.clone());
+    }
+    block
+}
+
+/// Shrink a rect by `padding` on every side, never past zero.
+fn pad(area: Rect, padding: u16) -> Rect {
+    if padding == 0 {
+        return area;
+    }
+    let horizontal = padding.saturating_mul(2);
+    Rect {
+        x: area.x.saturating_add(padding),
+        y: area.y.saturating_add(padding),
+        width: area.width.saturating_sub(horizontal),
+        height: area.height.saturating_sub(horizontal),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    use crate::kernel::convert::to_node;
+    use mlua::{Lua, Value};
+
+    /// Render a Lua-authored tree and return the screen as text lines.
+    fn screen(source: &str, width: u16, height: u16) -> Vec<String> {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load(format!("return {source}"))
+            .eval()
+            .expect("source evaluates");
+        let node = to_node(&value).expect("tree converts");
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("test terminal builds");
+        terminal
+            .draw(|frame| render(frame, frame.area(), &node, &PlaceholderSurfaces))
+            .expect("draw succeeds");
+
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn text_paints_its_content() {
+        let lines = screen("{ text = \"hello\" }", 10, 1);
+        assert_eq!(lines[0], "hello");
+    }
+
+    #[test]
+    fn a_vertical_box_stacks_children_in_order() {
+        let lines = screen("{ children = { \"top\", \"bottom\" } }", 10, 2);
+        assert_eq!(lines, vec!["top", "bottom"]);
+    }
+
+    #[test]
+    fn a_horizontal_box_places_children_side_by_side() {
+        let lines = screen(
+            "{ axis = \"horizontal\", children = { { text = \"L\", len = 5 }, { text = \"R\" } } }",
+            10,
+            1,
+        );
+        assert_eq!(lines[0], "L    R");
+    }
+
+    #[test]
+    fn a_frame_draws_a_border_and_insets_its_child() {
+        let lines = screen("{ text = \"x\", frame = \"T\" }", 6, 3);
+        assert!(lines[0].contains('T'), "title should be in the top border");
+        assert!(lines[1].contains('x'), "content sits inside the border");
+        assert!(
+            lines[1].starts_with('│'),
+            "left border present: {:?}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn alignment_moves_text_within_its_rect() {
+        let lines = screen("{ text = \"ab\", align = \"right\" }", 6, 1);
+        assert_eq!(lines[0], "    ab");
+    }
+
+    #[test]
+    fn a_surface_paints_its_own_cells() {
+        let lines = screen(
+            "{ type = \"surface\", cells = { \"line one\", \"line two\" } }",
+            12,
+            2,
+        );
+        assert_eq!(lines, vec!["line one", "line two"]);
+    }
+
+    #[test]
+    fn a_session_surface_uses_the_provider() {
+        let lines = screen("{ type = \"surface\", session = \"abcdef12-0000\" }", 30, 5);
+        let joined = lines.join("\n");
+        assert!(joined.contains("terminal surface"), "{joined}");
+        assert!(joined.contains("abcdef12"), "{joined}");
+    }
+
+    #[test]
+    fn a_zero_height_rect_paints_nothing_rather_than_panicking() {
+        // Guards the responsive case where a slot is squeezed out entirely.
+        let lines = screen("{ text = \"x\" }", 10, 0);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn a_child_squeezed_to_nothing_does_not_panic() {
+        let lines = screen(
+            "{ axis = \"horizontal\", children = { { text = \"aaa\", len = 20 }, { text = \"b\", len = 20 } } }",
+            8,
+            1,
+        );
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn an_error_panel_shows_the_message() {
+        let mut terminal = Terminal::new(TestBackend::new(40, 5)).expect("terminal");
+        terminal
+            .draw(|frame| render_error(frame, frame.area(), "session_list", "boom"))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..5)
+            .map(|y| {
+                (0..40)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(text.contains("session_list"), "{text}");
+        assert!(text.contains("boom"), "{text}");
+    }
+
+    #[test]
+    fn padding_never_underflows_a_small_rect() {
+        assert_eq!(pad(Rect::new(0, 0, 1, 1), 4).width, 0);
+    }
+}

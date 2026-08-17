@@ -1,0 +1,12 @@
+# Formatting for the Lua interface, so `ui/` gets what rustfmt gives `src/`.
+#
+# Matched to the code that was already there rather than to stylua's defaults:
+# two-space indent (a pane nests deeply — node tables inside boxes inside
+# frames), and the 100-column width the rest of the repo uses (rustfmt's
+# `max_width`, rumdl's `MD013`).
+column_width = 100
+indent_type = "Spaces"
+indent_width = 2
+quote_style = "AutoPreferDouble"
+call_parentheses = "Always"
+collapse_simple_statement = "Never"

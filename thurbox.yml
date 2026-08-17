@@ -1,0 +1,389 @@
+---
+# The plugin VM's standard library, as selene sees it.
+#
+# This file IS the sandbox contract, checked statically.
+#
+# There is deliberately **no `base:`**. `kernel::host::plugin_stdlib` grants
+# plugins `string`, `table`, `math`, `coroutine` and `utf8` and nothing else, and
+# the capability model is enforced by *absence* rather than by a binding that
+# refuses (design.md D9). Declaring the granted set and inheriting nothing
+# reproduces that exactly: `os`, `io`, `debug`, `package`, `print` and the loaders
+# are simply not here, so reaching for one is `undefined_variable` — a lint
+# failure instead of "attempt to index a nil value" when someone opens the pane.
+#
+# Inheriting `lua53` and marking things `removed` does NOT work: selene applies
+# that to plain functions but not to a table's fields, so `os.time()` passed
+# review while `dofile` was caught. Verified by probing both.
+#
+# Keep in step with `plugin_stdlib` and `install_api` in `src/kernel/host.rs`.
+# Arguments are declared as varargs: the value here is knowing a name exists and
+# is reachable, not policing arity that Lua itself does not.
+
+globals:
+  # ── Base ──────────────────────────────────────────────────────────────────
+  # mlua loads the base library alongside the tables above. Listed rather than
+  # inherited so this file stays the single statement of what a plugin may touch.
+  assert:
+    args:
+      - type: "..."
+  error:
+    args:
+      - type: "..."
+  getmetatable:
+    args:
+      - type: "..."
+  ipairs:
+    args:
+      - type: "..."
+  next:
+    args:
+      - type: "..."
+  pairs:
+    args:
+      - type: "..."
+  pcall:
+    args:
+      - type: "..."
+  rawequal:
+    args:
+      - type: "..."
+  rawget:
+    args:
+      - type: "..."
+  rawlen:
+    args:
+      - type: "..."
+  rawset:
+    args:
+      - type: "..."
+  select:
+    args:
+      - type: "..."
+  setmetatable:
+    args:
+      - type: "..."
+  tonumber:
+    args:
+      - type: "..."
+  tostring:
+    args:
+      - type: "..."
+  type:
+    args:
+      - type: "..."
+  xpcall:
+    args:
+      - type: "..."
+
+  # ── string ────────────────────────────────────────────────────────────────
+  string.byte:
+    args:
+      - type: "..."
+  string.char:
+    args:
+      - type: "..."
+  string.dump:
+    args:
+      - type: "..."
+  string.find:
+    args:
+      - type: "..."
+  string.format:
+    args:
+      - type: "..."
+  string.gmatch:
+    args:
+      - type: "..."
+  string.gsub:
+    args:
+      - type: "..."
+  string.len:
+    args:
+      - type: "..."
+  string.lower:
+    args:
+      - type: "..."
+  string.match:
+    args:
+      - type: "..."
+  string.pack:
+    args:
+      - type: "..."
+  string.packsize:
+    args:
+      - type: "..."
+  string.rep:
+    args:
+      - type: "..."
+  string.reverse:
+    args:
+      - type: "..."
+  string.sub:
+    args:
+      - type: "..."
+  string.unpack:
+    args:
+      - type: "..."
+  string.upper:
+    args:
+      - type: "..."
+
+  # ── table ─────────────────────────────────────────────────────────────────
+  table.concat:
+    args:
+      - type: "..."
+  table.insert:
+    args:
+      - type: "..."
+  table.move:
+    args:
+      - type: "..."
+  table.pack:
+    args:
+      - type: "..."
+  table.remove:
+    args:
+      - type: "..."
+  table.sort:
+    args:
+      - type: "..."
+  table.unpack:
+    args:
+      - type: "..."
+
+  # ── math ──────────────────────────────────────────────────────────────────
+  math.abs:
+    args:
+      - type: "..."
+  math.ceil:
+    args:
+      - type: "..."
+  math.cos:
+    args:
+      - type: "..."
+  math.exp:
+    args:
+      - type: "..."
+  math.floor:
+    args:
+      - type: "..."
+  math.fmod:
+    args:
+      - type: "..."
+  math.log:
+    args:
+      - type: "..."
+  math.max:
+    args:
+      - type: "..."
+  math.min:
+    args:
+      - type: "..."
+  math.modf:
+    args:
+      - type: "..."
+  math.random:
+    args:
+      - type: "..."
+  math.randomseed:
+    args:
+      - type: "..."
+  math.sin:
+    args:
+      - type: "..."
+  math.sqrt:
+    args:
+      - type: "..."
+  math.tan:
+    args:
+      - type: "..."
+  math.tointeger:
+    args:
+      - type: "..."
+  math.type:
+    args:
+      - type: "..."
+  math.ult:
+    args:
+      - type: "..."
+  math.huge:
+    property: read-only
+  math.maxinteger:
+    property: read-only
+  math.mininteger:
+    property: read-only
+  math.pi:
+    property: read-only
+
+  # ── coroutine ─────────────────────────────────────────────────────────────
+  coroutine.close:
+    args:
+      - type: "..."
+  coroutine.create:
+    args:
+      - type: "..."
+  coroutine.isyieldable:
+    args:
+      - type: "..."
+  coroutine.resume:
+    args:
+      - type: "..."
+  coroutine.running:
+    args:
+      - type: "..."
+  coroutine.status:
+    args:
+      - type: "..."
+  coroutine.wrap:
+    args:
+      - type: "..."
+  coroutine.yield:
+    args:
+      - type: "..."
+
+  # ── utf8 ──────────────────────────────────────────────────────────────────
+  # Granted because text handling needs it: Lua's `#` counts bytes, so a name
+  # like "Rosé Pine" measures one column short without it.
+  utf8.char:
+    args:
+      - type: "..."
+  utf8.codepoint:
+    args:
+      - type: "..."
+  utf8.codes:
+    args:
+      - type: "..."
+  utf8.len:
+    args:
+      - type: "..."
+  utf8.offset:
+    args:
+      - type: "..."
+  utf8.charpattern:
+    property: read-only
+
+  # ── Injected by the kernel ────────────────────────────────────────────────
+  # Everything readable. Read-only — a write never reaches the engine, which is
+  # what `command` is for.
+  #
+  # The shape is spelled out rather than left as a wildcard so a typo is a lint
+  # error: `thurbox.sesions` would otherwise just be nil, and the pane would
+  # render empty with nothing to explain it. Only the paths a plugin *indexes*
+  # need declaring — rows inside `sessions` are ordinary tables, so their fields
+  # are not checked here.
+  #
+  # A newly published field used by a plugin fails lint until it is added here,
+  # which is the right direction for the prompt to point.
+  thurbox.sessions:
+    property: read-only
+  thurbox.deleted:
+    property: read-only
+  thurbox.repos:
+    property: read-only
+  thurbox.agents:
+    property: read-only
+  # What a bare launch would use, so a flow preselects it.
+  thurbox.agent_default:
+    property: read-only
+  # The creation flow's three parameterised reads, each published only while it
+  # is being asked for (`store.want_*`).
+  # The settings in force: every feature switch, plus the scalars a pane or the
+  # arrangement needs.
+  thurbox.settings:
+    property: read-only
+  thurbox.bookmarks:
+    property: read-only
+  thurbox.browse:
+    property: read-only
+  thurbox.branches:
+    property: read-only
+  thurbox.hosts:
+    property: read-only
+  thurbox.tasks:
+    property: read-only
+  thurbox.automations:
+    property: read-only
+  thurbox.commands:
+    property: read-only
+  thurbox.diffs:
+    property: read-only
+  thurbox.links:
+    property: read-only
+  # What each session's terminal is showing, served only while a pane is asking
+  # for it (`store.want_content`) — nobody wants every agent's screen on every
+  # frame.
+  thurbox.content:
+    property: read-only
+  # Answers to the programs THIS plugin asked to be run. Set per plugin as it is
+  # entered, so a pane reads its own and no other's.
+  thurbox.runs:
+    property: read-only
+  thurbox.metrics:
+    property: read-only
+  thurbox.can_open_links:
+    property: read-only
+  thurbox.taken_at_ms:
+    property: read-only
+  thurbox.error:
+    property: read-only
+  thurbox.focus:
+    property: read-only
+  thurbox.hover:
+    property: read-only
+  # The interface's own files: where each came from, and which are running.
+  thurbox.plugins:
+    property: read-only
+  thurbox.ui_dir:
+    property: read-only
+  # What the arrangement needs to know about the bands, and no more.
+  thurbox.chrome.status_rows:
+    property: read-only
+  # The active palette as role -> colour, plus the selectable list.
+  thurbox.theme.name:
+    property: read-only
+  thurbox.theme.roles:
+    property: read-only
+  thurbox.theme.choices:
+    property: read-only
+  # What every plugin declared, so help and settings render from it.
+  thurbox.registry.keys:
+    property: read-only
+  thurbox.registry.settings:
+    property: read-only
+  thurbox.registry.sections:
+    property: read-only
+
+  # The only way to change anything. Enqueues and returns; never blocks.
+  command:
+    args:
+      - type: "..."
+
+  # Persistent and private to the declaring plugin; survives a reload.
+  state:
+    property: new-fields
+
+  # Persistent and shared by every plugin — the bus between them.
+  store:
+    property: new-fields
+
+  # Directory entries and file text, rooted at a session's directory. Not a
+  # filesystem: a path outside the root is refused.
+  files.list:
+    args:
+      - type: "..."
+  files.read:
+    args:
+      - type: "..."
+
+  # Loads `lib/*.lua`, and nothing outside the plugin directory.
+  require:
+    args:
+      - type: "..."
+
+  # Granted only to a plugin that DECLARES `capabilities = { "run" }` and that
+  # the user has TRUSTED (settings → Interface → `t`). Declared here so the
+  # linters know the shape; absent at runtime for a plugin that has neither, so
+  # calling it there is a nil call rather than a refusal.
+  run:
+    args:
+      - type: "..."

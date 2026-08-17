@@ -434,6 +434,40 @@ pub fn truncate_ellipsis(s: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
+/// Format seconds-until-an-event as the phrase thurbox shows in front of a name
+/// (`due`, `in 45s`, `in 2m 30s`, `in 3h 20m`).
+///
+/// Takes **seconds**, which is the granularity it displays at, so a plugin
+/// reproducing this pane formats the same number this does. A caller holding
+/// milliseconds divides.
+///
+/// It lives in `ui` rather than in `app` because it is presentation, and because a
+/// pane's tree builder needs it: the automations pane composes its summary tail
+/// from a countdown, and that composition has to be one function.
+pub fn format_countdown(secs: u64) -> String {
+    if secs == 0 {
+        "due".to_string()
+    } else if secs < 60 {
+        format!("in {secs}s")
+    } else if secs < 3600 {
+        let m = secs / 60;
+        let s = secs % 60;
+        if s == 0 {
+            format!("in {m}m")
+        } else {
+            format!("in {m}m {s}s")
+        }
+    } else {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        if m == 0 {
+            format!("in {h}h")
+        } else {
+            format!("in {h}h {m}m")
+        }
+    }
+}
+
 /// Fit a right-aligned top-border title into the space a left-side tab strip
 /// leaves it. `border_width` is the full pane width (its two corner cells are
 /// never title cells); `reserved_left` is the columns the tabs occupy on the
@@ -1382,6 +1416,26 @@ mod tests {
         assert!(inner_focused.height < test_area.height);
         assert!(inner_unfocused.width < test_area.width);
         assert!(inner_unfocused.height < test_area.height);
+    }
+
+    /// The countdown phrase, at each boundary it changes shape on. Seconds, not
+    /// milliseconds: a caller holding a millisecond remainder divides, which is
+    /// what the function used to do for it.
+    #[test]
+    fn format_countdown_reads_as_a_phrase_at_every_scale() {
+        assert_eq!(format_countdown(0), "due");
+        // A sub-second remainder is `due` because its caller's division floors it.
+        assert_eq!(format_countdown(999 / 1_000), "due");
+        assert_eq!(format_countdown(1), "in 1s");
+        assert_eq!(format_countdown(45), "in 45s");
+        assert_eq!(format_countdown(59), "in 59s");
+        assert_eq!(format_countdown(60), "in 1m");
+        assert_eq!(format_countdown(90), "in 1m 30s");
+        assert_eq!(format_countdown(300), "in 5m");
+        assert_eq!(format_countdown(3_599), "in 59m 59s");
+        assert_eq!(format_countdown(3_600), "in 1h");
+        assert_eq!(format_countdown(5_400), "in 1h 30m");
+        assert_eq!(format_countdown(7_200), "in 2h");
     }
 
     #[test]

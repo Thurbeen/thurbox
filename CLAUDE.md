@@ -47,11 +47,19 @@ so your authenticated agent CLIs (claude/codex/…) work — and puts dev
 ```bash
 scripts/dev/sandbox.sh               # persistent "default" profile, launch the TUI
 scripts/dev/sandbox.sh --fresh       # throwaway env, wiped on exit
+scripts/dev/sandbox.sh --v2          # launch the v2 kernel (thurbox2) instead of v1
 scripts/dev/sandbox.sh --isolate-home    # full hermetic isolation (fresh HOME; agents have no creds)
 scripts/dev/sandbox.sh --shell       # shell with the sandbox env (run thurbox-cli by hand)
 scripts/dev/sandbox.sh -- session list   # run a thurbox-cli command in the sandbox
 scripts/dev/sandbox.sh --clean       # wipe the persistent profile
 ```
+
+`--v2` builds and launches `thurbox2`, **from the sandbox root rather than the
+repo**: `resolve_ui_dir` prefers a `./ui` in the working directory, so started
+from the repo it would load the repo's `ui/` and the sandbox would isolate the
+database but not the interface. From the sandbox root it materializes
+`<sandbox>/thurbox-config/ui/` instead, which is what `--fresh` (`just
+sandbox-v2`) then gives you a clean one of per run.
 
 The isolation lives in one helper, `scripts/dev/lib/sandbox-env.sh`
 (`tbx_sandbox_init` = thurbox-only, `tbx_sandbox_init_full` = full HOME/XDG),
@@ -291,7 +299,40 @@ cargo clippy --all-targets --all-features -- -D warnings  # Lint
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features  # Docs
 rumdl check .                        # Markdown lint (.rumdl.toml)
 rumdl fmt .                          # Markdown auto-fix
+selene ui                            # Lua lint (selene.toml + thurbox.yml)
+stylua ui                            # Lua format (stylua.toml); --check in CI
+lua-language-server --check ui --configpath .luarc.json --checklevel=Warning
 ```
+
+Three tools on `ui/`, chosen to match what the Lua ecosystem actually gates on —
+**stylua** and **lua-language-server** are what neovim's own lint job runs. Each
+covers a different half of the sandbox, and both halves matter:
+
+| tool | catches | enforces absence of |
+|---|---|---|
+| `selene` | undefined variables, shadowing, `thurbox.*` typos | `print`, `dofile`, `load*` (base functions) |
+| `lua-language-server` | type errors, undefined fields, unused locals | `os`, `io`, `debug`, `package` (libraries) |
+| `stylua` | formatting | — |
+
+The split is not redundancy: selene's `removed:` works on plain functions but not
+on a table's fields, and luals' `runtime.builtin` disables whole libraries but
+cannot drop a single base function. Verified by probing every withheld capability
+against both.
+
+**`thurbox.yml` is the plugin sandbox, checked statically.** It is selene's
+standard library for `ui/`, and it deliberately declares **no `base:`** — it lists
+only what `kernel::host::plugin_stdlib` grants (`string`, `table`, `math`,
+`coroutine`, `utf8`) plus the six globals `install_api` injects. So `os`, `io`,
+`debug`, `package`, `print` and the loaders are *absent* rather than marked
+removed, which is the same shape the VM enforces (design.md D9) and means a plugin
+reaching for one fails lint instead of failing at runtime. Inheriting a base and
+marking things `removed` does **not** work: selene applies that to plain functions
+but not to a table's fields, so `os.time()` passed review while `dofile` was
+caught.
+
+It also declares the published shape of `thurbox`, so `thurbox.sesions` is a lint
+error rather than a silently-nil pane. Keep it in step with `LuaHost::publish`;
+a newly published field used by a plugin fails lint until it is added.
 
 ## Comments
 
@@ -835,7 +876,12 @@ startup when the flag is on), `notify`
 (diagnose OS desktop notifications: prints the detected delivery backend
 and last error; `--test` fires a sample — see OS notifications below), `perf`
 (print the perf snapshot a running TUI publishes while `THURBOX_PERF_LOG`
-or its perf HUD is active — see `docs/PERFORMANCE.md`).
+or its perf HUD is active — see `docs/PERFORMANCE.md`), `plugin`
+(v2 interface plugins without a TTY: `dir` reports the directory in force and
+which of the three rules chose it, `new <name>` writes a starter that already
+loads, `check` loads the interface the way `thurbox2` does and exits non-zero on
+a failure, `list` is the same inventory the settings modal's Interface tab shows
+— see `docs/PLUGINS.md`).
 Output is
 **human-readable by default** and switches to JSON automatically when stdout is
 piped (so `… | jq` keeps working); force a format with `--json` (compact),
@@ -2025,6 +2071,133 @@ its spelling differ):
   block commits on prose we don't author; excluding the whole agent dir (rather
   than the generated files inside it) is how `.claude`/`.pi` were already
   treated.
+
+## thurbox v2 (plugin kernel)
+
+A second binary, `thurbox2`, runs the v2 architecture alongside v1: a session
+engine with a Lua-driven renderer, where **every** pane — the session list
+included — is a plugin under `ui/`. The bundled set is currently **three panes**
+(`10_sessions`, `20_agent`, `65_search`) plus the **new-session flow**
+(`70_new_session`, a float that occupies no slot): the interface was cut back to
+its core, and v1's other surfaces are tracked with their gaps in
+`openspec/changes/v2-parity-gaps/`. `65_search` is v1's **global search**, back as
+a full-width strip above the chrome bands rather than a float — it highlights
+matches *inside* the panes it searches (subsequence matching via `ui/lib/fuzzy.lua`,
+shared with the session list, which dims what did not match), moving the selection
+previews it in the list, and `Esc` puts back what you were looking at. It searches
+a session's **terminal text** as well as its metadata — the half that finds a
+session by the error in it — as a *want*: the pane leaves its query in `store`
+under `want_content` and the kernel serves `thurbox.content` only while it is
+asking, so no interface pays for every agent's screen on every frame. Content
+matching is substring, not subsequence (fuzzy over a whole screen matches
+everything), and is skipped for a session whose metadata already matched.
+
+**The interface looking at itself** — every file, where it came from (bundled /
+edited / yours / removed), whether it is actually on screen, with restore and
+remove — is the **Interface tab of the settings modal**
+(`src/kernel/modals/interface.rs`), reached with `Ctrl+,`/`F6` then `]`. It was a
+pane once, deliberately: a pane that lists panes is an honest test of whether the
+plugin API can build a pane with. It is chrome now because it is a *recovery*
+tool, and a recovery tool that is itself a plugin can be the thing that is broken
+— the same argument that made help, settings and the theme picker kernel-owned.
+Being chrome also removes its reachability problem: as a centre-slot pane it
+needed an opening chord of its own, and no chord is safe from a terminal that
+claims it. A file can also be **turned off** (`space`) — present on disk, intact, and not
+loaded. That is a third thing distinct from adding and removing, and it exists
+because the only key that read like "not right now" used to delete: a plugin the
+user wrote has no embedded copy, so `restore` refuses it and the work was gone.
+Disabling is a *user decision* in `ui.json` beside trust and the rebindings, not
+a delivery fact in `.bundled.json` — a disabled bundled file is still one
+delivery should keep up to date. It is implemented by `build` not reading the
+file, so a disabled plugin declares no keys, occupies no slot and is granted no
+capability, and a broken one can be switched off to get a working interface back.
+**Deleting a bundled
+file is how you remove it**: delivery records the removal and never writes it
+again, which is what makes "replaceable on the same terms as any other plugin"
+true for a *differently named* replacement (`src/kernel/bundled.rs`,
+`src/kernel/inventory.rs`). A removed pane takes its slot, its keys and
+its affordances with it — `tests/v2_keymap.rs` asserts a freed chord stays
+*unbound* rather than being reused, and `tests/v2_parity.rs` counts which panes
+are still owed. The rest of **system chrome**: help,
+settings and the theme picker are kernel-owned modals (`src/kernel/modals/`)
+that overlay the arrangement, capture input, and stay out of the focus ring —
+plugins contribute *data* to them (a declared key, a declared setting) rather
+than replacing them. Nothing in `src/app/` or `src/ui/` is
+touched until v2 reaches feature parity; retiring v1 is its own gated change.
+
+```bash
+cargo run --bin thurbox2      # from the repo root
+```
+
+- `docs/V2-KERNEL.md` — the kernel's shape, its five rules, and the two traps
+  that will bite you when changing it
+- `docs/PLUGINS.md` — writing a plugin; its **Start here** is the fast path
+  (`thurbox-cli plugin dir | new | check | list` — no TTY needed), and its
+  **Traps** section lists the mistakes that are invisible until runtime
+- `openspec/changes/v2-*` — the changes, their specs, and the decisions
+  (with what each one got wrong, under "Findings from implementing")
+**Global search** (`ui/plugins/65_search.lua`) searches sessions by name, agent,
+branch and repo. Sessions is the only scope with a pane today; a result carries
+the pane it belongs to, so a returning pane is a scope added and nothing else
+changed. One divergence from v1 is deliberate and recorded in
+`KNOWN_DIVERGENCES`: v1 also takes `Ctrl+P`/`Ctrl+N` inside the strip because its
+search focus captures input before the keybinding table, while v2 routes every
+chord through one registry where a plugin-scoped claim does not outrank a global
+one — declaring them would take `Ctrl+N` from new-session everywhere.
+
+**Sessions outlive thurbox and tmux**, as they do in v1. A session whose window
+is gone when the interface starts — after a reboot, or a dead tmux server — has
+its agent **relaunched** under the same `SessionId`, resuming the conversation
+where the agent supports it (`Terminals::missing_agents` asks v1's restore-time
+question; the loop answers it through `restart`, once per session per run). The
+question needs the backend to have been *surveyed* first: "we have not looked
+yet" and "we looked and it is gone" are the same silence, and relaunching on the
+first would start a second agent beside a good one. A restart likewise clears the
+pane it killed, so the interface re-resolves the new window rather than staying
+attached to a dead one.
+
+**The new-session flow** (`ui/plugins/70_new_session.lua`) mirrors v1's wizard
+step for step — host → repositories → base branch → name → branch name → agent —
+and is one floating plugin rather than v1's five modals. The three reads it needs
+are worker-served like every other read that touches the world
+(`src/kernel/repos.rs`: host-scoped repository memory with its folders,
+directory listings for the browse dropdown, and a fetched base-branch list), and
+it asks for them by leaving a key in `store` (`want_bookmarks` /
+`want_browse` / `want_branches`) which the loop reads — a *parameterised* read
+has no other home under "snapshot-read, command-write". Writes are commands:
+`bookmark` (add/remove/import-parent, validated on the target machine, so a typo
+is refused before any git work) and one `create` carrying every member with its
+worktree flag.
+
+- `openspec/changes/v2-parity-gaps/` — **the ledger of what v2 still owes v1**,
+  from a surface-by-surface audit of each v1 pane against its plugin. Tier 0 is
+  what `v2-retire-v1` is actually waiting on (a v2-created session that never
+  attaches a terminal, automations that never fire, restore that only clears a
+  flag). `tests/v2_parity.rs::KNOWN_DIVERGENCES` is the narrower companion: what
+  v2 *draws* differently, with its count asserted so a new one cannot slip in.
+
+The load-bearing constraints, in one line each: **four node kinds** and
+everything else composes in Lua; **layout resolves before render**, so a plugin
+knows its own rect; **reads are snapshots, writes are commands**, so Lua never
+blocks; **capabilities are absent rather than blocked**; and anything touching
+the world **runs on a worker** (eight of them now: terminal attach, commands,
+diffs, metrics, git stats, repository reads, update checks, and **programs a
+plugin asked for**).
+
+**A plugin can run a third-party program** (`kernel::runs`) — `git status`,
+`docker compose ps`, `npm outdated` — in the session's working directory and, for
+a remote session, on that session's own host. The ask is `run(key, program, opts)`
+and the answer arrives next frame as `thurbox.runs[key]`, so Lua still never
+blocks; asking every frame is the intended pattern, because a fresh answer is a
+map lookup rather than a process. Bounds are the kernel's, not the plugin's:
+output capped and truncation flagged, a timeout, four runs at once with the rest
+queued. **This is the first capability that reaches outside thurbox**, so it is
+granted per plugin: a plugin declares `capabilities = { "run" }` and gets nothing
+until the user *trusts* it (settings → Interface → `t`). Trust is keyed by
+absolute path with the trusted digest recorded, so a changed trusted file reads
+`trusted · modified`. It is deliberately **not a sandbox** — a program thurbox
+spawns has the user's authority — and the position is that thurbox can only
+refuse to run things unasked. `docs/examples/composite.lua` is the worked example.
 
 ## Design Documentation
 

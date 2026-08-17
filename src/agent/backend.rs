@@ -370,11 +370,13 @@ struct WiredState {
 pub struct ShellPane {
     pub parser: Arc<Mutex<SessionParser>>,
     input_tx: mpsc::Sender<Vec<u8>>,
-    backend_id: String,
+    /// The tmux pane this shell is. Readable so it can be *persisted*: the
+    /// window outlives the interface, and re-adopting it on the next start is
+    /// what stops a restart forgetting the shell and orphaning its window.
+    pub(crate) backend_id: String,
     /// Kept alive so the reader loop's Arc clone has a peer.
     #[allow(dead_code)]
     exited: Arc<AtomicBool>,
-    #[allow(dead_code)]
     last_output_at: Arc<AtomicU64>,
     /// Captured OSC title for the shell pane (unused; kept for symmetry).
     #[allow(dead_code)]
@@ -384,6 +386,15 @@ pub struct ShellPane {
 impl ShellPane {
     pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
         send_to_input_channel(&self.input_tx, data, "Shell")
+    }
+
+    /// When this pane last produced output, as epoch milliseconds.
+    ///
+    /// The lock-free redraw signal, read the same way the agent pane's is: a
+    /// renderer compares it against the stamp it last painted at, so a quiet
+    /// shell costs one atomic load instead of a repaint.
+    pub fn last_output_at(&self) -> u64 {
+        self.last_output_at.load(Ordering::Relaxed)
     }
 
     /// Build a ShellPane from wired-up I/O state.

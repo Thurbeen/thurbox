@@ -1,0 +1,10 @@
+---
+source: tests/v1_recordings.rs
+expression: "described.join(\"\\n\")"
+---
+width=60
+ Sessio… Help · F1   Theme · F4   Settings · F6   Quit · ^Q
+width=100
+ Sessions  Help · F1   Info · F2   Files · F3   Theme · F4   Tasks · F5   Settings · F6   Quit · ^Q
+width=160
+ Sessions  4 session(s)  2 automation(s)  ^H/^L Focus ^O Open          Help · F1   Info · F2   Files · F3   Theme · F4   Tasks · F5   Settings · F6   Quit · ^Q

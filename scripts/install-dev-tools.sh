@@ -32,6 +32,22 @@ $INSTALL_CMD cargo-nextest
 $INSTALL_CMD cargo-modules
 $INSTALL_CMD cargo-deny
 $INSTALL_CMD rumdl
+# The Lua interface in ui/. Both are single Rust binaries, which is why they were
+# chosen over luacheck (a LuaRocks package needing a Lua toolchain).
+$INSTALL_CMD selene
+$INSTALL_CMD stylua
+
+# lua-language-server is not a cargo crate either — it is how CI type-checks the
+# plugin interface (`just lint`), the same tool neovim gates its own Lua on.
+if ! command -v lua-language-server &> /dev/null; then
+    echo ""
+    echo "⚠️  lua-language-server not found — install it for the Lua type check:"
+    echo "     Nix:           it is in the flake's devShell already"
+    echo "     Debian/Ubuntu: sudo apt-get install lua-language-server"
+    echo "     macOS:         brew install lua-language-server"
+    echo "     Arch:          sudo pacman -S lua-language-server"
+    echo "     Otherwise:     https://github.com/LuaLS/lua-language-server/releases"
+fi
 
 # ShellCheck is not a cargo crate — install it from your package manager
 if ! command -v shellcheck &> /dev/null; then

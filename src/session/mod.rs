@@ -1,11 +1,14 @@
 pub mod agent_def;
 pub mod automation;
+pub mod editor;
 pub mod extension_def;
 pub mod host_def;
 pub mod hyperlink;
 pub mod keybindings;
+pub mod links;
 pub mod message;
 pub mod review;
+pub mod selection;
 pub mod settings;
 pub mod task;
 pub mod theme_config;
@@ -201,6 +204,68 @@ pub struct AgentMetrics {
     pub cache_creation_input_tokens: Option<u64>,
     pub cache_read_input_tokens: Option<u64>,
     pub cli_version: Option<String>,
+}
+
+impl AgentMetrics {
+    /// Parse metrics out of a statusline JSON payload.
+    ///
+    /// Written by the agent's own statusline hook (Claude's shape), read by
+    /// whichever front end is drawing the info panel — so it lives on the type
+    /// rather than in either UI.
+    pub fn from_statusline_json(raw: &serde_json::Value) -> Self {
+        Self {
+            model_id: raw
+                .pointer("/model/id")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            model_display_name: raw
+                .pointer("/model/display_name")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            total_cost_usd: raw.pointer("/cost/total_cost_usd").and_then(|v| v.as_f64()),
+            total_duration_ms: raw
+                .pointer("/cost/total_duration_ms")
+                .and_then(|v| v.as_u64()),
+            total_api_duration_ms: raw
+                .pointer("/cost/total_api_duration_ms")
+                .and_then(|v| v.as_u64()),
+            total_lines_added: raw
+                .pointer("/cost/total_lines_added")
+                .and_then(|v| v.as_u64()),
+            total_lines_removed: raw
+                .pointer("/cost/total_lines_removed")
+                .and_then(|v| v.as_u64()),
+            total_input_tokens: raw
+                .pointer("/context_window/total_input_tokens")
+                .and_then(|v| v.as_u64()),
+            total_output_tokens: raw
+                .pointer("/context_window/total_output_tokens")
+                .and_then(|v| v.as_u64()),
+            context_window_size: raw
+                .pointer("/context_window/context_window_size")
+                .and_then(|v| v.as_u64()),
+            used_percentage: raw
+                .pointer("/context_window/used_percentage")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.min(100) as u8),
+            current_input_tokens: raw
+                .pointer("/context_window/current_usage/input_tokens")
+                .and_then(|v| v.as_u64()),
+            current_output_tokens: raw
+                .pointer("/context_window/current_usage/output_tokens")
+                .and_then(|v| v.as_u64()),
+            cache_creation_input_tokens: raw
+                .pointer("/context_window/current_usage/cache_creation_input_tokens")
+                .and_then(|v| v.as_u64()),
+            cache_read_input_tokens: raw
+                .pointer("/context_window/current_usage/cache_read_input_tokens")
+                .and_then(|v| v.as_u64()),
+            cli_version: raw
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+        }
+    }
 }
 
 /// Real git state for a session's worktree(s), computed by the app/git layer

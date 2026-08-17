@@ -23,6 +23,7 @@ pub mod messages;
 pub mod notify;
 pub mod output;
 pub mod perf;
+pub mod plugins;
 pub mod sessions;
 pub mod tasks;
 pub mod update;
@@ -106,6 +107,11 @@ pub enum Command {
     /// Print the perf snapshot a running TUI publishes (THURBOX_PERF_LOG or
     /// the perf HUD must be active in that TUI).
     Perf,
+    /// Interface plugins: where they live, start one, check it loads.
+    Plugin {
+        #[command(subcommand)]
+        action: plugins::Action,
+    },
 }
 
 /// Build the additional-repo list for a multi-repo `Spawn` from the repeatable
@@ -159,6 +165,8 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Update(args) => Ok(update::run(args)),
         Command::Notify(args) => Ok(notify::run(args)),
         Command::Perf => perf::run(db),
+        // The only command that needs no database: a plugin is a file.
+        Command::Plugin { action } => plugins::run(action),
     }?;
 
     println!("{}", format.render(&output));

@@ -198,6 +198,17 @@ cached for the process lifetime).
 
 ## settings.toml
 
+> **v2 (`thurbox2`)** honours this file too, and edits it from the same
+> `F6` / `Ctrl+,` panel — the core settings are listed above whatever
+> plugins declared, with `⟳` marking the ones that wait for the next
+> launch, and `Ctrl+S` saving. What v2 does **not** honour is the flags
+> whose panes it does not have yet (`tasks`, `file_viewer`, `info_panel`,
+> `global_search`, `code_review`) and `automations`, which v2 uses only
+> to arm the headless heartbeat: those are preserved untouched in the
+> file and simply not listed in its panel, since a row that gates nothing
+> reads as broken. The gap is tracked in
+> `openspec/changes/v2-parity-gaps/`.
+
 Scalar tuning knobs plus the `[features]` switches, seeded fully
 commented-out (defaults apply when absent). Only knobs a user plausibly
 wants are exposed; internals stay hardcoded. The seed closes with a

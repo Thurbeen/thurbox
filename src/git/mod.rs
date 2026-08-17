@@ -258,7 +258,7 @@ fn run_host_script(host: &HostDef, script: &str, action: &str) -> Result<()> {
 /// - **`ssh`** space-joins its trailing args into one string the remote login
 ///   shell re-splits, so the `script` must be POSIX-quoted to survive as a
 ///   single `sh -c` argument (mirroring [`git_command`]).
-fn host_shell_c(host: &HostDef, script: &str) -> Command {
+pub(crate) fn host_shell_c(host: &HostDef, script: &str) -> Command {
     let mut cmd = host_launcher(host);
     if host.is_wsl() {
         cmd.arg("-e").arg("sh").arg("-c").arg(script);
@@ -1626,6 +1626,7 @@ mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.email", "t@example.com"]);
         git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.join("file.txt"), "hi").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "init"]);
@@ -1777,6 +1778,7 @@ mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.email", "t@example.com"]);
         git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.join("file.txt"), "hi").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "init"]);
@@ -1813,6 +1815,7 @@ mod tests {
         run(&work, &["init", "-q"]);
         run(&work, &["config", "user.email", "t@example.com"]);
         run(&work, &["config", "user.name", "t"]);
+        run(&work, &["config", "commit.gpgsign", "false"]);
         std::fs::write(work.join("file.txt"), "hi").unwrap();
         run(&work, &["add", "."]);
         run(&work, &["commit", "-qm", "init"]);

@@ -11,6 +11,7 @@
 #
 # Usage:
 #   scripts/dev/sandbox.sh                 # persistent "default" profile, launch the TUI
+#   scripts/dev/sandbox.sh --v2            # launch the v2 kernel (thurbox2) instead
 #   scripts/dev/sandbox.sh --fresh         # throwaway env, wiped on exit
 #   scripts/dev/sandbox.sh --profile foo   # named persistent profile
 #   scripts/dev/sandbox.sh --isolate-home  # full isolation (fresh HOME; no agent creds)
@@ -18,6 +19,13 @@
 #                                          #   (run `thurbox-cli ...` against the sandbox DB)
 #   scripts/dev/sandbox.sh -- session list # run `thurbox-cli <args>` in the sandbox
 #   scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile, then exit
+#
+# --v2 launches `thurbox2` FROM THE SANDBOX ROOT rather than the repo, because
+# thurbox2 prefers a `./ui` in the working directory over the user's own copy —
+# started from the repo it would load the repo's `ui/`, so the sandbox would
+# isolate the database and not the interface. From the sandbox root it
+# materializes `<sandbox>/thurbox-config/ui/` instead, which is what `--fresh`
+# then gives you a clean one of.
 #
 # State (persistent mode): target/dev-sandbox/<profile>/ (gitignored). Sessions
 # survive across runs — its tmux-dev server is left alive on exit. `--clean`
@@ -42,6 +50,7 @@ mode="persistent"
 profile="default"
 isolation="thurbox" # thurbox | full
 action="tui"        # tui | shell | cli | clean
+kernel="v1"         # v1 (thurbox) | v2 (thurbox2)
 cli_args=()
 
 while [ $# -gt 0 ]; do
@@ -49,10 +58,11 @@ while [ $# -gt 0 ]; do
         --fresh) mode="fresh"; shift ;;
         --profile) profile="${2:?--profile needs a name}"; shift 2 ;;
         --isolate-home) isolation="full"; shift ;;
+        --v2) kernel="v2"; shift ;;
         --shell) action="shell"; shift ;;
         --clean) action="clean"; shift; case "${1:-}" in ""|-*) ;; *) profile="$1"; shift ;; esac ;;
         --) shift; action="cli"; cli_args=("$@"); break ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
 done
@@ -66,8 +76,15 @@ if [ "$action" = "clean" ]; then
 fi
 
 # Build the dev binaries BEFORE the HOME override (so cargo finds ~/.cargo).
-log "building thurbox (dev)"
-( cd "$TBX_REPO_ROOT" && cargo build --bin thurbox --bin thurbox-cli >&2 )
+# thurbox-cli is built either way: it drives the same database and is what an
+# agent hook inside a session calls.
+if [ "$kernel" = "v2" ]; then
+    tui_binary="thurbox2"
+else
+    tui_binary="thurbox"
+fi
+log "building $tui_binary + thurbox-cli (dev)"
+( cd "$TBX_REPO_ROOT" && cargo build --bin "$tui_binary" --bin thurbox-cli >&2 )
 
 if [ "$isolation" = "full" ]; then
     tbx_sandbox_init_full "$mode" "$profile"
@@ -82,11 +99,13 @@ log "sandbox root: $TBX_SANDBOX_ROOT ($mode, $isolation isolation)"
 run_in_sandbox() {
     case "$action" in
         shell)
-            log "entering sandbox shell — \`thurbox\`/\`thurbox-cli\` target this sandbox; exit to leave"
+            log "entering sandbox shell — \`$tui_binary\`/\`thurbox-cli\` target this sandbox; exit to leave"
             "${SHELL:-bash}" -i
             ;;
         cli) "$TBX_REPO_ROOT/target/debug/thurbox-cli" "${cli_args[@]}" ;;
-        tui) "$TBX_REPO_ROOT/target/debug/thurbox" ;;
+        # Run from the sandbox root, not the repo: see the --v2 note in the
+        # header. Harmless for v1, which resolves no paths from the cwd.
+        tui) ( cd "$TBX_SANDBOX_ROOT" && "$TBX_REPO_ROOT/target/debug/$tui_binary" ) ;;
     esac
 }
 

@@ -185,6 +185,8 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 parent_session_id,
                 task_id: None,
                 extra_repos,
+                fork_session_id: None,
+                inherit_worktrees: Vec::new(),
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
             let human = format!(
