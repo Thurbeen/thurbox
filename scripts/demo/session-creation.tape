@@ -36,9 +36,23 @@ Sleep 2500ms
 Ctrl+N
 Sleep 2200ms
 
-# The repository step. The sample repo is already remembered (the seeded sessions
-# registered it), so `space` selects it — the flow is multi-select, which is how a
-# session spans several repositories.
+# The repository step, and the row the cursor starts on is NOT the demo repo.
+#
+# The flow offers the INTERFACE DIRECTORY first — "Thurbox interface — edit your
+# panes" — because editing a pane is work every user can do without cloning
+# anything. So `space` here selected that instead: the session was created in
+# `~/.config/thurbox-dev/ui`, the flow diverged (it is not a git repository, so `w`
+# was refused), and the rest of this tape's keystrokes went into the agent's PTY.
+# The damage outlived the clip, because every tape in one `record.sh` run shares the
+# sandbox and the tmux session: `add-plugin-docs` was still sitting in the agent
+# pane when search.tape recorded.
+#
+# `record.sh` seeds the demo repo as a bookmark so there is a second row at all —
+# without that the picker offered ONE row, the interface directory, and `j` had
+# nowhere to go. Row 0 is still the interface (it is always offered), so one `j`
+# lands on the repo. If this looks wrong, check `repo_bookmarks` in the sandbox DB.
+Type "j"
+Sleep 900ms
 Space
 Sleep 1400ms
 

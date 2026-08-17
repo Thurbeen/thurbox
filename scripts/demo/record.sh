@@ -598,6 +598,26 @@ set_theme() {
 # instead — a broken clip that still exits 0. `display_order` is the authoritative
 # ordering (a NULL sorts after ordered rows, in creation order), so stamping it
 # 0..n-1 by creation time fixes both the order and which row is selected first.
+# Put the demo repo in the repo picker's remembered list.
+#
+# Bookmarks are written when a repository is chosen THROUGH THE FLOW, so seeding
+# sessions with `thurbox-cli session create` leaves the picker with nothing
+# remembered. The only row it then offers is the interface directory, which it
+# always offers — and that is what session-creation.tape selected for who knows how
+# long: the clip created a session in `~/.config/thurbox-dev/ui`, its `w` and its
+# typed name went to the agent's PTY, and the wreckage was still on screen when the
+# next tape recorded.
+#
+# `is_git = 1` because the flow needs it to offer the worktree option; `use_count`
+# and `last_used_at` are what a real bookmark would carry.
+bookmark_demo_repo() {
+    sqlite3 "$DB_FILE" <<SQL
+INSERT INTO repo_bookmarks (host, repo_path, last_used_at, use_count, is_parent, is_git)
+VALUES ('', '$DEMO_REPO', strftime('%s','now'), 3, 0, 1)
+ON CONFLICT(host, repo_path) DO UPDATE SET use_count = 3, is_git = 1;
+SQL
+}
+
 set_session_order() {
     sqlite3 "$DB_FILE" <<'SQL'
 UPDATE sessions
@@ -615,6 +635,10 @@ for tape in $TAPES; do
     # the change), so without this any tape after it would start on the wrong one.
     set_theme "$DEMO_THEME"
     set_session_order
+    # Re-applied per tape for the same reason as the theme: a tape that creates a
+    # session rewrites the bookmark list, so the next one must start from a known
+    # state.
+    bookmark_demo_repo
     echo "==> Recording $tape.tape (theme: $DEMO_THEME) ..."
     vhs "$SCRIPT_DIR/$tape.tape"
 done
