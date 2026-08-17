@@ -936,6 +936,10 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### The interface is a directory you can edit
 
+<div align="center">
+  <img src="./docs/media/thurbox-interface.gif" alt="Turning a pane off from the Interface tab" width="100%" />
+</div>
+
 Every pane — the session list included — is a Lua file under `ui/`.
 Move one, turn it off, delete it, or write your own, and the
 arrangement closes up around what is left. No recompile, no restart.
