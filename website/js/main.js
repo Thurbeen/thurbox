@@ -699,6 +699,7 @@
     var hint = document.getElementById('ui-lab-hint');
     var timer = null;
     var taken = false;
+    var done = false;
 
     function takeOver() {
       if (taken) return;
@@ -781,15 +782,31 @@
 
     function play() {
       if (taken) return;
-      SCRIPT[step % SCRIPT.length]();
+      if (step >= SCRIPT.length) {
+        // One pass, then stop for good. These transitions animate `left`/`top`/
+        // `width`/`height` -- layout properties, so each frame is a reflow on the
+        // main thread rather than compositor work. Looping that forever taxes the
+        // whole page (and reads as restless); one pass shows the point and then
+        // the section goes quiet until someone touches it.
+        stopAutoplay();
+        if (hint) hint.textContent = 'Your turn — click a layout or a file.';
+        return;
+      }
+      SCRIPT[step]();
       step += 1;
+    }
+
+    function stopAutoplay() {
+      if (timer) window.clearInterval(timer);
+      timer = null;
+      done = true;
     }
 
     if (!('IntersectionObserver' in window)) return;
     var watcher = new IntersectionObserver(
       function (entries) {
         entries.forEach(function (entry) {
-          if (entry.isIntersecting && !taken && !timer) {
+          if (entry.isIntersecting && !taken && !done && !timer) {
             timer = window.setInterval(play, 2300);
           } else if (!entry.isIntersecting && timer) {
             // Off screen is not "taken over": stop the work, keep the offer.

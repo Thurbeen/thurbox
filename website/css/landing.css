@@ -956,6 +956,11 @@ main {
 
 .ui-pane {
   border: 1px solid var(--border);
+
+  /* Keep a pane's reflow inside the pane. The rect changes are layout, not
+     transform, so containment is what stops four simultaneous size changes from
+     invalidating layout for the rest of the document. */
+  contain: layout paint;
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
