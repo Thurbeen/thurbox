@@ -207,6 +207,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         frames: 0,
         last_trees: Vec::new(),
         last_floats: std::collections::HashMap::new(),
+        drawn_floats: std::collections::HashSet::new(),
         last_paint: Instant::now(),
         dirty: true,
         changed_this_frame: false,
@@ -805,6 +806,13 @@ struct App {
     /// its own rect, so the two would overwrite each other for a plugin that did
     /// both. Its purpose is the same: settle the loop when nothing moved.
     last_floats: std::collections::HashMap<usize, (Rect, thurbox::kernel::node::Node)>,
+    /// Floats that actually painted on the last frame.
+    ///
+    /// Distinct from `last_floats`, which is a settle cache and deliberately
+    /// KEEPS a closed float's last tree to compare against when it reopens. This
+    /// is the live answer to "is it on screen", so it is rebuilt every frame —
+    /// reading the cache instead is what reported a closed modal as visible.
+    drawn_floats: std::collections::HashSet<usize>,
     last_paint: Instant,
     /// Set by anything that invalidates the screen outside the tree diff:
     /// input, a reload, a resize, a completed command.
@@ -1589,6 +1597,7 @@ impl App {
         //     frames it returns a float node, so a modal opens and closes with
         //     no separate channel for the kernel to keep in sync.
         self.grabbed = None;
+        self.drawn_floats.clear();
         for index in self.host.floating() {
             let probe = RenderContext {
                 width: area.width,
@@ -1633,6 +1642,7 @@ impl App {
             }
             self.last_floats
                 .insert(index, (rect, rendered.node.clone()));
+            self.drawn_floats.insert(index);
         }
 
         // System modals, above the arrangement and above every plugin float —
@@ -2394,6 +2404,7 @@ impl App {
         // still up.
         self.grabbed = None;
         self.last_floats.clear();
+        self.drawn_floats.clear();
         // A plugin that was edited away, renamed, removed or turned off must not
         // leave its answers behind to accumulate across reloads — and must not be
         // able to read them again if a file of that name comes back.
@@ -3289,6 +3300,7 @@ impl App {
         let Some(plugin) = self.host.plugins.get(index) else {
             return thurbox::kernel::focus::Placement {
                 floats: false,
+                float_open: false,
                 slot_placed: false,
                 chosen_in_switch: None,
             };
@@ -3305,6 +3317,7 @@ impl App {
             });
         thurbox::kernel::focus::Placement {
             floats: plugin.floats,
+            float_open: self.drawn_floats.contains(&index),
             slot_placed: self.visible_slots.contains(&plugin.slot),
             chosen_in_switch,
         }

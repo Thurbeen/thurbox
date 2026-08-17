@@ -25,6 +25,13 @@
 pub struct Placement {
     /// Floats above the arrangement, so it needs no slot at all.
     pub floats: bool,
+    /// Whether this float actually painted on the last frame.
+    ///
+    /// Only meaningful with `floats`. A float is *allowed* to draw above the
+    /// arrangement at any time; whether it *did* is a separate fact, and only the
+    /// frame that just happened knows it — a closed modal returns no float and
+    /// paints nothing.
+    pub float_open: bool,
     /// Its slot was placed by the arrangement on the last frame.
     pub slot_placed: bool,
     pub chosen_in_switch: Option<bool>,
@@ -35,9 +42,16 @@ pub struct Placement {
 /// The strict question, and the one the interface's own inventory answers with
 /// `visible` / `hidden`: an alternate of a switch slot is placed in the sense
 /// that its slot exists, but nothing of it is painted.
+///
+/// A float is judged by whether it *painted*, not by whether it may. Answering
+/// the permission instead reported the confirmation dialog and the creation
+/// wizard as on screen at all times — on the one screen whose whole job is
+/// telling you which files are drawing. Note this is the reverse of
+/// [`can_focus`]: focus may go to a float that is about to open, but nothing
+/// about that makes it drawn yet.
 pub fn is_drawn(placement: Placement) -> bool {
     if placement.floats {
-        return true;
+        return placement.float_open;
     }
     if !placement.slot_placed {
         return false;
@@ -66,8 +80,18 @@ mod tests {
     fn placement(slot_placed: bool, chosen_in_switch: Option<bool>) -> Placement {
         Placement {
             floats: false,
+            float_open: false,
             slot_placed,
             chosen_in_switch,
+        }
+    }
+
+    fn float(open: bool) -> Placement {
+        Placement {
+            floats: true,
+            float_open: open,
+            slot_placed: false,
+            chosen_in_switch: None,
         }
     }
 
@@ -106,12 +130,24 @@ mod tests {
 
     #[test]
     fn a_float_needs_no_slot() {
-        let it = Placement {
-            floats: true,
-            slot_placed: false,
-            chosen_in_switch: None,
-        };
+        let it = float(true);
         assert!(is_drawn(it));
+        assert!(can_focus(it));
+    }
+
+    #[test]
+    fn a_closed_float_is_not_drawn_though_focus_may_still_go_there() {
+        // The confirmation dialog and the creation wizard are floats that paint
+        // nothing until invoked. Judging them by the permission to float rather
+        // than by having floated reported both as on screen permanently, in the
+        // inventory that exists to say what is drawing.
+        let it = float(false);
+        assert!(
+            !is_drawn(it),
+            "a float that painted nothing is not on screen"
+        );
+        // Unchanged, and for the same reason a switch alternate keeps it:
+        // focusing a float is part of what opens it.
         assert!(can_focus(it));
     }
 

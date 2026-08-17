@@ -87,8 +87,10 @@ fn state_of(row: &Row) -> Reading {
         // answer to "where did my pane go", so it should not be buried.
         FileState::Disabled => (4, "◍", "off"),
         FileState::Visible => (5, "●", "on screen"),
-        FileState::Hidden => (6, "○", "hidden"),
-        FileState::Present => (7, "·", ""),
+        // Neither drawing nor waiting on anything: a modal at rest.
+        FileState::OnDemand => (6, "◐", "on demand"),
+        FileState::Hidden => (7, "○", "hidden"),
+        FileState::Present => (8, "·", ""),
     };
     Reading { rank, glyph, label }
 }

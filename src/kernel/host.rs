@@ -17,7 +17,7 @@
 //! makes "plugins never touch the render thread" a compile error (D10).
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -1822,6 +1822,8 @@ impl LuaHost {
                 let ctx = self.lua.create_table().map_err(|e| e.to_string())?;
                 ctx.set("width", width).map_err(|e| e.to_string())?;
                 ctx.set("height", height).map_err(|e| e.to_string())?;
+                ctx.set("slots", self.occupied_slots_table()?)
+                    .map_err(|e| e.to_string())?;
 
                 let guard = Budget::arm(&self.lua);
                 let result: Result<Value, mlua::Error> = arrange.call(ctx);
@@ -1831,6 +1833,35 @@ impl LuaHost {
                 super::layout::region_from_lua(&value, "layout")
             }
         }
+    }
+
+    /// Slots a loaded plugin would actually paint into, as `{ [slot] = true }`.
+    ///
+    /// Published to the arrangement so it can decline to reserve a rect nothing
+    /// will fill. Without it the two switches that remove a pane disagree: the
+    /// panel toggle is arrangement state and the disabled set is delivery state,
+    /// and `layout.lua` could only see the first — so turning a plugin off left
+    /// its column reserved and empty, which is the opposite of the promise that
+    /// the arrangement closes up around what is left.
+    ///
+    /// Floats and decorators are excluded for the same reason they are excluded
+    /// from [`Self::in_slot`]: a float draws *above* the arrangement and a
+    /// decorator draws *into* another plugin's tree, so neither one filling a
+    /// slot is a reason to carve space out of the screen for it.
+    pub fn occupied_slots(&self) -> BTreeSet<&str> {
+        self.plugins
+            .iter()
+            .filter(|plugin| plugin.decorates.is_none() && !plugin.floats)
+            .map(|plugin| plugin.slot.as_str())
+            .collect()
+    }
+
+    fn occupied_slots_table(&self) -> Result<Table, String> {
+        let table = self.lua.create_table().map_err(|e| e.to_string())?;
+        for slot in self.occupied_slots() {
+            table.set(slot, true).map_err(|e| e.to_string())?;
+        }
+        Ok(table)
     }
 
     /// Slot mode, declared by any plugin in the slot. Stack unless one says

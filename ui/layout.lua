@@ -77,6 +77,31 @@ local function status_rows()
   return (thurbox and thurbox.chrome and thurbox.chrome.status_rows) or 0
 end
 
+--- Will a loaded plugin actually paint into `slot`?
+---
+--- Removing a pane takes two switches and they are not the same kind of thing:
+--- the panel toggle below is ARRANGEMENT state (F9, mine to decide), while the
+--- disabled set is DELIVERY state (settings → Interface → space, the kernel's).
+--- Reserving a rect needs both to agree, because a slot no plugin can fill is a
+--- rect reserved for nothing — the same reason v1's info/tasks/files slots left
+--- with their plugins. Consulting only the toggle is what left a turned-off
+--- session list as an empty quarter-width column.
+---
+--- Only optional PLUGIN columns are gated on this. The chrome bands are drawn by
+--- the kernel and belong to no plugin, and `center` is never dropped, so neither
+--- appears in `ctx.slots` and neither may ask.
+---
+--- Unknown answers count as filled. The arrangement runs before anything else
+--- and must never fail closed: a kernel that published no slot table at all
+--- should still get the interface it had, not a screen with a pane missing.
+local function filled(ctx, slot)
+  local slots = ctx and ctx.slots
+  if type(slots) ~= "table" then
+    return true
+  end
+  return slots[slot] == true
+end
+
 return function(ctx)
   local height = ctx.height or 0
   local children = {}
@@ -92,8 +117,9 @@ return function(ctx)
   else
     local columns = {}
     -- The session column starts open; F9 hides it so the terminal can have the
-    -- full width (v1's `Action::ToggleSessionList`).
-    if panels.shown("sessions") then
+    -- full width (v1's `Action::ToggleSessionList`). `filled` is the other half:
+    -- turned off in the Interface tab, the column is not reserved either.
+    if panels.shown("sessions") and filled(ctx, "sessions") then
       columns[#columns + 1] = { slot = "sessions", pct = 25, min = 20 }
     end
     columns[#columns + 1] = { slot = "center" }
@@ -105,7 +131,7 @@ return function(ctx)
   -- so a modal covering them would hide the thing it is pointing at. It shrinks
   -- the content the same way a side column does — v1 carves the same row in
   -- `compute_layout` and for the same reason.
-  if panels.shown("search") then
+  if panels.shown("search") and filled(ctx, "search") then
     children[#children + 1] =
       { slot = "search", len = math.min(SEARCH_ROWS, math.max(3, height - 6)) }
   end

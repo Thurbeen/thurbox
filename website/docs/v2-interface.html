@@ -101,9 +101,8 @@ breadcrumb: 'Interface'
     The Interface tab (<kbd>Ctrl</kbd>+<kbd>,</kbd> then <kbd>]</kbd>): every file, where it came
     from, and whether it is on screen. Here <code>plugins/10_sessions.lua</code> is turned off with
     <kbd>space</kbd> &mdash; the file stays on disk, the session list stops being loaded, and the
-    session list stops loading — it declares no keys and is granted no capability. Its slot is
-    still declared by <code>ui/layout.lua</code>, so the column stays reserved until that line goes
-    too.
+    session list stops loading — it declares no keys, is granted no capability, and its column is
+    not reserved, so the agent pane takes the space rather than a hole being left behind.
   </figcaption>
 </figure>
 

@@ -346,9 +346,8 @@ cargo build --release</code></pre>
         <h2>The interface is a directory you can edit</h2>
         <p class="section-lede">
           The session list, the agent terminal, the search strip &mdash; each one is a Lua file
-          under <code>ui/plugins/</code>. Move it, turn it off, replace it with your own. What goes
-          where is a second file, <code>ui/layout.lua</code>, so the panes and the arrangement are
-          edited separately. No recompile, no restart.
+          under <code>ui/plugins/</code>. Move it, turn it off, replace it with your own, and the
+          arrangement closes up around what is left. No recompile, no restart.
         </p>
 
         <div class="ui-lab">
@@ -721,9 +720,9 @@ return {
                 <h3>Every pane is a file</h3>
                 <p>
                   The session list included. Move one, turn it off, delete it, or write your own
-                  &mdash; from a
-                  <strong>list of the files inside the app itself</strong>
-                  , which knows what each is and whether it is drawing. No recompile, no restart.
+                  &mdash; and the arrangement
+                  <strong>closes up around what is left</strong>
+                  rather than leaving a hole. No recompile, no restart.
                 </p>
               </div>
             </a>
@@ -885,10 +884,8 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
                 <code>10_sessions.lua</code>
                 is switched off with
                 <code>space</code>
-                : the file stays on disk, intact, and the session list stops loading &mdash; it
-                declares no keys and is granted no capability. Its column is still reserved by
-                <code>ui/layout.lua</code>
-                until you drop that line too.
+                : the file stays on disk, intact, it declares no keys and is granted no capability
+                &mdash; and its column is not reserved, so the agent takes the width.
               </p>
               <a class="feature-row-link" href="docs/v2-interface.html">Learn more &rarr;</a>
             </div>

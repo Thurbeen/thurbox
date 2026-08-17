@@ -382,3 +382,148 @@ fn a_broken_interface_loads_again_once_it_is_fixed() {
 
     let _ = fs::remove_dir_all(&floor);
 }
+
+/// Turning a pane off must not leave its column reserved and empty.
+///
+/// The interface's central promise is that the arrangement closes up around what
+/// is left, and it did not: `ui/layout.lua` gated the session column on the F9
+/// panel toggle alone, which is arrangement state, and knew nothing about the
+/// disabled set, which is delivery state. Disabling `10_sessions.lua` therefore
+/// produced a quarter-width rect with nothing in it — reproduced by a UI review
+/// and visible in the shipped demo recording.
+#[test]
+fn a_disabled_pane_does_not_reserve_its_column() {
+    let dir = interface();
+    let mut host = loaded(dir.path());
+
+    // Wide enough for the two-column arrangement, so the column is there to lose.
+    let before = placed(&host, 150, 40);
+    assert!(
+        before.contains("sessions"),
+        "the session column is placed while its plugin loads: {before:?}"
+    );
+    assert!(before.contains("center"), "{before:?}");
+
+    host.set_disabled(vec!["plugins/10_sessions.lua".to_string()]);
+    host.reload();
+    assert!(host.error.is_none(), "{:?}", host.error);
+    assert!(
+        !host
+            .plugins
+            .iter()
+            .any(|p| p.path == "plugins/10_sessions.lua"),
+        "a disabled file is not loaded at all"
+    );
+
+    let after = placed(&host, 150, 40);
+    assert!(
+        !after.contains("sessions"),
+        "no plugin fills `sessions`, so no rect may be reserved for it: {after:?}"
+    );
+    assert!(
+        after.contains("center"),
+        "the centre pane is never dropped: {after:?}"
+    );
+
+    // The point of not reserving it: the space goes to the pane that is left.
+    let full = resolve(
+        &host.arrangement(150, 40).expect("arrangement"),
+        Rect::new(0, 0, 150, 40),
+    );
+    let center = full
+        .iter()
+        .find(|slot| slot.slot == "center")
+        .expect("center is placed");
+    assert_eq!(
+        center.rect.width, 150,
+        "the centre takes the whole width once nothing else claims any"
+    );
+    assert_eq!(center.rect.x, 0, "and starts at the left edge");
+}
+
+/// A float claiming a slot must not make the arrangement reserve one.
+///
+/// A float draws *above* the arrangement, so it never fills a rect carved out of
+/// the screen. Counting one as an occupant would put back exactly the bug this
+/// pair of tests exists for: a reserved column with nothing in it.
+#[test]
+fn a_float_does_not_make_its_slot_count_as_occupied() {
+    let dir = interface();
+    // Replace the session list with a FLOAT that claims the same slot, so the
+    // slot is claimed but nothing will ever paint into the column.
+    fs::write(
+        dir.path().join("plugins/10_sessions.lua"),
+        "return { name = \"floaty\", slot = \"sessions\", floats = true,\n\
+         render = function() return { type = \"text\", text = \"x\" } end }",
+    )
+    .expect("write");
+    let host = loaded(dir.path());
+    assert!(
+        host.plugins.iter().any(|p| p.name == "floaty"),
+        "the float loaded"
+    );
+
+    let slots = host.occupied_slots();
+    assert!(
+        !slots.contains("sessions"),
+        "a float occupies no slot: {slots:?}"
+    );
+    let placed = placed(&host, 150, 40);
+    assert!(
+        !placed.contains("sessions"),
+        "so its column is not reserved: {placed:?}"
+    );
+}
+
+/// A float that painted nothing must not be reported as being on screen.
+///
+/// The inventory exists to answer "which of these files is drawing", and for the
+/// two floats — the confirmation dialog and the creation wizard — it answered
+/// `on screen` permanently, because `focus::is_drawn` returned true for anything
+/// *allowed* to float rather than for what had floated. Being the screen a user
+/// reaches for when the interface looks wrong, that is the worst place for it.
+#[test]
+fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
+    let dir = interface();
+    let host = loaded(dir.path());
+
+    // No float painted, which is the state at rest: nothing in `visible`.
+    let rows = inventory::rows(
+        &host.plugins,
+        &sources(dir.path()),
+        &HashSet::new(),
+        &["sessions".to_string(), "center".to_string()]
+            .into_iter()
+            .collect(),
+        None,
+        &|_| inventory::Trust::NotAsked,
+        &|_| false,
+    );
+    let state_of = |path: &str| {
+        rows.iter()
+            .find(|row| row.path == path)
+            .unwrap_or_else(|| panic!("{path} is listed"))
+            .state
+    };
+
+    for float in ["plugins/60_confirm.lua", "plugins/70_new_session.lua"] {
+        assert_eq!(
+            state_of(float),
+            State::OnDemand,
+            "{float} paints nothing until invoked"
+        );
+        assert_ne!(state_of(float), State::Visible, "{float}");
+    }
+
+    // The distinction is the point: `Hidden` still means a slot held by someone
+    // else or a closed column, which is a different thing from a modal at rest.
+    assert!(
+        thurbox::kernel::focus::is_drawn(thurbox::kernel::focus::Placement {
+            floats: true,
+            float_open: true,
+            slot_placed: false,
+            chosen_in_switch: None,
+        }),
+        "an open float is on screen"
+    );
+}

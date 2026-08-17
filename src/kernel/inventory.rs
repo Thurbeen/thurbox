@@ -54,6 +54,14 @@ pub enum State {
     /// Loaded, its slot placed, but another occupant holds it — or its column
     /// is closed. Normal, and not a fault.
     Hidden,
+    /// A float that is loaded and painting nothing at the moment.
+    ///
+    /// Distinct from `Hidden`, which is about a slot: a float has no slot to be
+    /// placed in and nothing is holding it back — it draws when it is invoked and
+    /// not before. Reporting the confirmation dialog and the creation wizard as
+    /// `Visible` (because a float *may* draw at any time) was the inventory's
+    /// worst answer, since saying what is drawing is the whole point of it.
+    OnDemand,
     /// Loaded, and its slot appears nowhere in the arrangement at this size.
     /// The silent drop, made loud.
     Unplaced,
@@ -79,6 +87,7 @@ impl State {
         match self {
             State::Visible => "visible",
             State::Hidden => "hidden",
+            State::OnDemand => "on demand",
             State::Unplaced => "unplaced",
             State::Failed => "failed",
             State::Removed => "removed",
@@ -186,7 +195,11 @@ pub fn rows(
             (_, Some((index, plugin))) => {
                 if visible.contains(&index) {
                     State::Visible
-                } else if placed.contains(&plugin.slot) || plugin.floats {
+                } else if plugin.floats {
+                    // Asked before the slot question, because a float's slot is
+                    // beside the point — it is not waiting for a column to open.
+                    State::OnDemand
+                } else if placed.contains(&plugin.slot) {
                     State::Hidden
                 } else {
                     State::Unplaced
