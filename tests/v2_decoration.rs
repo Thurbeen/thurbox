@@ -131,7 +131,7 @@ fn every_field_survives_the_trip_out_and_back() {
             max: Some(9),
         },
         frame: Some(Frame {
-            title: Some("Panel".into()),
+            title: Some(vec![thurbox::kernel::node::Run::plain("Panel")]),
             borders: Borders::All,
             border_style: Style::default().fg(Color::Magenta),
             style: Style::default().bg(Color::Indexed(17)),

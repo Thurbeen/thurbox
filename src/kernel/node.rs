@@ -131,7 +131,15 @@ impl ClickVerb {
 /// A frame drawn around a node.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Frame {
-    pub title: Option<String>,
+    /// The title, as styled runs rather than a bare string.
+    ///
+    /// Runs because a title is often two facts at once — the agent pane's is a
+    /// session's name *and* its status — and one style for the whole string forced
+    /// them to share a colour. The status word then took the focused pane's accent,
+    /// which in a red-accented palette announced an idle session in the same colour
+    /// the list uses for *blocked*. `Run` and `to_line` already existed for text
+    /// nodes; this is the same treatment.
+    pub title: Option<Vec<Run>>,
     pub borders: Borders,
     pub border_style: Style,
     pub style: Style,
@@ -156,6 +164,33 @@ pub enum Axis {
 pub struct Run {
     pub text: String,
     pub style: Style,
+}
+
+impl Run {
+    /// A run with no colour of its own, so it inherits whatever it is drawn into.
+    pub fn plain(text: impl Into<String>) -> Self {
+        Run {
+            text: text.into(),
+            style: Style::default(),
+        }
+    }
+}
+
+impl Frame {
+    /// A frame whose title is one unstyled run — the common case.
+    pub fn titled(title: impl Into<String>) -> Self {
+        Frame {
+            title: Some(vec![Run::plain(title)]),
+            ..Frame::default()
+        }
+    }
+
+    /// The title's text, styling dropped: what a decorator matches on.
+    pub fn title_text(&self) -> Option<String> {
+        self.title
+            .as_ref()
+            .map(|runs| runs.iter().map(|run| run.text.as_str()).collect())
+    }
 }
 
 /// A node in the view tree.

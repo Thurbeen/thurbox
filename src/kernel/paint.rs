@@ -14,7 +14,7 @@ use ratatui::widgets::{Block, BorderType, Borders as RatBorders, Clear, Paragrap
 use ratatui::Frame;
 
 use super::node::{
-    divide, to_line, Align, Axis, Borders, Frame as NodeFrame, Identity, Node, SurfaceSource,
+    divide, to_line, Align, Axis, Borders, Frame as NodeFrame, Identity, Node, Run, SurfaceSource,
 };
 
 /// A painted node that carried identity, and the rect it went into.
@@ -285,7 +285,26 @@ fn build_block(spec: &NodeFrame) -> Block<'static> {
         Borders::None => block.borders(RatBorders::NONE),
     };
     if let Some(title) = &spec.title {
-        block = block.title(title.clone());
+        // A run carrying no colour of its own takes the border's. An unstyled title
+        // took the TERMINAL's default foreground, which is somebody else's palette:
+        // under the light themes that came out cream on cream, and panel titles —
+        // the labels a newcomer navigates by — were the one thing on screen you
+        // could not read. A title and the border it sits in are one piece of
+        // chrome, so the default is shared and it is always a theme role. A run
+        // that does set a colour keeps it, which is how the agent pane paints its
+        // status word without the rest of the title changing.
+        let runs: Vec<Run> = title
+            .iter()
+            .map(|run| Run {
+                text: run.text.clone(),
+                style: if run.style.fg.is_some() {
+                    run.style
+                } else {
+                    spec.border_style.patch(run.style)
+                },
+            })
+            .collect();
+        block = block.title(to_line(&runs));
     }
     block
 }

@@ -321,10 +321,7 @@ fn read_frame(table: &Table, path: &str) -> Result<Option<Frame>, String> {
         Value::Nil => Ok(None),
         Value::Boolean(false) => Ok(None),
         Value::Boolean(true) => Ok(Some(Frame::default())),
-        Value::String(title) => Ok(Some(Frame {
-            title: Some(title.to_string_lossy()),
-            ..Frame::default()
-        })),
+        Value::String(title) => Ok(Some(Frame::titled(title.to_string_lossy()))),
         Value::Table(spec) => {
             let borders = match opt_string(&spec, "borders", path)?.as_deref() {
                 Some("none") => Borders::None,
@@ -335,8 +332,15 @@ fn read_frame(table: &Table, path: &str) -> Result<Option<Frame>, String> {
                     ))
                 }
             };
+            // A plain string stays a plain string; a table of runs is styled, the
+            // same shape a `text` node accepts.
+            let title = match spec.get::<Value>("title") {
+                Ok(Value::Nil) => None,
+                Ok(value) => Some(read_runs(&value, &format!("{path}.frame.title"), 0)?),
+                Err(e) => return Err(format!("{path}.frame.title: {e}")),
+            };
             Ok(Some(Frame {
-                title: opt_string(&spec, "title", path)?,
+                title,
                 borders,
                 border_style: read_style_field(&spec, "border_style", path)?,
                 style: read_style_field(&spec, "style", path)?,
@@ -600,9 +604,8 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
     }
     if let Some(frame) = node.frame() {
         let spec = lua.create_table().map_err(|e| e.to_string())?;
-        if let Some(title) = &frame.title {
-            spec.set("title", title.clone())
-                .map_err(|e| e.to_string())?;
+        if let Some(text) = frame.title_text() {
+            spec.set("title", text).map_err(|e| e.to_string())?;
         }
         spec.set(
             "borders",
@@ -850,7 +853,7 @@ mod tests {
     fn a_frame_accepts_a_bare_title() {
         let node = node_of("{ text = \"x\", frame = \"Sessions\" }").unwrap();
         assert_eq!(
-            node.frame().and_then(|f| f.title.as_deref()),
+            node.frame().and_then(|f| f.title_text()).as_deref(),
             Some("Sessions")
         );
     }
@@ -859,7 +862,7 @@ mod tests {
     fn block_is_still_accepted_as_a_frame() {
         let node = node_of("{ text = \"x\", block = { title = \"T\", padding = 1 } }").unwrap();
         let frame = node.frame().expect("block should become a frame");
-        assert_eq!(frame.title.as_deref(), Some("T"));
+        assert_eq!(frame.title_text().as_deref(), Some("T"));
         assert_eq!(frame.padding, 1);
     }
 

@@ -99,7 +99,21 @@ fn compute_matches(choices: &[ThemeChoice], filter: &str) -> Vec<usize> {
 /// flat arithmetic: back off far enough to show the margin above the selection,
 /// then pull the top up to fill the pane.
 fn scroll_start(rows: &[Row], selected: usize, height: u16) -> usize {
-    let selected = selected.min(rows.len().saturating_sub(1));
+    if rows.is_empty() {
+        return 0;
+    }
+    let selected = selected.min(rows.len() - 1);
+    // Show the top whenever the top would have fitted. The margin walk below
+    // backs off at most `MAX_MARGIN` rows, which is right for a list scrolled
+    // into its middle and wrong at the start of one: the picker opens on the
+    // active theme, and with `doom` fifth the walk stopped one row short of the
+    // beginning — because the first row carries the `Dark` section header and is
+    // two rows tall. So `Default` and the header that groups everything under it
+    // sat off the top of a pane with twenty-six rows to spare, which read as the
+    // grouping being absent rather than scrolled.
+    if total_height(&rows[..=selected]) <= height {
+        return 0;
+    }
     let margin = (height / 4).min(MAX_MARGIN);
     let mut start = selected;
     let mut used = 0u16;
@@ -549,7 +563,10 @@ pub enum Outcome {
 /// one's.
 fn render_preview(frame: &mut Frame, area: Rect, palette: &ThemePalette, chrome: Chrome) {
     use ratatui::style::Color;
-    let label = |text: &'static str| Span::styled(text, chrome.muted());
+    // Secondary, not muted: these name the swatches beside them, and a label
+    // dimmer than the thing it labels inverts the reading order.
+    let label =
+        |text: &'static str| Span::styled(text, Style::default().fg(chrome.palette.text_secondary));
     let chip = |text: &'static str, fg: Color, bg: Option<Color>| {
         let mut style = Style::default().fg(fg);
         if let Some(bg) = bg {
@@ -591,13 +608,21 @@ fn render_preview(frame: &mut Frame, area: Rect, palette: &ThemePalette, chrome:
             space(),
             chip(" - ", palette.diff_removed, Some(palette.diff_removed_bg)),
         ]),
+        // Blocks, like every row above. A hairline `╭─────╮` in the border colour
+        // was close to invisible, and it showed only one of the two border roles.
         Line::from(vec![
             label("  Border      "),
-            chip("╭─────╮", palette.border_focused, None),
+            chip("█████", palette.border_unfocused, None),
+            space(),
+            chip("█████", palette.border_focused, None),
         ]),
+        // Painted as INK, not as ground. This was spaces with `bg = modal_bg`,
+        // drawn onto the modal whose background is `modal_bg` — invisible by
+        // construction rather than by bad luck, in every one of the thirty-six
+        // palettes.
         Line::from(vec![
             label("  Modal bg    "),
-            chip("         ", palette.text_primary, Some(palette.modal_bg)),
+            chip("█████", palette.modal_bg, None),
         ]),
     ];
     frame.render_widget(Paragraph::new(swatch), area);
@@ -609,6 +634,48 @@ mod tests {
 
     fn choices() -> Vec<ThemeChoice> {
         Themes::load(None).choices().to_vec()
+    }
+
+    #[test]
+    fn opening_on_an_early_theme_does_not_scroll_the_first_ones_away() {
+        // The picker opens on the ACTIVE theme. `doom` is the fifth preset, and the
+        // first row is two tall because it carries the `Dark` header — so the
+        // margin walk, which backs off at most MAX_MARGIN rows, stopped one row
+        // short of the top and hid `Default` and the header with it. In a pane with
+        // twenty-six rows to spare, that read as the dark grouping not existing.
+        let choices = choices();
+        let matches: Vec<usize> = (0..choices.len()).collect();
+        let rows = build_rows(&choices, &matches);
+        let doom = choices
+            .iter()
+            .position(|choice| choice.name == "doom")
+            .expect("doom is a preset");
+        assert!(
+            doom > MAX_MARGIN as usize,
+            "or the walk would reach 0 anyway"
+        );
+        assert_eq!(
+            scroll_start(&rows, doom, 26),
+            0,
+            "everything from the top through the selection fits, so show the top"
+        );
+
+        // Still scrolls when it has to, and the selection stays inside the window
+        // it chose.
+        let last = rows.len() - 1;
+        let start = scroll_start(&rows, last, 26);
+        assert!(start > 0, "a selection past the pane still scrolls");
+        assert!(
+            total_height(&rows[start..=last]) <= 26,
+            "the selected row must be visible from the offset returned"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_has_somewhere_to_start() {
+        // Reachable with a filter that matches nothing; indexing `rows[..=0]` on an
+        // empty slice would panic.
+        assert_eq!(scroll_start(&[], 0, 20), 0);
     }
 
     #[test]
