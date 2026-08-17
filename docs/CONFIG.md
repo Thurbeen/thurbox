@@ -18,16 +18,19 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts + local WSL distros |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
-| `~/.config/thurbox/keybindings.json` | JSON | F1 editor (or you) | **live** (mtime poll) | key chord overrides |
+| `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua` and `lib/` |
+| `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, plugins turned off, files trusted, plugin settings |
 | `~/.config/thurbox/extensions/<name>.toml` | TOML | `thurbox-cli extension install` | startup + tick | extension manifests (self-healed resources) |
+| `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings) |
 
-`agents.toml`, `keybindings.json`, and `settings.toml` reload **live**:
-the TUI polls their mtime (~1/s) and applies edits with a confirmation
-toast — no restart. For `settings.toml` only the **feature flags that
-gate UI panels** (`tasks`, `file_viewer`, `info_panel`, `global_search`,
-`shell_pane`, `code_review`, `perf_hud`, `soft_delete`) apply live; the restart-only values stay
+`agents.toml` and `settings.toml` reload **live**: the TUI polls their
+mtime (~1/s) and applies edits with a confirmation toast — no restart.
+The `ui/` directory reloads live too, but on a **filesystem watcher**
+(120 ms debounce) rather than a poll, and `F10` forces one. For
+`settings.toml` the flags that apply live are `shell_pane`, `perf_hud`
+and `soft_delete`; the restart-only values stay
 published through a write-once global (so they can't drift mid-frame),
 and the reload toast says when a restart is needed. `hosts.toml` (SSH
 backends register at startup) and `themes.toml` need a restart.
@@ -234,21 +237,16 @@ config_version = 1
 # Scalar tuning knobs (top level)
 scrollback_lines      = 1000   # terminal scrollback kept per session
 two_panel_min_cols    = 80     # width below which only the terminal renders
-three_panel_min_cols  = 120    # width unlocking the optional third column
+three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
 audit_retention_days  = 90     # audit-log history kept (pruned on startup)
 
 [features]
-tasks         = true
-automations   = true
-file_viewer   = true
-global_search = true
-info_panel    = true
 shell_pane    = true
-code_review   = true
 perf_hud      = true
+soft_delete   = true
+automations   = true
 mouse         = true
 notifications = true
-soft_delete   = true
 version_check = true           # on by default (1.0): makes a network call
 auto_update   = true           # on by default (1.0): downloads + replaces binaries
 
@@ -261,27 +259,30 @@ min_interval_secs   = 5        # per-session floor between notifications
 
 ### `[features]` — whole-feature switches
 
-Turn major TUI features off entirely. All default to `true` — as of 1.0
-that includes `version_check` and `auto_update`, which both reach the
-network (they were opt-in before 1.0). The UI-panel flags
-(`tasks`, `file_viewer`, `info_panel`, `global_search`, `shell_pane`,
-`code_review`, `perf_hud`, `soft_delete`) apply **live** on save; the rest
-(`automations`, `mouse`, `notifications`, `version_check`, `auto_update`)
-take effect on the next launch.
-A disabled feature's pane never renders, its keybinding shows
-a status toast instead of acting, and its global-search scope returns
-no results. Data is never touched, so re-enabling a flag is lossless.
+Switch off behaviour that reaches outside the interface. All default to
+`true` — as of 1.0 that includes `version_check` and `auto_update`, which
+both reach the network (they were opt-in before 1.0). `shell_pane`,
+`perf_hud` and `soft_delete` apply **live** on save; `automations`,
+`mouse`, `notifications`, `version_check` and `auto_update` take effect on
+the next launch. Data is never touched, so re-enabling a flag is lossless.
+
+**A pane is not switched off here.** Panes are files, so turning one off
+is `space` on its row in the Interface tab (`Ctrl+,` then `]`), recorded
+in `ui.json`. That does strictly more than a flag could: it works for a
+plugin *you* wrote, which no compiled-in flag could know about.
+
+Five keys are **accepted and ignored**: `tasks`, `file_viewer`,
+`info_panel`, `code_review` and `global_search`. They gated v1 panes that
+no longer exist, and nothing reads them now. They are still parsed rather
+than rejected, so an existing `settings.toml` keeps loading instead of
+failing on an unknown key — but setting one has no effect in either
+direction. Same for `three_panel_min_cols` above.
 
 | Key | Default | Controls |
 |-----|---------|----------|
-| `tasks` | `true` | tasks panel (`F5`/`Ctrl+W`) and task search results |
-| `automations` | `true` | automations pane, `Ctrl+P`, TUI schedule firing, heartbeat arming |
-| `file_viewer` | `true` | file viewer column (`F3`) and file search results |
-| `global_search` | `true` | global search strip (`Ctrl+/`) |
-| `info_panel` | `true` | info panel column (`F2`) |
 | `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
-| `code_review` | `true` | native code-review view (diff + comments, `Ctrl+X`) |
 | `perf_hud` | `true` | perf HUD overlay (`F12`): live perf counters + frame/tick timing (see `docs/PERFORMANCE.md`) |
+| `automations` | `true` | TUI schedule firing + heartbeat arming (the CLI stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `true` | TUI `Ctrl+D` soft-deletes (Ctrl+Z undo); off = hard delete after a confirmation prompt |

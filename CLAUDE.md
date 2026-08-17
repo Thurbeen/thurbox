@@ -990,7 +990,8 @@ close it), and `task run` sends or spawns. Triggering advances `Todo → InProgr
   external_id)` (v35) backing the upsert lookup.
 - **CLI**: `thurbox-cli task` (alias `todo`) —
   `create`/`list`/`show`/`edit`/`remove`/`run`, with `--description` (markdown) and
-  the external-sync flags. `[features] tasks` still gates the CLI surface.
+  the external-sync flags. `[features] tasks` is **accepted and ignored** — nothing
+  reads it, in the CLI or anywhere else.
 
 > A pane is owed. It is Tier 2 in `openspec/changes/v2-parity-gaps/`, and the shape
 > a plugin would take is the same one `10_sessions.lua` uses: read the snapshot,
@@ -1600,9 +1601,12 @@ chrome now because a recovery tool must not be the thing that is broken.
 `settings.toml` is **live-reloaded** (mtime poll): an outside edit re-applies the
 live half and toasts, noting a restart when `restart_only_differs` says so.
 
-> `[features] code_review`, `file_viewer`, `tasks` and `info_panel` gated surfaces
-> the interface no longer draws. They are still accepted so existing files do not
-> fail `thurbox-cli config validate`; `tasks` still gates its CLI.
+> `[features] code_review`, `file_viewer`, `tasks`, `info_panel` and
+> `global_search` gated surfaces the interface no longer draws, and
+> `three_panel_min_cols` sized a column that no longer exists. None of the six is
+> read by anything: they are parsed so an existing `settings.toml` keeps loading
+> rather than failing on an unknown key, and setting one does nothing in either
+> direction. The settings panel does not offer them.
 
 ## OpenSpec (spec-driven changes)
 
@@ -1659,7 +1663,14 @@ thurbox-cli plugin list           # the inventory the Interface tab shows
 
 Three rules pick the directory, in order: `THURBOX_UI_DIR`, a `./ui` beside the
 working directory, then the user's copy (`~/.config/thurbox/ui/`, materialised from
-the embedded interface on first run, preserving edits). The resolved directory is
+the embedded interface on first run, preserving edits). That third path is derived
+from `paths::config_file()` like every other config path — `agents.toml`,
+`hosts.toml`, `settings.toml`, `themes.toml`, `extensions/`, `ui.json` — so a **dev
+build reads `~/.config/thurbox-dev/ui`** and cannot touch the release copy.
+`THURBOX_CONFIG_DIR` overrides that anchor and thurbox injects it into every
+session it spawns, which is why a `thurbox-cli` run *inside* a session resolves
+against that session's config dir rather than the dev default. `config show` prints
+the resolved `ui_dir`/`ui_json` beside the rest. The resolved directory is
 made **absolute** — trust, the disabled set and rebindings are keyed by
 `ui_dir.join(file)` and compared verbatim, so a relative `ui` would be shared by
 every checkout on the machine. It is *not* canonicalised: that would return a

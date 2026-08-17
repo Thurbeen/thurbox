@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Configuration — Thurbox Docs'
-description: 'Every config file and knob Thurbox reads: agents.toml, hosts.toml, settings.toml feature flags, themes.toml, keybindings.json, extension manifests, SQLite-backed state, and environment variables.'
+description: 'Every config file and knob Thurbox reads: agents.toml, hosts.toml, settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, extension manifests, SQLite-backed state, and environment variables.'
 currentPage: 'configuration'
 breadcrumb: 'Configuration'
 ---
@@ -76,11 +76,40 @@ breadcrumb: 'Configuration'
                 <td>custom theme palettes</td>
               </tr>
               <tr>
+                <td><code>~/.config/thurbox/ui/</code></td>
+                <td>Lua</td>
+                <td>you</td>
+                <td>live (watched, 120&nbsp;ms debounce; <code>F10</code> forces)</td>
+                <td>
+                  <strong>the interface itself</strong>
+                  &mdash; one file per pane, plus
+                  <code>layout.lua</code>
+                  and
+                  <code>lib/</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>~/.config/thurbox/ui.json</code></td>
+                <td>JSON</td>
+                <td><code>F1</code> / Interface tab (or you)</td>
+                <td>startup</td>
+                <td>
+                  your decisions <em>about</em> the interface: rebound chords, plugins turned off,
+                  files trusted, plugin settings
+                </td>
+              </tr>
+              <tr>
                 <td><code>~/.config/thurbox/keybindings.json</code></td>
                 <td>JSON</td>
-                <td>F1 editor (or you)</td>
-                <td>live (mtime poll)</td>
-                <td>key chord overrides</td>
+                <td>&mdash;</td>
+                <td><strong>never</strong></td>
+                <td>
+                  v1's chord overrides.
+                  <strong>Ignored</strong>
+                  &mdash; rebindings live in
+                  <code>ui.json</code>
+                  . Left in place rather than deleted, so going back to 1.x still finds it.
+                </td>
               </tr>
               <tr>
                 <td><code>~/.config/thurbox/extensions/&lt;name&gt;.toml</code></td>
@@ -411,19 +440,29 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
 
           <h3><code>[features]</code> &mdash; whole-feature switches</h3>
           <p>
-            Turn major TUI features off entirely. All default to
-            <code>true</code>
-            <strong>except <code>version_check</code> and <code>auto_update</code>, which default to <code>false</code></strong>
-            (both reach the network, so they are opt-in). The UI-panel feature flags
-            (<code>tasks</code>, <code>file_viewer</code>, <code>info_panel</code>,
-            <code>global_search</code>, <code>shell_pane</code>, <code>code_review</code>,
-            <code>soft_delete</code>) are <strong>live-reloaded</strong> &mdash; they take effect
-            immediately, no restart. The rest (<code>automations</code>, <code>mouse</code>,
-            <code>notifications</code>, <code>version_check</code>, <code>auto_update</code>) and the
-            write-once scalars wait for the next launch. A disabled feature's pane never renders, its keybinding shows a status
-            toast instead of acting, and its global-search scope returns no results. Data is never
-            touched, so re-enabling a flag is lossless.
+            Switch off behaviour that reaches outside the interface.
+            <strong>All default to <code>true</code></strong>
+            &mdash; as of 1.0 that includes <code>version_check</code> and
+            <code>auto_update</code>, which both reach the network (they were opt-in before 1.0).
+            <code>shell_pane</code>, <code>perf_hud</code> and <code>soft_delete</code> apply
+            <strong>live</strong> on save; <code>automations</code>, <code>mouse</code>,
+            <code>notifications</code>, <code>version_check</code> and <code>auto_update</code>, and
+            the write-once scalars, wait for the next launch. Data is never touched, so re-enabling a
+            flag is lossless.
           </p>
+          <div class="info-box">
+            <p>
+              <strong>A pane is not switched off here.</strong>
+              Panes are files, so turning one off is <code>space</code> on its row in the Interface
+              tab (<code>Ctrl+,</code> then <code>]</code>), recorded in <code>ui.json</code>. Five
+              keys are still <em>accepted and ignored</em> &mdash; <code>tasks</code>,
+              <code>file_viewer</code>, <code>info_panel</code>, <code>code_review</code> and
+              <code>global_search</code> &mdash; because they gated
+              <a href="deprecated.html">v1 panes that no longer exist</a>. They are parsed rather
+              than rejected so an existing <code>settings.toml</code> keeps loading, but setting one
+              has no effect in either direction. Same for <code>three_panel_min_cols</code>.
+            </p>
+          </div>
           <table>
             <thead>
               <tr>
@@ -436,7 +475,8 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               <tr>
                 <td><code>tasks</code></td>
                 <td><code>true</code></td>
-                <td><code>thurbox-cli task</code>. The TUI pane was removed; the flag still gates the CLI</td>
+                <td>Accepted, gates nothing &mdash; the tasks pane was removed and nothing reads
+                  this. <code>thurbox-cli task</code> works regardless</td>
               </tr>
               <tr>
                 <td><code>automations</code></td>
@@ -451,7 +491,8 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               <tr>
                 <td><code>global_search</code></td>
                 <td><code>true</code></td>
-                <td>global search strip (<code>Ctrl+/</code>)</td>
+                <td>Accepted, gates nothing &mdash; the search strip is a plugin, turned off from
+                  the Interface tab</td>
               </tr>
               <tr>
                 <td><code>info_panel</code></td>

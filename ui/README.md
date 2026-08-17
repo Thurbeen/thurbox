@@ -31,8 +31,11 @@ In a running thurbox, `F10` reloads from disk and `Ctrl+,` → `]` shows the sam
 inventory `plugin list` prints.
 
 Three rules pick the directory, in order: `THURBOX_UI_DIR`, a `./ui` beside the
-working directory, then the user's own copy. `plugin dir` says which won — worth
-checking before concluding an edit did nothing.
+working directory, then the user's own copy — `~/.config/thurbox/ui`, or
+`~/.config/thurbox-dev/ui` for a dev build, which sits beside that build's own
+`settings.toml` exactly as every other config path does. `plugin dir` says which
+rule won, and `thurbox-cli config show` prints the resolved `ui_dir` beside the
+rest of the config: worth checking before concluding an edit did nothing.
 
 ## The five rules
 

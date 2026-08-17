@@ -613,6 +613,24 @@ pub fn normalise_chord(raw: &str) -> String {
     parts.join("+")
 }
 
+/// Parse `ui.json` the way the kernel does, and report what it complained about.
+///
+/// For `thurbox-cli config validate`, which was checking v1's `keybindings.json`
+/// — a file nothing reads now — and not this one, which the interface reads on
+/// every launch for rebindings, trust and the disabled set.
+pub fn validate_overrides() -> Vec<String> {
+    read_overrides().4
+}
+
+/// Where the user's interface decisions live: `<config>/ui.json`.
+///
+/// Public so `thurbox-cli config` can report it. It sits beside `settings.toml`
+/// and the rest, which means it follows the same `thurbox` / `thurbox-dev` split
+/// every other config path does — a dev build never reads the release file.
+pub fn overrides_file() -> Option<PathBuf> {
+    overrides_path()
+}
+
 fn overrides_path() -> Option<PathBuf> {
     crate::paths::config_file().and_then(|config| config.parent().map(|dir| dir.join("ui.json")))
 }

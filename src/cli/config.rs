@@ -100,6 +100,22 @@ fn validate_toml<T: serde::de::DeserializeOwned>(
     (file_report(Some(path), problems, true), ok)
 }
 
+/// Validate `ui.json` — the file the interface actually reads for rebindings,
+/// trust and the disabled set.
+fn validate_ui_json() -> (Value, bool) {
+    let path = crate::kernel::registry::overrides_file();
+    let problems = crate::kernel::registry::validate_overrides();
+    let ok = problems.is_empty();
+    (
+        json!({
+            "path": path.map(|p| p.display().to_string()),
+            "ok": ok,
+            "problems": problems,
+        }),
+        ok,
+    )
+}
+
 fn validate_keybindings() -> (Value, bool) {
     let path = crate::paths::keybindings_file();
     match crate::storage::keybindings::load_keybindings_json() {
@@ -135,14 +151,21 @@ fn validate() -> (Value, Vec<String>) {
         crate::agent::themes_config::themes_config_path(),
         "themes.toml",
     );
-    let (keybindings, kb_ok) = validate_keybindings();
+    let (ui_json, ui_ok) = validate_ui_json();
+    // Parsed only to report where it is and whether it is well-formed; its
+    // verdict is not in the failure list, because nothing reads it.
+    let (keybindings, _kb_ok) = validate_keybindings();
 
     let failed: Vec<String> = [
         ("agents.toml", agents_ok),
         ("hosts.toml", hosts_ok),
         ("settings.toml", settings_ok),
         ("themes.toml", themes_ok),
-        ("keybindings.json", kb_ok),
+        ("ui.json", ui_ok),
+        // Deliberately NOT in the failure list: nothing reads it, so a malformed
+        // one cannot break anything and calling it invalid would send an upgrader
+        // to fix a file that no longer matters.
+        ("keybindings.json (v1, ignored)", true),
     ]
     .iter()
     .filter(|(_, ok)| !ok)
@@ -155,7 +178,8 @@ fn validate() -> (Value, Vec<String>) {
         "hosts_toml": hosts,
         "settings_toml": settings,
         "themes_toml": themes,
-        "keybindings_json": keybindings,
+        "ui_json": ui_json,
+        "keybindings_json_legacy": keybindings,
     });
     (report, failed)
 }
@@ -167,7 +191,8 @@ fn render_validate(report: &Value, failed: &[String]) -> String {
         ("hosts.toml", "hosts_toml"),
         ("settings.toml", "settings_toml"),
         ("themes.toml", "themes_toml"),
-        ("keybindings.json", "keybindings_json"),
+        ("ui.json", "ui_json"),
+        ("keybindings.json (v1, ignored)", "keybindings_json_legacy"),
     ];
     let mut lines = Vec::new();
     for (label, key) in files {
@@ -272,7 +297,19 @@ fn show(db: &Database) -> Result<Value, String> {
                 .map(|p| p.display().to_string()),
             "themes_toml": crate::agent::themes_config::themes_config_path()
                 .map(|p| p.display().to_string()),
-            "keybindings_json": crate::paths::keybindings_file()
+            // The interface is config like the rest of it, and it was the one
+            // thing this command could not tell you the location of — which is
+            // exactly the question a dev build invites, since every path here
+            // swaps `thurbox` for `thurbox-dev`.
+            "ui_dir": crate::kernel::bundled::user_ui_dir()
+                .map(|p| p.display().to_string()),
+            "ui_json": crate::kernel::registry::overrides_file()
+                .map(|p| p.display().to_string()),
+            // v1's file. Reported so an upgrader can see where their old
+            // rebindings went, and flagged because nothing reads it now: the
+            // interface keeps rebindings in `ui.json` beside trust and the
+            // disabled set, since all three are user decisions.
+            "keybindings_json_legacy": crate::paths::keybindings_file()
                 .map(|p| p.display().to_string()),
             "database": crate::paths::database_file().map(|p| p.display().to_string()),
         },
@@ -350,7 +387,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_reports_keybinding_conflicts() {
+    fn a_broken_v1_keybindings_file_does_not_fail_validation() {
+        // It used to, and must not: nothing reads `keybindings.json` any more —
+        // the interface keeps rebindings in `ui.json` beside trust and the disabled
+        // set. Failing validation over it would send an upgrader to fix a file that
+        // cannot affect anything. It is still *reported*, so they can see where the
+        // old rebindings went.
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
         crate::storage::keybindings::save_keybindings_json(
@@ -358,10 +400,38 @@ mod tests {
         )
         .unwrap();
 
-        let (_, failed) = validate();
+        let (report, failed) = validate();
         assert!(
-            failed.iter().any(|f| f == "keybindings.json"),
-            "got: {failed:?}"
+            !failed.iter().any(|f| f.starts_with("keybindings.json")),
+            "a file nothing reads cannot make the config invalid: {failed:?}"
+        );
+        assert!(
+            report["keybindings_json_legacy"]["path"].is_string(),
+            "still reported, so an upgrader can find it: {report}"
+        );
+    }
+
+    #[test]
+    fn validate_checks_the_interface_overrides_file() {
+        // `ui.json` is the one the interface actually reads on every launch, and it
+        // was the one `validate` did not look at.
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = TestPathGuard::new(tmp.path());
+        let path = crate::kernel::registry::overrides_file().expect("a ui.json path");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ this is not json").unwrap();
+
+        let (report, failed) = validate();
+        assert!(
+            failed.iter().any(|f| f == "ui.json"),
+            "a malformed ui.json is a real problem: {failed:?}"
+        );
+        assert!(
+            !report["ui_json"]["problems"]
+                .as_array()
+                .expect("problems is a list")
+                .is_empty(),
+            "and it says what is wrong: {report}"
         );
     }
 

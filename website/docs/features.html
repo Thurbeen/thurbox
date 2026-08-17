@@ -753,13 +753,14 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             <code>~/.config/thurbox/settings.toml</code>
             under
             <code>[features]</code>
-            (seeded commented-out; everything defaults to
+            (seeded commented-out, so the defaults apply when absent). Every flag defaults to
             <code>true</code>
-            except
+            &mdash; including
             <code>version_check</code>
             and
             <code>auto_update</code>
-            , which are opt-in because they reach the network).
+            , which were opt-in before 1.0 and reach the network, so they are the two most worth
+            knowing you can turn off.
           </p>
           <div class="info-box">
             <p>
@@ -778,9 +779,9 @@ soft_delete = true    # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard-delete b
 automations = true    # schedule firing + arming the tmux heartbeat
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
 notifications = true  # OS desktop alerts when a session needs attention
-perf_hud = false      # F12 live counters
-version_check = false # opt-in GitHub update check (makes a network call)
-auto_update = false   # opt-in: download+verify+replace the binaries on startup</code></pre>
+perf_hud = true       # F12 live counters
+version_check = true  # GitHub update check (makes a network call)
+auto_update = true    # download+verify+replace the binaries on startup</code></pre>
           <p>
             <code>automations = false</code>
             is the flag with teeth beyond the interface: it also stops due schedules from firing and
