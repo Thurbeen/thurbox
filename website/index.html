@@ -941,13 +941,21 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
               <p class="feature-row-eyebrow">Ctrl+, &rarr; Interface</p>
               <h3>The interface, editing itself</h3>
               <p>
-                The Interface tab lists every file that makes up what you are looking at, and
-                whether each is drawing right now. Here
-                <code>10_sessions.lua</code>
-                is switched off with
+                The Interface tab lists every file that makes up what you are looking at &mdash;
+                bundled ones saying nothing, the two panes from
+                <code>docs/examples/</code>
+                marked
+                <strong>yours</strong>
+                , and
+                <code>layout.lua</code>
+                marked
+                <strong>edited</strong>
+                because the demo replaced the shipped one. Here
+                <code>85_top.lua</code>
+                &mdash; a pane thurbox never shipped &mdash; is switched off with
                 <code>space</code>
-                : the file stays on disk, intact, it declares no keys and is granted no capability
-                &mdash; and its column is not reserved, so the agent takes the width.
+                : the file stays on disk, intact, and its row is not reserved, so the tasks pane
+                takes the whole column. The same machinery, for a file you wrote.
               </p>
               <a class="feature-row-link" href="docs/v2-interface.html">Learn more &rarr;</a>
             </div>
@@ -959,8 +967,8 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
                 <div class="terminal-body">
                   <!-- prettier-ignore -->
                   <video src="assets/thurbox-interface.mp4" width="1920" height="1080" autoplay loop muted playsinline preload="none">
-                    Turning the session-list plugin off from the Interface tab; the file stays on
-                    disk and the session list stops loading
+                    Turning off a pane from docs/examples/ in the Interface tab; the file stays on
+                    disk and the arrangement closes up around it
                   </video>
                 </div>
               </div>
