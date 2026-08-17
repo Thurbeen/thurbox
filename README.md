@@ -276,6 +276,10 @@ never cascades to its workers.
 
 ### Automations
 
+> **CLI only.** No pane yet — author and inspect them with
+> `thurbox-cli automation`. They still fire on their own: the tmux heartbeat
+> keeper runs due automations whether or not thurbox is open.
+
 Named, scheduled agent runs — one-shot or recurring (cron, with
 `hourly`/`daily`/`weekdays`/`weekly` presets) that **send** a prompt to a
 running session or **spawn** a fresh one. The editor needs no cron
@@ -286,13 +290,15 @@ keeper.
 
 </td>
 <td width="50%">
-  <img src="./docs/media/automations-demo.gif" alt="Automations demo" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="50%" valign="middle">
 
 ### Tasks
+
+> **CLI only.** No pane yet — `thurbox-cli task` does everything below, on
+> the same records.
 
 A built-in todo list whose items can be handed to a coding agent with the
 same Send/Spawn model — or stay plain local todos. Lives in a toggleable
@@ -303,7 +309,6 @@ advances it to *in progress*.
 
 </td>
 <td width="50%">
-  <img src="./docs/media/tasks-demo.gif" alt="Tasks demo" width="100%" />
 </td>
 </tr>
 <tr>
@@ -328,6 +333,9 @@ result; `Esc` restores exactly what you had.
 
 ### Code Review
 
+> **Not in the current interface**, and no replacement yet. `1.x` keeps it;
+> see [docs/v1](https://github.com/Thurbeen/thurbox/tree/1.x/docs).
+
 A native, GitHub-style diff reviewer (`Ctrl+X`, `F7` alternate) — no external tool. Browse the
 branch (`<base>..HEAD`), a single commit, or the uncommitted changes; the
 changed files show as a **folder tree** with colored statuses, and the diff is
@@ -341,13 +349,15 @@ keyboard-driven, with unified or side-by-side layout.
 
 </td>
 <td width="50%">
-  <img src="./docs/media/code-review-demo.gif" alt="Code review demo" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="50%" valign="middle">
 
 ### Info Panel & Live Metrics
+
+> **Not in the current interface.** Machine and agent metrics are still
+> collected and published to plugins; there is no pane drawing them yet.
 
 `Ctrl+B` (`F2`) shows per-session details with live CPU/RAM and agent
 metrics, right beside the terminal.
@@ -356,7 +366,6 @@ metrics, right beside the terminal.
 
 </td>
 <td width="50%">
-  <img src="./docs/media/thurbox-info-panel.gif" alt="Info panel" width="100%" />
 </td>
 </tr>
 <tr>
@@ -364,13 +373,14 @@ metrics, right beside the terminal.
 
 ### File Viewer
 
+> **Not in the current interface**, and no replacement yet.
+
 `Ctrl+E` (`F3`) browses the session's worktree tree with fuzzy search and in-file text search.
 
 [Keybindings →](#keybindings)
 
 </td>
 <td width="50%">
-  <img src="./docs/media/thurbox-file-manager.gif" alt="File manager" width="100%" />
 </td>
 </tr>
 <tr>
@@ -652,40 +662,47 @@ repos? Add `--add-repo PATH@main` (its own worktree per repo) or
 
 ### Global Keys
 
-| Key | Action | Mnemonic |
-|-----|--------|----------|
-| `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
-| `Ctrl+N` | New session (opens repo picker) | **N**ew |
-| `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
-| `Ctrl+V` | Paste from clipboard | Paste |
-| `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
-| `Ctrl+/` | Global search (sessions/tasks/automations/files) | **/** = search |
-| `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | **W**ork items |
-| `Ctrl+T` | Toggle shell pane | **T**erminal |
-| `Ctrl+X` / `F7` | Toggle code-review pane (native diff reviewer) | Review |
-| `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
-| `Ctrl+J` | Select next session | Vim: **j** = down |
-| `Ctrl+K` | Select previous session | Vim: **k** = up |
-| `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
-| `Shift+J` / `Shift+K` | Move selected session down/up (manual order) | reorder |
-| `Shift+S` | Sort sessions alphabetically within each repo group | **S**ort |
-| `Ctrl+D` | Delete session | Vim: **d** = delete |
-| `Ctrl+O` | Open active session's working dirs in editor | **O**pen |
-| `Ctrl+R` | Restart active session | **R**estart |
-| `Ctrl+F` | Fork active session | **F**ork |
-| `Ctrl+S` | Sync worktrees with their base branch | **S**ync |
-| `Ctrl+Z` | Undo session delete | **Z** = undo |
-| `Ctrl+U` | Restore deleted sessions | **U**ndelete |
-| `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
-| `Ctrl+,` / `F6` | Settings panel (edit settings.toml) | **,** = preferences |
-| `F1` / `Ctrl+G` | Keybindings help + interactive editor | Universal |
-| `Ctrl+B` / `F2` | Toggle info panel | **B**rief |
-| `Ctrl+E` / `F3` | Toggle file viewer | **E**xplorer |
-| `F12` | Toggle perf HUD (live counters + frame/tick timing) | Diagnostics |
+Every chord goes through one registry: the kernel owns a few, and each pane
+declares its own. **`F1` is authoritative** — it renders the registry, so it
+cannot drift from what is running.
 
-Every chord above is rebindable from the `F1` editor (or by editing
-`~/.config/thurbox/keybindings.json`). `Shift+J`/`Shift+K`/`Shift+S`
-reorder or sort the session list only while it is focused.
+| Key | Action | Owner |
+|-----|--------|-------|
+| `Ctrl+Q` | Quit (sessions keep running) | kernel |
+| `Ctrl+H` / `Ctrl+L` | Focus back / forward through the ring | kernel |
+| `Ctrl+C` / `Ctrl+V` | Copy selection / paste | kernel |
+| `F1` / `Ctrl+G` | Keybindings help | kernel |
+| `F6` / `Ctrl+,` | Settings (`]` for the Interface tab) | kernel |
+| `F4` / `Ctrl+Y` | Theme picker | kernel |
+| `F10` | Reload the interface from disk | kernel |
+| `F12` | Perf HUD | kernel |
+| `Ctrl+N` | New session | `70_new_session.lua` |
+| `Ctrl+/` | Search sessions, and their screens | `65_search.lua` |
+| `Ctrl+T` / `F8` | A shell beside the agent | `20_agent.lua` |
+| `j` `k` / `Ctrl+J` `Ctrl+K` | Next / previous session | `10_sessions.lua` |
+| `Enter` | Open the session | `10_sessions.lua` |
+| `Shift+J` / `Shift+K` | Move it down / up | `10_sessions.lua` |
+| `Shift+S` | Sort by name within each repo group | `10_sessions.lua` |
+| `d` / `Ctrl+D` | Delete (reversible) | `10_sessions.lua` |
+| `Shift+D` | Delete it *and* its worktree, after confirming | `10_sessions.lua` |
+| `Ctrl+Z` | Undo the last delete | `10_sessions.lua` |
+| `r` / `Ctrl+R` | Restart the agent | `10_sessions.lua` |
+| `Ctrl+F` | Fork | `10_sessions.lua` |
+| `Ctrl+S` | Sync worktrees with their base | `10_sessions.lua` |
+| `Ctrl+O` | Open in your editor | `10_sessions.lua` |
+| `F9` | Hide the session list | `10_sessions.lua` |
+
+Gone with the panes they opened: `Ctrl+X`/`F7` (code review), `Ctrl+E`/`F3`
+(file viewer), `Ctrl+B`/`F2` (info panel), `F5` (tasks), `Ctrl+P`
+(automations — now the creation flow's folder import) and `Ctrl+U` (restore
+list). See [docs/V2-KERNEL.md](docs/V2-KERNEL.md), or the `1.x` branch if you
+need them.
+
+Every chord is rebindable from the `F1` editor; rebindings persist to
+`~/.config/thurbox/ui.json`, beside the plugins you have turned off and the
+ones you trust. A chord already claimed by an overlapping action is reassigned
+and you are told which one lost it; a chord freed by a pane you removed stays
+unbound.
 
 **macOS:** in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm,
 Ghostty) the Command key works as a modifier — `Cmd+J`/`Cmd+Shift+J`

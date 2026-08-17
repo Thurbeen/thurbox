@@ -1,13 +1,15 @@
 # Performance
 
-> **Read this first.** The ADR-P decisions below were measured against v1's Rust
-> interface, and many cite `src/app/*` or `src/ui/*` — both deleted when the plugin
-> kernel took the binary name (ADR-23). The *findings* still hold and several
-> were carried across: demand-driven redraw, the 250 ms floor, output-driven dirty
-> marking, and reading the hook rows only when `PRAGMA data_version` moves are all
-> in the kernel's loop. What changed is where the code lives, and that a frame is
-> now a Lua call per pane — so the loop settles harder and every cached answer
-> carries an age. Current shape: the **Performance** section of `CLAUDE.md`.
+> **Two eras in one file.** ADR-P1 through ADR-P12 were measured against v1's Rust
+> interface and cite `src/app/*` / `src/ui/*`, both deleted when the plugin kernel
+> took the binary name (ADR-23). They are kept because the *findings* are what the
+> kernel was built against, and several are load-bearing in it today — the
+> demand-driven loop, the 250 ms floor, output-driven dirty marking, and reading the
+> hook rows only when `PRAGMA data_version` moves all carried across, in
+> `src/main.rs` and `src/kernel/` rather than `src/app/`.
+>
+> **ADR-P13 below is the current shape**, and the one to read first if you are
+> changing the loop.
 
 How thurbox stays responsive and light, and how to measure it. The focus areas
 are **input latency**, **runtime CPU / render cost**, **startup time**, and
@@ -633,6 +635,67 @@ Gate: `spawn_progress_outlives_the_status_message_timeout`,
 
 ---
 
+## ADR-P13: A frame is a Lua call per pane, so the loop settles hard
+
+**Choice**: Keep v1's demand-driven loop (ADR-P1) and make it stricter, because a
+frame now costs more. Every visible pane is a Lua call returning a table, which is
+converted to nodes (`kernel::convert`) and painted (`kernel::paint`); v1's frame was
+a Rust function writing into a buffer.
+
+So the loop paints only when something changed, or when `FORCE_REDRAW_INTERVAL`
+(250 ms) elapses, with `MIN_FRAME_INTERVAL` as the floor between two paints. What
+marks the screen dirty:
+
+- any input, a resize, a reload, a modal or focus change
+- a worker result (`terminals`, `commands`, `diffs`, `metrics`, `repos`, `runs`,
+  `updates`)
+- **new agent output** — `Terminals::output_generation` is summed each iteration and
+  compared. This is v1's `detect_output_redraw`, and it is what stops a printing
+  agent being drawn at the 250 ms floor
+- **a plugin's tree differing from the last one it returned.** `draw` keeps
+  `last_trees[index]` and only marks the frame changed when the new tree differs.
+  This is what makes an animating plugin work without a plugin-visible animation
+  API: a spinner's tree differs each frame, so it keeps the loop awake by itself,
+  and a static pane costs one comparison
+
+**Why the settling had to get stricter**: two things marked every frame changed
+unconditionally and so pinned the loop at the frame cap — an open float, and a
+non-empty text selection. With the creation wizard up, that meant rebuilding every
+Lua tree ~60 times a second for as long as it was open. A float now settles by
+comparing its own tree *and rect*, like a pane; a selection is already in the
+buffer and moving it takes a mouse event, which marks dirty on its own. The perf
+HUD keeps its unconditional mark, deliberately — its counters do move every
+iteration, and it says so.
+
+**Freshness is a property of a cached answer, not of having one.** The mistake this
+codebase kept re-inventing: `surveyed` recorded that a backend had *ever* been
+listed, so a session created since was judged against a listing that predated it and
+relaunched — killing the agent its own spawn had just started. `GitStats::known`
+never expired, so a diffstat froze at its first reading. A `run` marked only
+`Pending` started a process per frame once its answer went stale. A failed branch
+fetch stuck for the process lifetime. Each is now a TTL, an in-flight marker, or a
+generation counter. **If you add a cache to the loop, give it an age**; the review
+that found these is in the history, and they were one field each.
+
+**Bounds belong to the kernel, not the plugin.** A plugin may ask for a program
+(`kernel::runs`) every frame — that is the documented pattern, because a fresh answer
+is a map lookup — so the store refuses a duplicate while the answer is fresh *or*
+while a run for that key is in flight, caps output with truncation flagged, times
+out, and runs four at a time with the rest queued. The Lua VM has an instruction
+budget and a memory ceiling (`tests/kernel_limits.rs`), so a plugin cannot spin the
+frame either.
+
+**Rejected**:
+
+- *Caching converted nodes across frames* — the tree is the plugin's output and
+  cheap to compare; caching it would need invalidation the kernel cannot see into.
+- *A plugin-facing animation API* (`request_frame`) — the tree diff already gives
+  it, without a second way to keep the loop awake or a plugin that forgets to stop.
+- *Rendering panes in parallel* — one Lua VM, and the isolation model
+  (`enter` stamps the current plugin per call) depends on calls being serial.
+
+---
+
 ## Investigation 2026-07-09: where the time actually goes
 
 A measurement pass over the render loop, the tick, the draw path, startup, the
@@ -846,13 +909,13 @@ worktree/spawn offload should ride with that branch or follow it.
 | I want to… | Do this |
 | --- | --- |
 | Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read the `startup` line in `thurbox.log` |
-| Break down startup time | Read the `startup` phase fields (`config_init_ms`/`db_open_ms`/`theme_activate_ms`/`extension_heal_ms`/`app_new_ms`/`restore_ms`/`heartbeat_ms`) + the `restore_discover`/`restore_adopt` lines |
+| Break down startup time | Read the `startup` line's phase fields, then the per-phase lines that follow it. v1's `app_new_ms`/`theme_activate_ms` fields went with `src/app`; the kernel's phases are config, DB open, extension heal, host build and first paint |
 | Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~10 s cadence: counter deltas + frame/tick percentiles + slow ops) |
 | Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms), or the slow-op list in `perf_window` |
 | Watch perf live in the TUI | Press `F12` (perf HUD overlay; `[features] perf_hud`) |
 | Inspect a running TUI from outside | `thurbox-cli perf` (needs THURBOX_PERF_LOG or an open HUD in that TUI) |
-| Verify the status-hook cache (ADR-P6) | `cargo nextest run -E 'test(perf_hook_states)'`; `hook_state_loads` stays flat while idle, +1 per external `session signal` |
+| Verify the status-hook cache (ADR-P6) | `hook_state_loads` in `thurbox-cli perf` stays flat while idle and moves +1 per external `session signal`. v1's `perf_hook_states` acceptance test went with `src/app`; the counter it asserted on is still published |
 | See binary size | Check the `Binary Size` CI job summary, or `cargo bloat --release --crates` |
 | Profile CPU | `cargo flamegraph --profile release-with-debug --bin thurbox` |
-| Verify no perf regression | `cargo nextest run -E 'test(perf_)'` |
+| Verify no perf regression | `cargo nextest run -E 'test(kernel::perf)'` for the counters; the loop's settling is asserted per surface in `tests/v2_*.rs` |
 | Confirm idle CPU is low | Launch, leave it idle — `redraws_skipped` climbs while `frames_rendered` stays flat |

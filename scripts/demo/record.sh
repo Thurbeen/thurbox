@@ -4,15 +4,13 @@
 # This single script records every video pair under docs/media/:
 #
 #   * thurbox-demo.{gif,mp4}            (agents.tape          — the hero demo)
+#   * thurbox-interface.{gif,mp4}       (interface.tape       — panes are files)
 #   * thurbox-file-manager.{gif,mp4}    (file-manager.tape)
 #   * thurbox-info-panel.{gif,mp4}      (info-panel.tape)
 #   * thurbox-theme.{gif,mp4}           (theme.tape)
 #   * thurbox-session-creation.{gif,mp4}(session-creation.tape)
 #   * thurbox-fork.{gif,mp4}            (fork.tape)
-#   * automations-demo.{gif,mp4}        (automations.tape)
-#   * tasks-demo.{gif,mp4}              (tasks.tape)
 #   * search-demo.{gif,mp4}             (search.tape)
-#   * code-review-demo.{gif,mp4}        (code-review.tape)
 #
 # Every clip drives the actual `claude`, `opencode`, `codex` and `antigravity` CLIs —
 # one per thurbox session — to showcase real multi-agent orchestration. No prompt
@@ -41,15 +39,15 @@
 # Usage:  scripts/demo/record.sh [tape-stem ...]
 #
 #   With no args, records every tape below. Pass one or more tape stems to
-#   re-record only a subset, e.g. `record.sh theme automations`.
+#   re-record only a subset, e.g. `record.sh theme interface`.
 
 set -eu
 
 # Tapes to record (stems of scripts/demo/<stem>.tape), hero first. `agents` is
 # the combined hero demo (docs/media/thurbox-demo.*); the rest are per-feature
-# clips (`automations` -> automations-demo.*, `tasks` -> tasks-demo.*, `search`
+# clips (`search`
 # -> search-demo.*, others -> thurbox-<stem>.*).
-ALL_TAPES="agents file-manager info-panel theme session-creation fork automations tasks search code-review"
+ALL_TAPES="agents interface theme session-creation fork search"
 TAPES="${*:-$ALL_TAPES}"
 
 # thurbox TUI theme every clip starts in (persisted string in metadata.active_theme,
@@ -175,19 +173,23 @@ trap cleanup EXIT INT TERM
     done
 } > "$CFG_DIR/agents.toml"
 
-# --- Keybindings: rebind global search to Ctrl+A for the demo ----------------
-# The real default for Action::GlobalSearch is Ctrl+/ (plus the Ctrl+7/Ctrl+_
-# raw-0x1F encodings), which VHS+ttyd do not deliver reliably across terminals.
-# The search.tape opens the strip with Ctrl+A — an unambiguous chord every
-# terminal sends — so seed a keybindings.json that maps it. Only GlobalSearch is
-# overridden; every other action keeps its built-in default.
-# The code-review view needs no override: its default primary chord is Ctrl+X
-# (F7 alternate, which VHS can't send), so the agents/code-review tapes open it
-# with a plain Ctrl+X. Because Ctrl+X is in terminal_passthrough (the emacs
-# prefix key), those tapes open the review from the session list, not a focused
-# terminal, where the chord would be forwarded to the agent instead.
-printf '{\n  "GlobalSearch": ["ctrl+a"]\n}\n' \
-    > "$CFG_DIR/keybindings.json"
+# --- Rebindings for the recording -------------------------------------------
+# Two real chords cannot be driven by VHS+ttyd, so they are rebound for the demo
+# only. Everything else keeps its declared default.
+#
+#   * search  — really Ctrl+/ (plus the Ctrl+7 / Ctrl+_ raw-0x1F encodings the
+#     kernel folds into it), none of which arrive reliably across terminals.
+#   * settings — really F6 or Ctrl+, and VHS can send neither an F-key nor a
+#     Ctrl+punctuation chord. Ctrl+B rather than Ctrl+S: `sessions.sync` already
+#     declares Ctrl+S, and a rebinding that collides is a conflict the registry
+#     has to resolve rather than an override.
+#
+# The kernel reads rebindings from `ui.json`, as `bindings: { action: chord }` —
+# the same file that carries trust and the disabled set, because those are all
+# *user decisions* (v1 used a separate keybindings.json with arrays of chords).
+# Written before first launch so the registry picks it up on the first frame.
+printf '{\n  "bindings": {\n    "search.open": "ctrl+a",\n    "settings.open": "ctrl+b"\n  }\n}\n' \
+    > "$CFG_DIR/ui.json"
 
 # --- The demo repo: a vendored snapshot of thurbox's own tree ----------------
 # The demo repo is a fixed subset of THIS repository, copied into the throwaway
@@ -394,6 +396,13 @@ demo_session_name() {
 # no tape asserts on (agents are launched with no prompt, so nothing is working),
 # so dropping it costs the demo nothing. Must run BEFORE the sessions spawn.
 "$CLI_BIN" extension deactivate hooks >/dev/null 2>&1 || true
+
+# The first-launch interface prompt exists for somebody upgrading from v1. This
+# profile is synthetic and a minute old, but it has sessions, which is the signal
+# the gate reads — so without this every tape would spend its keystrokes on the
+# prompt instead of the interface, and the closing Ctrl+Q would decline and exit.
+# (That is exactly what the first re-recording produced.)
+"$CLI_BIN" config accept-interface >/dev/null 2>&1 || true
 
 echo "==> Seeding one session per agent:$AGENTS"
 for a in $AGENTS; do

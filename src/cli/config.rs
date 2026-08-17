@@ -20,6 +20,13 @@ pub enum Action {
     Validate,
     /// Print the effective configuration and where each value came from.
     Show,
+    /// Record that the interface change has been seen, so the first-launch prompt
+    /// does not appear.
+    ///
+    /// For a profile nobody needs to warn: a provisioned machine, a container, or
+    /// the demo recorder, which seeds sessions and would otherwise meet a gate
+    /// meant for someone upgrading from v1.
+    AcceptInterface,
 }
 
 pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
@@ -42,6 +49,14 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             let report = show(db)?;
             let human = render_show(&report);
             Ok(CommandOutput::new(report, human))
+        }
+        Action::AcceptInterface => {
+            db.acknowledge_v2()
+                .map_err(|e| format!("could not record the acknowledgement: {e}"))?;
+            Ok(CommandOutput::new(
+                serde_json::json!({ "accepted": true }),
+                "interface change acknowledged; the first-launch prompt is off\n".to_string(),
+            ))
         }
     }
 }

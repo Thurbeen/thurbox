@@ -5,9 +5,9 @@
 # real agent CLI in a sample repo, seeds a `~/projects` folder of several repos,
 # and exports $THURBOX_BIN.
 #
-# Ctrl+N opens the repo picker. Highlights: repos show by basename (not full
-# path); Ctrl+P imports a parent folder whose git sub-dirs are listed beneath a
-# collapsible header; then the usual name -> agent picker -> spawn flow.
+# Ctrl+N opens the creation flow — one floating plugin rather than v1's chain of
+# modals. Steps: host (skipped with no hosts.toml) -> repositories (multi-select,
+# `w` per repo for a worktree) -> base branch -> name -> branch name -> agent.
 
 Output docs/media/thurbox-session-creation.gif
 Output docs/media/thurbox-session-creation.mp4
@@ -27,61 +27,55 @@ Enter
 Sleep 2s
 Show
 
-# Let the real agent CLIs finish booting.
 Sleep 2500ms
 
-# Open the repo picker (Ctrl+N). The sample repo is already bookmarked (the
-# seeded sessions registered it) and now shows by basename, not full path.
+# Ctrl+N opens the creation flow. It is one floating plugin
+# (ui/plugins/70_new_session.lua) rather than v1's chain of five modals, and it
+# walks: repositories -> base branch -> name -> branch name -> agent. The host
+# step is skipped here because no hosts.toml is seeded, so this is local.
 Ctrl+N
-Sleep 2s
+Sleep 2200ms
 
-# Focus the path input (Tab) and type a PARENT folder containing several repos.
-Tab
-Sleep 700ms
-Type "~/projects"
+# The repository step. The sample repo is already remembered (the seeded sessions
+# registered it), so `space` selects it — the flow is multi-select, which is how a
+# session spans several repositories.
+Space
+Sleep 1400ms
+
+# `w` marks it worktree-backed: the session gets its own isolated checkout on a
+# new branch rather than working in the repo directly.
+Type "w"
+Sleep 1600ms
+
+# Confirm the repositories and move on.
+Enter
+Sleep 2200ms
+
+# The base branch, fetched on a worker so the list is what the remote actually
+# has. The default is pre-selected — take it.
+Enter
+Sleep 1800ms
+
+# Name the session after the work, not the agent.
+Type "add-plugin-docs"
 Sleep 1200ms
-
-# Ctrl+P imports it as a parent: its git sub-dirs are listed (by basename),
-# nested under a collapsible "▾ projects (parent)" header — and the folder is
-# re-scanned on every open, so new repos appear automatically.
-Ctrl+P
-Sleep 2500ms
-
-# Space on the header folds the tree (▸), then unfolds it (▾) again.
-Space
-Sleep 1400ms
-Space
-Sleep 1400ms
-
-# Move to a child repo and select it (Down to move, Space to check).
-Down
-Sleep 700ms
-Space
-Sleep 1400ms
-
-# Confirm the selection (Enter).
 Enter
-Sleep 1500ms
+Sleep 1600ms
 
-# Session-name prompt: type a name, then confirm.
-Type "review-bot"
-Sleep 1500ms
+# The branch name, pre-filled from the session name.
 Enter
-Sleep 1500ms
+Sleep 1800ms
 
-# Agent picker (shown because several agents are registered): choose one.
-Sleep 1s
-Down
+# The agent. Every entry comes from agents.toml, so this list is whatever CLIs
+# are installed and declared.
 Sleep 800ms
 Down
 Sleep 900ms
 Enter
-Sleep 1500ms
-
-# The new session appears in the list and its agent boots.
 Sleep 3s
 
-# Final beat, then quit (detaches sessions).
-Sleep 1s
+# The new session appears in the list, inside its repository group, and its agent
+# boots in the pane. Final beat, then quit.
+Sleep 2s
 Ctrl+Q
 Sleep 1s

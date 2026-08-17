@@ -1,24 +1,81 @@
 ---
 layout: docs.njk
 title: 'Architecture — Thurbox Docs'
-description: 'Thurbox architecture: The Elm Architecture, module isolation, the session backend, and design principles.'
+description: 'Thurbox architecture: the Lua plugin kernel, module isolation, the tmux session backend, and design principles.'
 currentPage: 'architecture'
 breadcrumb: 'Architecture'
 ---
 <h1>Architecture</h1>
 
+          <h2 id="kernel">
+            The interface is a Lua plugin kernel
+            <a href="#kernel" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            thurbox boots a Rust kernel that renders whatever Lua plugins it finds under
+            <code>ui/</code>. It owns no pane of its own: the session list, the agent terminal and the
+            search strip are files you can edit, move, turn off or replace. See
+            <a href="v2-interface.html">the interface</a> for what that means in practice.
+          </p>
+          <div class="tui-demo">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">one frame</span>
+            </div>
+            <div class="terminal-body">
+              <pre>resolve layout &rarr; call each plugin with its rect &rarr; table &rarr; nodes &rarr; paint</pre>
+            </div>
+          </div>
+          <p>Five constraints keep it small, and each one is load-bearing:</p>
+          <ul>
+            <li>
+              <strong>Four node kinds</strong> &mdash;
+              <code>text</code>, <code>box</code>, <code>input</code>, <code>surface</code>. Everything
+              else (lists, gauges, panels) composes in Lua.
+            </li>
+            <li>
+              <strong>Layout resolves before render</strong>, so a plugin is told its own rect and can
+              wrap, truncate and window against it.
+            </li>
+            <li>
+              <strong>Reads are snapshots, writes are commands.</strong> Lua never blocks or awaits, so
+              no plugin &mdash; including one nobody has written yet &mdash; can freeze the interface on
+              a slow git fetch or an unreachable host.
+            </li>
+            <li>
+              <strong>Capabilities are absent, not blocked.</strong> No filesystem, no network:
+              <code>io</code>, <code>os</code>, <code>debug</code> and the loaders are withheld rather
+              than stubbed, and a lint enforces it.
+            </li>
+            <li>
+              <strong>Anything touching the world runs on a worker</strong> &mdash; terminal attach,
+              commands, diffs, metrics, git stats, repository reads, update checks, and programs a
+              plugin asked for.
+            </li>
+          </ul>
+          <p>
+            <strong>System chrome is not a pane.</strong> Help, settings and the theme picker are
+            kernel-owned: they overlay the arrangement, capture input, and stay out of the focus ring.
+            Plugins contribute <em>data</em> to them &mdash; declare a key and it appears in help;
+            declare a setting and the settings modal grows a row.
+          </p>
+
           <h2 id="tea">
-            The Elm Architecture (TEA)
+            Before this: The Elm Architecture
             <a href="#tea" class="heading-anchor">#</a>
           </h2>
           <p>
-            All state lives in a single
+            Until 2.0 the interface was Rust, built on TEA: all state in a single
             <code>App</code>
-            model. Events become messages,
+            model, events becoming messages,
             <code>update()</code>
-            applies them,
+            applying them,
             <code>view()</code>
-            renders the result.
+            rendering the result. It is kept here because the kernel took its central idea &mdash; one
+            source of truth, one direction of data flow &mdash; and because
+            <a href="v1.html">1.x is still maintained</a>, so it is what that line still does.
           </p>
           <div class="tui-demo">
             <div class="terminal-header">
@@ -385,7 +442,7 @@ app      &larr; coordinator, imports all modules</pre>
               </tr>
               <tr>
                 <td>7</td>
-                <td>TEA as single pattern</td>
+                <td>One rendering pattern</td>
                 <td>Architecture tests + code review</td>
               </tr>
               <tr>

@@ -269,6 +269,19 @@ pub fn consent_gate(db: &Database) -> std::io::Result<Decision> {
         return Ok(Decision::Continue);
     }
 
+    // Nobody to ask. A script, a CI job, a provisioning run or a recording harness
+    // launched this, and blocking on a keypress there is not consent -- it is a
+    // hang, and `read()` on a closed stdin failed the launch outright with a raw
+    // OS error. Continue, because whoever ran this wanted thurbox, and do NOT
+    // record the answer: the next interactive launch still asks a person.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        tracing::info!(
+            "not a terminal: continuing to the v2 interface without asking. \
+             Run `thurbox-cli config accept-interface` to stop asking."
+        );
+        return Ok(Decision::Continue);
+    }
+
     // The user's own palette: they chose it, and the interface behind this screen
     // is about to use it. Falls back to the default preset when the theme cannot
     // be read -- a gate is not worth failing a launch over.

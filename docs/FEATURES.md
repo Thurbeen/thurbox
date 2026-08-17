@@ -1455,10 +1455,6 @@ auto-clear after a timeout or on the next successful action.
 The info panel (`Ctrl+B`) and file viewer (`Ctrl+E`) are the
 optional columns that appear at wider widths:
 
-![Info panel](media/thurbox-info-panel.gif)
-
-![File viewer](media/thurbox-file-manager.gif)
-
 ### Breakpoint Rationale
 
 | Width | Layout | Why |

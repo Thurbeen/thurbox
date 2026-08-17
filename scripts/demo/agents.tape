@@ -4,9 +4,10 @@
 # the dev binary, sets up an isolated environment, seeds one session per real
 # agent CLI, and exports $THURBOX_BIN. See that script for context.
 #
-# VHS has no function-key commands, so this uses the Ctrl aliases of the panel
-# toggles: Ctrl+B = info panel, Ctrl+E = file viewer, Ctrl+X = code review (its
-# default primary chord; F7 is the alternate VHS can't send).
+# VHS has no function-key commands, so every beat here uses a chord VHS can
+# actually send. The info panel, file viewer and code-review view this tape used
+# to open no longer exist — the interface is the plugin set under `ui/`, and the
+# clip that shows *that* is interface.tape.
 
 Output docs/media/thurbox-demo.gif
 Output docs/media/thurbox-demo.mp4
@@ -39,66 +40,20 @@ Sleep 2500ms
 Ctrl+J
 Sleep 2500ms
 
-# Show the info panel (Ctrl+B = alias for F2): per-session details + metrics.
-Ctrl+B
-Sleep 3s
-
-# Show the file viewer (Ctrl+E = alias for F3): the sample repo's file tree.
-Ctrl+E
-Sleep 2s
-
-# Focus the file viewer pane and browse the tree.
+# Focus a session's terminal and back out again: Ctrl+L walks the focus ring
+# (session list -> agent), Ctrl+H walks it back. The ring is built from whichever
+# panes are loaded, so it is the plugin set that decides what focus can reach.
 Ctrl+L
-Sleep 1s
-Down
-Sleep 600ms
-Down
-Sleep 600ms
-Enter
-Sleep 1200ms
-Down
-Sleep 800ms
-
-# Return focus to the session list, hide the panels again.
-Ctrl+H
-Sleep 800ms
-Ctrl+E
-Sleep 600ms
-Ctrl+B
-Sleep 1200ms
-
-# --- Native code review ------------------------------------------------------
-# The 4× Ctrl+J above walked from the top (claude) down to the LAST session,
-# "review" — a worktree on a branch with a real committed diff (seeded by
-# record.sh) — and the panel toggles don't move the selection, so "review" is
-# still selected here. Focus is on the session list (not a terminal), so Ctrl+X
-# runs ToggleReview instead of being forwarded to the agent by
-# terminal_passthrough. Open the built-in code-review view: a GitHub-style
-# continuous diff of the branch (<base>..HEAD) in the centre, the changed-files
-# list on the right, an action bar across the bottom — no external binary.
-Ctrl+X
-Sleep 2500ms
-
-# Scroll the diff — added lines (green) read clearly and the changed-files list
-# tracks the current file.
-Type "j"
-Sleep 500ms
-Type "j"
-Sleep 500ms
-Type "j"
-Sleep 1000ms
-
-# `}` jumps to the next changed file; the files list highlight follows.
-Type "}"
-Sleep 1400ms
-
-# `v` toggles side-by-side (old | new), then back to unified.
-Type "v"
 Sleep 2200ms
-Type "v"
-Sleep 1400ms
+Ctrl+H
+Sleep 1200ms
 
-# Esc closes the review, back to the session list.
+# Global search (rebound to Ctrl+A for the recording — really Ctrl+/): it matches
+# session names, agents, branches and repos, AND the text on each agent's screen.
+Ctrl+A
+Sleep 1200ms
+Type "osc"
+Sleep 2000ms
 Escape
 Sleep 1200ms
 

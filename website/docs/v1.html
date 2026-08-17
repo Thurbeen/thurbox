@@ -1,0 +1,138 @@
+---
+layout: docs.njk
+title: 'Using v1 — Thurbox Docs'
+description: 'thurbox 1.x is still maintained: what it has that the current interface does not, how to stay on it or go back, and what it will and will not receive.'
+currentPage: 'v1'
+breadcrumb: 'Using v1'
+---
+<h1>Using v1</h1>
+<p>
+  thurbox 2.0 replaced the interface. If you were using a pane it no longer has, you do not have to
+  give it up: <strong>1.x is still maintained</strong> and still gets patch releases.
+</p>
+
+<div class="info-box">
+  <p>
+    <strong>Nothing moves you without asking.</strong>
+    The first time thurbox 2.x starts on a profile that has sessions, it stops and tells you what
+    changed before touching anything. Declining turns auto-update off for you and prints the command
+    below &mdash; it does not want you upgraded by accident.
+  </p>
+</div>
+
+<h2 id="what-v1-has">
+  What v1 has that the current interface does not
+  <a href="#what-v1-has" class="heading-anchor">#</a>
+</h2>
+<p>
+  Six surfaces. Three have no replacement yet; three moved to
+  <code>thurbox-cli</code>, where the data and behaviour are the same.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Surface</th>
+      <th>v1</th>
+      <th>Now</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Code review</td>
+      <td><kbd>Ctrl</kbd>+<kbd>X</kbd> / <kbd>F7</kbd></td>
+      <td>Nothing yet &mdash; the largest gap</td>
+    </tr>
+    <tr>
+      <td>File viewer</td>
+      <td><kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>F3</kbd></td>
+      <td>Nothing yet</td>
+    </tr>
+    <tr>
+      <td>Info panel</td>
+      <td><kbd>Ctrl</kbd>+<kbd>B</kbd> / <kbd>F2</kbd></td>
+      <td>Nothing yet</td>
+    </tr>
+    <tr>
+      <td>Tasks</td>
+      <td><kbd>F5</kbd></td>
+      <td><code>thurbox-cli task</code></td>
+    </tr>
+    <tr>
+      <td>Automations</td>
+      <td><kbd>Ctrl</kbd>+<kbd>P</kbd></td>
+      <td><code>thurbox-cli automation</code> &mdash; and they still fire on their own</td>
+    </tr>
+    <tr>
+      <td>Restore deleted</td>
+      <td><kbd>Ctrl</kbd>+<kbd>U</kbd></td>
+      <td><code>thurbox-cli session restore</code></td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  Everything else is unchanged, because only the interface was replaced: sessions, git worktrees,
+  remote SSH and WSL hosts, agent definitions, extensions, hooks and status reporting, the mailbox
+  queue, themes, notifications, and the whole of <code>thurbox-cli</code>.
+</p>
+
+<h2 id="staying">
+  Staying on v1, or going back
+  <a href="#staying" class="heading-anchor">#</a>
+</h2>
+<p>
+  Pin a 1.x version and turn auto-update off, or the next launch will bring you forward again:
+</p>
+<pre data-wrap><code class="language-bash">export VERSION=v1.8.6
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+<p>
+  Then set <code>auto_update = false</code> under <code>[features]</code> in
+  <code>~/.config/thurbox/settings.toml</code>. Declining the first-launch prompt does both of these
+  for you and says so.
+</p>
+<p>
+  <code>export</code> matters: in <code>VERSION=x curl … | sh</code> the assignment binds to
+  <code>curl</code>, and the <code>sh</code> reading from the pipe never sees it. The newest 1.x patch
+  is on the
+  <a href="https://github.com/Thurbeen/thurbox/releases">releases page</a>.
+</p>
+
+<h2 id="data">
+  Your sessions are safe either way
+  <a href="#data" class="heading-anchor">#</a>
+</h2>
+<p>
+  Both versions read and write the same database at the same schema version, so nothing is migrated
+  and nothing is stranded. Sessions, worktrees, tasks and automations are the same records whichever
+  you run, and the agents themselves are held by tmux rather than by thurbox &mdash; so switching does
+  not interrupt a turn in progress. You can move back and forth as often as you like.
+</p>
+
+<h2 id="support">
+  What 1.x will and will not get
+  <a href="#support" class="heading-anchor">#</a>
+</h2>
+<ul>
+  <li><strong>Will</strong>: bug fixes, security fixes, and fixes to the session engine, backends and
+    CLI, released as 1.x patch versions from the <code>1.x</code> branch.</li>
+  <li><strong>Will not</strong>: new features. Those land on the current line, where the interface is
+    a plugin set rather than a fixed set of panes.</li>
+</ul>
+<p>
+  The reference documentation on this site describes the current interface. For v1's own docs, read
+  them at the tag you are running &mdash;
+  <a href="https://github.com/Thurbeen/thurbox/tree/1.x/docs">the <code>1.x</code> branch</a> carries
+  the versions that match it, including its keybindings, its feature notes and its architecture
+  decisions.
+</p>
+
+<h2 id="coming-forward">
+  Coming forward later
+  <a href="#coming-forward" class="heading-anchor">#</a>
+</h2>
+<p>
+  Reinstall without pinning a version and answer yes at the prompt. If what kept you on v1 was one of
+  the three missing panes, they are tracked in the repository under
+  <code>openspec/changes/v2-parity-gaps/</code> &mdash; and because panes are now files, a replacement
+  does not have to come from us. See <a href="v2-interface.html">the interface</a> for what writing one
+  involves.
+</p>

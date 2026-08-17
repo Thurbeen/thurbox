@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Comparison — Thurbox Docs'
-description: 'How Thurbox compares to other parallel coding-agent tools (GitHub Copilot App, Conductor, Herdr, 1Code, Orca, Claude Squad, Cursor): real tmux vs custom multiplexer, TUI vs Electron/GUI, native vendor CLI vs own models, native code review, and multi-repo sessions.'
+description: 'How Thurbox compares to other parallel coding-agent tools (GitHub Copilot App, Conductor, Herdr, 1Code, Orca, Claude Squad, Cursor): real tmux vs custom multiplexer, TUI vs Electron/GUI, native vendor CLI vs own models, an editable plugin interface, and multi-repo sessions.'
 currentPage: 'comparison'
 breadcrumb: 'Comparison'
 ---
@@ -193,11 +193,11 @@ breadcrumb: 'Comparison'
               ).
             </li>
             <li>
-              <strong>Native code review, in the terminal.</strong>
-              A built-in, GitHub-style diff reviewer (
-              <code>Ctrl+X</code>
-              ) &mdash; browse the branch, a commit, or working changes in a folder tree, leave
-              classified comments, fold reviewed files, then send the review back to the agent to
+              <strong>An interface you can edit.</strong>
+              Every pane &mdash; the session list included &mdash; is a Lua file under
+              <code>ui/plugins/</code>. Move one, turn it off, delete it, or write your own, and the
+              arrangement closes up around what is left. A plugin gets no filesystem and no network:
+              it draws, and the kernel does the rest. No other tool in this table lets you replace
               address. The click-to-review visual diff that used to be a GUI-only perk, without
               leaving the TUI.
             </li>

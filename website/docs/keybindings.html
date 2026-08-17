@@ -1,712 +1,213 @@
 ---
 layout: docs.njk
 title: 'Keybindings — Thurbox Docs'
-description: 'Thurbox keybindings reference: Vim-inspired keyboard shortcuts for navigation, session management, and terminal control.'
+description: 'Thurbox keybindings: what the kernel owns, what each pane declares, and how to rebind anything. Every chord goes through one registry.'
 currentPage: 'keybindings'
 breadcrumb: 'Keybindings'
 ---
 <h1>Keybindings</h1>
+<p>
+  Every chord goes through <strong>one registry</strong>. Panes
+  <em>declare</em> the keys they want; the kernel resolves a press to an action and hands it back to
+  the pane that claimed it. So this page is a description of what the shipped panes declare, not a
+  fixed list &mdash; add a pane and it brings its own keys, remove one and its keys go with it.
+</p>
+<p>
+  <strong><kbd>F1</kbd> is authoritative.</strong> The help screen renders the registry itself, so it
+  cannot drift from the running interface the way a written table can. If this page and
+  <kbd>F1</kbd> disagree, <kbd>F1</kbd> is right.
+</p>
 
-          <h2 id="design">
-            Design Philosophy
-            <a href="#design" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            When the terminal panel is focused,
-            <strong>all keys are forwarded to the PTY</strong>
-            except most keys with a
-            <code>Ctrl</code>
-            modifier (intercepted as global commands &mdash; though a handful that collide with
-            readline, such as
-            <code>Ctrl+B/D/E/F/O/P/R/S/U/W</code>, defer to the agent CLI; see
-            <strong>Terminal passthrough</strong> below) and
-            <code>Shift+arrow/page</code>
-            /
-            <code>Alt+page</code>
-            keys (for scrollback).
-          </p>
-          <div class="info-box">
-            <p>
-              <strong>Why Ctrl, not Alt?</strong>
-              Coding-agent CLIs and shell programs heavily use Alt-key combinations. Ctrl has
-              established precedent for meta actions in terminal multiplexers (tmux uses
-              <code>Ctrl+B</code>
-              , screen uses
-              <code>Ctrl+A</code>
-              ).
-            </p>
-          </div>
+<h2 id="kernel">
+  What the kernel owns
+  <a href="#kernel" class="heading-anchor">#</a>
+</h2>
+<p>
+  These are not a pane's to claim, because they have to work whatever is loaded &mdash; including
+  when a plugin is broken.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Key</th>
+      <th>Does</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Quit. Sessions keep running &mdash; tmux owns them, not thurbox</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>H</kbd> / <kbd>Ctrl</kbd>+<kbd>L</kbd></td><td>Move focus back / forward through the ring</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Copy a selection / paste</td></tr>
+    <tr><td><kbd>F1</kbd> or <kbd>Ctrl</kbd>+<kbd>G</kbd></td><td>Keybindings help &mdash; the registry, rendered</td></tr>
+    <tr><td><kbd>F6</kbd> or <kbd>Ctrl</kbd>+<kbd>,</kbd></td><td>Settings. <kbd>]</kbd> crosses to the Interface tab</td></tr>
+    <tr><td><kbd>F4</kbd> or <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Theme picker (<kbd>Ctrl</kbd>+<kbd>Y</kbd> is DSUSP in some terminals, hence <kbd>F4</kbd>)</td></tr>
+    <tr><td><kbd>F10</kbd></td><td>Reload the interface from disk</td></tr>
+    <tr><td><kbd>F12</kbd></td><td>Perf HUD (needs <code>[features] perf_hud</code>)</td></tr>
+  </tbody>
+</table>
 
-          <h2 id="global-keys">
-            Global Keys
-            <a href="#global-keys" class="heading-anchor">#</a>
-          </h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-                <th>Mnemonic</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>Ctrl+Q</code></td>
-                <td>Quit (detach sessions)</td>
-                <td>
-                  <strong>Q</strong>
-                  uit
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+N</code></td>
-                <td>New session (opens repo picker)</td>
-                <td>
-                  <strong>N</strong>
-                  ew
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+C</code></td>
-                <td>Copy selection, or send SIGINT if none</td>
-                <td>
-                  <strong>C</strong>
-                  opy
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+V</code></td>
-                <td>Paste from clipboard</td>
-                <td>Paste</td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+P</code></td>
-                <td>Automations (scheduled agent runs)</td>
-                <td>
-                  <strong>P</strong>
-                  rogram
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <code>Ctrl+W</code>
-                  /
-                  <code>F5</code>
-                </td>
-                <td>Toggle tasks panel (todo list)</td>
-                <td>Work items</td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+/</code></td>
-                <td>Global search (sessions / tasks / automations / files)</td>
-                <td>
-                  <strong>/</strong>
-                  = search
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+T</code></td>
-                <td>Toggle shell pane</td>
-                <td>
-                  <strong>T</strong>
-                  erminal
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+X</code> / <code>F7</code></td>
-                <td>Toggle code-review pane (native diff reviewer)</td>
-                <td>Review</td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+H</code></td>
-                <td>Focus previous pane (cycle backward)</td>
-                <td>
-                  Vim:
-                  <strong>h</strong>
-                  = left
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+J</code></td>
-                <td>Select next session</td>
-                <td>
-                  Vim:
-                  <strong>j</strong>
-                  = down
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+K</code></td>
-                <td>Select previous session</td>
-                <td>
-                  Vim:
-                  <strong>k</strong>
-                  = up
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+L</code></td>
-                <td>Focus next pane (cycle forward)</td>
-                <td>
-                  Vim:
-                  <strong>l</strong>
-                  = right
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+D</code></td>
-                <td>Delete session</td>
-                <td>
-                  Vim:
-                  <strong>d</strong>
-                  = delete
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+O</code></td>
-                <td>Open active session's repos/worktrees in editor</td>
-                <td>
-                  <strong>O</strong>
-                  pen
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+R</code></td>
-                <td>Restart active session</td>
-                <td>
-                  <strong>R</strong>
-                  estart
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+F</code></td>
-                <td>Fork active session</td>
-                <td>
-                  <strong>F</strong>
-                  ork
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+S</code></td>
-                <td>Sync worktrees with origin/main</td>
-                <td>
-                  <strong>S</strong>
-                  ync
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+Z</code></td>
-                <td>Undo session delete</td>
-                <td>
-                  <strong>Z</strong>
-                  = undo
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+U</code></td>
-                <td>Restore deleted sessions</td>
-                <td>
-                  <strong>U</strong>
-                  ndelete
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <code>Ctrl+Y</code>
-                  /
-                  <code>F4</code>
-                </td>
-                <td>Pick TUI theme</td>
-                <td>
-                  Color
-                  <strong>Y</strong>
-                  oke
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <code>F1</code>
-                  /
-                  <code>Ctrl+G</code>
-                </td>
-                <td>Keybindings help + interactive editor</td>
-                <td>Universal</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>Ctrl+,</code>
-                  /
-                  <code>F6</code>
-                </td>
-                <td>Settings panel (edit settings.toml)</td>
-                <td>
-                  <strong>,</strong>
-                  = preferences
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <code>Ctrl+B</code>
-                  /
-                  <code>F2</code>
-                </td>
-                <td>Toggle info panel</td>
-                <td>Next to F1</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>Ctrl+E</code>
-                  /
-                  <code>F3</code>
-                </td>
-                <td>Toggle file viewer</td>
-                <td>Next to F2</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>F9</code>
-                </td>
-                <td>Toggle session-list pane</td>
-                <td>Hide for a full-width terminal; right-side panels stay</td>
-              </tr>
-            </tbody>
-          </table>
+<h2 id="sessions">
+  The session list
+  <a href="#sessions" class="heading-anchor">#</a>
+</h2>
+<p>
+  Declared by <code>ui/plugins/10_sessions.lua</code>. The single-letter keys apply while the list is
+  focused; the <kbd>Ctrl</kbd> forms work from anywhere, which is what lets you restart or fork a
+  session without leaving the terminal you are typing in.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Key</th>
+      <th>Does</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><kbd>j</kbd> / <kbd>k</kbd> &middot; <kbd>&darr;</kbd> / <kbd>&uarr;</kbd></td><td>Next / previous session</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>J</kbd> / <kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>The same, from anywhere</td></tr>
+    <tr><td><kbd>g</kbd></td><td>First session</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>Open it &mdash; focus its agent</td></tr>
+    <tr><td><kbd>Shift</kbd>+<kbd>J</kbd> / <kbd>Shift</kbd>+<kbd>K</kbd></td><td>Move it down / up. A parent drags its children; a whole group moves past a group edge</td></tr>
+    <tr><td><kbd>Shift</kbd>+<kbd>S</kbd></td><td>Sort by name within each repository group</td></tr>
+    <tr><td><kbd>d</kbd> or <kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>Delete &mdash; reversible, with an undo window</td></tr>
+    <tr><td><kbd>Shift</kbd>+<kbd>D</kbd></td><td>Delete it <em>and its worktree</em>. Confirms first, itemising what would be lost</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo the last delete</td></tr>
+    <tr><td><kbd>r</kbd> or <kbd>Ctrl</kbd>+<kbd>R</kbd></td><td>Restart the agent, resuming the conversation where the agent supports it</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>Fork &mdash; a new session in the parent's worktree, carrying its conversation</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Sync every worktree with its base branch</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open the session's directories in your editor</td></tr>
+    <tr><td><kbd>F9</kbd></td><td>Hide the session list, for a full-width agent</td></tr>
+  </tbody>
+</table>
 
-          <div class="info-box">
-            <p>
-              <strong>Everything here is rebindable.</strong>
-              Press
-              <code>F1</code>
-              and pick an action to capture a new chord live, or hand-edit
-              <code>~/.config/thurbox/keybindings.json</code>
-              (an action name &rarr; one or more chord strings); changes reload without a restart.
-              See
-              <a href="configuration.html#keybindings-json">Configuration &rarr; keybindings.json</a>
-              for the format.
-            </p>
-            <p>
-              <strong>Terminal passthrough:</strong>
-              a handful of
-              <code>Ctrl+&lt;letter&gt;</code>
-              commands (
-              <code>Ctrl+D</code>
-              /
-              <code>Ctrl+O</code>
-              /
-              <code>Ctrl+R</code>
-              /
-              <code>Ctrl+F</code>
-              /
-              <code>Ctrl+S</code>
-              and the panel toggles) collide with readline. When a session terminal is focused they
-              defer to the agent CLI; reach them from the session list, or via their
-              <code>F</code>
-              -key alternate (
-              <code>F2</code>
-              /
-              <code>F3</code>
-              /
-              <code>F5</code>
-              ). Navigation and app-control chords (
-              <code>Ctrl+H</code>
-              /
-              <code>J</code>
-              /
-              <code>K</code>
-              /
-              <code>L</code>
-              ,
-              <code>Ctrl+Q</code>
-              ,
-              <code>Ctrl+N</code>
-              ) always work, even in the terminal.
-            </p>
-          </div>
+<h2 id="agent">
+  The agent pane
+  <a href="#agent" class="heading-anchor">#</a>
+</h2>
+<p>
+  <code>ui/plugins/20_agent.lua</code>. Everything else you type here goes to the agent &mdash; that is
+  the point of it.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Key</th>
+      <th>Does</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>T</kbd> or <kbd>F8</kbd></td><td>A shell in this session's directory, as a second tab beside the agent</td></tr>
+    <tr><td><kbd>PgUp</kbd> / <kbd>PgDn</kbd></td><td>Scroll the agent's history. Per session, so it does not follow you</td></tr>
+  </tbody>
+</table>
 
-          <div class="info-box">
-            <p>
-              <strong>macOS:</strong>
-              in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm, Ghostty) the Command key
-              works as a modifier:
-              <code>Cmd+J</code>
-              /
-              <code>Cmd+Shift+J</code>
-              switch sessions,
-              <code>Cmd+L</code>
-              /
-              <code>Cmd+Shift+L</code>
-              cycle panes, and any action can be rebound to a
-              <code>cmd+&hellip;</code>
-              chord (aliases:
-              <code>super</code>
-              ,
-              <code>command</code>
-              ). Terminal.app delivers no Cmd chords; everything else works there. F1&ndash;F5 need
-              <code>Fn</code>
-              on Mac laptops unless function keys are set to standard.
-            </p>
-          </div>
+<h2 id="new-session">
+  Creating a session
+  <a href="#new-session" class="heading-anchor">#</a>
+</h2>
+<p>
+  <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the flow (<code>ui/plugins/70_new_session.lua</code>) &mdash; one
+  float rather than a chain of modals. It walks host &rarr; repositories &rarr; base branch &rarr;
+  name &rarr; branch name &rarr; agent, skipping the host step when no hosts are configured.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Key</th>
+      <th>Does</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><kbd>j</kbd> / <kbd>k</kbd> &middot; <kbd>&darr;</kbd> / <kbd>&uarr;</kbd></td><td>Next / previous choice</td></tr>
+    <tr><td><kbd>Space</kbd></td><td>Select a repository, or fold a folder. Multi-select &mdash; that is how one session spans several repositories</td></tr>
+    <tr><td><kbd>w</kbd></td><td>Give that repository its own worktree</td></tr>
+    <tr><td><kbd>/</kbd></td><td>Filter the list</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td>Import a folder of repositories</td></tr>
+    <tr><td><kbd>d</kbd></td><td>Forget a remembered repository</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>Confirm the step</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>Back out. Nothing is created until the last step</td></tr>
+  </tbody>
+</table>
 
-          <h2 id="list-navigation">
-            List Navigation
-            <a href="#list-navigation" class="heading-anchor">#</a>
-          </h2>
-          <p>When the session list is focused:</p>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <code>j</code>
-                  /
-                  <code>Down</code>
-                </td>
-                <td>Next item</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>k</code>
-                  /
-                  <code>Up</code>
-                </td>
-                <td>Previous item</td>
-              </tr>
-              <tr>
-                <td><code>Enter</code></td>
-                <td>Select / focus</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>Shift+J</code>
-                  /
-                  <code>Shift+K</code>
-                </td>
-                <td>
-                  Move the selected session (and its nested children) down / up. Manual order wins
-                  over status &mdash; whole repo groups swap past a group edge.
-                </td>
-              </tr>
-              <tr>
-                <td><code>Shift+S</code></td>
-                <td>Sort sessions alphabetically by name within each repo group</td>
-              </tr>
-            </tbody>
-          </table>
-          <p>
-            Manual ordering and the alphabetical sort are persisted, so they survive restarts and
-            sync across concurrent instances.
-          </p>
+<h2 id="search">
+  Search
+  <a href="#search" class="heading-anchor">#</a>
+</h2>
+<p>
+  <kbd>Ctrl</kbd>+<kbd>/</kbd> opens a strip above the status bar
+  (<code>ui/plugins/65_search.lua</code>). It matches session names, agents, branches and repositories
+  &mdash; and <strong>the text on each agent's screen</strong>, which is the half that finds a session
+  by the error in it. Matches highlight <em>in the panes themselves</em>; moving the selection previews
+  it, and <kbd>Esc</kbd> puts back what you were looking at.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Key</th>
+      <th>Does</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>type</td><td>Filter. Names match as a subsequence; screen text as a substring</td></tr>
+    <tr><td><kbd>&darr;</kbd> / <kbd>&uarr;</kbd></td><td>Next / previous result, previewed as you move</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>Go to it</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>Close, restoring what was on screen before</td></tr>
+  </tbody>
+</table>
+<div class="info-box">
+  <p>
+    <strong>Why not <kbd>Ctrl</kbd>+<kbd>P</kbd>/<kbd>Ctrl</kbd>+<kbd>N</kbd> in the strip?</strong>
+    A pane-scoped claim never outranks a global one, so declaring them would take
+    <kbd>Ctrl</kbd>+<kbd>N</kbd> away from new-session everywhere. v1 could get away with it because
+    its search captured input ahead of the keybinding table; one registry is the trade.
+  </p>
+</div>
 
-          <h2 id="search">
-            Search
-            <a href="#search" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Press
-            <code>Ctrl+/</code>
-            to open the global search strip, which searches
-            <strong>every scope at once</strong>
-            &mdash; sessions (name, agent, branch, and live terminal-buffer content), tasks,
-            automations, and the active session's file tree. It replaces the old per-pane
-            <code>/</code>
-            filters.
-          </p>
-          <ul>
-            <li>Type to filter; matches highlight live in the panels themselves.</li>
-            <li>
-              <code>Up</code>
-              /
-              <code>Down</code>
-              (or
-              <code>Ctrl+P</code>
-              /
-              <code>Ctrl+N</code>
-              ) move the selection,
-              <code>Enter</code>
-              jumps to the result and focuses its pane, and
-              <code>Esc</code>
-              restores the prior state.
-            </li>
-          </ul>
-          <p>
-            The file viewer keeps its own in-file
-            <code>/</code>
-            text search, which is unrelated to global search.
-          </p>
+<h2 id="rebinding">
+  Rebinding anything
+  <a href="#rebinding" class="heading-anchor">#</a>
+</h2>
+<p>
+  From <kbd>F1</kbd>: select an action and press the chord you want. It takes effect on the next
+  keystroke and persists to <code>ui.json</code>, beside the plugins you have turned off and the ones
+  you trust &mdash; all three are <em>your</em> decisions, which is why they share a file.
+</p>
+<p>
+  Two rules the registry enforces. A chord already claimed by an action whose scope overlaps is
+  <strong>reassigned</strong>, and you are told which one lost it &mdash; a silent double-binding is
+  worse than a reported move. And a chord freed by a pane you removed stays
+  <strong>unbound</strong> rather than being inherited by whatever loads next.
+</p>
 
-          <h2 id="terminal-scrollback">
-            Terminal Scrollback &amp; Selection
-            <a href="#terminal-scrollback" class="heading-anchor">#</a>
-          </h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <code>Shift+Up</code>
-                  /
-                  <code>Shift+Down</code>
-                </td>
-                <td>Scroll 1 line</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>Shift+PageUp</code>
-                  /
-                  <code>Shift+PageDown</code>
-                </td>
-                <td>Scroll half page</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>Alt+PageUp</code>
-                  /
-                  <code>Alt+PageDown</code>
-                </td>
-                <td>
-                  Scroll half page (fallback where the terminal claims Shift+Page, e.g.
-                  Terminal.app/iTerm2)
-                </td>
-              </tr>
-              <tr>
-                <td>Mouse wheel</td>
-                <td>Scroll 3 lines</td>
-              </tr>
-              <tr>
-                <td>Mouse drag</td>
-                <td>Select text</td>
-              </tr>
-              <tr>
-                <td>Any other key</td>
-                <td>Snap to bottom + forward to PTY</td>
-              </tr>
-            </tbody>
-          </table>
-          <p>
-            When scrolled up, the block title shows a
-            <code>[N&#x2191;]</code>
-            indicator and the PTY cursor is hidden.
-          </p>
+<h2 id="terminal-conflicts">
+  Chords the terminal takes first
+  <a href="#terminal-conflicts" class="heading-anchor">#</a>
+</h2>
+<p>
+  thurbox shares the <kbd>Ctrl</kbd>+<em>letter</em> namespace with readline, so while an agent has
+  focus some chords are handed to it instead: <kbd>Ctrl</kbd>+<kbd>A</kbd> and
+  <kbd>Ctrl</kbd>+<kbd>E</kbd> for line start/end, <kbd>Ctrl</kbd>+<kbd>W</kbd> and
+  <kbd>Ctrl</kbd>+<kbd>U</kbd> for delete-word and kill-line, <kbd>Ctrl</kbd>+<kbd>R</kbd> for
+  reverse-search. Navigation is deliberately <em>never</em> deferred &mdash;
+  <kbd>Ctrl</kbd>+<kbd>H</kbd>/<kbd>J</kbd>/<kbd>K</kbd>/<kbd>L</kbd>,
+  <kbd>Ctrl</kbd>+<kbd>Q</kbd> and <kbd>Ctrl</kbd>+<kbd>N</kbd> are how you get <em>out</em> of a
+  focused agent, so they must keep working there.
+</p>
+<p>
+  On macOS, <kbd>Cmd</kbd> chords are bindable where the terminal supports the kitty keyboard
+  protocol (iTerm2 3.5+, kitty, WezTerm, Ghostty &mdash; not Terminal.app). Shortcuts the emulator
+  itself consumes (<kbd>Cmd</kbd>+<kbd>Q</kbd>/<kbd>W</kbd>/<kbd>T</kbd>/<kbd>K</kbd>&hellip;) never
+  reach thurbox, so only bind what your terminal leaves free. F-keys need <kbd>Fn</kbd> on Mac
+  laptops unless you have enabled standard function keys.
+</p>
 
-          <h2 id="modals">
-            Modal Keybindings
-            <a href="#modals" class="heading-anchor">#</a>
-          </h2>
-
-          <h3>Branch selector (Worktree mode)</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <code>j</code>
-                  /
-                  <code>Down</code>
-                </td>
-                <td>Next branch</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>k</code>
-                  /
-                  <code>Up</code>
-                </td>
-                <td>Previous branch</td>
-              </tr>
-              <tr>
-                <td><code>Enter</code></td>
-                <td>Select base branch, open name prompt</td>
-              </tr>
-              <tr>
-                <td><code>Esc</code></td>
-                <td>Cancel</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h3>New branch name prompt</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>Enter</code></td>
-                <td>Confirm name, create branch and worktree</td>
-              </tr>
-              <tr>
-                <td><code>Esc</code></td>
-                <td>Cancel</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h2 id="automations">
-            Automations
-            <a href="#automations" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            A dedicated Automations pane sits beneath the session list (always present). It joins
-            the
-            <code>Ctrl+H</code>
-            /
-            <code>Ctrl+L</code>
-            focus cycle;
-            <code>Ctrl+P</code>
-            opens the same list as a modal at any width.
-          </p>
-
-          <h3>Automations pane / list (focused)</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <code>Ctrl+N</code>
-                  /
-                  <code>n</code>
-                </td>
-                <td>New automation (opens the editor)</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>j</code>
-                  /
-                  <code>k</code>
-                </td>
-                <td>Select previous / next automation</td>
-              </tr>
-              <tr>
-                <td><code>Space</code></td>
-                <td>Toggle enabled / disabled</td>
-              </tr>
-              <tr>
-                <td><code>r</code></td>
-                <td>Run now</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>e</code>
-                  /
-                  <code>Enter</code>
-                </td>
-                <td>Edit</td>
-              </tr>
-              <tr>
-                <td><code>d</code></td>
-                <td>Delete</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h3>Automation editor</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <code>Tab</code>
-                  /
-                  <code>&uarr;</code>
-                  <code>&darr;</code>
-                </td>
-                <td>Move between fields</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>&larr;</code>
-                  <code>&rarr;</code>
-                  /
-                  <code>Space</code>
-                </td>
-                <td>Adjust the focused selector / stepper (trigger, time, action)</td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+E</code></td>
-                <td>Toggle enabled</td>
-              </tr>
-              <tr>
-                <td><code>Enter</code></td>
-                <td>Save</td>
-              </tr>
-              <tr>
-                <td><code>Esc</code></td>
-                <td>Cancel</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h2 id="agent-picker">
-            Agent Picker
-            <a href="#agent-picker" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            The
-            <code>Ctrl+N</code>
-            new-session flow ends with an agent picker. The agent picker is skipped when only one
-            agent is defined in
-            <code>agents.toml</code>
-            .
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <code>j</code>
-                  /
-                  <code>Down</code>
-                </td>
-                <td>Next agent</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>k</code>
-                  /
-                  <code>Up</code>
-                </td>
-                <td>Previous agent</td>
-              </tr>
-              <tr>
-                <td><code>Enter</code></td>
-                <td>Confirm selection</td>
-              </tr>
-              <tr>
-                <td><code>Esc</code></td>
-                <td>Cancel session creation</td>
-              </tr>
-            </tbody>
-          </table>
+<h2 id="v1">
+  Looking for a v1 chord?
+  <a href="#v1" class="heading-anchor">#</a>
+</h2>
+<p>
+  Several are gone with the panes they opened: <kbd>Ctrl</kbd>+<kbd>X</kbd>/<kbd>F7</kbd> (code
+  review), <kbd>Ctrl</kbd>+<kbd>E</kbd>/<kbd>F3</kbd> (file viewer),
+  <kbd>Ctrl</kbd>+<kbd>B</kbd>/<kbd>F2</kbd> (info panel), <kbd>F5</kbd> (tasks),
+  <kbd>Ctrl</kbd>+<kbd>P</kbd> (automations, now the folder import) and <kbd>Ctrl</kbd>+<kbd>U</kbd>
+  (restore list). See <a href="v1.html">using v1</a> for what still has them and how to get it.
+</p>

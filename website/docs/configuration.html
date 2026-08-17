@@ -395,7 +395,7 @@ file_viewer   = true
 global_search = true
 info_panel    = true
 shell_pane    = true
-code_review   = true           # native diff-review pane (F7)
+code_review   = true           # accepted, gates nothing (the pane was removed)
 mouse         = true
 notifications = true
 soft_delete   = true           # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard-delete
@@ -436,17 +436,17 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               <tr>
                 <td><code>tasks</code></td>
                 <td><code>true</code></td>
-                <td>tasks panel (<code>F5</code>/<code>Ctrl+W</code>) and task search results</td>
+                <td><code>thurbox-cli task</code>. The TUI pane was removed; the flag still gates the CLI</td>
               </tr>
               <tr>
                 <td><code>automations</code></td>
                 <td><code>true</code></td>
-                <td>automations pane, <code>Ctrl+P</code>, TUI schedule firing, heartbeat arming</td>
+                <td>heartbeat arming and headless firing. There is no pane, and no in-TUI scheduler &mdash; the tmux keeper runs due automations whether or not thurbox is open</td>
               </tr>
               <tr>
                 <td><code>file_viewer</code></td>
                 <td><code>true</code></td>
-                <td>file viewer column (<code>F3</code>) and file search results</td>
+                <td>Accepted, gates nothing &mdash; the file viewer was removed</td>
               </tr>
               <tr>
                 <td><code>global_search</code></td>
@@ -456,7 +456,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               <tr>
                 <td><code>info_panel</code></td>
                 <td><code>true</code></td>
-                <td>info panel column (<code>F2</code>)</td>
+                <td>Accepted, gates nothing &mdash; the info panel was removed</td>
               </tr>
               <tr>
                 <td><code>shell_pane</code></td>
@@ -466,7 +466,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               <tr>
                 <td><code>code_review</code></td>
                 <td><code>true</code></td>
-                <td>native code-review view (diff + comments, <code>Ctrl+X</code>)</td>
+                <td>Accepted, gates nothing &mdash; the review view was removed</td>
               </tr>
               <tr>
                 <td><code>mouse</code></td>

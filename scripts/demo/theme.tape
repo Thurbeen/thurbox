@@ -4,13 +4,13 @@
 # the dev binary, sets up the isolated env, seeds one session per real agent CLI
 # in a sample repo, and exports $THURBOX_BIN.
 #
-# Ctrl+Y opens the theme picker; Down/Up move, Enter selects. (No F-keys.)
-# Moving the selection LIVE-PREVIEWS the palette (the whole TUI recolors), so
-# this clip walks through EVERY built-in theme to show the full range. The demo
-# starts in `doom` (the last entry, re-applied by record.sh before each tape),
-# so we step UP through the list: doom -> solarized-light -> gruvbox-light ->
-# tokyo-night-day -> catppuccin-latte -> gruvbox-dark -> tokyo-night ->
-# catppuccin-mocha -> default, alternating dark and light palettes.
+# Ctrl+Y opens the theme picker; j/k or Down/Up move, Enter selects.
+# Moving the selection LIVE-PREVIEWS the palette — the whole interface recolors,
+# chrome bands included — so this clip walks down the list to show the range.
+#
+# It steps DOWN from the top: the picker opens on the *active* theme, which on a
+# fresh demo profile is `Default` (the first entry), so stepping up would go
+# nowhere. 36 palettes are listed, grouped under Dark and Light headers.
 
 Output docs/media/thurbox-theme.gif
 Output docs/media/thurbox-theme.mp4
@@ -38,26 +38,36 @@ Sleep 2500ms
 Ctrl+Y
 Sleep 1400ms
 
-# Step UP through every built-in theme. Each move recolors the live TUI; pause
-# on each so the palette is clearly visible.
-Up
+# Step DOWN through the dark palettes. Each move recolors the live interface;
+# pause on each so the palette is clearly visible.
+Down
 Sleep 1100ms
-Up
+Down
 Sleep 1100ms
-Up
+Down
 Sleep 1100ms
-Up
+Down
 Sleep 1100ms
-Up
+Down
 Sleep 1100ms
-Up
+Down
 Sleep 1100ms
-Up
-Sleep 1100ms
-Up
+Down
 Sleep 1100ms
 
-# Now back down to a vibrant dark palette and commit it with Enter.
+# Cross into the Light group, so the clip shows both halves of the range.
+Type "G"
+Sleep 1600ms
+Up
+Sleep 1200ms
+Up
+Sleep 1200ms
+
+# Back to a vibrant dark palette and commit it with Enter.
+Type "g"
+Sleep 1000ms
+Down
+Sleep 900ms
 Down
 Sleep 1000ms
 Enter
