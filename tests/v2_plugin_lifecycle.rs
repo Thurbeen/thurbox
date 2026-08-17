@@ -573,3 +573,109 @@ fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
     fs::write(&readme, "# mine\n").expect("edit");
     assert_eq!(sources(dir.path())["README.md"], Source::Edited);
 }
+
+/// The shipped examples load, and the demo arrangement stacks them where it says.
+///
+/// `docs/examples/` is not bundled, so nothing else would notice it rotting: a
+/// renamed snapshot field or a changed `run` signature would leave the files
+/// looking fine and failing the moment somebody copied them in. This builds the
+/// interface the copy instructions describe and asserts the shape the header
+/// diagram promises.
+#[test]
+fn the_demo_examples_load_and_stack_where_the_layout_says() {
+    let dir = interface();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples");
+    fs::copy(examples.join("layout.lua"), dir.path().join("layout.lua")).expect("layout");
+    for (from, to) in [
+        ("tasks.lua", "plugins/80_tasks.lua"),
+        ("top.lua", "plugins/85_top.lua"),
+    ] {
+        fs::copy(examples.join(from), dir.path().join(to)).expect(from);
+    }
+
+    let host = loaded(dir.path());
+    for name in ["tasks", "top"] {
+        assert!(
+            host.plugins.iter().any(|p| p.name == name),
+            "{name} must load: {:?}",
+            host.error
+        );
+    }
+    // The `top` example asks to run a program, and declaring that is not being
+    // granted it — the whole point of the capability being per-plugin.
+    let top = host
+        .plugins
+        .iter()
+        .find(|p| p.name == "top")
+        .expect("top loaded");
+    assert!(
+        top.capabilities
+            .contains(&thurbox::kernel::host::Capability::Run),
+        "the example declares `run`, so the trust prompt has something to be about"
+    );
+
+    // Wide enough for the right stack.
+    let wide = resolve(
+        &host.arrangement(200, 40).expect("arrangement"),
+        Rect::new(0, 0, 200, 40),
+    );
+    let rect = |slot: &str| {
+        wide.iter()
+            .find(|placed| placed.slot == slot)
+            .map(|placed| placed.rect)
+            .unwrap_or_else(|| panic!("{slot} is not placed: {wide:?}"))
+    };
+    let (sessions, center, tasks, top_rect) =
+        (rect("sessions"), rect("center"), rect("tasks"), rect("top"));
+
+    // Left to right: sessions, centre, then the stack.
+    assert!(sessions.x < center.x, "{sessions:?} {center:?}");
+    assert!(
+        center.x + center.width <= tasks.x,
+        "the stack is to the RIGHT of the centre: {center:?} {tasks:?}"
+    );
+    // Stacked: same column, tasks above top, no gap and no overlap.
+    assert_eq!(tasks.x, top_rect.x, "one column");
+    assert_eq!(tasks.width, top_rect.width, "one width");
+    assert_eq!(
+        tasks.y + tasks.height,
+        top_rect.y,
+        "tasks sits directly on top of top: {tasks:?} {top_rect:?}"
+    );
+
+    // Too narrow for a legible gauge: the stack goes rather than being squeezed.
+    let narrow = resolve(
+        &host.arrangement(120, 40).expect("arrangement"),
+        Rect::new(0, 0, 120, 40),
+    );
+    let slots: Vec<&str> = narrow.iter().map(|placed| placed.slot.as_str()).collect();
+    assert!(!slots.contains(&"tasks"), "{slots:?}");
+    assert!(!slots.contains(&"top"), "{slots:?}");
+    assert!(
+        slots.contains(&"center"),
+        "the centre is never dropped: {slots:?}"
+    );
+}
+
+/// A slot the arrangement reserves for a plugin that was not copied is an empty
+/// column, and an empty column reads as breakage.
+#[test]
+fn the_demo_layout_drops_a_stack_slot_whose_plugin_is_missing() {
+    let dir = interface();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples");
+    fs::copy(examples.join("layout.lua"), dir.path().join("layout.lua")).expect("layout");
+    // Only one of the two, which is the likeliest half-finished state.
+    fs::copy(
+        examples.join("tasks.lua"),
+        dir.path().join("plugins/80_tasks.lua"),
+    )
+    .expect("tasks");
+
+    let host = loaded(dir.path());
+    let placed = placed(&host, 200, 40);
+    assert!(placed.contains("tasks"), "{placed:?}");
+    assert!(
+        !placed.contains("top"),
+        "no `top` plugin, so no rect reserved for one: {placed:?}"
+    );
+}

@@ -385,6 +385,28 @@ cargo build --release</code></pre>
                   <span class="ui-pane__row mono">/ osc</span>
                   <span class="ui-pane__file">65_search.lua</span>
                 </div>
+                <div class="ui-pane" data-pane="tasks">
+                  <span class="ui-pane__title">Tasks</span>
+                  <span class="ui-pane__row">&#9744; rebase the wsl branch</span>
+                  <span class="ui-pane__row warn">&#9680; osc52 over ssh</span>
+                  <span class="ui-pane__row done">&#9745; ship the kernel</span>
+                  <span class="ui-pane__file">80_tasks.lua</span>
+                </div>
+                <div class="ui-pane" data-pane="top">
+                  <span class="ui-pane__title">System</span>
+                  <span class="ui-pane__row mono">
+                    CPU
+                    <i class="bar"><i class="bar__fill" style="width: 38%"></i></i>
+                    38%
+                  </span>
+                  <span class="ui-pane__row mono">
+                    MEM
+                    <i class="bar"><i class="bar__fill is-warn" style="width: 71%"></i></i>
+                    71%
+                  </span>
+                  <span class="ui-pane__row mono dim">firefox&nbsp;&nbsp;&nbsp;81.0%</span>
+                  <span class="ui-pane__file">85_top.lua</span>
+                </div>
               </div>
             </div>
           </div>
@@ -401,6 +423,9 @@ cargo build --release</code></pre>
                 </button>
                 <button class="ui-lab__btn" type="button" data-arrangement="focus" aria-pressed="false">
                   focus
+                </button>
+                <button class="ui-lab__btn" type="button" data-arrangement="stack" aria-pressed="false">
+                  stacked right
                 </button>
               </div>
             </div>
@@ -420,6 +445,12 @@ cargo build --release</code></pre>
                 <button class="ui-lab__chip is-yours" type="button" data-toggle="yours" aria-pressed="false">
                   90_yours.lua
                 </button>
+                <button class="ui-lab__chip is-demo" type="button" data-toggle="tasks" aria-pressed="false">
+                  80_tasks.lua
+                </button>
+                <button class="ui-lab__chip is-demo" type="button" data-toggle="top" aria-pressed="false">
+                  85_top.lua
+                </button>
               </div>
               <p class="ui-lab__hint">
                 <span class="ui-lab__hint-mark">&#9656;</span>
@@ -436,6 +467,36 @@ cargo build --release</code></pre>
           two edits, as it is above: the plugin, and the slot in
           <code>ui/layout.lua</code> that says where it goes.
         </p>
+
+        <div class="ui-lab__demo">
+          <p class="ui-lab__demo-lede">
+            <strong>&ldquo;Stacked right&rdquo; is a demo you can run.</strong>
+            Those two panes are real examples in the repository &mdash; a tasks list, and CPU and
+            memory read from
+            <code>top</code>
+            &mdash; with an arrangement that puts them in a column beside the agent. Copy the three
+            files and press
+            <code>F10</code>
+            :
+          </p>
+          <pre data-wrap><code class="language-bash">cp docs/examples/layout.lua ~/.config/thurbox/ui/layout.lua
+cp docs/examples/tasks.lua  ~/.config/thurbox/ui/plugins/80_tasks.lua
+cp docs/examples/top.lua    ~/.config/thurbox/ui/plugins/85_top.lua</code></pre>
+          <p class="ui-lab__demo-note">
+            The tasks pane needs no permission &mdash; it reads the same records
+            <code>thurbox-cli task</code>
+            does and writes back as commands. The
+            <code>top</code>
+            one asks to
+            <strong>run a program</strong>
+            , so it draws nothing until you trust the file (settings &rarr; Interface &rarr;
+            <code>t</code>
+            ). It then reads the machine
+            <em>the selected session runs on</em>
+            , which means picking a session over SSH shows you that host's load &mdash; without the
+            plugin knowing what SSH is.
+          </p>
+        </div>
       </div>
     </section>
 

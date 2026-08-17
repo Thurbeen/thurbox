@@ -642,12 +642,27 @@
     var WEIGHT = { sessions: 1, agent: 2.4, yours: 1 };
     var FOOTER = 18;
 
+    // The `stacked right` arrangement, mirroring docs/examples/layout.lua's own
+    // numbers so the widget and the file it advertises cannot drift: a 30%-wide
+    // right column split 55/45 between tasks and top, top to bottom.
+    var STACK = ['tasks', 'top'];
+    var STACK_SHARE = { tasks: 55, top: 45 };
+    var STACK_WIDTH = 30;
+    var SESSIONS_WIDTH = 25;
+
     var panes = {};
     Array.prototype.forEach.call(screen.querySelectorAll('.ui-pane'), function (el) {
       panes[el.getAttribute('data-pane')] = el;
     });
 
-    var on = { sessions: true, agent: true, search: true, yours: false };
+    var on = {
+      sessions: true,
+      agent: true,
+      search: true,
+      yours: false,
+      tasks: false,
+      top: false,
+    };
     var mode = 'columns';
 
     function place(el, x, y, w, h) {
@@ -655,6 +670,33 @@
       el.style.top = y + '%';
       el.style.width = w + '%';
       el.style.height = h + '%';
+    }
+
+    // sessions | agent | (tasks over top).
+    //
+    // Honours each pane's own switch the way the real `layout.lua` honours
+    // `ctx.slots`: a stack slot whose plugin is not loaded is not reserved, so
+    // turning one off gives its row to the other rather than leaving a hole — and
+    // turning both off drops the column, not just its contents.
+    function placeStack(bodyH) {
+      panes.yours.setAttribute('data-off', 'true');
+      var stack = STACK.filter(function (id) {
+        return on[id];
+      });
+      var right = stack.length ? STACK_WIDTH : 0;
+      var left = on.sessions ? SESSIONS_WIDTH : 0;
+      if (on.sessions) place(panes.sessions, 0, 0, left, bodyH);
+      if (on.agent) place(panes.agent, left, 0, 100 - left - right, bodyH);
+
+      var total = stack.reduce(function (sum, id) {
+        return sum + STACK_SHARE[id];
+      }, 0);
+      var offset = 0;
+      stack.forEach(function (id) {
+        var share = (STACK_SHARE[id] / total) * bodyH;
+        place(panes[id], 100 - right, offset, right, share);
+        offset += share;
+      });
     }
 
     function render() {
@@ -669,6 +711,19 @@
       });
 
       if (on.search) place(panes.search, 0, bodyH, 100, footer);
+
+      // The right stack only exists in its own arrangement; elsewhere the two
+      // demo panes have no slot, which is exactly what happens in the app when
+      // you copy the plugins and not the layout.
+      if (mode !== 'stack') {
+        STACK.forEach(function (id) {
+          panes[id].setAttribute('data-off', 'true');
+        });
+      }
+      if (mode === 'stack') {
+        placeStack(bodyH);
+        return;
+      }
 
       // Focus gives the whole body to the agent when it is loaded; the others
       // keep their rect so they fade rather than jump on the way back.
@@ -776,11 +831,19 @@
       function () {
         setMode('focus');
       },
+      // The shipped demo: two example panes stacked to the right of the agent.
+      // Last in the sequence because it is the most to take in, and it is where
+      // the autoplay stops — so it is what a reader is left looking at.
       function () {
         setMode('columns');
         setPane('sessions', true);
-        setPane('search', true);
         setPane('yours', false);
+        setPane('search', true);
+      },
+      function () {
+        setPane('tasks', true);
+        setPane('top', true);
+        setMode('stack');
       },
     ];
     var step = 0;

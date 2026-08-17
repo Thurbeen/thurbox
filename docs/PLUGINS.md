@@ -519,3 +519,41 @@ Three escape hatches, in increasing order of how much you give up:
 - **Delete `.bundled.json`** and the next start re-delivers every bundled file,
   forgetting which ones you had removed. Your own files are untouched.
 - **Delete the whole directory** for the shipped interface exactly as it ships.
+
+## Examples you can run
+
+Four files under `docs/examples/`, none of them bundled — copy the ones you want.
+They exist because "every pane is a file" is easier to believe from a pane you
+added yourself than from prose.
+
+| File | What it is |
+|---|---|
+| [`plugin.lua`](examples/plugin.lua) | what `plugin new` writes: a pane, a key, a setting |
+| [`composite.lua`](examples/composite.lua) | the worked `run` example — git status and log, on the session's own host |
+| [`tasks.lua`](examples/tasks.lua) | v1's tasks pane, rebuilt as a plugin. Reads `thurbox.tasks`, writes `task` commands, needs no capability |
+| [`top.lua`](examples/top.lua) | CPU, memory and load as gauges, parsed from `top`. Asks for `run`, so it needs your trust |
+| [`layout.lua`](examples/layout.lua) | an arrangement putting the two above in a column beside the agent |
+
+The last three are one demo:
+
+```bash
+cp docs/examples/layout.lua ~/.config/thurbox/ui/layout.lua
+cp docs/examples/tasks.lua  ~/.config/thurbox/ui/plugins/80_tasks.lua
+cp docs/examples/top.lua    ~/.config/thurbox/ui/plugins/85_top.lua
+```
+
+Press `F10`, then trust `85_top.lua` (settings → Interface → `t`) so it may run a
+program. `layout.lua` **replaces** the shipped arrangement — delete yours
+afterwards and the Interface tab restores it, so there is nothing here you cannot
+undo.
+
+Two things they are chosen to show. `tasks.lua` draws the `input` node kind, which
+is the one of the four nothing bundled uses. And `top.lua` reads the machine **the
+selected session runs on**, because `run` executes in that session's directory on
+that session's host — so moving the cursor onto a session over SSH shows the remote
+box's load, with nothing in the plugin knowing what SSH is.
+
+`layout.lua` is the half people forget: adding a pane is two edits, the plugin and
+the slot. Both example panes name a slot of their own, and a slot no arrangement
+places is a pane that loads and never draws — `plugin list` reports it as
+`no slot`, which is the fastest way to spot it.
