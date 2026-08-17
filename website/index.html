@@ -346,8 +346,9 @@ cargo build --release</code></pre>
         <h2>The interface is a directory you can edit</h2>
         <p class="section-lede">
           The session list, the agent terminal, the search strip &mdash; each one is a Lua file
-          under <code>ui/plugins/</code>. Move it, turn it off, replace it with your own, and the
-          arrangement closes up around what is left. No recompile, no restart.
+          under <code>ui/plugins/</code>. Move it, turn it off, replace it with your own. What goes
+          where is a second file, <code>ui/layout.lua</code>, so the panes and the arrangement are
+          edited separately. No recompile, no restart.
         </p>
 
         <div class="ui-lab">
@@ -432,7 +433,9 @@ cargo build --release</code></pre>
         <p class="ui-lab__foot">
           That last one is not shipped. <code>thurbox-cli plugin new git-status</code> writes a file
           that already loads, and it is a pane the moment you save it. A plugin gets no filesystem
-          and no network &mdash; it draws, and the kernel does the rest.
+          and no network &mdash; it draws, and the kernel does the rest. Adding or removing a pane is
+          two edits, as it is above: the plugin, and the slot in
+          <code>ui/layout.lua</code> that says where it goes.
         </p>
       </div>
     </section>
@@ -718,9 +721,9 @@ return {
                 <h3>Every pane is a file</h3>
                 <p>
                   The session list included. Move one, turn it off, delete it, or write your own
-                  &mdash; and the arrangement
-                  <strong>closes up around what is left</strong>
-                  rather than leaving a hole. No recompile, no restart.
+                  &mdash; from a
+                  <strong>list of the files inside the app itself</strong>
+                  , which knows what each is and whether it is drawing. No recompile, no restart.
                 </p>
               </div>
             </a>
@@ -877,12 +880,15 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
               <p class="feature-row-eyebrow">Ctrl+, &rarr; Interface</p>
               <h3>The interface, editing itself</h3>
               <p>
-                The Interface tab lists every file that makes up what you are looking at &mdash;
-                where each came from, and whether it is on screen right now. Here
+                The Interface tab lists every file that makes up what you are looking at, and
+                whether each is drawing right now. Here
                 <code>10_sessions.lua</code>
                 is switched off with
                 <code>space</code>
-                : the file stays on disk, intact, and the agent simply takes the space.
+                : the file stays on disk, intact, and the session list stops loading &mdash; it
+                declares no keys and is granted no capability. Its column is still reserved by
+                <code>ui/layout.lua</code>
+                until you drop that line too.
               </p>
               <a class="feature-row-link" href="docs/v2-interface.html">Learn more &rarr;</a>
             </div>
@@ -894,8 +900,8 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
                 <div class="terminal-body">
                   <!-- prettier-ignore -->
                   <video src="assets/thurbox-interface.mp4" width="1920" height="1080" autoplay loop muted playsinline preload="none">
-                    Turning the session-list plugin off from the Interface tab and watching the
-                    arrangement close up around it
+                    Turning the session-list plugin off from the Interface tab; the file stays on
+                    disk and the session list stops loading
                   </video>
                 </div>
               </div>

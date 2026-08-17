@@ -7,7 +7,7 @@
 # This is the clip that shows what makes thurbox thurbox: every pane is a Lua
 # file, and the Interface tab is the interface looking at itself. It walks the
 # inventory (which files exist, where each came from, which are on screen), turns
-# one off and watches the arrangement close up around it, then turns it back on.
+# one off and watches it stop drawing, then turns it back on.
 #
 # Chords: `record.sh` seeds a ui.json rebinding `settings.open` to Ctrl+B,
 # because the real chords are F6 and Ctrl+, — VHS can send neither. `]` moves to
@@ -52,8 +52,10 @@ Sleep 900ms
 Space
 Sleep 1800ms
 
-# Close the modal: the left column is gone and the agent has taken the space,
-# rather than a hole being left where the session list used to be.
+# Close the modal: the session list is no longer drawn. Its COLUMN is still
+# reserved, because `layout.lua` declares that slot on `panels.shown("sessions")`
+# — the F9 toggle — and knows nothing about the disabled set. Closing the
+# arrangement up is a second edit. Recorded as a blocker in the UI review.
 Escape
 Sleep 3s
 

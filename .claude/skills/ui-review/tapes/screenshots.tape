@@ -5,12 +5,17 @@
 # an isolated sandbox. VHS Screenshot paths are literal (no env expansion), which is
 # why capture.sh sed-substitutes the absolute screenshot dir here.
 #
-# VHS has no function-key commands, so this uses thurbox's Ctrl aliases:
-#   Ctrl+B = info panel, Ctrl+E = file viewer, Ctrl+W = tasks, Ctrl+P = automations,
-#   Ctrl+A = global search, Ctrl+Y = theme picker, Ctrl+N = new session,
-#   Ctrl+G = keybindings help, Ctrl+J = next session, Ctrl+X = settings.
-# Ctrl+A (global search) and Ctrl+X (settings) are remapped by capture.sh via a
-# seeded keybindings.json, because VHS cannot type their real chords (Ctrl+/, Ctrl+,).
+# Chords used, all Ctrl+<letter> because VHS emits no F-keys and no
+# Ctrl+punctuation:
+#   Ctrl+J next session   Ctrl+Y theme picker   Ctrl+N new session
+#   Ctrl+G help           Ctrl+T shell          Ctrl+H focus previous pane
+#   Ctrl+A search   (really Ctrl+/ — rebound by capture.sh via ui.json)
+#   Ctrl+B settings (really Ctrl+, / F6 — likewise)
+#
+# Focus matters. A chord a plugin flags as passthrough is forwarded to the agent
+# CLI while a session terminal is focused, so the tape presses Ctrl+H first —
+# focus-cycling is never deferred, which is what makes it the reliable way out of
+# a focused terminal.
 
 # VHS still requires at least one Output; we use a throwaway one and rely on
 # Screenshot for the real artifacts.
@@ -30,154 +35,115 @@ Enter
 Sleep 2s
 Show
 
-# Let panes boot.
-Sleep 3s
+# Let the real agent CLIs finish booting so the panes hold live content rather
+# than an empty terminal.
+Sleep 3500ms
 
-# 01 — default view: session list + terminal
+# 01 — default view: session list + agent terminal
 Screenshot "__SHOT_DIR__/01-session-list.png"
 
-# 11-14 — the native code-review view. The "review" session is seeded last, so
-# it's the one selected on launch. ToggleReview is a terminal-passthrough chord,
-# so a bare Ctrl+R is forwarded to the agent while the terminal is focused — focus
-# the session list first (Ctrl+H, never passthrough) so Ctrl+R runs as a global
-# action and opens the diff for the selected "review" session.
-Ctrl+H
-Sleep 500ms
-Ctrl+R
-Sleep 1800ms
-# Move onto a changed line so the comment anchors to it.
-Type "j"
-Sleep 300ms
-Type "j"
-Sleep 300ms
-Type "j"
-Sleep 900ms
-Screenshot "__SHOT_DIR__/11-code-review.png"
-# Inline comment compose + classification badge (Tab cycles the type).
-Type "c"
-Sleep 1000ms
-Type "Use checked_add to surface overflow"
-Sleep 600ms
-Tab
-Sleep 800ms
-Screenshot "__SHOT_DIR__/12-code-review-comment.png"
-Ctrl+S
-Sleep 1200ms
-# Side-by-side layout.
-Type "v"
-Sleep 1200ms
-Screenshot "__SHOT_DIR__/13-code-review-sidebyside.png"
-Type "v"
-Sleep 600ms
-# Target picker (branch / working / per-commit).
-Type "t"
-Sleep 1200ms
-Screenshot "__SHOT_DIR__/14-code-review-targets.png"
-Escape
-Sleep 500ms
-Escape
-Sleep 800ms
-
-# 02 — select a different session (terminal still focused)
+# 02 — a different session selected. Ctrl+J is navigation, never passthrough, so
+# it works with the terminal still focused.
 Ctrl+J
 Sleep 1500ms
 Screenshot "__SHOT_DIR__/02-second-session.png"
 
-# Focus the session list. The panel-toggle chords below (Ctrl+B/E/W/P) are
-# terminal-PASSTHROUGH actions: while a session terminal is focused they are
-# forwarded to the agent CLI instead of running the thurbox command, so they
-# must be issued from the session list. Ctrl+H (focus previous pane) is NOT a
-# passthrough, so it reliably moves focus Terminal -> session list. Each toggle
-# below returns focus to the session list when closed, so one Ctrl+H suffices.
+# Out of the terminal for the rest of the tape.
 Ctrl+H
 Sleep 700ms
 
-# 03 — info panel (toggle leaves focus on the session list)
-Ctrl+B
-Sleep 1500ms
-Screenshot "__SHOT_DIR__/03-info-panel.png"
-Ctrl+B
-Sleep 700ms
-
-# 04 — file viewer
-Ctrl+E
-Sleep 1500ms
-Screenshot "__SHOT_DIR__/04-file-viewer.png"
-Ctrl+E
-Sleep 700ms
-
-# 05 — tasks panel
-Ctrl+W
-Sleep 1500ms
-Screenshot "__SHOT_DIR__/05-tasks-panel.png"
-Ctrl+W
-Sleep 700ms
-
-# 06 — automations pane
-Ctrl+P
-Sleep 1500ms
-Screenshot "__SHOT_DIR__/06-automations.png"
-Escape
-Sleep 700ms
-
-# 07 — global search strip (with a query so it shows results)
+# 03 — the search strip. The point of this screen is that matches highlight in
+# the session list itself and non-matching rows dim, rather than being reprinted
+# in the strip — so the query has to match some sessions and not others.
 Ctrl+A
 Sleep 800ms
-Type "test"
-Sleep 1200ms
-Screenshot "__SHOT_DIR__/07-global-search.png"
+Type "re"
+Sleep 1400ms
+Screenshot "__SHOT_DIR__/03-search.png"
 Escape
 Sleep 700ms
 
-# 08 — theme picker
+# 04 — theme picker: 36 palettes under Dark/Light headers drawn inside their
+# entry's row.
 Ctrl+Y
 Sleep 1500ms
-Screenshot "__SHOT_DIR__/08-theme-picker.png"
-Escape
-Sleep 700ms
+Screenshot "__SHOT_DIR__/04-theme-picker.png"
 
-# 09 — new-session / repo picker
-Ctrl+N
-Sleep 1500ms
-Screenshot "__SHOT_DIR__/09-repo-picker.png"
-Escape
-Sleep 700ms
-
-# 10 — keybindings help + editor
-Ctrl+G
-Sleep 1500ms
-Screenshot "__SHOT_DIR__/10-keybindings.png"
-Escape
+# 05 — the same picker filtered. Letters only append after `/`, and the count is
+# live, so this shows both the query and matched/total.
+Type "/"
 Sleep 500ms
-
-# 11 — settings panel. Default chord is Ctrl+, / F6, neither typeable by VHS;
-# capture.sh remaps OpenSettings -> Ctrl+X for the tape.
-Ctrl+X
-Sleep 1500ms
-Screenshot "__SHOT_DIR__/11-settings-panel.png"
+Type "light"
+Sleep 1200ms
+Screenshot "__SHOT_DIR__/05-theme-filter.png"
+Escape
+Sleep 400ms
 Escape
 Sleep 700ms
 
-# 12 — automation editor (multi-line wrapping prompt + modal button footer).
-# Ctrl+P opens the automations list; Enter edits the seeded "nightly-triage".
-Ctrl+P
-Sleep 900ms
+# 06 — new session, first step: the repo picker.
+Ctrl+N
+Sleep 1600ms
+Screenshot "__SHOT_DIR__/06-new-session-repo.png"
+
+# 07 — a later step of the same flow. The seeded repo is preselected, so Enter
+# advances; this captures whichever step follows (name / agent) with the wizard's
+# own hint line.
 Enter
-Sleep 1500ms
-Screenshot "__SHOT_DIR__/12-automation-editor.png"
+Sleep 1400ms
+Screenshot "__SHOT_DIR__/07-new-session-agent.png"
+Escape
+Sleep 800ms
+
+# 08 — keybindings help. Rendered FROM the registry, so it lists exactly what the
+# loaded plugins declared: there is no hardcoded table to drift.
+Ctrl+G
+Sleep 1600ms
+Screenshot "__SHOT_DIR__/08-help.png"
 Escape
 Sleep 700ms
 
-# 13 — task editor (in-pane, central-pane). Ctrl+W focuses the tasks panel;
-# Enter opens the editor for the selected task.
-Ctrl+W
-Sleep 900ms
-Enter
-Sleep 1500ms
-Screenshot "__SHOT_DIR__/13-task-editor.png"
-Escape
-Sleep 700ms
+# 09 — settings: plugin settings (effective next frame) above core settings
+# (settings.toml), with restart-only rows marked.
+Ctrl+B
+Sleep 1600ms
+Screenshot "__SHOT_DIR__/09-settings.png"
 
-# Quit cleanly.
+# 10 — the Interface tab: every file, where it came from, whether it is on screen.
+# This is the screen that has no v1 counterpart.
+Type "]"
+Sleep 1600ms
+Screenshot "__SHOT_DIR__/10-interface-tab.png"
+
+# 11 — turn a pane off and watch the arrangement close up around it. Row 0 is
+# `65_search.lua`, whose slot is empty while search is closed, so toggling that
+# would show no reflow at all — one `j` first, onto `plugins/10_sessions.lua`.
+# Movement here is j/k as the modal's own hint says; arrows are not bound for up.
+Type "j"
+Sleep 700ms
+Space
+Sleep 1400ms
+Escape
+Sleep 1600ms
+Screenshot "__SHOT_DIR__/11-plugin-off.png"
+
+# Put it back, so the shell screenshot below is of the normal arrangement.
+Ctrl+B
+Sleep 1000ms
+Type "]"
+Sleep 1000ms
+Type "j"
+Sleep 600ms
+Space
+Sleep 1200ms
+Escape
+Sleep 1200ms
+
+# 12 — the per-session shell pane.
+Ctrl+T
+Sleep 2s
+Screenshot "__SHOT_DIR__/12-shell-pane.png"
+
+# Quit cleanly (detaches sessions).
 Ctrl+Q
 Sleep 1s

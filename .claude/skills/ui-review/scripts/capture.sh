@@ -137,23 +137,28 @@ trap cleanup EXIT INT TERM
     fi
 } > "$CFG_DIR/agents.toml"
 
-# --- Keybindings override (VHS can't type Ctrl+, , Ctrl+/, or F-keys) --------
-# Remap the actions whose default chords VHS cannot emit to free, typeable
-# Ctrl+<letter> chords so the tape can open them. The rendered panels are
-# identical regardless of which key opens them.
-#   GlobalSearch: Ctrl+/    -> Ctrl+A   OpenSettings: Ctrl+, -> Ctrl+X
-#   ToggleReview: Ctrl+X/F7 -> Ctrl+R   (code-review view; remapping it here also
-#                                        frees its default Ctrl+X for OpenSettings)
-# RestartSession's default is also Ctrl+R, and a file-loaded override does NOT
-# steal a chord from another action — so without moving RestartSession off Ctrl+R
-# it shadows ToggleReview and the tape ends up restarting the session instead of
-# opening the diff. The tape never restarts, so park it on a chord it won't press.
-cat > "$CFG_DIR/keybindings.json" <<'EOF'
+# --- Keybinding overrides (VHS can't type Ctrl+, , Ctrl+/, or F-keys) --------
+# Two of the screens under review open on chords VHS cannot emit:
+#   search.open   — really Ctrl+/ (and Ctrl+7 / Ctrl+_, which the kernel folds
+#                   into it); no terminal sends any of them reliably.
+#   settings.open — really Ctrl+, or F6, and VHS sends neither an F-key nor a
+#                   Ctrl+punctuation chord.
+# Ctrl+A and Ctrl+B are the two free Ctrl+<letter> slots: every other letter is
+# claimed by the kernel (c/d/g/h/l/n/q/s/v/x/y/z) or by a plugin
+# (f/j/k/o/p/r/t). A rebinding that collides is a conflict for the registry to
+# resolve rather than an override, so picking a free slot matters.
+#
+# The kernel reads rebindings from `ui.json` as `bindings: { action: chord }` —
+# the same file that carries trust and the disabled set, because all three are
+# *user decisions*. (v1 used a separate keybindings.json holding arrays of chords
+# keyed by CamelCase action names; neither the file nor those names exist now.)
+# Written before first launch so the registry has it on the first frame.
+cat > "$CFG_DIR/ui.json" <<'EOF'
 {
-  "GlobalSearch": ["ctrl+a"],
-  "OpenSettings": ["ctrl+x"],
-  "ToggleReview": ["ctrl+r"],
-  "RestartSession": ["ctrl+shift+r"]
+  "bindings": {
+    "search.open": "ctrl+a",
+    "settings.open": "ctrl+b"
+  }
 }
 EOF
 
@@ -217,9 +222,10 @@ This means THURBOX_DATA_DIR/THURBOX_CONFIG_DIR (or similar) pointed the dev
 binary at your real data. Aborting before any further writes."
 fi
 
-# A worktree session with a committed multi-file diff, created LAST so the TUI
-# selects it on launch — the code-review view (F7 / Ctrl+R here) diffs
-# <base>..HEAD of this worktree, so the review screenshots show a real diff.
+# A worktree session on its own branch, created LAST so the TUI selects it on
+# launch. There is no review view to point at a diff any more, but the branch is
+# what the session list renders beside the name and what the search strip matches
+# on, so a session that actually has one keeps those screens honest.
 # shellcheck disable=SC2086 # $AGENTS is a space-separated list, split on purpose
 review_agent=$(printf '%s\n' $AGENTS | head -n1)
 "$CLI_BIN" session create --name "review" --repo-path "$DEMO_REPO" \
@@ -254,6 +260,17 @@ EOF
         commit -q -m "feat: add greeting + checked arithmetic"
 fi
 
+# The first-launch interface prompt exists for somebody upgrading from v1. This
+# sandbox profile is a minute old, but it has sessions — which is the signal the
+# gate reads. Without this the tape spends its keystrokes answering the prompt and
+# the closing Ctrl+Q *declines* it, so every screenshot is of the gate.
+"$CLI_BIN" config accept-interface >/dev/null 2>&1 \
+    || log "warning: could not pre-accept the interface prompt (screens may show the gate)"
+
+# Tasks and automations no longer have panes, so nothing below is screenshotted.
+# It is seeded anyway: the rows are real state the session list and search read
+# past, and an empty database is a less honest thing to review than a populated
+# one.
 log "Seeding tasks + an automation"
 "$CLI_BIN" task create --title "Write integration tests" >/dev/null 2>&1 || true
 "$CLI_BIN" task create --title "Triage failing CI" --status in_progress >/dev/null 2>&1 || true
@@ -302,23 +319,18 @@ emit() { # file label screen keys
         first=0
         printf '%s' "$entry"
     done <<'MANIFEST'
-01-session-list.png|Session list + terminal (default view)|session-list|launch
-11-code-review.png|Code-review view: diff + changed-files column|code-review|Ctrl+X
-12-code-review-comment.png|Code review: inline comment compose + classification|code-review|c
-13-code-review-sidebyside.png|Code review: side-by-side diff layout|code-review|v
-14-code-review-targets.png|Code review: target picker (branch/working/commit)|code-review|t
+01-session-list.png|Session list + agent terminal (default view)|session-list|launch
 02-second-session.png|A different session selected|session-list|Ctrl+J
-03-info-panel.png|Session info panel|info-panel|Ctrl+B
-04-file-viewer.png|File viewer (repo tree)|file-viewer|Ctrl+E
-05-tasks-panel.png|Tasks panel (todo list)|tasks|Ctrl+W
-06-automations.png|Automations pane|automations|Ctrl+P
-07-global-search.png|Global search strip|search|Ctrl+A + query
-08-theme-picker.png|Theme picker|theme|Ctrl+Y
-09-repo-picker.png|New-session / repo picker|new-session|Ctrl+N
-10-keybindings.png|Keybindings help + editor|keybindings|Ctrl+G
-11-settings-panel.png|Settings panel|settings|Ctrl+,
-12-automation-editor.png|Automation editor (multi-line prompt)|automation-editor|Ctrl+P then Enter
-13-task-editor.png|Task editor (in-pane)|task-editor|Ctrl+W then Enter
+03-search.png|Search strip, matches highlighted in the pane|search|Ctrl+/ + query
+04-theme-picker.png|Theme picker (36 palettes, grouped)|theme|Ctrl+Y
+05-theme-filter.png|Theme picker filtered behind /|theme|Ctrl+Y then / + query
+06-new-session-repo.png|New session: repo picker|new-session|Ctrl+N
+07-new-session-name.png|New session: naming step|new-session|Ctrl+N then Enter
+08-help.png|Keybindings help, rendered from the registry|keybindings|Ctrl+G
+09-settings.png|Settings: core + plugin settings|settings|Ctrl+,
+10-interface-tab.png|Settings: the Interface tab (plugin inventory)|interface|Ctrl+, then ]
+11-plugin-off.png|The arrangement after a pane is turned off|interface|space then Esc
+12-shell-pane.png|Per-session shell pane|shell|Ctrl+T
 MANIFEST
     printf '\n]\n'
 } > "$OUT_DIR/manifest.json"

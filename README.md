@@ -942,7 +942,7 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Every pane — the session list included — is a Lua file under `ui/`.
 Move one, turn it off, delete it, or write your own, and the
-arrangement closes up around what is left. No recompile, no restart.
+arrangement that places them is a second file, `ui/layout.lua`. No recompile, no restart.
 
 ```bash
 thurbox-cli plugin dir          # which interface directory is live

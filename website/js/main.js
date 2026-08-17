@@ -622,12 +622,18 @@
 
   /* ── The panel lab ────────────────────────────────────────────────────────
    *
-   * Demonstrates the one claim the page rests on: a pane is a file, and the
-   * arrangement closes up around whichever files are loaded. So the rects are
+   * Demonstrates the one claim the page rests on: a pane is a file, and what an
+   * arrangement file does with the set of files it is given. So the rects are
    * COMPUTED from the enabled set rather than picked from a table of finished
-   * layouts -- a table would have to enumerate every combination, and would let
-   * a hole appear where a turned-off pane used to be, which is exactly the
-   * behaviour being claimed not to happen.
+   * layouts -- a table would have to enumerate every combination.
+   *
+   * This models an `ui/layout.lua` that conditions its slots on the plugins
+   * actually loaded. The SHIPPED layout.lua does not yet: it gates the session
+   * column on the F9 toggle alone, so disabling that plugin in the app leaves
+   * its column reserved and empty (a blocker in docs/ui-review.html). Keep the
+   * prose around this widget describing a pane and its slot as two edits, which
+   * is true either way -- do not restore a claim that turning a plugin off
+   * reflows on its own until the kernel publishes the occupied slots to Lua.
    */
   (function panelLab() {
     var screen = document.getElementById('ui-lab-screen');
