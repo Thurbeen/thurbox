@@ -523,18 +523,43 @@ pub fn is_repository(src: &str) -> bool {
 /// `plugin new` refuses a bad name: a clone landing somewhere other than where it
 /// said is worse than one that stops.
 pub fn repository_name(url: &str) -> Result<String, String> {
-    let trimmed = url.trim().trim_end_matches('/');
-    let last = trimmed
-        .rsplit(['/', ':'])
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(".git");
+    let last = last_segment(url, cfg!(windows));
     if last.is_empty() {
         return Err(format!("could not read a plugin name out of {url}"));
     }
     crate::paths::validate_safe_name(last)
         .map_err(|e| format!("{url} names {last:?}, which is not usable as a directory: {e}"))?;
     Ok(last.to_string())
+}
+
+/// The last segment of a source, without `.git`.
+///
+/// `windows` decides whether a **backslash separates**. On Windows a local source is
+/// `D:\src\thurbox-widget`; on POSIX a backslash is a legal filename character, and
+/// splitting on one there would rename a directory that legitimately contains it. A
+/// remote URL separates with `/` or `:` on either platform, so this changes nothing
+/// but the local-path case.
+///
+/// The platform is a **parameter** rather than a `cfg!` read inside the body, so both
+/// behaviours are testable on one machine. That is not tidiness: this is exactly the
+/// bug that got shipped. Every repository test passed on Linux and *all ten* failed on
+/// Windows, because the only difference was a separator the Linux suite could not
+/// express — the same way `bundled::relative_to` was invisible here until Windows CI
+/// said otherwise.
+fn last_segment(source: &str, windows: bool) -> &str {
+    let separators: &[char] = match windows {
+        true => &['/', ':', '\\'],
+        false => &['/', ':'],
+    };
+    let mut trimmed = source.trim().trim_end_matches('/');
+    if windows {
+        trimmed = trimmed.trim_end_matches('\\');
+    }
+    trimmed
+        .rsplit(separators)
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(".git")
 }
 
 /// The pane inside a freshly-cloned working copy.
@@ -1109,6 +1134,47 @@ fn edit_distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Windows local path names its clone directory too.
+    ///
+    /// Both platforms are asserted from one machine on purpose: the Windows reading
+    /// was wrong for the whole life of the clone path and Linux could not see it,
+    /// because a `\` is an ordinary filename character here and a separator there.
+    /// Every repository test failed on Windows CI with "Name contains invalid
+    /// characters" while passing locally.
+    #[test]
+    fn a_source_names_its_directory_on_either_platform() {
+        // A remote URL reads the same either way.
+        for windows in [true, false] {
+            for url in [
+                "https://github.com/you/thurbox-widget",
+                "https://github.com/you/thurbox-widget.git",
+                "https://github.com/you/thurbox-widget/",
+                "git@github.com:you/thurbox-widget.git",
+            ] {
+                assert_eq!(last_segment(url, windows), "thurbox-widget", "{url}");
+            }
+            assert_eq!(
+                last_segment("/home/me/src/thurbox-widget", windows),
+                "thurbox-widget"
+            );
+        }
+
+        // A local Windows path: the drive letter's colon already split, but the
+        // backslashes did not, so the whole tail was taken as one name and refused.
+        for path in [
+            r"D:\a\thurbox\thurbox-widget",
+            r"D:\a\thurbox\thurbox-widget\",
+            r"\\server\share\thurbox-widget",
+            r"C:\Users\me\thurbox-widget.git",
+        ] {
+            assert_eq!(last_segment(path, true), "thurbox-widget", "{path}");
+        }
+
+        // And on POSIX a backslash stays part of the name: it is legal there, so
+        // splitting on it would rename somebody's directory.
+        assert_eq!(last_segment(r"/home/me/odd\name", false), r"odd\name");
+    }
 
     fn entry(file: &str) -> PluginEntry {
         PluginEntry {

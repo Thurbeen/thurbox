@@ -765,12 +765,28 @@ fn a_clone_that_fails_leaves_nothing_behind() {
             None => format!("git+{}", home.path().join("no-such-repo").display()),
             Some(_) => format!("git+{}", repo.display()),
         };
+        let pinned = pin.is_some();
         let report = run(Action::Install {
             src,
             as_file: None,
             pin,
         });
-        assert!(report.is_err(), "the install must fail: {report:?}");
+        let error = report.expect_err("the install must fail");
+
+        // The two failures must read differently. A pin that cannot be obtained is
+        // the ordinary consequence of a rebase or squash merge replacing the commit
+        // somebody pinned, and its fix (drop the pin, or take the new commit) is not
+        // the fix for a repository that is not there.
+        match pinned {
+            true => assert!(
+                error.contains("cloned, but commit") && error.contains("rebased"),
+                "a missing commit must not read as a failed clone: {error}"
+            ),
+            false => assert!(
+                error.contains("clone failed"),
+                "and a failed clone must say so: {error}"
+            ),
+        }
 
         assert!(
             !ui.join("thurbox-widget").exists() && !ui.join("no-such-repo").exists(),

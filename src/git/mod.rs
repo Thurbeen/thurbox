@@ -125,7 +125,16 @@ pub fn clone_plugin(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()>
             // Clone succeeded, the pin did not: this working copy is at the wrong
             // revision and nobody asked for that one.
             let _ = std::fs::remove_dir_all(dest);
-            return Err(e);
+            // Said distinctly from a failed clone, because the two have different
+            // fixes and the common cause is invisible: a rebase or squash merge
+            // *replaces* commits, so a pin taken from a pull request that has since
+            // been merged names an object the remote no longer has. Reachable
+            // without the pin, which is the actual next step.
+            return Err(e.context(format!(
+                "the repository cloned, but commit {commit} could not be obtained \
+                 from it — if that commit came from a branch which was since \
+                 rebased, squashed or deleted, the remote no longer has it"
+            )));
         }
     }
     Ok(())
