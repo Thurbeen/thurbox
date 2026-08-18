@@ -158,6 +158,16 @@ pub enum Command {
     /// wait for.
     Focus {
         plugin: String,
+        /// Focus this pane, or — when it already holds focus — return to whatever
+        /// was focused before it.
+        ///
+        /// Here rather than in each plugin because the kernel is what remembers
+        /// where focus came from (`focus_return`, the same memory `Esc` uses). A
+        /// pane implementing this itself would have to name the pane to go back
+        /// to, and the only name it could hard-code is the one that happens to
+        /// share its slot today — which is the user's arrangement, not the
+        /// plugin's to assume.
+        toggle: bool,
     },
     /// Open a shell beside a session's agent.
     ///
@@ -411,6 +421,7 @@ impl Command {
             delta,
             force,
             flag,
+            toggle,
             number,
             reset,
             repo,
@@ -539,7 +550,7 @@ impl Command {
         // Focus names a pane, not a session.
         if kind == "focus" {
             return match text.clone().filter(|t| !t.is_empty()) {
-                Some(plugin) => Ok(Command::Focus { plugin }),
+                Some(plugin) => Ok(Command::Focus { plugin, toggle }),
                 None => Err("command \"focus\" needs a plugin name".to_string()),
             };
         }
@@ -636,6 +647,8 @@ pub struct Args {
     pub delta: Option<i64>,
     pub force: bool,
     pub flag: Option<bool>,
+    /// `focus`: return to the previous pane when the named one already has focus.
+    pub toggle: bool,
     pub number: Option<f64>,
     pub reset: bool,
     pub repo: Option<String>,
@@ -1664,6 +1677,40 @@ mod tests {
         assert!(error.contains("delete"), "{error}");
     }
 
+    /// `toggle` is what lets one key both enter and leave a pane.
+    ///
+    /// Off by default, so every existing `command("focus", …)` keeps meaning "go
+    /// there" — a plugin that wanted the old behaviour did not have to change.
+    #[test]
+    fn focus_carries_whether_it_toggles() {
+        let plain = Command::parse(
+            "focus",
+            Args {
+                text: Some("review".into()),
+                ..Args::default()
+            },
+        )
+        .expect("focus parses");
+        assert!(matches!(plain, Command::Focus { toggle: false, .. }));
+
+        let toggling = Command::parse(
+            "focus",
+            Args {
+                text: Some("review".into()),
+                toggle: true,
+                ..Args::default()
+            },
+        )
+        .expect("focus parses");
+        match toggling {
+            Command::Focus { plugin, toggle } => {
+                assert_eq!(plugin, "review");
+                assert!(toggle);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// A refresh names its session and is applied on the UI thread, so it must
     /// parse, carry the id, and never be routed to the worker dispatch (which
     /// asserts `unreachable!` for UI-thread commands).
@@ -1833,6 +1880,7 @@ mod tests {
         let mut bus = CommandBus::new();
         let id = bus.dispatch(Command::Focus {
             plugin: "agent".into(),
+            toggle: false,
         });
         assert!(
             bus.inflight().iter().any(|item| item.id == id),
@@ -1854,6 +1902,7 @@ mod tests {
         let mut bus = CommandBus::new();
         let id = bus.dispatch(Command::Focus {
             plugin: "agent".into(),
+            toggle: false,
         });
         bus.finish_for_test(id, Some("no such pane".to_string()));
         assert!(bus.poll());

@@ -116,7 +116,13 @@ pub struct Row {
     /// Path relative to the interface directory — the identity every command
     /// about this file uses, since it is the only name a file always has.
     pub path: String,
-    /// The plugin's declared name, or the file's own when it declares none.
+    /// The plugin's declared name; its bare filename when it declares none **or
+    /// when it did not load**.
+    ///
+    /// A display name, not an identity: `path` is the identity, and a *managed*
+    /// file additionally answers to its spec entry's name (which is what `plugin
+    /// remove` takes). Those three can all differ for one file, so do not pass this
+    /// to a command.
     pub name: String,
     pub kind: Kind,
     /// Empty for anything that is not a pane.

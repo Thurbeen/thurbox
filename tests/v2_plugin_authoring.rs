@@ -326,6 +326,60 @@ fn the_listing_does_not_report_working_panes_as_unplaced() {
     assert_eq!(state_of(&json(Action::List), "nowhere"), "unplaced");
 }
 
+/// The listing has to hand back a name the next command accepts.
+///
+/// `name` is a display name: the pane's own, or its bare filename when it did not
+/// load — and `40_review.lua` is not a key `plugin remove` takes. A managed row
+/// therefore also carries `entry`, which is exactly what `remove`/`update` resolve.
+/// Without it a script reading the listing has no way to address what it found.
+#[test]
+fn the_listing_reports_the_name_that_commands_accept() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+
+    // A managed pane whose file stem differs from its directory and from its
+    // declared name — the shape that made the two disagree.
+    std::fs::create_dir_all(ui.join("vendor-tree/plugins")).expect("mkdir");
+    std::fs::write(
+        ui.join("vendor-tree/plugins/40_thing.lua"),
+        "return { name = \"thing\", slot = \"center\",          render = function() return { type = \"text\", text = \"x\" } end }\n",
+    )
+    .expect("pane");
+    let entry = thurbox::session::PluginEntry {
+        src: "git+https://example.com/vendor-tree".into(),
+        file: "vendor-tree/plugins/40_thing.lua".into(),
+        pin: None,
+    };
+    thurbox::kernel::packages::add_to_spec(&ui, &entry).expect("spec");
+
+    let listing = json(Action::List);
+    let row = listing["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|row| row["file"] == "vendor-tree/plugins/40_thing.lua")
+        .cloned()
+        .unwrap_or_else(|| panic!("missing from {listing}"));
+
+    assert_eq!(
+        row["entry"], "thing",
+        "the managed row must carry the key `remove` takes: {row}"
+    );
+    // And an unmanaged file has no entry to report, rather than an invented one.
+    let bundled = listing["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|row| row["file"] == "plugins/10_sessions.lua")
+        .cloned()
+        .expect("bundled pane listed");
+    assert!(
+        bundled["entry"].is_null(),
+        "a file the spec does not manage has no entry name: {bundled}"
+    );
+}
+
 #[test]
 fn a_pane_that_floats_is_not_reported_as_unplaced() {
     // A float draws ABOVE the arrangement, so it needs no slot at all. Reporting

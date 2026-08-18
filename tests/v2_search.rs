@@ -179,7 +179,8 @@ fn the_strip_opens_closed_and_takes_focus() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            plugin: "search".into()
+            plugin: "search".into(),
+            toggle: false,
         }],
         "an open strip that does not take focus cannot be typed into"
     );
@@ -279,7 +280,8 @@ fn enter_keeps_the_jump_and_lands_in_the_session() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            plugin: "agent".into()
+            plugin: "agent".into(),
+            toggle: false,
         }]
     );
 }

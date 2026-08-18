@@ -181,6 +181,22 @@ These are the ones that cost real time.
   sibling of the above: the slot's first occupant is shown and yours waits. Nothing
   fails, so declare a `pills = { … }` entry and the action band will offer it —
   `plugin check` warns when you have not.
+- **Give that pane one key that both enters and leaves it**, with `toggle`:
+
+  ```lua
+  command("focus", { text = "review", toggle = true })
+  ```
+
+  Pressed once it focuses your pane; pressed again it returns to whatever was
+  focused before. Declare it `scope = "global"` so it works from inside a focused
+  terminal, and prefer an F-key — a focused terminal keeps the bare
+  `ctrl+<letter>` chords for the program in it.
+
+  The alternative is worse in a way that is not obvious: a pane that focuses
+  *itself* and leaves the user to walk out with `ctrl+h`/`ctrl+l` is a one-way
+  door, and a pane that focuses a named sibling to get back has hard-coded the
+  user's arrangement. `toggle` uses the memory `Esc` already uses, so it needs no
+  name and `Esc` keeps working too.
 - **`theme.*` returns roles, not colours.** Ask for `theme.accent` or
   `theme.muted` so your pane looks right under all thirty-six palettes. Never
   hardcode a hex value.

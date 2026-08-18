@@ -2693,6 +2693,7 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
                 .as_ref()
                 .and_then(|t| t.get::<Option<i64>>("delta").ok().flatten()),
             force: get_bool("force").unwrap_or(false),
+            toggle: get_bool("toggle").unwrap_or(false),
             flag: get_bool("flag"),
             number: opts
                 .as_ref()

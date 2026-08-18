@@ -133,7 +133,8 @@ fn enter_opens_the_selected_session() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            plugin: "agent".into()
+            plugin: "agent".into(),
+            toggle: false,
         }]
     );
 }

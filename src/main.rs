@@ -962,12 +962,32 @@ impl App {
                         continue;
                     }
                     // Focus is the loop's own state, so it is applied here.
-                    thurbox::kernel::command::Command::Focus { plugin } => {
+                    thurbox::kernel::command::Command::Focus { plugin, toggle } => {
                         if let Some(index) = self.host.index_of(plugin) {
-                            if let Some(position) =
-                                self.host.focusable().iter().position(|i| *i == index)
-                            {
-                                self.focus = position;
+                            let position = self
+                                .host
+                                .focusable()
+                                .iter()
+                                .position(|candidate| *candidate == index);
+                            // Already here, and asked to toggle: go back where the
+                            // last focus change came from. That memory is
+                            // `focus_return`, which is the same one `Esc` uses — so
+                            // a pane reached by its own key leaves by either.
+                            if *toggle && position == Some(self.focus) {
+                                let back = self.focus_return;
+                                if self.host.focusable().get(back).is_some() {
+                                    self.focus_return = self.focus;
+                                    self.focus = back;
+                                    self.dirty = true;
+                                }
+                            } else {
+                                // Through `focus_plugin`, not by assigning `focus`:
+                                // it records where focus came from and refuses a
+                                // pane focus cannot rest on. Assigning directly
+                                // skipped both, so a pane reached from a plugin
+                                // command could not be left with `Esc` — the user
+                                // had to walk out with the focus cycle.
+                                self.focus_plugin(index);
                                 self.dirty = true;
                             }
                         }

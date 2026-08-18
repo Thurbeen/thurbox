@@ -344,6 +344,19 @@ fn list() -> Result<CommandOutput, String> {
     let host = crate::kernel::host::LuaHost::new(&dir);
     let sources = crate::kernel::bundled::sources(&dir);
     let registry = crate::kernel::registry::Registry::load();
+    // The name each managed file answers to. `name` below is what the pane calls
+    // itself — or, when it failed to load, its bare filename — and neither is a key
+    // `remove` or `update` accepts. A listing whose name column cannot be pasted
+    // into the next command is a listing that lies about being an index.
+    let managed: std::collections::BTreeMap<String, String> =
+        crate::kernel::packages::read_spec(&dir)
+            .map(|spec| {
+                spec.plugins
+                    .iter()
+                    .map(|entry| (entry.file.clone(), entry.name().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
     // Which occupant of a slot is *in front* needs a painted frame, so nothing is
     // reported as drawn here. Placement does not: it is resolved at the stated
     // reference size, the same way `check` resolves it. Passing an empty set
@@ -400,6 +413,9 @@ fn list() -> Result<CommandOutput, String> {
                 // origin without parsing it out of a label: "installed" is the
                 // kind of file it is, and this is who it came from.
                 "installed_from": row.source.installed_from(),
+                // Present only for a file the spec manages: the name to pass to
+                // `plugin remove` / `plugin update`.
+                "entry": managed.get(&row.path),
                 "state": row.state.as_str(),
                 // What the file asks to be able to do. Reported because a
                 // capability is granted per file, so a script auditing an

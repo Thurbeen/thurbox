@@ -61,7 +61,7 @@ inventory `plugin list` does, and restores a file you broke. Open settings with
 
 ## Traps
 
-Five mistakes that are invisible until runtime. Each cost real time in the
+Six mistakes that are invisible until runtime. Each cost real time in the
 changes that built the bundled panes.
 
 **Reading `state` or `store` hands back a copy.** Mutating it changes nothing —
@@ -85,6 +85,13 @@ undefined variable; the runtime message will not help you.
 **`and`/`or` cannot carry a miss.** `matched = searching and fuzzy(q, row) or {}`
 turns a *failed* match (`nil`) into an empty table, which then reads as a match —
 so a filter silently keeps everything. Spell it as an `if`.
+
+**A pane in a `switch` slot needs one key that goes both ways.** `command("focus",
+{ text = "<your pane>", toggle = true })` focuses it, and focuses whatever you came
+from when it already has focus. Without `toggle` the pane is a one-way door: the key
+gets you in and only the focus cycle gets you out. Do not solve that by focusing a
+named sibling — the only name available is whatever shares the slot in the *default*
+arrangement, which is the user's to change.
 
 **A floating pane needs a slot the arrangement never places.** Otherwise it also
 occupies the centre and competes with the terminal. The bundled floats use
