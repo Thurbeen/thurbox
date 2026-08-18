@@ -708,7 +708,9 @@ changed reports `kept` and leaves it alone. `git diff` shows what you changed an
 never shipped.
 
 That protection cuts both ways, and it is the trap for a pane that *generates*
-anything. **Never write inside your own working copy.** A build artefact, a
+anything — which is to say, exactly the pane this whole capability invites. A pane that
+runs a program is the pane tempted to build one. **Never write inside your own working
+copy.** A build artefact, a
 downloaded engine, a cache — anything you produce there makes the tree dirty, and a
 dirty tree is exactly what makes `update` report `kept` and refuse to move. Keeping
 your working copy clean is not tidiness; it is what keeps your plugin updatable. Put

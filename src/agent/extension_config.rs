@@ -904,18 +904,18 @@ mod tests {
         for (target, expected) in [
             // `git+` prefix, stripped from what git is handed.
             (
-                "git+https://github.com/Thurbeen/thurbox-doom",
-                "https://github.com/Thurbeen/thurbox-doom",
+                "git+https://github.com/you/thurbox-widget",
+                "https://github.com/you/thurbox-widget",
             ),
             // A `.git` suffix speaks for itself.
             (
-                "https://github.com/Thurbeen/thurbox-doom.git",
-                "https://github.com/Thurbeen/thurbox-doom.git",
+                "https://github.com/you/thurbox-widget.git",
+                "https://github.com/you/thurbox-widget.git",
             ),
             // scp-like.
             (
-                "git@github.com:Thurbeen/thurbox-doom.git",
-                "git@github.com:Thurbeen/thurbox-doom.git",
+                "git@github.com:you/thurbox-widget.git",
+                "git@github.com:you/thurbox-widget.git",
             ),
         ] {
             match resolve_source_in(target, "ui-plugins") {
@@ -926,7 +926,7 @@ mod tests {
 
         // And these must keep the meanings they already have.
         assert!(matches!(
-            resolve_source_in("https://github.com/Thurbeen/thurbox-doom", "ui-plugins"),
+            resolve_source_in("https://github.com/you/thurbox-widget", "ui-plugins"),
             ExtensionSource::Remote(_)
         ));
         assert!(matches!(
