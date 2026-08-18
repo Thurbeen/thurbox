@@ -73,10 +73,16 @@ flow.step = "name"
 state.flow = flow            -- without this line, nothing happened
 ```
 
-**Anything a render computes is gone by the time a key arrives.** `render` does
-not write `state`, so a value derived while drawing is invisible to `on_key`.
-Share a function, not a field — then what a key acts on is by construction what
-was on screen.
+**Anything a render computes is gone by the time a key arrives.** A value derived
+while drawing lives in a local, and a local is invisible to `on_key` — so share a
+*function*, not a field, and what a key acts on is by construction what was on
+screen.
+
+`state` is the exception, and deliberately so: writes to it persist whenever they
+happen, render included. Most panes should not need that — deriving twice is simpler
+than remembering — but a decision only a render can make (a click deferred until an
+incremental parse reaches the row it named) has nowhere else to go. Prefer the shared
+function; reach for `state` when the render is the only place that knows.
 
 **A local used above its definition is `nil`, not an error you can read.** Lua
 resolves a `local function` from where it appears. `selene ui` catches it as an
@@ -315,6 +321,13 @@ they only existed inside `on_key`. Help is a kernel modal rather than a plugin,
 and it renders the registry, so your key appears in it (and becomes rebindable)
 by being declared and nothing else. The same is true of `settings`: declare
 `{ id, desc, default }` and the settings modal grows a row for it.
+
+A plugin can also **write** its own settings — `command("set", { text =
+"yourpane.wrap", flag = true })` — which is what a view toggle should do. Keeping a
+second copy of the value in `state` is the mistake to avoid: both persist, so the
+shadow buys nothing and costs the property that matters, because the settings modal
+then shows a value your key has silently overridden and resetting it there does
+nothing. One home per setting.
 Plugin-scoped keys fire only while you have focus, so several panes can all
 declare `j`.
 

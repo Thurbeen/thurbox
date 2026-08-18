@@ -1343,7 +1343,9 @@ return {
     if flow.focus == "input" then
       if name == "tab" then
         -- Derived here rather than read off the flow: the renderer's copy belongs
-        -- to the frame it drew, and `state` is not written during a render.
+        -- to the frame it drew, and this pane does not stash it. (A render CAN
+        -- write `state` — it persists whenever it happens — but deriving twice is
+        -- simpler than keeping two places true.)
         local suggestion = suggestion_for(flow)
         if suggestion ~= "" then
           textinput.insert(flow.input, suggestion)
