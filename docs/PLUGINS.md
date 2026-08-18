@@ -61,7 +61,7 @@ inventory `plugin list` does, and restores a file you broke. Open settings with
 
 ## Traps
 
-Six mistakes that are invisible until runtime. Each cost real time in the
+Eight mistakes that are invisible until runtime. Each cost real time in the
 changes that built the bundled panes.
 
 **Reading `state` or `store` hands back a copy.** Mutating it changes nothing —
@@ -85,6 +85,14 @@ undefined variable; the runtime message will not help you.
 **`and`/`or` cannot carry a miss.** `matched = searching and fuzzy(q, row) or {}`
 turns a *failed* match (`nil`) into an empty table, which then reads as a match —
 so a filter silently keeps everything. Spell it as an `if`.
+
+**`ipairs` stops at the first hole.** It is not "iterate the array"; it is "iterate
+until a `nil`". A table built by index where one slot was left empty — a diff row with
+no old side, a session with no worktree — ends the loop early and *silently*, and the
+symptom is never an error: it is a filter that keeps everything, a count that is short,
+or a row reported missing that the screen plainly shows. This has cost real time twice,
+once in a bundled pane and once in a plugin written against it. If a table can have a
+hole, iterate its indices (`for i = 1, n`) or do not leave one.
 
 **A pane in a `switch` slot needs one key that goes both ways.** `command("focus",
 { text = "<your pane>", toggle = true })` focuses it, and focuses whatever you came
@@ -364,6 +372,15 @@ that focused a terminal also start a drag-selection over it. A pane needs no
 
 Rows built by `widgets.list` already carry `role = "row"` and whatever `id` you
 gave them, so a list is clickable as soon as it has an `on_click`.
+
+**A `surface` can be clicked too, and this is the escape hatch that makes a
+geometry-first pane interactive.** A surface carries an `id` like any other node, the
+paint walk records the rect of anything carrying identity, and `hit.x` / `hit.y` arrive
+*inside* that rect — so a pane resolves a coordinate to whatever it drew there, from the
+map it necessarily already has. Cells have no per-line identity and do not need any: the
+thing that decided where every row went is the thing that receives the coordinate. That
+is what lets a side-by-side diff aim a click at the old or the new column with nothing
+added to the node catalog.
 
 Everything here is inert when `[features] mouse` is off — the capture escape is
 never sent, so the terminal keeps its own selection and scrolling.
