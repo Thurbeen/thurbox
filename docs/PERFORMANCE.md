@@ -390,6 +390,13 @@ each was wrong once:
   `focused_session`, re-derived each frame from the focused plugin's *session
   surface* — so only a pane drawing a terminal ever asked for a diff, and a pane
   whose job is showing one could never be handed it.
+- **The file list is not capped; only the body is.** `files` was derived from the
+  capped text, so it listed only what fit — 310 of 433 files on this repository's own
+  diff, with totals to match, and `truncated` (which is about *bytes*) gave a reviewer
+  no way to know the navigation aid ended early. It now comes from `git diff --numstat
+  -M -z` plus `--name-status -M -z`: two cheap commands, ~12 KB for four hundred files
+  against a 4 MiB body, joined on the new path. A failure to list fails the diff rather
+  than reporting a partial list as complete.
 - **A cached diff can be discarded.** `command("diff", { session })` invalidates,
   and the next frame recomputes. Without it a diff was computed once per session per
   process and never again — a diff frozen at first sight while the agent kept

@@ -964,6 +964,48 @@ pub fn diff_working_on(host: Option<&HostDef>, worktree: &Path) -> Option<String
     run_diff(host, worktree, &["diff", "--no-color", "HEAD"])
 }
 
+/// The **complete** list of changed files as `--numstat -M -z`, with exact counts.
+///
+/// Separate from the diff text because the two have different bounds: a diff body is
+/// capped (see `kernel::diff::MAX_DIFF_BYTES`) and this is not. Deriving the file
+/// list from the capped body made it silently short — on this repository's own diff,
+/// 310 files of 433 — so a reviewer navigating it could not tell it ended early, and
+/// the totals were a fraction of the truth. Twelve kilobytes for four hundred files
+/// is not worth capping.
+///
+/// `-z` rather than the human format: a rename in `--numstat` otherwise arrives as
+/// `old => new` (or a brace form) and has to be un-guessed. NUL-separated, a rename
+/// is an empty path field followed by two more records.
+pub fn diff_numstat_on(
+    host: Option<&HostDef>,
+    worktree: &Path,
+    base: Option<&str>,
+) -> Option<String> {
+    let range = base.map_or_else(|| "HEAD".to_string(), |base| format!("{base}..HEAD"));
+    run_diff(
+        host,
+        worktree,
+        &["diff", "--no-color", "--numstat", "-M", "-z", &range],
+    )
+}
+
+/// Each changed file's status (`M`/`A`/`D`/`R…`) as `--name-status -M -z`.
+///
+/// The companion to [`diff_numstat_on`]: `--numstat` carries the counts and cannot
+/// tell a deletion from a rewrite. Cheap — a fraction of the cost of the diff itself.
+pub fn diff_name_status_on(
+    host: Option<&HostDef>,
+    worktree: &Path,
+    base: Option<&str>,
+) -> Option<String> {
+    let range = base.map_or_else(|| "HEAD".to_string(), |base| format!("{base}..HEAD"));
+    run_diff(
+        host,
+        worktree,
+        &["diff", "--no-color", "--name-status", "-M", "-z", &range],
+    )
+}
+
 /// Raw unified diff of a single commit (`git show`), for the review view's
 /// per-commit target. `--format=` suppresses the log message, leaving the patch.
 pub fn show_commit_on(host: Option<&HostDef>, worktree: &Path, sha: &str) -> Option<String> {

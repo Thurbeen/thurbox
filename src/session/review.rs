@@ -302,6 +302,101 @@ fn push_hunk(cur: &mut Option<DiffFile>, hunk: &mut Option<DiffHunk>) {
     }
 }
 
+/// One changed file, as git itself reports it — complete, and independent of any cap
+/// on the diff text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedFile {
+    pub path: String,
+    /// Where a rename came from.
+    pub old_path: Option<String>,
+    pub status: FileStatus,
+    pub added: usize,
+    pub removed: usize,
+}
+
+/// Join `--numstat -M -z` and `--name-status -M -z` into one list per file.
+///
+/// Two commands because neither is sufficient: `--numstat` carries the counts and
+/// cannot tell a deletion from a rewrite, `--name-status` carries the status and no
+/// counts. Joined on the **new path**, which is the identity git reports for a rename
+/// and the one a comment anchor will have to use.
+///
+/// Both are NUL-separated, and the two spell a rename differently — which is the whole
+/// reason to parse `-z` rather than the human output:
+///
+/// ```text
+/// --numstat      "1\t0\tCargo.toml"  "0\t0\t"  "README.md"  "GUIDE.md"
+/// --name-status  "A"  "Cargo.toml"     "R100"  "README.md"  "GUIDE.md"
+/// ```
+///
+/// A binary file's counts arrive as `-`, which is not zero and not a number; such a
+/// file is reported with zero counts rather than dropped, since it did change.
+pub fn parse_changed_files(numstat_z: &str, name_status_z: &str) -> Vec<ChangedFile> {
+    let mut statuses: std::collections::BTreeMap<String, (FileStatus, Option<String>)> =
+        std::collections::BTreeMap::new();
+    let mut fields = name_status_z.split('\0').filter(|f| !f.is_empty());
+    while let Some(token) = fields.next() {
+        let status = match token.as_bytes().first() {
+            Some(b'A') => FileStatus::Added,
+            Some(b'D') => FileStatus::Deleted,
+            Some(b'R') | Some(b'C') => FileStatus::Renamed,
+            _ => FileStatus::Modified,
+        };
+        // A rename or copy names both sides; everything else names one.
+        let renamed = matches!(status, FileStatus::Renamed);
+        let first = match fields.next() {
+            Some(path) => path,
+            None => break,
+        };
+        match renamed {
+            true => match fields.next() {
+                Some(new_path) => {
+                    statuses.insert(new_path.to_string(), (status, Some(first.to_string())));
+                }
+                None => break,
+            },
+            false => {
+                statuses.insert(first.to_string(), (status, None));
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut fields = numstat_z.split('\0').filter(|f| !f.is_empty());
+    while let Some(record) = fields.next() {
+        let mut parts = record.split('\t');
+        let added = parts.next().unwrap_or_default();
+        let removed = parts.next().unwrap_or_default();
+        let path = parts.next().unwrap_or_default();
+        // An empty path field means the two following records are the old and new
+        // names; `-z` is what makes that unambiguous.
+        let path = match path.is_empty() {
+            true => {
+                let _old = fields.next();
+                match fields.next() {
+                    Some(new_path) => new_path.to_string(),
+                    None => break,
+                }
+            }
+            false => path.to_string(),
+        };
+        // `-` for a binary file: it changed, and it has no line counts.
+        let count = |field: &str| field.parse::<usize>().unwrap_or(0);
+        let (status, old_path) = statuses
+            .get(&path)
+            .cloned()
+            .unwrap_or((FileStatus::Modified, None));
+        out.push(ChangedFile {
+            path,
+            old_path,
+            status,
+            added: count(added),
+            removed: count(removed),
+        });
+    }
+    out
+}
+
 /// Apply a file-header metadata line (mode / rename / `---` / `+++`) to `f`,
 /// returning whether it was consumed. `in_hunk` gates the `---`/`+++` arms to
 /// the pre-hunk region: inside a hunk a removed/added line whose *content*
@@ -464,6 +559,48 @@ pub fn pair_hunk(hunk: &DiffHunk) -> Vec<SidePair> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The list of changed files comes from git, so it must survive git's own
+    /// spellings — and the two commands spell a rename differently, which is why
+    /// `-z` is parsed rather than the human output.
+    ///
+    /// The counts and the status arrive from *different* commands and are joined on
+    /// the new path: `--numstat` cannot tell a deletion from a rewrite, and
+    /// `--name-status` carries no counts.
+    #[test]
+    fn changed_files_join_counts_and_status_including_a_rename() {
+        // Exactly what git emits, NULs included (see the doc comment on the parser).
+        let numstat = "1\t0\tCargo.toml\x000\t0\t\x00README.md\x00GUIDE.md\x002\t1\tsrc.rs\x00";
+        let name_status = "A\x00Cargo.toml\x00R100\x00README.md\x00GUIDE.md\x00M\x00src.rs\x00";
+
+        let files = parse_changed_files(numstat, name_status);
+        assert_eq!(files.len(), 3, "{files:?}");
+
+        assert_eq!(files[0].path, "Cargo.toml");
+        assert_eq!(files[0].status, FileStatus::Added);
+        assert_eq!((files[0].added, files[0].removed), (1, 0));
+        assert!(files[0].old_path.is_none());
+
+        // The rename: keyed on the NEW path, carrying where it came from.
+        assert_eq!(files[1].path, "GUIDE.md");
+        assert_eq!(files[1].status, FileStatus::Renamed);
+        assert_eq!(files[1].old_path.as_deref(), Some("README.md"));
+
+        assert_eq!(files[2].path, "src.rs");
+        assert_eq!(files[2].status, FileStatus::Modified);
+        assert_eq!((files[2].added, files[2].removed), (2, 1));
+    }
+
+    /// A binary file changed, and has no line counts. It is reported with zero rather
+    /// than dropped: `-` is not a number, and a file missing from the list is worse
+    /// than one with nothing to count.
+    #[test]
+    fn a_binary_file_is_listed_with_no_counts() {
+        let files = parse_changed_files("-\t-\tlogo.png\x00", "M\x00logo.png\x00");
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].path, "logo.png");
+        assert_eq!((files[0].added, files[0].removed), (0, 0));
+    }
     use super::*;
 
     #[test]

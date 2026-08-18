@@ -14,8 +14,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use crate::session::review::{parse_unified_diff, DiffFile};
-
 /// Largest diff read, in bytes. Beyond this the cap is *reported*, because a
 /// silently truncated diff is a review that quietly omits things.
 pub const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
@@ -187,24 +185,40 @@ fn compute(worktree: &Path, base: Option<&str>, host: Option<&crate::session::Ho
         raw
     };
 
-    let parsed = parse_unified_diff(&raw);
+    // The file list comes from git, not from the body above, and this is the whole
+    // point: the body is capped and the list is not. Derived from the capped text it
+    // was silently short — 310 files of 433 on this repository's own diff — with
+    // totals to match, and nothing said so. `truncated` is about bytes; a reviewer
+    // scrolling a list that ends early has no way to know.
+    //
+    // A failure here fails the diff rather than falling back to the body's own
+    // files. These are the cheap commands: if they cannot run, the expensive one that
+    // just did was luck, and reporting a partial list as complete is the fault this
+    // exists to remove.
+    let files = match (
+        crate::git::diff_numstat_on(host, worktree, base),
+        crate::git::diff_name_status_on(host, worktree, base),
+    ) {
+        (Some(numstat), Some(name_status)) => {
+            crate::session::review::parse_changed_files(&numstat, &name_status)
+                .into_iter()
+                .map(|file| FileSummary {
+                    path: file.path,
+                    added: file.added,
+                    removed: file.removed,
+                    status: file.status.glyph(),
+                    old_path: file.old_path,
+                })
+                .collect()
+        }
+        _ => return Diff::Failed("could not list the changed files".to_string()),
+    };
+
     Diff::Ready {
-        files: parsed.iter().map(summarise).collect(),
+        files,
         body: raw.lines().map(str::to_string).collect(),
         truncated,
         raw_bytes,
-    }
-}
-
-fn summarise(file: &DiffFile) -> FileSummary {
-    // `DiffFile` already counts both sides; reusing it keeps this and the
-    // review types from drifting apart.
-    FileSummary {
-        path: file.path.clone(),
-        added: file.added_count(),
-        removed: file.deleted_count(),
-        status: file.status.glyph(),
-        old_path: file.old_path.clone(),
     }
 }
 
@@ -267,32 +281,6 @@ mod tests {
         assert_eq!(store.get("s1"), Some(&Diff::Pending));
     }
 
-    /// A rename and a status reach the pane without it re-reading the body — the
-    /// parser knew both, and dropping them cost ~99,000 lines of Lua per capped
-    /// diff to recover a glyph and an arrow.
-    #[test]
-    fn a_summary_carries_the_status_and_the_old_path() {
-        let raw = "diff --git a/old.rs b/new.rs\n\
-                   similarity index 90%\n\
-                   rename from old.rs\n\
-                   rename to new.rs\n\
-                   --- a/old.rs\n\
-                   +++ b/new.rs\n\
-                   @@ -1,1 +1,1 @@\n\
-                   -was\n\
-                   +is\n";
-        let parsed = parse_unified_diff(raw);
-        let summary: Vec<FileSummary> = parsed.iter().map(summarise).collect();
-        let file = summary.first().expect("one file");
-        assert_eq!(file.status, "R", "a rename reports itself as one");
-        assert_eq!(
-            file.old_path.as_deref(),
-            Some("old.rs"),
-            "and says where it came from: {file:?}"
-        );
-        assert_eq!((file.added, file.removed), (1, 1));
-    }
-
     #[test]
     fn pending_is_distinct_from_empty() {
         // A slow diff must not look like a clean worktree.
@@ -344,22 +332,84 @@ mod tests {
         panic!("the failure never arrived");
     }
 
+    /// The property the file list was changed for: **the body is capped and the list
+    /// is not.**
+    ///
+    /// Built against a real repository, because it is git's own output that has to be
+    /// complete. The body here is deliberately pushed past `MAX_DIFF_BYTES`, and every
+    /// file must still be listed with its true counts — derived from the capped text,
+    /// this listed only the files that fit.
     #[test]
-    fn a_summary_counts_added_and_removed_lines() {
-        let raw = "diff --git a/x.rs b/x.rs\n\
-                   --- a/x.rs\n\
-                   +++ b/x.rs\n\
-                   @@ -1,2 +1,3 @@\n\
-                   \x20context\n\
-                   -gone\n\
-                   +new\n\
-                   +also new\n";
-        let parsed = parse_unified_diff(raw);
-        assert_eq!(parsed.len(), 1);
-        let summary = summarise(&parsed[0]);
-        assert_eq!(summary.added, 2);
-        assert_eq!(summary.removed, 1);
-        assert!(summary.path.contains("x.rs"));
+    fn a_capped_body_still_lists_every_changed_file() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                // The pre-commit hook exports these; unscrubbed, a test's git call
+                // lands in the real repository.
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_CONFIG_PARAMETERS")
+                .env_remove("GIT_CONFIG_COUNT")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "T"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+
+        // On a BRANCH, or `main..HEAD` is empty — which is precisely the bug this
+        // whole change exists to fix, and it caught this fixture first.
+        git(&["checkout", "-q", "-b", "work"]);
+
+        // Enough text that the diff is past the cap several times over, spread over
+        // more files than the cap can hold.
+        let filler = "x".repeat(200);
+        let files = 400;
+        for index in 0..files {
+            let body: String = (0..80)
+                .map(|line| format!("{index} {line} {filler}\n"))
+                .collect();
+            std::fs::write(repo.join(format!("file{index:03}.txt")), body).expect("write");
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "everything"]);
+
+        let raw = crate::git::diff_against_on(None, &repo, "main").expect("a diff");
+        assert!(
+            raw.len() > MAX_DIFF_BYTES,
+            "the fixture must exceed the cap to be testing anything: {} bytes",
+            raw.len()
+        );
+
+        let diff = compute(&repo, Some("main"), None);
+        match diff {
+            Diff::Ready {
+                files: listed,
+                truncated,
+                ..
+            } => {
+                assert!(truncated, "the body was over the cap");
+                assert_eq!(
+                    listed.len(),
+                    files,
+                    "every changed file is listed even though the body was cut"
+                );
+                assert!(
+                    listed.iter().all(|file| file.added == 80),
+                    "and with its true counts, not the ones that survived the cap"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
