@@ -33,6 +33,17 @@ pub const BUNDLED: &[(&str, &str)] = &[
     // — four node kinds, ask-every-frame, `run` absent until trusted — are not
     // guessable from the Lua beside it.
     ("README.md", include_str!("../../ui/README.md")),
+    // The same reasoning, under the name an agent actually reads on its own.
+    // README.md is what a person opens; `AGENTS.md` is what a coding CLI loads as
+    // context without being told to — which is what stops "install this plugin"
+    // being read as a package-manager request. `CLAUDE.md` and `GEMINI.md` are
+    // pointers rather than copies: two files saying the same thing drift, and the
+    // stale one is the one somebody reads. The `flow` extension surfaces its spec
+    // the same way, as symlinks — which it can do because it copies its own files,
+    // and delivery here writes contents.
+    ("AGENTS.md", include_str!("../../ui/AGENTS.md")),
+    ("CLAUDE.md", include_str!("../../ui/CLAUDE.md")),
+    ("GEMINI.md", include_str!("../../ui/GEMINI.md")),
     ("layout.lua", include_str!("../../ui/layout.lua")),
     ("lib/theme.lua", include_str!("../../ui/lib/theme.lua")),
     ("lib/widgets.lua", include_str!("../../ui/lib/widgets.lua")),
@@ -914,6 +925,49 @@ mod tests {
         assert_eq!(relative_to(dir, "/home/me/.config/thurbox/ui/"), None);
     }
 
+    /// The directory tells whoever edits it how to, under the name their tool reads.
+    ///
+    /// `README.md` is what a person opens; `AGENTS.md` is what a coding CLI loads as
+    /// context on its own. Without the second, "install this plugin" reads as a
+    /// package-manager request — which is the specific confusion it exists to
+    /// prevent, so the instruction that prevents it is pinned here.
+    #[test]
+    fn the_interface_ships_its_own_guidance_for_whoever_edits_it() {
+        let file = |name: &str| -> &str {
+            BUNDLED
+                .iter()
+                .find(|(path, _)| *path == name)
+                .map(|(_, contents)| *contents)
+                .unwrap_or_else(|| panic!("{name} is not bundled"))
+        };
+
+        let agents = file("AGENTS.md");
+        assert!(
+            agents.contains("thurbox-cli plugin install"),
+            "the command an agent needs when told to install a plugin"
+        );
+        assert!(
+            agents.contains("npm") && agents.contains("cargo"),
+            "and the package managers it must NOT reach for, named so the \
+             instruction is unmissable"
+        );
+        assert!(
+            agents.contains("thurbox-cli plugin check"),
+            "and the gate for every edit"
+        );
+
+        // The per-agent files point at it rather than repeating it: two copies
+        // drift, and the stale one is the one somebody reads.
+        for pointer in ["CLAUDE.md", "GEMINI.md"] {
+            let contents = file(pointer);
+            assert!(contents.contains("AGENTS.md"), "{pointer} must point at it");
+            assert!(
+                contents.len() < agents.len() / 4,
+                "{pointer} is a pointer, not a copy"
+            );
+        }
+    }
+
     #[test]
     fn the_bundle_covers_the_whole_interface() {
         // A file that stops shipping is worse than one that fails to compile.
@@ -947,6 +1001,45 @@ mod tests {
         materialize(dir.path());
         let report = materialize(dir.path());
         assert!(report.is_empty(), "{report:?}");
+    }
+
+    /// A file new in this release reaches a directory that already exists.
+    ///
+    /// The upgrade path, and the one that matters for guidance in particular:
+    /// `AGENTS.md` is worth nothing if only fresh installs get it. Delivery
+    /// re-runs on every launch, and a path never written here is `Write` — while an
+    /// edited neighbour is still left alone in the same pass.
+    #[test]
+    fn a_file_new_in_this_release_reaches_an_existing_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        materialize(dir.path());
+
+        // Look like an older delivery: the file was never written, and the manifest
+        // never knew about it.
+        let newcomer = "AGENTS.md";
+        std::fs::remove_file(dir.path().join(newcomer)).expect("remove");
+        let mut manifest = read_manifest(dir.path());
+        manifest.remove(newcomer);
+        write_manifest(dir.path(), &manifest).expect("write manifest");
+
+        // And carry an edit into the upgrade, which must survive it.
+        let edited = dir.path().join("plugins/10_sessions.lua");
+        std::fs::write(&edited, "-- mine\n").expect("edit");
+
+        let report = materialize(dir.path());
+        assert!(
+            report.written.contains(&newcomer.to_string()),
+            "a file new in this release is delivered on upgrade: {report:?}"
+        );
+        assert!(dir.path().join(newcomer).is_file());
+        assert_eq!(
+            std::fs::read_to_string(&edited).expect("read"),
+            "-- mine\n",
+            "and the edit beside it is untouched"
+        );
+        assert!(report
+            .preserved
+            .contains(&"plugins/10_sessions.lua".to_string()));
     }
 
     #[test]

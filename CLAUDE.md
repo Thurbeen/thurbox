@@ -1671,6 +1671,14 @@ examples to read and copy from, not a catalogue thurbox maintains for anyone —
 `check` fails on a pane that **loaded but which no arrangement places** — the only
 failure with no symptom — and prints the `layout.lua` line to add.
 
+The directory ships its own guidance for whoever edits it: `README.md` is the
+reference, and **`AGENTS.md`** is the operational half a coding CLI loads as context
+without being asked — which is what stops "install this plugin" being read as a
+package-manager request rather than `thurbox-cli plugin install`. `CLAUDE.md` and
+`GEMINI.md` beside it are one-line pointers, not copies, so there is one file to
+keep true; the `flow` extension surfaces its own spec the same way, as symlinks it
+can make because it copies its own files.
+
 Two rules pick the directory: `THURBOX_UI_DIR` if set, otherwise the user's copy
 (`~/.config/thurbox/ui/`, materialised from the embedded interface on first run,
 preserving edits). A third rule — a `./ui` beside the working directory, winning

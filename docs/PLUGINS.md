@@ -94,6 +94,16 @@ occupies the centre and competes with the terminal. The bundled floats use
 own letter keys swallow typing. The flow's `j` moves the list in one focus and
 types a `j` in another for exactly this reason.
 
+## The directory tells you this too
+
+`AGENTS.md` and `README.md` are delivered into the interface directory itself, so a
+session pointed at it has the rules to hand without finding this file. `AGENTS.md`
+is the one a coding CLI loads on its own; it is deliberately short and covers what
+is easy to get wrong — that "install a plugin" is `thurbox-cli plugin install` and
+not a package manager, that `plugin check` gates every edit, and that adding a pane
+is two edits. `CLAUDE.md` and `GEMINI.md` beside them point at it rather than
+repeating it.
+
 ## Your copy of the interface
 
 The bundled panes are not special files. They are written into your directory on
