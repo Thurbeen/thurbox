@@ -2653,16 +2653,10 @@ impl App {
     /// plugins, because a disabled one is not loaded — it would not be in the
     /// list to filter. Relative, because that is what `build` compares against.
     fn publish_disabled(&self) {
-        let root = self.ui_dir.to_string_lossy();
         let disabled: Vec<String> = self
             .registry
             .disabled()
-            .filter_map(|absolute| {
-                absolute
-                    .strip_prefix(root.as_ref())
-                    .map(|relative| relative.trim_start_matches(['/', '\\']).to_string())
-            })
-            .filter(|relative| !relative.is_empty())
+            .filter_map(|absolute| thurbox::kernel::bundled::relative_to(&self.ui_dir, absolute))
             .collect();
         self.host.set_disabled(disabled);
     }

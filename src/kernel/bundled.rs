@@ -324,6 +324,29 @@ fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Repo
 /// loop cannot make the inventory — the recovery tool — hang.
 const LIB_DEPTH: usize = 3;
 
+/// One file's identity within the interface directory, from an absolute path.
+///
+/// Trust, the disabled set and the rebindings are stored **absolute** (a repo's
+/// `./ui` and the config directory's are different sets of files and must not
+/// share them), while everything that reads a file — `build`, the spec, the lock,
+/// the inventory — keys on the path relative to the directory with **`/`**
+/// separators. This is the conversion between the two, and it exists in one place
+/// because getting it wrong is invisible on Linux: `Path::join` writes a `\` on
+/// Windows, so a hand-rolled strip yields `plugins\90_notes.lua`, which matches
+/// nothing and fails silently. That is exactly how "turn a plugin off" came to be
+/// a no-op on Windows.
+///
+/// `None` when `absolute` is not inside `dir`, or is `dir` itself.
+pub fn relative_to(dir: &Path, absolute: &str) -> Option<String> {
+    let root = dir.to_string_lossy();
+    let rest = absolute.strip_prefix(root.as_ref())?;
+    let relative: String = rest
+        .trim_start_matches(['/', '\\'])
+        .replace('\\', "/")
+        .to_string();
+    (!relative.is_empty()).then_some(relative)
+}
+
 /// Lua files under `root`, as paths relative to it, sorted.
 ///
 /// Sorted so the inventory's order is deterministic rather than the filesystem's,
@@ -854,6 +877,41 @@ mod tests {
                 Action::Settle
             );
         }
+    }
+
+    /// The absolute→relative conversion, including the Windows separator.
+    ///
+    /// Written with literal `\` rather than by joining paths, so it runs the
+    /// Windows case on Linux too: `Path::join` writes `/` here, which is exactly
+    /// why a hand-rolled strip looked correct on every developer machine while
+    /// "turn a plugin off" was a silent no-op on Windows. Caught by a Windows CI
+    /// run, and this is what stops it coming back.
+    #[test]
+    fn a_stored_path_becomes_the_identity_the_loader_compares() {
+        let dir = Path::new("/home/me/.config/thurbox/ui");
+        assert_eq!(
+            relative_to(dir, "/home/me/.config/thurbox/ui/plugins/90_notes.lua").as_deref(),
+            Some("plugins/90_notes.lua")
+        );
+
+        // A Windows root, with the separators `Path::join` would have written.
+        let windows = Path::new(r"C:\Users\me\AppData\Roaming\thurbox\ui");
+        assert_eq!(
+            relative_to(
+                windows,
+                r"C:\Users\me\AppData\Roaming\thurbox\ui\plugins\90_notes.lua"
+            )
+            .as_deref(),
+            Some("plugins/90_notes.lua"),
+            "`build` keys on `plugins/<name>`, so a backslash here matches nothing"
+        );
+
+        // Not inside the directory, and the directory itself: neither is a file
+        // identity, and returning `""` for the second is how an empty entry used
+        // to reach the disabled set.
+        assert_eq!(relative_to(dir, "/elsewhere/plugins/x.lua"), None);
+        assert_eq!(relative_to(dir, "/home/me/.config/thurbox/ui"), None);
+        assert_eq!(relative_to(dir, "/home/me/.config/thurbox/ui/"), None);
     }
 
     #[test]

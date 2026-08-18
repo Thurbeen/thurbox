@@ -191,18 +191,13 @@ fn new(name: &str) -> Result<CommandOutput, String> {
 /// would fault a slot the user correctly removed along with the pane.
 ///
 /// Mirrors `App::publish_disabled`: the paths are stored absolute and `build`
-/// compares them relative.
+/// compares them relative, through the one conversion between the two
+/// (`bundled::relative_to`).
 fn host_at(dir: &std::path::Path) -> crate::kernel::host::LuaHost {
     let mut host = crate::kernel::host::LuaHost::new(dir);
-    let root = dir.to_string_lossy();
     let disabled: Vec<String> = crate::kernel::registry::Registry::load()
         .disabled()
-        .filter_map(|absolute| {
-            absolute
-                .strip_prefix(root.as_ref())
-                .map(|relative| relative.trim_start_matches(['/', '\\']).to_string())
-        })
-        .filter(|relative| !relative.is_empty())
+        .filter_map(|absolute| crate::kernel::bundled::relative_to(dir, absolute))
         .collect();
     if !disabled.is_empty() {
         host.set_disabled(disabled);
