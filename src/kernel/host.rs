@@ -2026,6 +2026,48 @@ impl LuaHost {
         Ok(table)
     }
 
+    /// Why this pane may be impossible to find, if it may be.
+    ///
+    /// The one install that cannot demonstrate itself. A pane whose slot no
+    /// arrangement places fails `plugin check` loudly. A pane that is the **alternate
+    /// occupant of a `switch` slot** passes every check, reports `installed`, and
+    /// shows the user nothing: the slot's first occupant draws, and this one waits to
+    /// be focused. Somebody who installs it, follows its README and launches sees an
+    /// unchanged screen and reasonably concludes the install failed.
+    ///
+    /// The kernel already offers four ways to reach it — the action band, the focus
+    /// ring, `F1`, and a `focus:<plugin>` click role — but none of them is automatic.
+    /// A **pill** is: it is declared data the band enumerates without invoking
+    /// anything. So the answer is not new machinery, it is telling the author, and
+    /// this is the predicate both the check and the install report consult so they
+    /// cannot disagree.
+    ///
+    /// `None` when the pane draws by default, or when it declares a pill and is
+    /// therefore advertised.
+    pub fn undiscoverable(&self, index: usize) -> Option<String> {
+        let plugin = self.plugins.get(index)?;
+        if plugin.floats || plugin.decorates.is_some() {
+            return None;
+        }
+        if self.slot_mode(&plugin.slot) != SlotMode::Switch {
+            return None;
+        }
+        // The first occupant of a switch slot is the one that draws.
+        if self.in_slot(&plugin.slot).first() == Some(&index) {
+            return None;
+        }
+        if !plugin.pills.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "shares the {:?} slot and is not the one shown by default, and declares no \
+             pill — so nothing on screen offers it. Declare one \
+             (`pills = {{ {{ action = \"…\", label = \"…\" }} }}`) or it can only be \
+             reached by cycling focus.",
+            plugin.slot
+        ))
+    }
+
     /// Slot mode, declared by any plugin in the slot. Stack unless one says
     /// otherwise, so the common case needs no declaration.
     pub fn slot_mode(&self, slot: &str) -> SlotMode {

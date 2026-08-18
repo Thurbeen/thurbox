@@ -583,3 +583,89 @@ fn an_untrusted_composite_draws_how_to_trust_it_rather_than_failing() {
         "it must say how to grant it: {drawn}"
     );
 }
+
+// ── the install that cannot demonstrate itself ─────────────────────────────
+
+/// A pane sharing a `switch` slot draws nothing until it is focused.
+///
+/// This is the sibling of the unplaced-slot failure and it is *quieter*: an unplaced
+/// slot fails the check loudly, while a switch alternate loads, is placed, reports
+/// `installed`, and shows the user an unchanged screen. It was found by a plugin
+/// author whose pane nobody could see. Warned rather than failed — the author may
+/// have meant it, and failing a judgement makes the check unusable as a gate.
+#[test]
+fn a_pane_sharing_a_switch_slot_with_no_pill_is_warned_about() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+
+    // `20_agent` already occupies `center` in switch mode and sorts first, so this
+    // one is the alternate.
+    std::fs::write(
+        ui.join("plugins").join("90_hidden.lua"),
+        "return {\n\
+           name = \"hidden\",\n\
+           slot = \"center\",\n\
+           render = function() return { type = \"text\", text = \"hi\" } end,\n\
+         }\n",
+    )
+    .expect("write");
+
+    let output = run(Action::Check).expect("check runs");
+    assert!(
+        output.failure.is_none(),
+        "a warning must not fail the exit, or the check stops being a gate: {:?}",
+        output.json
+    );
+    let warnings = output.json["warnings"].to_string();
+    assert!(warnings.contains("90_hidden.lua"), "{warnings}");
+    assert!(warnings.contains("pill"), "and says what to do: {warnings}");
+    assert!(
+        output.human.contains("90_hidden.lua"),
+        "and a human reading the output sees it: {}",
+        output.human
+    );
+}
+
+#[test]
+fn declaring_a_pill_is_enough_to_be_findable() {
+    // The action band is kernel chrome and enumerates declared pills without invoking
+    // anything, so a pill is the one advertisement that is automatic.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins").join("90_hidden.lua"),
+        "return {\n\
+           name = \"hidden\",\n\
+           slot = \"center\",\n\
+           pills = { { action = \"hidden.open\", label = \"Hidden\", priority = 10 } },\n\
+           render = function() return { type = \"text\", text = \"hi\" } end,\n\
+         }\n",
+    )
+    .expect("write");
+
+    let output = run(Action::Check).expect("check runs");
+    assert!(output.failure.is_none(), "{:?}", output.json);
+    assert_eq!(
+        output.json["warnings"].as_array().map(Vec::len),
+        Some(0),
+        "a pane the band offers is findable: {:?}",
+        output.json
+    );
+}
+
+#[test]
+fn the_pane_that_draws_by_default_is_not_warned_about() {
+    // The first occupant of a switch slot is the one shown, so it needs no pill —
+    // warning about it would train the reader to ignore the warning.
+    std::env::set_var("THURBOX_UI_DIR", checkout_ui());
+    let output = run(Action::Check).expect("check runs");
+    assert!(output.failure.is_none(), "{:?}", output.json);
+    assert_eq!(
+        output.json["warnings"].as_array().map(Vec::len),
+        Some(0),
+        "the shipped interface must be quiet: {:?}",
+        output.json
+    );
+}

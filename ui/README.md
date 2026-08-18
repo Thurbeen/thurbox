@@ -177,6 +177,10 @@ These are the ones that cost real time.
   the arrangement loads fine and never draws. **Adding a pane is two edits** — the
   plugin and the slot — and `plugin check` fails on the missing second one and
   prints the line to add.
+- **A pane sharing a `switch` slot draws nothing until it is focused.** The quieter
+  sibling of the above: the slot's first occupant is shown and yours waits. Nothing
+  fails, so declare a `pills = { … }` entry and the action band will offer it —
+  `plugin check` warns when you have not.
 - **`theme.*` returns roles, not colours.** Ask for `theme.accent` or
   `theme.muted` so your pane looks right under all thirty-six palettes. Never
   hardcode a hex value.

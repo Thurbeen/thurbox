@@ -73,6 +73,18 @@ arrangement decides where that slot goes. Miss the second and you get the
 silent-but-loading failure above. `thurbox-cli plugin install` prints the line for
 you.
 
+There is a quieter version of the same failure: a slot in **`switch`** mode shows one
+occupant and keeps the rest as alternates, so a pane that is not first draws nothing
+until it is focused. It loads, it is placed, every check passes, and the screen does not
+change. **Declare a pill** and the action band offers it:
+
+```lua
+pills = { { action = "mine.open", label = "Mine", priority = 10 } },
+```
+
+`plugin check` warns about a pane in that state and `plugin install` says it when you
+install one — neither fails, because you may have meant it.
+
 ## What you cannot do from a pane
 
 - **No `os`, `io`, `debug`, `package`, `print`, `dofile`, `load`.** They are not

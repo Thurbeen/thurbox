@@ -661,6 +661,27 @@ drops the session column below 80 columns — so "unplaced" only means anything 
 size where the slot should have been placed. Floats need no slot and disabled panes
 were never asked for, so neither is reported.
 
+**The quieter sibling: sharing a `switch` slot.** A slot in switch mode shows one
+occupant and keeps the rest as alternates, so a pane that is not first draws nothing
+until it is focused. Unlike an unplaced slot this fails no check — it loads, it is
+placed, `plugin list` says `installed`, and the user's screen is unchanged. It is the
+one install that cannot demonstrate itself, and the person it fools is whoever followed
+your README.
+
+So **declare a pill**. The action band is kernel chrome and enumerates pills as declared
+data, without invoking anything, which makes it the only advertisement that is
+automatic — the tab strip beside the agent's views is that *plugin's* own chrome and
+cannot carry a third occupant:
+
+```lua
+pills = { { action = "mine.open", label = "Mine", priority = 10 } },
+```
+
+A low `priority` is right for anything optional: the band drops the least important
+entries first when it runs out of width. `plugin check` **warns** about a pane in this
+state, and `plugin install` says it at the moment you install one — but it does not fail
+either, because you may have meant it.
+
 ## Managing panes
 
 Composition is written down, in `plugins.toml` beside your panes:
