@@ -384,6 +384,25 @@ impl InterfaceTab {
                 Style::default().fg(chrome.row_hovered_bg()),
             ));
         }
+        // What the selected file is asking for, in words, because `t` is the one
+        // key here that hands something away. The row's tail says whether trust was
+        // granted; it has no room to say what *for*, and "runs programs" would
+        // describe both capabilities while hiding the difference that matters —
+        // whether it also takes your keystrokes and stays running.
+        if let Some(row) = self.current(inventory) {
+            if !row.capabilities.is_empty() {
+                let asks: Vec<&str> = row
+                    .capabilities
+                    .iter()
+                    .map(|capability| capability.describe())
+                    .collect();
+                return Line::from(vec![
+                    Span::styled(" asks to: ", chrome.muted()),
+                    Span::styled(asks.join(", "), chrome.normal_item()),
+                    Span::styled("   t to decide", chrome.muted()),
+                ]);
+            }
+        }
         chrome::hint_line(
             // The descriptions carry their own spacing: `hint_line` joins the
             // spans as they are, so a bare word runs into the next key.
@@ -487,6 +506,56 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    /// The list where `t` is pressed has to say what it would be granting.
+    ///
+    /// The row's tail says whether trust was given; it has no room to say what
+    /// *for*, and the two capabilities are two different decisions — one is
+    /// bounded output, the other is a process held open on your keystrokes.
+    #[test]
+    fn the_footer_says_what_the_selected_file_is_asking_for() {
+        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let footer = |rows: &[Row]| -> String {
+            let tab = InterfaceTab {
+                selected: 0,
+                ..Default::default()
+            };
+            tab.footer(rows, Chrome::new(&palette))
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        };
+
+        let mut asks = row("plugins/85_top.lua", Source::User, FileState::Visible);
+        asks.capabilities = vec![crate::kernel::host::Capability::Run];
+        let line = footer(std::slice::from_ref(&asks));
+        assert!(line.contains("asks to"), "{line}");
+        assert!(
+            line.contains("output"),
+            "the bounded one is named as such: {line}"
+        );
+
+        asks.capabilities = vec![crate::kernel::host::Capability::Program];
+        let line = footer(std::slice::from_ref(&asks));
+        assert!(
+            line.contains("interact"),
+            "and the interactive one is distinguishable: {line}"
+        );
+
+        // A file asking for nothing gets the keys back, not an empty claim.
+        let quiet = row(
+            "plugins/10_sessions.lua",
+            Source::Bundled,
+            FileState::Visible,
+        );
+        let line = footer(std::slice::from_ref(&quiet));
+        assert!(!line.contains("asks to"), "{line}");
+        assert!(
+            line.contains("trust"),
+            "the key hints are shown instead: {line}"
+        );
     }
 
     #[test]

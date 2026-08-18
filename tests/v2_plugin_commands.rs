@@ -332,3 +332,126 @@ fn an_ask_names_a_session_that_must_exist() {
     };
     assert_eq!(ask.session, "nope");
 }
+
+// ── the two capabilities are two decisions ─────────────────────────────────
+
+/// A pane declaring exactly the capabilities named.
+fn declares(name: &str, capabilities: &[&str]) -> String {
+    let list: Vec<String> = capabilities
+        .iter()
+        .map(|capability| format!("\"{capability}\""))
+        .collect();
+    format!(
+        r#"return {{
+  name = "{name}",
+  slot = "sessions",
+  capabilities = {{ {} }},
+  render = function()
+    return {{ type = "text", text = "" }}
+  end,
+}}"#,
+        list.join(", ")
+    )
+}
+
+#[test]
+fn program_is_a_capability_of_its_own_and_is_enumerable_from_the_declaration() {
+    let (_home, ui) = interface(&[("91_doom.lua", &declares("doom", &["program"]))]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    assert_eq!(
+        host.plugins[host.index_of("doom").expect("loaded")].capabilities,
+        vec![Capability::Program],
+        "readable as data, without executing the plugin"
+    );
+}
+
+#[test]
+fn a_misspelled_capability_is_refused_and_names_what_exists() {
+    // Refused rather than ignored, for the reason `run` already is: a typo would
+    // otherwise load, be granted nothing, and look like the capability is broken.
+    let (_home, ui) = interface(&[("91_typo.lua", &declares("typo", &["porgram"]))]);
+    let host = LuaHost::new(&ui);
+    let error = host.error.clone().unwrap_or_default();
+    assert!(error.contains("porgram"), "{error}");
+    assert!(
+        error.contains("program") && error.contains("run"),
+        "and names both real ones: {error}"
+    );
+}
+
+/// The load-bearing property: neither grant confers the other.
+///
+/// `run` is bounded on every axis that matters — capped output, a timeout, four at
+/// a time — and an interactive program has none of those and holds the keyboard
+/// too. If one grant covered both, trusting a pane to poll `top` would silently
+/// have granted it a process held open on your keystrokes.
+#[test]
+fn trusting_a_file_for_one_capability_does_not_grant_the_other() {
+    let (_home, ui) = interface(&[
+        ("91_runner.lua", &declares("runner", &["run"])),
+        ("92_doomer.lua", &declares("doomer", &["program"])),
+    ]);
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec![
+        "plugins/91_runner.lua".to_string(),
+        "plugins/92_doomer.lua".to_string(),
+    ]);
+
+    let runner = &host.plugins[host.index_of("runner").expect("loaded")];
+    let doomer = &host.plugins[host.index_of("doomer").expect("loaded")];
+
+    assert!(host.may(runner, Capability::Run));
+    assert!(
+        !host.may(runner, Capability::Program),
+        "trusted to read a program's output is not trusted to hold one open"
+    );
+    assert!(host.may(doomer, Capability::Program));
+    assert!(
+        !host.may(doomer, Capability::Run),
+        "and the converse: the grant follows what the file declared"
+    );
+}
+
+#[test]
+fn declaring_a_capability_is_not_being_granted_it() {
+    let (_home, ui) = interface(&[("91_doom.lua", &declares("doom", &["program"]))]);
+    let host = LuaHost::new(&ui);
+    let doom = &host.plugins[host.index_of("doom").expect("loaded")];
+    assert!(
+        !host.may(doom, Capability::Program),
+        "declaring is asking, not being granted"
+    );
+    // And the path-keyed form agrees, since that is what a queued command carries.
+    assert!(!host.may_path("plugins/91_doom.lua", Capability::Program));
+    host.set_trusted(vec!["plugins/91_doom.lua".to_string()]);
+    assert!(host.may_path("plugins/91_doom.lua", Capability::Program));
+    assert!(
+        !host.may_path("plugins/99_nobody.lua", Capability::Program),
+        "a path that names no loaded plugin may nothing"
+    );
+}
+
+#[test]
+fn each_capability_says_what_it_would_let_a_file_do() {
+    // The list where the user presses `t` has to distinguish them: "runs programs"
+    // describes both while hiding the difference that decides the answer.
+    let described: Vec<&str> = Capability::ALL
+        .iter()
+        .map(|capability| capability.describe())
+        .collect();
+    assert_eq!(
+        described.len(),
+        Capability::ALL.len(),
+        "every capability is describable"
+    );
+    assert!(
+        described[0] != described[1],
+        "and no two share a description: {described:?}"
+    );
+    assert!(
+        Capability::Program.describe().contains("interact"),
+        "{:?}",
+        Capability::Program.describe()
+    );
+}

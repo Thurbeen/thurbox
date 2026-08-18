@@ -220,19 +220,41 @@ pub struct Plugin {
 
 /// Something a plugin may ask to be able to do that ordinary Lua here cannot.
 ///
-/// One variant today, and the enum exists so a second is a compile error at
-/// every place that decides about the first rather than a string compared in
-/// four places.
+/// The enum exists so a third is a compile error at every place that decides
+/// about the first two, rather than a string compared in four places.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
     /// Run a program on the user's behalf and read its output.
     Run,
+    /// Keep an interactive program in a pane and feed it the user's keystrokes.
+    ///
+    /// Deliberately **not** part of [`Capability::Run`]. `run` is bounded on every
+    /// axis that matters — a capped amount of output, a timeout, a limit on how
+    /// many run at once — and an interactive program has none of those by design,
+    /// and holds the keyboard as well. Someone who trusted a pane to poll `top`
+    /// every few seconds did not agree to "may hold a process open indefinitely
+    /// and feed it what I type", so the grant is asked for separately.
+    Program,
 }
 
 impl Capability {
     pub fn as_str(self) -> &'static str {
         match self {
             Capability::Run => "run",
+            Capability::Program => "program",
+        }
+    }
+
+    /// What granting this lets a file do, in words, for the list where the user
+    /// decides about it.
+    ///
+    /// Distinguishing the two is the whole point: "runs programs" would describe
+    /// both, and the difference — whether it also takes your keystrokes and stays
+    /// running — is exactly what a reader needs before pressing `t`.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Capability::Run => "runs programs and reads their output",
+            Capability::Program => "runs a program you interact with",
         }
     }
 
@@ -244,12 +266,13 @@ impl Capability {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "run" => Some(Capability::Run),
+            "program" => Some(Capability::Program),
             _ => None,
         }
     }
 
     /// Every capability, for a message naming what was available.
-    pub const ALL: [Capability; 1] = [Capability::Run];
+    pub const ALL: [Capability; 2] = [Capability::Run, Capability::Program];
 }
 
 /// A key, flattened to what Lua needs to know about it.
@@ -683,7 +706,9 @@ impl LuaHost {
         drop(guard);
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
-        convert::to_node(&value).map_err(fail)
+        // The DECORATOR owns what it returns: a program surface it names is one of
+        // its own panes, not one belonging to the plugin whose tree it decorated.
+        convert::to_node(&value, &plugin.path).map_err(fail)
     }
 
     /// Publish the settings in force.
@@ -957,11 +982,31 @@ impl LuaHost {
         let _ = self.lua.globals().set("run", Value::Nil);
     }
 
+    /// May this plugin use `capability`?
+    ///
+    /// Two conditions, and both are needed: the file **declared** it, and the user
+    /// **trusted** that file. One predicate rather than the check written out at
+    /// each site, because the capabilities must not be able to drift apart — a
+    /// grant for one is not a grant for the other, and the way that breaks is a
+    /// second site that checks trust and forgets to check which capability was
+    /// asked for.
+    pub fn may(&self, plugin: &Plugin, capability: Capability) -> bool {
+        plugin.capabilities.contains(&capability) && self.trusted.borrow().contains(&plugin.path)
+    }
+
+    /// [`Self::may`], for a plugin named by its path — the identity a queued
+    /// command carries, since the command is honoured after the call that made it.
+    pub fn may_path(&self, path: &str, capability: Capability) -> bool {
+        self.plugins
+            .iter()
+            .find(|plugin| plugin.path == path)
+            .is_some_and(|plugin| self.may(plugin, capability))
+    }
+
     fn enter(&self, plugin: &Plugin) {
         *self.current.borrow_mut() = plugin.file.clone();
         *self.current_path.borrow_mut() = plugin.path.clone();
-        let granted = plugin.capabilities.contains(&Capability::Run)
-            && self.trusted.borrow().contains(&plugin.path);
+        let granted = self.may(plugin, Capability::Run);
         // Only a plugin that asked for a capability can have answers, so every
         // other one skips the rest. Worth the check: `enter` runs on every call
         // to every plugin, and building a table per call for the panes that can
@@ -999,6 +1044,26 @@ impl LuaHost {
                 }
             }
             let _ = surface.set("runs", table);
+        }
+
+        // What this plugin has actually been granted, as `thurbox.granted.<name>`.
+        //
+        // Needed because not every capability can be withheld by absence. `run` is
+        // a global, so a plugin checks `if not run then` and draws an honest hint —
+        // that IS the absence. `program` is asked for through `command`, which
+        // every plugin has, so absence cannot express it and a pane would have no
+        // way to tell "not trusted" from "still starting". This is that answer, and
+        // it grants nothing: it is a boolean about a decision the user already made.
+        if let (Ok(surface), Ok(table)) = (
+            self.lua.globals().get::<Table>("thurbox"),
+            self.lua.create_table(),
+        ) {
+            for capability in Capability::ALL {
+                if self.may(plugin, capability) {
+                    let _ = table.set(capability.as_str(), true);
+                }
+            }
+            let _ = surface.set("granted", table);
         }
 
         // Resolved out of the VM rather than held in Rust, because a reload
@@ -1715,7 +1780,7 @@ impl LuaHost {
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         let float = read_float(&value).map_err(fail)?;
-        let node = convert::to_node(&value).map_err(fail)?;
+        let node = convert::to_node(&value, &plugin.path).map_err(fail)?;
         Ok(Rendered { node, float })
     }
 
@@ -2334,7 +2399,7 @@ fn install_api(
     install_require(lua, ui_dir)?;
     install_store(lua, "store", store, None)?;
     install_private(lua, state, current)?;
-    install_command(lua, queue)?;
+    install_command(lua, queue, current_path.clone())?;
     install_files(lua, roots)?;
     install_run(lua, runs, current_path)?;
     Ok(())
@@ -2483,7 +2548,7 @@ fn install_files(lua: &Lua, roots: Roots) -> mlua::Result<()> {
 ///
 /// A malformed command raises immediately, because the mistake is in the
 /// plugin's own call and there is nothing to report asynchronously about.
-fn install_command(lua: &Lua, queue: Queue) -> mlua::Result<()> {
+fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -> mlua::Result<()> {
     let command = lua.create_function(move |_, (kind, opts): (String, Option<Table>)| {
         let opts = opts;
         let get_string = |key: &str| -> Option<String> {
@@ -2495,6 +2560,14 @@ fn install_command(lua: &Lua, queue: Queue) -> mlua::Result<()> {
                 .and_then(|t| t.get::<Option<bool>>(key).ok().flatten())
         };
         let args = Args {
+            // Stamped from the plugin currently executing, NEVER read from the
+            // options table: a plugin that could name its own owner could act as
+            // another one. Same reasoning as `run`'s attribution.
+            owner: current_path.borrow().clone(),
+            argv: opts
+                .as_ref()
+                .and_then(|t| t.get::<Option<Vec<String>>>("args").ok().flatten())
+                .unwrap_or_default(),
             session: get_string("session").unwrap_or_default(),
             text: get_string("text"),
             delta: opts

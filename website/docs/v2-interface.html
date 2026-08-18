@@ -111,11 +111,36 @@ breadcrumb: 'Interface'
   <a href="#running-programs" class="heading-anchor">#</a>
 </h2>
 <p>
-  One capability reaches outside thurbox: a plugin can run a program &mdash;
+  Two capabilities reach outside thurbox, and they are two separate decisions.
+</p>
+<p>
+  <strong>Reading a program's output.</strong>
+  A plugin can run
   <code>git status</code>,
-  <code>docker compose ps</code>,
+  <code>docker compose ps</code>
+  or
   <code>npm outdated</code>
-  &mdash; in a session's working directory, and on that session's own host for a remote session.
+  in a session's working directory &mdash; and on that session's own host for a remote session. It is
+  bounded: output is capped, a run times out, four run at once.
+</p>
+<p>
+  <strong>Running a program you interact with.</strong>
+  A pane can hold a
+  <em>real terminal</em>
+  for a program it names &mdash;
+  <code>htop</code>, a REPL, a log you page through, or
+  <code>doom</code>. Keystrokes reach it, it is resized to the pane's rect, and it keeps running
+  while you work elsewhere. The pane belongs to the plugin rather than to a session, and survives
+  reloading the interface.
+</p>
+<p>
+  The second is
+  <strong>not</strong>
+  covered by trusting the first, and that is deliberate: none of the bounds that make reading output
+  safe apply to a program held open on your keystrokes. Trusting a pane to poll
+  <code>top</code>
+  every few seconds is a different decision, so it is asked separately &mdash; and the Interface tab
+  says which of the two a file wants before you decide.
 </p>
 <p>
   It is granted per plugin, and only after you trust that plugin: settings

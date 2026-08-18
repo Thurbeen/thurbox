@@ -247,6 +247,21 @@ pub trait SessionBackend: Send + Sync {
     /// Discover existing sessions managed by this backend.
     fn discover(&self) -> Result<Vec<DiscoveredSession>>;
 
+    /// The pane id of a live window with this **exact** name, if there is one.
+    ///
+    /// Deliberately separate from [`Self::discover`], which filters to agent
+    /// windows (`tb-`) — by design, since it answers "which sessions are running".
+    /// A plugin's program pane is found by *name* because the name is its identity
+    /// (nothing about it is persisted), so it needs a lookup that is not filtered
+    /// to a prefix it does not have. That the shell prefix `tbs-` also fails
+    /// `discover`'s filter is why shells persist a pane id instead.
+    ///
+    /// Default: nothing found, so a backend without a window concept simply always
+    /// spawns fresh.
+    fn find_window(&self, _window_name: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Resize a session's terminal.
     fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()>;
 
@@ -406,6 +421,143 @@ impl ShellPane {
             exited: state.exited,
             last_output_at: state.last_output_at,
             last_title: state.last_title,
+        }
+    }
+}
+
+/// A program a plugin asked for, running in a pane of its own.
+///
+/// Deliberately mirrors [`ShellPane`] — the same wired I/O, reached through the
+/// same `Session::wire_up`, so the subtle part (a `vt100` parser fed by a reader
+/// task, a writer channel, an exit flag and an output stamp) exists once. What it
+/// is *not* is a shell, and not a session: it belongs to a plugin, holds a program
+/// that plugin named, and carries its own backend handle so it can be resized and
+/// killed without a `Session` to route through.
+pub struct ProgramPane {
+    pub parser: Arc<Mutex<SessionParser>>,
+    input_tx: mpsc::Sender<Vec<u8>>,
+    /// The pane this is. Not persisted anywhere — the window *name* is the
+    /// identity that survives a restart (`tmux::program_window_name`), because a
+    /// deterministic name cannot go stale where a stored id can.
+    backend_id: String,
+    exited: Arc<AtomicBool>,
+    last_output_at: Arc<AtomicU64>,
+    /// Kept so the pane can resize and kill itself.
+    backend: Arc<dyn SessionBackend>,
+    /// What is running, for reporting.
+    pub program: String,
+}
+
+impl ProgramPane {
+    /// Start `program` in a new pane on `backend`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn(
+        backend: Arc<dyn SessionBackend>,
+        window_name: &str,
+        program: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self> {
+        let spawned = backend.spawn(window_name, program, args, cwd, env, rows, cols)?;
+        let (state, backend_id) = Session::wire_up(
+            rows,
+            cols,
+            SessionIo {
+                output: spawned.output,
+                input: spawned.input,
+                backend_id: spawned.backend_id,
+                mode: WireMode::Spawn,
+            },
+        );
+        debug!(program, window_name, "spawned a plugin's program pane");
+        Ok(Self::from_wired(state, backend_id, backend, program))
+    }
+
+    /// Reconnect to a pane that is already running — the restart path, where the
+    /// window was found again by its deterministic name.
+    pub fn adopt(
+        backend: Arc<dyn SessionBackend>,
+        backend_id: &str,
+        program: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self> {
+        let adopted = backend.adopt(backend_id, rows, cols, None)?;
+        let (state, bid) = Session::wire_up(
+            rows,
+            cols,
+            SessionIo {
+                output: adopted.output,
+                input: adopted.input,
+                backend_id: backend_id.to_string(),
+                mode: WireMode::Adopt,
+            },
+        );
+        debug!(program, backend_id, "adopted a plugin's program pane");
+        Ok(Self::from_wired(state, bid, backend, program))
+    }
+
+    fn from_wired(
+        state: WiredState,
+        backend_id: String,
+        backend: Arc<dyn SessionBackend>,
+        program: &str,
+    ) -> Self {
+        Self {
+            parser: state.parser,
+            input_tx: state.input_tx,
+            backend_id,
+            exited: state.exited,
+            last_output_at: state.last_output_at,
+            backend,
+            program: program.to_string(),
+        }
+    }
+
+    pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
+        send_to_input_channel(&self.input_tx, data, "Program")
+    }
+
+    /// When this pane last produced output, as epoch milliseconds — the redraw
+    /// signal, read the same way the agent and shell panes' are.
+    pub fn last_output_at(&self) -> u64 {
+        self.last_output_at.load(Ordering::Relaxed)
+    }
+
+    /// Whether the program has ended.
+    ///
+    /// Read from the reader loop's flag rather than by asking the backend, so the
+    /// answer costs an atomic load on a render path. What it enables is reporting
+    /// "this exited" instead of painting the frozen grid it left behind.
+    pub fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::Relaxed)
+    }
+
+    pub fn backend_id(&self) -> &str {
+        &self.backend_id
+    }
+
+    pub fn resize(&self, rows: u16, cols: u16) {
+        // Clamped at 1 for the reason `Session::resize` documents: a cramped
+        // layout can compute a zero-row area, vt100's `set_size` underflows on 0
+        // and tmux rejects it.
+        let (rows, cols) = (rows.max(1), cols.max(1));
+        if let Err(e) = self.backend.resize(&self.backend_id, rows, cols) {
+            tracing::debug!("could not resize program pane {}: {e:#}", self.backend_id);
+            return;
+        }
+        if let Ok(mut parser) = self.parser.lock() {
+            parser.screen_mut().set_size(rows, cols);
+        }
+    }
+
+    /// End the program and take its window with it.
+    pub fn kill(&self) {
+        if let Err(e) = self.backend.kill(&self.backend_id) {
+            tracing::warn!("could not kill program pane {}: {e:#}", self.backend_id);
         }
     }
 }

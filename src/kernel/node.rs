@@ -243,6 +243,12 @@ pub enum SurfaceSource {
     /// A live session, named by its id. The kernel resolves it to that
     /// session's terminal grid.
     Session(String),
+    /// A program the declaring plugin asked to run, named by the plugin.
+    ///
+    /// Still a `surface` — four node kinds, forever. The kernel resolves the name
+    /// against the plugin being rendered, so a plugin can only ever name its own
+    /// (`kernel::terminal::ProgramKey`).
+    Program(String),
     /// Cells the plugin produced itself, one entry per line.
     Cells(Vec<Vec<Run>>),
 }
@@ -304,6 +310,27 @@ impl Node {
                 ..
             } => Some(id),
             Node::Box { children, .. } => children.iter().find_map(Node::first_session_surface),
+            _ => None,
+        }
+    }
+
+    /// The first **live** surface in this tree, of either kind, with the id the
+    /// kernel resolves it by.
+    ///
+    /// This is what raw input is routed to. Keys already followed the returned
+    /// tree — `input = "session"` never meant "the selected session", it meant
+    /// "whatever this pane is showing" — and what was narrow was only the set of
+    /// things a surface could name. A plugin's own program is now one of them.
+    ///
+    /// `Cells` is excluded: a plugin drew those itself, so there is nothing behind
+    /// them to type at.
+    pub fn first_live_surface(&self) -> Option<&str> {
+        match self {
+            Node::Surface {
+                source: SurfaceSource::Session(id) | SurfaceSource::Program(id),
+                ..
+            } => Some(id),
+            Node::Box { children, .. } => children.iter().find_map(Node::first_live_surface),
             _ => None,
         }
     }
@@ -663,5 +690,64 @@ mod tests {
         assert_eq!(ClickVerb::parse(Some("action:")), None);
         assert_eq!(ClickVerb::parse(Some("shout:hello")), None);
         assert_eq!(ClickVerb::parse(None), None);
+    }
+
+    /// Raw input follows the tree, and now the tree can name either kind of live
+    /// surface. The session behaviour must be identical — `20_agent.lua` depends
+    /// on it — and a plugin-drawn `cells` surface has nothing behind it to type at.
+    #[test]
+    fn the_first_live_surface_is_either_kind_but_never_plugin_drawn_cells() {
+        let session = Node::Surface {
+            source: SurfaceSource::Session("s1".into()),
+            scroll: 0,
+            frame: None,
+            size: Size::default(),
+            identity: Identity::default(),
+        };
+        let program = Node::Surface {
+            source: SurfaceSource::Program("program:plugins/90_doom.lua#doom".into()),
+            scroll: 0,
+            frame: None,
+            size: Size::default(),
+            identity: Identity::default(),
+        };
+        let cells = Node::Surface {
+            source: SurfaceSource::Cells(vec![Vec::new()]),
+            scroll: 0,
+            frame: None,
+            size: Size::default(),
+            identity: Identity::default(),
+        };
+
+        assert_eq!(session.first_live_surface(), Some("s1"));
+        assert_eq!(session.first_session_surface(), Some("s1"));
+
+        assert_eq!(
+            program.first_live_surface(),
+            Some("program:plugins/90_doom.lua#doom")
+        );
+        assert_eq!(
+            program.first_session_surface(),
+            None,
+            "a program is not a session, and everything that is about sessions must \
+             keep getting that answer"
+        );
+
+        assert_eq!(cells.first_live_surface(), None);
+
+        // Found through nesting, which is how every real pane wraps its surface.
+        let wrapped = Node::Box {
+            axis: Axis::Vertical,
+            gap: 0,
+            children: vec![cells, program],
+            frame: None,
+            size: Size::default(),
+            identity: Identity::default(),
+        };
+        assert_eq!(
+            wrapped.first_live_surface(),
+            Some("program:plugins/90_doom.lua#doom"),
+            "the plugin-drawn cells are skipped rather than claiming the keys"
+        );
     }
 }

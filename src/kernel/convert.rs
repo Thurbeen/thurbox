@@ -18,11 +18,17 @@ use super::node::{
 const MAX_DEPTH: usize = 64;
 
 /// Convert a plugin's returned value into a node tree.
-pub fn to_node(value: &Value) -> Result<Node, String> {
-    convert(value, "root", 0)
+/// Read a plugin's returned tree.
+///
+/// `owner` is the path of the plugin that produced it, needed because a
+/// `surface` naming a **program** names one of that plugin's own — the plugin
+/// writes `program = "doom"` and the kernel resolves the owner, so naming another
+/// plugin's pane is impossible by construction rather than refused by a check.
+pub fn to_node(value: &Value, owner: &str) -> Result<Node, String> {
+    convert(value, "root", 0, owner)
 }
 
-fn convert(value: &Value, path: &str, depth: usize) -> Result<Node, String> {
+fn convert(value: &Value, path: &str, depth: usize, owner: &str) -> Result<Node, String> {
     if depth > MAX_DEPTH {
         return Err(format!(
             "{path}: tree nested deeper than {MAX_DEPTH} levels"
@@ -32,7 +38,7 @@ fn convert(value: &Value, path: &str, depth: usize) -> Result<Node, String> {
         // A bare string is the shorthand every plugin reaches for first.
         Value::String(s) => Ok(Node::line(s.to_string_lossy(), Style::default())),
         Value::Nil => Ok(Node::empty()),
-        Value::Table(table) => convert_table(table, path, depth),
+        Value::Table(table) => convert_table(table, path, depth, owner),
         other => Err(format!(
             "{path}: expected a table or a string, found {}",
             type_name(other)
@@ -40,7 +46,7 @@ fn convert(value: &Value, path: &str, depth: usize) -> Result<Node, String> {
     }
 }
 
-fn convert_table(table: &Table, path: &str, depth: usize) -> Result<Node, String> {
+fn convert_table(table: &Table, path: &str, depth: usize, owner: &str) -> Result<Node, String> {
     let size = read_size(table, path)?;
     let identity = read_identity(table, path)?;
     let frame = read_frame(table, path)?;
@@ -99,7 +105,7 @@ fn convert_table(table: &Table, path: &str, depth: usize) -> Result<Node, String
             Ok(Node::Box {
                 axis,
                 gap: opt_u16(table, "gap", path)?.unwrap_or(0),
-                children: read_children(table, path, depth)?,
+                children: read_children(table, path, depth, owner)?,
                 frame,
                 size,
                 identity,
@@ -117,6 +123,15 @@ fn convert_table(table: &Table, path: &str, depth: usize) -> Result<Node, String
         "surface" => {
             let source = if let Some(session) = opt_string(table, "session", path)? {
                 SurfaceSource::Session(session)
+            } else if let Some(program) = opt_string(table, "program", path)? {
+                // Resolved against the plugin that drew it. The name is checked
+                // here so a bad one is a conversion error naming its path, rather
+                // than a pane that never appears.
+                super::terminal::validate_program_name(&program)
+                    .map_err(|e| format!("{path}.program: {e}"))?;
+                SurfaceSource::Program(
+                    super::terminal::ProgramKey::new(owner, &program).surface_id(),
+                )
             } else {
                 let raw: Value = table
                     .raw_get("cells")
@@ -146,7 +161,12 @@ fn normalize_kind(name: &str) -> Option<&'static str> {
     }
 }
 
-fn read_children(table: &Table, path: &str, depth: usize) -> Result<Vec<Node>, String> {
+fn read_children(
+    table: &Table,
+    path: &str,
+    depth: usize,
+    owner: &str,
+) -> Result<Vec<Node>, String> {
     // Children live under `children`, or in the array part of the table so a
     // plugin can write `{ a, b, c }` without the extra key.
     let raw: Value = table
@@ -167,7 +187,7 @@ fn read_children(table: &Table, path: &str, depth: usize) -> Result<Vec<Node>, S
     for (index, entry) in list.sequence_values::<Value>().enumerate() {
         let entry = entry.map_err(|e| lua_err(path, "children", &e))?;
         let child_path = format!("{path}[{}]", index + 1);
-        children.push(convert(&entry, &child_path, depth + 1)?);
+        children.push(convert(&entry, &child_path, depth + 1, owner)?);
     }
     Ok(children)
 }
@@ -719,6 +739,11 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
                 SurfaceSource::Session(id) => table
                     .set("session", id.clone())
                     .map_err(|e| e.to_string())?,
+                // The resolved id, not the bare name the plugin wrote: the tree a
+                // decorator receives has to name the same surface the paint will.
+                SurfaceSource::Program(id) => table
+                    .set("program", id.clone())
+                    .map_err(|e| e.to_string())?,
                 SurfaceSource::Cells(lines) => {
                     // Emitted as runs rather than flattened to one string per
                     // line: a plugin-fed surface is where a review diff's syntax
@@ -766,7 +791,7 @@ mod tests {
             .load(format!("return {source}"))
             .eval()
             .expect("test source should evaluate");
-        to_node(&value)
+        to_node(&value, "plugins/90_test.lua")
     }
 
     #[test]
@@ -897,7 +922,7 @@ mod tests {
             )
             .eval()
             .expect("deep tree builds");
-        let error = to_node(&value).unwrap_err();
+        let error = to_node(&value, "plugins/90_test.lua").unwrap_err();
         assert!(error.contains("nested deeper"), "{error}");
     }
 
@@ -913,7 +938,7 @@ mod tests {
             "local t = {}; t[1] = t; return { type = \"surface\", cells = t }",
         ] {
             let value: Value = lua.load(source).eval().expect("cyclic table builds");
-            let error = to_node(&value).unwrap_err();
+            let error = to_node(&value, "plugins/90_test.lua").unwrap_err();
             assert!(error.contains("nested deeper"), "{source}: {error}");
         }
     }

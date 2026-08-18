@@ -152,6 +152,25 @@ pub enum Command {
     Shell {
         session: String,
     },
+    /// Start — or close — an interactive program in a pane a plugin owns.
+    ///
+    /// UI-thread applied for the same reason `Shell` is: the pane is wired into
+    /// the `!Send` world the agent's terminal lives in.
+    ///
+    /// `owner` is **stamped by the kernel** from the plugin currently executing,
+    /// never read from Lua. That is what makes naming another plugin's pane
+    /// impossible by construction rather than refused by a check — the same
+    /// reasoning that keeps `run`'s implementation in the VM registry instead of
+    /// in globals.
+    Program {
+        owner: String,
+        name: String,
+        /// What to run. Empty when closing.
+        program: String,
+        argv: Vec<String>,
+        /// Give the pane up instead of starting it.
+        close: bool,
+    },
     /// Open a session's working directory in the configured editor.
     ///
     /// UI-thread applied, and the reason is the whole difficulty of v1's
@@ -272,6 +291,7 @@ impl Command {
             Command::Sync { .. } => "sync",
             Command::Copy { .. } => "copy",
             Command::Shell { .. } => "shell",
+            Command::Program { .. } => "program",
             Command::Editor { .. } => "editor",
             Command::Focus { .. } => "focus",
             Command::OpenLink { .. } => "open",
@@ -315,6 +335,10 @@ impl Command {
             | Command::Setting { .. }
             | Command::OpenLink { .. }
             | Command::Order { .. }
+            // A plugin's pane belongs to the plugin, not to a session — which is
+            // the whole point of it, and why it must never appear in anything
+            // that enumerates sessions.
+            | Command::Program { .. }
             | Command::Focus { .. } => "",
         }
     }
@@ -338,6 +362,7 @@ impl Command {
                 | Command::Copy { .. }
                 | Command::OpenLink { .. }
                 | Command::Shell { .. }
+                | Command::Program { .. }
                 | Command::Editor { .. }
                 | Command::Focus { .. }
                 | Command::Plugin { .. }
@@ -382,6 +407,8 @@ impl Command {
             file,
             action,
             extras,
+            owner,
+            argv,
         } = args;
         // The interface's own files name no session, and the verb is explicit:
         // removing a plugin is destructive, so it is never the default.
@@ -523,6 +550,29 @@ impl Command {
                 Ok(Command::Order { list })
             };
         }
+        // A plugin's program pane belongs to the plugin, not to a session, so it is
+        // resolved before the single-session guard below — the same reason `order`
+        // and `plugin` are.
+        if kind == "program" {
+            let name = text.unwrap_or_default();
+            super::terminal::validate_program_name(&name)?;
+            // The verb, spelled the way `plugin` and `bookmark` spell theirs.
+            let close = matches!(action.as_deref(), Some("close") | Some("stop"));
+            let program = repo.unwrap_or_default();
+            if !close && program.trim().is_empty() {
+                return Err(
+                    "command \"program\" needs a program to run (or action = \"close\")"
+                        .to_string(),
+                );
+            }
+            return Ok(Command::Program {
+                owner,
+                name,
+                program,
+                argv,
+                close,
+            });
+        }
         if session.is_empty() {
             return Err(format!("command {kind:?} needs a session"));
         }
@@ -586,6 +636,14 @@ pub struct Args {
     pub action: Option<String>,
     /// Further repositories a create spans, in the order they were chosen.
     pub extras: Vec<ExtraMember>,
+    /// The plugin that issued this command, by path.
+    ///
+    /// **Stamped by the kernel**, never read from the options table — a plugin
+    /// that could set this could act as another one. Empty for a command that did
+    /// not come from a plugin.
+    pub owner: String,
+    /// Arguments for a program a plugin asked to run.
+    pub argv: Vec<String>,
 }
 
 /// How far along a command is.
@@ -916,6 +974,7 @@ fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<()
         | Command::Copy { .. }
         | Command::OpenLink { .. }
         | Command::Shell { .. }
+        | Command::Program { .. }
         | Command::Editor { .. }
         | Command::Focus { .. }
         | Command::Plugin { .. } => unreachable!("applied on the UI thread"),
@@ -1766,5 +1825,64 @@ mod tests {
             .find(|item| item.id == id)
             .expect("a failure stays visible");
         assert_eq!(item.error.as_deref(), Some("no such pane"));
+    }
+
+    // ── a plugin's program is not a session ────────────────────────────────
+
+    /// The command names no session, which is what keeps a program pane out of
+    /// everything that enumerates them.
+    #[test]
+    fn a_program_command_names_no_session() {
+        let program = Command::Program {
+            owner: "plugins/90_doom.lua".into(),
+            name: "doom".into(),
+            program: "doom".into(),
+            argv: Vec::new(),
+            close: false,
+        };
+        assert_eq!(program.session(), "");
+        assert_eq!(program.kind(), "program");
+        // Applied by the loop: the pane is wired into the `!Send` world the
+        // agent's terminal lives in, exactly as a shell's is.
+        assert!(program.applied_on_ui_thread());
+    }
+
+    #[test]
+    fn a_program_command_needs_a_program_or_a_close() {
+        let ask = |program: &str, action: Option<&str>| {
+            Command::parse(
+                "program",
+                Args {
+                    owner: "plugins/90_doom.lua".into(),
+                    text: Some("doom".into()),
+                    repo: (!program.is_empty()).then(|| program.to_string()),
+                    action: action.map(str::to_string),
+                    ..Args::default()
+                },
+            )
+        };
+        assert!(ask("doom", None).is_ok());
+        // Closing needs no program — the pane is being given up.
+        assert!(ask("", Some("close")).is_ok());
+        // Starting nothing is a mistake worth reporting, not an empty command line
+        // handed to the multiplexer.
+        let error = ask("", None).expect_err("should refuse");
+        assert!(error.contains("program"), "{error}");
+    }
+
+    #[test]
+    fn a_program_command_refuses_a_name_that_would_not_survive_a_window_name() {
+        for bad in ["", "doom#2", "a b", "../x"] {
+            let refused = Command::parse(
+                "program",
+                Args {
+                    owner: "plugins/90_doom.lua".into(),
+                    text: Some(bad.to_string()),
+                    repo: Some("doom".into()),
+                    ..Args::default()
+                },
+            );
+            assert!(refused.is_err(), "{bad:?} should be refused");
+        }
     }
 }

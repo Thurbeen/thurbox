@@ -49,7 +49,7 @@ fn styled_tree() -> Node {
 fn round_trip(node: &Node) -> Node {
     let lua = mlua::Lua::new();
     let value = to_lua(&lua, node).expect("to_lua");
-    to_node(&value).expect("to_node")
+    to_node(&value, "plugins/90_test.lua").expect("to_node")
 }
 
 #[test]

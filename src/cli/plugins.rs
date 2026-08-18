@@ -372,6 +372,15 @@ fn list() -> Result<CommandOutput, String> {
                 // kind of file it is, and this is who it came from.
                 "installed_from": row.source.installed_from(),
                 "state": row.state.as_str(),
+                // What the file asks to be able to do. Reported because a
+                // capability is granted per file, so a script auditing an
+                // interface — "which panes here want to run programs?" — should
+                // not have to read Lua to find out.
+                "capabilities": row
+                    .capabilities
+                    .iter()
+                    .map(|capability| capability.as_str())
+                    .collect::<Vec<_>>(),
                 "error": row.error,
             })
         })

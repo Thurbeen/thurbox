@@ -43,6 +43,26 @@ pub trait SurfaceProvider {
     /// Paint `session` into `area`. Return `false` when there is nothing live
     /// behind it, and the caller draws a placeholder instead.
     fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool;
+
+    /// Paint the program `surface` names into `area`, for a pane a plugin owns.
+    ///
+    /// Returns what to draw instead when there is nothing to paint, so a pane
+    /// that has not been started and one whose program has ended read
+    /// differently — a frozen grid and an empty box are the two answers this
+    /// exists to avoid.
+    fn render_program(&self, frame: &mut Frame, area: Rect, surface: &str) -> ProgramPaint;
+}
+
+/// What a program surface had to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProgramPaint {
+    /// Painted its screen.
+    Painted,
+    /// Nothing has been started for this pane.
+    NotStarted,
+    /// The program ran and ended. Named, because "which one exited" is the first
+    /// thing anybody asks.
+    Exited(String),
 }
 
 /// A provider with nothing behind it — every surface falls back to the
@@ -62,9 +82,33 @@ impl SurfaceProvider for PlaceholderSurfaces {
     ) -> bool {
         false
     }
+
+    fn render_program(&self, _frame: &mut Frame, _area: Rect, _surface: &str) -> ProgramPaint {
+        ProgramPaint::NotStarted
+    }
 }
 
 /// What a session-backed surface shows when nothing live is behind it.
+/// A centred two-line notice, for a surface with nothing to paint.
+fn render_notice(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
+    let mut lines = Vec::new();
+    let blank = usize::from(area.height).saturating_sub(2) / 2;
+    for _ in 0..blank {
+        lines.push(Line::default());
+    }
+    lines.push(
+        Line::from(title.to_string())
+            .style(Style::default().add_modifier(Modifier::BOLD))
+            .centered(),
+    );
+    lines.push(
+        Line::from(detail.to_string())
+            .style(Style::default().add_modifier(Modifier::DIM))
+            .centered(),
+    );
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 fn render_detached(frame: &mut Frame, area: Rect, session: &str) {
     let mut lines = Vec::new();
     let blank = usize::from(area.height).saturating_sub(3) / 2;
@@ -246,6 +290,17 @@ pub fn render_recording(
                         render_detached(frame, inner, id);
                     }
                 }
+                SurfaceSource::Program(id) => match surfaces.render_program(frame, inner, id) {
+                    ProgramPaint::Painted => {}
+                    ProgramPaint::NotStarted => {
+                        render_notice(frame, inner, "program surface", "nothing started here yet")
+                    }
+                    // Said rather than shown: the grid a finished program left
+                    // behind looks exactly like one that is still running.
+                    ProgramPaint::Exited(program) => {
+                        render_notice(frame, inner, &program, "exited")
+                    }
+                },
             }
         }
     }
@@ -339,7 +394,7 @@ mod tests {
             .load(format!("return {source}"))
             .eval()
             .expect("source evaluates");
-        let node = to_node(&value).expect("tree converts");
+        let node = to_node(&value, "plugins/90_test.lua").expect("tree converts");
 
         let mut terminal =
             Terminal::new(TestBackend::new(width, height)).expect("test terminal builds");

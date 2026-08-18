@@ -1,0 +1,14 @@
+# Doom, in a pane. Install it with:
+#
+#     thurbox-cli plugin install doom
+#
+# It declares the `program` capability, so it draws how to trust it until you do
+# (settings -> Interface -> `t`). Installing a plugin grants it nothing.
+#
+# You also need a `doom` on PATH and a WAD it can find. The pane says so if the
+# program exits immediately, which is what a missing WAD looks like.
+name = "doom"
+description = "Doom, in a pane, because the pane is a real terminal"
+requires_thurbox = ">=2.0"
+
+pane = { source = "doom.lua", path = "plugins/95_doom.lua" }

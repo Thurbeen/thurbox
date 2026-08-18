@@ -322,6 +322,10 @@ pub const OFFICIAL_SET: &str = "ui-plugins";
 /// `OFFICIAL_EXTENSIONS` is: a misspelled name should be caught without a network
 /// round-trip. Keep in step with `ui-plugins/<name>/`.
 pub const OFFICIAL_PLUGINS: &[(&str, &str)] = &[
+    (
+        "doom",
+        "Doom, in a pane, because the pane is a real terminal",
+    ),
     ("tasks", "A todo pane: read the snapshot, send or spawn"),
     ("top", "CPU, memory and load as gauges, parsed from `top`"),
 ];

@@ -318,6 +318,13 @@ globals:
   # entered, so a pane reads its own and no other's.
   thurbox.runs:
     property: read-only
+  # Which capabilities THIS plugin has been granted, as `granted.run` /
+  # `granted.program`. Present because not every capability can be withheld by
+  # absence: `run` is a global, so `if not run then` is the check, but a program
+  # pane is asked for through `command`, which every plugin has. Without this a
+  # pane could not tell "you have not trusted me" from "still starting".
+  thurbox.granted:
+    property: read-only
   thurbox.metrics:
     property: read-only
   thurbox.can_open_links:

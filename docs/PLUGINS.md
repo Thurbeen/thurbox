@@ -474,6 +474,68 @@ ten minutes), and four run at once with the rest queued. A run happens in the
 session's working directory, and for a remote session **on that session's host** —
 which is what makes `docker compose ps` mean the right containers.
 
+## Running a program you interact with
+
+`run` captures a program's output once. It has no stdin and no terminal, so it
+cannot give you `htop`, `lazygit`, a REPL, a log you page through — or `doom`. For
+those a pane holds a **real terminal**: keystrokes go to the program, it is resized
+to the rect, and it keeps running while you work elsewhere.
+
+```lua
+capabilities = { "program" },      -- a DIFFERENT capability from `run`
+focusable = true,                  -- or it can never be typed at
+input = "session",                 -- keys you do not handle go to the surface
+
+render = function(ctx)
+  if not (thurbox.granted or {}).program then
+    return needs_trust(ctx)        -- absent until you are trusted; draw that
+  end
+  -- Every frame. Asking for a pane you already have is a map lookup, not a
+  -- second copy of the program.
+  command("program", { text = "doom", repo = "doom", args = { "-warp", "1" } })
+  return { type = "surface", program = "doom", fill = 1 }
+end,
+```
+
+The pane is **yours**, not a session's: one `doom` whatever is selected. You write
+its name and the kernel supplies the owner, so two plugins can both call their pane
+`doom` and get two different programs — and neither can name the other's.
+
+Give one up with `command("program", { text = "doom", action = "close" })`. A
+plugin that is removed, renamed or turned off has its panes released for it.
+
+**Why `thurbox.granted` and not `if not program then`.** A capability is normally
+withheld by *absence* — that is rule 4, and it is why `run` is simply not a
+function until you are trusted. A program pane is asked for through `command`,
+which every plugin has, so absence cannot express it: without `granted` a pane
+could not tell "you have not trusted me" from "still starting". It grants nothing;
+it reports a decision you already made.
+
+**Why it is not `run`'s grant.** `run` is bounded on every axis that matters —
+capped output, a timeout, four at a time. An interactive program has none of those
+by design, and holds your keyboard as well. Trusting a pane to poll `top` every few
+seconds is not the same decision as letting it hold a process open on your
+keystrokes, so it is asked separately. The Interface tab says which of the two a
+file wants.
+
+**Bounds.** Four panes per plugin — the same number as `run`'s concurrency, so
+there is one to remember. `run`'s others do not transfer: an output cap is
+meaningless for a screen overwritten in place, and a timeout is the opposite of what
+an interactive program wants.
+
+**Lifetime.** Reloading (`F10`) keeps the program running — a reload is an edit to
+a file, and losing your editor to one would make reloading unusable. Quitting
+leaves it running; the next launch finds it again by its window name, so nothing is
+persisted that could go stale. A program that exits on its own is *reported* as
+exited rather than drawn as a frozen screen, and asking again starts it afresh.
+
+**Local only, for now.** A plugin's pane has no session and therefore no host, so
+it runs on this machine in the interface directory. `run` goes remote because a
+session tells it where to; there is nothing here to ask.
+
+`ui-plugins/doom/` is the worked example. Install it with `thurbox-cli plugin
+install doom`, add its slot to `layout.lua`, and trust it.
+
 ## Reserved keys
 
 `ctrl+q` quit · `f10` reload · `tab` / `shift+tab` and `ctrl+h` / `ctrl+l` move

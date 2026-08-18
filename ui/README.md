@@ -136,8 +136,13 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 | `store` | scratch state that survives a frame, and how you *ask* for things (`store.want_branches`, `store.want_content`, …) |
 | `state` | your plugin's own persisted settings |
 | `require` | `lib/` modules only |
-| `run(key, cmd, opts)` | run a program — **only if trusted**, see below |
+| `run(key, cmd, opts)` | run a program and read its output — **only if trusted**, see below |
 | `files` | bounded reads the kernel performs for you |
+
+`thurbox.granted` tells you which capabilities *this* file has been granted
+(`granted.run`, `granted.program`). It exists because not every capability can be
+withheld by absence: `run` is a global, so `if not run then` is the check, but an
+interactive program pane is asked for through `command`, which every plugin has.
 
 **Deliberately absent**: `os`, `io`, `debug`, `package`, `print`, `dofile`,
 `load`, `loadstring`, `require` of anything outside `lib/`. They are not blocked,
@@ -159,6 +164,11 @@ These are the ones that cost real time.
 - **`run` is nil until the user trusts the file.** Declaring
   `capabilities = { "run" }` does not grant it. Check `if not run then` and draw
   something honest; do not call it and hope.
+- **A program pane needs `focusable = true`.** `capabilities = { "program" }` plus
+  `input = "session"` gets you a terminal you can never type at, because raw input
+  only reaches the plugin that *has* focus. It draws perfectly and ignores the
+  keyboard, which is a confusing thing to debug — and check
+  `thurbox.granted.program`, since `command` is present whether or not you may.
 - **Declaring a key does not outrank a global one.** A plugin-scoped chord loses
   to a kernel chord. Check `F1` after adding a key: if it is not listed, it did
   not bind.

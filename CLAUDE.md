@@ -1392,7 +1392,10 @@ deleted when the kernel took the binary name — v1 lives on the `1.x` branch.
    blocks, so no plugin can stall the loop on SQLite, git or an unreachable host.
 4. **Capabilities by absence** — an ungranted capability is *not in the
    environment*. `io`, `os`, `debug`, `package` and the loaders are withheld, and
-   `thurbox.yml` makes selene enforce that statically.
+   `thurbox.yml` makes selene enforce that statically. One capability cannot be
+   expressed that way: a program pane is asked for through `command`, which every
+   plugin has, so `thurbox.granted` reports the grant instead — a boolean about a
+   decision already made, which withholds nothing.
 5. **Anything touching the world runs on a worker** — terminal attach, commands,
    diffs, metrics, git stats, repository reads, update checks, and programs a
    plugin asked for.
@@ -1721,6 +1724,24 @@ would report every ordinary release as tampering; `(src, pin)` alone would let a
 upstream re-tag of the same version inherit a grant made to what that version used to
 be. Both are checked, and `ui.json`'s bare-string grant form is still read so an
 upgrade forgets nothing.
+
+**A plugin can run a program you interact with** (`Capability::Program`,
+`kernel::terminal`'s `programs` map). `run` captures output once with no stdin and
+no tty, so it cannot give you `htop`, a REPL or `doom`; a *program pane* holds a
+real terminal — keystrokes go to it, it is resized to its rect, it survives an
+`F10` reload. The pane belongs to the **plugin**, not a session: the plugin writes
+`command("program", { text = "doom", repo = "doom" })` and draws
+`{ type = "surface", program = "doom" }`, and the kernel stamps the owner from the
+plugin being rendered, so naming another plugin's pane is impossible by
+construction. Reuses the companion-shell machinery whole (`ProgramPane` mirrors
+`ShellPane` over the same `Session::wire_up`); the differences are a third window
+prefix (`tbp-`, invisible to `discover`'s `tb-` filter — hence `find_window`), and
+that **nothing is persisted**: the window name is deterministic, so re-adoption
+after a restart is a lookup and there is no stored id to go stale. Gated by its own
+capability, **not** `run`'s — `run` is bounded (256 KB, 600 s, 4 at a time) and an
+interactive program is none of those, so an existing grant must not silently widen.
+Four panes per plugin. `thurbox.granted.<name>` is how a pane knows, since
+`command` is present whether or not it may.
 
 **A plugin can run a program** (`kernel::runs`) — `git status`, `docker compose ps` —
 in the session's working directory, and on that session's own host for a remote

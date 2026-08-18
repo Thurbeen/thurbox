@@ -202,6 +202,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tracked_commands: std::collections::HashMap::new(),
         band_targets: Vec::new(),
         focused_session: None,
+        focused_surface: None,
         last_selected_session: None,
         started: Instant::now(),
         frames: 0,
@@ -776,6 +777,13 @@ struct App {
     /// Read off the tree that was just painted, so the kernel never needs to
     /// know which plugin is "the terminal".
     focused_session: Option<String>,
+    /// The surface the focused pane is showing, of either kind — a session's
+    /// terminal or a program a plugin owns.
+    ///
+    /// Distinct from `focused_session` because the two answer different questions:
+    /// that one is "which session am I looking at", which a program pane has no
+    /// answer to, and this one is "where do unclaimed keys go".
+    focused_surface: Option<String>,
     /// The session the list had selected last frame, so moving off one can
     /// acknowledge the finished turn it was showing.
     last_selected_session: Option<String>,
@@ -986,6 +994,16 @@ impl App {
                             // shell and orphans the window it left running.
                             self.remember_shell(&session);
                         }
+                        continue;
+                    }
+                    thurbox::kernel::command::Command::Program {
+                        owner,
+                        name,
+                        program,
+                        argv,
+                        close,
+                    } => {
+                        self.apply_program(owner, name, program, argv, *close);
                         continue;
                     }
                     // The editor wants a controlling tty, which only this
@@ -1518,6 +1536,7 @@ impl App {
     fn draw(&mut self, frame: &mut Frame) {
         self.errors.clear();
         self.focused_session = None;
+        self.focused_surface = None;
         self.changed_this_frame = false;
         self.click_targets.clear();
         self.band_targets.clear();
@@ -1874,7 +1893,14 @@ impl App {
                     return;
                 }
                 if focused {
+                    // The session, for everything that is about sessions — the
+                    // focus label, the info the bands show, `Ctrl+O`.
                     self.focused_session = node.first_session_surface().map(str::to_string);
+                    // And whatever this pane is actually showing, which is where
+                    // raw input goes. `input = "session"` never meant "the
+                    // selected session"; it meant "what this pane is showing", and
+                    // a plugin's own program is now one of the things that can be.
+                    self.focused_surface = node.first_live_surface().map(str::to_string);
                 }
 
                 // Decoration: another plugin may restyle this tree. A decorator
@@ -2117,12 +2143,24 @@ impl App {
         // declared `input = "session"` and which session the tree it returned
         // pointed at. Replace that plugin and this still works.
         if self.focused_wants_session_input() {
-            if let Some(session) = self.focused_session.clone() {
+            if let Some(surface) = self.focused_surface.clone() {
                 if let Some(bytes) = key_to_bytes(key.code, key.modifiers) {
                     // Whether it lands is the terminal's business; either way
                     // the key belongs to the pane that asked for raw input and
                     // is not offered to anything else.
-                    self.terminals.send(&session, bytes);
+                    //
+                    // Routed by what the pane is SHOWING. A program pane's keys go
+                    // to that program and to nothing else — and a pane with nothing
+                    // behind it swallows nothing, since neither send finds a
+                    // target.
+                    match self.terminals.program_key(&surface).cloned() {
+                        Some(key) => {
+                            self.terminals.send_to_program(&key, bytes);
+                        }
+                        None => {
+                            self.terminals.send(&surface, bytes);
+                        }
+                    }
                 }
             }
         }
@@ -2433,14 +2471,19 @@ impl App {
         // A plugin that was edited away, renamed, removed or turned off must not
         // leave its answers behind to accumulate across reloads — and must not be
         // able to read them again if a file of that name comes back.
-        self.runs.retain_plugins(
-            &self
-                .host
-                .plugins
-                .iter()
-                .map(|plugin| plugin.path.clone())
-                .collect::<Vec<_>>(),
-        );
+        let live: Vec<String> = self
+            .host
+            .plugins
+            .iter()
+            .map(|plugin| plugin.path.clone())
+            .collect();
+        self.runs.retain_plugins(&live);
+        // The same rule for a program it was holding, and here it matters more: an
+        // answer left behind is a few bytes, a program left behind is a process
+        // nothing on screen can ever reach again. A plugin that is still loaded
+        // keeps its pane — a reload is an edit to a file, and losing your game to
+        // one would make reloading unusable.
+        self.terminals.retain_program_plugins(&live);
         if self.host.error.is_none() {
             if self.floor.take().is_some() {
                 self.toast(format!("{} loaded again", self.ui_dir.display()));
@@ -2652,6 +2695,69 @@ impl App {
     /// Derived from the *stored* absolute paths rather than from the loaded
     /// plugins, because a disabled one is not loaded — it would not be in the
     /// list to filter. Relative, because that is what `build` compares against.
+    /// Start or close a plugin's program pane.
+    ///
+    /// The gate is here rather than in the queue: a command is honoured after the
+    /// call that made it, so the check is "may the plugin that asked, right now" —
+    /// which is also what makes revoking trust take effect on the next frame
+    /// rather than at the next reload.
+    ///
+    /// A refusal is **reported to the plugin's own error channel** rather than
+    /// silently dropped, because a pane that cannot start needs to be able to say
+    /// why: an empty box that never explains itself is the failure mode the
+    /// capability model is otherwise prone to.
+    fn apply_program(
+        &mut self,
+        owner: &str,
+        name: &str,
+        program: &str,
+        argv: &[String],
+        close: bool,
+    ) {
+        let key = thurbox::kernel::terminal::ProgramKey::new(owner, name);
+        if close {
+            if self.terminals.release_program(&key) {
+                self.changed_this_frame = true;
+            }
+            return;
+        }
+        // Absent rather than refusing, as `run` is: a plugin that did not declare
+        // the capability, or that the user has not trusted, simply cannot start
+        // anything. Reported so an untrusted pane can say so instead of looking
+        // broken.
+        if !self
+            .host
+            .may_path(owner, thurbox::kernel::host::Capability::Program)
+        {
+            self.report(
+                format!("{owner} may not run a program — trust it in settings → Interface"),
+                Level::Error,
+            );
+            return;
+        }
+
+        // Born at the rect it will be painted into where the last frame recorded
+        // one; `open_shell` documents why the render-time resize cannot correct a
+        // bad birth size once the size memo looks settled.
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let rect = self.terminals.last_rect(&key.surface_id());
+        let (rows, cols) = match rect {
+            Some(rect) if rect.width > 0 && rect.height > 0 => (rect.height, rect.width),
+            _ => (rows, cols),
+        };
+        // The interface directory: the one directory a plugin-owned pane can be
+        // said to belong to, since it has no session and therefore no worktree.
+        let cwd = self.ui_dir.clone();
+        if let Err(e) = self
+            .terminals
+            .start_program(&key, program, argv, Some(&cwd), rows, cols)
+        {
+            self.report(e, Level::Error);
+            return;
+        }
+        self.changed_this_frame = true;
+    }
+
     fn publish_disabled(&self) {
         let disabled: Vec<String> = self
             .registry

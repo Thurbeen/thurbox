@@ -124,6 +124,31 @@ pub(crate) fn shell_window_name(session_name: &str) -> String {
     )
 }
 
+/// Prefix for a pane a *plugin* asked for, holding a program it named.
+///
+/// A third prefix rather than reusing `tbs-`: window discovery adopts panes by
+/// prefix, and a plugin's pane must never be picked up as a session's anything.
+pub(crate) const PROGRAM_WINDOW_PREFIX: &str = "tbp-";
+
+/// Build the tmux window name for a plugin-owned program pane.
+///
+/// `owner` is a short **digest** of the owning plugin's path, computed by the
+/// caller, not the path itself. Two reasons, and the first is a correctness one:
+/// [`sanitize_window_name`] maps every character outside `[A-Za-z0-9_-]` to `_`,
+/// so `plugins/90_doom.lua` and `plugins.90.doom.lua` would sanitize to the same
+/// window and two plugins would share one program. The second is that a path is
+/// long enough to make the window list unreadable.
+///
+/// Deterministic, which is the whole mechanism for finding the window again after
+/// a restart — there is no stored pane id to go stale.
+pub(crate) fn program_window_name(owner: &str, pane: &str) -> String {
+    format!(
+        "{PROGRAM_WINDOW_PREFIX}{}-{}",
+        sanitize_window_name(owner),
+        sanitize_window_name(pane)
+    )
+}
+
 /// Build the `session:=window` tmux target for a thurbox agent session.
 ///
 /// The `=` prefix forces tmux to match the window name exactly. Without
@@ -1483,6 +1508,30 @@ impl SessionBackend for TmuxBackend {
         self.capture_history_seed(backend_id)
     }
 
+    fn find_window(&self, window_name: &str) -> Result<Option<String>> {
+        // The same listing `discover` reads, without its `tb-` filter and matched
+        // exactly rather than by prefix — tmux's own name matching is FNMATCH-ish,
+        // which would make `tbp-x-doom` findable by `tbp-x-doo`.
+        let listing = self.tmux_output(&[
+            "list-windows",
+            "-t",
+            &self.session,
+            "-F",
+            "#{pane_id}|#{window_name}|#{pane_dead}",
+        ])?;
+        for line in listing.lines() {
+            let parts: Vec<&str> = line.splitn(3, '|').collect();
+            if parts.len() < 3 || parts[1] != window_name {
+                continue;
+            }
+            if parse_pane_dead(parts[2]) || !control_mode::is_valid_pane_id(parts[0]) {
+                continue;
+            }
+            return Ok(Some(parts[0].to_string()));
+        }
+        Ok(None)
+    }
+
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
         if !self.session_exists() {
             return Ok(Vec::new());
@@ -2548,6 +2597,66 @@ mod tests {
     fn agent_and_shell_window_names_share_sanitization() {
         assert_eq!(agent_window_name("Foo Bar"), "tb-Foo_Bar");
         assert_eq!(shell_window_name("Foo Bar"), "tbs-Foo_Bar");
+    }
+
+    /// A plugin's pane gets a prefix of its own, and its name is deterministic —
+    /// which is the entire mechanism for finding the window again after a restart.
+    #[test]
+    fn a_program_window_is_named_deterministically_and_apart_from_sessions() {
+        let once = program_window_name("abcd1234", "doom");
+        assert_eq!(once, "tbp-abcd1234-doom");
+        assert_eq!(
+            once,
+            program_window_name("abcd1234", "doom"),
+            "deterministic"
+        );
+
+        // Distinct prefix, so window discovery cannot adopt one as a session's
+        // agent (`tb-`) or its companion shell (`tbs-`).
+        assert!(once.starts_with(PROGRAM_WINDOW_PREFIX));
+        assert!(!once.starts_with(&format!("{WINDOW_PREFIX}a")));
+        assert!(!once.starts_with(SHELL_WINDOW_PREFIX));
+    }
+
+    /// A program window is invisible to session discovery — which is both a
+    /// safety property and the reason `find_window` exists.
+    ///
+    /// `discover` filters on `tb-`, so `tbp-` can never be adopted as a session's
+    /// agent pane. The same filter is why re-finding a program pane needs its own
+    /// lookup, and why the companion shell persists a pane id instead (`tbs-`
+    /// fails the filter too — the comment there claiming otherwise is wrong).
+    #[test]
+    fn discovery_cannot_see_a_program_window() {
+        let program = program_window_name("abcd1234", "doom");
+        assert!(
+            !program.starts_with(WINDOW_PREFIX),
+            "{program} must fail discovery's filter"
+        );
+        // And the shell's, for the same reason — pinned so the asymmetry is not
+        // mistaken for an oversight later.
+        assert!(!shell_window_name("s").starts_with(WINDOW_PREFIX));
+        // While an agent window of course passes it.
+        assert!(agent_window_name("s").starts_with(WINDOW_PREFIX));
+    }
+
+    /// Why the owner is a **digest** rather than the plugin's path.
+    ///
+    /// `sanitize_window_name` maps every character outside `[A-Za-z0-9_-]` to
+    /// `_`, so two different paths sanitize to one window — and two plugins would
+    /// then share a single program. The digest is computed by the caller for
+    /// exactly this reason; this pins the hazard that makes it necessary.
+    #[test]
+    fn sanitizing_a_path_would_collide_which_is_why_the_owner_is_digested() {
+        assert_eq!(
+            sanitize_window_name("plugins/90_doom.lua"),
+            sanitize_window_name("plugins.90.doom.lua"),
+            "two distinct paths, one window name — the collision a digest avoids"
+        );
+        // Digested owners of different paths do not collide.
+        assert_ne!(
+            program_window_name("aaaa1111", "doom"),
+            program_window_name("bbbb2222", "doom")
+        );
     }
 
     #[test]
