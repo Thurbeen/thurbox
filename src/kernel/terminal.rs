@@ -748,6 +748,7 @@ impl Terminals {
     ///
     /// Returns false when the session is not attached, so the caller can leave
     /// the key for something else rather than swallowing it silently.
+    #[must_use = "the caller decides whether the keystroke was consumed from this"]
     pub fn send(&self, session: &str, bytes: Vec<u8>) -> bool {
         // A shell surface is addressed `<id>#shell`, the same spelling
         // `render_session` resolves — so the view you are looking at is the pane
@@ -1030,6 +1031,7 @@ impl Terminals {
     }
 
     /// Send bytes to a plugin's program.
+    #[must_use = "the caller decides whether the keystroke was consumed from this"]
     pub fn send_to_program(&self, key: &ProgramKey, bytes: Vec<u8>) -> bool {
         let Some(slot) = self.programs.get(key) else {
             return false;
