@@ -2,8 +2,9 @@
 #
 # Black-box smoke test for the thurbox TUI: launch the *real* `thurbox` binary
 # inside a throwaway tmux pane, drive it with keystrokes, and assert on the
-# frames it actually paints — the one thing the in-process acceptance tests
-# (src/app/acceptance.rs) can't cover, since they never touch a terminal.
+# frames it actually paints — the one thing the in-process tests can't cover,
+# since they never touch a terminal. (It used to say "unlike
+# src/app/acceptance.rs"; that harness went with v1's `src/app`.)
 #
 # Everything is isolated from your real environment, mirroring scripts/demo/
 # record.sh: a temp HOME + XDG dirs, and a private TMUX_TMPDIR so both the outer
@@ -78,6 +79,22 @@ wait_for() {
   die "timed out waiting for: $needle"
 }
 
+# The inverse: poll until $1 is GONE. Needed after an Escape, and not merely for
+# tidiness — `send` is fire-and-forget, so an Escape immediately followed by
+# another chord reaches the terminal as one burst, and `ESC` + a byte is exactly
+# what an ESC-prefixed (alt+key) sequence looks like. Sending the next key without
+# waiting for the overlay to actually close swallowed it, and the failure then
+# surfaced one assertion later as "the picker never opened".
+wait_gone() {
+  local needle="$1" tries="${2:-50}"
+  for _ in $(seq 1 "$tries"); do
+    if ! capture | grep -qF "$needle"; then return 0; fi
+    sleep 0.1
+  done
+  printf '\n--- final frame ---\n%s\n-------------------\n' "$(capture)" >&2
+  die "timed out waiting for this to disappear: $needle"
+}
+
 send() { tmux -L "$SOCKET" send-keys -t "$SESSION" "$@"; }
 
 # --- assertions --------------------------------------------------------------
@@ -88,16 +105,37 @@ wait_for "No sessions yet"
 ok "empty-state hint is shown"
 
 # 2. F1 opens the keybindings help overlay.
+#
+# Asserted on the overlay's own chrome — its title and its footer — because those
+# are pinned wherever the list is scrolled. The needle used to be `Quit`, which
+# broke: the reserved chords render after every plugin group, so as panes declared
+# more keys `Quit` slid below the fold and a passing overlay read as a timeout.
+# Any needle that depends on scroll position will do that again.
 send F1
-wait_for "Quit"
+wait_for "Keybindings"
+wait_for "rebind"
 ok "F1 opened the help overlay"
+# And it rendered the registry, not just a frame: one real binding row.
+wait_for "next session"
+ok "the help overlay lists declared bindings"
 send Escape
+wait_gone "Keybindings"
+ok "Escape closed it"
 
 # 3. Ctrl+Y opens the theme picker, listing built-in palettes.
+#
+# `/ filter themes` rather than the picker's title: the footer band already says
+# `Theme · F4`, so the title alone would match with no picker open at all.
 send C-y
-wait_for "Catppuccin Mocha"
+wait_for "/ filter themes"
 ok "Ctrl+Y opened the theme picker"
+# Grouped and populated. `Dark` is the group header, which does not move when the
+# presets are reordered — unlike any single palette name in a 36-entry list.
+wait_for "Dark"
+ok "the picker groups and lists the built-in palettes"
 send Escape
+wait_gone "filter themes"
+ok "Escape closed it"
 
 # 4. Ctrl+Q exits cleanly (the tmux session ends when thurbox returns).
 send C-q

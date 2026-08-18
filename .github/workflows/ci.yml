@@ -225,20 +225,12 @@ jobs:
       - name: Black-box TUI smoke test
         run: scripts/dev/smoke/tui-smoke.sh
 
-  acceptance:
-    name: Acceptance Tests
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
-        with:
-          tool: cargo-nextest
-      - name: Run TUI acceptance (e2e) tests
-        run: cargo nextest run --profile ci -E 'test(app::acceptance::)'
+  # No `acceptance` job. It ran `-E 'test(app::acceptance::)'`, which was v1's
+  # in-process TEA harness under `src/app` — deleted when the kernel took the
+  # binary name. The filter then matched nothing, nextest exited non-zero on "no
+  # tests run", and the job was red on every push while asserting nothing. Its
+  # successors are `tests/v2_*.rs`, which the `nextest` job already runs via
+  # `--all`, so re-pointing it would only duplicate that.
 
   deny:
     name: Cargo Deny
@@ -472,7 +464,6 @@ jobs:
       - fmt
       - clippy
       - nextest
-      - acceptance
       - architecture
       - windows-clippy
       - windows-test
