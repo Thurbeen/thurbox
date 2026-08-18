@@ -138,6 +138,7 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 | `require` | `lib/` modules only |
 | `run(key, cmd, opts)` | run a program and read its output — **only if trusted**, see below |
 | `files` | bounded reads the kernel performs for you |
+| `thurbox.platform` | `os` and `arch`, so a plugin shipping several builds can pick one |
 
 `thurbox.granted` tells you which capabilities *this* file has been granted
 (`granted.run`, `granted.program`). It exists because not every capability can be

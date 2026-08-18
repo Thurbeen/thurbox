@@ -511,3 +511,223 @@ fn removing_works_without_the_source_and_refuses_an_unknown_name() {
     let checked = run(Action::Check).expect("check");
     assert!(checked.failure.is_none(), "{:?}", checked.json);
 }
+
+// ── a plugin that carries more than Lua ────────────────────────────────────
+
+/// Build a throwaway plugin **repository**: a pane in a nested directory, a module
+/// beside it, and a payload no text path could carry.
+fn plugin_repo(root: &Path, marker: &str) -> PathBuf {
+    let repo = root.join("thurbox-widget");
+    std::fs::create_dir_all(repo.join("plugins")).expect("mkdir");
+    std::fs::create_dir_all(repo.join("lib")).expect("mkdir");
+    std::fs::create_dir_all(repo.join("bin")).expect("mkdir");
+
+    // The pane requires a module by the repo-relative path `require` already
+    // resolves, and reads the platform to find its own payload.
+    std::fs::write(
+        repo.join("plugins/40_widget.lua"),
+        "local util = require(\"thurbox-widget.lib.util\")\n\
+         return {\n\
+           name = \"widget\",\n\
+           slot = \"widget\",\n\
+           render = function(ctx)\n\
+             local p = (thurbox and thurbox.platform) or {}\n\
+             return { type = \"text\", text = util.label() .. \" \" .. tostring(p.os) }\n\
+           end,\n\
+         }\n",
+    )
+    .expect("pane");
+    std::fs::write(
+        repo.join("lib/util.lua"),
+        format!("local u = {{}}\nfunction u.label() return \"{marker}\" end\nreturn u\n"),
+    )
+    .expect("module");
+    // Bytes that are not valid UTF-8: the exact thing the text fetch path corrupts.
+    std::fs::write(repo.join("bin/payload.bin"), [0x00u8, 0xff, 0xfe, 0x01]).expect("payload");
+
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            // The pre-commit hook exports these; without scrubbing them a test's git
+            // call lands in the real repository.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "--initial-branch=main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "T"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "seed"]);
+    repo
+}
+
+/// The whole point: a repository install delivers Lua in the author's layout AND
+/// bytes beside it, and the pane loads.
+#[test]
+fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "widget");
+
+    // A local path that ends in `.git`? No — the form has to be explicit, so the
+    // `git+` prefix is what says "clone this".
+    let report = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: None,
+    })
+    .expect("install runs");
+    assert!(report.failure.is_none(), "{:?}", report.json);
+
+    // Delivered in the layout the author chose, payload included.
+    assert!(ui.join("thurbox-widget/plugins/40_widget.lua").is_file());
+    assert!(ui.join("thurbox-widget/lib/util.lua").is_file());
+    assert_eq!(
+        std::fs::read(ui.join("thurbox-widget/bin/payload.bin")).expect("read"),
+        [0x00u8, 0xff, 0xfe, 0x01],
+        "the bytes survive — this is what the text fetch path cannot do"
+    );
+    assert!(
+        ui.join("thurbox-widget/.git").exists(),
+        "the clone keeps its .git, which is what makes update a fetch"
+    );
+
+    // The lock records the COMMIT, not the ref: `main` moves, a commit does not.
+    let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
+    let entry = lock
+        .entry("thurbox-widget/plugins/40_widget.lua")
+        .expect("recorded");
+    assert_eq!(
+        entry.version.len(),
+        40,
+        "a full commit id: {}",
+        entry.version
+    );
+
+    // And the pane LOADS, from outside `plugins/`, requiring its own module.
+    let checked = run(Action::Check).expect("check runs");
+    assert!(
+        checked.json["loaded"].to_string().contains("widget"),
+        "{:?}",
+        checked.json
+    );
+
+    // The inventory accounts for it, with the origin its entry names.
+    let listing = run(Action::List).expect("list runs");
+    let row = listing.json["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|row| row["file"] == "thurbox-widget/plugins/40_widget.lua")
+        .cloned()
+        .unwrap_or_else(|| panic!("the pane must be listed: {:?}", listing.json));
+    assert_eq!(row["source"], "installed", "{row}");
+    // The rest of the working copy is deliberately not walked.
+    assert!(
+        !listing.json["files"].to_string().contains("payload.bin"),
+        "a repository's assets are not interface files"
+    );
+}
+
+/// git owns "your edits are yours" for a working copy, and this is the property
+/// that makes keeping `.git` worth its cost.
+#[test]
+fn an_edit_inside_a_working_copy_survives_sync_and_update() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "widget");
+    run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: None,
+    })
+    .expect("install");
+
+    let pane = ui.join("thurbox-widget/plugins/40_widget.lua");
+    std::fs::write(&pane, "-- mine\nreturn {}\n").expect("edit");
+
+    for action in [
+        Action::Sync,
+        Action::Update {
+            name: Some("40_widget".into()),
+        },
+    ] {
+        let report = run(action).expect("runs");
+        assert!(report.failure.is_none(), "{:?}", report.json);
+        assert_eq!(
+            report.json["entries"][0]["outcome"], "kept",
+            "a dirty working copy is reported as kept: {:?}",
+            report.json
+        );
+        assert_eq!(
+            std::fs::read_to_string(&pane).expect("read"),
+            "-- mine\nreturn {}\n",
+            "and is never moved"
+        );
+    }
+}
+
+#[test]
+fn syncing_a_repository_entry_is_idempotent_and_clones_what_is_missing() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "widget");
+    run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: None,
+    })
+    .expect("install");
+
+    let again = run(Action::Sync).expect("sync");
+    assert_eq!(
+        again.json["entries"][0]["outcome"], "current",
+        "{:?}",
+        again.json
+    );
+    assert_eq!(again.json["changed"], false, "{:?}", again.json);
+
+    // A fresh machine: the spec and lock are there, the working copy is not.
+    std::fs::remove_dir_all(ui.join("thurbox-widget")).expect("remove");
+    let fresh = run(Action::Sync).expect("sync");
+    assert_eq!(
+        fresh.json["entries"][0]["outcome"], "installed",
+        "a spec that cannot be applied on a fresh machine defeats the lock: {:?}",
+        fresh.json
+    );
+    assert!(ui.join("thurbox-widget/bin/payload.bin").is_file());
+}
+
+#[test]
+fn removing_a_repository_takes_the_whole_working_copy() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "widget");
+    run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: None,
+    })
+    .expect("install");
+
+    // Offline: everything removal needs is on disk.
+    std::fs::remove_dir_all(&repo).expect("delete the source");
+    let removed = run(Action::Remove {
+        name: "40_widget".into(),
+    })
+    .expect("remove");
+    assert!(removed.failure.is_none(), "{:?}", removed.json);
+    assert!(
+        !ui.join("thurbox-widget").exists(),
+        "the directory and its .git go together, not just the files the lock named"
+    );
+    assert!(!ui.join("plugins.lock").exists());
+    let checked = run(Action::Check).expect("check");
+    assert!(checked.failure.is_none(), "{:?}", checked.json);
+}

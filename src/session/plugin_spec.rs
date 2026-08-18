@@ -108,6 +108,16 @@ pub fn validate_destination(file: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Is this destination inside an installed plugin's own directory rather than the
+/// interface's shared `plugins/`?
+///
+/// A plugin obtained as a repository keeps the layout its author chose, so its pane
+/// lives at `<name>/…` — which the loader has to be told about, because it otherwise
+/// reads only the top level of `plugins/`.
+pub fn is_nested_pane(file: &str) -> bool {
+    !file.starts_with("plugins/") && !file.starts_with("lib/") && file.contains('/')
+}
+
 /// Whether a source is a bare name rather than a URL or a path.
 ///
 /// Bare names are what resolve against the repository's examples; the

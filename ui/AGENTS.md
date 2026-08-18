@@ -15,8 +15,19 @@ registry. If someone asks you to install one:
 ```bash
 thurbox-cli plugin available          # what installs by bare name
 thurbox-cli plugin install <name>     # or a URL, or a path
+thurbox-cli plugin install git+<url>  # a repository: cloned, payload and all
 thurbox-cli plugin sync               # after editing plugins.toml by hand
 ```
+
+A plugin that carries a program or a data file is a **repository**, and `git+<url>`
+(or a `.git` suffix, or `git@host:path`) clones it into `<interface dir>/<name>/`,
+keeping its `.git`. Say plainly what that does before running it: **it puts that
+repository's files on the user's disk, executables included.** Nothing is executed by
+installing, and a program still needs the `program` capability the user grants — but
+the files are theirs now, so do not install a repository the user did not name.
+
+`thurbox.platform` gives a pane `os` and `arch`, which is how a plugin shipping
+several binaries picks one. The manifest does not do it for you.
 
 **There is no `npm`, `cargo`, `pip` or `go get` in this directory, and nothing to
 run one on.** No `package.json`, no lockfile of that kind, no `node_modules`. The

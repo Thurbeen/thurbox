@@ -372,6 +372,7 @@ pub fn resolve_source(src: &str, pin: Option<&str>) -> Resolved {
     let at = match &source {
         ext::ExtensionSource::Remote(base) => base.clone(),
         ext::ExtensionSource::Local(dir) => dir.display().to_string(),
+        ext::ExtensionSource::Git(url) => url.clone(),
     };
     Resolved {
         source,
@@ -411,6 +412,9 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
         let source = match &resolved.source {
             ext::ExtensionSource::Remote(_) => ext::ExtensionSource::Remote(base),
             ext::ExtensionSource::Local(_) => ext::ExtensionSource::Local(ext::expand_tilde(&base)),
+            // A `.lua` source cannot also be a repository: `git_url` matched first,
+            // so a `git+…/x.lua` never reaches here.
+            ext::ExtensionSource::Git(url) => ext::ExtensionSource::Git(url.clone()),
         };
         let contents = ext::fetch_file(&source, &name)?;
         return Ok(Fetched {
@@ -503,6 +507,156 @@ pub struct EntryReport {
     pub outcome: Outcome,
 }
 
+/// Is this entry's source a repository, and therefore a working copy on disk?
+///
+/// Re-derived from the source rather than stored as a field: the source is what
+/// decided the mechanism at install time, so asking it again cannot disagree with
+/// itself the way a second recorded flag could.
+pub fn is_repository(src: &str) -> bool {
+    crate::agent::extension_config::git_url(src).is_some()
+}
+
+/// The directory name a repository is cloned into: its last path segment, without
+/// `.git`.
+///
+/// Refused rather than sanitised when it is not one safe segment, for the reason
+/// `plugin new` refuses a bad name: a clone landing somewhere other than where it
+/// said is worse than one that stops.
+pub fn repository_name(url: &str) -> Result<String, String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let last = trimmed
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(".git");
+    if last.is_empty() {
+        return Err(format!("could not read a plugin name out of {url}"));
+    }
+    crate::paths::validate_safe_name(last)
+        .map_err(|e| format!("{url} names {last:?}, which is not usable as a directory: {e}"))?;
+    Ok(last.to_string())
+}
+
+/// The pane inside a freshly-cloned working copy.
+///
+/// `as_file` wins. Otherwise the single `.lua` in the repository's `plugins/`
+/// directory is it — which is what a well-formed plugin repository looks like, and
+/// makes "clone it and it works" true without a manifest. Anything else is
+/// ambiguous and says so, listing what it found, because guessing which of several
+/// panes is the entry point would be a silent wrong answer.
+fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Result<String, String> {
+    if let Some(rel) = as_file {
+        let rel = rel.trim_start_matches('/');
+        // Accept either `plugins/40_x.lua` (inside the repo) or the full
+        // `<name>/plugins/40_x.lua`, since both readings are natural.
+        let rel = rel.strip_prefix(&format!("{name}/")).unwrap_or(rel);
+        let file = format!("{name}/{rel}");
+        plugin_spec::validate_destination(&file)?;
+        if !root.join(rel).is_file() {
+            return Err(format!("{rel} is not in the repository"));
+        }
+        return Ok(file);
+    }
+
+    let plugins = root.join("plugins");
+    let mut found: Vec<String> = std::fs::read_dir(&plugins)
+        .map_err(|_| {
+            "the repository has no plugins/ directory, so name its pane: \
+             --as plugins/NN_name.lua"
+                .to_string()
+        })?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".lua"))
+        .collect();
+    found.sort();
+    match found.len() {
+        1 => Ok(format!("{name}/plugins/{}", found[0])),
+        0 => Err("the repository's plugins/ directory holds no Lua".to_string()),
+        _ => Err(format!(
+            "the repository has more than one pane ({}) — name the one to load: \
+             --as plugins/<file>",
+            found.join(", ")
+        )),
+    }
+}
+
+/// Install a plugin by obtaining a working copy of its repository.
+///
+/// Everything the repository holds is delivered, in the layout its author chose.
+/// The lock records the **commit**, not the ref asked for, which is what makes the
+/// same spec reproduce the same bytes after a branch moves.
+fn install_repository(
+    dir: &Path,
+    src: &str,
+    url: &str,
+    as_file: Option<&str>,
+    pin: Option<&str>,
+    spec: &PluginSpec,
+    lock: &mut PluginLock,
+) -> Result<EntryReport, String> {
+    let name = repository_name(url)?;
+    let root = dir.join(&name);
+
+    // Occupied by something this spec does not manage: not ours to replace.
+    if root.exists()
+        && !spec
+            .plugins
+            .iter()
+            .any(|entry| entry.file.starts_with(&format!("{name}/")))
+    {
+        return Err(format!(
+            "{} already exists and is not managed here — move it aside, or remove it first",
+            name
+        ));
+    }
+    if root.exists() {
+        std::fs::remove_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+    }
+
+    crate::git::clone_plugin(url, &root, pin).map_err(|e| format!("{e:#}"))?;
+    let commit = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
+
+    let file = pane_in_working_copy(&root, &name, as_file).map_err(|e| {
+        // A clone whose pane cannot be identified is not an install: take it back so
+        // a second attempt with `--as` starts clean.
+        let _ = std::fs::remove_dir_all(&root);
+        e
+    })?;
+
+    let entry = PluginEntry {
+        src: src.to_string(),
+        file: file.clone(),
+        pin: pin.map(str::to_string),
+    };
+    // Only the pane is digested. The rest of a repository is its own business, and a
+    // per-file record of it would be thousands of rows the manager never consults —
+    // git owns that working copy.
+    let mut files = BTreeMap::new();
+    if let Ok(contents) = std::fs::read_to_string(dir.join(&file)) {
+        files.insert(file.clone(), digest(&contents));
+    }
+    lock.record(LockEntry {
+        src: src.to_string(),
+        file: file.clone(),
+        resolved: url.to_string(),
+        version: commit.clone(),
+        files,
+        removed: Vec::new(),
+    });
+    write_lock(dir, lock)?;
+    add_to_spec(dir, &entry)?;
+
+    Ok(EntryReport {
+        name: entry.name().to_string(),
+        file,
+        src: src.to_string(),
+        version: commit,
+        from: None,
+        outcome: Outcome::Installed,
+    })
+}
+
 /// Install one plugin, recording it in the spec and the lock.
 ///
 /// Refuses before it writes anything: a destination already holding a file the
@@ -518,6 +672,12 @@ pub fn install(
     let mut lock = read_lock(dir)?;
 
     let resolved = resolve_source(src, pin);
+    // A repository is obtained as a working copy; everything else is fetched file by
+    // file. The source's own form chose this (`extension_config::git_url`).
+    if let crate::agent::extension_config::ExtensionSource::Git(url) = &resolved.source {
+        let url = url.clone();
+        return install_repository(dir, src, &url, as_file, pin, &spec, &mut lock);
+    }
     let fetched = fetch(src, &resolved, as_file).map_err(|e| not_found_help(src, e))?;
     let file = fetched
         .payloads
@@ -563,6 +723,96 @@ pub fn install(
     })
 }
 
+/// Converge or advance one repository-backed entry.
+///
+/// git owns the working copy here, and that is the point rather than a shortcut: it
+/// refuses to move a dirty tree, which is the "an edit is yours to keep" rule done
+/// by the tool that owns it. `advance` distinguishes convergence (hold at the
+/// recorded commit) from an update (take what the remote has now).
+fn converge_repository(
+    dir: &Path,
+    entry: &PluginEntry,
+    url: &str,
+    advance: bool,
+    lock: &mut PluginLock,
+) -> Result<(Outcome, String, Option<String>), String> {
+    let name = repository_name(url)?;
+    let root = dir.join(&name);
+    let recorded = lock.entry(&entry.file).map(|e| e.version.clone());
+
+    // Absent: a spec that cannot be applied on a fresh machine defeats the lock, so
+    // convergence clones it.
+    if !crate::git::is_working_copy(&root) {
+        if root.exists() {
+            return Err(format!(
+                "{name} exists but is not a working copy — move it aside"
+            ));
+        }
+        crate::git::clone_plugin(url, &root, entry.pin.as_deref()).map_err(|e| format!("{e:#}"))?;
+        // Reproducing a recorded commit: a shallow clone has only the tip, so the
+        // exact object has to be asked for.
+        if let Some(commit) = recorded.as_deref().filter(|c| !c.is_empty()) {
+            if crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))? != commit {
+                crate::git::fetch_commit(&root, commit).map_err(|e| format!("{e:#}"))?;
+                crate::git::checkout_plugin(&root, commit).map_err(|e| format!("{e:#}"))?;
+            }
+        }
+        let commit = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
+        return Ok((Outcome::Installed, commit, None));
+    }
+
+    let head = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
+
+    // Modified locally: never moved, and reported so rather than completing
+    // silently. Checked before any fetch, so a dirty copy is not even touched.
+    if crate::git::is_dirty(&root).map_err(|e| format!("{e:#}"))? {
+        return Ok((Outcome::Kept, head, None));
+    }
+
+    if !advance {
+        // Convergence holds at the recorded commit rather than following a branch.
+        match recorded.as_deref().filter(|c| !c.is_empty()) {
+            Some(commit) if commit != head => {
+                crate::git::fetch_commit(&root, commit).map_err(|e| format!("{e:#}"))?;
+                crate::git::checkout_plugin(&root, commit).map_err(|e| format!("{e:#}"))?;
+                return Ok((Outcome::Updated, commit.to_string(), Some(head)));
+            }
+            _ => return Ok((Outcome::Current, head, None)),
+        }
+    }
+
+    crate::git::fetch_tip(&root).map_err(|e| format!("{e:#}"))?;
+    let target = entry.pin.as_deref().unwrap_or("FETCH_HEAD");
+    crate::git::checkout_plugin(&root, target).map_err(|e| format!("{e:#}"))?;
+    let moved = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
+    if moved == head {
+        return Ok((Outcome::Current, head, None));
+    }
+    Ok((Outcome::Updated, moved, Some(head)))
+}
+
+/// Record what a repository entry converged to.
+fn record_repository(
+    lock: &mut PluginLock,
+    dir: &Path,
+    entry: &PluginEntry,
+    url: &str,
+    commit: &str,
+) {
+    let mut files = BTreeMap::new();
+    if let Ok(contents) = std::fs::read_to_string(dir.join(&entry.file)) {
+        files.insert(entry.file.clone(), digest(&contents));
+    }
+    lock.record(LockEntry {
+        src: entry.src.clone(),
+        file: entry.file.clone(),
+        resolved: url.to_string(),
+        version: commit.to_string(),
+        files,
+        removed: Vec::new(),
+    });
+}
+
 /// Bring the directory into agreement with the spec.
 ///
 /// Installs what is absent, takes back what the spec no longer lists, and leaves
@@ -599,6 +849,19 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
     }
 
     for entry in &spec.plugins {
+        if let Some(url) = crate::agent::extension_config::git_url(&entry.src) {
+            let (outcome, commit, from) = converge_repository(dir, entry, &url, false, &mut lock)?;
+            record_repository(&mut lock, dir, entry, &url, &commit);
+            reports.push(EntryReport {
+                name: entry.name().to_string(),
+                file: entry.file.clone(),
+                src: entry.src.clone(),
+                version: commit,
+                from,
+                outcome,
+            });
+            continue;
+        }
         let recorded = lock.entry(&entry.file).map(|entry| entry.version.clone());
         let pin = entry.pin.as_deref().or(recorded.as_deref());
         let resolved = resolve_source(&entry.src, pin);
@@ -649,6 +912,19 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
 
     let mut reports = Vec::new();
     for entry in targets {
+        if let Some(url) = crate::agent::extension_config::git_url(&entry.src) {
+            let (outcome, commit, from) = converge_repository(dir, entry, &url, true, &mut lock)?;
+            record_repository(&mut lock, dir, entry, &url, &commit);
+            reports.push(EntryReport {
+                name: entry.name().to_string(),
+                file: entry.file.clone(),
+                src: entry.src.clone(),
+                version: commit,
+                from,
+                outcome,
+            });
+            continue;
+        }
         let was = lock.entry(&entry.file).map(|entry| entry.version.clone());
         // A pin is the user's statement about which version to run; an update
         // resolves at it rather than past it.
@@ -687,6 +963,26 @@ pub fn remove(dir: &Path, key: &str) -> Result<EntryReport, String> {
     let removed = remove_from_spec(dir, key)?;
     let mut lock = read_lock(dir)?;
     let record = lock.forget(&removed.file);
+
+    // A repository is one directory, not a file list: taking back the files the lock
+    // happens to name would leave the working copy and its `.git` behind.
+    if let Some(url) = crate::agent::extension_config::git_url(&removed.src) {
+        let name = repository_name(&url)?;
+        let root = dir.join(&name);
+        if root.exists() {
+            std::fs::remove_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+        }
+        write_lock(dir, &lock)?;
+        return Ok(EntryReport {
+            name: removed.name().to_string(),
+            file: removed.file.clone(),
+            src: removed.src.clone(),
+            version: record.map(|record| record.version).unwrap_or_default(),
+            from: None,
+            outcome: Outcome::Removed,
+        });
+    }
+
     if let Some(record) = &record {
         withdraw(dir, record)?;
     } else {

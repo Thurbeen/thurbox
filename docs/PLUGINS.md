@@ -674,7 +674,75 @@ name resolves to `ui-plugins/<name>` in the thurbox repository at **this binary'
 release tag**, exactly as an extension name resolves to `extensions/<name>` — a
 pane reads `thurbox.*`, which is a contract that moves, so what a bare name fetches
 matches the binary asking for it. Bare names reach the *examples*; anything you
-actually depend on is better named by a URL or a path you control. URLs and filesystem paths work too,
+actually depend on is better named by a URL, a path, or a repository you control.
+
+### A plugin that carries more than Lua
+
+A pane that runs a program needs that program, and a pane with data needs the data.
+Neither can arrive as text: the file-by-file path returns a `String` and decodes
+remote output lossily, so a binary through it is **corrupted rather than refused**.
+
+So a plugin with a payload is a **repository**, and installing it clones it:
+
+```bash
+thurbox-cli plugin install git+https://github.com/you/thurbox-widget
+```
+
+Everything the repository holds arrives, in the layout you chose — Lua in whatever
+directories suit it, a program, a data file. Three forms are recognised as a
+repository, all of them explicit: a `git+` prefix, a `.git` suffix, or
+`git@host:path`. A bare `https://…` URL deliberately does **not** clone, because
+that spelling already means "fetch the manifest's files from this base" and
+reinterpreting it by hostname would change what every existing install does.
+
+The working copy lands at `<interface dir>/<name>/`, and **keeps its `.git`**. That
+is what makes `update` a fetch rather than a re-download, and it is what protects
+your edits: git refuses to move a dirty working tree, so a `sync` over a pane you
+changed reports `kept` and leaves it alone. `git diff` shows what you changed and
+`git checkout` undoes it — better than any restore we could offer for a file we
+never shipped.
+
+The spec entry names the pane inside the working copy:
+
+```toml
+[[plugin]]
+src  = "git+https://github.com/you/thurbox-widget"
+file = "thurbox-widget/plugins/40_widget.lua"
+```
+
+You rarely write that by hand — `install` finds it, taking the single `.lua` in the
+repository's `plugins/` directory, and asks for `--as plugins/<file>` when there is
+more than one. Its place in the load order still comes from the `40_` prefix, so
+where a plugin came from does not change where it sits. Its own modules are
+requirable by path: `require("thurbox-widget.lib.util")`.
+
+The lock records the **commit**, not the branch. `main` moves; a commit does not, so
+the same spec and lock reproduce the same bytes on another machine. That is also why
+there is no checksum field to maintain: the commit already identifies every byte, and
+it is produced by the source rather than transcribed by hand.
+
+**Installing a plugin from a repository puts that repository's files on your disk,
+executable bits included.** That is what cloning anything does. What it does *not*
+do is run any of it: nothing executes at install time, and a program still needs the
+`program` capability you grant per file. Treat a repository you did not write the way
+you would treat one you were about to `make` in.
+
+**Picking the right build.** `thurbox.platform` gives you `os` and `arch`, so a
+plugin shipping several binaries chooses for itself:
+
+```lua
+local p = thurbox.platform
+local exe = thurbox.ui_dir .. "/thurbox-widget/bin/" .. p.os .. "-" .. p.arch .. "/widget"
+```
+
+Deliberately not a manifest field. A substitution template states one rule; a pane
+that reads its platform states every rule it actually needs — prefer something
+already on `PATH`, fall back to a portable build, distinguish a libc variant, or draw
+an honest "nothing here for this machine".
+
+**If you publish one:** shipping a program under a copyleft licence obliges your
+repository to carry that program's corresponding source. That is your obligation, not
+thurbox's, but the mechanism invites it. URLs and filesystem paths work too,
 and a URL ending in `.lua` installs that single file (with `--as` naming where it
 lands).
 

@@ -548,8 +548,34 @@ impl LuaHost {
         // Sorted so `order` ties break by filename, deterministically.
         files.sort();
 
+        // Panes the spec names outside `plugins/`. A plugin obtained as a repository
+        // keeps its author's layout, so its pane sits at `<name>/…` — invisible to
+        // the scan above, which reads only the top level of `plugins/`.
+        //
+        // Its place in the load order is unaffected: `order` comes from the
+        // *basename*'s numeric prefix, so `40_x.lua` sorts as `40_x.lua` wherever it
+        // lives.
+        let nested: Vec<String> = super::packages::read_spec(&self.ui_dir)
+            .map(|spec| {
+                spec.plugins
+                    .into_iter()
+                    .map(|entry| entry.file)
+                    .filter(|file| crate::session::plugin_spec::is_nested_pane(file))
+                    .collect()
+            })
+            // A malformed spec must not cost the whole interface: the panes in
+            // `plugins/` still load, and `plugin check` reports the spec separately.
+            .unwrap_or_default();
+
         let mut plugins = Vec::new();
         let disabled = self.disabled.borrow();
+        for relative in nested {
+            let path = self.ui_dir.join(&relative);
+            if !path.is_file() || disabled.iter().any(|off| off == &relative) {
+                continue;
+            }
+            plugins.push(load_plugin(&lua, &path, &relative)?);
+        }
         for path in files {
             let name = path
                 .file_name()
@@ -1710,6 +1736,23 @@ impl LuaHost {
         table
             .set("ui_dir", to_lua_string(&self.lua, ui_dir)?)
             .map_err(|e| e.to_string())?;
+
+        // The machine this is running on, so a plugin delivering more than one
+        // build can choose between them itself.
+        //
+        // Published rather than expressed in a package manifest, deliberately: a
+        // substitution template states one rule, while a pane that can read this
+        // states every rule it actually needs — prefer a binary already on `PATH`,
+        // fall back to a portable build, distinguish a libc variant, or say politely
+        // that it has nothing for you. The kernel models none of that.
+        let platform = self.lua.create_table().map_err(|e| e.to_string())?;
+        platform
+            .set("os", std::env::consts::OS)
+            .map_err(|e| e.to_string())?;
+        platform
+            .set("arch", std::env::consts::ARCH)
+            .map_err(|e| e.to_string())?;
+        table.set("platform", platform).map_err(|e| e.to_string())?;
 
         // So a plugin can say "open" or "copy" before you press it.
         table

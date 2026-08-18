@@ -270,3 +270,71 @@ fn a_program_pane_is_absent_from_every_session_enumeration() {
     assert!(terminals.visible_text(&key.surface_id()).is_none());
     assert!(terminals.last_rect(&key.surface_id()).is_none());
 }
+
+// ── what machine am I on ───────────────────────────────────────────────────
+
+/// A plugin delivering more than one build has to be able to choose, so the
+/// platform is published rather than expressed in a package manifest.
+///
+/// A substitution template states one rule; a pane that can read this states every
+/// rule it needs — prefer something already on `PATH`, fall back to a portable
+/// build, or say politely that there is nothing for this machine.
+#[test]
+fn a_plugin_can_read_the_platform_it_is_running_on() {
+    let pane = r#"return {
+  name = "probe",
+  slot = "center",
+  render = function()
+    local p = (thurbox and thurbox.platform) or {}
+    return { type = "text", text = "os=" .. tostring(p.os) .. " arch=" .. tostring(p.arch) }
+  end,
+}"#;
+    let (_home, ui) = interface(&[("91_probe.lua", pane)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+
+    let themes = thurbox::kernel::theme::Themes::load(None);
+    let diffs = thurbox::kernel::diff::DiffStore::new();
+    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let snapshot = thurbox::kernel::snapshot::Snapshot::default();
+    let registry = thurbox::kernel::registry::Registry::default();
+    host.publish(&thurbox::kernel::host::Published {
+        snapshot: &snapshot,
+        attach_errors: &Default::default(),
+        inflight: &[],
+        themes: &themes,
+        registry: &registry,
+        diffs: &diffs,
+        links: &Default::default(),
+        content: &Default::default(),
+        meta: &Default::default(),
+        metrics: &Default::default(),
+        status_rows: 0,
+        can_open: true,
+        inventory: &[],
+        ui_dir: &ui.display().to_string(),
+        settings: &Default::default(),
+        repos: &repos,
+        wants: &Default::default(),
+        focus: Some("probe"),
+        hovered: None,
+    })
+    .expect("publish");
+
+    let drawn = format!("{:?}", render(&host, "probe").node);
+    // The values the binary was built for — asserted against the same constants, so
+    // this is "the plugin sees what the kernel knows", not a hardcoded platform.
+    assert!(
+        drawn.contains(&format!("os={}", std::env::consts::OS)),
+        "{drawn}"
+    );
+    assert!(
+        drawn.contains(&format!("arch={}", std::env::consts::ARCH)),
+        "{drawn}"
+    );
+    // And neither is nil, which is what a missing publish would look like.
+    assert!(
+        !drawn.contains("os=nil") && !drawn.contains("arch=nil"),
+        "{drawn}"
+    );
+}

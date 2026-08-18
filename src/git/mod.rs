@@ -38,6 +38,131 @@ pub(crate) fn scrub_git_location_env(cmd: &mut Command) {
     }
 }
 
+// ── working copies for installed interface plugins ─────────────────────────
+//
+// A plugin that carries more than Lua is a repository: `git clone` delivers
+// arbitrary bytes, preserves whatever layout the author chose, identifies exactly
+// what it delivered, and refuses to clobber a dirty working tree. These are the
+// operations `kernel::packages` needs for that, local only — a plugin's pane has no
+// session and therefore no host to run on.
+
+/// Make a git invocation refuse to ask the user anything.
+///
+/// A clone of a private repository can otherwise block forever on an SSH
+/// passphrase or a host-key confirmation, and an install runs from the command
+/// drain — so a prompt is a frozen interface, with no indication why. Two knobs
+/// cover it: `GIT_TERMINAL_PROMPT=0` stops git asking for HTTPS credentials, and
+/// `GIT_SSH_COMMAND` carries the same [`crate::shell::SSH_HARDENING_OPTS`] every
+/// other ssh use here applies. A clone that would have prompted fails with a
+/// message instead.
+fn non_interactive(cmd: &mut Command) {
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    let ssh = std::iter::once("ssh".to_string())
+        .chain(
+            crate::shell::SSH_HARDENING_OPTS
+                .iter()
+                .map(|o| o.to_string()),
+        )
+        .collect::<Vec<_>>()
+        .join(" ");
+    cmd.env("GIT_SSH_COMMAND", ssh);
+}
+
+/// Run a git command that produces no output worth keeping, or fail with stderr.
+fn run_git(mut cmd: Command, what: &str) -> Result<()> {
+    let output = cmd
+        .output()
+        .with_context(|| format!("failed to run {what}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("{what} failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+/// Clone `url` into `dest`, shallow, optionally at `git_ref`.
+///
+/// `--depth 1` because running a pane needs no history and a shallow clone is
+/// dramatically faster; the two properties keeping `.git` is *for* — refusing to
+/// overwrite a dirty tree, and `git diff` against the checkout — need none either.
+/// A specific recorded commit that is not the tip is fetched afterwards by
+/// [`fetch_commit`].
+pub fn clone_plugin(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()> {
+    if dest.exists() {
+        anyhow::bail!("{} already exists", dest.display());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut cmd = git_program();
+    non_interactive(&mut cmd);
+    cmd.arg("clone").arg("--depth").arg("1");
+    if let Some(git_ref) = git_ref {
+        cmd.arg("--branch").arg(git_ref);
+    }
+    cmd.arg(url).arg(dest);
+    run_git(cmd, "git clone")
+}
+
+/// Fetch one commit by id into an existing shallow working copy.
+///
+/// What makes a recorded commit reproducible: a shallow clone has only the tip, so
+/// reproducing a spec elsewhere has to ask for the exact object the lock names.
+pub fn fetch_commit(repo: &Path, commit: &str) -> Result<()> {
+    let mut cmd = git_command(None, repo, &["fetch", "--depth", "1", "origin", commit]);
+    non_interactive(&mut cmd);
+    run_git(cmd, "git fetch")
+}
+
+/// Fetch whatever the remote's default branch now points at.
+pub fn fetch_tip(repo: &Path) -> Result<()> {
+    let mut cmd = git_command(None, repo, &["fetch", "--depth", "1", "origin"]);
+    non_interactive(&mut cmd);
+    run_git(cmd, "git fetch")
+}
+
+/// Check out a revision in a working copy.
+pub fn checkout_plugin(repo: &Path, rev: &str) -> Result<()> {
+    let cmd = git_command(None, repo, &["checkout", "--detach", rev]);
+    run_git(cmd, "git checkout")
+}
+
+/// The commit a working copy is on.
+///
+/// Recorded in the lock instead of the ref that was asked for: `main` moves, and a
+/// spec that reproduces "whatever main is now" reproduces nothing.
+pub fn head_commit(repo: &Path) -> Result<String> {
+    let output = git_command(None, repo, &["rev-parse", "HEAD"])
+        .output()
+        .context("failed to run git rev-parse")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git rev-parse failed: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Does this working copy have uncommitted changes?
+///
+/// The question that makes "your edits are yours" git's job rather than the
+/// delivery matrix's: a dirty copy is never moved, and the caller reports it as
+/// kept.
+pub fn is_dirty(repo: &Path) -> Result<bool> {
+    let output = git_command(None, repo, &["status", "--porcelain"])
+        .output()
+        .context("failed to run git status")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git status failed: {}", stderr.trim());
+    }
+    Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
+/// Whether `dir` is the root of a working copy.
+pub fn is_working_copy(dir: &Path) -> bool {
+    dir.join(".git").exists()
+}
+
 /// A `git` [`Command`] with the ambient repo-location environment scrubbed (see
 /// [`scrub_git_location_env`]). Every git invocation — production and tests —
 /// must start from this rather than a bare `Command::new("git")`, so it always
@@ -1559,6 +1684,113 @@ mod tests {
         for var in GIT_LOCATION_ENV {
             assert!(removed.contains(var), "git_program must scrub {var}");
         }
+    }
+
+    /// A throwaway repository with one commit, to clone from.
+    fn seed_repo(dir: &Path, file: &str, contents: &str) -> String {
+        std::fs::create_dir_all(dir.parent().unwrap_or(dir)).ok();
+        run_git(
+            {
+                let mut c = git_program();
+                c.arg("init").arg("--initial-branch=main").arg(dir);
+                c
+            },
+            "git init",
+        )
+        .expect("init");
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&path, contents).expect("write");
+        for args in [
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "T"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["add", "-A"],
+            vec!["commit", "-m", "seed"],
+        ] {
+            run_git(git_command(None, dir, &args), "git").expect("seed");
+        }
+        head_commit(dir).expect("head")
+    }
+
+    /// A clone delivers whatever the repository holds — including bytes no text
+    /// path could carry — and reports the commit, not the ref.
+    #[test]
+    fn cloning_a_plugin_delivers_its_files_and_reports_the_commit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let origin = tmp.path().join("origin");
+        // A pane in a nested directory, and a non-UTF-8 payload beside it: the exact
+        // pair the text fetch path corrupts.
+        let commit = seed_repo(&origin, "plugins/40_x.lua", "return {}\n");
+        std::fs::write(origin.join("payload.bin"), [0x00u8, 0xff, 0xfe, 0x01]).expect("write");
+        for args in [vec!["add", "-A"], vec!["commit", "-m", "payload"]] {
+            run_git(git_command(None, &origin, &args), "git").expect("commit");
+        }
+        let commit = {
+            let _ = commit;
+            head_commit(&origin).expect("head")
+        };
+
+        let dest = tmp.path().join("ui").join("x");
+        clone_plugin(&origin.to_string_lossy(), &dest, None).expect("clone");
+
+        assert_eq!(
+            std::fs::read(dest.join("payload.bin")).expect("read"),
+            [0x00u8, 0xff, 0xfe, 0x01],
+            "the bytes survive, which is the whole point of a clone"
+        );
+        assert!(dest.join("plugins/40_x.lua").is_file());
+        assert!(is_working_copy(&dest), "the clone keeps its .git");
+        assert_eq!(head_commit(&dest).expect("head"), commit);
+        assert!(!is_dirty(&dest).expect("status"));
+    }
+
+    #[test]
+    fn cloning_over_something_that_exists_is_refused() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dest = tmp.path().join("taken");
+        std::fs::create_dir_all(&dest).expect("mkdir");
+        std::fs::write(dest.join("mine.lua"), "return {}").expect("write");
+        let error =
+            clone_plugin("https://example.com/x.git", &dest, None).expect_err("should refuse");
+        assert!(error.to_string().contains("already exists"), "{error}");
+        assert!(dest.join("mine.lua").is_file(), "and leaves it alone");
+    }
+
+    /// The property that makes git the right owner of "your edits are yours".
+    #[test]
+    fn an_edited_working_copy_reports_itself_dirty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let origin = tmp.path().join("origin");
+        seed_repo(&origin, "plugins/40_x.lua", "return {}\n");
+        let dest = tmp.path().join("clone");
+        clone_plugin(&origin.to_string_lossy(), &dest, None).expect("clone");
+
+        assert!(!is_dirty(&dest).expect("clean"));
+        std::fs::write(dest.join("plugins/40_x.lua"), "-- mine\n").expect("edit");
+        assert!(
+            is_dirty(&dest).expect("dirty"),
+            "an edit has to be visible, or nothing can refuse to overwrite it"
+        );
+    }
+
+    /// A clone must never be able to sit waiting for a passphrase: an install runs
+    /// from the command drain, so a prompt is a frozen interface.
+    #[test]
+    fn git_operations_refuse_to_prompt() {
+        let mut cmd = git_program();
+        non_interactive(&mut cmd);
+        let envs: std::collections::HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+            .collect();
+        assert_eq!(
+            envs.get("GIT_TERMINAL_PROMPT").map(String::as_str),
+            Some("0")
+        );
+        let ssh = envs.get("GIT_SSH_COMMAND").expect("GIT_SSH_COMMAND");
+        assert!(ssh.contains("BatchMode=yes"), "{ssh}");
+        assert!(ssh.contains("ConnectTimeout"), "{ssh}");
     }
 
     #[test]

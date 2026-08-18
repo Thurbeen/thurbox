@@ -1713,6 +1713,24 @@ disk, intact, not loaded — implemented by `build` not reading the file, so a d
 plugin declares no keys, occupies no slot and is granted no capability. A broken one
 can be switched off to get a working interface back.
 
+**A plugin that carries more than Lua is a repository** (`ExtensionSource::Git`,
+`git::clone_plugin`). The fetch path returns a `String` and decodes remote output
+lossily, so a binary through it is *corrupted rather than refused* — which is why
+payload arrives only by clone and that path stays Lua-only. Recognition is
+**explicit**: `git+<url>`, a `.git` suffix, or `git@host:path`; a bare `https://` URL
+keeps meaning "fetch the manifest's files from this base". The working copy lands at
+`<ui_dir>/<name>/` and **keeps its `.git`**, so `update` is a fetch and git owns "your
+edits are yours" (a dirty tree is never moved and reports `kept`). The lock records
+the **commit**, not the ref, which is what makes a spec reproducible and why there is
+no checksum field. Two consequences elsewhere: `build` loads panes the spec names
+outside `plugins/` (`is_nested_pane`; the load order still comes from the basename's
+numeric prefix) and `sources()` inventories those panes but deliberately does **not**
+walk the rest of a working copy. `.git` is watcher noise (`watch::is_noise`) — a fix
+in its own right, since it already affected anyone versioning their own panes, and the
+symptom is not "reloads too often" but "stops reloading while git is busy".
+`thurbox.platform` is published so a plugin shipping several binaries picks one
+itself; platform selection is deliberately not a manifest field.
+
 **Panes are installable** (`kernel::packages`, `session::plugin_spec`). `plugins.toml`
 in the interface directory lists a `src` (a bare name resolving to `ui-plugins/<name>`
 at the binary's release tag, a URL, or a path — `extension_config::resolve_source_in`,

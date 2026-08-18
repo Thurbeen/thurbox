@@ -66,15 +66,31 @@ fn is_noise(event: &Event) -> bool {
     if event.paths.is_empty() {
         return false;
     }
-    event.paths.iter().all(
-        |path| match path.file_name().and_then(|name| name.to_str()) {
+    event.paths.iter().all(|path| {
+        // Version-control bookkeeping is not an interface edit. The directory is
+        // watched RECURSIVELY, so without this every `git` operation anywhere under
+        // it — an index lock, a ref update, a pack — looks like an edit.
+        //
+        // This is not only for installed plugins that arrive as a clone: putting
+        // your own interface under version control is a reasonable thing to do, and
+        // it currently makes your own commits fight the reload. And the symptom is
+        // the surprising one this function's other carve-out documents — a burst of
+        // events keeps the debounce window rolling forward, so the reload does not
+        // fire *more*, it stops firing at all while git is busy.
+        if path
+            .components()
+            .any(|part| part.as_os_str() == std::ffi::OsStr::new(".git"))
+        {
+            return true;
+        }
+        match path.file_name().and_then(|name| name.to_str()) {
             // Editor scratch files: emacs' `.#name`, backups, gio's temp names.
             Some(name) => {
                 name.ends_with('~') || name.starts_with(".#") || name.starts_with(".goutputstream")
             }
             None => false,
-        },
-    )
+        }
+    })
 }
 
 #[cfg(test)]
@@ -100,6 +116,44 @@ mod tests {
     fn editor_scratch_files_are_noise() {
         assert!(is_noise(&event(&["/ui/plugins/session_list.lua~"])));
         assert!(is_noise(&event(&["/ui/plugins/.#session_list.lua"])));
+    }
+
+    /// Version-control bookkeeping is not an interface edit.
+    ///
+    /// The directory is watched recursively, so every `git` operation under it would
+    /// otherwise read as an edit. Two callers depend on this: a plugin installed as
+    /// a clone, and a user who versions their own panes — and the second is why this
+    /// is a fix rather than a concession.
+    #[test]
+    fn version_control_bookkeeping_is_noise() {
+        for path in [
+            "/ui/.git/index.lock",
+            "/ui/.git/refs/heads/main",
+            "/ui/.git/objects/pack/pack-abc.pack",
+            // A clone belonging to an installed plugin, nested deeper.
+            "/ui/doom/.git/FETCH_HEAD",
+        ] {
+            assert!(is_noise(&event(&[path])), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_file_merely_named_like_git_is_not_noise() {
+        // The test is a path COMPONENT, not a substring: a pane may legitimately be
+        // called `.gitignore.lua`, and a directory `mygit/` is not `.git/`.
+        assert!(!is_noise(&event(&["/ui/plugins/.gitignore.lua"])));
+        assert!(!is_noise(&event(&["/ui/mygit/plugins/a.lua"])));
+        assert!(!is_noise(&event(&["/ui/lib/.gitkeep.lua"])));
+    }
+
+    #[test]
+    fn a_real_edit_beside_git_churn_still_wakes_it() {
+        // `all` over the batch: a commit that also touched a plugin must not be
+        // swallowed because most of its paths were bookkeeping.
+        assert!(!is_noise(&event(&[
+            "/ui/.git/index",
+            "/ui/plugins/session_list.lua",
+        ])));
     }
 
     #[test]

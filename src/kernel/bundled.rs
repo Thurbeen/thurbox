@@ -408,6 +408,7 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
     // make the inventory unavailable — the inventory is the recovery tool, so it
     // degrades to "I do not know where this came from" rather than refusing.
     let lock = super::packages::read_lock(dir).unwrap_or_default();
+    let spec = super::packages::read_spec(dir).unwrap_or_default();
     let mut out = BTreeMap::new();
 
     let mut classify = |relative: String, path: &Path| {
@@ -461,6 +462,24 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
     }
     for name in lua_files(&dir.join("lib"), LIB_DEPTH) {
         classify(format!("lib/{name}"), &dir.join("lib").join(&name));
+    }
+
+    // Panes the spec names outside `plugins/` — a plugin obtained as a repository
+    // keeps its author's layout. Without this such a pane is LOADED but absent from
+    // the inventory, which is exactly the "a file the tab cannot account for"
+    // problem the tab exists to prevent.
+    //
+    // The rest of a working copy is deliberately NOT walked: a repository can hold
+    // hundreds of files, none of them interface code, and listing them would bury
+    // the panes among one plugin's assets.
+    for entry in &spec.plugins {
+        if !crate::session::plugin_spec::is_nested_pane(&entry.file) {
+            continue;
+        }
+        let path = dir.join(&entry.file);
+        if path.is_file() {
+            classify(entry.file.clone(), &path);
+        }
     }
 
     // The spec, which is part of what the interface is made of and is the one file

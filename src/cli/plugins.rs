@@ -442,6 +442,7 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
     let report = crate::kernel::packages::install(&dir, src, as_file, pin)?;
 
     let hint = placement_hint(&dir, &report.file);
+    let repository = crate::kernel::packages::is_repository(&report.src);
     let mut human = format!(
         "{} {} from {} ({})",
         report.outcome.as_str(),
@@ -449,6 +450,12 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
         report.src,
         report.version
     );
+    if repository {
+        // Said at the moment it happens, not only in the guide. Installing a plugin
+        // from a repository puts that repository's files on your disk — binaries
+        // included — which is what cloning anything does, and is worse left unsaid.
+        human.push_str("\n  a working copy of that repository is now in your interface directory");
+    }
     if let Some(hint) = &hint {
         human.push_str(&format!("\n  {hint}"));
     }
@@ -461,6 +468,7 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
             "src": report.src,
             "version": report.version,
             "outcome": report.outcome.as_str(),
+            "repository": repository,
             "placement_hint": hint,
             "summary": format!("{} {}", report.outcome.as_str(), report.file),
         }),

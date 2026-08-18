@@ -295,6 +295,14 @@ pub enum ExtensionSource {
     Remote(String),
     /// A local directory containing `extension.toml` + payload files.
     Local(PathBuf),
+    /// A version-control repository, obtained as a working copy rather than
+    /// fetched file by file.
+    ///
+    /// The only form that can deliver bytes: [`fetch_file`] returns a `String` and
+    /// decodes remote output lossily, so a binary through it is corrupted rather
+    /// than refused. A clone carries whatever the repository holds, preserves its
+    /// layout, and identifies exactly what it delivered.
+    Git(String),
 }
 
 /// Resolve an install target into a source:
@@ -312,6 +320,18 @@ pub fn resolve_source(target: &str) -> ExtensionSource {
 /// thing they can install. Only where a *bare name* points differs.
 pub fn resolve_source_in(target: &str, folder: &str) -> ExtensionSource {
     let t = target.trim();
+    // A repository, recognised EXPLICITLY and never guessed. Three unambiguous
+    // forms: a `git+` prefix, a `.git` suffix, or the scp-like `git@host:path`.
+    //
+    // A bare `https://github.com/owner/repo` deliberately does NOT clone. That
+    // spelling already means "a base URL to fetch manifest-named files from", and
+    // reinterpreting it by host would change the meaning of every existing install
+    // for one forge while leaving it alone for others. `git+` is the escape hatch
+    // for a repository URL with no `.git` suffix — cargo's spelling, for this
+    // reason.
+    if let Some(url) = git_url(t) {
+        return ExtensionSource::Git(url);
+    }
     if let Some(rest) = t
         .strip_prefix("https://")
         .or_else(|| t.strip_prefix("http://"))
@@ -337,6 +357,30 @@ pub fn resolve_source_in(target: &str, folder: &str) -> ExtensionSource {
     ExtensionSource::Remote(format!("{}/{t}", official_set_base(folder)))
 }
 
+/// The repository URL a target names, or `None` when it does not name one.
+///
+/// The `git+` prefix is stripped: it is thurbox's marker, not part of the URL git
+/// is handed.
+pub fn git_url(target: &str) -> Option<String> {
+    let t = target.trim();
+    if let Some(rest) = t.strip_prefix("git+") {
+        return (!rest.is_empty()).then(|| rest.to_string());
+    }
+    if t.ends_with(".git") {
+        return Some(t.to_string());
+    }
+    // scp-like: `git@host:path`. Required to have both a host and a path, so a bare
+    // `git@host` is not mistaken for one.
+    if let Some(rest) = t.strip_prefix("git@") {
+        if let Some((host, path)) = rest.split_once(':') {
+            if !host.is_empty() && !path.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Expand a leading `~/` (or bare `~`) to the user's home directory. Shared by
 /// the source resolver and the installer so both agree on home expansion.
 /// Delegates to [`crate::paths::expand_tilde`] — the single implementation —
@@ -353,6 +397,12 @@ pub fn fetch_file(source: &ExtensionSource, rel: &str) -> Result<String, String>
             std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))
         }
         ExtensionSource::Remote(base) => http_get(&format!("{base}/{rel}")),
+        // A repository is obtained as a working copy, not read file by file — that
+        // is the whole point of the form. Reaching here means a caller took the
+        // fetch path for a git source, which is a bug at that call site.
+        ExtensionSource::Git(url) => Err(format!(
+            "{url} is a repository: it is cloned, not fetched file by file"
+        )),
     }
 }
 
@@ -841,6 +891,75 @@ mod tests {
         assert_eq!(levenshtein("flow", "flow"), 0);
         assert_eq!(levenshtein("flwo", "flow"), 2);
         assert_eq!(levenshtein("kitten", "sitting"), 3);
+    }
+
+    /// The three repository forms, and — the load-bearing half — that nothing else
+    /// became one.
+    ///
+    /// A bare `https://…` URL silently reinterpreted as a clone would change the
+    /// meaning of every install that works today, which is why recognition is
+    /// explicit rather than guessed from the host.
+    #[test]
+    fn a_repository_source_is_recognised_only_in_its_explicit_forms() {
+        for (target, expected) in [
+            // `git+` prefix, stripped from what git is handed.
+            (
+                "git+https://github.com/Thurbeen/thurbox-doom",
+                "https://github.com/Thurbeen/thurbox-doom",
+            ),
+            // A `.git` suffix speaks for itself.
+            (
+                "https://github.com/Thurbeen/thurbox-doom.git",
+                "https://github.com/Thurbeen/thurbox-doom.git",
+            ),
+            // scp-like.
+            (
+                "git@github.com:Thurbeen/thurbox-doom.git",
+                "git@github.com:Thurbeen/thurbox-doom.git",
+            ),
+        ] {
+            match resolve_source_in(target, "ui-plugins") {
+                ExtensionSource::Git(url) => assert_eq!(url, expected, "{target}"),
+                other => panic!("{target} should be a repository, got {other:?}"),
+            }
+        }
+
+        // And these must keep the meanings they already have.
+        assert!(matches!(
+            resolve_source_in("https://github.com/Thurbeen/thurbox-doom", "ui-plugins"),
+            ExtensionSource::Remote(_)
+        ));
+        assert!(matches!(
+            resolve_source_in("./local/pane", "ui-plugins"),
+            ExtensionSource::Local(_)
+        ));
+        assert!(matches!(
+            resolve_source_in("tasks", "ui-plugins"),
+            ExtensionSource::Remote(_)
+        ));
+    }
+
+    #[test]
+    fn a_near_miss_is_not_a_repository() {
+        // `git@host` with no path, and a bare `git+`, are not sources.
+        assert_eq!(git_url("git@github.com"), None);
+        assert_eq!(git_url("git+"), None);
+        // A directory merely named `.github` is not a `.git` suffix.
+        assert_eq!(git_url("./.github"), None);
+        // A path that happens to contain the word.
+        assert_eq!(git_url("./my-git-panes"), None);
+    }
+
+    /// A repository must never be read through the text fetch path: that is where a
+    /// binary is corrupted rather than refused, so the mistake is made loud.
+    #[test]
+    fn fetching_a_file_from_a_repository_is_refused() {
+        let error = fetch_file(
+            &ExtensionSource::Git("https://example.com/x.git".into()),
+            "plugin.toml",
+        )
+        .expect_err("should refuse");
+        assert!(error.contains("cloned"), "{error}");
     }
 
     #[test]

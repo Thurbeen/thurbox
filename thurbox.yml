@@ -327,6 +327,11 @@ globals:
     property: read-only
   thurbox.metrics:
     property: read-only
+  # The machine this is running on: `platform.os` / `platform.arch`, from the
+  # values the binary was built for. Here so a plugin that delivers more than one
+  # build can pick — which is why platform selection is NOT in a package manifest.
+  thurbox.platform:
+    property: read-only
   thurbox.can_open_links:
     property: read-only
   thurbox.taken_at_ms:

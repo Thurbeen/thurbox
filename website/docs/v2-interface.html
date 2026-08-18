@@ -212,7 +212,19 @@ breadcrumb: 'Interface'
   optional pin &mdash; and
   <code>plugins.lock</code>
   beside it records what each entry resolved to, so the same spec reproduces the same interface on
-  another machine. A bare name resolves to the repository's examples at
+  another machine. A plugin that carries a program or a data file is itself a
+  <strong>repository</strong>
+  &mdash;
+  <code>plugin install git+&lt;url&gt;</code>
+  clones it, payload and all, keeping its
+  <code>.git</code>
+  so updates are a fetch and your edits are protected by git rather than by us. The
+  lock records the commit, so the same spec reproduces the same bytes. Installing one
+  puts that repository's files on your disk, executables included; nothing runs
+  without the capability you grant.
+</p>
+<p>
+  A bare name resolves to the repository's examples at
   <em>this binary's release tag</em>
   , exactly as an extension name does; URLs and filesystem paths work too. The rules delivery
   already follows carry over unchanged: a managed file you edited is preserved and reported, and one
