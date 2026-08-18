@@ -276,6 +276,56 @@ fn a_pane_nothing_places_is_a_failure_that_says_what_to_add() {
     );
 }
 
+/// The listing must not call a working pane unplaced.
+///
+/// `unplaced` means "its slot appears nowhere in the arrangement" — a defect with
+/// no symptom, which is why `check` fails on it. The listing resolved placement
+/// with an empty set on the reasoning that the arrangement needs a terminal, so
+/// every pane in the shipped interface was reported as that defect. Placement is
+/// knowable without a frame (`check` resolves it at a reference size); what needs
+/// one is which occupant of a slot is in *front*.
+#[test]
+fn the_listing_does_not_report_working_panes_as_unplaced() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+
+    let state_of = |listing: &serde_json::Value, name: &str| -> String {
+        listing["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .find(|row| row["name"] == name)
+            .map(|row| row["state"].as_str().unwrap_or_default().to_string())
+            .unwrap_or_else(|| panic!("{name} missing from {listing}"))
+    };
+
+    let listing = json(Action::List);
+    for pane in ["sessions", "agent", "search"] {
+        assert_eq!(
+            state_of(&listing, pane),
+            "hidden",
+            "{pane} is placed by the shipped arrangement, so the listing must not \
+             report it as the one state that means a defect"
+        );
+    }
+
+    // And the signal survives: a pane whose slot nothing names still reads unplaced,
+    // or this fix would have replaced one wrong answer with another.
+    run(Action::New {
+        name: "nowhere".into(),
+    })
+    .expect("new");
+    let file = ui.join("plugins").join("90_nowhere.lua");
+    let body = std::fs::read_to_string(&file).expect("read");
+    std::fs::write(
+        &file,
+        body.replace("slot = \"center\"", "slot = \"nowhere\""),
+    )
+    .expect("write");
+    assert_eq!(state_of(&json(Action::List), "nowhere"), "unplaced");
+}
+
 #[test]
 fn a_pane_that_floats_is_not_reported_as_unplaced() {
     // A float draws ABOVE the arrangement, so it needs no slot at all. Reporting

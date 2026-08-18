@@ -758,6 +758,22 @@ the same spec and lock reproduce the same bytes on another machine. That is also
 there is no checksum field to maintain: the commit already identifies every byte, and
 it is produced by the source rather than transcribed by hand.
 
+`--pin` takes any of the three, and which one you give decides what `update` does:
+
+| `--pin` | what you get | what `update` does |
+|---|---|---|
+| *(none)* | the default branch's tip | follows it |
+| a branch | that branch's tip | follows that branch |
+| a tag | the tag | stays |
+| a commit | that commit | stays |
+
+A pin is a pin: `update` on a tagged or committed entry reports `current` rather
+than moving it, so pinning is how you hold a plugin still. Pinning a commit is what
+`--pin` is *for* — it is what the lock writes — and it is worth knowing that `git
+clone --branch` cannot do it: a commit is fetched and checked out after the clone.
+You get one shallow round trip either way; a pin that cannot be obtained fails with
+git's own message and leaves nothing behind.
+
 **Installing a plugin from a repository puts that repository's files on your disk,
 executable bits included.** That is what cloning anything does. What it does *not*
 do is run any of it: nothing executes at install time, and a program still needs the

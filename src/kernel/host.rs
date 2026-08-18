@@ -2007,15 +2007,31 @@ impl LuaHost {
             .into_iter()
             .map(str::to_string)
             .collect();
-        for slot in &occupied {
-            self.set_shared_bool(&format!("panels.{slot}"), true);
-        }
-        let region = self.arrangement(area.width, area.height)?;
-        let placed = super::layout::placed_slots(&region, area);
+        let placed = self.placed_slots(area)?;
         Ok(occupied
             .into_iter()
             .filter(|slot| !placed.contains(slot))
             .collect())
+    }
+
+    /// Slots the arrangement places at `area`, with every panel toggle opened.
+    ///
+    /// Extracted so "placed" means one thing: the check that fails an install and
+    /// the listing that reports a pane's state resolve the same arrangement at the
+    /// same size. Reported as its own answer because *placement is knowable without
+    /// a frame* — what needs one is which occupant of a placed slot is in front,
+    /// and that is a separate question.
+    pub fn placed_slots(&self, area: Rect) -> Result<BTreeSet<String>, String> {
+        let occupied: Vec<String> = self
+            .occupied_slots()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        for slot in &occupied {
+            self.set_shared_bool(&format!("panels.{slot}"), true);
+        }
+        let region = self.arrangement(area.width, area.height)?;
+        Ok(super::layout::placed_slots(&region, area))
     }
 
     fn occupied_slots_table(&self) -> Result<Table, String> {

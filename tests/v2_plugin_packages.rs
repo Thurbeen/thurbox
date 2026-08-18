@@ -567,6 +567,226 @@ fn plugin_repo(root: &Path, marker: &str) -> PathBuf {
     repo
 }
 
+/// Run git in `repo`, scrubbing the location variables the pre-commit hook exports
+/// — without which a test's git call lands in the real repository.
+fn git_in(repo: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .expect("git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Add a commit to a source repository, returning the commit id it created.
+fn commit_more(repo: &Path, marker: &str) -> String {
+    std::fs::write(
+        repo.join("lib/util.lua"),
+        format!("local u = {{}}\nfunction u.label() return \"{marker}\" end\nreturn u\n"),
+    )
+    .expect("module");
+    git_in(repo, &["add", "-A"]);
+    git_in(repo, &["commit", "-m", marker]);
+    git_in(repo, &["rev-parse", "HEAD"])
+}
+
+/// A pin that is a **commit id** is the one a lock writes, and `git clone
+/// --branch` rejects it: it takes a branch or a tag only. So the ref has to be
+/// fetched and checked out after cloning, and the install that names a commit —
+/// the reproducible one — used to fail outright with git's "Remote branch not
+/// found".
+#[test]
+fn installing_at_a_commit_pin_checks_out_that_commit() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "first");
+    let pinned = git_in(&repo, &["rev-parse", "HEAD"]);
+    // The branch moves past the pin, so checking out the tip would be visible.
+    commit_more(&repo, "second");
+
+    let report = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: Some(pinned.clone()),
+    })
+    .expect("install");
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert_eq!(report.json["version"], pinned);
+
+    // The bytes on disk are the pinned commit's, not the branch tip's.
+    assert!(
+        std::fs::read_to_string(ui.join("thurbox-widget/lib/util.lua"))
+            .expect("module")
+            .contains("first"),
+        "the working copy must be at the pin, not the tip"
+    );
+    let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
+    assert_eq!(
+        lock.entry("thurbox-widget/plugins/40_widget.lua")
+            .expect("recorded")
+            .version,
+        pinned
+    );
+}
+
+/// The lock's promise: the same spec applied where nothing is installed obtains
+/// the revision recorded, not whatever the name now points at.
+#[test]
+fn a_commit_pinned_spec_reproduces_on_a_fresh_machine() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "first");
+    let pinned = git_in(&repo, &["rev-parse", "HEAD"]);
+    commit_more(&repo, "second");
+    run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: Some(pinned.clone()),
+    })
+    .expect("install");
+
+    // A fresh machine: spec and lock present, working copy absent.
+    std::fs::remove_dir_all(ui.join("thurbox-widget")).expect("remove");
+    let fresh = run(Action::Sync).expect("sync");
+    assert_eq!(fresh.json["entries"][0]["outcome"], "installed");
+    assert_eq!(fresh.json["entries"][0]["version"], pinned);
+    assert!(
+        std::fs::read_to_string(ui.join("thurbox-widget/lib/util.lua"))
+            .expect("module")
+            .contains("first"),
+        "a spec that reproduces the branch tip reproduces nothing"
+    );
+}
+
+/// A pin is a pin: advancing an entry pinned to a commit holds it there even
+/// though the branch has moved on. What made this worth a test is that the
+/// advance path used to check out the pin's *name* after fetching the default
+/// branch — which for a commit is an object it never asked for, and for a branch
+/// is the stale local ref a fetch does not move.
+#[test]
+fn advancing_a_commit_pinned_entry_holds_its_pin() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "first");
+    let pinned = git_in(&repo, &["rev-parse", "HEAD"]);
+    run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: Some(pinned.clone()),
+    })
+    .expect("install");
+    commit_more(&repo, "second");
+
+    let report = run(Action::Update {
+        name: Some("40_widget".into()),
+    })
+    .expect("update");
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert_eq!(
+        report.json["entries"][0]["outcome"], "current",
+        "a pinned entry does not advance: {:?}",
+        report.json
+    );
+    assert!(
+        std::fs::read_to_string(ui.join("thurbox-widget/lib/util.lua"))
+            .expect("module")
+            .contains("first"),
+        "and its bytes stay at the pin"
+    );
+}
+
+/// A pin that names a **branch** means "follow this branch", and advancing has to
+/// actually follow it.
+///
+/// This is the case the advance path got wrong: it fetched and then checked out the
+/// pin by *name*, and a fetch does not move the local branch a `--branch` clone left
+/// checked out — so the working copy stayed where it was while `update` reported
+/// success. Checking out what the fetch returned is what fixes it, and a branch pin
+/// is the only pin that can tell the two apart (a commit's object is already local,
+/// so checking it out by name happens to work).
+#[test]
+fn advancing_a_branch_pinned_entry_follows_the_branch() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "first");
+    run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: Some("main".to_string()),
+    })
+    .expect("install");
+    let moved = commit_more(&repo, "second");
+
+    let report = run(Action::Update {
+        name: Some("40_widget".into()),
+    })
+    .expect("update");
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert_eq!(
+        report.json["entries"][0]["outcome"], "updated",
+        "a branch pin follows its branch: {:?}",
+        report.json
+    );
+    assert_eq!(report.json["entries"][0]["version"], moved);
+    assert!(
+        std::fs::read_to_string(ui.join("thurbox-widget/lib/util.lua"))
+            .expect("module")
+            .contains("second"),
+        "reporting an update while the bytes stay put is the worst of both"
+    );
+}
+
+/// An install that cannot obtain what it was told to obtain leaves the interface
+/// exactly as it found it. Worth pinning because it is easy to regress by writing
+/// the spec entry before the fetch, or by leaving a half-clone where the pin
+/// failed — and an install command an agent may run unattended has to be safe to
+/// retry.
+#[test]
+fn a_clone_that_fails_leaves_nothing_behind() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "widget");
+
+    for pin in [
+        None,
+        Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+    ] {
+        // A source that resolves as git and cannot be cloned. The pinned case is the
+        // other half: the clone succeeds and the *pin* is what cannot be obtained.
+        let src = match &pin {
+            None => format!("git+{}", home.path().join("no-such-repo").display()),
+            Some(_) => format!("git+{}", repo.display()),
+        };
+        let report = run(Action::Install {
+            src,
+            as_file: None,
+            pin,
+        });
+        assert!(report.is_err(), "the install must fail: {report:?}");
+
+        assert!(
+            !ui.join("thurbox-widget").exists() && !ui.join("no-such-repo").exists(),
+            "no working copy, whole or partial"
+        );
+        assert!(
+            !thurbox::kernel::packages::spec_path(&ui).exists(),
+            "no spec entry"
+        );
+        assert!(
+            !thurbox::kernel::packages::lock_path(&ui).exists(),
+            "no record"
+        );
+    }
+}
+
 /// The whole point: a repository install delivers Lua in the author's layout AND
 /// bytes beside it, and the pane loads.
 #[test]

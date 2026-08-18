@@ -344,14 +344,22 @@ fn list() -> Result<CommandOutput, String> {
     let host = crate::kernel::host::LuaHost::new(&dir);
     let sources = crate::kernel::bundled::sources(&dir);
     let registry = crate::kernel::registry::Registry::load();
-    // Visibility depends on the terminal's size and the arrangement, neither of
-    // which exists here — so every pane is reported as not-drawn rather than
-    // guessed at, and the origin (the part that is knowable) is what this is for.
+    // Which occupant of a slot is *in front* needs a painted frame, so nothing is
+    // reported as drawn here. Placement does not: it is resolved at the stated
+    // reference size, the same way `check` resolves it. Passing an empty set
+    // instead read every pane out as `unplaced` — a state that means "its slot
+    // appears nowhere", i.e. a defect — so the whole shipped interface listed as
+    // broken.
+    let placed = host
+        .placed_slots(crate::kernel::layout::REFERENCE)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     let rows = crate::kernel::inventory::rows(
         &host.plugins,
         &sources,
         &Default::default(),
-        &Default::default(),
+        &placed,
         host.error.as_deref(),
         // Trust is a decision the user made in a running interface; from here it
         // is read, not judged — so this reports what was recorded and nothing

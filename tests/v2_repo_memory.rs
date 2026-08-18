@@ -112,6 +112,14 @@ fn repo(at: &Path) {
             "GIT_ALTERNATE_OBJECT_DIRECTORIES",
             "GIT_PREFIX",
             "GIT_NAMESPACE",
+            // Config injected on the *command line* — `git -c commit.gpgsign=true
+            // commit` — travels to every child through these, hooks included, and
+            // outranks the repo config a test could set. `GIT_CONFIG_GLOBAL` above
+            // does not cover it. Left in place, a contributor signing this
+            // project's own commits fails these tests and nothing else: HOME is
+            // isolated here, so there is no key to sign the fixture commit with.
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_COUNT",
         ] {
             command.env_remove(name);
         }

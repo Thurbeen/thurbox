@@ -777,7 +777,7 @@ fn converge_repository(
         // exact object has to be asked for.
         if let Some(commit) = recorded.as_deref().filter(|c| !c.is_empty()) {
             if crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))? != commit {
-                crate::git::fetch_commit(&root, commit).map_err(|e| format!("{e:#}"))?;
+                crate::git::fetch_ref(&root, commit).map_err(|e| format!("{e:#}"))?;
                 crate::git::checkout_plugin(&root, commit).map_err(|e| format!("{e:#}"))?;
             }
         }
@@ -797,7 +797,7 @@ fn converge_repository(
         // Convergence holds at the recorded commit rather than following a branch.
         match recorded.as_deref().filter(|c| !c.is_empty()) {
             Some(commit) if commit != head => {
-                crate::git::fetch_commit(&root, commit).map_err(|e| format!("{e:#}"))?;
+                crate::git::fetch_ref(&root, commit).map_err(|e| format!("{e:#}"))?;
                 crate::git::checkout_plugin(&root, commit).map_err(|e| format!("{e:#}"))?;
                 return Ok((Outcome::Updated, commit.to_string(), Some(head)));
             }
@@ -805,9 +805,16 @@ fn converge_repository(
         }
     }
 
-    crate::git::fetch_tip(&root).map_err(|e| format!("{e:#}"))?;
-    let target = entry.pin.as_deref().unwrap_or("FETCH_HEAD");
-    crate::git::checkout_plugin(&root, target).map_err(|e| format!("{e:#}"))?;
+    // Advancing follows the entry's own ref: a pinned branch moves, a pinned tag or
+    // commit does not, and an unpinned entry follows the remote's default branch.
+    // What is checked out is what the fetch returned — never the ref's name, since
+    // a fetch does not move the local branch a `--branch` clone checked out, and a
+    // pinned commit's object is not there until it is asked for by id.
+    match entry.pin.as_deref() {
+        Some(pin) => crate::git::fetch_ref(&root, pin).map_err(|e| format!("{e:#}"))?,
+        None => crate::git::fetch_tip(&root).map_err(|e| format!("{e:#}"))?,
+    }
+    crate::git::checkout_plugin(&root, "FETCH_HEAD").map_err(|e| format!("{e:#}"))?;
     let moved = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
     if moved == head {
         return Ok((Outcome::Current, head, None));

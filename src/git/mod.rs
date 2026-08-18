@@ -80,13 +80,27 @@ fn run_git(mut cmd: Command, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// Does this ref name a commit rather than a branch or a tag?
+///
+/// The distinction is forced on us by git: `clone --branch` accepts a branch or a
+/// tag and **rejects a commit id**, so a pin that is one has to be obtained the
+/// long way round. Ambiguity resolves toward the commit — a branch could be named
+/// `deadbeef` and would be read as one — because a hex-looking branch name is a
+/// curiosity and pinning a commit is the whole point of a lock.
+fn names_a_commit(git_ref: &str) -> bool {
+    (7..=40).contains(&git_ref.len()) && git_ref.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Clone `url` into `dest`, shallow, optionally at `git_ref`.
 ///
 /// `--depth 1` because running a pane needs no history and a shallow clone is
 /// dramatically faster; the two properties keeping `.git` is *for* — refusing to
 /// overwrite a dirty tree, and `git diff` against the checkout — need none either.
-/// A specific recorded commit that is not the tip is fetched afterwards by
-/// [`fetch_commit`].
+///
+/// `git_ref` may be a branch, a tag **or a commit id**; the last cannot be cloned
+/// directly, so it is fetched and checked out afterwards. A failure at either step
+/// takes the clone back, so a caller that has written nothing yet leaves nothing
+/// behind.
 pub fn clone_plugin(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()> {
     if dest.exists() {
         anyhow::bail!("{} already exists", dest.display());
@@ -97,19 +111,34 @@ pub fn clone_plugin(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()>
     let mut cmd = git_program();
     non_interactive(&mut cmd);
     cmd.arg("clone").arg("--depth").arg("1");
-    if let Some(git_ref) = git_ref {
-        cmd.arg("--branch").arg(git_ref);
+    // A commit id is not a `--branch`: clone the default tip, then go and get it.
+    let commit = git_ref.filter(|git_ref| names_a_commit(git_ref));
+    if let Some(name) = git_ref.filter(|git_ref| !names_a_commit(git_ref)) {
+        cmd.arg("--branch").arg(name);
     }
     cmd.arg(url).arg(dest);
-    run_git(cmd, "git clone")
+    run_git(cmd, "git clone")?;
+
+    if let Some(commit) = commit {
+        let obtained = fetch_ref(dest, commit).and_then(|()| checkout_plugin(dest, commit));
+        if let Err(e) = obtained {
+            // Clone succeeded, the pin did not: this working copy is at the wrong
+            // revision and nobody asked for that one.
+            let _ = std::fs::remove_dir_all(dest);
+            return Err(e);
+        }
+    }
+    Ok(())
 }
 
-/// Fetch one commit by id into an existing shallow working copy.
+/// Fetch one ref — a commit id, a branch or a tag — into a shallow working copy.
 ///
 /// What makes a recorded commit reproducible: a shallow clone has only the tip, so
 /// reproducing a spec elsewhere has to ask for the exact object the lock names.
-pub fn fetch_commit(repo: &Path, commit: &str) -> Result<()> {
-    let mut cmd = git_command(None, repo, &["fetch", "--depth", "1", "origin", commit]);
+/// Checking out the result means checking out `FETCH_HEAD`, not the ref's name: a
+/// fetch does not move the local branch a `--branch` clone left checked out.
+pub fn fetch_ref(repo: &Path, git_ref: &str) -> Result<()> {
+    let mut cmd = git_command(None, repo, &["fetch", "--depth", "1", "origin", git_ref]);
     non_interactive(&mut cmd);
     run_git(cmd, "git fetch")
 }
