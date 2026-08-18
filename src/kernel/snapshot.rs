@@ -60,6 +60,15 @@ pub struct SessionRow {
     /// only the first of them.
     pub member_dirs: Vec<PathBuf>,
     pub branch: Option<String>,
+    /// The branch this session's work is measured *against* — `sessions.base_branch`,
+    /// written once at spawn.
+    ///
+    /// Emphatically not [`Self::branch`], which is the session's own worktree
+    /// branch. Confusing the two is not a cosmetic error: a diff taken against a
+    /// session's own branch is empty, and an empty diff that reports itself ready
+    /// is a wrong answer rather than a missing one. `None` means no base was ever
+    /// recorded, and the diff falls back to uncommitted changes.
+    pub base_branch: Option<String>,
     pub backend: String,
     /// Backend pane identifier (a tmux `%N`). `None` until the session has a
     /// pane; this is what a live terminal attaches to.
@@ -670,6 +679,7 @@ impl SnapshotStore {
             }
         };
         let hooks = database.load_hook_states().unwrap_or_default();
+        let bases = database.load_base_branches().unwrap_or_default();
 
         self.git.drain();
 
@@ -702,6 +712,7 @@ impl SnapshotStore {
                     repo: repo_name(&session.cwd, worktree.map(|w| &w.repo_path)),
                     repos,
                     branch: worktree.map(|w| w.branch.clone()),
+                    base_branch: bases.get(&session.id).cloned(),
                     cwd: session.cwd,
                     remote_host: remote_host_of(&session.backend_type),
                     agent_session_id: session.agent_session_id,

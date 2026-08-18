@@ -1714,6 +1714,7 @@ mod tests {
             repo: None,
             repos: Vec::new(),
             branch: None,
+            base_branch: None,
             backend: backend.to_string(),
             backend_id: backend_id.map(str::to_string),
             remote_host: None,

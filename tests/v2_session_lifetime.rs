@@ -26,6 +26,7 @@ fn row(id: &str, name: &str, backend: &str, pane: Option<&str>) -> SessionRow {
         repo: None,
         repos: Vec::new(),
         branch: None,
+        base_branch: None,
         backend: backend.into(),
         backend_id: pane.map(str::to_string),
         remote_host: None,

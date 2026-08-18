@@ -1192,6 +1192,12 @@ impl LuaHost {
             set("backend", to_lua_string(&self.lua, &row.backend)?)?;
             set("repo", opt_lua_string(&self.lua, row.repo.as_deref())?)?;
             set("branch", opt_lua_string(&self.lua, row.branch.as_deref())?)?;
+            // What the diff is taken against, so a pane can name the range it is
+            // showing rather than guessing. Distinct from `branch` above.
+            set(
+                "base_branch",
+                opt_lua_string(&self.lua, row.base_branch.as_deref())?,
+            )?;
             set(
                 "host",
                 opt_lua_string(&self.lua, row.remote_host.as_deref())?,

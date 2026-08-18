@@ -494,6 +494,34 @@ impl Database {
         }
         Ok(map)
     }
+
+    /// Load every active session's base branch in one indexed scan, keyed by id.
+    ///
+    /// The sibling of [`Self::load_hook_states`], and read on the same schedule
+    /// for the same reason: a diff is taken *against* this, so a snapshot that
+    /// does not carry it cannot describe what it diffed. Rows with no base are
+    /// omitted rather than mapped to an empty string — "never recorded" is a
+    /// real answer, and the caller shows uncommitted changes instead.
+    pub fn load_base_branches(&self) -> rusqlite::Result<HashMap<SessionId, String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, base_branch FROM sessions \
+             WHERE deleted_at IS NULL AND base_branch IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id_str: String = row.get(0)?;
+            let base: String = row.get(1)?;
+            Ok((id_str, base))
+        })?;
+
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id_str, base) = row?;
+            if let Ok(id) = id_str.parse::<SessionId>() {
+                map.insert(id, base);
+            }
+        }
+        Ok(map)
+    }
 }
 
 /// Encode a session's `additional_dirs` for the column: a JSON array of path
@@ -602,6 +630,30 @@ mod tests {
             tombstone: false,
             tombstone_at: None,
         }
+    }
+
+    /// The bulk read the snapshot uses, and the reason it omits rather than
+    /// defaults: a session with no recorded base is diffed against its own
+    /// uncommitted changes, and an empty string would name a branch called "".
+    #[test]
+    fn bases_load_in_bulk_and_omit_the_sessions_that_have_none() {
+        let db = Database::open_in_memory().unwrap();
+        let with_base = make_session("has-base");
+        let without = make_session("no-base");
+        db.upsert_session(&with_base).unwrap();
+        db.upsert_session(&without).unwrap();
+        db.set_session_base_branch(with_base.id, "origin/main")
+            .unwrap();
+
+        let bases = db.load_base_branches().unwrap();
+        assert_eq!(
+            bases.get(&with_base.id).map(String::as_str),
+            Some("origin/main")
+        );
+        assert!(
+            !bases.contains_key(&without.id),
+            "a session with no base must be absent, not empty: {bases:?}"
+        );
     }
 
     #[test]

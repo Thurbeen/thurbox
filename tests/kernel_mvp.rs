@@ -105,6 +105,7 @@ fn row(name: &str, repo: &str, status: &str) -> SessionRow {
         repo: Some(repo.to_string()),
         repos: vec![repo.to_string()],
         branch: Some(format!("feat/{name}")),
+        base_branch: None,
         backend: "local-tmux".to_string(),
         backend_id: Some("%1".to_string()),
         agent_session_id: None,

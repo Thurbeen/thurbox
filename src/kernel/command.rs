@@ -138,6 +138,20 @@ pub enum Command {
     Copy {
         session: String,
     },
+    /// Recompute a session's diff, discarding the one already published.
+    ///
+    /// UI-thread applied: it only drops a cache entry, and the loop re-requests
+    /// on the next frame — the recompute itself is the worker's, as it always was.
+    ///
+    /// This exists because a diff was otherwise computed **once per session per
+    /// process** and never again: `request` returns early when it already holds an
+    /// answer, and nothing ever invalidated one. A pane watching an agent that is
+    /// still writing code would show a diff frozen at first sight, which is worse
+    /// than showing none. The store's own doctrine — a cached answer carries an
+    /// age, not just a value — was not being met.
+    Diff {
+        session: String,
+    },
     /// Focus a pane by name.
     ///
     /// UI-thread applied: focus is the loop's state, and there is nothing to
@@ -290,6 +304,7 @@ impl Command {
             Command::Fork { .. } => "fork",
             Command::Sync { .. } => "sync",
             Command::Copy { .. } => "copy",
+            Command::Diff { .. } => "diff",
             Command::Shell { .. } => "shell",
             Command::Program { .. } => "program",
             Command::Editor { .. } => "editor",
@@ -319,6 +334,7 @@ impl Command {
             | Command::Fork { session, .. }
             | Command::Sync { session }
             | Command::Copy { session }
+            | Command::Diff { session }
             | Command::Editor { session }
             | Command::Reap { session }
             | Command::Shell { session } => session,
@@ -597,11 +613,12 @@ impl Command {
             }),
             "sync" => Ok(Command::Sync { session }),
             "copy" => Ok(Command::Copy { session }),
+            "diff" => Ok(Command::Diff { session }),
             "shell" => Ok(Command::Shell { session }),
             "editor" => Ok(Command::Editor { session }),
             other => Err(format!(
-                "unknown command {other:?} — try create, fork, sync, copy, delete, \
-                 restore, restart, send, reorder, theme or set"
+                "unknown command {other:?} — try create, fork, sync, copy, diff, \
+                 delete, restore, restart, send, reorder, theme or set"
             )),
         }
     }
@@ -972,6 +989,7 @@ fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<()
         Command::Theme { .. }
         | Command::Setting { .. }
         | Command::Copy { .. }
+        | Command::Diff { .. }
         | Command::OpenLink { .. }
         | Command::Shell { .. }
         | Command::Program { .. }
@@ -1644,6 +1662,26 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("unknown command"), "{error}");
         assert!(error.contains("delete"), "{error}");
+    }
+
+    /// A refresh names its session and is applied on the UI thread, so it must
+    /// parse, carry the id, and never be routed to the worker dispatch (which
+    /// asserts `unreachable!` for UI-thread commands).
+    #[test]
+    fn a_diff_refresh_parses_and_names_its_session() {
+        let command = Command::parse(
+            "diff",
+            Args {
+                session: "s1".into(),
+                ..Args::default()
+            },
+        )
+        .expect("diff parses");
+        assert_eq!(command.kind(), "diff");
+        assert_eq!(command.session(), "s1");
+        assert!(matches!(command, Command::Diff { .. }));
+        // And it is refused without one, like every session-scoped command.
+        assert!(Command::parse("diff", Args::default()).is_err());
     }
 
     #[test]

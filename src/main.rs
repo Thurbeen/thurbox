@@ -1021,6 +1021,13 @@ impl App {
                         });
                         continue;
                     }
+                    thurbox::kernel::command::Command::Diff { session } => {
+                        // Drop the answer; the request at the top of the next
+                        // iteration recomputes it on the worker.
+                        self.diffs.invalidate(session);
+                        self.dirty = true;
+                        continue;
+                    }
                     thurbox::kernel::command::Command::Copy { session } => {
                         match self.terminals.visible_text(session) {
                             Some(text) => {
@@ -1121,11 +1128,25 @@ impl App {
             // The selected session's diff, computed on a worker. Requesting is
             // idempotent, so calling it every frame costs nothing after the
             // first.
-            if let Some(id) = self.focused_session.clone() {
+            //
+            // Driven by the *selection*, not by `focused_session`: the latter is
+            // re-derived each frame from the focused plugin's session surface, so
+            // only a pane drawing a terminal ever asked for one. A pane that shows
+            // a diff draws no terminal by definition, and would never be handed the
+            // thing it exists to show. The selection is what "the session the user
+            // is looking at" actually means, and the session list publishes it.
+            let wanted = self
+                .host
+                .shared_string("selected")
+                .or_else(|| self.focused_session.clone());
+            if let Some(id) = wanted {
                 if let Some(row) = self.snapshots.current().session(&id) {
                     if let Some(cwd) = row.cwd.clone() {
+                        // `base_branch`, never `branch`. Against its own branch a
+                        // session diffs to nothing, and publishing that as `ready`
+                        // is a confident wrong answer.
                         self.diffs
-                            .request(&id, cwd, row.branch.clone(), &row.backend);
+                            .request(&id, cwd, row.base_branch.clone(), &row.backend);
                     }
                 }
             }

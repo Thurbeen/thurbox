@@ -139,6 +139,7 @@ fn one_session() -> Snapshot {
             repo: Some("thurbox".into()),
             repos: vec!["thurbox".into()],
             branch: Some("fix/osc52".into()),
+            base_branch: None,
             backend: "local-tmux".into(),
             backend_id: Some("%1".into()),
             remote_host: None,

@@ -35,6 +35,7 @@ fn session(name: &str, branch: &str) -> SessionRow {
         repo: Some("repo".into()),
         repos: vec!["repo".into()],
         branch: Some(branch.into()),
+        base_branch: None,
         backend: "local-tmux".into(),
         backend_id: Some("%1".into()),
         remote_host: None,

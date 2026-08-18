@@ -52,6 +52,7 @@ fn row(name: &str) -> SessionRow {
         repo: Some("thurbox".to_string()),
         repos: Vec::new(),
         branch: Some(format!("feat/{name}")),
+        base_branch: None,
         backend: "local-tmux".to_string(),
         backend_id: Some("%1".to_string()),
         remote_host: None,

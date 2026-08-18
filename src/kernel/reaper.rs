@@ -74,6 +74,7 @@ mod tests {
             repo: None,
             repos: Vec::new(),
             branch: None,
+            base_branch: None,
             backend: "local-tmux".into(),
             backend_id: Some("%1".into()),
             remote_host: None,

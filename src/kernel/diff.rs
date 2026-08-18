@@ -199,6 +199,40 @@ mod tests {
         assert!(store.get("nobody").is_none());
     }
 
+    /// The property `Command::Diff` exists to provide, and which nothing provided
+    /// before it: a diff can be asked for a second time.
+    ///
+    /// `request` returns early while it holds an answer, so without invalidation a
+    /// diff was computed once per session per process. A pane watching an agent
+    /// that is still writing code would show the diff it first saw, forever —
+    /// stale and confident, which is worse than absent.
+    #[test]
+    fn invalidating_lets_the_next_request_recompute() {
+        let mut store = DiffStore::new();
+        let ask = |store: &mut DiffStore| {
+            store.request(
+                "s1",
+                PathBuf::from("/definitely/not/a/repo"),
+                None,
+                "local-tmux",
+            )
+        };
+        ask(&mut store);
+        assert_eq!(store.get("s1"), Some(&Diff::Pending));
+
+        // Asking again is a no-op while an answer is held — that is the cache.
+        ask(&mut store);
+        assert_eq!(store.get("s1"), Some(&Diff::Pending));
+
+        store.invalidate("s1");
+        assert!(
+            store.get("s1").is_none(),
+            "invalidation has to clear the entry, or the next request returns early"
+        );
+        ask(&mut store);
+        assert_eq!(store.get("s1"), Some(&Diff::Pending), "and recomputes");
+    }
+
     #[test]
     fn requesting_marks_it_pending_immediately() {
         // The property that matters: asking does not wait for git.

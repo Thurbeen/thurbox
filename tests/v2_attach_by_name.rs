@@ -51,6 +51,7 @@ fn row(name: &str) -> SessionRow {
         repo: None,
         repos: Vec::new(),
         branch: None,
+        base_branch: None,
         backend: "local-tmux".into(),
         // The whole point: the database has no pane id for it.
         backend_id: None,

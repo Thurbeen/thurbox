@@ -37,6 +37,7 @@ fn row(id: &str, name: &str, agent: &str, branch: &str) -> SessionRow {
         repo: Some("thurbox".into()),
         repos: vec!["thurbox".into()],
         branch: Some(branch.into()),
+        base_branch: None,
         backend: "local-tmux".into(),
         backend_id: Some("%1".into()),
         remote_host: None,

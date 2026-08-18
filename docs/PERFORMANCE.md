@@ -370,6 +370,32 @@ uses for git stats and worktree creation.
   parts for a build that is fast locally; revisit only if multi-repo remote
   reviews prove slow *after* this change.
 
+**Superseded by `kernel::diff`.** Everything named above (`toggle_code_review`,
+`App::code_reviews`, `build_review_open`, and all four gate tests) went with
+`src/app`; the reasoning survives because the successor is the same shape. The
+kernel's `DiffStore` computes on a worker and publishes into the snapshot, which a
+plugin reads as `thurbox.diffs[<session>]` — `pending` / `failed` / `ready`, with
+`files`, `body` and `truncated`. Three things about it are worth stating because
+each was wrong once:
+
+- **The base is `sessions.base_branch`, never the session's own branch.** The loop
+  passed `SessionRow.branch` — a session's *own* worktree branch — so the range was
+  `<own-branch>..HEAD`, which is empty. Every worktree-backed session published a
+  `ready` diff with no files: a confident wrong answer, and the inversion of the
+  intent, since the sessions that *have* a base were the ones showing nothing. The
+  snapshot now carries `base_branch` beside `branch` (a bulk read, on the schedule
+  the hook columns already use) and `None` still means "diff the uncommitted
+  changes".
+- **The request follows the selection, not the focused pane.** It was driven by
+  `focused_session`, re-derived each frame from the focused plugin's *session
+  surface* — so only a pane drawing a terminal ever asked for a diff, and a pane
+  whose job is showing one could never be handed it.
+- **A cached diff can be discarded.** `command("diff", { session })` invalidates,
+  and the next frame recomputes. Without it a diff was computed once per session per
+  process and never again — a diff frozen at first sight while the agent kept
+  writing, which is exactly the "cached answer with no age" mistake this document
+  warns about two sections down.
+
 ---
 
 ## ADR-P9: Prefetch restore's history captures in parallel
