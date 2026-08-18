@@ -1901,6 +1901,11 @@ mod tests {
 
     /// Nothing running means nothing to send to, and nothing to report — asserted
     /// because "no pane" must not read as "a pane that swallowed your key".
+    ///
+    /// This return value is **load-bearing for key routing**: the loop consumes a
+    /// keystroke only when a send reports delivery. A pane whose surface names a
+    /// session that is no longer live therefore does not swallow `Esc`, which is
+    /// what keeps the user from being trapped in a pane showing a dead terminal.
     #[test]
     fn an_absent_program_pane_accepts_nothing_and_reports_nothing() {
         let terminals = Terminals::new();

@@ -2194,13 +2194,21 @@ impl App {
                     // to that program and to nothing else — and a pane with nothing
                     // behind it swallows nothing, since neither send finds a
                     // target.
-                    match self.terminals.program_key(&surface).cloned() {
-                        Some(key) => {
-                            self.terminals.send_to_program(&key, bytes);
-                        }
-                        None => {
-                            self.terminals.send(&surface, bytes);
-                        }
+                    let delivered = match self.terminals.program_key(&surface).cloned() {
+                        Some(program) => self.terminals.send_to_program(&program, bytes),
+                        None => self.terminals.send(&surface, bytes),
+                    };
+                    // Delivered means consumed, which is what the rule above says
+                    // and what this now enforces. Falling through sent `Esc` to a
+                    // program AND dismissed the pane under it in one keypress — a
+                    // game opening its menu on a pane nobody is looking at.
+                    //
+                    // Gated on delivery rather than on having tried, because both
+                    // sends already report it: a surface naming a session that is
+                    // no longer live must not swallow the key, or `Esc` traps the
+                    // user in a pane showing a dead terminal.
+                    if delivered {
+                        return;
                     }
                 }
             }
