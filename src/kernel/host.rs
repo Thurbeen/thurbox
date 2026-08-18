@@ -958,7 +958,7 @@ impl LuaHost {
     /// Put a boolean into the shared `store`.
     ///
     /// The counterpart to [`Self::shared_bool`], and used for the same panel
-    /// flags: [`Self::unplaced_slots`] opens every column before resolving the
+    /// flags: [`Self::placed_slots`] opens every column before resolving the
     /// arrangement, because a pane behind a closed toggle is not a missing pane.
     pub fn set_shared_bool(&self, key: &str, value: bool) {
         self.store
@@ -1995,12 +1995,10 @@ impl LuaHost {
     /// tree); a **disabled** plugin never reaches `plugins` at all, since being
     /// disabled is implemented as not loading the file.
     ///
-    /// A third kind has to be handled here: a pane behind a **closed panel
-    /// toggle**. `search` starts closed, so the bundled arrangement legitimately
-    /// names no `search` slot until something opens it — which would make the
-    /// interface we ship fail its own check. So every occupied slot's panel flag
-    /// is opened before resolving. The kernel already reads these flags from
-    /// outside Lua (see [`Self::shared_bool`]); this writes the same key.
+    /// A third kind is handled by [`Self::placed_slots`], which this defers to: a
+    /// pane behind a **closed panel toggle**. `search` starts closed, so the
+    /// bundled arrangement legitimately names no `search` slot until something
+    /// opens it — which would make the interface we ship fail its own check.
     pub fn unplaced_slots(&self, area: Rect) -> Result<Vec<String>, String> {
         let occupied: BTreeSet<String> = self
             .occupied_slots()

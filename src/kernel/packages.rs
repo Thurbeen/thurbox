@@ -311,13 +311,18 @@ fn prune_empty(dir: &Path, removed: &Path) {
 }
 
 /// The directory in the thurbox repository that bare plugin names resolve against
-/// — `ui-plugins/`, mirroring `extensions/`, and pinned to the same release tag by
-/// the same helper.
+/// — `ui-plugins/`, laid out like `extensions/` and pinned to the same release tag
+/// by the same helper.
+///
+/// Named for what it holds rather than for the mechanism it borrows: `extensions/`
+/// *is* an official set and `official_set_base` is the right name there, but these
+/// are examples to copy from (see [`EXAMPLE_PLUGINS`]) and calling the constant
+/// official would put the two words back in the same file.
 ///
 /// Pinning to the tag is worth keeping even for examples: a pane reads `thurbox.*`,
 /// a contract that moves, so what a bare name fetches matches the binary asking
 /// for it.
-pub const OFFICIAL_SET: &str = "ui-plugins";
+pub const EXAMPLE_SET: &str = "ui-plugins";
 
 /// One example pane, for discovery and for typo help on a failed bare-name
 /// install.
@@ -329,7 +334,7 @@ pub const OFFICIAL_SET: &str = "ui-plugins";
 /// edit it.
 ///
 /// A small static list rather than a remote index, exactly as
-/// `OFFICIAL_EXTENSIONS` is: a misspelled name should be caught without a network
+/// `OFFICIAL_EXTENSIONS` is (extensions really are official): a misspelled name should be caught without a network
 /// round-trip. Keep in step with `ui-plugins/<name>/`.
 pub const EXAMPLE_PLUGINS: &[(&str, &str)] = &[
     ("tasks", "A todo pane: read the snapshot, send or spawn"),
@@ -364,10 +369,10 @@ pub fn resolve_source(src: &str, pin: Option<&str>) -> Resolved {
     let source = if bare {
         ext::ExtensionSource::Remote(format!(
             "{}/{src}",
-            ext::official_set_base_at(OFFICIAL_SET, &version)
+            ext::official_set_base_at(EXAMPLE_SET, &version)
         ))
     } else {
-        ext::resolve_source_in(src, OFFICIAL_SET)
+        ext::resolve_source_in(src, EXAMPLE_SET)
     };
     let at = match &source {
         ext::ExtensionSource::Remote(base) => base.clone(),
