@@ -549,11 +549,16 @@ session tells it where to; there is nothing here to ask.
 
 ## Reserved keys
 
-`ctrl+q` quit · `f10` reload · `tab` / `shift+tab` and `ctrl+h` / `ctrl+l` move
-focus · `f12` perf counters.
+`ctrl+q` quit · `f10` reload · `ctrl+h` / `ctrl+l` move focus · `f12` perf counters.
 
 These cannot be rebound or consumed, so a misbehaving plugin can never leave the
 user stuck inside it.
+
+**`tab` is not among them**, deliberately. Every coding agent uses it for completion,
+and a full-screen program in a pane needs it too — an automap, a pager, `vim`. So it
+reaches your pane, and a plugin may claim it (the creation flow does). This list used
+to name `tab` as moving focus, which was never true and cost a plugin author real
+time; focus has only ever moved on `ctrl+h`/`ctrl+l`.
 
 **A disabled plugin reports nothing.** Its keys are free while it is off — another
 plugin may claim one, and turning the first back on can then surface a conflict

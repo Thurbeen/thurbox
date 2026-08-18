@@ -36,16 +36,22 @@ const KEY_WIDTH: usize = 16;
 
 /// The chords the kernel keeps for itself, with what they do.
 ///
+/// **`tab` is deliberately absent.** It used to be listed here as moving focus,
+/// which was simply untrue — `RESERVED` does not contain it and nothing binds it, on
+/// purpose: every coding agent uses Tab for completion, and a full-screen program in
+/// a pane needs it too (`doom`'s automap, vim, a pager). Listing it told users the
+/// interface would eat a key it forwards, and a downstream plugin author read that
+/// and concluded their pane could never receive it. Focus moves on `ctrl+h`/`ctrl+l`.
+///
 /// Listed because they are real and cannot be rebound, which is exactly what
 /// someone reading help wants to know. Kept in step with
 /// [`crate::kernel::registry::RESERVED`] by a test below; copy and paste are
 /// here too because the loop handles them before any binding is consulted, and
 /// the settings tabs because they belong to a modal rather than to the registry
 /// — a key nobody can discover is a key nobody uses.
-const RESERVED_ROWS: [(&str, &str); 8] = [
+const RESERVED_ROWS: [(&str, &str); 7] = [
     ("ctrl+q", "Quit"),
     ("f10", "Reload plugins"),
-    ("tab / shift+tab", "Focus next / previous pane"),
     ("ctrl+h / ctrl+l", "Focus previous / next pane"),
     ("f12", "Perf counters"),
     ("ctrl+c", "Copy selection"),
@@ -474,6 +480,34 @@ mod tests {
             false,
             Some(group),
         )
+    }
+
+    /// The rows may not claim a chord the kernel does not actually take.
+    ///
+    /// The existing check below is one-directional — every `RESERVED` chord appears
+    /// here — so an extra row went unnoticed for as long as it took a plugin author
+    /// to trust it. `tab` was listed as moving focus while being forwarded to the
+    /// pane, and this is the direction that catches the next one.
+    #[test]
+    fn no_row_claims_a_chord_the_kernel_does_not_take() {
+        use crate::kernel::registry::RESERVED;
+        // Rows that are not registry chords are documented exceptions, each of which
+        // the loop handles before any binding is consulted, or a modal owns.
+        const HANDLED_ELSEWHERE: [&str; 3] = ["ctrl+c", "ctrl+v", "[ / ]"];
+        for (chord, description) in RESERVED_ROWS {
+            if HANDLED_ELSEWHERE.contains(&chord) {
+                continue;
+            }
+            // Split the alternates a row may fold together.
+            for one in chord.split(" / ") {
+                assert!(
+                    RESERVED.contains(&one),
+                    "help lists {one:?} as {description:?}, but the kernel does not \
+                     reserve it — so it is forwarded to the focused pane and this row \
+                     is a false claim"
+                );
+            }
+        }
     }
 
     #[test]
