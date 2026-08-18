@@ -310,22 +310,28 @@ fn prune_empty(dir: &Path, removed: &Path) {
     }
 }
 
-/// The set within the official repo that bare plugin names resolve against —
-/// `ui-plugins/`, mirroring `extensions/`, and pinned to the same release tag by
+/// The directory in the thurbox repository that bare plugin names resolve against
+/// — `ui-plugins/`, mirroring `extensions/`, and pinned to the same release tag by
 /// the same helper.
+///
+/// Pinning to the tag is worth keeping even for examples: a pane reads `thurbox.*`,
+/// a contract that moves, so what a bare name fetches matches the binary asking
+/// for it.
 pub const OFFICIAL_SET: &str = "ui-plugins";
 
-/// One officially-distributed pane, for discovery and for typo help on a failed
-/// bare-name install.
+/// One example pane, for discovery and for typo help on a failed bare-name
+/// install.
+///
+/// **Examples, not a supported catalogue.** What lives in `ui-plugins/` is there to
+/// be read and copied from — one pane that draws the `input` node kind, one that
+/// runs a program — not a set thurbox maintains on anybody's behalf. Installing one
+/// is a convenience over `cp`, and delivery treats it as the user's the moment they
+/// edit it.
 ///
 /// A small static list rather than a remote index, exactly as
 /// `OFFICIAL_EXTENSIONS` is: a misspelled name should be caught without a network
 /// round-trip. Keep in step with `ui-plugins/<name>/`.
-pub const OFFICIAL_PLUGINS: &[(&str, &str)] = &[
-    (
-        "doom",
-        "Doom, in a pane, because the pane is a real terminal",
-    ),
+pub const EXAMPLE_PLUGINS: &[(&str, &str)] = &[
     ("tasks", "A todo pane: read the snapshot, send or spawn"),
     ("top", "CPU, memory and load as gauges, parsed from `top`"),
 ];
@@ -350,8 +356,8 @@ pub fn resolve_source(src: &str, pin: Option<&str>) -> Resolved {
     let bare = plugin_spec::is_bare_name(src);
     let version = match (pin, bare) {
         (Some(pin), _) => pin.to_string(),
-        // The official set follows the binary's release tag, so that IS the
-        // version of a freshly-installed bare name.
+        // A bare name is fetched at the binary's release tag, so that IS the
+        // version of a freshly-installed one.
         (None, true) => ext::official_ref(),
         (None, false) => String::new(),
     };
@@ -729,11 +735,11 @@ fn not_found_help(src: &str, error: String) -> String {
     // The fetcher's own message is two downloaders' stderr and a raw URL, which
     // buries the one thing a mistyped name needs. It is REPLACED rather than
     // appended to: this is the common failure, and the answer to it is short.
-    let mut message = format!("no official plugin named {src:?}");
+    let mut message = format!("no example plugin named {src:?}");
     if let Some(suggestion) = suggest_plugin(src) {
         message.push_str(&format!(" — did you mean {suggestion:?}?"));
     }
-    let available: Vec<&str> = OFFICIAL_PLUGINS.iter().map(|(name, _)| *name).collect();
+    let available: Vec<&str> = EXAMPLE_PLUGINS.iter().map(|(name, _)| *name).collect();
     message.push_str(&format!("\n  available: {}", available.join(", ")));
     // Kept, indented, because a bare name can also fail for reasons that are not
     // a typo at all — no network, a proxy, a broken package upstream — and
@@ -742,12 +748,12 @@ fn not_found_help(src: &str, error: String) -> String {
     message
 }
 
-/// Suggest the closest official plugin name, within a small edit budget so an
+/// Suggest the closest example plugin name, within a small edit budget so an
 /// unrelated typo suggests nothing. Mirrors `suggest_extension`.
 pub fn suggest_plugin(name: &str) -> Option<&'static str> {
     let name = name.trim().to_lowercase();
     let budget = (name.len() / 3).clamp(2, 3);
-    OFFICIAL_PLUGINS
+    EXAMPLE_PLUGINS
         .iter()
         .map(|(official, _)| (*official, edit_distance(&name, official)))
         .filter(|(_, distance)| *distance <= budget)

@@ -1,8 +1,8 @@
 //! Acquiring a pane without a terminal.
 //!
 //! Every test installs from a **local** package directory, so the suite needs no
-//! network and nothing is pinned to what the official set happens to contain
-//! today. Local, URL and bare-name sources resolve through the same function; what
+//! network and nothing is pinned to what the repository's examples happen to
+//! contain today. Local, URL and bare-name sources resolve through the same function; what
 //! differs is only where a bare name points, which is covered by a unit test
 //! beside the resolver.
 //!
@@ -78,7 +78,7 @@ fn install(src: &Path) -> thurbox::cli::output::CommandOutput {
 
 // ── what we distribute ─────────────────────────────────────────────────────
 
-/// Every package in `ui-plugins/` installs and loads.
+/// Every example package in `ui-plugins/` installs and loads.
 ///
 /// Installed from the checkout rather than by bare name, which is the same code
 /// path with a local source — the suite must not need the network, and a bare name
@@ -86,8 +86,8 @@ fn install(src: &Path) -> thurbox::cli::output::CommandOutput {
 /// is being changed here.
 ///
 /// `ui-plugins/` is not bundled, so without this nothing notices it rotting: a
-/// renamed snapshot field would leave a package looking fine and failing the moment
-/// somebody installed it.
+/// renamed snapshot field would leave an example looking fine and failing the moment
+/// somebody installed it — and an example that does not work is worse than none.
 #[test]
 fn every_distributed_package_installs_and_loads() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui-plugins");
@@ -126,16 +126,16 @@ fn every_distributed_package_installs_and_loads() {
         );
     }
 
-    // And the official listing names them, since that is what a bare-name install
-    // and a typo suggestion are resolved against.
-    let listed: Vec<&str> = thurbox::kernel::packages::OFFICIAL_PLUGINS
+    // And the listing names them, since that is what a bare-name install and a typo
+    // suggestion are resolved against.
+    let listed: Vec<&str> = thurbox::kernel::packages::EXAMPLE_PLUGINS
         .iter()
         .map(|(name, _)| *name)
         .collect();
     for name in &names {
         assert!(
             listed.contains(&name.as_str()),
-            "{name} is distributed but absent from OFFICIAL_PLUGINS, so it cannot \
+            "{name} is in ui-plugins/ but absent from EXAMPLE_PLUGINS, so it cannot \
              be installed by name and a typo suggests nothing: {listed:?}"
         );
     }

@@ -1462,7 +1462,7 @@ impl Terminals {
                 .wrapping_add(shell)
         });
         // A plugin's program is summed in too, or a frame would only be painted at
-        // the forced-redraw floor while it produced output — which for a game is
+        // the forced-redraw floor while it produced output — which for a full-screen program is
         // the difference between playable and not.
         self.programs.values().fold(sessions, |acc, slot| {
             acc.wrapping_add(slot.pane.last_output_at())
@@ -1835,7 +1835,7 @@ mod tests {
     /// keystrokes at somebody's agent.
     #[test]
     fn a_program_surface_is_told_from_a_session_surface() {
-        let key = ProgramKey::new("plugins/90_doom.lua", "doom");
+        let key = ProgramKey::new("plugins/90_watch.lua", "watch");
         assert!(is_program_surface(&key.surface_id()));
         for not_a_program in [
             "5f9c1f6e-1b2a-4c3d-8e9f-0a1b2c3d4e5f",
@@ -1856,7 +1856,7 @@ mod tests {
     fn a_program_surface_resolves_by_lookup_not_by_splitting() {
         let terminals = Terminals::new();
         // Nothing is running, so nothing resolves — including a well-formed id.
-        let key = ProgramKey::new("plugins/90_doom.lua", "doom");
+        let key = ProgramKey::new("plugins/90_watch.lua", "watch");
         assert!(terminals.program_key(&key.surface_id()).is_none());
         assert!(terminals.program_key("not-a-program").is_none());
     }
@@ -1865,10 +1865,10 @@ mod tests {
     /// string — so it is checked where the ask arrives rather than mangled.
     #[test]
     fn a_program_pane_name_is_checked_when_it_is_asked_for() {
-        for good in ["doom", "top-2", "my_pane", "a1"] {
+        for good in ["watch", "top-2", "my_pane", "a1"] {
             assert!(validate_program_name(good).is_ok(), "{good}");
         }
-        for bad in ["", "doom#2", "a b", "../x", "hé"] {
+        for bad in ["", "watch#2", "a b", "../x", "hé"] {
             assert!(validate_program_name(bad).is_err(), "{bad:?}");
         }
     }
@@ -1877,14 +1877,14 @@ mod tests {
     fn a_plugin_may_not_hold_unbounded_panes() {
         for held in 0..MAX_PROGRAMS_PER_PLUGIN {
             assert!(
-                admit_program("plugins/90_doom.lua", held, "doom").is_ok(),
+                admit_program("plugins/90_watch.lua", held, "watch").is_ok(),
                 "{held} should be admitted"
             );
         }
-        let refused = admit_program("plugins/90_doom.lua", MAX_PROGRAMS_PER_PLUGIN, "doom")
+        let refused = admit_program("plugins/90_watch.lua", MAX_PROGRAMS_PER_PLUGIN, "watch")
             .expect_err("the limit is a limit");
         // The refusal names the plugin and the limit, because the plugin shows it.
-        assert!(refused.contains("90_doom.lua"), "{refused}");
+        assert!(refused.contains("90_watch.lua"), "{refused}");
         assert!(
             refused.contains(&MAX_PROGRAMS_PER_PLUGIN.to_string()),
             "{refused}"
@@ -1894,8 +1894,8 @@ mod tests {
     #[test]
     fn a_pane_with_no_program_named_is_refused() {
         // Otherwise the pane spawns the backend's idea of an empty command line.
-        assert!(admit_program("plugins/90_doom.lua", 0, "   ").is_err());
-        assert!(admit_program("plugins/90_doom.lua", 0, "").is_err());
+        assert!(admit_program("plugins/90_watch.lua", 0, "   ").is_err());
+        assert!(admit_program("plugins/90_watch.lua", 0, "").is_err());
     }
 
     /// Nothing running means nothing to send to, and nothing to report — asserted
@@ -1903,8 +1903,8 @@ mod tests {
     #[test]
     fn an_absent_program_pane_accepts_nothing_and_reports_nothing() {
         let terminals = Terminals::new();
-        let key = ProgramKey::new("plugins/90_doom.lua", "doom");
-        assert_eq!(terminals.program_count("plugins/90_doom.lua"), 0);
+        let key = ProgramKey::new("plugins/90_watch.lua", "watch");
+        assert_eq!(terminals.program_count("plugins/90_watch.lua"), 0);
         assert!(!terminals.send_to_program(&key, b"x".to_vec()));
         assert!(terminals.program_state(&key).is_none());
     }
@@ -1915,24 +1915,24 @@ mod tests {
     /// edit, and losing a running program to one would make reloading unusable.
     #[test]
     fn a_reload_keeps_a_live_plugins_pane_and_releases_a_vanished_ones() {
-        let doom = ProgramKey::new("plugins/90_doom.lua", "doom");
+        let watch = ProgramKey::new("plugins/90_watch.lua", "watch");
         let gone = ProgramKey::new("plugins/91_deleted.lua", "top");
-        let keys = [doom.clone(), gone.clone()];
+        let keys = [watch.clone(), gone.clone()];
 
         // Both still loaded: nothing is released.
         let live = vec![
-            "plugins/90_doom.lua".to_string(),
+            "plugins/90_watch.lua".to_string(),
             "plugins/91_deleted.lua".to_string(),
         ];
         assert!(stale_program_keys(keys.iter(), &live).is_empty());
 
         // One edited away, renamed or turned off: only its pane goes.
-        let live = vec!["plugins/90_doom.lua".to_string()];
+        let live = vec!["plugins/90_watch.lua".to_string()];
         assert_eq!(stale_program_keys(keys.iter(), &live), vec![gone]);
 
         // Every plugin gone (a failed reload leaves none loaded): all of them.
         let all: Vec<ProgramKey> = stale_program_keys(keys.iter(), &[]);
         assert_eq!(all.len(), 2);
-        let _ = doom;
+        let _ = watch;
     }
 }

@@ -10,7 +10,7 @@
 //! The invisible failures are the gate and the attribution, exactly as they are
 //! for `run`: a capability that is *present and refusing* looks identical to one
 //! that is absent until you read the error, and a pane resolved to the wrong owner
-//! looks like nothing at all until two plugins both want `doom`.
+//! looks like nothing at all until two plugins both want `watch`.
 
 use thurbox::kernel::host::{Capability, LuaHost, RenderContext};
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
@@ -42,7 +42,7 @@ fn render(host: &LuaHost, name: &str) -> thurbox::kernel::host::Rendered {
 }
 
 /// A pane that asks for a program and draws its surface.
-fn doom_pane(name: &str, pane: &str, declares: bool) -> String {
+fn watch_pane(name: &str, pane: &str, declares: bool) -> String {
     format!(
         r#"return {{
   name = "{name}",
@@ -50,7 +50,7 @@ fn doom_pane(name: &str, pane: &str, declares: bool) -> String {
   input = "session",
   {}
   render = function()
-    command("program", {{ text = "{pane}", repo = "doom", args = {{ "-warp", "1" }} }})
+    command("program", {{ text = "{pane}", repo = "watch", args = {{ "-warp", "1" }} }})
     return {{ type = "surface", program = "{pane}", fill = 1 }}
   end,
 }}"#,
@@ -69,12 +69,12 @@ fn an_undeclared_plugin_asking_for_a_program_is_queued_but_may_not_run_it() {
     // The command is *queued* — `command` is always available — and refused when
     // it is honoured, because trust can be revoked between the ask and the doing.
     // What must never happen is the program starting.
-    let (_home, ui) = interface(&[("91_doom.lua", &doom_pane("doom", "doom", false))]);
+    let (_home, ui) = interface(&[("91_watch.lua", &watch_pane("watch", "watch", false))]);
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
-    render(&host, "doom");
+    render(&host, "watch");
 
-    let plugin = &host.plugins[host.index_of("doom").expect("loaded")];
+    let plugin = &host.plugins[host.index_of("watch").expect("loaded")];
     assert!(
         !host.may(plugin, Capability::Program),
         "declared nothing, so it may not run a program"
@@ -83,17 +83,17 @@ fn an_undeclared_plugin_asking_for_a_program_is_queued_but_may_not_run_it() {
 
 #[test]
 fn a_declared_but_untrusted_plugin_still_may_not_run_a_program() {
-    let (_home, ui) = interface(&[("91_doom.lua", &doom_pane("doom", "doom", true))]);
+    let (_home, ui) = interface(&[("91_watch.lua", &watch_pane("watch", "watch", true))]);
     let host = LuaHost::new(&ui);
-    let plugin = &host.plugins[host.index_of("doom").expect("loaded")];
+    let plugin = &host.plugins[host.index_of("watch").expect("loaded")];
     assert_eq!(plugin.capabilities, vec![Capability::Program]);
     assert!(
         !host.may(plugin, Capability::Program),
         "declaring is asking, not being granted"
     );
 
-    host.set_trusted(vec!["plugins/91_doom.lua".to_string()]);
-    let plugin = &host.plugins[host.index_of("doom").expect("loaded")];
+    host.set_trusted(vec!["plugins/91_watch.lua".to_string()]);
+    let plugin = &host.plugins[host.index_of("watch").expect("loaded")];
     assert!(host.may(plugin, Capability::Program));
 }
 
@@ -108,8 +108,8 @@ fn a_declared_but_untrusted_plugin_still_may_not_run_a_program() {
 #[test]
 fn two_plugins_asking_for_the_same_name_get_different_panes() {
     let (_home, ui) = interface(&[
-        ("91_one.lua", &doom_pane("one", "doom", true)),
-        ("92_two.lua", &doom_pane("two", "doom", true)),
+        ("91_one.lua", &watch_pane("one", "watch", true)),
+        ("92_two.lua", &watch_pane("two", "watch", true)),
     ]);
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -140,7 +140,7 @@ fn two_plugins_asking_for_the_same_name_get_different_panes() {
 fn a_pane_name_that_could_not_be_a_window_is_a_load_error_not_a_missing_pane() {
     // Caught while the tree is read, so the author gets a message naming the path
     // rather than a pane that silently never appears.
-    let (_home, ui) = interface(&[("91_bad.lua", &doom_pane("bad", "doom#2", true))]);
+    let (_home, ui) = interface(&[("91_bad.lua", &watch_pane("bad", "watch#2", true))]);
     let host = LuaHost::new(&ui);
     let index = host.index_of("bad").expect("the plugin itself loads");
     let error = host
@@ -166,7 +166,7 @@ fn a_pane_name_that_could_not_be_a_window_is_a_load_error_not_a_missing_pane() {
 fn an_unstarted_program_surface_is_reported_as_such() {
     use thurbox::kernel::paint::{ProgramPaint, SurfaceProvider};
     let terminals = Terminals::new();
-    let key = ProgramKey::new("plugins/91_doom.lua", "doom");
+    let key = ProgramKey::new("plugins/91_watch.lua", "watch");
 
     let mut term =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 6)).expect("terminal");
@@ -190,9 +190,9 @@ fn an_unstarted_program_surface_is_reported_as_such() {
 /// The whole tree paints, with the surface's placeholder inside it.
 #[test]
 fn a_program_pane_paints_its_placeholder_rather_than_nothing() {
-    let (_home, ui) = interface(&[("91_doom.lua", &doom_pane("doom", "doom", true))]);
+    let (_home, ui) = interface(&[("91_watch.lua", &watch_pane("watch", "watch", true))]);
     let host = LuaHost::new(&ui);
-    let rendered = render(&host, "doom");
+    let rendered = render(&host, "watch");
 
     let mut term =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).expect("terminal");
@@ -229,7 +229,7 @@ fn a_program_pane_paints_its_placeholder_rather_than_nothing() {
 #[test]
 fn a_key_for_an_absent_program_is_not_reported_as_delivered() {
     let terminals = Terminals::new();
-    let key = ProgramKey::new("plugins/91_doom.lua", "doom");
+    let key = ProgramKey::new("plugins/91_watch.lua", "watch");
     assert!(
         !terminals.send_to_program(&key, b"q".to_vec()),
         "nothing is running, so nothing accepted it"
@@ -241,7 +241,7 @@ fn a_program_surface_is_never_resolved_to_a_session() {
     let terminals = Terminals::new();
     // A well-formed program id resolves to nothing while nothing is running, and a
     // session id never resolves to a program at all.
-    let key = ProgramKey::new("plugins/91_doom.lua", "doom");
+    let key = ProgramKey::new("plugins/91_watch.lua", "watch");
     assert!(terminals.program_key(&key.surface_id()).is_none());
     assert!(terminals
         .program_key("5f9c1f6e-1b2a-4c3d-8e9f-0a1b2c3d4e5f")
@@ -260,7 +260,7 @@ fn a_program_surface_is_never_resolved_to_a_session() {
 #[test]
 fn a_program_pane_is_absent_from_every_session_enumeration() {
     let terminals = Terminals::new();
-    let key = ProgramKey::new("plugins/91_doom.lua", "doom");
+    let key = ProgramKey::new("plugins/91_watch.lua", "watch");
 
     // Not attached, not failed, has no shell, and contributes no output generation.
     assert!(!terminals.is_attached(&key.surface_id()));

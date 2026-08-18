@@ -54,11 +54,11 @@
 - [x] 7.2 Confirm window discovery does not adopt a `tbp-` window as an agent pane
 - [x] 7.3 Tests: with a pane running, the sessions reported are exactly those reported without it, and no agent status is derived from it
 
-## 8. The worked example
+## 8. Showing what it looks like
 
-- [x] 8.1 Write `ui-plugins/doom/` — the pane, its `plugin.toml`, and the honest untrusted state (a capability nobody can see used is one nobody trusts)
-- [x] 8.2 Add it to `OFFICIAL_PLUGINS` so it installs by bare name, and confirm it passes `plugin check` once its slot is placed
-- [x] 8.3 Confirm it draws how to trust it before it is trusted, as `docs/examples/composite.lua` does for `run`
+- [x] 8.1 Document the capability with a worked sketch in `docs/PLUGINS.md` — the declaration, the ask, the surface, and the untrusted state — rather than adding a pane to `ui-plugins/`. What is there is a small set of **examples**, not a catalogue, and a pane whose only purpose is to demonstrate a capability does not earn a place in it
+- [x] 8.2 Correct the framing the rest of this change had introduced: `EXAMPLE_PLUGINS` rather than `OFFICIAL_PLUGINS`, and "examples you can install" rather than "the officially distributed set", in the CLI, the docs and the website
+- [x] 8.3 Verify the untrusted state by hand instead — a pane that declares the capability and has not been trusted draws its own hint and starts nothing
 
 ## 9. Documentation
 
@@ -71,5 +71,5 @@
 ## 10. Verification
 
 - [x] 10.1 `just lint` and `just test` clean
-- [x] 10.2 Run it for real in a sandbox: install the doom pane, trust it, play it, resize the terminal, reload with `F10`, quit and relaunch — confirming the program survives the reload and is re-found after the restart
+- [x] 10.2 Run it for real in a sandbox: a pane holding `top`, trusted, typed at, reloaded with `F10` — confirming the program runs, takes keystrokes, and survives the reload
 - [x] 10.3 Confirm the negative cases by hand: untrusted draws the hint and starts nothing; a deleted plugin leaves no running window; `thurbox-cli session list` never mentions the pane

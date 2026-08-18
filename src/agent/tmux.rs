@@ -135,7 +135,7 @@ pub(crate) const PROGRAM_WINDOW_PREFIX: &str = "tbp-";
 /// `owner` is a short **digest** of the owning plugin's path, computed by the
 /// caller, not the path itself. Two reasons, and the first is a correctness one:
 /// [`sanitize_window_name`] maps every character outside `[A-Za-z0-9_-]` to `_`,
-/// so `plugins/90_doom.lua` and `plugins.90.doom.lua` would sanitize to the same
+/// so `plugins/90_watch.lua` and `plugins.90.watch.lua` would sanitize to the same
 /// window and two plugins would share one program. The second is that a path is
 /// long enough to make the window list unreadable.
 ///
@@ -1511,7 +1511,7 @@ impl SessionBackend for TmuxBackend {
     fn find_window(&self, window_name: &str) -> Result<Option<String>> {
         // The same listing `discover` reads, without its `tb-` filter and matched
         // exactly rather than by prefix — tmux's own name matching is FNMATCH-ish,
-        // which would make `tbp-x-doom` findable by `tbp-x-doo`.
+        // which would make `tbp-x-watch` findable by `tbp-x-watc`.
         let listing = self.tmux_output(&[
             "list-windows",
             "-t",
@@ -2603,11 +2603,11 @@ mod tests {
     /// which is the entire mechanism for finding the window again after a restart.
     #[test]
     fn a_program_window_is_named_deterministically_and_apart_from_sessions() {
-        let once = program_window_name("abcd1234", "doom");
-        assert_eq!(once, "tbp-abcd1234-doom");
+        let once = program_window_name("abcd1234", "watch");
+        assert_eq!(once, "tbp-abcd1234-watch");
         assert_eq!(
             once,
-            program_window_name("abcd1234", "doom"),
+            program_window_name("abcd1234", "watch"),
             "deterministic"
         );
 
@@ -2627,7 +2627,7 @@ mod tests {
     /// fails the filter too — the comment there claiming otherwise is wrong).
     #[test]
     fn discovery_cannot_see_a_program_window() {
-        let program = program_window_name("abcd1234", "doom");
+        let program = program_window_name("abcd1234", "watch");
         assert!(
             !program.starts_with(WINDOW_PREFIX),
             "{program} must fail discovery's filter"
@@ -2648,14 +2648,14 @@ mod tests {
     #[test]
     fn sanitizing_a_path_would_collide_which_is_why_the_owner_is_digested() {
         assert_eq!(
-            sanitize_window_name("plugins/90_doom.lua"),
-            sanitize_window_name("plugins.90.doom.lua"),
+            sanitize_window_name("plugins/90_watch.lua"),
+            sanitize_window_name("plugins.90.watch.lua"),
             "two distinct paths, one window name — the collision a digest avoids"
         );
         // Digested owners of different paths do not collide.
         assert_ne!(
-            program_window_name("aaaa1111", "doom"),
-            program_window_name("bbbb2222", "doom")
+            program_window_name("aaaa1111", "watch"),
+            program_window_name("bbbb2222", "watch")
         );
     }
 

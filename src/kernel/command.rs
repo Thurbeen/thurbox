@@ -1834,9 +1834,9 @@ mod tests {
     #[test]
     fn a_program_command_names_no_session() {
         let program = Command::Program {
-            owner: "plugins/90_doom.lua".into(),
-            name: "doom".into(),
-            program: "doom".into(),
+            owner: "plugins/90_watch.lua".into(),
+            name: "watch".into(),
+            program: "watch".into(),
             argv: Vec::new(),
             close: false,
         };
@@ -1853,15 +1853,15 @@ mod tests {
             Command::parse(
                 "program",
                 Args {
-                    owner: "plugins/90_doom.lua".into(),
-                    text: Some("doom".into()),
+                    owner: "plugins/90_watch.lua".into(),
+                    text: Some("watch".into()),
                     repo: (!program.is_empty()).then(|| program.to_string()),
                     action: action.map(str::to_string),
                     ..Args::default()
                 },
             )
         };
-        assert!(ask("doom", None).is_ok());
+        assert!(ask("watch", None).is_ok());
         // Closing needs no program — the pane is being given up.
         assert!(ask("", Some("close")).is_ok());
         // Starting nothing is a mistake worth reporting, not an empty command line
@@ -1872,13 +1872,13 @@ mod tests {
 
     #[test]
     fn a_program_command_refuses_a_name_that_would_not_survive_a_window_name() {
-        for bad in ["", "doom#2", "a b", "../x"] {
+        for bad in ["", "watch#2", "a b", "../x"] {
             let refused = Command::parse(
                 "program",
                 Args {
-                    owner: "plugins/90_doom.lua".into(),
+                    owner: "plugins/90_watch.lua".into(),
                     text: Some(bad.to_string()),
-                    repo: Some("doom".into()),
+                    repo: Some("watch".into()),
                     ..Args::default()
                 },
             );

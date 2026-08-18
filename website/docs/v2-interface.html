@@ -128,9 +128,8 @@ breadcrumb: 'Interface'
   A pane can hold a
   <em>real terminal</em>
   for a program it names &mdash;
-  <code>htop</code>, a REPL, a log you page through, or
-  <code>doom</code>. Keystrokes reach it, it is resized to the pane's rect, and it keeps running
-  while you work elsewhere. The pane belongs to the plugin rather than to a session, and survives
+  <code>htop</code>, a REPL, or a log you page through. Keystrokes reach it, it is resized to the
+  pane's rect, and it keeps running while you work elsewhere. The pane belongs to the plugin rather than to a session, and survives
   reloading the interface.
 </p>
 <p>
@@ -213,7 +212,7 @@ breadcrumb: 'Interface'
   optional pin &mdash; and
   <code>plugins.lock</code>
   beside it records what each entry resolved to, so the same spec reproduces the same interface on
-  another machine. A bare name resolves to the official set at
+  another machine. A bare name resolves to the repository's examples at
   <em>this binary's release tag</em>
   , exactly as an extension name does; URLs and filesystem paths work too. The rules delivery
   already follows carry over unchanged: a managed file you edited is preserved and reported, and one

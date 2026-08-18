@@ -35,8 +35,8 @@ read of a grid some other thread fills.
 
 **Goals:**
 
-- A plugin can put an interactive program in a pane it owns, and `thurbox-doom` is
-  a plugin somebody can actually write.
+- A plugin can put an interactive program in a pane it owns — a full-screen game,
+  `htop`, a REPL — and it is a plugin somebody can actually write.
 - Keystrokes, resize and repaint work the way they already do for a session's
   terminal, through the same code rather than beside it.
 - The capability is granted separately from `run`, and what a file is asking for is
@@ -66,7 +66,7 @@ read of a grid some other thread fills.
 ### D1 — The pane is the plugin's, keyed by (plugin, name)
 
 A plugin asks for `name`, and the kernel keys the pane on the **calling plugin's
-path plus that name**. Not on a session, per the user's decision: one `doom`,
+path plus that name**. Not on a session, per the user's decision: one instance,
 whatever is selected.
 
 The plugin's path is the key because it is already the identity everything else
@@ -75,7 +75,7 @@ Using the declared `name` instead would let two files claim one pane by declarin
 the same name, and would move a pane when its author renamed the plugin.
 
 *Alternative.* Key on the session, reusing `ensure_shell_pane` almost verbatim —
-near-free, and right for `htop`-on-this-host. Rejected as the user's call and
+near-free, and right for a per-session `htop`. Rejected as the user's call and
 because the session's own shell already covers "a terminal in this worktree".
 
 ### D2 — State lives in `Terminals`, beside `live`
@@ -96,7 +96,7 @@ alternative splits one paint seam in two.
 
 ### D3 — The surface names the pane, and the kernel stamps the owner
 
-In Lua: `{ type = "surface", program = "doom" }`. The plugin never writes an owner
+In Lua: `{ type = "surface", program = "watch" }`. The plugin never writes an owner
 and cannot name another plugin's pane — the kernel resolves `program` against the
 plugin currently being rendered, the same way `state` is namespaced by plugin and
 `run`'s answers are namespaced by asker.
@@ -125,7 +125,8 @@ spelling to learn and no migration.
 
 The escape-route rule is unchanged and load-bearing: `RESERVED` chords and the
 navigation/quit set are never deferred, so a program that eats every key cannot
-trap the user. This is why `doom` is safe to run at all.
+trap the user. This is what makes a program that consumes every key safe to run
+at all.
 
 ### D5 — Re-adoption by window name, not by a persisted id
 
@@ -142,7 +143,7 @@ cannot go stale: either the window is there or it is not.
 
 The plugin path is **digested** rather than sanitized into the name because
 `sanitize_window_name` maps every non-`[A-Za-z0-9_-]` character to `_`, so
-`plugins/90_doom.lua` and `plugins.90.doom.lua` would collide — and a path is long
+`plugins/90_watch.lua` and `plugins.90.watch.lua` would collide — and a path is long
 enough to make window names unreadable.
 
 *Alternative.* Kill the pane on quit, so nothing is ever re-adopted. Simpler and no
@@ -157,7 +158,7 @@ orphans — and it throws away the game you were playing, which is the whole fea
 - **A plugin that is gone** — deleted, renamed, disabled — has its panes released,
   following `runs::retain_plugins(live)`, which `reload_interface` already calls for
   exactly this reason ("must not leave its answers behind to accumulate across
-  reloads"). Released means the window is killed: an invisible unreachable `doom` is
+  reloads"). Released means the window is killed: an invisible unreachable program is
   worse than a closed one, and unlike a session there is nothing in the interface
   that could ever show it again.
 - **Quit** detaches, as it does for sessions. The window survives and D5 finds it
@@ -259,7 +260,7 @@ session's agent, which D8 asserts.
   the pane having focus, and the escape chords are never deferred. The failure mode
   to avoid is a *silently* swallowed key, which is why an unbacked pane must not
   report the key as handled (a spec scenario).
-- **Two plugins both wanting `doom`** → They get two panes, two windows, two
+- **Two plugins both wanting a pane of the same name** → They get two panes, two windows, two
   processes, by D1's key. Correct, if surprising; the alternative (sharing by name)
   is the cross-plugin access D3 exists to prevent.
 
@@ -282,7 +283,7 @@ trust; either leaves the pane unable to start and the plugin still loading.
   plugin would have to name one — which means plugins knowing about `hosts.toml`,
   which nothing in the interface does today. Deferred, not refused.
 - **Should the pane's working directory be nameable?** Local-only makes the
-  interface directory the obvious default, and `doom` does not care. A REPL or a log
+  interface directory the obvious default, and a game does not care. A REPL or a log
   tail would. Related to the question above: both are really "how much context does a
   plugin-owned pane get to choose".
 - **Does a program pane want scrollback?** The agent surface has it and the shell

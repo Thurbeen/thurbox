@@ -36,8 +36,8 @@ pub const LOCK_FILE: &str = "plugins.lock";
 /// One plugin the interface is composed of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginEntry {
-    /// Where it comes from: a bare name resolving to the official set for this
-    /// release, a URL, or a filesystem path. Resolved by the same rules an
+    /// Where it comes from: a bare name resolving to the repository's examples for
+    /// this release, a URL, or a filesystem path. Resolved by the same rules an
     /// extension source is, so one vocabulary covers both.
     pub src: String,
     /// Where it is delivered, relative to the interface directory. Carries the
@@ -110,9 +110,9 @@ pub fn validate_destination(file: &str) -> Result<(), String> {
 
 /// Whether a source is a bare name rather than a URL or a path.
 ///
-/// Bare names are what resolve against the official set; the discrimination
-/// matters here only for naming an entry, and the authoritative resolution lives
-/// with the installer.
+/// Bare names are what resolve against the repository's examples; the
+/// discrimination matters here only for naming an entry, and the authoritative
+/// resolution lives with the installer.
 pub fn is_bare_name(src: &str) -> bool {
     !src.contains("://")
         && !src.contains('/')

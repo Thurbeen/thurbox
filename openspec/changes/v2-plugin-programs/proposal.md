@@ -1,10 +1,11 @@
 ## Why
 
 A plugin can read anything and draw anything, and it can ask for a program's
-*output* — but it cannot give you a program to **use**. `thurbox-doom` is the
-sharp version of the request: a pane that runs `doom`, takes your keystrokes, and
-resizes with its rect. So are the ordinary versions — `htop`, `lazygit`, a REPL, a
-log tail you page through.
+*output* — but it cannot give you a program to **use**. The sharp version of the
+request is a pane running a full-screen game: it takes every keystroke and resizes
+with its rect, so nothing about the existing machinery covers it. The ordinary
+versions are the same shape — `htop`, `lazygit`, a REPL, a log tail you page
+through.
 
 Two things stand in the way, and both are hardcoded rather than principled:
 
@@ -24,10 +25,10 @@ strictly a session id, which is the seam this change widens.
 - **A plugin can ask for a program and get a pane.** It names the pane; the
   kernel keeps it running and paints it. Idempotent, like `shell`: asking every
   frame is safe, which is the pattern `run` already established.
-- **The pane belongs to the plugin, not a session.** One `doom`, whatever is
-  selected. A session-scoped program would mean one doom per session, which is
-  not what "a dedicated pane" means — and the session's own shell already covers
-  "a terminal in this worktree, on this host".
+- **The pane belongs to the plugin, not a session.** One instance, whatever is
+  selected. A session-scoped program would mean one per session, which is not what
+  "a dedicated pane" means — and the session's own shell already covers "a terminal
+  in this worktree, on this host".
 - **A new `surface` source addresses it.** No new node kind: `surface` already
   resolves a kernel-interpreted id, and this is a second thing that id can name.
 - **Keystrokes reach it.** Today a pane declaring `input = "session"` has its
@@ -87,8 +88,10 @@ None. Two requirements were considered and deliberately left alone:
   `Run`, so the inventory can say which files ask for it without reading them.
 - **`src/main.rs`** — key forwarding stops assuming the target is a session.
 - **`src/kernel/modals/interface.rs`** — a file asking for `program` says so.
-- **`ui-plugins/`** — `doom` as the worked example, since a capability nobody
-  can see used is one nobody trusts.
+- **No new example pane.** `ui-plugins/` holds a small set of examples, not a
+  catalogue, and a pane whose only purpose is to demonstrate a capability does not
+  earn a place there. The capability is shown as a worked sketch in the guide
+  instead.
 - **Docs** — `docs/PLUGINS.md`, `ui/README.md`, `thurbox.yml` (the plugin sandbox
   selene lints against), `CLAUDE.md`, and the website's interface page.
 - **No schema change.** A plugin's pane is runtime state, not a persisted row.

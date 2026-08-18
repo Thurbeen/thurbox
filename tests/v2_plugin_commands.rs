@@ -356,11 +356,11 @@ fn declares(name: &str, capabilities: &[&str]) -> String {
 
 #[test]
 fn program_is_a_capability_of_its_own_and_is_enumerable_from_the_declaration() {
-    let (_home, ui) = interface(&[("91_doom.lua", &declares("doom", &["program"]))]);
+    let (_home, ui) = interface(&[("91_watch.lua", &declares("watch", &["program"]))]);
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
     assert_eq!(
-        host.plugins[host.index_of("doom").expect("loaded")].capabilities,
+        host.plugins[host.index_of("watch").expect("loaded")].capabilities,
         vec![Capability::Program],
         "readable as data, without executing the plugin"
     );
@@ -390,42 +390,42 @@ fn a_misspelled_capability_is_refused_and_names_what_exists() {
 fn trusting_a_file_for_one_capability_does_not_grant_the_other() {
     let (_home, ui) = interface(&[
         ("91_runner.lua", &declares("runner", &["run"])),
-        ("92_doomer.lua", &declares("doomer", &["program"])),
+        ("92_watcher.lua", &declares("watcher", &["program"])),
     ]);
     let host = LuaHost::new(&ui);
     host.set_trusted(vec![
         "plugins/91_runner.lua".to_string(),
-        "plugins/92_doomer.lua".to_string(),
+        "plugins/92_watcher.lua".to_string(),
     ]);
 
     let runner = &host.plugins[host.index_of("runner").expect("loaded")];
-    let doomer = &host.plugins[host.index_of("doomer").expect("loaded")];
+    let watcher = &host.plugins[host.index_of("watcher").expect("loaded")];
 
     assert!(host.may(runner, Capability::Run));
     assert!(
         !host.may(runner, Capability::Program),
         "trusted to read a program's output is not trusted to hold one open"
     );
-    assert!(host.may(doomer, Capability::Program));
+    assert!(host.may(watcher, Capability::Program));
     assert!(
-        !host.may(doomer, Capability::Run),
+        !host.may(watcher, Capability::Run),
         "and the converse: the grant follows what the file declared"
     );
 }
 
 #[test]
 fn declaring_a_capability_is_not_being_granted_it() {
-    let (_home, ui) = interface(&[("91_doom.lua", &declares("doom", &["program"]))]);
+    let (_home, ui) = interface(&[("91_watch.lua", &declares("watch", &["program"]))]);
     let host = LuaHost::new(&ui);
-    let doom = &host.plugins[host.index_of("doom").expect("loaded")];
+    let watch = &host.plugins[host.index_of("watch").expect("loaded")];
     assert!(
-        !host.may(doom, Capability::Program),
+        !host.may(watch, Capability::Program),
         "declaring is asking, not being granted"
     );
     // And the path-keyed form agrees, since that is what a queued command carries.
-    assert!(!host.may_path("plugins/91_doom.lua", Capability::Program));
-    host.set_trusted(vec!["plugins/91_doom.lua".to_string()]);
-    assert!(host.may_path("plugins/91_doom.lua", Capability::Program));
+    assert!(!host.may_path("plugins/91_watch.lua", Capability::Program));
+    host.set_trusted(vec!["plugins/91_watch.lua".to_string()]);
+    assert!(host.may_path("plugins/91_watch.lua", Capability::Program));
     assert!(
         !host.may_path("plugins/99_nobody.lua", Capability::Program),
         "a path that names no loaded plugin may nothing"

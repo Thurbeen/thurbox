@@ -44,7 +44,7 @@ pub enum Action {
     List,
     /// Install a plugin from a source, recording it in `plugins.toml`.
     Install {
-        /// A bare name from the official set, a URL, or a filesystem path.
+        /// A bare name from the examples in the repo, a URL, or a filesystem path.
         src: String,
         /// Where the pane lands. Required for a single `.lua` source, which
         /// proposes no destination of its own.
@@ -66,7 +66,7 @@ pub enum Action {
         /// The entry's name, or the file it delivered.
         name: String,
     },
-    /// List the officially distributed plugins.
+    /// List the example plugins a bare name resolves to.
     Available,
 }
 
@@ -557,7 +557,7 @@ fn remove(name: &str) -> Result<CommandOutput, String> {
 }
 
 fn available() -> Result<CommandOutput, String> {
-    let plugins = crate::kernel::packages::OFFICIAL_PLUGINS;
+    let plugins = crate::kernel::packages::EXAMPLE_PLUGINS;
     let table = super::output::table(
         &["name", "description"],
         &plugins

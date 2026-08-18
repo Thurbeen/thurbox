@@ -22,7 +22,7 @@ const MAX_DEPTH: usize = 64;
 ///
 /// `owner` is the path of the plugin that produced it, needed because a
 /// `surface` naming a **program** names one of that plugin's own — the plugin
-/// writes `program = "doom"` and the kernel resolves the owner, so naming another
+/// writes `program = "watch"` and the kernel resolves the owner, so naming another
 /// plugin's pane is impossible by construction rather than refused by a check.
 pub fn to_node(value: &Value, owner: &str) -> Result<Node, String> {
     convert(value, "root", 0, owner)

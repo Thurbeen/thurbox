@@ -1664,8 +1664,10 @@ thurbox-cli plugin install top    # a distributed pane, recorded in plugins.toml
 thurbox-cli plugin sync           # make the directory match the spec
 ```
 
-Two officially distributed panes live in `ui-plugins/` (`tasks`, `top`) and install
-by bare name; `docs/examples/{plugin,composite,layout}.lua` are copied by hand.
+Two **example** panes live in `ui-plugins/` (`tasks`, `top`) and install by bare
+name; `docs/examples/{plugin,composite,layout}.lua` are copied by hand. They are
+examples to read and copy from, not a catalogue thurbox maintains for anyone —
+`EXAMPLE_PLUGINS` is the list a bare name and a typo suggestion resolve against.
 `check` fails on a pane that **loaded but which no arrangement places** — the only
 failure with no symptom — and prints the `layout.lua` line to add.
 
@@ -1727,11 +1729,11 @@ upgrade forgets nothing.
 
 **A plugin can run a program you interact with** (`Capability::Program`,
 `kernel::terminal`'s `programs` map). `run` captures output once with no stdin and
-no tty, so it cannot give you `htop`, a REPL or `doom`; a *program pane* holds a
+no tty, so it cannot give you `htop`, `lazygit` or a REPL; a *program pane* holds a
 real terminal — keystrokes go to it, it is resized to its rect, it survives an
 `F10` reload. The pane belongs to the **plugin**, not a session: the plugin writes
-`command("program", { text = "doom", repo = "doom" })` and draws
-`{ type = "surface", program = "doom" }`, and the kernel stamps the owner from the
+`command("program", { text = "watch", repo = "htop" })` and draws
+`{ type = "surface", program = "watch" }`, and the kernel stamps the owner from the
 plugin being rendered, so naming another plugin's pane is impossible by
 construction. Reuses the companion-shell machinery whole (`ProgramPane` mirrors
 `ShellPane` over the same `Session::wire_up`); the differences are a third window

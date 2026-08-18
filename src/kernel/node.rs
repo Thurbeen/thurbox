@@ -705,7 +705,7 @@ mod tests {
             identity: Identity::default(),
         };
         let program = Node::Surface {
-            source: SurfaceSource::Program("program:plugins/90_doom.lua#doom".into()),
+            source: SurfaceSource::Program("program:plugins/90_watch.lua#watch".into()),
             scroll: 0,
             frame: None,
             size: Size::default(),
@@ -724,7 +724,7 @@ mod tests {
 
         assert_eq!(
             program.first_live_surface(),
-            Some("program:plugins/90_doom.lua#doom")
+            Some("program:plugins/90_watch.lua#watch")
         );
         assert_eq!(
             program.first_session_surface(),
@@ -746,7 +746,7 @@ mod tests {
         };
         assert_eq!(
             wrapped.first_live_surface(),
-            Some("program:plugins/90_doom.lua#doom"),
+            Some("program:plugins/90_watch.lua#watch"),
             "the plugin-drawn cells are skipped rather than claiming the keys"
         );
     }

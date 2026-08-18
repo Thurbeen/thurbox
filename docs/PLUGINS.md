@@ -477,9 +477,9 @@ which is what makes `docker compose ps` mean the right containers.
 ## Running a program you interact with
 
 `run` captures a program's output once. It has no stdin and no terminal, so it
-cannot give you `htop`, `lazygit`, a REPL, a log you page through — or `doom`. For
-those a pane holds a **real terminal**: keystrokes go to the program, it is resized
-to the rect, and it keeps running while you work elsewhere.
+cannot give you `htop`, `lazygit`, a REPL or a log you page through. For those a
+pane holds a **real terminal**: keystrokes go to the program, it is resized to the
+rect, and it keeps running while you work elsewhere.
 
 ```lua
 capabilities = { "program" },      -- a DIFFERENT capability from `run`
@@ -492,16 +492,20 @@ render = function(ctx)
   end
   -- Every frame. Asking for a pane you already have is a map lookup, not a
   -- second copy of the program.
-  command("program", { text = "doom", repo = "doom", args = { "-warp", "1" } })
-  return { type = "surface", program = "doom", fill = 1 }
+  command("program", { text = "watch", repo = "htop", args = { "-d", "10" } })
+  return { type = "surface", program = "watch", fill = 1 }
 end,
 ```
 
-The pane is **yours**, not a session's: one `doom` whatever is selected. You write
+The pane is **yours**, not a session's: one instance whatever is selected. You write
 its name and the kernel supplies the owner, so two plugins can both call their pane
-`doom` and get two different programs — and neither can name the other's.
+`watch` and get two different programs — and neither can name the other's.
 
-Give one up with `command("program", { text = "doom", action = "close" })`. A
+`repo` is the program and `args` its arguments, kept separate because the
+multiplexer quotes each one: a path with a space in it survives that and would not
+survive being concatenated into a command line.
+
+Give one up with `command("program", { text = "watch", action = "close" })`. A
 plugin that is removed, renamed or turned off has its panes released for it.
 
 **Why `thurbox.granted` and not `if not program then`.** A capability is normally
@@ -532,9 +536,6 @@ exited rather than drawn as a frozen screen, and asking again starts it afresh.
 **Local only, for now.** A plugin's pane has no session and therefore no host, so
 it runs on this machine in the interface directory. `run` goes remote because a
 session tells it where to; there is nothing here to ask.
-
-`ui-plugins/doom/` is the worked example. Install it with `thurbox-cli plugin
-install doom`, add its slot to `layout.lua`, and trust it.
 
 ## Reserved keys
 
@@ -582,14 +583,17 @@ Three escape hatches, in increasing order of how much you give up:
   forgetting which ones you had removed. Your own files are untouched.
 - **Delete the whole directory** for the shipped interface exactly as it ships.
 
-## Panes you can install
+## Examples you can install
 
-Two distributed panes under `ui-plugins/`, neither of them bundled, plus two
-worked examples under `docs/examples/` you copy by hand. They exist because "every
-pane is a file" is easier to believe from a pane you added yourself than from
-prose.
+Two example panes under `ui-plugins/`, neither of them bundled, plus two more under
+`docs/examples/` you copy by hand. They exist because "every pane is a file" is
+easier to believe from a pane you added yourself than from prose.
 
-| Pane | What it is |
+**They are examples, not a catalogue.** They are here to be read and copied from,
+not a set thurbox maintains on your behalf — installing one is a convenience over
+`cp`, and it becomes yours the moment you edit it.
+
+| Example | What it is |
 |---|---|
 | `tasks` | v1's tasks pane, rebuilt as a plugin. Reads `thurbox.tasks`, writes `task` commands, needs no capability |
 | `top` | CPU, memory and load as gauges, parsed from `top`. Asks for `run`, so it needs your trust |
@@ -658,8 +662,9 @@ TOML because that is what every hand-edited registry here is, and because a bad
 edit is a parse error naming its line rather than a nil three frames later. A bare
 name resolves to `ui-plugins/<name>` in the thurbox repository at **this binary's
 release tag**, exactly as an extension name resolves to `extensions/<name>` — a
-pane reads `thurbox.*`, which is a contract that moves, so what the official source
-hands over matches the binary asking for it. URLs and filesystem paths work too,
+pane reads `thurbox.*`, which is a contract that moves, so what a bare name fetches
+matches the binary asking for it. Bare names reach the *examples*; anything you
+actually depend on is better named by a URL or a path you control. URLs and filesystem paths work too,
 and a URL ending in `.lua` installs that single file (with `--as` naming where it
 lands).
 
