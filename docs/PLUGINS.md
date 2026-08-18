@@ -61,7 +61,7 @@ inventory `plugin list` does, and restores a file you broke. Open settings with
 
 ## Traps
 
-Eight mistakes that are invisible until runtime. Each cost real time in the
+Nine mistakes that are invisible until runtime. Each cost real time in the
 changes that built the bundled panes.
 
 **Reading `state` or `store` hands back a copy.** Mutating it changes nothing —
@@ -91,6 +91,13 @@ undefined variable; the runtime message will not help you.
 **`and`/`or` cannot carry a miss.** `matched = searching and fuzzy(q, row) or {}`
 turns a *failed* match (`nil`) into an empty table, which then reads as a match —
 so a filter silently keeps everything. Spell it as an `if`.
+
+**A Lua character class is a set of *bytes*.** `text:match("[▸▾]")` does not mean
+"either of those arrows" — it means any byte occurring in their encodings, which
+matches no arrow and plenty of unrelated things. `#` counts bytes for the same reason,
+so a column computed from it comes out short on any row with `é` or `╭` in it. This
+interface is full of multi-byte glyphs, so both apply constantly: measure with
+`utf8.len`, and compare whole strings rather than classing them.
 
 **`ipairs` stops at the first hole.** It is not "iterate the array"; it is "iterate
 until a `nil`". A table built by index where one slot was left empty — a diff row with
@@ -230,6 +237,13 @@ widgets.gauge(0.7, { width = 20 })
 `surface` is the exception that proves the rule: it carries **cells**, for
 content positioned by character measurement rather than by structure — a live
 terminal, or a diff body. You place and frame it; the kernel fills it.
+
+The cost of that split, which is easy to meet as a mystery rather than as a fact:
+**cells never become nodes, so a surface is invisible to anything that walks the node
+tree** — including your own tests. An assertion that looks for text in the tree finds
+none of a diff body's content and *matches nothing rather than failing*, which reads
+as the feature being broken. Anything asserting on what a surface shows has to go
+through the cells you handed it.
 
 ## Sizing, and why your rect is known
 
