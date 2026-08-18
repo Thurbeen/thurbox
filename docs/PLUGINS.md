@@ -90,9 +90,17 @@ so a filter silently keeps everything. Spell it as an `if`.
 occupies the centre and competes with the terminal. The bundled floats use
 `slot = "float"`, which `layout.lua` does not place.
 
-**`on_action` must return `false` while a text field has focus**, or your pane's
-own letter keys swallow typing. The flow's `j` moves the list in one focus and
-types a `j` in another for exactly this reason.
+**`on_action` must return `false` while a text field has focus** — and that check
+has to be the **first thing it does, for every action**, not a decision made inside
+the handler for a particular one. The order is why: a press is resolved against the
+registry *before* `on_key` is offered it, so by the time your pane sees the letter
+it is already an action. A pane that gates inside `review.refresh` has still
+refreshed by the time it notices the find box had focus — the symptom being that
+typing a word containing `r` does something, and only that letter.
+
+Every letter your pane declares is a letter somebody will type into a search box.
+The flow's `j` moves the list in one focus and types a `j` in another for exactly
+this reason.
 
 ## The directory tells you this too
 

@@ -26,6 +26,14 @@ pub struct FileSummary {
     pub path: String,
     pub added: usize,
     pub removed: usize,
+    /// `M` / `A` / `D` / `R`, as the parser determined it.
+    ///
+    /// Carried because the parser already knew: dropping it made a pane re-read
+    /// the whole body to recover a glyph, which for a capped diff is ~99,000 lines
+    /// of Lua to learn something the kernel had in hand.
+    pub status: &'static str,
+    /// The path a rename came from, when it differs.
+    pub old_path: Option<String>,
 }
 
 /// What is known about a session's changes.
@@ -39,6 +47,9 @@ pub enum Diff {
         body: Vec<String>,
         /// Set when the diff was larger than the cap.
         truncated: bool,
+        /// The diff's size before any cut, in bytes, so a truncation banner can be
+        /// specific about what is missing.
+        raw_bytes: usize,
     },
     Failed(String),
 }
@@ -153,6 +164,11 @@ fn compute(worktree: &Path, base: Option<&str>, host: Option<&crate::session::Ho
     };
 
     let truncated = raw.len() > MAX_DIFF_BYTES;
+    // The size before the cut, so a pane can say "4.0 of 20.3 MB" rather than
+    // "some changes are not shown". The file *count* is deliberately not offered:
+    // knowing it would mean parsing the whole diff, which is what the cap exists
+    // to avoid.
+    let raw_bytes = raw.len();
     let raw = if truncated {
         // Cut on a line boundary so the parser is not handed half a hunk. Searched
         // over the *bytes* rather than by slicing the string first: a `String` is
@@ -176,6 +192,7 @@ fn compute(worktree: &Path, base: Option<&str>, host: Option<&crate::session::Ho
         files: parsed.iter().map(summarise).collect(),
         body: raw.lines().map(str::to_string).collect(),
         truncated,
+        raw_bytes,
     }
 }
 
@@ -186,6 +203,8 @@ fn summarise(file: &DiffFile) -> FileSummary {
         path: file.path.clone(),
         added: file.added_count(),
         removed: file.deleted_count(),
+        status: file.status.glyph(),
+        old_path: file.old_path.clone(),
     }
 }
 
@@ -248,6 +267,32 @@ mod tests {
         assert_eq!(store.get("s1"), Some(&Diff::Pending));
     }
 
+    /// A rename and a status reach the pane without it re-reading the body — the
+    /// parser knew both, and dropping them cost ~99,000 lines of Lua per capped
+    /// diff to recover a glyph and an arrow.
+    #[test]
+    fn a_summary_carries_the_status_and_the_old_path() {
+        let raw = "diff --git a/old.rs b/new.rs\n\
+                   similarity index 90%\n\
+                   rename from old.rs\n\
+                   rename to new.rs\n\
+                   --- a/old.rs\n\
+                   +++ b/new.rs\n\
+                   @@ -1,1 +1,1 @@\n\
+                   -was\n\
+                   +is\n";
+        let parsed = parse_unified_diff(raw);
+        let summary: Vec<FileSummary> = parsed.iter().map(summarise).collect();
+        let file = summary.first().expect("one file");
+        assert_eq!(file.status, "R", "a rename reports itself as one");
+        assert_eq!(
+            file.old_path.as_deref(),
+            Some("old.rs"),
+            "and says where it came from: {file:?}"
+        );
+        assert_eq!((file.added, file.removed), (1, 1));
+    }
+
     #[test]
     fn pending_is_distinct_from_empty() {
         // A slow diff must not look like a clean worktree.
@@ -256,6 +301,7 @@ mod tests {
             files: Vec::new(),
             body: Vec::new(),
             truncated: false,
+            raw_bytes: 0,
         };
         assert_ne!(pending, empty);
     }

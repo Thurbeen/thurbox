@@ -1584,9 +1584,12 @@ impl LuaHost {
                     files,
                     body,
                     truncated,
+                    raw_bytes,
                 } => {
                     item.set("state", "ready").map_err(|e| e.to_string())?;
                     item.set("truncated", *truncated)
+                        .map_err(|e| e.to_string())?;
+                    item.set("raw_bytes", *raw_bytes as i64)
                         .map_err(|e| e.to_string())?;
                     let list = self.lua.create_table().map_err(|e| e.to_string())?;
                     for (index, file) in files.iter().enumerate() {
@@ -1597,6 +1600,17 @@ impl LuaHost {
                         entry.set("added", file.added).map_err(|e| e.to_string())?;
                         entry
                             .set("removed", file.removed)
+                            .map_err(|e| e.to_string())?;
+                        // Both already known to the parser; a pane re-reading the
+                        // body to recover them is the cost of dropping them here.
+                        entry
+                            .set("status", file.status)
+                            .map_err(|e| e.to_string())?;
+                        entry
+                            .set(
+                                "old_path",
+                                opt_lua_string(&self.lua, file.old_path.as_deref())?,
+                            )
                             .map_err(|e| e.to_string())?;
                         list.set(index + 1, entry).map_err(|e| e.to_string())?;
                     }
