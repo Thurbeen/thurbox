@@ -108,6 +108,21 @@ pub fn validate_destination(file: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The pane a package manifest names, read **leniently**.
+///
+/// Only `pane.source` — the path within the package — and none of the copy-model
+/// rules [`PackageManifest::validate`] enforces. Those rules exist for a package
+/// whose files are copied to prescribed destinations; a repository keeps its own
+/// layout, so a manifest written for a clone would legitimately fail them (its
+/// modules live at `lib/…` inside its own tree, not at `lib/<name>/…` inside the
+/// interface). Reading strictly here would reject a correct repository for breaking
+/// a rule that does not apply to it.
+pub fn pane_source_of(text: &str) -> Option<String> {
+    let value: toml::Value = toml::from_str(text).ok()?;
+    let source = value.get("pane")?.get("source")?.as_str()?.trim();
+    (!source.is_empty()).then(|| source.to_string())
+}
+
 /// Is this destination inside an installed plugin's own directory rather than the
 /// interface's shared `plugins/`?
 ///

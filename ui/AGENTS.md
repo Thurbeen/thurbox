@@ -29,6 +29,19 @@ the files are theirs now, so do not install a repository the user did not name.
 `thurbox.platform` gives a pane `os` and `arch`, which is how a plugin shipping
 several binaries picks one. The manifest does not do it for you.
 
+**Never build under this directory, and never write inside an installed plugin's
+working copy.** Two different reasons, both easy to trip over if you make a pane fetch
+or compile something:
+
+- This directory is watched *recursively*, so an `npm install` here fires thousands of
+  events. The symptom is not "reloads too often" — a burst keeps the debounce rolling
+  forward, so it **stops reloading at all** while you are busy.
+- Anything you generate inside a cloned plugin's own directory makes its git tree
+  dirty, and a dirty tree is what makes `plugin update` refuse to move it. You would
+  be making the plugin un-updatable to save a path.
+
+Put generated files in `$XDG_CACHE_HOME/<plugin>/` (or `~/.cache/<plugin>/`).
+
 **There is no `npm`, `cargo`, `pip` or `go get` in this directory, and nothing to
 run one on.** No `package.json`, no lockfile of that kind, no `node_modules`. The
 only dependencies a pane has are the modules in `lib/`, which are already here and

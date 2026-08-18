@@ -539,11 +539,20 @@ pub fn repository_name(url: &str) -> Result<String, String> {
 
 /// The pane inside a freshly-cloned working copy.
 ///
-/// `as_file` wins. Otherwise the single `.lua` in the repository's `plugins/`
-/// directory is it — which is what a well-formed plugin repository looks like, and
-/// makes "clone it and it works" true without a manifest. Anything else is
-/// ambiguous and says so, listing what it found, because guessing which of several
-/// panes is the entry point would be a silent wrong answer.
+/// Three answers in order, and the order is the point:
+///
+/// 1. **`--as`**, because an explicit request wins over anything inferred.
+/// 2. **The repository's own `plugin.toml`**, if it has one. A manifest is therefore
+///    *not* irrelevant to a cloned plugin: it is how a repository with several panes
+///    names its entry point, and it means one repository serves both install
+///    mechanisms rather than presenting two doors that behave differently. Read
+///    leniently (`pane_source_of`) — the copy-model rules do not apply to a tree
+///    that keeps its own layout.
+/// 3. **The single `.lua` under `plugins/`**, which is what a one-pane repository
+///    looks like and makes "clone it and it works" true with no manifest at all.
+///
+/// Anything else is ambiguous and says so, listing what it found: guessing which of
+/// several panes is the entry point would be a silent wrong answer.
 fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Result<String, String> {
     if let Some(rel) = as_file {
         let rel = rel.trim_start_matches('/');
@@ -556,6 +565,21 @@ fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Resul
             return Err(format!("{rel} is not in the repository"));
         }
         return Ok(file);
+    }
+
+    // The repository's own manifest, when it has one.
+    if let Ok(text) = std::fs::read_to_string(root.join(crate::session::PackageManifest::FILE)) {
+        if let Some(source) = plugin_spec::pane_source_of(&text) {
+            let file = format!("{name}/{}", source.trim_start_matches('/'));
+            plugin_spec::validate_destination(&file)?;
+            if !root.join(&source).is_file() {
+                return Err(format!(
+                    "{} names {source} as its pane, which is not in the repository",
+                    crate::session::PackageManifest::FILE
+                ));
+            }
+            return Ok(file);
+        }
     }
 
     let plugins = root.join("plugins");

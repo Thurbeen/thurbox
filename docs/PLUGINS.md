@@ -707,6 +707,15 @@ changed reports `kept` and leaves it alone. `git diff` shows what you changed an
 `git checkout` undoes it — better than any restore we could offer for a file we
 never shipped.
 
+That protection cuts both ways, and it is the trap for a pane that *generates*
+anything. **Never write inside your own working copy.** A build artefact, a
+downloaded engine, a cache — anything you produce there makes the tree dirty, and a
+dirty tree is exactly what makes `update` report `kept` and refuse to move. Keeping
+your working copy clean is not tidiness; it is what keeps your plugin updatable. Put
+what you generate in `$XDG_CACHE_HOME/<your-plugin>/` (or `~/.cache/<your-plugin>/`),
+outside the interface directory entirely — which the next paragraph is also the reason
+for.
+
 The spec entry names the pane inside the working copy:
 
 ```toml
@@ -744,6 +753,22 @@ Deliberately not a manifest field. A substitution template states one rule; a pa
 that reads its platform states every rule it actually needs — prefer something
 already on `PATH`, fall back to a portable build, distinguish a libc variant, or draw
 an honest "nothing here for this machine".
+
+**Do not build under the interface directory.** It is watched *recursively*, so an
+`npm install` or a compile there fires thousands of events. `.git` is filtered;
+a plugin's own build tree is not, and filtering every possible one is not a rule worth
+having — the rule is "build somewhere else". The symptom if you ignore this is the
+counter-intuitive one: a burst of events keeps the reload debounce rolling forward, so
+the interface does not reload too often, it **stops reloading at all** while you are
+busy. A pane that fetches or builds its own engine on first run is exactly the case
+that tempts you into it.
+
+**Key releases do not reach a program pane.** thurbox asks its own terminal only for
+`DISAMBIGUATE_ESCAPE_CODES`, not `REPORT_EVENT_TYPES`, and the loop handles
+`KeyEventKind::Press` alone — so a program that distinguishes press from release
+(anything using the kitty keyboard protocol's `CSI > 3 u`) sees presses only, and a
+held key latches. Nothing a plugin can do about it; it needs a change in the kernel.
+Worth knowing before you build a pane whose program wants held keys.
 
 **If you publish one:** shipping a program under a copyleft licence obliges your
 repository to carry that program's corresponding source. That is your obligation, not

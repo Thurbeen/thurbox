@@ -731,3 +731,104 @@ fn removing_a_repository_takes_the_whole_working_copy() {
     let checked = run(Action::Check).expect("check");
     assert!(checked.failure.is_none(), "{:?}", checked.json);
 }
+
+/// A repository with several panes names its entry point in its own manifest — so a
+/// manifest is not irrelevant to a cloned plugin, and one repository serves both
+/// install mechanisms rather than presenting two doors that behave differently.
+#[test]
+fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let _ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "widget");
+
+    // A second pane makes auto-detection ambiguous, and a manifest that resolves it.
+    std::fs::write(
+        repo.join("plugins/50_extra.lua"),
+        "return { name = \"extra\", slot = \"extra\", render = function() return \"\" end }\n",
+    )
+    .expect("second pane");
+    // Modules at `lib/…` inside its own tree — legitimate for a clone, and something
+    // the copy-model rules would reject, which is why the manifest is read leniently.
+    std::fs::write(
+        repo.join("plugin.toml"),
+        "name = \"widget\"\n\
+         pane = { source = \"plugins/40_widget.lua\", path = \"plugins/40_widget.lua\" }\n\
+         [[module]]\n\
+         source = \"lib/util.lua\"\n\
+         path = \"lib/util.lua\"\n",
+    )
+    .expect("manifest");
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .expect("git");
+    };
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "manifest"]);
+
+    let report = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: None,
+    })
+    .expect("install runs");
+    assert!(
+        report.failure.is_none(),
+        "the manifest resolves what auto-detection could not: {:?}",
+        report.json
+    );
+    assert_eq!(
+        report.json["file"], "thurbox-widget/plugins/40_widget.lua",
+        "{:?}",
+        report.json
+    );
+    // And only that one is loaded as a pane; the other is present, not claimed.
+    let checked = run(Action::Check).expect("check runs");
+    let loaded = checked.json["loaded"].to_string();
+    assert!(loaded.contains("widget"), "{loaded}");
+    assert!(!loaded.contains("extra"), "{loaded}");
+}
+
+#[test]
+fn a_repository_with_several_panes_and_no_manifest_says_so() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let _ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "widget");
+    std::fs::write(
+        repo.join("plugins/50_extra.lua"),
+        "return { name = \"extra\", slot = \"extra\", render = function() return \"\" end }\n",
+    )
+    .expect("second pane");
+    for args in [vec!["add", "-A"], vec!["commit", "-m", "two"]] {
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .expect("git");
+    }
+
+    // Guessing which is the entry point would be a silent wrong answer.
+    let error = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: None,
+    })
+    .expect_err("should refuse");
+    assert!(
+        error.contains("40_widget.lua"),
+        "lists what it found: {error}"
+    );
+    assert!(error.contains("50_extra.lua"), "{error}");
+    assert!(
+        error.contains("--as"),
+        "and says how to resolve it: {error}"
+    );
+}

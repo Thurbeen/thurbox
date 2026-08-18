@@ -275,6 +275,30 @@ user.
 Rollback is removing the capability from a plugin's declaration, or revoking the
 trust; either leaves the pane unable to start and the plugin still loading.
 
+### D12 — Key releases do not reach a program pane (found downstream, unresolved)
+
+A plugin author building a pane around a full-screen game reported it: a program that
+distinguishes press from release sees presses only, so a held key latches.
+
+Confirmed, with **two** independent causes rather than the one guessed:
+
+- `push_keyboard_enhancement` asks the outer terminal for `DISAMBIGUATE_ESCAPE_CODES`
+  and nothing else. `REPORT_EVENT_TYPES` — the kitty flag that makes a terminal report
+  releases at all — is never requested, so crossterm has none to deliver.
+- The loop matches `Event::Key(key) if key.kind == KeyEventKind::Press`, so a release
+  would be dropped even if one arrived.
+
+Not fixed here, and not a one-line fix. Requesting the flag globally is the easy part
+(the `Press` filter already stops every chord firing twice). The hard parts are that
+`key_to_bytes` has no encoding for a release — forwarding one as a press would type the
+character twice — and that a release should only be forwarded to a program that *asked*
+for it, which a program signals by writing `CSI > 3 u` to its own pty. So thurbox would
+have to notice that request per pane and honour it, which is a change of its own with a
+real risk of doubling keystrokes in every agent pane if got wrong.
+
+Documented as a limitation in `docs/PLUGINS.md` in the meantime, because a pane whose
+program wants held keys is otherwise a mystery to debug.
+
 ## Open Questions
 
 - **Should a plugin's pane be able to run on a remote host?** The backend registry
