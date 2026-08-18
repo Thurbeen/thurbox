@@ -1,0 +1,11 @@
+# A tasks pane. Install it with:
+#
+#     thurbox-cli plugin install tasks
+#
+# `file` below is where the pane lands by default. `--as plugins/NN_tasks.lua`
+# moves it, since the number is load order and yours to choose.
+name = "tasks"
+description = "A todo pane: read the snapshot, send or spawn"
+requires_thurbox = ">=2.0"
+
+pane = { source = "tasks.lua", path = "plugins/80_tasks.lua" }

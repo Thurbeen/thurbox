@@ -15,10 +15,32 @@
 //! declares the space it wants **statically**, in its declaration table, not
 //! in its render output. That is what breaks the circularity.
 
+use std::collections::BTreeSet;
+
 use mlua::{Table, Value};
 use ratatui::layout::Rect;
 
 use super::node::{divide, Axis, Size};
+
+/// The size an arrangement is resolved at when the question is *whether* a slot
+/// is placed rather than *where*.
+///
+/// Placement is size-dependent by design — the bundled arrangement drops the
+/// session column below `two_panel_min_cols` and the header below twenty rows —
+/// so "unplaced" is only a meaningful verdict at a size where the slot should
+/// have been placed. This is comfortably above every breakpoint the bundled
+/// arrangement has, and above a plausibly-raised `two_panel_min_cols`, so what
+/// is missing here is missing because nothing names it rather than because the
+/// screen is small.
+///
+/// Reported alongside any verdict drawn from it, so a surprising answer is
+/// explicable rather than mysterious.
+pub const REFERENCE: Rect = Rect {
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 50,
+};
 
 /// How a slot's occupants share it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -70,6 +92,19 @@ pub fn resolve(region: &Region, area: Rect) -> Vec<SlotRect> {
     let mut out = Vec::new();
     walk(region, area, &mut out);
     out
+}
+
+/// Which slots an arrangement places, without their rects.
+///
+/// The set a loaded plugin's slot is compared against to answer the one failure
+/// no other signal reports: a plugin whose slot the arrangement names nowhere
+/// loads without error, declares its keys, is granted its capabilities — and
+/// draws nothing. Every other check passes it.
+pub fn placed_slots(region: &Region, area: Rect) -> BTreeSet<String> {
+    resolve(region, area)
+        .into_iter()
+        .map(|placed| placed.slot)
+        .collect()
 }
 
 fn walk(region: &Region, area: Rect, out: &mut Vec<SlotRect>) {

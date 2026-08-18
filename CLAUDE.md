@@ -308,7 +308,10 @@ Every push to `main` automatically triggers the release workflow:
    - **Artifact relevance** (`check-release`'s `shipped` step): the diff since
      the last tag must touch something a user installs (`src/`, `tests/`,
      `build.rs`, `Cargo.toml`/`Cargo.lock`, `rust-toolchain.toml`, `Cross.toml`,
-     `extensions/`, `packaging/`, `scripts/install.{sh,ps1}`, `cd.yml`).
+     `extensions/`, `ui-plugins/`, `packaging/`, `scripts/install.{sh,ps1}`,
+     `cd.yml`). `extensions/` and `ui-plugins/` are there although no binary
+     carries them: a bare-name install resolves against the release *tag*, so a
+     change never tagged is one nobody can install.
      Commit type alone over-releases: Renovate labels a GitHub-Actions pin bump
      `fix(deps)` and the website is versioned `feat(ui)`/`fix(ui)`, so a
      CSS-only or lint-action-only change used to cut a real release (v1.2.13
@@ -795,9 +798,12 @@ and last error; `--test` fires a sample — see OS notifications below), `perf`
 (print the perf snapshot a running TUI publishes while `THURBOX_PERF_LOG`
 or its perf HUD is active — see `docs/PERFORMANCE.md`), `plugin`
 (v2 interface plugins without a TTY: `dir` reports the directory in force and
-which of the three rules chose it, `new <name>` writes a starter that already
+which of the two rules chose it, `new <name>` writes a starter that already
 loads, `check` loads the interface the way `thurbox` does and exits non-zero on
-a failure, `list` is the same inventory the settings modal's Interface tab shows
+a failure — **including on a pane that loaded but which no arrangement places**,
+printing the `layout.lua` line to add — `list` is the same inventory the settings
+modal's Interface tab shows, and
+`install|sync|update|remove|available` manage panes from a declarative spec
 — see `docs/PLUGINS.md`).
 Output is
 **human-readable by default** and switches to JSON automatically when stdout is
@@ -1419,19 +1425,22 @@ already follow.
   bars), `snapshot` (the read side), `command` (the write side), `terminal` (live
   PTY surfaces), `consent` (the one-time v1→v2 gate), plus the worker-backed
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
-  `theme`, `perf`, `bundled`, `inventory`.
+  `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
+  install/converge/withdraw operations — sharing `bundled`'s decision matrix).
 - **`agent/`** — side-effect layer, unchanged by the retirement. `AgentProvider`
   - `GenericProvider` build the CLI invocation from a declarative `AgentDef`;
   `Session` wraps a `SessionBackend`; `TmuxBackend` runs tmux over a
   `TmuxTransport` (`Local` / `Ssh` / `Wsl`). Output is read into
   `Arc<Mutex<vt100::Parser>>`, input written over an mpsc channel.
 - **`session/`** — plain data: `SessionId`, `SessionStatus`, `SessionInfo`,
-  `SessionConfig`, `AgentDef`/`AgentRegistry`, `HostDef`/`HostRegistry`, plus the
-  logic the kernel needs and cannot import `agent` for (`links`, `selection`,
-  `review`, `editor`, `hyperlink`, `theme_config`).
+  `SessionConfig`, `AgentDef`/`AgentRegistry`, `HostDef`/`HostRegistry`,
+  `PluginSpec`/`PluginLock`/`PackageManifest` (`plugin_spec`, so the kernel and the
+  CLI share one definition), plus the logic the kernel needs and cannot import
+  `agent` for (`links`, `selection`, `review`, `editor`, `hyperlink`,
+  `theme_config`).
 - **`ui/`** (Lua, not Rust) — `layout.lua` is the arrangement; `lib/` holds
   widgets, theme roles, fuzzy match, text input, trees; `plugins/` holds the panes.
-- **`cli/`** — `thurbox-cli` subcommands, including `plugin dir|new|check|list`
+- **`cli/`** — `thurbox-cli` subcommands, including `plugin dir|new|check|list|install|sync|update|remove`
   for writing an interface with no TTY.
 
 ### Event Loop (src/main.rs)
@@ -1648,7 +1657,14 @@ thurbox-cli plugin dir            # which directory is live, and which rule chos
 thurbox-cli plugin new notes      # a starter that already loads
 thurbox-cli plugin check          # load it the way thurbox does; non-zero on failure
 thurbox-cli plugin list           # the inventory the Interface tab shows
+thurbox-cli plugin install top    # a distributed pane, recorded in plugins.toml
+thurbox-cli plugin sync           # make the directory match the spec
 ```
+
+Two officially distributed panes live in `ui-plugins/` (`tasks`, `top`) and install
+by bare name; `docs/examples/{plugin,composite,layout}.lua` are copied by hand.
+`check` fails on a pane that **loaded but which no arrangement places** — the only
+failure with no symptom — and prints the `layout.lua` line to add.
 
 Two rules pick the directory: `THURBOX_UI_DIR` if set, otherwise the user's copy
 (`~/.config/thurbox/ui/`, materialised from the embedded interface on first run,
@@ -1673,14 +1689,38 @@ every checkout on the machine. It is *not* canonicalised: that would return a
 `\\?\D:\…` extended-length path on Windows and resolve `/var` to `/private/var` on
 macOS, and this path is shown to people.
 
-**Delivery vs. decision.** `.bundled.json` records what delivery did (bundled /
-edited / yours / removed); `ui.json` records what the *user* decided (disabled,
-trust, rebindings). Deleting a bundled file is how you remove it — delivery records
+**Delivery vs. decision vs. composition.** `.bundled.json` records what delivery did
+(bundled / edited / yours / removed / installed); `ui.json` records what the *user*
+decided (disabled, trust, rebindings); `plugins.toml` records what the interface is
+**composed of** and `plugins.lock` what each entry resolved to.
+Deleting a bundled file is how you remove it — delivery records
 the removal and never writes it back, which is what makes a differently-named
 replacement possible on equal terms. Turning one **off** is a third thing: present on
 disk, intact, not loaded — implemented by `build` not reading the file, so a disabled
 plugin declares no keys, occupies no slot and is granted no capability. A broken one
 can be switched off to get a working interface back.
+
+**Panes are installable** (`kernel::packages`, `session::plugin_spec`). `plugins.toml`
+in the interface directory lists a `src` (a bare name resolving to `ui-plugins/<name>`
+at the binary's release tag, a URL, or a path — `extension_config::resolve_source_in`,
+one resolver for both kinds of thing), a destination `file`, and an optional `pin`;
+`plugins.lock` records what each resolved to plus the digest of every file delivered.
+`plugin sync` converges the directory to the spec, which reduces an agent's job to
+*edit one file, run one command, read the exit status*. Delivery semantics are
+**shared with the bundled path, not reimplemented**: both call `bundled::decide`, so an
+edit is preserved and a deletion is remembered for a package exactly as for a shipped
+file. Two consequences worth knowing: the manager never writes `layout.lua` (placement
+stays hand-authored, and `check` fails loudly on an unplaced slot instead), and a
+package may deliver shared modules only under `lib/<its own name>/` — enforced at
+install time, since `require` splits on every dot and would otherwise let a package
+replace `lib/theme.lua`.
+
+**Trust for an installed pane is keyed to `(src, pin)` *and* the lock's digest**
+(`registry::Granted::Managed`, `inventory::Trust::resolve_installed`). Contents alone
+would report every ordinary release as tampering; `(src, pin)` alone would let an
+upstream re-tag of the same version inherit a grant made to what that version used to
+be. Both are checked, and `ui.json`'s bare-string grant form is still read so an
+upgrade forgets nothing.
 
 **A plugin can run a program** (`kernel::runs`) — `git status`, `docker compose ps` —
 in the session's working directory, and on that session's own host for a remote

@@ -104,10 +104,24 @@ impl Record {
             Record::Removed { .. } => None,
         }
     }
+
+    /// This record as the delivery decision reads it — see [`decide`].
+    fn delivered(&self) -> Delivered<'_> {
+        match self {
+            Record::Written(digest) => Delivered::Digest(digest.as_str()),
+            Record::Removed { .. } => Delivered::Tombstoned,
+        }
+    }
 }
 
 /// Where a file in the interface directory came from, as far as delivery knows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy`: [`Source::Installed`] carries the source it came from, because
+/// naming it is the whole point of the case. A capability is granted **per file**,
+/// so "who shipped this" is the question to answer before granting one — and
+/// until this existed, a third-party pane and one the user wrote themselves were
+/// the same answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     /// Shipped, and byte-identical to what this binary carries.
     Bundled,
@@ -117,16 +131,43 @@ pub enum Source {
     User,
     /// Shipped, and deleted by the user. Restorable from the binary.
     Removed,
+    /// Installed from a source the spec names, and still what that source
+    /// delivered.
+    Installed { src: String },
+    /// Installed from a source the spec names, and since changed — locally, or
+    /// upstream under the same pin. Either way the contents are no longer the ones
+    /// the version delivered, which is what a capability grant was made against.
+    InstalledEdited { src: String },
 }
 
 impl Source {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Source::Bundled => "bundled",
             Source::Edited => "edited",
             Source::User => "user",
             Source::Removed => "removed",
+            Source::Installed { .. } => "installed",
+            Source::InstalledEdited { .. } => "installed · modified",
         }
+    }
+
+    /// The source this file was installed from, when it was.
+    pub fn installed_from(&self) -> Option<&str> {
+        match self {
+            Source::Installed { src } | Source::InstalledEdited { src } => Some(src.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Is this a file the user wrote, rather than one delivered to them?
+    ///
+    /// The question the Interface tab asks before offering to restore a file from
+    /// the binary — which it cannot do for a file that never came from there.
+    /// Asked as a question rather than compared against `User` so that an
+    /// installed file is not silently treated as the user's own.
+    pub fn is_theirs(&self) -> bool {
+        matches!(self, Source::User)
     }
 }
 
@@ -194,20 +235,13 @@ pub fn materialize(dir: &Path) -> Report {
         }
 
         let existing = std::fs::read_to_string(&path).ok();
-        let action = match (&existing, manifest.get(*relative)) {
-            // Never delivered here: a first run, or a file new in this release.
-            (None, None) => Action::Write,
-            // Already known to be gone. Say nothing; it was said once.
-            (None, Some(record)) if record.is_removed() => Action::Leave,
-            // We wrote it and it is no longer there: the user removed it.
-            (None, Some(_)) => Action::Tombstone,
-            (Some(current), _) if current.as_str() == *contents => Action::Settle,
-            // Replace only what we last wrote and the user has not touched.
-            (Some(current), Some(record)) if record.digest() == Some(digest(current).as_str()) => {
-                Action::Update
-            }
-            (Some(_), _) => Action::Preserve,
-        };
+        let action = decide(
+            existing.as_deref(),
+            manifest
+                .get(*relative)
+                .map_or(Delivered::Never, Record::delivered),
+            contents,
+        );
 
         match action {
             Action::Leave => {}
@@ -283,6 +317,52 @@ fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Repo
     }
 }
 
+/// How deep `lib/` is walked.
+///
+/// A package's modules live one level down (`lib/<package>/…`); the extra level is
+/// for a package that groups its own, and the bound is here at all so a symlink
+/// loop cannot make the inventory — the recovery tool — hang.
+const LIB_DEPTH: usize = 3;
+
+/// Lua files under `root`, as paths relative to it, sorted.
+///
+/// Sorted so the inventory's order is deterministic rather than the filesystem's,
+/// and separators normalised to `/` because that is the identity trust, the
+/// disabled set, the lock and the spec all use.
+fn lua_files(root: &Path, depth: usize) -> Vec<String> {
+    fn walk(base: &Path, at: &Path, depth: usize, out: &mut Vec<String>) {
+        if depth == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(at) else {
+            return;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                walk(base, &path, depth - 1, out);
+            } else if path.extension().is_some_and(|ext| ext == "lua") {
+                if let Ok(relative) = path.strip_prefix(base) {
+                    out.push(
+                        relative
+                            .components()
+                            .map(|part| part.as_os_str().to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    );
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, depth, &mut out);
+    out.sort();
+    out
+}
+
 /// Where each file of the interface in `dir` came from.
 ///
 /// Keyed by path relative to `dir`. Covers the three places the interface lives
@@ -290,6 +370,10 @@ fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Repo
 /// deleted, which by definition is not on disk to be found.
 pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
     let bundled: BTreeMap<&str, &str> = BUNDLED.iter().copied().collect();
+    // A directory with no lock has nothing installed, and a malformed one must not
+    // make the inventory unavailable — the inventory is the recovery tool, so it
+    // degrades to "I do not know where this came from" rather than refusing.
+    let lock = super::packages::read_lock(dir).unwrap_or_default();
     let mut out = BTreeMap::new();
 
     let mut classify = |relative: String, path: &Path| {
@@ -299,7 +383,23 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
         let source = match bundled.get(relative.as_str()) {
             Some(shipped) if *shipped == current => Source::Bundled,
             Some(_) => Source::Edited,
-            None => Source::User,
+            // Shipped takes precedence deliberately: a package that delivered over
+            // a bundled path is still, to delivery, a shipped file that changed —
+            // and `install` refuses that destination anyway.
+            None => match lock.covering(&relative) {
+                Some(entry) => {
+                    let src = entry.src.clone();
+                    // A managed file whose contents are not the ones its version
+                    // delivered. Locally edited, or re-tagged upstream; the
+                    // inventory cannot tell which, and says only that they differ.
+                    if entry.digest(&relative) == Some(digest(&current).as_str()) {
+                        Source::Installed { src }
+                    } else {
+                        Source::InstalledEdited { src }
+                    }
+                }
+                None => Source::User,
+            },
         };
         out.insert(relative, source);
     };
@@ -316,21 +416,26 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
             classify((*relative).to_string(), &path);
         }
     }
-    for folder in ["lib", "plugins"] {
-        let Ok(entries) = std::fs::read_dir(dir.join(folder)) else {
-            continue;
-        };
-        let mut files: Vec<PathBuf> = entries
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.extension().is_some_and(|ext| ext == "lua"))
-            .collect();
-        files.sort();
-        for path in files {
-            let Some(name) = path.file_name().map(|name| name.to_string_lossy()) else {
-                continue;
-            };
-            classify(format!("{folder}/{name}"), &path);
-        }
+    // `plugins/` flat, `lib/` deep. Not an inconsistency: `build` reads only the
+    // top level of `plugins/`, so a nested file there is never loaded and
+    // reporting it would be a pane that "failed" nobody asked to load — while
+    // `require` splits a module name on every dot, so `lib/<vendor>/util.lua` is
+    // requirable and is where a package puts its own modules without colliding
+    // with `lib/theme.lua`.
+    for name in lua_files(&dir.join("plugins"), 1) {
+        classify(format!("plugins/{name}"), &dir.join("plugins").join(&name));
+    }
+    for name in lua_files(&dir.join("lib"), LIB_DEPTH) {
+        classify(format!("lib/{name}"), &dir.join("lib").join(&name));
+    }
+
+    // The spec, which is part of what the interface is made of and is the one file
+    // here a person maintains by hand. The LOCK is deliberately absent, along with
+    // `.bundled.json` and `ui.json`: bookkeeping nobody edits is not something the
+    // tab has to account for, and listing it would only offer actions that refuse.
+    let spec = crate::session::plugin_spec::SPEC_FILE;
+    if dir.join(spec).is_file() {
+        out.insert(spec.to_string(), Source::User);
     }
 
     for (relative, record) in read_manifest(dir) {
@@ -400,8 +505,8 @@ fn checked(dir: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(dir.join(candidate))
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-enum Action {
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum Action {
     Write,
     Update,
     Preserve,
@@ -411,6 +516,58 @@ enum Action {
     Tombstone,
     /// Already recorded as removed.
     Leave,
+}
+
+/// What delivery last did with one file, as the decision needs to know it.
+///
+/// Deliberately not [`Record`], which is the manifest's *on-disk* shape: the same
+/// decision governs a file that arrived from a package, whose record lives in a
+/// lockfile rather than in `.bundled.json`. Stating the decision over this
+/// instead is what lets the two delivery paths share one implementation of "do
+/// not clobber my edits, remember what I deleted" rather than growing a second
+/// copy of the only subtle logic here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivered<'a> {
+    /// Never delivered to this path.
+    Never,
+    /// Delivered, and these were the contents.
+    Digest(&'a str),
+    /// Delivered, and since deleted by the user.
+    Tombstoned,
+}
+
+/// What to do with one file, given what is there, what we last put there, and
+/// what we would put there now.
+///
+/// Pure, and the whole of the policy — every caller that writes a delivered file
+/// asks this first. Two properties are load-bearing and are why the order of the
+/// arms matters:
+///
+/// * **An edit is the user's to keep.** A file whose contents do not match what
+///   we recorded is `Preserve`, whatever we would rather write.
+/// * **A deletion is remembered.** A file we wrote and that is now gone is
+///   tombstoned once and left alone forever after, so removing a plugin is a way
+///   to remove it rather than a thing delivery undoes on next launch.
+///
+/// `Settle` is tested before `Update` so a byte-identical file is adopted without
+/// a write — including one the user deleted and then put back unchanged, which is
+/// theirs by the first rule and ours by the second, and is resolved in favour of
+/// adopting it.
+pub(crate) fn decide(existing: Option<&str>, delivered: Delivered<'_>, payload: &str) -> Action {
+    match (existing, delivered) {
+        // Never delivered here: a first run, or a file new in this release.
+        (None, Delivered::Never) => Action::Write,
+        // Already known to be gone. Say nothing; it was said once.
+        (None, Delivered::Tombstoned) => Action::Leave,
+        // We wrote it and it is no longer there: the user removed it.
+        (None, Delivered::Digest(_)) => Action::Tombstone,
+        (Some(current), _) if current == payload => Action::Settle,
+        // Replace only what we last wrote and the user has not touched.
+        (Some(current), Delivered::Digest(recorded)) if recorded == digest(current) => {
+            Action::Update
+        }
+        (Some(_), _) => Action::Preserve,
+    }
 }
 
 fn read_manifest(dir: &Path) -> BTreeMap<String, Record> {
@@ -605,6 +762,99 @@ pub fn fallback_dir() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The decision matrix, arm by arm.
+    ///
+    /// Tested here rather than only through `materialize` because both delivery
+    /// paths now depend on it — a package install asks the same question about a
+    /// file recorded in a lockfile — and a matrix reached only through the
+    /// filesystem is one whose arms are easy to leave uncovered.
+    mod decide {
+        use super::*;
+
+        /// Contents whose digest a record can be built from.
+        const OLD: &str = "-- v1\n";
+        const NEW: &str = "-- v2\n";
+        const MINE: &str = "-- mine\n";
+
+        #[test]
+        fn nothing_there_and_nothing_recorded_is_written() {
+            assert_eq!(decide(None, Delivered::Never, NEW), Action::Write);
+        }
+
+        #[test]
+        fn nothing_there_but_we_wrote_it_once_is_tombstoned() {
+            // The user deleted it. Recorded so the next run leaves it alone —
+            // this is the arm that makes deleting a plugin a way to remove it.
+            let recorded = digest(OLD);
+            assert_eq!(
+                decide(None, Delivered::Digest(&recorded), NEW),
+                Action::Tombstone
+            );
+        }
+
+        #[test]
+        fn nothing_there_and_already_tombstoned_is_left() {
+            // And said once, not once per launch.
+            assert_eq!(decide(None, Delivered::Tombstoned, NEW), Action::Leave);
+        }
+
+        #[test]
+        fn what_we_would_write_is_already_there_so_it_settles() {
+            assert_eq!(decide(Some(NEW), Delivered::Never, NEW), Action::Settle);
+            let recorded = digest(OLD);
+            assert_eq!(
+                decide(Some(NEW), Delivered::Digest(&recorded), NEW),
+                Action::Settle
+            );
+        }
+
+        #[test]
+        fn ours_and_untouched_is_updated() {
+            let recorded = digest(OLD);
+            assert_eq!(
+                decide(Some(OLD), Delivered::Digest(&recorded), NEW),
+                Action::Update
+            );
+        }
+
+        #[test]
+        fn a_file_the_user_changed_is_preserved() {
+            // The load-bearing arm: whatever we would rather write, an edit stays.
+            let recorded = digest(OLD);
+            assert_eq!(
+                decide(Some(MINE), Delivered::Digest(&recorded), NEW),
+                Action::Preserve
+            );
+        }
+
+        #[test]
+        fn a_file_we_never_wrote_is_preserved() {
+            // Someone else's file at a path we now ship. Never overwritten.
+            assert_eq!(decide(Some(MINE), Delivered::Never, NEW), Action::Preserve);
+        }
+
+        #[test]
+        fn a_tombstone_does_not_authorise_overwriting_what_replaced_it() {
+            // Deleted, then a file of their own put at the same path. The
+            // tombstone says "do not write here", not "this one is ours".
+            assert_eq!(
+                decide(Some(MINE), Delivered::Tombstoned, NEW),
+                Action::Preserve
+            );
+        }
+
+        #[test]
+        fn putting_back_an_identical_copy_readopts_it() {
+            // Deleted, then restored byte-identically. Theirs by the edit rule and
+            // ours by the deletion rule; `Settle` before `Update` resolves it in
+            // favour of adopting it, so the next release can update it again.
+            assert_eq!(
+                decide(Some(NEW), Delivered::Tombstoned, NEW),
+                Action::Settle
+            );
+        }
+    }
 
     #[test]
     fn the_bundle_covers_the_whole_interface() {
@@ -864,6 +1114,117 @@ mod tests {
         assert_eq!(sources["lib/theme.lua"], Source::Edited);
         assert_eq!(sources["plugins/50_mine.lua"], Source::User);
         assert_eq!(sources["plugins/20_agent.lua"], Source::Removed);
+    }
+
+    /// A file the user did not write is a different answer from one they did,
+    /// because a capability is granted per file and the source is the fact to know
+    /// before granting it.
+    #[test]
+    fn an_installed_file_names_the_source_it_came_from() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        materialize(dir.path());
+
+        let entry = crate::session::PluginEntry {
+            src: "atlas".into(),
+            file: "plugins/75_atlas.lua".into(),
+            pin: Some("v0.3.1".into()),
+        };
+        let mut lock = crate::session::PluginLock::default();
+        super::super::packages::deliver(
+            dir.path(),
+            &entry,
+            "https://example.com/atlas",
+            "v0.3.1",
+            &[
+                super::super::packages::Payload {
+                    file: "plugins/75_atlas.lua".into(),
+                    contents: "return {}\n".into(),
+                },
+                super::super::packages::Payload {
+                    file: "lib/atlas/util.lua".into(),
+                    contents: "return {}\n".into(),
+                },
+            ],
+            &mut lock,
+        )
+        .expect("deliver");
+        super::super::packages::write_lock(dir.path(), &lock).expect("write lock");
+
+        let fresh = sources(dir.path());
+        assert_eq!(
+            fresh["plugins/75_atlas.lua"],
+            Source::Installed {
+                src: "atlas".into()
+            }
+        );
+        assert!(
+            !fresh["plugins/75_atlas.lua"].is_theirs(),
+            "an installed pane is not the user's own file"
+        );
+        assert_eq!(
+            fresh["plugins/75_atlas.lua"].installed_from(),
+            Some("atlas")
+        );
+        // A module the package brought is traceable too — otherwise a `lib/` file
+        // somebody else shipped reads as one the user wrote.
+        assert_eq!(fresh["lib/atlas/util.lua"].installed_from(), Some("atlas"));
+
+        // Changed since: locally, or re-tagged upstream. The inventory cannot tell
+        // which, and says only that the contents are no longer the version's.
+        std::fs::write(dir.path().join("plugins/75_atlas.lua"), "-- mine\n").expect("edit");
+        let after = sources(dir.path());
+        assert_eq!(
+            after["plugins/75_atlas.lua"],
+            Source::InstalledEdited {
+                src: "atlas".into()
+            }
+        );
+        assert_eq!(
+            after["plugins/75_atlas.lua"].installed_from(),
+            Some("atlas")
+        );
+    }
+
+    #[test]
+    fn the_spec_is_inventoried_and_the_lock_is_not() {
+        // The spec is part of what the interface is made of and a person maintains
+        // it. The lock is bookkeeping, like `.bundled.json` and `ui.json`, and
+        // listing it would only offer actions that refuse.
+        let dir = tempfile::tempdir().expect("tempdir");
+        materialize(dir.path());
+        super::super::packages::add_to_spec(
+            dir.path(),
+            &crate::session::PluginEntry {
+                src: "atlas".into(),
+                file: "plugins/75_atlas.lua".into(),
+                pin: None,
+            },
+        )
+        .expect("add");
+        std::fs::write(super::super::packages::lock_path(dir.path()), "").expect("lock");
+
+        let sources = sources(dir.path());
+        assert!(sources.contains_key(crate::session::plugin_spec::SPEC_FILE));
+        assert!(!sources.contains_key(crate::session::plugin_spec::LOCK_FILE));
+        assert!(!sources.contains_key(MANIFEST));
+    }
+
+    /// A malformed lock must not take the inventory with it: the inventory is the
+    /// recovery tool, so it degrades to "I do not know" rather than refusing.
+    #[test]
+    fn a_broken_lock_does_not_break_the_inventory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        materialize(dir.path());
+        std::fs::write(dir.path().join("plugins/50_mine.lua"), "return {}").expect("write");
+        std::fs::write(
+            super::super::packages::lock_path(dir.path()),
+            "[[plugin]]\nsrc =\n",
+        )
+        .expect("write");
+
+        let sources = sources(dir.path());
+        assert_eq!(sources["layout.lua"], Source::Bundled);
+        assert_eq!(sources["plugins/50_mine.lua"], Source::User);
     }
 
     #[test]

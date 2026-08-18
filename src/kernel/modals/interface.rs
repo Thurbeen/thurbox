@@ -196,7 +196,18 @@ impl InterfaceTab {
         let Some(row) = self.current(inventory) else {
             return (None, None);
         };
-        if row.source == Source::User {
+        if let Some(src) = row.source.installed_from() {
+            // Nothing to restore *to* either, and the fix is a different command:
+            // an installed file is put back by the manager that put it there.
+            return (
+                Some(format!(
+                    "{} came from {src}; `thurbox-cli plugin sync` puts it back",
+                    row.path
+                )),
+                None,
+            );
+        }
+        if row.source.is_theirs() {
             // Nothing to restore *to*: we never shipped it, so there is no
             // shipped version to put back.
             return (
@@ -276,7 +287,7 @@ impl InterfaceTab {
         let path = row.path.clone();
         if self.armed.as_deref() != Some(path.as_str()) {
             self.armed = Some(path);
-            self.armed_is_ours = row.source == Source::User;
+            self.armed_is_ours = row.source.is_theirs();
             return (None, None);
         }
         self.armed = None;
@@ -311,11 +322,19 @@ impl InterfaceTab {
             Span::styled(row.path.clone(), body),
         ];
 
+        // Where it came from, and — for a file the user did not write — WHO from.
+        // A capability is granted per file, so the source is the fact that has to
+        // be legible before anyone presses `t` at it.
+        let origin = match &row.source {
+            Source::Edited => Some("edited".to_string()),
+            Source::User => Some("yours".to_string()),
+            Source::Installed { src } => Some(format!("from {src}")),
+            Source::InstalledEdited { src } => Some(format!("from {src} · modified")),
+            Source::Bundled | Source::Removed => None,
+        };
         let mut tail: Vec<&str> = Vec::new();
-        match row.source {
-            Source::Edited => tail.push("edited"),
-            Source::User => tail.push("yours"),
-            _ => {}
+        if let Some(origin) = &origin {
+            tail.push(origin.as_str());
         }
         if !state.label.is_empty() {
             tail.push(state.label);
@@ -489,6 +508,30 @@ mod tests {
 
         let mine = row("plugins/90_mine.lua", Source::User, FileState::Visible);
         assert!(rendered(&mine).contains("yours"), "{}", rendered(&mine));
+
+        // A pane somebody else wrote is NOT "yours". `run` is granted per file, so
+        // the source is the fact that has to be legible before anyone presses `t`
+        // at the row — and until this existed, a third-party pane and one you wrote
+        // yourself read identically.
+        let installed = row(
+            "plugins/85_top.lua",
+            Source::Installed { src: "top".into() },
+            FileState::Visible,
+        );
+        let line = rendered(&installed);
+        assert!(line.contains("from top"), "names the source: {line}");
+        assert!(!line.contains("yours"), "{line}");
+
+        let tampered = row(
+            "plugins/85_top.lua",
+            Source::InstalledEdited { src: "top".into() },
+            FileState::Visible,
+        );
+        let line = rendered(&tampered);
+        assert!(
+            line.contains("from top") && line.contains("modified"),
+            "and says when the contents are no longer that version's: {line}"
+        );
 
         // A file asking to run programs is the whole security surface, so where it
         // stands has to be legible in the list rather than found by pressing keys.

@@ -181,7 +181,7 @@ pub struct Registry {
     /// by path rather than by digest because revoking on every edit would make
     /// writing your own plugin intolerable — the digest is kept so the drift can
     /// be *reported* instead (design D6).
-    trusted: BTreeMap<String, String>,
+    trusted: BTreeMap<String, Granted>,
     /// What would not load: a config file that failed to parse, a rejected
     /// override. Conflicts are *not* kept here — see [`Registry::warnings`].
     load_warnings: Vec<String>,
@@ -371,7 +371,18 @@ impl Registry {
 
     /// The contents trusted, if any — so a caller can notice they have changed.
     pub fn trusted_digest(&self, path: &str) -> Option<&str> {
-        self.trusted.get(path).map(String::as_str)
+        self.trusted.get(path).map(Granted::digest)
+    }
+
+    /// The `src@version` a grant was made against, for a file that was installed.
+    ///
+    /// `None` for an unmanaged file, whose grant is about its contents and nothing
+    /// else — which is the right answer for a file the user wrote themselves.
+    pub fn trusted_pin(&self, path: &str) -> Option<&str> {
+        match self.trusted.get(path) {
+            Some(Granted::Managed { pin, .. }) => Some(pin.as_str()),
+            _ => None,
+        }
     }
 
     /// Trust a file as it is right now.
@@ -379,8 +390,30 @@ impl Registry {
     /// The digest is taken from the contents at this moment, which is what makes
     /// "trusted, and since modified" a state the interface can report.
     pub fn trust(&mut self, path: &str, contents: &str) -> Result<(), String> {
-        self.trusted
-            .insert(path.to_string(), super::bundled::digest(contents));
+        self.trusted.insert(
+            path.to_string(),
+            Granted::Contents(super::bundled::digest(contents)),
+        );
+        self.persist()
+    }
+
+    /// Trust an **installed** file at the source and version it came from.
+    ///
+    /// Both halves are recorded, and both are load-bearing. The `src@version` is
+    /// what the user can actually mean — "I trust atlas v0.3.1" is a sentence; "I
+    /// trust this digest" is not — and it is what lets the grant lapse when the pin
+    /// moves instead of the row reading `trusted · modified` after every ordinary
+    /// release. The digest is what closes the hole that would otherwise open: a
+    /// source that re-tagged the same version with different contents would
+    /// silently keep a capability the user granted to what the version used to be.
+    pub fn trust_installed(&mut self, path: &str, pin: &str, contents: &str) -> Result<(), String> {
+        self.trusted.insert(
+            path.to_string(),
+            Granted::Managed {
+                pin: pin.to_string(),
+                digest: super::bundled::digest(contents),
+            },
+        );
         self.persist()
     }
 
@@ -640,10 +673,41 @@ fn overrides_path() -> Option<PathBuf> {
 type Overrides = (
     BTreeMap<String, String>,
     BTreeMap<String, Value>,
-    BTreeMap<String, String>,
+    BTreeMap<String, Granted>,
     BTreeSet<String>,
     Vec<String>,
 );
+
+/// What was trusted at a path.
+///
+/// Untagged, and the bare-string form is listed **first**, because that is what
+/// earlier releases wrote: a form that could not read the old shape would forget
+/// every grant on upgrade — the same reasoning `bundled::Record` follows.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum Granted {
+    /// The digest the contents had when trust was granted. An unmanaged file's
+    /// grant is about its contents and nothing else.
+    Contents(String),
+    /// An installed file: the `src@version` the grant was made against, and the
+    /// digest that version delivered. Both are checked — see
+    /// [`Registry::trust_installed`].
+    Managed { pin: String, digest: String },
+}
+
+impl Granted {
+    fn digest(&self) -> &str {
+        match self {
+            Granted::Contents(digest) | Granted::Managed { digest, .. } => digest.as_str(),
+        }
+    }
+}
+
+/// A path as it should read in a warning — the file's name, not the whole
+/// absolute path, which is long and mostly the same for every row.
+fn path_display(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
 
 fn read_overrides() -> Overrides {
     let mut bindings = BTreeMap::new();
@@ -680,9 +744,33 @@ fn read_overrides() -> Overrides {
         }
     }
     if let Some(map) = parsed.get("trusted").and_then(|v| v.as_object()) {
-        for (path, digest) in map {
-            if let Some(digest) = digest.as_str() {
-                trusted.insert(path.clone(), digest.to_string());
+        for (path, granted) in map {
+            // A bare string is what every release before managed panes wrote, and
+            // is still what an unmanaged file gets. Read first so an upgrade cannot
+            // forget a grant the user already made.
+            if let Some(digest) = granted.as_str() {
+                trusted.insert(path.clone(), Granted::Contents(digest.to_string()));
+            } else if let Some(object) = granted.as_object() {
+                let pin = object.get("pin").and_then(|v| v.as_str());
+                let digest = object.get("digest").and_then(|v| v.as_str());
+                match (pin, digest) {
+                    (Some(pin), Some(digest)) => {
+                        trusted.insert(
+                            path.clone(),
+                            Granted::Managed {
+                                pin: pin.to_string(),
+                                digest: digest.to_string(),
+                            },
+                        );
+                    }
+                    // A half-written grant is not one. Dropped rather than
+                    // guessed at, since guessing here means granting a capability
+                    // on the strength of a malformed file.
+                    _ => warnings.push(format!(
+                        "{}: trusted[{path}] is not a grant; ignoring it",
+                        path_display(path)
+                    )),
+                }
             }
         }
     }

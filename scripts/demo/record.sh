@@ -205,8 +205,8 @@ trap cleanup EXIT INT TERM
 UI_DIR="$CFG_DIR/ui"
 mkdir -p "$UI_DIR/plugins"
 cp "$REPO_ROOT/docs/examples/layout.lua" "$UI_DIR/layout.lua"
-cp "$REPO_ROOT/docs/examples/tasks.lua" "$UI_DIR/plugins/80_tasks.lua"
-cp "$REPO_ROOT/docs/examples/top.lua" "$UI_DIR/plugins/85_top.lua"
+cp "$REPO_ROOT/ui-plugins/tasks/tasks.lua" "$UI_DIR/plugins/80_tasks.lua"
+cp "$REPO_ROOT/ui-plugins/top/top.lua" "$UI_DIR/plugins/85_top.lua"
 
 # `top.lua` asks to run a program, and declaring that is not being granted it —
 # untrusted it draws "not trusted yet" instead of gauges, which is correct and

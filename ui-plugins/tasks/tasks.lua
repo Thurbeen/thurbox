@@ -1,8 +1,8 @@
 -- A tasks pane, as a plugin.
 --
--- NOT bundled. Copy it into your interface to use it:
+-- NOT bundled. Install it into your interface with:
 --
---     cp docs/examples/tasks.lua ~/.config/thurbox/ui/plugins/80_tasks.lua
+--     thurbox-cli plugin install tasks
 --
 -- v1 had a tasks column on `F5`/`Ctrl+W` and v2 removed it with the rest of
 -- `src/ui`. The records never went anywhere — `thurbox.tasks` is in the snapshot

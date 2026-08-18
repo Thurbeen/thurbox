@@ -158,14 +158,55 @@ breadcrumb: 'Interface'
     </tr>
     <tr>
       <td><code>thurbox-cli plugin check</code></td>
-      <td>Loads the interface the way <code>thurbox</code> does; non-zero on a failure</td>
+      <td>
+        Loads the interface the way <code>thurbox</code> does; non-zero on a failure &mdash;
+        including on a pane that loaded but which no arrangement places
+      </td>
     </tr>
     <tr>
       <td><code>thurbox-cli plugin list</code></td>
-      <td>The same inventory the settings Interface tab shows</td>
+      <td>The same inventory the settings Interface tab shows, with each file's origin</td>
+    </tr>
+    <tr>
+      <td><code>thurbox-cli plugin install &lt;src&gt;</code></td>
+      <td>Fetches a pane and records it in <code>plugins.toml</code></td>
+    </tr>
+    <tr>
+      <td><code>thurbox-cli plugin sync</code></td>
+      <td>Brings the directory into agreement with <code>plugins.toml</code></td>
+    </tr>
+    <tr>
+      <td><code>thurbox-cli plugin update</code> / <code>remove</code></td>
+      <td>Advances a pin when you ask; removes a pane, its entry and its record</td>
     </tr>
   </tbody>
 </table>
+<p>
+  <strong>A pane does not have to be one you wrote.</strong>
+  <code>plugins.toml</code>
+  in your interface directory lists what it is composed of &mdash; a source, a destination file, an
+  optional pin &mdash; and
+  <code>plugins.lock</code>
+  beside it records what each entry resolved to, so the same spec reproduces the same interface on
+  another machine. A bare name resolves to the official set at
+  <em>this binary's release tag</em>
+  , exactly as an extension name does; URLs and filesystem paths work too. The rules delivery
+  already follows carry over unchanged: a managed file you edited is preserved and reported, and one
+  you deleted stays deleted.
+</p>
+<p>
+  Two deliberate limits. The manager
+  <strong>never writes your arrangement</strong>
+  &mdash; adding a pane is two edits, and
+  <code>plugin check</code>
+  fails loudly on the missing second one instead of guessing at it. And installing grants nothing:
+  a pane that asks to run programs still draws how to trust it until you do. Trust for an installed
+  pane is recorded against the source and version it was granted for, so an ordinary release asks
+  you again rather than reading as tampering &mdash; while contents that change
+  <em>within</em>
+  one version still show up, because from outside a local edit and an upstream substitution are the
+  same thing.
+</p>
 <p>
   A broken plugin does not cost you the interface: the error is reported in place, and the bundled
   copy stands in until the file loads again. The full author's guide, including the mistakes that

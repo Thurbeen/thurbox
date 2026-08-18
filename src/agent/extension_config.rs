@@ -36,7 +36,7 @@ pub fn is_dev_build() -> bool {
 /// The git ref to fetch official extensions from: the running binary's release
 /// tag (`v0.7.0`), so a fetched extension matches the binary that reads it. Dev
 /// builds track `main`.
-fn official_ref() -> String {
+pub fn official_ref() -> String {
     if is_dev_build() {
         "main".to_string()
     } else {
@@ -44,11 +44,31 @@ fn official_ref() -> String {
     }
 }
 
+/// Base URL for one of the repo's officially-distributed sets, pinned to this
+/// binary's release tag.
+///
+/// Two sets use it: `extensions/` and `ui-plugins/`. Pinning to the tag is the
+/// property worth keeping in both cases — an extension calls `thurbox-cli` and a
+/// pane reads `thurbox.*`, and both are contracts that move, so what the official
+/// source hands over should match the binary asking for it.
+pub fn official_set_base(folder: &str) -> String {
+    official_set_base_at(folder, &official_ref())
+}
+
+/// [`official_set_base`] at an explicit git ref.
+///
+/// What a lockfile needs: an entry recorded at `v2.0.0` has to keep resolving to
+/// `v2.0.0` after the binary moves on, or applying the same spec elsewhere would
+/// deliver whatever is newest — which is the property a lock exists to provide.
+pub fn official_set_base_at(folder: &str, git_ref: &str) -> String {
+    format!("{OFFICIAL_REPO_RAW}/{git_ref}/{folder}")
+}
+
 /// Base URL for the official extensions shipped in the thurbox repo, pinned to
 /// this binary's version. A bare `thurbox-cli extension install <name>` resolves
 /// to `<official_base()>/<name>`.
 pub fn official_base() -> String {
-    format!("{OFFICIAL_REPO_RAW}/{}/extensions", official_ref())
+    official_set_base("extensions")
 }
 
 /// One officially-distributed extension, surfaced for discovery
@@ -282,6 +302,15 @@ pub enum ExtensionSource {
 /// - a path-like target (`/abs`, `./rel`, `~/x`, anything with a `/`) → local dir,
 /// - a bare name (`flow`) → the official remote `<official_base()>/<name>`.
 pub fn resolve_source(target: &str) -> ExtensionSource {
+    resolve_source_in(target, "extensions")
+}
+
+/// [`resolve_source`], for a named set within the official repo.
+///
+/// Interface plugins resolve the same way against `ui-plugins/`, so a person
+/// learns one vocabulary — bare name, URL, path — and it covers both kinds of
+/// thing they can install. Only where a *bare name* points differs.
+pub fn resolve_source_in(target: &str, folder: &str) -> ExtensionSource {
     let t = target.trim();
     if let Some(rest) = t
         .strip_prefix("https://")
@@ -305,7 +334,7 @@ pub fn resolve_source(target: &str) -> ExtensionSource {
     if looks_local {
         return ExtensionSource::Local(expand_tilde(t));
     }
-    ExtensionSource::Remote(format!("{}/{t}", official_base()))
+    ExtensionSource::Remote(format!("{}/{t}", official_set_base(folder)))
 }
 
 /// Expand a leading `~/` (or bare `~`) to the user's home directory. Shared by

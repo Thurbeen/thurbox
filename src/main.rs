@@ -1349,6 +1349,9 @@ impl App {
             .collect();
         let ui_dir = self.ui_dir.clone();
         let registry = &self.registry;
+        // Read once per inventory pass rather than per file: it is one small TOML,
+        // and a per-file read would make the cost scale with the directory.
+        let plugin_lock = thurbox::kernel::packages::read_lock(&ui_dir).unwrap_or_default();
         self.inventory = thurbox::kernel::inventory::rows(
             &self.host.plugins,
             &self.sources,
@@ -1357,17 +1360,10 @@ impl App {
             self.host.error.as_deref(),
             // Trust is keyed by absolute path, and drift is answered by reading
             // the file — cheap, and only for the handful that declare anything.
-            &|path| {
-                let absolute = ui_dir.join(path);
-                let key = absolute.to_string_lossy();
-                let current = std::fs::read_to_string(&absolute)
-                    .ok()
-                    .map(|text| thurbox::kernel::bundled::digest(&text));
-                thurbox::kernel::inventory::Trust::resolve(
-                    registry.trusted_digest(&key),
-                    current.as_deref(),
-                )
-            },
+            // An INSTALLED file is judged differently (its `src@version` as well as
+            // its contents), and `trust_of` owns that split so no caller can check
+            // only one half of it.
+            &|path| thurbox::kernel::packages::trust_of(&ui_dir, path, &plugin_lock, registry),
             &|path| registry.is_disabled(&ui_dir.join(path).to_string_lossy()),
         );
         let inventory = std::mem::take(&mut self.inventory);
@@ -2514,10 +2510,25 @@ impl App {
             match std::fs::read_to_string(&absolute) {
                 // Trusted as it is *now*: the digest recorded here is what makes
                 // "trusted, and since modified" a state the list can report.
-                Ok(contents) => self
-                    .registry
-                    .trust(&key, &contents)
-                    .map(|()| format!("trusting {file}")),
+                //
+                // For an INSTALLED file the `src@version` is recorded beside it, so
+                // the grant is a statement the user could actually have meant — "I
+                // trust atlas v0.3.1" — and lapses when the pin moves instead of
+                // reading as tampering after every ordinary release.
+                Ok(contents) => {
+                    let lock =
+                        thurbox::kernel::packages::read_lock(&self.ui_dir).unwrap_or_default();
+                    match lock.covering(file) {
+                        Some(entry) => self
+                            .registry
+                            .trust_installed(&key, &entry.pin_key(), &contents)
+                            .map(|()| format!("trusting {file} at {}", entry.pin_key())),
+                        None => self
+                            .registry
+                            .trust(&key, &contents)
+                            .map(|()| format!("trusting {file}")),
+                    }
+                }
                 Err(e) => Err(format!("{}: {e}", absolute.display())),
             }
         } else {

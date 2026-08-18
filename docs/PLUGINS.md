@@ -520,32 +520,41 @@ Three escape hatches, in increasing order of how much you give up:
   forgetting which ones you had removed. Your own files are untouched.
 - **Delete the whole directory** for the shipped interface exactly as it ships.
 
-## Examples you can run
+## Panes you can install
 
-Four files under `docs/examples/`, none of them bundled — copy the ones you want.
-They exist because "every pane is a file" is easier to believe from a pane you
-added yourself than from prose.
+Two distributed panes under `ui-plugins/`, neither of them bundled, plus two
+worked examples under `docs/examples/` you copy by hand. They exist because "every
+pane is a file" is easier to believe from a pane you added yourself than from
+prose.
 
-| File | What it is |
+| Pane | What it is |
+|---|---|
+| `tasks` | v1's tasks pane, rebuilt as a plugin. Reads `thurbox.tasks`, writes `task` commands, needs no capability |
+| `top` | CPU, memory and load as gauges, parsed from `top`. Asks for `run`, so it needs your trust |
+
+| Example file | What it is |
 |---|---|
 | [`plugin.lua`](examples/plugin.lua) | what `plugin new` writes: a pane, a key, a setting |
 | [`composite.lua`](examples/composite.lua) | the worked `run` example — git status and log, on the session's own host |
-| [`tasks.lua`](examples/tasks.lua) | v1's tasks pane, rebuilt as a plugin. Reads `thurbox.tasks`, writes `task` commands, needs no capability |
-| [`top.lua`](examples/top.lua) | CPU, memory and load as gauges, parsed from `top`. Asks for `run`, so it needs your trust |
-| [`layout.lua`](examples/layout.lua) | an arrangement putting the two above in a column beside the agent |
+| [`layout.lua`](examples/layout.lua) | an arrangement putting the two panes above in a column beside the agent |
 
-The last three are one demo:
+Together they are one demo:
 
 ```bash
+thurbox-cli plugin install tasks
+thurbox-cli plugin install top
 cp docs/examples/layout.lua ~/.config/thurbox/ui/layout.lua
-cp docs/examples/tasks.lua  ~/.config/thurbox/ui/plugins/80_tasks.lua
-cp docs/examples/top.lua    ~/.config/thurbox/ui/plugins/85_top.lua
 ```
 
-Press `F10`, then trust `85_top.lua` (settings → Interface → `t`) so it may run a
-program. `layout.lua` **replaces** the shipped arrangement — delete yours
-afterwards and the Interface tab restores it, so there is nothing here you cannot
-undo.
+Each install prints the `layout.lua` line the pane needs, because a pane whose slot
+nothing places loads cleanly and draws nothing. Press `F10`, then trust
+`85_top.lua` (settings → Interface → `t`) so it may run a program — installing a
+plugin grants it nothing.
+
+`layout.lua` **replaces** the shipped arrangement — delete yours afterwards and the
+Interface tab restores it, so there is nothing here you cannot undo. It is copied
+rather than installed on purpose: the manager never writes your arrangement (see
+below).
 
 Two things they are chosen to show. `tasks.lua` draws the `input` node kind, which
 is the one of the four nothing bundled uses. And `top.lua` reads the machine **the
@@ -554,6 +563,104 @@ that session's host — so moving the cursor onto a session over SSH shows the r
 box's load, with nothing in the plugin knowing what SSH is.
 
 `layout.lua` is the half people forget: adding a pane is two edits, the plugin and
-the slot. Both example panes name a slot of their own, and a slot no arrangement
-places is a pane that loads and never draws — `plugin list` reports it as
-`no slot`, which is the fastest way to spot it.
+the slot. Both panes name a slot of their own, and a slot no arrangement places is
+a pane that loads and never draws. `plugin check` **fails** on exactly that and
+prints the line to add, so it is caught rather than puzzled over:
+
+```console
+$ thurbox-cli plugin check
+  ✓ loads — sessions, agent, confirm, search, new_session, tasks
+  ✗ plugins/80_tasks.lua — loaded, but nothing places slot "tasks"
+      add it to layout.lua's children: { slot = "tasks" }
+  (checked at 200x50)
+```
+
+The size is reported because placement depends on it — the shipped arrangement
+drops the session column below 80 columns — so "unplaced" only means anything at a
+size where the slot should have been placed. Floats need no slot and disabled panes
+were never asked for, so neither is reported.
+
+## Managing panes
+
+Composition is written down, in `plugins.toml` beside your panes:
+
+```toml
+# what this interface is made of
+[[plugin]]
+src  = "top"                    # a bare name, a URL, or a path
+file = "plugins/85_top.lua"     # load order lives in the filename
+pin  = "v2.1.0"                 # omit to take the newest at install time
+```
+
+TOML because that is what every hand-edited registry here is, and because a bad
+edit is a parse error naming its line rather than a nil three frames later. A bare
+name resolves to `ui-plugins/<name>` in the thurbox repository at **this binary's
+release tag**, exactly as an extension name resolves to `extensions/<name>` — a
+pane reads `thurbox.*`, which is a contract that moves, so what the official source
+hands over matches the binary asking for it. URLs and filesystem paths work too,
+and a URL ending in `.lua` installs that single file (with `--as` naming where it
+lands).
+
+Beside it, `plugins.lock` records what each entry resolved to and the digest of
+every file delivered. You hand-edit the spec; nothing hand-edits the lock. Commit
+both and the same interface reproduces elsewhere.
+
+```bash
+thurbox-cli plugin install <src> [--as FILE] [--pin V]  # and record it
+thurbox-cli plugin sync                                 # make the directory match the spec
+thurbox-cli plugin update [name]                        # advance a pin, when you ask
+thurbox-cli plugin remove <name>                        # file, spec entry and record
+thurbox-cli plugin available                            # what installs by bare name
+```
+
+`sync` is the one to reach for after editing the spec by hand, and it is the one an
+agent wants: **edit one file, run one command, read the exit status.** It installs
+what is missing, takes back what you removed from the spec, and leaves everything
+else alone — including a pane the spec never listed, which is nobody's to touch.
+Running it twice changes nothing.
+
+Three rules it will not break, all of them the ones delivery already follows:
+
+- **An edit is yours.** A managed file you changed is preserved and reported as
+  `kept`, never overwritten — even when the source has moved on.
+- **A deletion is remembered.** Delete a managed pane and `sync` leaves it deleted.
+  That is how you remove one.
+- **Your arrangement is yours.** Nothing here writes `layout.lua`. Editing Lua is
+  what a coding agent is good at; noticing that a pane silently is not drawing is
+  what it cannot do, so the effort went into `check` instead.
+
+`sync` resolves each entry at the version the **lock** recorded, not at whatever is
+newest — that is what makes it reproducible. Moving forward is `update`, asked for
+explicitly, which reports what moved and from where. An entry the spec *pins* is
+already where you said it should be, so `update` leaves it and says `already
+current`; moving that one means editing the pin and running `sync`.
+
+### Trust for a pane you did not write
+
+`run` is granted per file, so where a file came from is the question to answer
+before granting it. The Interface tab says: a pane from a source reads `from <src>`
+rather than `yours`, and a `lib/<name>/` module a package brought is traced to it
+too.
+
+The grant itself is recorded against the **source and version** it was made for,
+not against the file's contents alone:
+
+| `src@version` | contents | reads as |
+|---|---|---|
+| matches | match | `trusted` — including a reinstall |
+| differs | — | not granted; you are asked again |
+| matches | differ | `installed · modified` |
+
+Both halves matter. Recording only the contents would report every ordinary release
+as tampering and teach you to dismiss the warning. Recording only `src@version`
+would let a source re-tag the same version with something else and keep a
+capability you granted to what that version used to be. That last row is the one to
+notice — it is the same warning as a local edit, because from outside they are
+indistinguishable.
+
+### There is no lazy loading
+
+The Neovim package managers this borrows from make it the headline feature. Here it
+would optimise nothing: a disabled plugin is never read, an unplaced pane never
+renders, and the bundled set is nine files. A load scheduler would add machinery and
+a new class of "why is my pane missing".

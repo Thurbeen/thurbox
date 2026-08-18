@@ -6,8 +6,8 @@
 # that runs a program, then exports $THURBOX_BIN. See that script for context.
 #
 # What this clip is for: the interface as somebody's own arrangement. The two
-# panes stacked on the right are NOT bundled — they are `docs/examples/tasks.lua`
-# and `docs/examples/top.lua`, placed by `docs/examples/layout.lua`, and they are
+# panes stacked on the right are NOT bundled — they are `ui-plugins/tasks/` and
+# `ui-plugins/top/`, placed by `docs/examples/layout.lua`, and they are
 # on screen from the first frame because that is the point. A viewer who takes
 # nothing else away should notice that two of the four panes came from a
 # directory they could edit.

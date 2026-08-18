@@ -25,6 +25,7 @@ pub mod metrics;
 pub mod modals;
 pub mod node;
 pub mod notify;
+pub mod packages;
 pub mod paint;
 pub mod perf;
 pub mod reaper;

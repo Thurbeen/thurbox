@@ -14,10 +14,10 @@
 //! declaration-shaped — a plugin with no `render`, a slot nothing places, a key
 //! that clashes — and a syntax check passes all of them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::output::CommandOutput;
 
@@ -42,6 +42,32 @@ pub enum Action {
     Check,
     /// List every file of the interface: where it came from, and whether it draws.
     List,
+    /// Install a plugin from a source, recording it in `plugins.toml`.
+    Install {
+        /// A bare name from the official set, a URL, or a filesystem path.
+        src: String,
+        /// Where the pane lands. Required for a single `.lua` source, which
+        /// proposes no destination of its own.
+        #[arg(long = "as", value_name = "FILE")]
+        as_file: Option<String>,
+        /// The version to install, and to keep installing.
+        #[arg(long)]
+        pin: Option<String>,
+    },
+    /// Bring the interface into agreement with `plugins.toml`.
+    Sync,
+    /// Advance an entry, or every entry, to what its source carries now.
+    Update {
+        /// The entry to advance. Omit for all of them.
+        name: Option<String>,
+    },
+    /// Remove an installed plugin, its spec entry and its record.
+    Remove {
+        /// The entry's name, or the file it delivered.
+        name: String,
+    },
+    /// List the officially distributed plugins.
+    Available,
 }
 
 pub fn run(action: Action) -> Result<CommandOutput, String> {
@@ -50,6 +76,11 @@ pub fn run(action: Action) -> Result<CommandOutput, String> {
         Action::New { name } => new(&name),
         Action::Check => check(),
         Action::List => list(),
+        Action::Install { src, as_file, pin } => install(&src, as_file.as_deref(), pin.as_deref()),
+        Action::Sync => sync(),
+        Action::Update { name } => update(name.as_deref()),
+        Action::Remove { name } => remove(&name),
+        Action::Available => available(),
     }
 }
 
@@ -149,6 +180,37 @@ fn new(name: &str) -> Result<CommandOutput, String> {
     ))
 }
 
+/// Build the host the way the running interface builds it — including the set of
+/// files the user turned off.
+///
+/// Loading everything on disk is not what the interface does, and the difference
+/// is the whole point of the switch: a plugin turned off declares no key,
+/// occupies no slot and cannot fail to load, which is what makes turning one off
+/// the way back from a broken pane. A check that read it anyway would report a
+/// failure the interface does not have — and, once the arrangement is consulted,
+/// would fault a slot the user correctly removed along with the pane.
+///
+/// Mirrors `App::publish_disabled`: the paths are stored absolute and `build`
+/// compares them relative.
+fn host_at(dir: &std::path::Path) -> crate::kernel::host::LuaHost {
+    let mut host = crate::kernel::host::LuaHost::new(dir);
+    let root = dir.to_string_lossy();
+    let disabled: Vec<String> = crate::kernel::registry::Registry::load()
+        .disabled()
+        .filter_map(|absolute| {
+            absolute
+                .strip_prefix(root.as_ref())
+                .map(|relative| relative.trim_start_matches(['/', '\\']).to_string())
+        })
+        .filter(|relative| !relative.is_empty())
+        .collect();
+    if !disabled.is_empty() {
+        host.set_disabled(disabled);
+        host.reload();
+    }
+    host
+}
+
 fn check() -> Result<CommandOutput, String> {
     let (dir, chosen) = resolve()?;
     if !dir.is_dir() {
@@ -158,7 +220,7 @@ fn check() -> Result<CommandOutput, String> {
             chosen.as_str()
         ));
     }
-    let host = crate::kernel::host::LuaHost::new(&dir);
+    let host = host_at(&dir);
     let loaded: Vec<String> = host
         .plugins
         .iter()
@@ -184,18 +246,80 @@ fn check() -> Result<CommandOutput, String> {
 
     // No panes is a real state — a user who removed them all — and the interface
     // runs perfectly well like that, so it is reported rather than failed.
-    let human = if loaded.is_empty() {
+    let loads = if loaded.is_empty() {
         format!("{}\n  ✓ loads — no panes", dir.display())
     } else {
         format!("{}\n  ✓ loads — {}", dir.display(), loaded.join(", "))
     };
+
+    // Loading is not the same as drawing. A plugin whose slot the arrangement
+    // names nowhere passes every check above it — it compiles, declares its keys
+    // and is listed — and paints nothing, which is the one failure a pipe could
+    // not see. Resolved at a stated size because placement is size-dependent;
+    // see `layout::REFERENCE`.
+    let reference = crate::kernel::layout::REFERENCE;
+    let size = format!("{}x{}", reference.width, reference.height);
+    let unplaced = match host.unplaced_slots(reference) {
+        Ok(slots) => slots,
+        // A broken arrangement is survivable at runtime (the loop falls back to
+        // a centre-only screen) but it is still a defect, and it is the reason
+        // the verdict below cannot be reached — so it is reported as the failure
+        // rather than passed over in silence.
+        Err(error) => {
+            let human = format!("{loads}\n  ✗ {error}");
+            return Ok(CommandOutput::failed(
+                json!({
+                    "dir": dir.display().to_string(),
+                    "ok": false,
+                    "error": error,
+                    "loaded": loaded,
+                    "checked_at": size,
+                }),
+                human,
+                "the arrangement did not resolve",
+            ));
+        }
+    };
+
+    if !unplaced.is_empty() {
+        let mut lines = vec![loads];
+        let mut rows = Vec::new();
+        for slot in &unplaced {
+            let files: Vec<&str> = host
+                .plugins
+                .iter()
+                .filter(|plugin| &plugin.slot == slot)
+                .map(|plugin| plugin.path.as_str())
+                .collect();
+            lines.push(format!(
+                "  ✗ {} — loaded, but nothing places slot {slot:?}\n      \
+                 add it to layout.lua's children: {{ slot = {slot:?} }}",
+                files.join(", ")
+            ));
+            rows.push(json!({ "slot": slot, "files": files }));
+        }
+        lines.push(format!("  (checked at {size})"));
+        return Ok(CommandOutput::failed(
+            json!({
+                "dir": dir.display().to_string(),
+                "ok": false,
+                "loaded": loaded,
+                "unplaced": rows,
+                "checked_at": size,
+            }),
+            lines.join("\n"),
+            "a plugin loaded but nothing places it",
+        ));
+    }
+
     Ok(CommandOutput::new(
         json!({
             "dir": dir.display().to_string(),
             "ok": true,
             "loaded": loaded,
+            "checked_at": size,
         }),
-        human,
+        loads,
     ))
 }
 
@@ -248,6 +372,10 @@ fn list() -> Result<CommandOutput, String> {
                 "name": row.name,
                 "kind": row.kind.as_str(),
                 "source": row.source.as_str(),
+                // Named separately from `source` so a script can match on the
+                // origin without parsing it out of a label: "installed" is the
+                // kind of file it is, and this is who it came from.
+                "installed_from": row.source.installed_from(),
                 "state": row.state.as_str(),
                 "error": row.error,
             })
@@ -256,6 +384,191 @@ fn list() -> Result<CommandOutput, String> {
     Ok(CommandOutput::new(
         json!({ "dir": dir.display().to_string(), "files": json_rows }),
         format!("{}\n{table}", dir.display()),
+    ))
+}
+
+/// The interface directory an install writes into.
+///
+/// `resolve(true)` here, unlike everywhere else in this file: installing a plugin
+/// into a directory that is not an interface yet would deliver a pane with no
+/// `lib/` to require, which fails to load before it is ever looked at — the same
+/// reasoning `new` follows.
+fn install_dir() -> Result<PathBuf, String> {
+    let (dir, chosen, _report) = crate::kernel::bundled::resolve(true)?;
+    if !dir.join("lib").is_dir() {
+        let report = crate::kernel::bundled::materialize(&dir);
+        if !report.errors.is_empty() {
+            return Err(format!(
+                "could not set up {} ({}): {}",
+                dir.display(),
+                chosen.as_str(),
+                report.errors.join("; ")
+            ));
+        }
+    }
+    Ok(dir)
+}
+
+/// The line to add to `ui/layout.lua` so a slot is placed.
+///
+/// Printed at the moment of installing rather than left for `check` to discover:
+/// a pane that loads and draws nothing is the one failure with no symptom, so the
+/// instruction should arrive before anybody has to go looking for it.
+fn placement_hint(dir: &Path, file: &str) -> Option<String> {
+    let host = host_at(dir);
+    let plugin = host.plugins.iter().find(|plugin| plugin.path == file)?;
+    if plugin.floats || plugin.decorates.is_some() {
+        return None;
+    }
+    let unplaced = host
+        .unplaced_slots(crate::kernel::layout::REFERENCE)
+        .unwrap_or_default();
+    if !unplaced.contains(&plugin.slot) {
+        return None;
+    }
+    Some(format!(
+        "nothing places slot {slot:?} yet — add to layout.lua's children: \
+         {{ slot = {slot:?} }}",
+        slot = plugin.slot
+    ))
+}
+
+fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<CommandOutput, String> {
+    let dir = install_dir()?;
+    let report = crate::kernel::packages::install(&dir, src, as_file, pin)?;
+
+    let hint = placement_hint(&dir, &report.file);
+    let mut human = format!(
+        "{} {} from {} ({})",
+        report.outcome.as_str(),
+        report.file,
+        report.src,
+        report.version
+    );
+    if let Some(hint) = &hint {
+        human.push_str(&format!("\n  {hint}"));
+    }
+    human.push_str("\n  `thurbox-cli plugin check` to confirm it loads and draws");
+    Ok(CommandOutput::new(
+        json!({
+            "dir": dir.display().to_string(),
+            "file": report.file,
+            "name": report.name,
+            "src": report.src,
+            "version": report.version,
+            "outcome": report.outcome.as_str(),
+            "placement_hint": hint,
+            "summary": format!("{} {}", report.outcome.as_str(), report.file),
+        }),
+        human,
+    ))
+}
+
+/// One report line, and the JSON beside it.
+fn entry_rows(reports: &[crate::kernel::packages::EntryReport]) -> (Vec<String>, Vec<Value>) {
+    let mut lines = Vec::new();
+    let mut rows = Vec::new();
+    for report in reports {
+        let moved = match &report.from {
+            Some(from) => format!(" ({from} → {})", report.version),
+            None if report.version.is_empty() => String::new(),
+            None => format!(" ({})", report.version),
+        };
+        lines.push(format!(
+            "  {:<9} {}{moved}",
+            report.outcome.as_str(),
+            report.file
+        ));
+        rows.push(json!({
+            "file": report.file,
+            "name": report.name,
+            "src": report.src,
+            "version": report.version,
+            "from": report.from,
+            "outcome": report.outcome.as_str(),
+        }));
+    }
+    (lines, rows)
+}
+
+fn sync() -> Result<CommandOutput, String> {
+    let dir = install_dir()?;
+    let reports = crate::kernel::packages::sync(&dir)?;
+    let (lines, rows) = entry_rows(&reports);
+    let changed = reports.iter().any(|report| report.outcome.changed());
+
+    let human = if reports.is_empty() {
+        format!("{}\n  nothing installed", dir.display())
+    } else {
+        format!("{}\n{}", dir.display(), lines.join("\n"))
+    };
+    Ok(CommandOutput::new(
+        json!({
+            "dir": dir.display().to_string(),
+            "changed": changed,
+            "entries": rows,
+        }),
+        human,
+    ))
+}
+
+fn update(name: Option<&str>) -> Result<CommandOutput, String> {
+    let dir = install_dir()?;
+    let reports = crate::kernel::packages::update(&dir, name)?;
+    let (lines, rows) = entry_rows(&reports);
+
+    // Nothing newer upstream is success, not a failure — a scheduled update that
+    // exits non-zero on "already current" is one nobody can schedule.
+    let human = if reports.is_empty() {
+        format!("{}\n  nothing installed", dir.display())
+    } else if reports.iter().any(|report| report.from.is_some()) {
+        format!("{}\n{}", dir.display(), lines.join("\n"))
+    } else {
+        format!("{}\n{}\n  already current", dir.display(), lines.join("\n"))
+    };
+    Ok(CommandOutput::new(
+        json!({
+            "dir": dir.display().to_string(),
+            "moved": reports.iter().filter(|report| report.from.is_some()).count(),
+            "entries": rows,
+        }),
+        human,
+    ))
+}
+
+fn remove(name: &str) -> Result<CommandOutput, String> {
+    let (dir, _chosen) = resolve()?;
+    let report = crate::kernel::packages::remove(&dir, name)?;
+    Ok(CommandOutput::new(
+        json!({
+            "dir": dir.display().to_string(),
+            "file": report.file,
+            "name": report.name,
+            "src": report.src,
+            "outcome": report.outcome.as_str(),
+            "summary": format!("removed {}", report.file),
+        }),
+        format!("removed {} ({})", report.file, report.src),
+    ))
+}
+
+fn available() -> Result<CommandOutput, String> {
+    let plugins = crate::kernel::packages::OFFICIAL_PLUGINS;
+    let table = super::output::table(
+        &["name", "description"],
+        &plugins
+            .iter()
+            .map(|(name, description)| vec![(*name).to_string(), (*description).to_string()])
+            .collect::<Vec<_>>(),
+    );
+    Ok(CommandOutput::new(
+        json!({
+            "plugins": plugins
+                .iter()
+                .map(|(name, description)| json!({ "name": name, "description": description }))
+                .collect::<Vec<_>>(),
+        }),
+        table,
     ))
 }
 

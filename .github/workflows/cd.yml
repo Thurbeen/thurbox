@@ -121,7 +121,12 @@ jobs:
           #
           # A forced `workflow_dispatch` version skips this gate entirely (the
           # `if:` above): an explicit human cut is always honoured.
-          SHIPPED_PATHS='^(src/|tests/|build\.rs$|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|extensions/|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
+          #
+          # `extensions/` and `ui-plugins/` are in the list although no binary
+          # carries them: a bare-name install resolves against the release TAG
+          # (`official_set_base`), so a change that is never tagged is one nobody
+          # can install.
+          SHIPPED_PATHS='^(src/|tests/|build\.rs$|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|extensions/|ui-plugins/|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
 
           LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 

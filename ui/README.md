@@ -23,9 +23,16 @@ invisible until something is missing from the screen.
 
 ```bash
 thurbox-cli plugin check     # load it the way thurbox does
-thurbox-cli plugin list      # every file, and whether it is drawing
+thurbox-cli plugin list      # every file, where it came from, whether it is drawing
 thurbox-cli plugin dir       # which directory is live, and which rule chose it
 ```
+
+`check` fails on two things, and the second is the one worth knowing about. A file
+that will not load is obvious. A pane that **loads and draws nothing** — because no
+arrangement places its slot — is not: it compiles, declares its keys, appears in
+`plugin list`, and is absent from the screen. `check` reports it with the
+`layout.lua` line to add, and exits non-zero, so it is caught rather than puzzled
+over.
 
 In a running thurbox, `F10` reloads from disk and `Ctrl+,` → `]` shows the same
 inventory `plugin list` prints.
@@ -156,13 +163,39 @@ These are the ones that cost real time.
   to a kernel chord. Check `F1` after adding a key: if it is not listed, it did
   not bind.
 - **A slot needs a home in `layout.lua`.** A plugin whose slot appears nowhere in
-  the arrangement loads fine and never draws — `plugin list` reports it as
-  `no slot`, which is the fastest way to spot it.
+  the arrangement loads fine and never draws. **Adding a pane is two edits** — the
+  plugin and the slot — and `plugin check` fails on the missing second one and
+  prints the line to add.
 - **`theme.*` returns roles, not colours.** Ask for `theme.accent` or
   `theme.muted` so your pane looks right under all thirty-six palettes. Never
   hardcode a hex value.
 - **Instructions and memory are bounded.** An accidental infinite loop is killed,
   not hung — if a pane vanishes after an edit, check `plugin check`.
+
+## Panes somebody else wrote
+
+You do not have to write one from scratch. `plugins.toml` here lists what this
+interface is composed of, and the manager keeps the directory in step with it:
+
+```bash
+thurbox-cli plugin available          # what installs by bare name
+thurbox-cli plugin install top        # fetch it, and record it in plugins.toml
+thurbox-cli plugin sync               # make the directory match the spec
+thurbox-cli plugin remove top         # file, spec entry and record
+```
+
+`install` prints the `layout.lua` line the new pane needs, since that is the edit
+it cannot make for you — **nothing here writes your arrangement.** After editing
+`plugins.toml` by hand, `sync` is the one command to run: it installs what is
+missing, takes back what you removed from the spec, and leaves everything else
+alone. Running it twice changes nothing.
+
+Your edits survive all of it. A managed file you changed is reported as `kept` and
+never overwritten, and a managed file you deleted stays deleted — that is how you
+remove one.
+
+`plugins.lock` beside the spec records what each entry resolved to. You edit the
+spec; nothing edits the lock. Commit both and this interface reproduces elsewhere.
 
 ## Files here are yours, and recoverable
 

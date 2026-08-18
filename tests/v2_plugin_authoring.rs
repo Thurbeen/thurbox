@@ -227,6 +227,114 @@ fn the_shipped_interface_checks_out() {
     for pane in ["sessions", "agent", "new_session", "confirm", "search"] {
         assert!(loaded.contains(pane), "{pane} missing from {loaded}");
     }
+    // `search` is the reason the unplaced check has to open every panel before it
+    // resolves the arrangement: the strip starts CLOSED, so `layout.lua`
+    // legitimately names no `search` slot until something opens it. Without that,
+    // the interface we ship would fail its own check.
+    assert!(loaded.contains("search"), "{checked}");
+    assert!(
+        !checked["checked_at"].is_null(),
+        "the size the verdict was reached at is reported, so a surprising one is \
+         explicable: {checked}"
+    );
+}
+
+/// A plugin the arrangement places nowhere is the failure no other signal
+/// reports: it compiles, declares its keys, is listed, and paints nothing.
+#[test]
+fn a_pane_nothing_places_is_a_failure_that_says_what_to_add() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    run(Action::New {
+        name: "notes".into(),
+    })
+    .expect("new");
+
+    // The starter takes `center`, which the arrangement always places. Moving it
+    // to a slot nothing names is the whole difference between drawing and not.
+    let file = ui.join("plugins").join("90_notes.lua");
+    let body = std::fs::read_to_string(&file).expect("read");
+    std::fs::write(&file, body.replace("slot = \"center\"", "slot = \"notes\"")).expect("write");
+
+    let output = run(Action::Check).expect("check runs");
+    assert!(
+        output.failure.is_some(),
+        "a pane that draws nothing has to fail the exit, or CI cannot gate on it: {:?}",
+        output.json
+    );
+    let unplaced = output.json["unplaced"].to_string();
+    assert!(
+        unplaced.contains("90_notes.lua"),
+        "names the file: {unplaced}"
+    );
+    assert!(unplaced.contains("notes"), "and the slot: {unplaced}");
+    let human = output.human.clone();
+    assert!(
+        human.contains("slot = \"notes\""),
+        "and prints the line to add to layout.lua, since knowing the slot is not \
+         the same as knowing the fix: {human}"
+    );
+}
+
+#[test]
+fn a_pane_that_floats_is_not_reported_as_unplaced() {
+    // A float draws ABOVE the arrangement, so it needs no slot at all. Reporting
+    // one would fault the creation wizard, which is bundled and correct.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    run(Action::New {
+        name: "notes".into(),
+    })
+    .expect("new");
+
+    let file = ui.join("plugins").join("90_notes.lua");
+    let body = std::fs::read_to_string(&file).expect("read");
+    std::fs::write(
+        &file,
+        body.replace("slot = \"center\"", "slot = \"notes\",\n  floats = true"),
+    )
+    .expect("write");
+
+    let output = run(Action::Check).expect("check runs");
+    assert!(output.failure.is_none(), "{:?}", output.json);
+    assert_eq!(output.json["ok"], true, "{:?}", output.json);
+}
+
+#[test]
+fn a_pane_the_user_turned_off_is_not_reported_as_unplaced() {
+    // Turning a pane off is the way back from a broken one, so a check that read
+    // it anyway would report a failure the interface does not have. Removing the
+    // slot from the arrangement is the CORRECT thing to do alongside it.
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let ui = at(home.path());
+    run(Action::New {
+        name: "notes".into(),
+    })
+    .expect("new");
+
+    let file = ui.join("plugins").join("90_notes.lua");
+    let body = std::fs::read_to_string(&file).expect("read");
+    std::fs::write(&file, body.replace("slot = \"center\"", "slot = \"notes\"")).expect("write");
+
+    // Unplaced while it is on …
+    let on = run(Action::Check).expect("check runs");
+    assert!(on.failure.is_some(), "{:?}", on.json);
+
+    // … and not a failure once it is off.
+    let mut registry = thurbox::kernel::registry::Registry::load();
+    registry
+        .set_disabled(&file.to_string_lossy(), true)
+        .expect("disable");
+
+    let off = run(Action::Check).expect("check runs");
+    std::env::remove_var("THURBOX_CONFIG_DIR");
+    assert!(off.failure.is_none(), "{:?}", off.json);
+    assert!(
+        !off.json["loaded"].to_string().contains("notes"),
+        "and it is not reported as loaded either, because it was not read: {:?}",
+        off.json
+    );
 }
 
 #[test]
@@ -277,6 +385,77 @@ fn an_interface_with_no_panes_is_reported_not_failed() {
 }
 
 // ── what is loaded, and where it came from ─────────────────────────────────
+
+#[test]
+fn the_listing_tells_a_file_you_installed_from_one_you_wrote() {
+    // The distinction a capability grant rests on: `run` is granted per file, so
+    // "who shipped this" is the question to answer before granting it. Until the
+    // installed origin existed, a third-party pane and one you wrote yourself were
+    // the same answer.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(ui.join("plugins").join("90_mine.lua"), "return {}\n").expect("write");
+
+    let entry = thurbox::session::PluginEntry {
+        src: "atlas".into(),
+        file: "plugins/75_atlas.lua".into(),
+        pin: Some("v0.3.1".into()),
+    };
+    let mut lock = thurbox::session::PluginLock::default();
+    thurbox::kernel::packages::deliver(
+        &ui,
+        &entry,
+        "https://example.com/atlas",
+        "v0.3.1",
+        &[thurbox::kernel::packages::Payload {
+            file: "plugins/75_atlas.lua".into(),
+            contents: "return {}\n".into(),
+        }],
+        &mut lock,
+    )
+    .expect("deliver");
+    thurbox::kernel::packages::write_lock(&ui, &lock).expect("write lock");
+    thurbox::kernel::packages::add_to_spec(&ui, &entry).expect("add to spec");
+
+    let listing = json(Action::List);
+    let row = |file: &str| -> serde_json::Value {
+        listing["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .find(|row| row["file"] == file)
+            .cloned()
+            .unwrap_or_else(|| panic!("{file} missing from {listing}"))
+    };
+
+    let installed = row("plugins/75_atlas.lua");
+    assert_eq!(installed["source"], "installed", "{installed}");
+    assert_eq!(installed["installed_from"], "atlas", "{installed}");
+    let mine = row("plugins/90_mine.lua");
+    assert_eq!(mine["source"], "user", "{mine}");
+    assert!(mine["installed_from"].is_null(), "{mine}");
+
+    // The spec is part of what the interface is made of, and it is not a pane that
+    // failed to load — which is what it would read as without its own kind.
+    let spec = row("plugins.toml");
+    assert_eq!(spec["kind"], "manifest", "{spec}");
+    assert_ne!(spec["state"], "failed", "{spec}");
+
+    // Edited locally, or re-tagged upstream under the same pin. Either way the
+    // contents are no longer the ones the grant was made against.
+    std::fs::write(ui.join("plugins").join("75_atlas.lua"), "-- mine\n").expect("edit");
+    let after = json(Action::List);
+    let edited = after["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|row| row["file"] == "plugins/75_atlas.lua")
+        .cloned()
+        .expect("row");
+    assert_eq!(edited["source"], "installed · modified", "{edited}");
+    assert_eq!(edited["installed_from"], "atlas", "{edited}");
+}
 
 #[test]
 fn the_listing_tells_a_shipped_file_from_an_edited_one() {

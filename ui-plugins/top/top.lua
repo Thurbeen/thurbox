@@ -1,8 +1,8 @@
 -- CPU and memory, from `top`, as gauges.
 --
--- NOT bundled. Copy it into your interface to use it:
+-- NOT bundled. Install it into your interface with:
 --
---     cp docs/examples/top.lua ~/.config/thurbox/ui/plugins/85_top.lua
+--     thurbox-cli plugin install top
 --
 -- Then trust it: settings (`Ctrl+,`) → Interface (`]`) → the row → `t`. Until you
 -- do, `run` is **not in this plugin's environment** — not a function that returns

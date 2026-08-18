@@ -7,6 +7,7 @@ pub mod hyperlink;
 pub mod keybindings;
 pub mod links;
 pub mod message;
+pub mod plugin_spec;
 pub mod review;
 pub mod selection;
 pub mod settings;
@@ -29,6 +30,9 @@ pub use host_def::{
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use keybindings::{compact_shortcut, Action, KeyBindings, KeyChord, KeyContext};
 pub use message::SessionMessage;
+pub use plugin_spec::{
+    LockEntry, PackageFile, PackageManifest, PluginEntry, PluginLock, PluginSpec,
+};
 pub use review::{
     parse_unified_diff, Classification, CommentAnchor, DiffFile, DiffHunk, DiffLine, DiffLineKind,
     FileStatus, ReviewComment, Side,

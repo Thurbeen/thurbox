@@ -574,23 +574,26 @@ fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
     assert_eq!(sources(dir.path())["README.md"], Source::Edited);
 }
 
-/// The shipped examples load, and the demo arrangement stacks them where it says.
+/// The distributed panes load, and the demo arrangement stacks them where it says.
 ///
-/// `docs/examples/` is not bundled, so nothing else would notice it rotting: a
-/// renamed snapshot field or a changed `run` signature would leave the files
-/// looking fine and failing the moment somebody copied them in. This builds the
-/// interface the copy instructions describe and asserts the shape the header
-/// diagram promises.
+/// `ui-plugins/` is not bundled, so nothing else would notice it rotting: a renamed
+/// snapshot field or a changed `run` signature would leave the files looking fine
+/// and failing the moment somebody installed them. This builds the interface the
+/// install instructions produce and asserts the shape the header diagram promises.
 #[test]
 fn the_demo_examples_load_and_stack_where_the_layout_says() {
     let dir = interface();
-    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples");
-    fs::copy(examples.join("layout.lua"), dir.path().join("layout.lua")).expect("layout");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    fs::copy(
+        root.join("docs/examples/layout.lua"),
+        dir.path().join("layout.lua"),
+    )
+    .expect("layout");
     for (from, to) in [
-        ("tasks.lua", "plugins/80_tasks.lua"),
-        ("top.lua", "plugins/85_top.lua"),
+        ("ui-plugins/tasks/tasks.lua", "plugins/80_tasks.lua"),
+        ("ui-plugins/top/top.lua", "plugins/85_top.lua"),
     ] {
-        fs::copy(examples.join(from), dir.path().join(to)).expect(from);
+        fs::copy(root.join(from), dir.path().join(to)).expect(from);
     }
 
     let host = loaded(dir.path());
@@ -662,11 +665,15 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
 #[test]
 fn the_demo_layout_drops_a_stack_slot_whose_plugin_is_missing() {
     let dir = interface();
-    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples");
-    fs::copy(examples.join("layout.lua"), dir.path().join("layout.lua")).expect("layout");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    fs::copy(
+        root.join("docs/examples/layout.lua"),
+        dir.path().join("layout.lua"),
+    )
+    .expect("layout");
     // Only one of the two, which is the likeliest half-finished state.
     fs::copy(
-        examples.join("tasks.lua"),
+        root.join("ui-plugins/tasks/tasks.lua"),
         dir.path().join("plugins/80_tasks.lua"),
     )
     .expect("tasks");

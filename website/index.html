@@ -472,17 +472,28 @@ cargo build --release</code></pre>
         <div class="ui-lab__demo">
           <p class="ui-lab__demo-lede">
             <strong>&ldquo;Stacked right&rdquo; is a demo you can run.</strong>
-            Those two panes are real examples in the repository &mdash; a tasks list, and CPU and
-            memory read from
+            Those two panes are real, distributed panes &mdash; a tasks list, and CPU and memory read
+            from
             <code>top</code>
-            &mdash; with an arrangement that puts them in a column beside the agent. Copy the three
-            files and press
+            &mdash; with an arrangement that puts them in a column beside the agent. Install them,
+            copy the arrangement, and press
             <code>F10</code>
             :
           </p>
-          <pre data-wrap><code class="language-bash">cp docs/examples/layout.lua ~/.config/thurbox/ui/layout.lua
-cp docs/examples/tasks.lua  ~/.config/thurbox/ui/plugins/80_tasks.lua
-cp docs/examples/top.lua    ~/.config/thurbox/ui/plugins/85_top.lua</code></pre>
+          <pre data-wrap><code class="language-bash">thurbox-cli plugin install tasks
+thurbox-cli plugin install top
+cp docs/examples/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
+          <p class="ui-lab__demo-note">
+            Each install records itself in
+            <code>plugins.toml</code>
+            beside your panes and prints the
+            <code>layout.lua</code>
+            line the new pane needs &mdash; because a pane whose slot nothing places loads perfectly
+            and draws nothing, and
+            <code>thurbox-cli plugin check</code>
+            is what fails on it. The arrangement is copied rather than installed on purpose: the
+            manager never writes that file.
+          </p>
           <p class="ui-lab__demo-note">
             The tasks pane needs no permission &mdash; it reads the same records
             <code>thurbox-cli task</code>

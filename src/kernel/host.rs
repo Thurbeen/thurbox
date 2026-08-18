@@ -24,6 +24,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use mlua::{Function, Lua, StdLib, Table, Value, VmState};
+use ratatui::layout::Rect;
 
 use super::command::{Args, Command, ExtraMember, InFlight};
 use super::convert;
@@ -901,6 +902,17 @@ impl LuaHost {
         self.store
             .borrow_mut()
             .insert(key.to_string(), Persisted::Str(value.to_string()));
+    }
+
+    /// Put a boolean into the shared `store`.
+    ///
+    /// The counterpart to [`Self::shared_bool`], and used for the same panel
+    /// flags: [`Self::unplaced_slots`] opens every column before resolving the
+    /// arrangement, because a pane behind a closed toggle is not a missing pane.
+    pub fn set_shared_bool(&self, key: &str, value: bool) {
+        self.store
+            .borrow_mut()
+            .insert(key.to_string(), Persisted::Bool(value));
     }
 
     /// Indices of plugins that may float, in render order.
@@ -1859,6 +1871,43 @@ impl LuaHost {
             .filter(|plugin| plugin.decorates.is_none() && !plugin.floats)
             .map(|plugin| plugin.slot.as_str())
             .collect()
+    }
+
+    /// Slots a loaded plugin occupies that the arrangement places nowhere.
+    ///
+    /// The failure this answers is invisible to every other check: such a plugin
+    /// compiles, declares its keys, appears in the inventory and draws nothing.
+    /// Reported by slot; the caller names the files, since it is the one holding
+    /// the plugin list the user recognises.
+    ///
+    /// Two kinds of plugin are excluded before the question is asked, because
+    /// neither is broken and reporting them would train the reader to ignore the
+    /// answer. [`Self::occupied_slots`] already drops **floats** (they draw above
+    /// the arrangement) and **decorators** (they draw into another plugin's
+    /// tree); a **disabled** plugin never reaches `plugins` at all, since being
+    /// disabled is implemented as not loading the file.
+    ///
+    /// A third kind has to be handled here: a pane behind a **closed panel
+    /// toggle**. `search` starts closed, so the bundled arrangement legitimately
+    /// names no `search` slot until something opens it — which would make the
+    /// interface we ship fail its own check. So every occupied slot's panel flag
+    /// is opened before resolving. The kernel already reads these flags from
+    /// outside Lua (see [`Self::shared_bool`]); this writes the same key.
+    pub fn unplaced_slots(&self, area: Rect) -> Result<Vec<String>, String> {
+        let occupied: BTreeSet<String> = self
+            .occupied_slots()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        for slot in &occupied {
+            self.set_shared_bool(&format!("panels.{slot}"), true);
+        }
+        let region = self.arrangement(area.width, area.height)?;
+        let placed = super::layout::placed_slots(&region, area);
+        Ok(occupied
+            .into_iter()
+            .filter(|slot| !placed.contains(slot))
+            .collect())
     }
 
     fn occupied_slots_table(&self) -> Result<Table, String> {

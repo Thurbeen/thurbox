@@ -26,6 +26,8 @@ pub enum Kind {
     Arrangement,
     /// Prose, not code: shipped guidance for whoever edits this directory.
     Doc,
+    /// `plugins.toml`: what the interface is composed of.
+    Manifest,
 }
 
 impl Kind {
@@ -35,15 +37,19 @@ impl Kind {
             Kind::Module => "module",
             Kind::Arrangement => "arrangement",
             Kind::Doc => "doc",
+            Kind::Manifest => "manifest",
         }
     }
 
     fn of(relative: &str) -> Self {
         if relative == "layout.lua" {
             Kind::Arrangement
+        } else if relative == crate::session::plugin_spec::SPEC_FILE {
+            // Before the `plugins/` fallthrough, for the same reason `Doc` is: a
+            // manifest reported as a pane that failed to load is a false alarm,
+            // and the loader never offers it one (it reads `plugins/*.lua`).
+            Kind::Manifest
         } else if relative.ends_with(".md") {
-            // Before the `plugins/` fallthrough: a doc is not a pane that failed
-            // to load, and the loader never offers it one (it reads `*.lua` only).
             Kind::Doc
         } else if relative.starts_with("lib/") {
             Kind::Module
@@ -164,6 +170,46 @@ impl Trust {
             (Some(_), Some(_)) => Trust::Drifted,
         }
     }
+
+    /// Resolve an **installed** file's standing, which asks a different question.
+    ///
+    /// For a file the user wrote, "have the contents changed" is the whole of it.
+    /// For one delivered by a manager it is the wrong question twice over: every
+    /// legitimate release changes the contents, so a grant keyed on them alone
+    /// reports each one as tampering and trains the reader to dismiss the warning —
+    /// and yet the contents still matter, because a source that re-tagged the same
+    /// version with something else must not inherit a grant made to what that
+    /// version was.
+    ///
+    /// So both are checked, and each answers a different failure:
+    ///
+    /// | `src@version` | contents | result | why |
+    /// |---|---|---|---|
+    /// | matches | match | `Trusted` | including a reinstall, silently |
+    /// | differs | — | `Untrusted` | the pin moved; ask again |
+    /// | matches | differ | `Drifted` | edited locally, **or re-tagged upstream** |
+    ///
+    /// That last row is the one that cannot be dropped: keying on `src@version`
+    /// alone would let an upstream substitution keep the capability — a hole opened
+    /// by the very change meant to reduce warning fatigue.
+    pub fn resolve_installed(
+        granted: Option<(&str, &str)>,
+        current_pin: &str,
+        current_digest: Option<&str>,
+    ) -> Self {
+        match granted {
+            None => Trust::Untrusted,
+            // Granted to a different version than the one installed now. Not a
+            // warning — simply not granted, so the capability is absent until the
+            // user says so again.
+            Some((pin, _)) if pin != current_pin => Trust::Untrusted,
+            Some((_, was)) => match current_digest {
+                None => Trust::Trusted,
+                Some(now) if was == now => Trust::Trusted,
+                Some(_) => Trust::Drifted,
+            },
+        }
+    }
 }
 
 /// Join what delivery knows with what the last frame drew.
@@ -235,7 +281,7 @@ pub fn rows(
                 .map(|(_, plugin)| plugin.slot.clone())
                 .filter(|_| kind == Kind::Pane)
                 .unwrap_or_default(),
-            source: *source,
+            source: source.clone(),
             state,
             error,
             capabilities: loaded
@@ -272,7 +318,7 @@ mod tests {
     fn sources(pairs: &[(&str, Source)]) -> BTreeMap<String, Source> {
         pairs
             .iter()
-            .map(|(path, source)| ((*path).to_string(), *source))
+            .map(|(path, source)| ((*path).to_string(), source.clone()))
             .collect()
     }
 
@@ -351,6 +397,51 @@ mod tests {
         // Trusted, and the file cannot be read now — reported as trusted rather
         // than as drifted, because "changed" is a claim we cannot make.
         assert_eq!(Trust::resolve(Some("a"), None), Trust::Trusted);
+    }
+
+    /// The design's table, row by row. An installed file is judged on the version
+    /// it came from AND its contents, and each half catches a failure the other
+    /// cannot.
+    #[test]
+    fn an_installed_files_trust_is_judged_on_its_version_and_its_contents() {
+        // Never granted.
+        assert_eq!(
+            Trust::resolve_installed(None, "atlas@v1", Some("a")),
+            Trust::Untrusted
+        );
+        // Granted, untouched — and again after a reinstall at the same version,
+        // which rewrites identical contents.
+        assert_eq!(
+            Trust::resolve_installed(Some(("atlas@v1", "a")), "atlas@v1", Some("a")),
+            Trust::Trusted
+        );
+        // The pin moved. Not a warning: simply not granted, so the capability is
+        // absent until the user says so again. This is what stops every ordinary
+        // release reading as tampering.
+        assert_eq!(
+            Trust::resolve_installed(Some(("atlas@v1", "a")), "atlas@v2", Some("b")),
+            Trust::Untrusted
+        );
+        // Edited locally at the granted version.
+        assert_eq!(
+            Trust::resolve_installed(Some(("atlas@v1", "a")), "atlas@v1", Some("mine")),
+            Trust::Drifted
+        );
+        // THE ROW THAT CANNOT BE DROPPED: same source, same version, different
+        // contents — an upstream re-tag. Keying the grant on `src@version` alone
+        // would let a substitution keep a capability granted to what that version
+        // used to be, which is a supply-chain hole opened by the very change meant
+        // to reduce warning fatigue.
+        assert_eq!(
+            Trust::resolve_installed(Some(("atlas@v1", "a")), "atlas@v1", Some("swapped")),
+            Trust::Drifted
+        );
+        // Unreadable now: reported as trusted, because "changed" is a claim we
+        // cannot make — the same answer the unmanaged rule gives.
+        assert_eq!(
+            Trust::resolve_installed(Some(("atlas@v1", "a")), "atlas@v1", None),
+            Trust::Trusted
+        );
     }
 
     #[test]

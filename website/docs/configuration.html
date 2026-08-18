@@ -89,6 +89,27 @@ breadcrumb: 'Configuration'
                 </td>
               </tr>
               <tr>
+                <td><code>~/.config/thurbox/ui/plugins.toml</code></td>
+                <td>TOML</td>
+                <td>you (or <code>thurbox-cli plugin</code>)</td>
+                <td>on each <code>plugin</code> command</td>
+                <td>
+                  <strong>what the interface is composed of</strong>
+                  &mdash; a source, a destination file and an optional pin, per installed pane
+                </td>
+              </tr>
+              <tr>
+                <td><code>~/.config/thurbox/ui/plugins.lock</code></td>
+                <td>TOML</td>
+                <td><code>thurbox-cli plugin</code></td>
+                <td>on each <code>plugin</code> command</td>
+                <td>
+                  what each entry resolved to, and the digest of every file delivered.
+                  Machine-written &mdash; commit it beside the spec and the same interface
+                  reproduces elsewhere
+                </td>
+              </tr>
+              <tr>
                 <td><code>~/.config/thurbox/ui.json</code></td>
                 <td>JSON</td>
                 <td><code>F1</code> / Interface tab (or you)</td>
