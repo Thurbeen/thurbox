@@ -137,7 +137,25 @@ send Escape
 wait_gone "filter themes"
 ok "Escape closed it"
 
-# 4. Ctrl+Q exits cleanly (the tmux session ends when thurbox returns).
+# 4. Ctrl+/ opens the global search strip *and* focuses it.
+#
+# The typed text is the assertion, not the strip appearing: focus may only rest on
+# a slot the last painted frame placed, and a pane that opens itself is not in that
+# set until the next paint — so the focus request that came with the chord was
+# refused and dropped, and every letter of the query went to the agent's terminal
+# instead. Anything that reintroduces that shows up here as a strip with an empty
+# field. `C-_` is what a terminal sends for ctrl+/.
+send C-_
+wait_for "Search"
+ok "Ctrl+/ opened the search strip"
+send "zq"
+wait_for "Search zq"
+ok "the strip has focus, so the query is typed into it"
+send Escape
+wait_gone "Search zq"
+ok "Escape closed it"
+
+# 5. Ctrl+Q exits cleanly (the tmux session ends when thurbox returns).
 send C-q
 for _ in $(seq 1 50); do
   if ! tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then

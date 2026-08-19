@@ -547,13 +547,14 @@ return {
     end
     save(search)
     store[QUERY] = search.field.value or ""
-    -- The result under the cursor changed out from under it, so the preview has
-    -- to follow the query as well as the arrows — otherwise typing narrows the
-    -- list while the list underneath still shows the old row.
-    local rows = results()
-    search.cursor = widgets.clamp(search.cursor, #rows)
-    save(search)
-    preview(rows[search.cursor])
+    -- The preview follows the query as well as the arrows — otherwise typing
+    -- narrows the list while the list underneath still shows the old row. It is
+    -- `render` that does it, on the frame this keystroke causes: it clamps the
+    -- cursor to the new results and previews whatever that lands on, which is
+    -- the same answer this handler used to compute. Computing it here as well
+    -- scanned every session (and, once a query settles, every session's SCREEN)
+    -- a second time per keystroke, for a row that was about to be previewed
+    -- anyway.
     return true
   end,
 }

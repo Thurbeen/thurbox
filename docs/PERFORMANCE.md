@@ -748,6 +748,45 @@ frame either.
 
 ---
 
+## ADR-P14: Publish once per input batch, and gate every screen read on a stamp
+
+**Choice**: `App::republish` — the call that rebuilds every `thurbox.*` table Lua can
+read — runs **once per event batch** rather than once per event, and the three reads
+inside it that touch a screen or the filesystem are gated on something that says
+whether the answer could have changed.
+
+It ran per event because a handler has to read something current. It does; nothing
+between two events of one batch can change what it would say, since the snapshot is
+refreshed at the top of the iteration and a command a handler queues is drained on
+the next one. What that cost, per keystroke — and a held-down key is 30 or more a
+second, each one draining in the same batch:
+
+| Read | What it did per event | What gates it now |
+|---|---|---|
+| `Terminals::links` | walked every cell of **every** live session's grid, building a `String` per row, to find OSC 8 targets and bare URLs | that session's `output_stamp` — the same atomic the redraw signal reads |
+| `Terminals::screens` (search content) | re-read every grid again, capped at `CONTENT_LINE_CAP` | `output_generation`, plus the existing "is anything asking" check |
+| the interface inventory | `read_to_string` + digest of **every file** in the interface directory, and a `plugins.lock` TOML parse, to answer "is this file still the one that was trusted" | a `trust_stale` flag set by `refresh_sources`, which every path that changes the directory or a grant already calls |
+
+The rows of the inventory are still assembled every publish: which pane is *on
+screen* depends on the frame, and that half is a set lookup. Only the file reads
+behind them are cached, which is ADR-P13's rule applied — the cached answer carries
+the thing that makes it current, not merely the fact that it exists.
+
+**Measured by**: the `renders` counter is unchanged (the same trees are built); what
+falls is the work between them. There is no counter for "publishes", which is the
+honest gap here — the change was reasoned from what the reads do, and the reads are
+the same ones ADR-P13 already treats as per-frame costs.
+
+**Rejected**:
+
+- *Publishing lazily, on the first `thurbox.*` read from Lua* — the publish builds one
+  table; making it per-field would put a Rust callback on every field read, which is
+  the cost this avoids, spread thinner.
+- *Not publishing before input at all* — a handler would read the previous frame's
+  world, and a key pressed on what a frame showed has to act on what that frame showed.
+
+---
+
 ## Investigation 2026-07-09: where the time actually goes
 
 A measurement pass over the render loop, the tick, the draw path, startup, the

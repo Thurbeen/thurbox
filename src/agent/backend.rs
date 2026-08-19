@@ -22,6 +22,26 @@ pub(crate) fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// The smallest grid a `vt100` parser may be given, as `(rows, cols)`.
+///
+/// Two, not one, and the difference is a crash. `set_size(0, _)` underflows
+/// outright, which is why every size here used to be clamped at 1 — but a
+/// **one-row** grid underflows in `row_inc_scroll` the moment output wraps, and a
+/// **one-column** grid underflows in `col_wrap` (`cols - width`) the moment a
+/// double-width character arrives, which for an agent that prints emoji is the
+/// first line it writes. A cramped layout really does compute those rects — a
+/// pane one column wide is what a 20-column terminal with the session list open
+/// leaves for the terminal — and the panic lands on the *reader* thread, so the
+/// process survives while that session's pane is blank for the rest of the run:
+/// the unwind poisons the parser mutex, and every reader of it (paint, links,
+/// selection, copy) treats a poisoned lock as "no live terminal".
+///
+/// Nothing is readable at two columns either, so clamping loses nothing a
+/// smaller grid would have shown.
+fn vt_floor(rows: u16, cols: u16) -> (u16, u16) {
+    (rows.max(2), cols.max(2))
+}
+
 /// Length of the prefix of `buf` that is safe to feed to the vt100 parser
 /// without splitting a UTF-8 character. Returns `buf.len()` unless `buf` ends
 /// with the start of a multi-byte character whose continuation bytes have not
@@ -541,10 +561,10 @@ impl ProgramPane {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {
-        // Clamped at 1 for the reason `Session::resize` documents: a cramped
-        // layout can compute a zero-row area, vt100's `set_size` underflows on 0
-        // and tmux rejects it.
-        let (rows, cols) = (rows.max(1), cols.max(1));
+        // Floored for the reason [`vt_floor`] documents: a cramped layout can
+        // compute a one-cell area, and a grid that small is where vt100
+        // underflows on the next byte the program prints.
+        let (rows, cols) = vt_floor(rows, cols);
         if let Err(e) = self.backend.resize(&self.backend_id, rows, cols) {
             tracing::debug!("could not resize program pane {}: {e:#}", self.backend_id);
             return;
@@ -716,6 +736,10 @@ impl Session {
         let attention_at = Arc::new(AtomicU64::new(0));
         let notification = Arc::new(Mutex::new(None));
         let meta_gen = Arc::new(AtomicU64::new(0));
+        // The floor applies at construction too: a session first painted into a
+        // one-column pane would otherwise panic on its first line of output,
+        // before any resize could correct it.
+        let (rows, cols) = vt_floor(rows, cols);
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
@@ -810,9 +834,10 @@ impl Session {
         let attention_at = Arc::new(AtomicU64::new(0));
         let notification = Arc::new(Mutex::new(None));
         let meta_gen = Arc::new(AtomicU64::new(0));
+        let (rows, cols) = vt_floor(rows, cols);
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            rows.max(1),
-            cols.max(1),
+            rows,
+            cols,
             crate::session::settings::global().scrollback_lines,
             TermSignals {
                 title: Arc::clone(&last_title),
@@ -938,9 +963,11 @@ impl Session {
 
     pub fn resize(&self, rows: u16, cols: u16) {
         // A cramped layout (tiny terminal + open panels/strips) can compute a
-        // zero-row/col content area; vt100's `set_size` underflows on 0 and
-        // tmux rejects it, so clamp at this boundary for every path below.
-        let (rows, cols) = (rows.max(1), cols.max(1));
+        // one-cell content area, which vt100 cannot be fed without underflowing
+        // — see [`vt_floor`]. Floored at this boundary for every path below,
+        // including the pane the backend is told about, so the grid and the pane
+        // agree on a size they can both hold.
+        let (rows, cols) = vt_floor(rows, cols);
         // A placeholder has no live pane; only resize its local notice buffer.
         // Talking to the (possibly-down) backend here would issue a blocking
         // ssh resize on the UI thread — the freeze we're avoiding.
@@ -1327,6 +1354,31 @@ mod tests {
         drop(rx);
         let err = send_to_input_channel(&tx, vec![b'x'], "Session").unwrap_err();
         assert!(err.to_string().contains("closed"), "got: {err}");
+    }
+
+    #[test]
+    fn a_grid_at_the_floor_survives_what_an_agent_prints() {
+        // The floor is not cosmetic: at one row vt100 underflows in
+        // `row_inc_scroll` as soon as output wraps, and at one column it
+        // underflows in `col_wrap` as soon as a double-width character arrives.
+        // Both used to be reachable — a one-cell pane is what a cramped layout
+        // hands a session — and both killed the reader thread, which poisons the
+        // parser mutex and blanks that pane for the rest of the run.
+        for (rows, cols) in [(0, 0), (1, 1), (1, 2), (2, 1), (1, 40), (3, 1)] {
+            let (rows, cols) = vt_floor(rows, cols);
+            let mut parser = vt100::Parser::new(rows, cols, 0);
+            parser.screen_mut().set_size(rows, cols);
+            // A wide character (the `col_wrap` path) and enough plain text to
+            // wrap and scroll (the `row_inc_scroll` path).
+            parser.process("🚀 done\r\n".repeat(4).as_bytes());
+            parser.process("hello world hello world".as_bytes());
+        }
+    }
+
+    #[test]
+    fn the_grid_floor_leaves_a_usable_size_alone() {
+        assert_eq!(vt_floor(24, 80), (24, 80));
+        assert_eq!(vt_floor(2, 2), (2, 2));
     }
 
     #[test]

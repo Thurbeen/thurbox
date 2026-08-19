@@ -315,6 +315,12 @@ fn backspace_widens_the_search_again() {
     let host = host();
     open(&host);
     type_query(&host, "docs");
+    // Rendered before asserting because rendering is what previews: typing
+    // records the query, and the frame it causes clamps the cursor to the new
+    // results and points the list at whatever that lands on. The strip used to
+    // do both — the scan of every session, and once a query settled every
+    // session's *screen*, ran twice per keystroke for the same answer.
+    render(&host, PLUGIN);
     assert_eq!(selected(&host).as_deref(), Some("ccc"));
 
     for _ in 0..4 {

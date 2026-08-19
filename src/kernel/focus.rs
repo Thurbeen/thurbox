@@ -13,6 +13,14 @@
 //! lands the pane is not yet the chosen one — judging it by the previous frame's
 //! selection is judging it by the state it is about to change.
 //!
+//! There is a third case, and it belongs to the loop rather than to these two
+//! predicates: a pane that opens *itself* writes its visibility to `store`, so the
+//! arrangement only places its slot on the next paint, and [`can_focus`] answers no
+//! until then. A focus request refused there must be **held over that paint**, not
+//! dropped — `App::deferred_focus` is where. Dropping it is how `ctrl+/` opened the
+//! search strip and left focus on the agent, so the query was typed into the agent's
+//! terminal.
+//!
 //! Kept here rather than in the binary because it is the rule that was wrong,
 //! and a rule worth a test is worth a home.
 

@@ -152,6 +152,24 @@ a failed branch fetch stuck for the process lifetime, and a backend surveyed onc
 was treated as surveyed since. Each is now a TTL, an in-flight marker, or a
 generation counter — if you add a cache here, give it one.
 
+`republish` — the one call that rebuilds every `thurbox.*` table — runs once per
+painted frame and **once per input batch**, not once per event: a held-down key
+otherwise paid for it per repeat. The three reads in it that touch a screen or the
+disk carry the age above (ADR-P14): link extraction is keyed on that session's
+`output_stamp`, the search content scan on `output_generation`, and the interface
+inventory's per-file digests on a `trust_stale` flag every path that changes the
+directory or a grant already sets.
+
+**A vt100 grid is never given fewer than two rows or two columns**
+(`agent::backend::vt_floor`). A cramped layout really does compute a one-cell pane,
+and vt100 underflows on the next byte written into one — in `row_inc_scroll` when a
+line wraps, in `col_wrap` (`cols - width`) when a double-width character arrives.
+The panic lands on the session's *reader* thread, so the process lives while that
+session's terminal is blank for the rest of the run: the unwind poisons the parser
+mutex, and every reader of it (paint, links, selection, copy) reads a poisoned lock
+as "no live terminal". A panic is also written to `thurbox.log`, because a worker's
+stderr is scrolled away long before anyone looks.
+
 **Observability**: `F12` toggles the perf HUD (`[features] perf_hud`); launching with
 `THURBOX_PERF_LOG=1` writes `startup`, `perf_window` and `slow op` lines to
 `thurbox.log`; while either is active a JSON snapshot is published for

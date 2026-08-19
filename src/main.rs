@@ -71,6 +71,13 @@ const FORCE_REDRAW_INTERVAL: Duration = Duration::from_millis(250);
 /// was drawn at the `FORCE_REDRAW_INTERVAL` floor, four times a second, which is
 /// what made v2 feel less responsive than v1.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Consecutive input-read failures tolerated before the loop gives up.
+///
+/// One is a terminal handing crossterm bytes it cannot parse, which is a
+/// keystroke to drop rather than a reason to quit. A run of them is a stream
+/// that has gone away, and polling it forever would spin at full speed.
+const INPUT_FAILURE_LIMIT: u32 = 64;
 /// How long an outcome message stays up. v1's `STATUS_MESSAGE_TTL`.
 const STATUS_TTL: Duration = Duration::from_secs(5);
 
@@ -89,9 +96,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // afterwards printed `\x1b[<35;…M` into the prompt. Restoring here is also
     // why the message is readable at all: on the alternate screen it would be
     // wiped the moment the shell repainted.
+    //
+    // The message is also written to the log, because stderr is where a panic
+    // is *least* likely to be read: a worker thread's panic does not end the
+    // process, so the pane it printed on is scrolled away long before anyone
+    // looks — which is how a reader thread dying, and taking one session's
+    // terminal with it for the rest of the run, left no trace to report.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
+        tracing::error!(
+            "panicked at {}: {}",
+            info.location()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "an unknown location".to_string()),
+            info.payload()
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "a payload of an unknown type".to_string()),
+        );
         original_hook(info);
     }));
 
@@ -195,6 +219,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         focus_return: initial_focus,
         reload_at: None,
         errors: Vec::new(),
+        deferred_focus: None,
+        links: std::collections::HashMap::new(),
+        link_stamps: std::collections::HashMap::new(),
+        content: std::collections::HashMap::new(),
+        content_generation: None,
+        trust: std::collections::HashMap::new(),
+        trust_stale: true,
         layout_error: None,
         floor: None,
         status: None,
@@ -868,6 +899,17 @@ struct App {
     last_output_gen: u64,
     /// Plugin holding an exclusive key grab this frame, if any.
     grabbed: Option<usize>,
+    /// A pane that asked for focus before it was on screen.
+    ///
+    /// Focus may only rest on a slot the *last painted frame* placed
+    /// (`kernel::focus::can_focus`), and a pane opening itself writes its
+    /// visibility to `store` — so the arrangement only learns about it on the
+    /// next paint. A `focus` command drained in between was therefore refused
+    /// and dropped: `ctrl+/` opened the search strip and left focus on the
+    /// agent, which is not a cosmetic difference — every letter of the query
+    /// went to the agent's terminal instead. Held over the paint that places the
+    /// slot and applied there, so the strip is focused on the frame it appears.
+    deferred_focus: Option<usize>,
     /// Programs plugins asked to be run, and what they printed.
     runs: thurbox::kernel::runs::RunStore,
     /// Every file of the interface, as of the last painted frame.
@@ -889,6 +931,31 @@ struct App {
     /// re-reading while the worker is mid-write would publish the old list and
     /// look like the add did nothing.
     bookmark_in_flight: bool,
+    /// Links found on each live session's screen, keyed by session, and the
+    /// output stamp each answer was found at.
+    ///
+    /// Rebuilt for a session only when that session printed something. Finding
+    /// them walks the whole grid cell by cell, and this runs on every frame *and*
+    /// every input event — so a held-down key used to rescan every terminal on
+    /// the screen per repeat, for answers that cannot have changed.
+    links: std::collections::HashMap<String, Vec<(String, usize, usize)>>,
+    link_stamps: std::collections::HashMap<String, u64>,
+    /// What each terminal was showing when a search last asked, and the output
+    /// generation it was read at. Empty while nothing is searching.
+    content: std::collections::HashMap<String, String>,
+    content_generation: Option<u64>,
+    /// Where each interface file stands with the user, and the lock the answer
+    /// was resolved against.
+    ///
+    /// Answering it reads and digests every file in the interface directory and
+    /// parses `plugins.lock`, which is the wrong price to pay per keystroke: the
+    /// answer changes only when the directory or a grant does, and both say so.
+    /// The rows themselves are still assembled every publish — those depend on
+    /// what is on screen this frame, which is cheap and does change.
+    trust: std::collections::HashMap<String, thurbox::kernel::inventory::Trust>,
+    /// Set when the directory, a grant or the disabled set moved, so the trust
+    /// answers above are re-read.
+    trust_stale: bool,
     /// Whether the perf counters are painted over the interface (F12).
     hud: bool,
     quit: bool,
@@ -896,6 +963,9 @@ struct App {
 
 impl App {
     fn run(&mut self, mut terminal: DefaultTerminal) -> Result<(), Box<dyn Error>> {
+        // Consecutive input failures, reset by the first event that reads
+        // cleanly. See the poll below for why one is survivable.
+        let mut input_failures: u32 = 0;
         while !self.quit {
             Counters::bump(&self.perf.iterations);
             if self.watcher.changed() {
@@ -980,7 +1050,7 @@ impl App {
                                     self.focus = back;
                                     self.dirty = true;
                                 }
-                            } else {
+                            } else if self.can_focus_plugin(index) {
                                 // Through `focus_plugin`, not by assigning `focus`:
                                 // it records where focus came from and refuses a
                                 // pane focus cannot rest on. Assigning directly
@@ -988,6 +1058,11 @@ impl App {
                                 // command could not be left with `Esc` — the user
                                 // had to walk out with the focus cycle.
                                 self.focus_plugin(index);
+                                self.dirty = true;
+                            } else {
+                                // Not on screen yet — it is opening itself this
+                                // very frame. See `deferred_focus`.
+                                self.deferred_focus = Some(index);
                                 self.dirty = true;
                             }
                         }
@@ -1276,6 +1351,19 @@ impl App {
                 // After the backend flushed, so the escapes cannot interleave
                 // with ratatui's own output.
                 self.paint_terminal_hyperlinks(&buffer);
+                // The frame that just painted is what placed the slots, so a
+                // pane that asked for focus while it was still invisible can be
+                // answered now — before this iteration reads any input, so the
+                // first key after the one that opened it lands in the right pane.
+                // Dropped rather than retried if the paint did not place it: the
+                // pane declined to draw, and a request that outlives that would
+                // steal focus later for no visible reason.
+                if let Some(index) = self.deferred_focus.take() {
+                    if self.can_focus_plugin(index) {
+                        self.focus_plugin(index);
+                        self.dirty = true;
+                    }
+                }
                 self.last_paint = Instant::now();
                 self.frames += 1;
                 Counters::bump(&self.perf.frames);
@@ -1290,18 +1378,46 @@ impl App {
             // without bound. That is felt as an unresponsive mouse, and the
             // backlog outlives the process — the leftover reports are what
             // printed `\x1b[<35;92;31M` into the terminal afterwards.
-            let mut first = true;
-            while if first {
-                first = false;
-                event::poll(TICK)?
-            } else {
-                event::poll(Duration::ZERO)?
-            } {
-                match event::read()? {
+            //
+            // The batch is also what `thurbox.*` is published for: once, before
+            // the first event that runs Lua, rather than once per event. A
+            // handler has to read something current, and nothing between two
+            // events of one batch can change what it would say — the snapshot is
+            // refreshed at the top of the iteration, and a command a handler
+            // queues is drained on the next one. Per event, a held-down key paid
+            // for the whole publish (every session's links, the interface
+            // inventory, the plugin lock) on every repeat.
+            let mut published = false;
+            let mut waited = false;
+            loop {
+                // Only the first read waits; the rest take what is already queued.
+                let timeout = if waited { Duration::ZERO } else { TICK };
+                waited = true;
+                let event = match next_event(timeout) {
+                    Ok(Some(event)) => {
+                        input_failures = 0;
+                        event
+                    }
+                    Ok(None) => break,
+                    // Input is not worth the process. A terminal can hand
+                    // crossterm a sequence it cannot parse — a burst of keys
+                    // interleaving with a mouse report is enough — and
+                    // propagating that error exited thurbox with every session
+                    // detached. Logged, dropped, and retried next iteration; only
+                    // a stream that keeps failing (a closed stdin, say) is fatal,
+                    // since polling a dead terminal would otherwise spin.
+                    Err(e) => {
+                        input_failures += 1;
+                        tracing::warn!("reading input failed: {e}");
+                        if input_failures > INPUT_FAILURE_LIMIT {
+                            return Err(Box::new(e));
+                        }
+                        break;
+                    }
+                };
+                match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        // A handler reads `thurbox.*` too, and input is rare
-                        // enough that keeping it current costs nothing.
-                        self.republish();
+                        self.publish_for_batch(&mut published);
                         self.on_key(&key);
                         self.dirty = true;
                     }
@@ -1310,7 +1426,7 @@ impl App {
                     // reports mouse events unasked. v1 does the same in
                     // `App::update`.
                     Event::Mouse(mouse) if self.mouse => {
-                        self.republish();
+                        self.publish_for_batch(&mut published);
                         self.on_mouse(mouse);
                         self.dirty = true;
                     }
@@ -1318,7 +1434,7 @@ impl App {
                     // whatever has focus, exactly as `ctrl+v` is: a modal's
                     // text field if one is open, else the focused terminal.
                     Event::Paste(text) => {
-                        self.republish();
+                        self.publish_for_batch(&mut published);
                         self.on_paste(text);
                         self.dirty = true;
                     }
@@ -1353,6 +1469,111 @@ impl App {
     /// can have changed. Not per frame: it digests every file.
     fn refresh_sources(&mut self) {
         self.sources = thurbox::kernel::bundled::sources(&self.ui_dir);
+        // Delivery just re-read the directory, so whatever the cached trust
+        // answers were digested from is no longer the file on disk.
+        self.trust_stale = true;
+    }
+
+    /// Publish the world for this batch of input, unless it already was.
+    ///
+    /// See the drain loop for why once per batch is enough.
+    fn publish_for_batch(&mut self, published: &mut bool) {
+        if !*published {
+            self.republish();
+            *published = true;
+        }
+    }
+
+    /// Rescan for the links on each session's screen, where that screen moved.
+    ///
+    /// Part of publishing rather than a standing cost of the loop, because the
+    /// answer is only ever read by a plugin — and gated on the session's
+    /// `output_stamp`, because finding them walks every cell of its grid building
+    /// a `String` per row. Ungated, a held-down key rescanned every terminal on
+    /// screen per repeat for answers that could not have changed.
+    fn refresh_links(&mut self, sessions: &[String]) {
+        for id in sessions {
+            match self.terminals.output_stamp(id) {
+                // Unchanged since the last scan: the answer stands.
+                Some(stamp) if self.link_stamps.get(id) == Some(&stamp) => {}
+                Some(stamp) => {
+                    self.link_stamps.insert(id.clone(), stamp);
+                    let found = self.terminals.links(id);
+                    // Absent rather than empty when there are none, which is the
+                    // shape a plugin reads: `thurbox.links[id]` is nil for a
+                    // session with no links, not a table with nothing in it.
+                    if found.is_empty() {
+                        self.links.remove(id);
+                    } else {
+                        self.links.insert(id.clone(), found);
+                    }
+                }
+                // No live pane, so no screen and no links.
+                None => {
+                    self.link_stamps.remove(id);
+                    self.links.remove(id);
+                }
+            }
+        }
+        // A session that left the snapshot takes its cached answer with it.
+        let known: std::collections::HashSet<&str> = sessions.iter().map(String::as_str).collect();
+        self.links.retain(|id, _| known.contains(id.as_str()));
+        self.link_stamps.retain(|id, _| known.contains(id.as_str()));
+    }
+
+    /// Read what each terminal is showing, while something is searching them.
+    ///
+    /// The scan is the same walk [`Self::refresh_links`] makes, so serving it
+    /// always would not be ruinous — it would simply be paid by every interface
+    /// that never searches, which is the argument for asking. Gated a second time
+    /// on the screens having *moved*: a query is asked for once and then read on
+    /// every frame and every keystroke of it being narrowed, and re-reading every
+    /// grid for each of those is the whole cost of typing in the search strip.
+    fn refresh_search_content(&mut self, sessions: &[String]) {
+        let asked = self
+            .host
+            .shared_string(thurbox::kernel::terminal::WANT_CONTENT)
+            .is_some_and(|query| !query.is_empty());
+        if !asked {
+            // Dropped the moment nothing is searching, so a closed strip is not
+            // still holding every screen it scanned.
+            if self.content_generation.is_some() {
+                self.content = std::collections::HashMap::new();
+                self.content_generation = None;
+            }
+            return;
+        }
+        let generation = self.terminals.output_generation();
+        if self.content_generation != Some(generation) {
+            self.content = self.terminals.screens(sessions);
+            self.content_generation = Some(generation);
+        }
+    }
+
+    /// Re-read where each file of the interface stands with the user.
+    ///
+    /// Answering it reads and digests every file in the directory and parses
+    /// `plugins.lock`, so it is done when something says the answer moved rather
+    /// than per publish. Trust is keyed by absolute path, and drift is answered by
+    /// reading the file; an INSTALLED file is judged differently (its
+    /// `src@version` as well as its contents), and `trust_of` owns that split so
+    /// no caller can check only one half of it.
+    fn refresh_trust(&mut self) {
+        if !self.trust_stale {
+            return;
+        }
+        let lock = thurbox::kernel::packages::read_lock(&self.ui_dir).unwrap_or_default();
+        self.trust = self
+            .sources
+            .keys()
+            .map(|path| {
+                (
+                    path.clone(),
+                    thurbox::kernel::packages::trust_of(&self.ui_dir, path, &lock, &self.registry),
+                )
+            })
+            .collect();
+        self.trust_stale = false;
     }
 
     /// Rebuild everything a plugin can read.
@@ -1360,36 +1581,15 @@ impl App {
     /// Called just before a paint and before dispatching input — the only two
     /// moments Lua runs — rather than once per loop iteration.
     fn republish(&mut self) {
-        // Links are scanned out of each terminal's screen, so this is part of
-        // publishing rather than a standing cost of the loop.
-        let mut links = std::collections::HashMap::new();
-        for row in &self.snapshots.current().sessions {
-            let found = self.terminals.links(&row.id);
-            if !found.is_empty() {
-                links.insert(row.id.clone(), found);
-            }
-        }
-        // Terminal text, but only while something is searching it. The scan is
-        // the same walk `links` just made, so serving it always would not be
-        // ruinous — it would simply be paid by every interface that never
-        // searches, which is the argument for asking.
-        let content = match self
-            .host
-            .shared_string(thurbox::kernel::terminal::WANT_CONTENT)
-            .filter(|query| !query.is_empty())
-        {
-            Some(_) => {
-                let ids: Vec<String> = self
-                    .snapshots
-                    .current()
-                    .sessions
-                    .iter()
-                    .map(|row| row.id.clone())
-                    .collect();
-                self.terminals.screens(&ids)
-            }
-            None => std::collections::HashMap::new(),
-        };
+        let sessions: Vec<String> = self
+            .snapshots
+            .current()
+            .sessions
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        self.refresh_links(&sessions);
+        self.refresh_search_content(&sessions);
         // Generation-gated, so an idle session costs one atomic load.
         let meta = self.terminals.meta().clone();
         let attach_errors = self.terminals.failures();
@@ -1406,23 +1606,24 @@ impl App {
         let visible: std::collections::HashSet<usize> = (0..self.host.plugins.len())
             .filter(|index| self.is_visible_plugin(*index))
             .collect();
+        // Before the borrows below: it re-reads the directory when something says
+        // the answer moved, which needs `self` mutably.
+        self.refresh_trust();
         let ui_dir = self.ui_dir.clone();
         let registry = &self.registry;
-        // Read once per inventory pass rather than per file: it is one small TOML,
-        // and a per-file read would make the cost scale with the directory.
-        let plugin_lock = thurbox::kernel::packages::read_lock(&ui_dir).unwrap_or_default();
+        let trust = &self.trust;
         self.inventory = thurbox::kernel::inventory::rows(
             &self.host.plugins,
             &self.sources,
             &visible,
             &self.visible_slots,
             self.host.error.as_deref(),
-            // Trust is keyed by absolute path, and drift is answered by reading
-            // the file — cheap, and only for the handful that declare anything.
-            // An INSTALLED file is judged differently (its `src@version` as well as
-            // its contents), and `trust_of` owns that split so no caller can check
-            // only one half of it.
-            &|path| thurbox::kernel::packages::trust_of(&ui_dir, path, &plugin_lock, registry),
+            &|path| {
+                trust
+                    .get(path)
+                    .copied()
+                    .unwrap_or(thurbox::kernel::inventory::Trust::NotAsked)
+            },
             &|path| registry.is_disabled(&ui_dir.join(path).to_string_lossy()),
         );
         let inventory = std::mem::take(&mut self.inventory);
@@ -1434,8 +1635,8 @@ impl App {
             themes: &self.themes,
             registry: &self.registry,
             diffs: &self.diffs,
-            links: &links,
-            content: &content,
+            links: &self.links,
+            content: &self.content,
             meta: &meta,
             metrics: &self.metrics,
             status_rows: self.status_rows(),
@@ -3542,6 +3743,17 @@ impl App {
 /// `u16::clamp` asserts `min <= max`, and every rect below takes its cap from the
 /// space available — which on a short terminal is smaller than the floor the
 /// content wants. The cap wins, because a rect must never exceed its parent.
+/// The next terminal event, or `None` if none arrived within `timeout`.
+///
+/// The two crossterm calls belong together: a `poll` that says yes is what makes
+/// the `read` non-blocking, and either can fail the same way.
+fn next_event(timeout: Duration) -> std::io::Result<Option<Event>> {
+    if !event::poll(timeout)? {
+        return Ok(None);
+    }
+    event::read().map(Some)
+}
+
 fn clamp_span(value: u16, floor: u16, cap: u16) -> u16 {
     value.clamp(floor.min(cap), cap)
 }
