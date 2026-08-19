@@ -478,7 +478,11 @@ Maps `Action` names to one or more chord strings:
 - Chord syntax: `[ctrl+][alt+][shift+][cmd+]<key>` where `<key>` is a
   letter, `f1`–`f12`, or a named key (`enter`, `esc`, `tab`, arrows,
   `home`, `end`, `pageup`, `pagedown`, `backspace`, `delete`,
-  `insert`). Case-insensitive. `cmd` (aliases `super`, `command`,
+  `insert`, `space`, `plus`). Case-insensitive. The Space and `+` keys
+  are **named** rather than written literally — a lone `" "` is
+  indistinguishable from blank and a literal `+` from the separator
+  (releases up to 1.8.6 wrote `" "` and then rejected it on reload; such
+  a file still loads). `cmd` (aliases `super`, `command`,
   `win`) is the macOS Command key — delivered only by
   kitty-keyboard-protocol terminals (iTerm2 3.5+, kitty, WezTerm,
   Ghostty; not Terminal.app), and only for chords the emulator
