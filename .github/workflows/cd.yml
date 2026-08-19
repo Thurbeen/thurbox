@@ -40,6 +40,11 @@ jobs:
       # path is deterministic — the ternary form silently fell back to `--auto`
       # when an output briefly evaluated empty, defeating the forced cut.
       bump_args: ${{ steps.parse.outputs.bump_args }}
+      # Whether this cut is the highest version the repository has ever tagged.
+      # A maintenance release off `v1.x` is not: everything downstream of the
+      # tag points at "the current thurbox" rather than at a version, so a 1.8.x
+      # cut would drag all of it backwards past 2.x. See the `newest` step.
+      newest: ${{ steps.newest.outputs.newest }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -144,6 +149,41 @@ jobs:
           else
             echo "shipped=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Skipping release ${{ steps.parse.outputs.version }} — no shipped artifact changed since $LAST_TAG (docs/website/CI only). The commits stay in history and ride along with the next real release."
+          fi
+
+      - name: Is this the highest version ever tagged
+        id: newest
+        run: |
+          # The release line is not a single line any more: 2.x ships from
+          # `main` while 1.8.x is maintained on `v1.x`, and a v1 patch is cut by
+          # dispatching this workflow from that ref. Nothing downstream of the
+          # tag knows that. The GitHub Release would claim "Latest" — which is
+          # what `scripts/install.{sh,ps1}` resolve, so every fresh install would
+          # land on the older line — and the Homebrew formula and the AUR
+          # PKGBUILDs would be rewritten to it, moving 2.x users *backwards* on
+          # their next upgrade. The moderated channels (Chocolatey, winget) would
+          # merely reject a version behind what they already carry.
+          #
+          # So compare the cut against every tag that exists. Behind the highest
+          # one means this is a maintenance release: still tagged, still built,
+          # still published with its binaries, but not marked latest and not
+          # pushed to any channel. The version is the whole test — not the ref —
+          # because that is the property those consumers care about, and a hotfix
+          # cut from some other ref that *is* the newest version should still
+          # ship everywhere.
+          TARGET="${{ steps.parse.outputs.version }}"
+          HIGHEST="$(git tag --list 'v*' | sort -V | tail -1)"
+          echo "cutting ${TARGET:-(nothing)}; highest existing tag ${HIGHEST:-(none)}"
+          if [ -z "$TARGET" ]; then
+            # No release is being cut; the value is unused but must not be empty.
+            echo "newest=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$HIGHEST" ] \
+            || [ "$(printf '%s\n%s\n' "$HIGHEST" "$TARGET" | sort -V | tail -1)" = "$TARGET" ]; then
+            echo "newest=true" >> "$GITHUB_OUTPUT"
+            echo "$TARGET leads the line — release as latest, push to every channel"
+          else
+            echo "newest=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TARGET is behind $HIGHEST — cutting it as a maintenance release: tagged and published with binaries, but not marked latest and not pushed to Homebrew/AUR/Chocolatey/winget."
           fi
 
   # Create git tag (only if release needed)
@@ -348,6 +388,10 @@ jobs:
           files: release-assets/*
           draft: false
           prerelease: false
+          # A maintenance cut off an older line must not claim the pointer the
+          # installers resolve. Not `prerelease`: 1.8.7 is a real release, it is
+          # simply not the newest one.
+          make_latest: ${{ needs.check-release.outputs.newest }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -359,6 +403,7 @@ jobs:
     name: Publish AUR (${{ matrix.pkgname }})
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
+      && needs.check-release.outputs.newest == 'true'
     runs-on: ubuntu-latest
     # Hoisted so the publish step can be skipped when the secret is unset
     # (the `secrets` context cannot be used directly in an `if` condition).
@@ -405,6 +450,7 @@ jobs:
     name: Publish Homebrew formula
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
+      && needs.check-release.outputs.newest == 'true'
     runs-on: ubuntu-latest
     # Hoisted so the push step can be skipped when the secret is unset
     # (the `secrets` context cannot be used directly in an `if` condition).
@@ -476,6 +522,7 @@ jobs:
     name: Publish Chocolatey package
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
+      && needs.check-release.outputs.newest == 'true'
     runs-on: windows-latest
     # Hoisted so the steps can be skipped when the secret is unset
     # (the `secrets` context cannot be used directly in an `if` condition).
@@ -618,6 +665,7 @@ jobs:
     name: Publish winget manifest
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
+      && needs.check-release.outputs.newest == 'true'
     runs-on: windows-latest
     # Hoisted so the steps can be skipped when the secret is unset
     # (the `secrets` context cannot be used directly in an `if` condition).
