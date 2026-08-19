@@ -1404,9 +1404,20 @@ return {
     elseif action == "sessions.restart" and id then
       command("restart", { session = id })
     elseif action == "sessions.fork" and id then
-      -- Unnamed, so `Command::Fork` derives `<source>-fork`: one press forks,
-      -- rather than stopping to ask for a name first.
-      command("fork", { session = id })
+      -- v1 asked for the name first: `fork_active_session` prepared the spawn and
+      -- opened its shared Session Name modal prefilled `<source>-fork`, so the
+      -- fork was named before it existed and could be renamed on the spot. Forking
+      -- silently was a v2 divergence, not a decision.
+      --
+      -- The naming UI lives in the creation float, so hand it the job through
+      -- `store`, exactly as an irreversible change hands its question to
+      -- `confirm`. This pane keeps owning what it knows (which session, and what
+      -- the derived name is) and decides nothing about how it is asked.
+      local source = items[at].session
+      store.fork = {
+        session = id,
+        name = ((source and source.name) or "session") .. "-fork",
+      }
     elseif action == "sessions.sync" and id then
       command("sync", { session = id })
     elseif action == "sessions.editor" and id then

@@ -820,11 +820,33 @@ end
 --- typing behaves normally, and `Enter` on an untouched field is a valid answer
 --- with the answer visible before you press it.
 local function suggested_name(flow)
+  -- A fork's default is the name it was handed, not the repository's leaf: the
+  -- field starts prefilled, and clearing it must fall back to the same answer
+  -- rather than to something about the directory.
+  if flow and flow.fork then
+    return flow.fork_name or ""
+  end
   local name = leaf(flow and flow.primary)
   if name == "" or name == "~" then
     return ""
   end
   return name
+end
+
+--- A flow that exists only to name a fork.
+---
+--- v1's `fork_active_session` prepared the spawn and opened the SAME name modal the
+--- creation flow uses, then spawned straight from it — the agent, the directory and
+--- the worktrees all came from the source session, so there was nothing left to ask.
+--- This is that, entered from `store.fork` rather than from a key: the sessions pane
+--- knows which session and what the derived name is, and this knows how to ask.
+local function fork_flow(handover)
+  local flow = fresh()
+  flow.step = "name"
+  flow.fork = handover.session
+  flow.fork_name = handover.name or ""
+  textinput.set(flow.name, flow.fork_name)
+  return flow
 end
 
 local function after_repos(flow)
@@ -864,6 +886,15 @@ end
 
 --- Issue the one command the whole flow exists to produce, and close.
 local function commit(flow)
+  if flow.fork then
+    -- Everything else about a fork is the source session's, resolved by the
+    -- kernel: the agent, the host, the directory, the shared worktrees and the
+    -- parent link. The only thing this flow decides is the name.
+    command("fork", { session = flow.fork, text = flow.name.value })
+    save(nil)
+    ask(nil)
+    return
+  end
   local picked = agents()[flow.agent_index]
   local agent = picked and picked.name or nil
   command("create", {
@@ -883,6 +914,13 @@ end
 --- or straight to creating when there is nothing to choose. v1's
 --- `finish_prepare_spawn`.
 local function after_name(flow)
+  -- v1: "Fork flow — role already set, spawn directly." A fork inherits its
+  -- source's agent, so offering the agent step would invite changing the one thing
+  -- a fork cannot change.
+  if flow.fork then
+    commit(flow)
+    return nil
+  end
   local list = agents()
   if #list <= 1 then
     flow.agent_index = 1
@@ -998,6 +1036,14 @@ return {
 
   render = function(ctx)
     local flow = load()
+    if not flow and type(store.fork) == "table" and store.fork.session then
+      -- Taken here because this is where "is the float open" is decided, and the
+      -- handover has to become a flow before that question is asked. Cleared as it
+      -- is taken, so a cancelled fork does not reopen on the next frame.
+      flow = fork_flow(store.fork)
+      store.fork = nil
+      save(flow)
+    end
     ask(flow)
     if not flow then
       -- Not floating: the flow is closed, and a closed modal draws nothing.

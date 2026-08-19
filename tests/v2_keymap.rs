@@ -280,7 +280,6 @@ fn the_session_chords_issue_the_commands_v1_runs() {
     for (chord, kind) in [
         ("ctrl+d", "delete"),
         ("ctrl+r", "restart"),
-        ("ctrl+f", "fork"),
         ("ctrl+s", "sync"),
         ("ctrl+o", "editor"),
     ] {
@@ -290,6 +289,42 @@ fn the_session_chords_issue_the_commands_v1_runs() {
         assert_eq!(issued[0].kind(), kind, "{chord}");
         assert_eq!(issued[0].session(), snapshot.sessions[0].id, "{chord}");
     }
+
+    // `ctrl+f` is the exception, and matching v1 is why: `fork_active_session`
+    // prepared the spawn and opened the shared Session Name modal prefilled
+    // `<source>-fork`, so a fork was named before it existed. It therefore issues
+    // NOTHING on the keystroke — it leaves the job in `store.fork`, the way an
+    // irreversible change leaves its question in `store.confirm`.
+    fire(&host, "ctrl+f");
+    assert!(
+        host.drain_commands().is_empty(),
+        "ctrl+f must ask for a name before forking, as v1 did"
+    );
+    // What it handed over is asserted where it is consumed: the creation float
+    // opens at its name step with the prefill, which is the v1-visible behaviour
+    // and is checked through the real plugins rather than by reading `store`.
+    let rendered = host
+        .render(
+            index_of(&host, "new_session"),
+            RenderContext {
+                width: 120,
+                height: 40,
+                focused: true,
+                elapsed: 0.0,
+                frame: 2,
+            },
+        )
+        .expect("render the flow");
+    assert!(rendered.float.is_some(), "the flow floats");
+    let tree = format!("{:?}", rendered.node);
+    assert!(
+        tree.contains("fix-osc52-fork"),
+        "the name field is prefilled `<source>-fork`, as v1 prefilled it: {tree}"
+    );
+    assert!(
+        tree.contains("Session Name"),
+        "and it is v1's Session Name step: {tree}"
+    );
 }
 
 #[test]
