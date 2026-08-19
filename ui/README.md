@@ -134,7 +134,7 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 | `thurbox` | the read side — the snapshot. `thurbox.sessions`, `.settings`, `.theme`, `.repos`, `.runs`, `.diffs`, `.metrics`, `.chrome`, `.ui_dir`, … |
 | `command(name, args)` | the write side. Accepted now, applied by the kernel later. |
 | `store` | scratch state that survives a frame, and how you *ask* for things (`store.want_branches`, `store.want_content`, …) |
-| `state` | your plugin's own persisted settings |
+| `state` | your plugin's own scratch state — survives a reload, **not** a restart |
 | `require` | `lib/` modules only |
 | `run(key, cmd, opts)` | run a program and read its output — **only if trusted**, see below |
 | `files` | bounded reads the kernel performs for you |

@@ -2858,7 +2858,13 @@ fn install_store(lua: &Lua, global: &str, store: Shared, _ns: Option<()>) -> mlu
     Ok(())
 }
 
-/// `state` — persistent, and private to the plugin currently being called.
+/// `state` — private to the plugin currently being called, and **in memory only**.
+///
+/// It outlives a reload because [`LuaHost::build`] hands the same map to the new VM,
+/// which is what "persistent" in the plugin docs used to mean and read as more than
+/// it was. Nothing serialises it: a plugin's `state` dies with the process, and so
+/// does `store`. Anything a plugin needs after a restart has nowhere to go today —
+/// worth knowing before this word is chosen again.
 fn install_private(lua: &Lua, state: Private, current: Rc<RefCell<String>>) -> mlua::Result<()> {
     let table = lua.create_table()?;
     let meta = lua.create_table()?;

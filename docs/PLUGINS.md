@@ -78,7 +78,7 @@ while drawing lives in a local, and a local is invisible to `on_key` — so shar
 *function*, not a field, and what a key acts on is by construction what was on
 screen.
 
-`state` is the exception, and deliberately so: writes to it persist whenever they
+`state` is the exception, and deliberately so: writes to it land whenever they
 happen, render included. Most panes should not need that — deriving twice is simpler
 than remembering — but a decision only a render can make (a click deferred until an
 incremental parse reaches the row it named) has nowhere else to go. Prefer the shared
@@ -197,8 +197,8 @@ that throws costs its own pane and nothing else.
 |---|---|
 | `thurbox` | Everything readable: sessions, tasks, automations, repos, agents, hosts, theme, registry, diffs, links |
 | `command(kind, opts)` | The only way to change anything. Enqueues and returns |
-| `state` | Persistent, private to your plugin. Survives reload |
-| `store` | Persistent, shared by every plugin. The bus between them |
+| `state` | Private to your plugin. Survives a reload; **not** a restart |
+| `store` | Shared by every plugin — the bus between them. Same lifetime as `state` |
 | `files.list/read` | Directory entries and file text, rooted at a session's directory |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
 | `thurbox.bookmarks/browse/branches` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list — each served only while `store.want_bookmarks`/`want_browse`/`want_branches` asks for it |
