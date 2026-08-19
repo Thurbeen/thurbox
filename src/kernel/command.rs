@@ -716,6 +716,21 @@ pub struct InFlight {
     pub error: Option<String>,
 }
 
+impl InFlight {
+    /// Note that the worker has started, unless this row is already finished.
+    ///
+    /// A phase only ever moves forward. The worker announces itself from its own
+    /// thread, so the announcement can be scheduled *after* something has already
+    /// resolved the row — and an unguarded write then puts a failed command back
+    /// on the progress line, where it hides the error that explains it. Only a
+    /// row still reading `Queued` has anything to learn from "it started".
+    fn started(&mut self) {
+        if self.phase == Phase::Queued {
+            self.phase = Phase::Running;
+        }
+    }
+}
+
 /// A phase change reported from a running command.
 struct Progress {
     id: u64,
@@ -781,7 +796,7 @@ impl CommandBus {
         std::thread::spawn(move || {
             if let Ok(mut list) = inflight.lock() {
                 if let Some(entry) = list.iter_mut().find(|entry| entry.id == id) {
-                    entry.phase = Phase::Running;
+                    entry.started();
                 }
             }
             let error = execute(&command, id, &progress).err();
@@ -1871,6 +1886,34 @@ mod tests {
         let found = bus.first_running().expect("the running command");
         assert_eq!(found.id, running);
         assert_ne!(found.phase, Phase::Failed);
+    }
+
+    #[test]
+    fn a_worker_announcing_itself_cannot_revive_a_finished_row() {
+        // The worker sets `Running` from its own thread, so that write races
+        // whatever resolved the row first. Losing the race used to overwrite
+        // `Failed` — which put the failure back on the progress line, hiding the
+        // error that explains it, and made
+        // `a_failure_is_skipped_to_find_the_work_still_running_behind_it` fail
+        // about one run in twenty.
+        let mut entry = InFlight {
+            id: 1,
+            kind: "delete",
+            session: "s1".into(),
+            subject: None,
+            phase: Phase::Failed,
+            error: Some("bad session id".into()),
+        };
+        entry.started();
+        assert_eq!(entry.phase, Phase::Failed, "a phase only moves forward");
+
+        // A queued row is exactly what the announcement is for.
+        let mut queued = InFlight {
+            phase: Phase::Queued,
+            ..entry
+        };
+        queued.started();
+        assert_eq!(queued.phase, Phase::Running);
     }
 
     #[test]
