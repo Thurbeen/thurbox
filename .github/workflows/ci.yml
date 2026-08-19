@@ -58,10 +58,24 @@ jobs:
               - 'src/**'
               - 'tests/**'
               - 'build.rs'
+              # The Lua trees are Rust inputs, not merely neighbours: they are
+              # `include_str!`d into the binary, and the suite asserts on their
+              # CONTENT — `tests/v2_new_session.rs` checks a string that exists
+              # only in `ui/plugins/10_sessions.lua`. Without these, a Lua-only
+              # change skips check, clippy, nextest, the architecture rules and
+              # both Windows jobs, and can red-build main while its own PR is
+              # green. The `lua` filter below already lists all three.
+              - 'ui/**'
+              - 'ui-plugins/**'
+              - 'docs/examples/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.config/nextest.toml'
               - 'deny.toml'
+              # The configs that decide these jobs' verdicts, so changing a rule
+              # re-runs what it rules on.
+              - 'clippy.toml'
+              - '.rustfmt.toml'
               - 'sonar-project.properties'
               - '.github/workflows/ci.yml'
             shell:

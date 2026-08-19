@@ -332,6 +332,14 @@ globals:
   # build can pick — which is why platform selection is NOT in a package manifest.
   thurbox.platform:
     property: read-only
+  # Both are on the root table (`kernel::host` sets them beside the snapshot) and
+  # were missing here, so a pane reading a field the kernel genuinely serves was
+  # rejected by `selene ui` — the same error class as the deliberate
+  # `thurbox.sesions` typo, which is what this file exists to catch.
+  thurbox.version:
+    property: read-only
+  thurbox.reloads:
+    property: read-only
   thurbox.can_open_links:
     property: read-only
   thurbox.taken_at_ms:

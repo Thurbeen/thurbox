@@ -97,7 +97,6 @@ if [ "$isolation" = "full" ]; then
 else
     tbx_sandbox_init "$mode" "$profile"
 fi
-export TBX_IN_SANDBOX="$profile"
 
 log "sandbox root: $TBX_SANDBOX_ROOT ($mode, $isolation isolation)"
 

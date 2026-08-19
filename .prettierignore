@@ -1,4 +1,10 @@
-# Only lint website/ — ignore everything else
+# Only lint the website — ignore everything else
 *
 !website/
 !website/**
+# `eleventy.config.js` builds that website and is named explicitly by
+# `lint:format`, `fmt:website` and the prettier hook. Without this line prettier
+# reports `{"ignored": true}` for it and all three exit 0 with "All matched files
+# use Prettier code style!" — it warns nothing when an explicitly-named file is
+# ignored, so the gate was dead rather than passing.
+!eleventy.config.js

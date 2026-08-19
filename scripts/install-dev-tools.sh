@@ -7,7 +7,7 @@
 #     nix develop            # or `direnv allow` once, then it auto-enters
 #
 # Use this script if you don't have Nix. It also installs the couple of tools
-# not yet packaged in nixpkgs (prek, rumdl, nightly cargo-pup), so the flake's
+# not yet packaged in nixpkgs (prek, rumdl), so the flake's
 # shellHook points here for those. See docs/DEVELOPMENT.md.
 
 set -e
@@ -29,7 +29,6 @@ echo "📦 Installing stable Rust tools..."
 $INSTALL_CMD prek
 $INSTALL_CMD cocogitto
 $INSTALL_CMD cargo-nextest
-$INSTALL_CMD cargo-modules
 $INSTALL_CMD cargo-deny
 $INSTALL_CMD rumdl
 # The Lua interface in ui/. Both are single Rust binaries, which is why they were
@@ -66,17 +65,6 @@ if ! command -v openspec &> /dev/null; then
     echo "     npm install -g @fission-ai/openspec"
 fi
 
-# Install nightly tools
-echo ""
-echo "📦 Installing nightly Rust tools..."
-NIGHTLY_VERSION="nightly-2026-01-22"
-echo "Installing specific nightly toolchain: $NIGHTLY_VERSION (required for cargo-pup)"
-if ! rustup toolchain list | grep -q "$NIGHTLY_VERSION"; then
-    rustup toolchain install "$NIGHTLY_VERSION"
-fi
-echo "Installing required rustc components for cargo-pup..."
-rustup component add --toolchain "$NIGHTLY_VERSION" rust-src rustc-dev llvm-tools-preview
-cargo +"$NIGHTLY_VERSION" install cargo_pup
 
 echo ""
 echo "✅ All development tools installed successfully!"

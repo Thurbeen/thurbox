@@ -31,7 +31,7 @@ guide in **`docs/DEVELOPMENT.md`**.
 ```bash
 just build                           # cargo build --bin thurbox --bin thurbox-cli
 just test                            # cargo nextest run --all
-just lint                            # fmt-check + clippy + deny + rumdl + shellcheck
+just lint                            # fmt-check + clippy + deny + rumdl + shellcheck + the 3 Lua gates
 
 cargo check --all                    # Type check (bare cargo still works)
 cargo build --release                # Release build (LTO, stripped)
@@ -218,7 +218,10 @@ rumdl check .                        # Markdown lint (.rumdl.toml)
 rumdl fmt .                          # Markdown auto-fix
 selene ui                            # Lua lint (selene.toml + thurbox.yml)
 stylua ui                            # Lua format (stylua.toml); --check in CI
-lua-language-server --check ui --configpath .luarc.json --checklevel=Warning
+# A RELATIVE --configpath resolves against the server's own install dir, is
+# silently not found, and then reports every injected global as undefined (79
+# phantom findings). `just lint` passes an absolute one:
+lua-language-server --check ui --configpath "$PWD/.luarc.json" --checklevel=Warning
 ```
 
 Three tools on `ui/`, chosen to match what the Lua ecosystem actually gates on —
@@ -1465,13 +1468,13 @@ tokio::main → load config + settings → heal extensions → arm the heartbeat
 
 ## Pre-commit Hooks
 
-17 hooks run automatically via `prek` (Rust-based pre-commit
+19 hooks run automatically via `prek` (Rust-based pre-commit
 framework). Install with `prek install`. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
 - **pre-commit**: fmt, clippy, check, nextest, architecture,
-  deny, doc, bats, shellcheck, rumdl, prettier, htmlhint,
-  stylelint, eslint
+  deny, doc, bats, shellcheck, rumdl, selene, stylua, prettier,
+  htmlhint, stylelint, eslint
 - **pre-push**: commit history check (`cog check`)
 
 Shell scripts are linted with **shellcheck** (config in

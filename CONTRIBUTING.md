@@ -57,7 +57,7 @@ sandbox for trying thurbox in isolation — lives in
 |------|--------------|
 | `just build` | build the dev binaries (`thurbox` + `thurbox-cli`) |
 | `just test` | `cargo nextest run --all` |
-| `just lint` | fmt-check + clippy + cargo-deny + rumdl + shellcheck |
+| `just lint` | fmt-check + clippy + cargo-deny + rumdl + shellcheck + selene, stylua and lua-language-server |
 | `just fmt` | format Rust + website |
 | `just arch` | architecture-rule + rustdoc checks |
 | `just sandbox` | run thurbox in an isolated dev sandbox |
@@ -91,11 +91,13 @@ cargo nextest run --all              # run all tests (preferred runner)
 cargo nextest run -E 'test(name)'    # run a single test by name
 ```
 
-The TUI has in-process acceptance tests with `insta` snapshots
-(`src/app/acceptance.rs`) and a black-box smoke test
-(`scripts/dev/smoke/tui-smoke.sh`). Update snapshots with
-`INSTA_UPDATE=always cargo test` (or `cargo insta review`). See the Testing
-section of [`CLAUDE.md`](CLAUDE.md) for the full picture.
+The interface is Lua on a Rust kernel, so most coverage drives the **real kernel
+over the real `ui/`**: `tests/kernel_mvp.rs` for the kernel's contract and
+`tests/v2_*.rs` one file per surface. There is also a black-box smoke test
+(`scripts/dev/smoke/tui-smoke.sh`) that launches the real binary in a throwaway
+tmux pane. v1's in-process acceptance harness and its `insta` snapshots were
+deleted with `src/app`; there are no snapshots to update. See the Testing section
+of [`CLAUDE.md`](CLAUDE.md) for the full picture.
 
 ## Linting & formatting
 

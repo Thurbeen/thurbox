@@ -30,12 +30,11 @@
         # clippy, rust-src). No version drift between flake users and others.
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
-        # Cargo dev tools that ARE packaged in nixpkgs (pinned by flake.lock).
+        # Cargo dev tools that ARE packaged in nixpkgs. NOT pinned: no flake.lock is
+        # committed, so these resolve to whatever the nixpkgs branch currently has.
         cargoTools = with pkgs; [
           cargo-nextest
           cargo-deny
-          cargo-audit
-          cargo-modules
           cocogitto
         ];
 
@@ -64,7 +63,7 @@
         # Dev tools NOT in nixpkgs — the shellHook nudges the user to install
         # them via scripts/install-dev-tools.sh (cargo-binstall). Keeping the
         # flake the single entrypoint without blocking on un-packaged tools.
-        # (prek = pre-commit runner, rumdl = markdown linter, cargo-pup = nightly.)
+        # (prek = pre-commit runner, rumdl = markdown linter.)
         missingHint = ''
           for t in prek rumdl; do
             command -v "$t" >/dev/null 2>&1 || {

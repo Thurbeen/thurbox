@@ -7,9 +7,13 @@ isolated sandbox.
 
 ### Recommended: Nix flake
 
-The `flake.nix` pins the whole toolchain CI uses — the Rust toolchain (read from
+The `flake.nix` provides the tools CI uses — the Rust toolchain (read from
 `rust-toolchain.toml`), `tmux`, `shellcheck`, `bats`, Node, `cargo-nextest`,
 `cargo-deny`, `cocogitto`, `just`, and the demo stack (`vhs`/`ffmpeg`/`ttyd`).
+It does **not** pin versions: no `flake.lock` is committed and
+`rust-toolchain.toml` says `stable`, so a fresh checkout resolves whatever is
+current. No CI workflow uses Nix — this is a local convenience, not the thing
+CI runs.
 
 ```bash
 # one-time, if not done already: enable flakes
@@ -33,7 +37,9 @@ prek install                   # install the git hooks
 ```
 
 You'll also need, from your package manager: `tmux >= 3.2`, `shellcheck`,
-`bats`, Node + npm (website linters), and `git`.
+`bats`, Node + npm (website linters), `git`, and the three Lua gates `just lint`
+runs — `selene`, `stylua` and `lua-language-server`. Run `npm ci` once, or
+`just fmt`'s website half exits 127 on a fresh checkout.
 
 ## 2. Everyday tasks — `just`
 
@@ -43,7 +49,7 @@ You'll also need, from your package manager: `tmux >= 3.2`, `shellcheck`,
 |------|--------------|
 | `just build` | build the dev binaries (`thurbox` + `thurbox-cli`) |
 | `just test` | `cargo nextest run --all` |
-| `just lint` | fmt-check + clippy + cargo-deny + rumdl + shellcheck |
+| `just lint` | fmt-check + clippy + cargo-deny + rumdl + shellcheck + selene, stylua and lua-language-server |
 | `just fmt` | format Rust + website |
 | `just arch` | architecture-rule + rustdoc checks |
 | `just hooks-install` | `prek install` |

@@ -21,7 +21,10 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
-        args: ["--all"]
+        # `--check`, or this hook reformats every file in the workspace including
+        # ones the developer did not stage — surprising, and not what its name
+        # says. Matches `just fmt-check` and the CI job.
+        args: ["--all", "--", "--check"]
 
       - id: cargo-clippy
         name: Cargo clippy
@@ -77,7 +80,9 @@ repos:
 
       - id: bash-install-tests
         name: Bash install script tests
-        entry: bash -c "~/.local/bin/bats scripts/install.bats"
+        # From PATH: an absolute ~/.local/bin path fails under the flake (nix store),
+        # under the package-manager route docs/DEVELOPMENT.md documents, and in CI.
+        entry: bats scripts/install.bats
         language: system
         files: scripts/install\.(sh|bats)
         pass_filenames: false

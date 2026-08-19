@@ -9,6 +9,14 @@ on:
       # the rendered videos must also redeploy the site (e.g. after re-running
       # scripts/demo/record.sh). Without this the live site keeps stale mp4s.
       - 'docs/media/**'
+      # The build reads these from the repo root, outside `website/`:
+      # `eleventy.config.js` generates the CSS bundle, the TOC rail and the code
+      # highlighting, and the two package files decide which versions do it. A
+      # Renovate bump to `node-html-parser` or `prismjs` changes deployed HTML
+      # with nothing under `website/` touched.
+      - 'eleventy.config.js'
+      - 'package.json'
+      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:
