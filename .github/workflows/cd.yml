@@ -183,11 +183,14 @@ jobs:
           git-user: 'github-actions[bot]'
           git-user-email: 'github-actions[bot]@users.noreply.github.com'
 
+      # Push the tag and nothing else. `ad-m/github-push-action` stood here and
+      # defaults its `branch` to the repository's default: from `main` that is
+      # the ref already checked out, so pushing it is a no-op and the tag rides
+      # along — but from `v1.x` it tries to push that branch's tip onto `main`,
+      # is rejected as a non-fast-forward, and the tag it was there to deliver
+      # never leaves the runner. A tag push is what this step means; say so.
       - name: Push tag to repository
-        uses: ad-m/github-push-action@881a6320fdb16eb5318c5054f31c218aec2b324c # v1.3.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          tags: true
+        run: git push origin "refs/tags/${{ needs.check-release.outputs.version }}"
 
   # Build binaries for all platforms (only if tag created)
   build:
