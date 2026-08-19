@@ -180,7 +180,10 @@ fn the_decision_is_per_file_and_survives_a_restart() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("THURBOX_CONFIG_DIR", home.path());
 
-    let mut registry = Registry::default();
+    // Loaded, not default: only a registry that read `ui.json` writes it back,
+    // which is what keeps a test from erasing the config directory it inherited
+    // (`registry::Origin`). The loop's registry is a loaded one.
+    let mut registry = Registry::load();
     registry
         .set_disabled("/ui/plugins/mine.lua", true)
         .expect("disable");

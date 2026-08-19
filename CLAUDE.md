@@ -1649,6 +1649,14 @@ never a second list beside the field. A hand-written copy had already drifted fr
 it, promising both panel-width scalars applied live while `adopt` froze them and
 reported `NeedsRestart`. Restart-only rows are marked `⟳`.
 
+The panel is handed **`Config::on_disk`**, not `Config::in_force`. They are
+different documents on purpose: a restart-only change is written to the file and
+deliberately *not* taken into force, so a panel drafting from what is in force
+proposes reverting every such change already saved — one visit saved
+`features.mouse = false`, and the next save of anything at all put it back. Two
+thirds of the core rows are restart-only, which made it read as "my settings do
+not survive a restart".
+
 `]` switches to the **Interface tab** (`kernel::modals::interface`): every file, where
 it came from (bundled / edited / yours / removed), whether it is on screen, and
 `r` restore · `d` delete · `space` turn off · `t` trust. It was a pane once — an

@@ -439,7 +439,7 @@ fn closing_the_picker_by_its_own_chord_also_reverts() {
     // What the loop does for the picker's own chord.
     {
         let mut world = World {
-            settings: &Default::default(),
+            settings_on_disk: &Default::default(),
             save_settings: &mut None,
             inventory: &[],
             interface_edit: &mut None,
@@ -468,7 +468,7 @@ fn send(
     db: Option<&Database>,
 ) -> Option<String> {
     let mut world = World {
-        settings: &Default::default(),
+        settings_on_disk: &Default::default(),
         save_settings: &mut None,
         inventory: &[],
         interface_edit: &mut None,
@@ -813,7 +813,10 @@ fn settings_renders_what_the_bundled_plugins_declare() {
 fn a_setting_declared_by_an_unknown_plugin_is_editable_without_touching_settings() {
     let dir = tempfile::tempdir().expect("temp dir");
     let _guard = thurbox::paths::TestPathGuard::new(dir.path());
-    let mut registry = Registry::default();
+    // Loaded, like the loop's own: writing `ui.json` back is a capability of a
+    // registry that read it (`registry::Origin`), and persistence is the half of
+    // this test that matters.
+    let mut registry = Registry::load();
     registry.declare(
         Vec::new(),
         vec![Setting {
@@ -1028,7 +1031,7 @@ fn click(
     db: Option<&Database>,
 ) -> Option<String> {
     let mut world = World {
-        settings: &Default::default(),
+        settings_on_disk: &Default::default(),
         save_settings: &mut None,
         inventory: &[],
         interface_edit: &mut None,

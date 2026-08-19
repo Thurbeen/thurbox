@@ -398,12 +398,18 @@ pub struct SettingsModal {
     selected: usize,
     /// The in-progress text edit, when a `Text` row is being typed into.
     editing: Option<String>,
-    /// The core settings as edited, seeded from what is in force on first touch.
+    /// The core settings as edited, seeded on first touch from what the *file*
+    /// holds.
     ///
     /// A draft, unlike a plugin setting: these are a *file*, and some of them
     /// cannot take effect until the next launch, so applying each keystroke
     /// would mean writing the document a dozen times and lying about half of
     /// them. Dropped with the modal, which is what makes `Esc` a discard.
+    ///
+    /// Seeded from the file rather than from what is in force, which is the
+    /// load-bearing half: seeded from what is *running*, a draft proposes
+    /// reverting every restart-only change already saved
+    /// ([`crate::kernel::config::Config::on_disk`]).
     draft: Option<Settings>,
     hits: Hits,
 }
@@ -426,31 +432,31 @@ impl SettingsModal {
     }
 
     /// Whether the core half has unsaved edits — what makes the save hint appear.
-    pub fn dirty(&self, in_force: &Settings) -> bool {
-        self.draft.as_ref().is_some_and(|draft| draft != in_force)
+    pub fn dirty(&self, on_disk: &Settings) -> bool {
+        self.draft.as_ref().is_some_and(|draft| draft != on_disk)
     }
 
     /// Every row on screen: the core settings, then whatever plugins declared.
     ///
     /// Rebuilt per call rather than cached: it is a dozen rows, and a cache would
     /// be one more thing that can disagree with the registry.
-    fn rows(&self, registry: &Registry, in_force: &Settings) -> Vec<Setting> {
-        let draft = self.draft.clone().unwrap_or_else(|| in_force.clone());
+    fn rows(&self, registry: &Registry, on_disk: &Settings) -> Vec<Setting> {
+        let draft = self.draft.clone().unwrap_or_else(|| on_disk.clone());
         let mut rows = core_rows(&draft);
         rows.extend(registry.settings().iter().cloned());
         rows
     }
 
-    /// The draft to edit, seeded from what is in force the first time it is
-    /// touched.
-    fn draft_mut(&mut self, in_force: &Settings) -> &mut Settings {
-        self.draft.get_or_insert_with(|| in_force.clone())
+    /// The draft to edit, seeded from what the file holds the first time it is
+    /// touched — see [`SettingsModal::draft`] for why not from what is in force.
+    fn draft_mut(&mut self, on_disk: &Settings) -> &mut Settings {
+        self.draft.get_or_insert_with(|| on_disk.clone())
     }
 
     /// Write a core value into the draft. Nothing reaches the file until save.
-    fn write_core(&mut self, in_force: &Settings, id: &str, value: Value) -> Option<String> {
+    fn write_core(&mut self, on_disk: &Settings, id: &str, value: Value) -> Option<String> {
         let field = CORE_FIELDS.iter().find(|field| field.id == id)?;
-        let draft = self.draft_mut(in_force);
+        let draft = self.draft_mut(on_disk);
         (field.set)(draft, &value);
         Some(format!("{id} = {} (unsaved)", display(&value)))
     }
@@ -459,7 +465,7 @@ impl SettingsModal {
         &mut self,
         key: &KeyEvent,
         registry: &mut Registry,
-        in_force: &Settings,
+        on_disk: &Settings,
         inventory: &[FileRow],
     ) -> Outcome {
         // Tab switching outranks both halves, but not a text edit: while a value
@@ -484,19 +490,19 @@ impl SettingsModal {
                 None => Outcome::Stay(message),
             };
         }
-        let total = self.rows(registry, in_force).len();
+        let total = self.rows(registry, on_disk).len();
         if total == 0 {
             return Outcome::Stay(None);
         }
         self.selected = self.selected.min(total - 1);
         if self.editing.is_some() {
-            return Outcome::Stay(self.edit_key(key, registry, in_force));
+            return Outcome::Stay(self.edit_key(key, registry, on_disk));
         }
         // The core half is a document, so it is saved rather than applied per
         // keystroke — and only when there is something to save.
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return match self.draft.clone() {
-                Some(draft) if self.dirty(in_force) => Outcome::Save(Box::new(draft)),
+                Some(draft) if self.dirty(on_disk) => Outcome::Save(Box::new(draft)),
                 _ => Outcome::Stay(Some("nothing to save".to_string())),
             };
         }
@@ -515,37 +521,37 @@ impl SettingsModal {
             KeyCode::Home => self.selected = 0,
             KeyCode::End => self.selected = total - 1,
             KeyCode::Char(' ') | KeyCode::Enter => {
-                return Outcome::Stay(self.activate(registry, in_force))
+                return Outcome::Stay(self.activate(registry, on_disk))
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                return Outcome::Stay(self.step(registry, in_force, NUMBER_STEP))
+                return Outcome::Stay(self.step(registry, on_disk, NUMBER_STEP))
             }
             KeyCode::Left | KeyCode::Char('h') => {
-                return Outcome::Stay(self.step(registry, in_force, -NUMBER_STEP))
+                return Outcome::Stay(self.step(registry, on_disk, -NUMBER_STEP))
             }
-            KeyCode::Char('d') => return Outcome::Stay(self.reset(registry, in_force)),
+            KeyCode::Char('d') => return Outcome::Stay(self.reset(registry, on_disk)),
             _ => {}
         }
         Outcome::Stay(None)
     }
 
     /// The row under the cursor.
-    fn current(&self, registry: &Registry, in_force: &Settings) -> Option<Setting> {
-        self.rows(registry, in_force).get(self.selected).cloned()
+    fn current(&self, registry: &Registry, on_disk: &Settings) -> Option<Setting> {
+        self.rows(registry, on_disk).get(self.selected).cloned()
     }
 
     /// `Space`/`Enter`: flip a bool, start editing a text value, or step a
     /// number — whichever the declared type admits.
-    fn activate(&mut self, registry: &mut Registry, in_force: &Settings) -> Option<String> {
-        let setting = self.current(registry, in_force)?;
+    fn activate(&mut self, registry: &mut Registry, on_disk: &Settings) -> Option<String> {
+        let setting = self.current(registry, on_disk)?;
         match &setting.value {
-            Value::Bool(on) => self.put(registry, in_force, &setting, Value::Bool(!on)),
-            Value::Number(_) => self.step(registry, in_force, NUMBER_STEP),
+            Value::Bool(on) => self.put(registry, on_disk, &setting, Value::Bool(!on)),
+            Value::Number(_) => self.step(registry, on_disk, NUMBER_STEP),
             Value::Text(text) => {
                 // An enum is stepped, not typed: there are four spellings and a
                 // fifth would be silently ignored.
                 if setting.plugin == CORE_OWNER {
-                    return self.step(registry, in_force, NUMBER_STEP);
+                    return self.step(registry, on_disk, NUMBER_STEP);
                 }
                 self.editing = Some(text.clone());
                 None
@@ -553,30 +559,30 @@ impl SettingsModal {
         }
     }
 
-    fn step(&mut self, registry: &mut Registry, in_force: &Settings, by: f64) -> Option<String> {
-        let setting = self.current(registry, in_force)?;
+    fn step(&mut self, registry: &mut Registry, on_disk: &Settings, by: f64) -> Option<String> {
+        let setting = self.current(registry, on_disk)?;
         match &setting.value {
-            Value::Number(n) => self.put(registry, in_force, &setting, Value::Number(n + by)),
+            Value::Number(n) => self.put(registry, on_disk, &setting, Value::Number(n + by)),
             // A bool has two states, so a horizontal step is the same act as a
             // toggle.
-            Value::Bool(on) => self.put(registry, in_force, &setting, Value::Bool(!on)),
+            Value::Bool(on) => self.put(registry, on_disk, &setting, Value::Bool(!on)),
             // A core text value is an enum, and it cycles; a plugin's is free
             // text, which only typing changes.
             Value::Text(name) if setting.plugin == CORE_OWNER => {
                 let next = next_backend(name, by >= 0.0);
-                self.put(registry, in_force, &setting, Value::Text(next))
+                self.put(registry, on_disk, &setting, Value::Text(next))
             }
             Value::Text(_) => None,
         }
     }
 
-    fn reset(&mut self, registry: &mut Registry, in_force: &Settings) -> Option<String> {
-        let setting = self.current(registry, in_force)?;
+    fn reset(&mut self, registry: &mut Registry, on_disk: &Settings) -> Option<String> {
+        let setting = self.current(registry, on_disk)?;
         if setting.plugin == CORE_OWNER {
             // Back to what an untouched file would hold — still a draft, so the
             // file is not written until save.
             let value = setting.default.clone();
-            return self.write_core(in_force, &setting.id, value);
+            return self.write_core(on_disk, &setting.id, value);
         }
         Some(
             match registry.set_setting(&setting.plugin, &setting.id, None) {
@@ -592,12 +598,12 @@ impl SettingsModal {
     fn put(
         &mut self,
         registry: &mut Registry,
-        in_force: &Settings,
+        on_disk: &Settings,
         setting: &Setting,
         value: Value,
     ) -> Option<String> {
         if setting.plugin == CORE_OWNER {
-            return self.write_core(in_force, &setting.id, value);
+            return self.write_core(on_disk, &setting.id, value);
         }
         Some(write(registry, setting, value))
     }
@@ -607,7 +613,7 @@ impl SettingsModal {
         &mut self,
         key: &KeyEvent,
         registry: &mut Registry,
-        in_force: &Settings,
+        on_disk: &Settings,
     ) -> Option<String> {
         let Some(buffer) = &mut self.editing else {
             return None;
@@ -623,8 +629,8 @@ impl SettingsModal {
             }
             KeyCode::Enter => {
                 let text = self.editing.take()?;
-                let setting = self.current(registry, in_force)?;
-                self.put(registry, in_force, &setting, Value::Text(text))
+                let setting = self.current(registry, on_disk)?;
+                self.put(registry, on_disk, &setting, Value::Text(text))
             }
             KeyCode::Esc => {
                 self.editing = None;
@@ -646,7 +652,7 @@ impl SettingsModal {
         x: u16,
         y: u16,
         registry: &mut Registry,
-        in_force: &Settings,
+        on_disk: &Settings,
     ) -> Option<String> {
         if self.tab == Tab::Interface {
             self.interface.on_click(x, y, &self.hits);
@@ -658,7 +664,7 @@ impl SettingsModal {
         if reselecting {
             return None;
         }
-        self.activate(registry, in_force)
+        self.activate(registry, on_disk)
     }
 
     pub fn render(
@@ -666,12 +672,12 @@ impl SettingsModal {
         frame: &mut Frame,
         area: Rect,
         registry: &Registry,
-        in_force: &Settings,
+        on_disk: &Settings,
         files: Files<'_>,
         chrome: Chrome,
     ) {
         self.hits.clear();
-        let rows_data = self.rows(registry, in_force);
+        let rows_data = self.rows(registry, on_disk);
         let settings = rows_data.as_slice();
         // Sized to what the rows need, then clamped to the screen — the same rule
         // the height below already follows. Two fixed widths could not do this:
@@ -692,7 +698,7 @@ impl SettingsModal {
         let inner_width = usize::from(width.saturating_sub(2));
 
         let (lines, rows) = self.build_rows(settings, inner_width, chrome);
-        let footer = self.footer(settings, self.dirty(in_force), chrome);
+        let footer = self.footer(settings, self.dirty(on_disk), chrome);
         // Sized to the real content — headers, separators and rows — then
         // clamped to the screen, exactly as v1 sizes its panel.
         let height = (lines.len() + footer.len() + 2)
@@ -747,7 +753,7 @@ impl SettingsModal {
         // the key was pressed. ` Close ` replays the `Esc` the layer above turns
         // into a close, which is also what discards an unsaved draft.
         let mut pills = Vec::new();
-        if self.dirty(in_force) {
+        if self.dirty(on_disk) {
             pills.push(Pill {
                 label: "Save",
                 primary: true,
@@ -756,7 +762,7 @@ impl SettingsModal {
         }
         pills.push(Pill {
             label: "Close",
-            primary: !self.dirty(in_force),
+            primary: !self.dirty(on_disk),
             key: Replay::ESC,
         });
         // Extended, never assigned: the tab headings are already in here, and
@@ -1129,25 +1135,25 @@ mod tests {
     fn each_declared_type_is_editable() {
         let dir = tempfile::tempdir().expect("temp dir");
         let _guard = crate::paths::TestPathGuard::new(dir.path());
-        let in_force = Settings::default();
+        let on_disk = Settings::default();
         let mut registry = registry_with(vec![
             setting("a", "flag", Value::Bool(false)),
             setting("a", "size", Value::Number(4.0)),
             setting("b", "label", Value::Text("x".into())),
         ]);
         let mut modal = on_plugin_row(0);
-        message(modal.on_key(&press(KeyCode::Char(' ')), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Char(' ')), &mut registry, &on_disk, &[]));
         assert_eq!(registry.settings()[0].value, Value::Bool(true));
 
-        message(modal.on_key(&press(KeyCode::Char('j')), &mut registry, &in_force, &[]));
-        message(modal.on_key(&press(KeyCode::Right), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Char('j')), &mut registry, &on_disk, &[]));
+        message(modal.on_key(&press(KeyCode::Right), &mut registry, &on_disk, &[]));
         assert_eq!(registry.settings()[1].value, Value::Number(5.0));
 
-        message(modal.on_key(&press(KeyCode::Char('j')), &mut registry, &in_force, &[]));
-        message(modal.on_key(&press(KeyCode::Enter), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Char('j')), &mut registry, &on_disk, &[]));
+        message(modal.on_key(&press(KeyCode::Enter), &mut registry, &on_disk, &[]));
         assert!(modal.editing(), "Enter on a text value starts an edit");
-        message(modal.on_key(&press(KeyCode::Char('y')), &mut registry, &in_force, &[]));
-        message(modal.on_key(&press(KeyCode::Enter), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Char('y')), &mut registry, &on_disk, &[]));
+        message(modal.on_key(&press(KeyCode::Enter), &mut registry, &on_disk, &[]));
         assert_eq!(registry.settings()[2].value, Value::Text("xy".into()));
         assert!(!modal.editing());
     }
@@ -1156,12 +1162,12 @@ mod tests {
     fn reset_puts_a_setting_back_to_its_default() {
         let dir = tempfile::tempdir().expect("temp dir");
         let _guard = crate::paths::TestPathGuard::new(dir.path());
-        let in_force = Settings::default();
+        let on_disk = Settings::default();
         let mut registry = registry_with(vec![setting("a", "flag", Value::Bool(false))]);
         let mut modal = on_plugin_row(0);
-        message(modal.on_key(&press(KeyCode::Char(' ')), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Char(' ')), &mut registry, &on_disk, &[]));
         assert_eq!(registry.settings()[0].value, Value::Bool(true));
-        message(modal.on_key(&press(KeyCode::Char('d')), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Char('d')), &mut registry, &on_disk, &[]));
         assert_eq!(registry.settings()[0].value, Value::Bool(false));
     }
 
@@ -1177,10 +1183,10 @@ mod tests {
 
     #[test]
     fn the_core_settings_are_listed_beside_what_plugins_declared() {
-        let in_force = Settings::default();
+        let on_disk = Settings::default();
         let registry = registry_with(vec![setting("a", "flag", Value::Bool(false))]);
         let modal = SettingsModal::default();
-        let rows = modal.rows(&registry, &in_force);
+        let rows = modal.rows(&registry, &on_disk);
         assert_eq!(rows.len(), CORE_FIELDS.len() + 1);
         assert!(rows.iter().any(|row| row.id == "features.soft_delete"));
         assert!(
@@ -1210,26 +1216,23 @@ mod tests {
     fn a_core_edit_is_a_draft_until_it_is_saved() {
         let dir = tempfile::tempdir().expect("temp dir");
         let _guard = crate::paths::TestPathGuard::new(dir.path());
-        let in_force = Settings::default();
+        let on_disk = Settings::default();
         let mut registry = registry_with(Vec::new());
         let mut modal = on_core_row("features.soft_delete");
 
-        assert!(!modal.dirty(&in_force));
+        assert!(!modal.dirty(&on_disk));
         let reported =
-            message(modal.on_key(&press(KeyCode::Char(' ')), &mut registry, &in_force, &[]));
+            message(modal.on_key(&press(KeyCode::Char(' ')), &mut registry, &on_disk, &[]));
         assert!(
             reported.unwrap_or_default().contains("unsaved"),
             "the row says the change has not landed yet"
         );
-        assert!(modal.dirty(&in_force));
-        assert!(
-            in_force.features.soft_delete,
-            "and what is in force has not moved"
-        );
+        assert!(modal.dirty(&on_disk));
+        assert!(on_disk.features.soft_delete, "and the file has not moved");
 
         // Saving hands the whole draft over; the file and the live half are the
         // loop's business, not the modal's.
-        match modal.on_key(&ctrl(KeyCode::Char('s')), &mut registry, &in_force, &[]) {
+        match modal.on_key(&ctrl(KeyCode::Char('s')), &mut registry, &on_disk, &[]) {
             Outcome::Save(draft) => assert!(!draft.features.soft_delete),
             other => panic!(
                 "expected a save, got {}",
@@ -1240,35 +1243,35 @@ mod tests {
 
     #[test]
     fn saving_with_nothing_changed_says_so() {
-        let in_force = Settings::default();
+        let on_disk = Settings::default();
         let mut registry = registry_with(Vec::new());
         let mut modal = SettingsModal::default();
         let reported =
-            message(modal.on_key(&ctrl(KeyCode::Char('s')), &mut registry, &in_force, &[]));
+            message(modal.on_key(&ctrl(KeyCode::Char('s')), &mut registry, &on_disk, &[]));
         assert_eq!(reported.as_deref(), Some("nothing to save"));
     }
 
     #[test]
     fn a_core_number_steps_and_a_core_enum_cycles() {
-        let in_force = Settings::default();
+        let on_disk = Settings::default();
         let mut registry = registry_with(Vec::new());
         let mut modal = on_core_row("notifications.min_interval_secs");
-        message(modal.on_key(&press(KeyCode::Right), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Right), &mut registry, &on_disk, &[]));
         let draft = modal.draft.clone().expect("a draft");
         assert_eq!(
             draft.notifications.min_interval_secs,
-            in_force.notifications.min_interval_secs + 1
+            on_disk.notifications.min_interval_secs + 1
         );
 
         // The backend is an enum: typing a fifth spelling would be ignored, so it
         // is stepped through the four that exist.
         modal.selected = core_row("notifications.backend");
-        message(modal.on_key(&press(KeyCode::Right), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Right), &mut registry, &on_disk, &[]));
         assert_eq!(
             modal.draft.as_ref().map(|d| d.notifications.backend),
             Some(NotificationBackend::Dbus)
         );
-        message(modal.on_key(&press(KeyCode::Left), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Left), &mut registry, &on_disk, &[]));
         assert_eq!(
             modal.draft.as_ref().map(|d| d.notifications.backend),
             Some(NotificationBackend::Auto),
@@ -1282,18 +1285,18 @@ mod tests {
 
     #[test]
     fn resetting_a_core_row_stays_a_draft() {
-        let in_force = Settings::default();
+        let on_disk = Settings::default();
         let mut registry = registry_with(Vec::new());
         let mut modal = on_core_row("audit_retention_days");
-        message(modal.on_key(&press(KeyCode::Right), &mut registry, &in_force, &[]));
-        message(modal.on_key(&press(KeyCode::Char('d')), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Right), &mut registry, &on_disk, &[]));
+        message(modal.on_key(&press(KeyCode::Char('d')), &mut registry, &on_disk, &[]));
         assert_eq!(
             modal.draft.as_ref().map(|d| d.audit_retention_days),
             Some(Settings::default().audit_retention_days)
         );
         assert!(
-            !modal.dirty(&in_force),
-            "back to what is in force is not a change"
+            !modal.dirty(&on_disk),
+            "back to what the file holds is not a change"
         );
     }
 
@@ -1324,7 +1327,7 @@ mod tests {
     }
 
     /// Every cell of a rendered modal as one string.
-    fn painted(modal: &mut SettingsModal, registry: &Registry, in_force: &Settings) -> String {
+    fn painted(modal: &mut SettingsModal, registry: &Registry, on_disk: &Settings) -> String {
         let palette = crate::session::theme_config::ThemePreset::Default.palette();
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).expect("terminal");
@@ -1334,7 +1337,7 @@ mod tests {
                     frame,
                     frame.area(),
                     registry,
-                    in_force,
+                    on_disk,
                     Files {
                         rows: &[],
                         dir: "ui",
@@ -1361,13 +1364,13 @@ mod tests {
         // shows up later, as "where am I typing?".
         let mut registry =
             registry_with(vec![setting("plugin", "label", Value::Text("hi".into()))]);
-        let in_force = Settings::default();
+        let on_disk = Settings::default();
         let mut modal = on_plugin_row(0);
-        message(modal.on_key(&press(KeyCode::Enter), &mut registry, &in_force, &[]));
+        message(modal.on_key(&press(KeyCode::Enter), &mut registry, &on_disk, &[]));
         assert!(modal.editing(), "Enter on a text value starts an edit");
 
         assert!(
-            painted(&mut modal, &registry, &in_force).contains('\u{2588}'),
+            painted(&mut modal, &registry, &on_disk).contains('\u{2588}'),
             "an open edit must show where the keys go"
         );
     }

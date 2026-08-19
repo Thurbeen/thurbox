@@ -1225,8 +1225,11 @@ fn a_rebound_key_routes_to_its_action() {
     };
     assert!(registry.resolve(&key, Some("sessions")).is_none());
 
-    // Rebinding persists, so this writes the user's real config; only the
-    // in-memory routing is asserted, then it is put back.
+    // This registry was built here rather than read from `ui.json`, so the
+    // rebind stays in memory: a registry that never read the file cannot write
+    // it (`registry::Origin`). It used to, and a test run inherits the config
+    // directory of the session that spawned it — so this emptied the running
+    // interface's decisions.
     registry
         .rebind("sessions.delete", Some("z"))
         .expect("rebind");

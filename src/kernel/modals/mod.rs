@@ -141,9 +141,13 @@ pub fn pills() -> Vec<Pill> {
 pub struct World<'a> {
     pub registry: &'a mut Registry,
     pub themes: &'a mut Themes,
-    /// The settings in force, which the settings modal shows beside what plugins
-    /// declared and seeds its draft from.
-    pub settings: &'a crate::session::settings::Settings,
+    /// The settings **as the file has them**, which the settings modal shows
+    /// beside what plugins declared and seeds its draft from.
+    ///
+    /// Deliberately not the settings in force — the panel edits the file, and the
+    /// two documents differ by exactly the restart-only half: see
+    /// [`crate::kernel::config::Config::on_disk`].
+    pub settings_on_disk: &'a crate::session::settings::Settings,
     /// Where a saved draft is left for the loop: it has to write the file (off
     /// the render path) and take the live half into force, neither of which is a
     /// modal's business. `None` on the way in, `Some` when a save was asked for.
@@ -260,7 +264,7 @@ impl Modals {
         match self.open.as_mut()? {
             Open::Help(modal) => modal.on_key(key, chord, world.registry),
             Open::Settings(modal) => {
-                match modal.on_key(key, world.registry, world.settings, world.inventory) {
+                match modal.on_key(key, world.registry, world.settings_on_disk, world.inventory) {
                     settings::Outcome::Stay(message) => message,
                     // Left for the loop, and the modal stays open — v1's panel does
                     // too, so a second change does not mean re-opening it.
@@ -317,7 +321,7 @@ impl Modals {
                 modal.on_click(x, y);
                 None
             }
-            Open::Settings(modal) => modal.on_click(x, y, world.registry, world.settings),
+            Open::Settings(modal) => modal.on_click(x, y, world.registry, world.settings_on_disk),
             Open::Theme(modal) => {
                 // A click is the same act as moving the cursor there, so it
                 // previews too — `ClickVerb::Key`'s rule, one level up.
@@ -385,7 +389,7 @@ impl Modals {
         area: Rect,
         registry: &Registry,
         themes: &Themes,
-        settings: &crate::session::settings::Settings,
+        on_disk: &crate::session::settings::Settings,
         files: interface::Files<'_>,
     ) {
         let palette = &themes.active().palette;
@@ -395,7 +399,7 @@ impl Modals {
         match self.open.as_mut() {
             Some(Open::Help(modal)) => modal.render(frame, area, registry, chrome),
             Some(Open::Settings(modal)) => {
-                modal.render(frame, area, registry, settings, files, chrome)
+                modal.render(frame, area, registry, on_disk, files, chrome)
             }
             Some(Open::Theme(modal)) => modal.render(frame, area, themes, chrome),
             None => return,
@@ -434,13 +438,13 @@ mod tests {
     fn world<'a>(
         registry: &'a mut Registry,
         themes: &'a mut Themes,
-        settings: &'a crate::session::settings::Settings,
+        settings_on_disk: &'a crate::session::settings::Settings,
         saved: &'a mut Option<crate::session::settings::Settings>,
     ) -> World<'a> {
         World {
             registry,
             themes,
-            settings,
+            settings_on_disk,
             save_settings: saved,
             inventory: &[],
             interface_edit: Box::leak(Box::new(None)),

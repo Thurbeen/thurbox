@@ -49,6 +49,14 @@ pub struct Config {
     /// What is in force *now*: the restart-only half as published at startup, the
     /// live half as last read from disk.
     in_force: Settings,
+    /// What the *file* says, restart-only half included.
+    ///
+    /// Not the same document as [`in_force`](Self::in_force), and the difference
+    /// is the whole reason this field exists: a restart-only change is written to
+    /// the file and deliberately *not* taken into force, so anything that seeds an
+    /// edit from what is in force silently proposes reverting it. The settings
+    /// panel is exactly that — it edits the file — so it is handed this.
+    on_disk: Settings,
     path: Option<PathBuf>,
     /// Modification time the file had when it was last read, so an outside edit
     /// can be noticed without re-parsing it every frame.
@@ -73,6 +81,7 @@ impl Config {
         let stamp = path.as_deref().and_then(modified);
         (
             Self {
+                on_disk: settings.clone(),
                 in_force: settings,
                 path,
                 stamp,
@@ -86,6 +95,7 @@ impl Config {
     /// wants, and the fallback for a profile with no config directory.
     pub fn detached(settings: Settings) -> Self {
         Self {
+            on_disk: settings.clone(),
             in_force: settings,
             path: None,
             stamp: None,
@@ -96,6 +106,13 @@ impl Config {
     /// Everything the user is running with, live half and restart-only half.
     pub fn in_force(&self) -> &Settings {
         &self.in_force
+    }
+
+    /// The settings as the file has them — what an editor of the file must show
+    /// and seed its draft from. See the field's own note for why this is not
+    /// [`in_force`](Self::in_force).
+    pub fn on_disk(&self) -> &Settings {
+        &self.on_disk
     }
 
     /// The feature switches, with the live ones as currently edited.
@@ -142,6 +159,10 @@ impl Config {
     /// to prevent.
     pub fn adopt(&mut self, fresh: Settings) -> Reloaded {
         let needs_restart = self.in_force.restart_only_differs(&fresh);
+        // `fresh` is what the file holds — it was either just read from it or is
+        // about to be written to it — so it is the whole document that is kept,
+        // not only the half taken into force.
+        self.on_disk = fresh.clone();
         let restart_only = self.in_force.clone();
         self.in_force = Settings {
             // Live: the feature switches that only gate whether a surface is

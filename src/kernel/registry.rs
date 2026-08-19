@@ -185,12 +185,44 @@ pub struct Registry {
     /// What would not load: a config file that failed to parse, a rejected
     /// override. Conflicts are *not* kept here — see [`Registry::warnings`].
     load_warnings: Vec<String>,
+    /// Whether this registry's overrides came from `ui.json`, and so whether
+    /// writing them back is an edit or an erasure.
+    origin: Origin,
+}
+
+/// Where a registry's overrides came from.
+///
+/// A registry built with [`Default`] holds no overrides at all, so persisting
+/// one does not *change* `ui.json` — it empties it: every disabled plugin, every
+/// trust grant and every setting a user chose is gone, replaced by the four
+/// empty tables the fresh registry has. That is not hypothetical. thurbox
+/// injects `THURBOX_CONFIG_DIR` into the sessions it spawns, so a `cargo test`
+/// run from inside thurbox resolves the *real* config directory, and the tests
+/// that build a registry to assert routing wiped the running interface's
+/// decisions as a side effect.
+///
+/// So writing back is a capability of a registry that was *read*, and the type
+/// carries which kind it is rather than every caller remembering.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+enum Origin {
+    /// Never read: it has nothing of the user's to write back.
+    #[default]
+    Detached,
+    /// Read from `ui.json` — a write back is an edit of what was read.
+    File,
 }
 
 impl Registry {
     /// Load persisted overrides, migrating v1's bindings on first run.
+    ///
+    /// The one constructor that reads `ui.json`, and so the one whose registry
+    /// may write it back — see the private `Origin`, which carries that
+    /// distinction so no caller has to remember it.
     pub fn load() -> Self {
-        let mut registry = Self::default();
+        let mut registry = Self {
+            origin: Origin::File,
+            ..Self::default()
+        };
         let (bindings, settings, trusted, disabled, mut warnings) = read_overrides();
         registry.binding_overrides = bindings;
         registry.trusted = trusted;
@@ -514,6 +546,12 @@ impl Registry {
     }
 
     fn persist(&self) -> Result<(), String> {
+        // Nothing was read, so there is nothing to write back: this registry's
+        // empty tables are not the user's decisions (see `Origin`). Reported as
+        // success because the caller asked for a state, and in memory it has it.
+        if self.origin == Origin::Detached {
+            return Ok(());
+        }
         let Some(path) = overrides_path() else {
             return Err("could not resolve the config directory".to_string());
         };
@@ -1220,7 +1258,9 @@ mod tests {
         let home = tempfile::TempDir::new().expect("tempdir");
         std::env::set_var("THURBOX_CONFIG_DIR", home.path());
 
-        let mut written = Registry::default();
+        // Loaded rather than default, because only a registry that read the
+        // file writes it back — see `Origin`.
+        let mut written = Registry::load();
         written
             .trust("/ui/plugins/mine.lua", "body")
             .expect("trust");
@@ -1259,5 +1299,71 @@ mod tests {
             first,
             "reloading must not stack another copy of the same conflict"
         );
+    }
+
+    /// The bug this guards: a registry nobody read from disk used to write
+    /// itself over `ui.json`, and its four empty tables *are* the whole file. A
+    /// test run inherits `THURBOX_CONFIG_DIR` from the session that spawned it,
+    /// so `cargo test` from inside thurbox emptied the running interface's
+    /// disabled set, trust grants and plugin settings.
+    #[test]
+    fn a_registry_that_was_never_read_does_not_write_over_the_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let _guard = crate::paths::TestPathGuard::new(dir.path());
+        let path = overrides_path().expect("a config directory");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        let decisions = r#"{"bindings":{},"disabled":["/ui/plugins/40_review.lua"],"settings":{"sessions.group_by_repo":false},"trusted":{}}"#;
+        std::fs::write(&path, decisions).expect("write");
+
+        let mut registry = Registry::default();
+        registry.declare(
+            vec![binding("sessions", "d", "sessions.delete", Scope::Plugin)],
+            Vec::new(),
+        );
+        // Each of the four writers, all reporting success: the state asked for
+        // is held in memory, which is what a caller of a detached registry wants.
+        registry
+            .rebind("sessions.delete", Some("x"))
+            .expect("rebind");
+        registry
+            .set_disabled("/ui/plugins/10_sessions.lua", true)
+            .expect("disable");
+        registry
+            .trust("/ui/plugins/10_sessions.lua", "-- mine")
+            .expect("trust");
+        registry
+            .revoke("/ui/plugins/10_sessions.lua")
+            .expect("revoke");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            decisions,
+            "the user's decisions were overwritten by a registry that never read them"
+        );
+    }
+
+    /// The other half: a registry that *did* read the file still writes it, or
+    /// the guard above would have turned every real change into a silent no-op.
+    #[test]
+    fn a_registry_that_read_the_file_writes_its_changes_back() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let _guard = crate::paths::TestPathGuard::new(dir.path());
+
+        let mut registry = Registry::load();
+        registry.declare(
+            vec![binding("sessions", "d", "sessions.delete", Scope::Plugin)],
+            Vec::new(),
+        );
+        registry
+            .set_disabled("/ui/plugins/65_search.lua", true)
+            .expect("disable");
+
+        let path = overrides_path().expect("a config directory");
+        let written = std::fs::read_to_string(&path).expect("ui.json was not written");
+        assert!(written.contains("65_search.lua"), "{written}");
+
+        // And it comes back on the next launch, which is the whole point.
+        let reloaded = Registry::load();
+        assert!(reloaded.is_disabled("/ui/plugins/65_search.lua"));
     }
 }

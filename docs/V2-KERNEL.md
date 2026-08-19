@@ -167,6 +167,12 @@ rows that will not take effect until the next launch. `kernel::config` owns that
 split; `Settings::restart_only_differs` is the shared definition of it, asserted
 against in both places so the two cannot drift.
 
+That split has a second edge, and missing it cost the panel its edits: what the
+modal shows and drafts from is `Config::on_disk`, **not** `Config::in_force`. A
+restart-only change lands in the file and is deliberately withheld from what is
+running, so seeding an edit from what is running silently proposes undoing it —
+the next save of any row reverted it.
+
 `settings::global()` is still a write-once `OnceLock`, shared with `thurbox-cli`
 and v1, and it stays that way: it is what makes those callers safe. The live half
 lives in `kernel::config` instead. Publishing at startup is load-bearing rather

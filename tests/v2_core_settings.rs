@@ -175,6 +175,61 @@ fn our_own_write_is_not_reported_as_an_outside_edit() {
     );
 }
 
+/// The settings panel edits the *file*, so it drafts from the file.
+///
+/// The bug: it drafted from what was in force, and a restart-only change is
+/// deliberately never taken into force. So one visit saved `mouse = false`
+/// correctly, and the next visit — any visit, changing anything — carried the
+/// stale `mouse = true` back into the document and reverted it. Two thirds of
+/// the panel's core rows are restart-only, which made "my settings do not
+/// survive a restart" the everyday symptom.
+#[test]
+fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
+    let _home = isolate();
+    let (mut config, _) = Config::load();
+
+    // One visit to the panel: seed a draft, change a restart-only row, save.
+    // The loop adopts the draft and writes it, which is `App::apply_settings`.
+    let mut draft = config.on_disk().clone();
+    draft.features.mouse = false;
+    assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
+    thurbox::agent::settings_config::save_settings(&draft).expect("save");
+
+    // The next visit, with the modal (and its draft) long since dropped: change
+    // something else entirely.
+    let mut draft = config.on_disk().clone();
+    draft.features.soft_delete = false;
+    // Still `NeedsRestart`: the earlier change is pending until the next launch,
+    // and saying otherwise would report it as applied.
+    assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
+    thurbox::agent::settings_config::save_settings(&draft).expect("save");
+
+    let (next_launch, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    assert!(
+        !next_launch.features.mouse,
+        "the restart-only change was reverted by an unrelated later save"
+    );
+    assert!(!next_launch.features.soft_delete, "and the live one landed");
+}
+
+/// The other half of the same rule: what is *in force* still refuses the
+/// restart-only change, or the split this all rests on would be gone.
+#[test]
+fn the_file_moves_ahead_of_what_is_in_force() {
+    let _home = isolate();
+    let (mut config, _) = Config::load();
+
+    let mut draft = config.on_disk().clone();
+    draft.features.mouse = false;
+    config.adopt(draft);
+
+    assert!(!config.on_disk().features.mouse, "the file has the change");
+    assert!(
+        config.features().mouse,
+        "and it is still not in force, because the escape was already sent"
+    );
+}
+
 #[test]
 fn saving_preserves_the_files_comments() {
     // The seed is documented inline, and a save that regenerated the file would

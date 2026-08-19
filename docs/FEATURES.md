@@ -1372,7 +1372,9 @@ chord did nothing.
 > Now `kernel::modals::settings` — kernel-owned chrome that plugins contribute rows
 > to. Core settings still write `settings.toml` through `toml_edit`, and whether a
 > row applies live is *asked of* `Settings::restart_only_differs` rather than
-> recorded beside the field.
+> recorded beside the field. The rows show `Config::on_disk` — the file — because a
+> restart-only change lives only there until the next launch; drafting from what is
+> in force made every later save revert it.
 
 `Ctrl+,` (rebindable `Action::OpenSettings`; `F6` alternate) opens a
 centered Settings modal that views and edits **all of settings.toml** —

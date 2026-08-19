@@ -1953,7 +1953,7 @@ impl App {
                 content,
                 &self.registry,
                 &self.themes,
-                self.config.in_force(),
+                self.config.on_disk(),
                 thurbox::kernel::modals::interface::Files {
                     rows: &inventory,
                     dir: &ui_dir,
@@ -2847,9 +2847,11 @@ impl App {
             .then(snapshots_db)
             .flatten();
         // The settings the modal shows, and the slot a save comes back through.
-        // Cloned because the modal needs the settings while `self.config` is
-        // borrowed mutably to apply whatever comes back.
-        let in_force = self.config.in_force().clone();
+        // What the *file* holds rather than what is in force: the panel edits the
+        // file, and a restart-only change lives only there until the next launch
+        // (`Config::on_disk`). Cloned because the modal needs it while
+        // `self.config` is borrowed mutably to apply whatever comes back.
+        let on_disk = self.config.on_disk().clone();
         let mut saved = None;
         let mut edit = None;
         // Same reason as the settings clone: the modal reads it while `self` is
@@ -2859,7 +2861,7 @@ impl App {
             let mut world = thurbox::kernel::modals::World {
                 registry: &mut self.registry,
                 themes: &mut self.themes,
-                settings: &in_force,
+                settings_on_disk: &on_disk,
                 save_settings: &mut saved,
                 inventory: &inventory,
                 interface_edit: &mut edit,
