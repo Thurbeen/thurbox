@@ -582,28 +582,36 @@ fn remote_output_or_stderr(output: std::process::Output, action: &str) -> Result
     // A command that failed silently still has to say *something*; its exit
     // code is more use than a blank after the colon.
     if detail.is_empty() {
-        anyhow::bail!("remote {action} failed: {}", describe_exit(&output.status));
+        anyhow::bail!(
+            "remote {action} failed: {}",
+            describe_exit(output.status.code())
+        );
     }
     anyhow::bail!("remote {action} failed: {detail}")
 }
 
-/// A remote command's exit status, for when it printed nothing to explain
-/// itself.
+/// Describe a remote command's exit code, for when it printed nothing to explain
+/// itself. `None` is "terminated without one" — a signal on unix.
 ///
 /// `255` is worth naming because it is not the command's: ssh reserves it for
 /// its own failures, so it means the host was never reached rather than that
 /// the command ran and failed. Phrased without naming ssh — the same helper
 /// serves the `wsl.exe` transport, which has no such convention.
-fn describe_exit(status: &std::process::ExitStatus) -> String {
+///
+/// Takes the code rather than the `ExitStatus` it came from: the status is only
+/// ever consulted for it, and the extra coupling made this untestable without
+/// `ExitStatusExt`, whose constructor is per-platform — so the test compiled on
+/// unix and broke the Windows build.
+fn describe_exit(code: Option<i32>) -> String {
     /// ssh's reserved code for "the connection itself failed".
     const SSH_TRANSPORT_FAILURE: i32 = 255;
 
-    match status.code() {
+    match code {
         Some(SSH_TRANSPORT_FAILURE) => {
             "exit 255, no error output — the host was likely never reached".to_string()
         }
         Some(code) => format!("exit {code}, no error output"),
-        None => "killed by a signal".to_string(),
+        None => "terminated without an exit code".to_string(),
     }
 }
 
@@ -2997,22 +3005,16 @@ mod tests {
 
     #[test]
     fn describe_exit_names_sshs_reserved_code_without_claiming_ssh() {
-        use std::os::unix::process::ExitStatusExt;
-
         // 255 means the command never ran, which is a different sentence from
         // "the command failed" — but the same helper serves `wsl.exe`, which
         // has no such convention, so it must not say ssh.
-        let transport = std::process::ExitStatus::from_raw(255 << 8);
-        let described = describe_exit(&transport);
+        let described = describe_exit(Some(255));
         assert!(described.contains("255"), "{described}");
         assert!(described.contains("never reached"), "{described}");
         assert!(!described.contains("ssh"), "{described}");
 
-        let ordinary = std::process::ExitStatus::from_raw(1 << 8);
-        assert_eq!(describe_exit(&ordinary), "exit 1, no error output");
-
-        let signalled = std::process::ExitStatus::from_raw(9);
-        assert_eq!(describe_exit(&signalled), "killed by a signal");
+        assert_eq!(describe_exit(Some(1)), "exit 1, no error output");
+        assert_eq!(describe_exit(None), "terminated without an exit code");
     }
 
     #[test]
