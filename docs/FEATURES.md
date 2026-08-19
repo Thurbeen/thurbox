@@ -652,7 +652,7 @@ editor of choice can open them as a workspace.
 > survived and is waiting for a plugin: `session::review` (pure diff types +
 > `parse_unified_diff`), `storage::review` (`review_comments` + `review_marks`,
 > schema v38), and `kernel::diff` (diffs on a worker, published into the snapshot).
-> `openspec/changes/v2-code-review/` has the design. v1 keeps the view on `1.x`.
+> `openspec/changes/v2-code-review/` has the design. v1 keeps the view on `v1.x`.
 
 Thurbox ships a **native, built-in** tuicr-like review view (`Ctrl+X`, `F7` alternate): a
 GitHub-style continuous diff of the active session's worktree

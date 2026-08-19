@@ -1365,7 +1365,7 @@ overflow the banner.
 **The view is gone.** v1's native diff reviewer (`ui/code_review.rs` +
 `app/code_review.rs`) went with `src/ui`; there is no replacement yet, and it is the
 largest single thing v2 owes v1 (`openspec/changes/v2-code-review/` has the design,
-`v2-parity-gaps` tracks it). v1 keeps it on the `1.x` branch.
+`v2-parity-gaps` tracks it). v1 keeps it on the `v1.x` branch.
 
 What survived, because it is not view code:
 
@@ -1434,7 +1434,7 @@ and `README.md` embeds the gifs, so regenerating them propagates everywhere.
 The interface is **Lua running on a Rust kernel**. `thurbox` boots the kernel,
 which reads `ui/` and renders whatever plugins it finds; there is no built-in
 pane. v1's `src/app` (TEA model/update/view) and `src/ui` (35 render modules) were
-deleted when the kernel took the binary name — v1 lives on the `1.x` branch.
+deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
 
 ### The five rules
 

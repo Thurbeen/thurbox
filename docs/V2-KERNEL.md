@@ -16,7 +16,7 @@ Writing a plugin starts at `docs/PLUGINS.md` — **Start here**, which is four
 
 Runs as `thurbox`. It **is** the interface now: `src/app/` and `src/ui/` were
 deleted when the kernel took the binary name, so there is no second interface to
-fall back to inside the process. v1 is maintained on the `1.x` branch and still
+fall back to inside the process. v1 is maintained on the `v1.x` branch and still
 takes patch releases.
 
 The name matters more than it looks. The updater in an already-installed binary

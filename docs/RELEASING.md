@@ -50,7 +50,7 @@ expect a new tool to reach the existing population.
 ## v1 is a branch, not a binary
 
 `thurbox` runs the plugin kernel; `src/app` and `src/ui` are gone. v1 is
-maintained on the **`1.x`** branch, and a patch is released by dispatching
+maintained on the **`v1.x`** branch, and a patch is released by dispatching
 `cd.yml` from that ref with an explicit `version` (e.g. `1.8.7`) — `cog bump
 --auto` computes from tags and would try to move the 2.x line instead.
 

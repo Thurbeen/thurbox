@@ -46,7 +46,7 @@ worktrees are first-class citizens.
 >
 > Then set `auto_update = false` under `[features]` in
 > `~/.config/thurbox/settings.toml`, or the next launch pulls v2 back. v1 is
-> maintained on the [`1.x`](https://github.com/Thurbeen/thurbox/tree/1.x) branch;
+> maintained on the [`v1.x`](https://github.com/Thurbeen/thurbox/tree/v1.x) branch;
 > newer 1.x patches are on the
 > [releases page](https://github.com/Thurbeen/thurbox/releases).
 
@@ -368,7 +368,7 @@ result; `Esc` restores exactly what you had.
 ### Code Review
 
 > **Not in the current interface**, and no replacement yet. `1.x` keeps it;
-> see [docs/v1](https://github.com/Thurbeen/thurbox/tree/1.x/docs).
+> see [docs/v1](https://github.com/Thurbeen/thurbox/tree/v1.x/docs).
 
 A native, GitHub-style diff reviewer (`Ctrl+X`, `F7` alternate) — no external tool. Browse the
 branch (`<base>..HEAD`), a single commit, or the uncommitted changes; the
@@ -729,7 +729,7 @@ cannot drift from what is running.
 Gone with the panes they opened: `Ctrl+X`/`F7` (code review), `Ctrl+E`/`F3`
 (file viewer), `Ctrl+B`/`F2` (info panel), `F5` (tasks), `Ctrl+P`
 (automations — now the creation flow's folder import) and `Ctrl+U` (restore
-list). See [docs/V2-KERNEL.md](docs/V2-KERNEL.md), or the `1.x` branch if you
+list). See [docs/V2-KERNEL.md](docs/V2-KERNEL.md), or the `v1.x` branch if you
 need them.
 
 Every chord is rebindable from the `F1` editor; rebindings persist to
@@ -993,7 +993,7 @@ See [docs/PLUGINS.md](docs/PLUGINS.md) and
 **Moving from v1?** Some panes are owed rather than ported, and some
 moved to `thurbox-cli`. The note at the top of this file has the list,
 what asks you before anything changes, and how to stay on v1 — which
-is maintained on the `1.x` branch.
+is maintained on the `v1.x` branch.
 
 ## Documentation
 

@@ -11,7 +11,7 @@ Each decision follows a mini-ADR format:
 > the plugin kernel took the `thurbox` binary name. The reasoning below is why the
 > kernel keeps a single source of truth and one direction of data flow — reads are
 > snapshots, writes are commands — rather than letting each pane own state. v1 is
-> maintained on the `1.x` branch.
+> maintained on the `v1.x` branch.
 
 **Choice**: All state lives in a single `App` model.
 Events become messages, `update()` applies them,
