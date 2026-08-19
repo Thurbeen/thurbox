@@ -53,9 +53,7 @@ fn row_height(row: &Row) -> u16 {
 }
 
 fn total_height(rows: &[Row]) -> u16 {
-    rows.iter()
-        .map(row_height)
-        .fold(0u16, |total, height| total.saturating_add(height))
+    rows.iter().map(row_height).fold(0u16, u16::saturating_add)
 }
 
 /// Pair each surviving choice with its header. A header is emitted at the first

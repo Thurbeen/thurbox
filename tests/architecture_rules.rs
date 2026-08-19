@@ -223,103 +223,123 @@ fn is_ident_char(b: u8) -> bool {
 
 /// Strip comments and string/char-literal contents from Rust source,
 /// preserving newlines so byte offsets still map to line numbers.
+///
+/// One `skip_*` helper per lexical form, each returning the index just past what
+/// it consumed and pushing only the newlines it swallowed.
 fn strip_comments_and_strings(src: &str) -> String {
     let bytes = src.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        let b = bytes[i];
-        match b {
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                let mut depth = 1usize;
-                i += 2;
-                while i < bytes.len() && depth > 0 {
-                    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
-                        depth += 1;
-                        i += 2;
-                    } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
-                        depth -= 1;
-                        i += 2;
-                    } else {
-                        if bytes[i] == b'\n' {
-                            out.push(b'\n');
-                        }
-                        i += 1;
-                    }
-                }
-            }
-            b'"' => {
-                i += 1;
-                while i < bytes.len() {
-                    match bytes[i] {
-                        b'\\' => i += 2,
-                        b'"' => {
-                            i += 1;
-                            break;
-                        }
-                        b'\n' => {
-                            out.push(b'\n');
-                            i += 1;
-                        }
-                        _ => i += 1,
-                    }
-                }
-            }
+        i = match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => skip_line_comment(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => skip_block_comment(bytes, i, &mut out),
+            b'"' => skip_string(bytes, i, &mut out),
             // Raw strings: r"…", r#"…"#, br#"…"# (the `b` is consumed as a
             // normal byte before we land on the `r`).
             b'r' if !(i > 0 && is_ident_char(bytes[i - 1]) && bytes[i - 1] != b'b') => {
-                let mut j = i + 1;
-                while bytes.get(j) == Some(&b'#') {
-                    j += 1;
-                }
-                if bytes.get(j) == Some(&b'"') {
-                    let hashes = j - (i + 1);
-                    let mut close = vec![b'"'];
-                    close.extend(std::iter::repeat(b'#').take(hashes));
-                    i = j + 1;
-                    while i < bytes.len() && bytes[i..].len() >= close.len() {
-                        if bytes[i..i + close.len()] == close[..] {
-                            i += close.len();
-                            break;
-                        }
-                        if bytes[i] == b'\n' {
-                            out.push(b'\n');
-                        }
-                        i += 1;
-                    }
-                } else {
-                    out.push(b'r');
-                    i += 1;
-                }
+                skip_raw_string(bytes, i, &mut out)
             }
             // Char literal vs lifetime: 'x' / '\n' are literals; 'a is a
             // lifetime (kept — it contains no `crate::`).
-            b'\'' => {
-                if bytes.get(i + 1) == Some(&b'\\') {
-                    i += 3;
-                    while i < bytes.len() && bytes[i] != b'\'' {
-                        i += 1;
-                    }
-                    i += 1;
-                } else if bytes.get(i + 2) == Some(&b'\'') && bytes.get(i + 1) != Some(&b'\'') {
-                    i += 3;
-                } else {
-                    out.push(b'\'');
-                    i += 1;
-                }
-            }
-            _ => {
+            b'\'' => skip_char_literal(bytes, i, &mut out),
+            b => {
                 out.push(b);
-                i += 1;
+                i + 1
             }
-        }
+        };
     }
     String::from_utf8(out).expect("stripped source remains valid UTF-8")
+}
+
+/// `// …` to the end of the line. The newline itself is left for the caller.
+fn skip_line_comment(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i] != b'\n' {
+        i += 1;
+    }
+    i
+}
+
+/// `/* … */`, nested.
+fn skip_block_comment(bytes: &[u8], mut i: usize, out: &mut Vec<u8>) -> usize {
+    let mut depth = 1usize;
+    i += 2;
+    while i < bytes.len() && depth > 0 {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            depth += 1;
+            i += 2;
+        } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+            depth -= 1;
+            i += 2;
+        } else {
+            if bytes[i] == b'\n' {
+                out.push(b'\n');
+            }
+            i += 1;
+        }
+    }
+    i
+}
+
+/// `"…"`, honouring backslash escapes.
+fn skip_string(bytes: &[u8], mut i: usize, out: &mut Vec<u8>) -> usize {
+    i += 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return i + 1,
+            b'\n' => {
+                out.push(b'\n');
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    i
+}
+
+/// `r"…"` / `r#"…"#`. Not a raw string after all (a bare `r` identifier) → emit
+/// the `r` and move on.
+fn skip_raw_string(bytes: &[u8], i: usize, out: &mut Vec<u8>) -> usize {
+    let mut j = i + 1;
+    while bytes.get(j) == Some(&b'#') {
+        j += 1;
+    }
+    if bytes.get(j) != Some(&b'"') {
+        out.push(b'r');
+        return i + 1;
+    }
+    let hashes = j - (i + 1);
+    let mut close = vec![b'"'];
+    close.extend(std::iter::repeat(b'#').take(hashes));
+    let mut at = j + 1;
+    while at < bytes.len() && bytes[at..].len() >= close.len() {
+        if bytes[at..at + close.len()] == close[..] {
+            return at + close.len();
+        }
+        if bytes[at] == b'\n' {
+            out.push(b'\n');
+        }
+        at += 1;
+    }
+    at
+}
+
+/// `'x'` / `'\n'` are literals and are consumed; `'a` is a lifetime and the
+/// quote is kept, since a lifetime contains no `crate::`.
+fn skip_char_literal(bytes: &[u8], mut i: usize, out: &mut Vec<u8>) -> usize {
+    if bytes.get(i + 1) == Some(&b'\\') {
+        i += 3;
+        while i < bytes.len() && bytes[i] != b'\'' {
+            i += 1;
+        }
+        return i + 1;
+    }
+    if bytes.get(i + 2) == Some(&b'\'') && bytes.get(i + 1) != Some(&b'\'') {
+        return i + 3;
+    }
+    out.push(b'\'');
+    i + 1
 }
 
 /// Byte spans of `use …;` statements in stripped source.
@@ -331,9 +351,7 @@ fn use_spans(stripped: &str) -> Vec<(usize, usize)> {
         let start = search + found;
         search = start + 3;
         let before_ok = start == 0 || !is_ident_char(bytes[start - 1]);
-        let after_ok = bytes
-            .get(start + 3)
-            .is_some_and(|b| b.is_ascii_whitespace());
+        let after_ok = bytes.get(start + 3).is_some_and(u8::is_ascii_whitespace);
         if before_ok && after_ok {
             let end = stripped[start..]
                 .find(';')
@@ -361,33 +379,32 @@ fn brace_group_segments(bytes: &[u8], open: usize) -> Vec<String> {
     let mut expect_segment = false;
     let mut i = open;
     while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'{' {
-            depth += 1;
-            expect_segment = depth == 1;
-            i += 1;
-        } else if b == b'}' {
-            depth -= 1;
-            if depth == 0 {
-                break;
-            }
-            i += 1;
-        } else if b == b',' {
-            if depth == 1 {
-                expect_segment = true;
-            }
-            i += 1;
-        } else if b.is_ascii_whitespace() {
-            i += 1;
-        } else if depth == 1 && expect_segment {
-            if is_ident_char(b) {
-                segments.push(read_ident(bytes, &mut i));
-            } else {
+        match bytes[i] {
+            b'{' => {
+                depth += 1;
+                expect_segment = depth == 1;
                 i += 1;
             }
-            expect_segment = false;
-        } else {
-            i += 1;
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                i += 1;
+            }
+            b',' => {
+                expect_segment |= depth == 1;
+                i += 1;
+            }
+            b if depth == 1 && expect_segment && !b.is_ascii_whitespace() => {
+                if is_ident_char(b) {
+                    segments.push(read_ident(bytes, &mut i));
+                } else {
+                    i += 1;
+                }
+                expect_segment = false;
+            }
+            _ => i += 1,
         }
     }
     segments
@@ -403,26 +420,11 @@ fn crate_refs(stripped: &str) -> Vec<RefSite> {
     while let Some(found) = stripped[search..].find(TOKEN) {
         let pos = search + found;
         search = pos + TOKEN.len();
-        if pos > 0 {
-            let prev = bytes[pos - 1];
-            // Skip `$crate::` (macros) and path tails like `my_crate::`.
-            if is_ident_char(prev) || prev == b':' || prev == b'$' {
-                continue;
-            }
+        if is_crate_tail(bytes, pos) {
+            continue;
         }
-        let mut i = pos + TOKEN.len();
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        let segments = if bytes.get(i) == Some(&b'{') {
-            brace_group_segments(bytes, i)
-        } else if i < bytes.len() && is_ident_char(bytes[i]) {
-            vec![read_ident(bytes, &mut i)]
-        } else {
-            Vec::new()
-        };
         let in_use = spans.iter().any(|&(s, e)| pos >= s && pos < e);
-        for segment in segments {
+        for segment in refs_after(bytes, pos + TOKEN.len()) {
             refs.push(RefSite {
                 offset: pos,
                 segment,
@@ -431,6 +433,31 @@ fn crate_refs(stripped: &str) -> Vec<RefSite> {
         }
     }
     refs
+}
+
+/// Whether the `crate::` at `pos` is really the tail of something else —
+/// `$crate::` (macros) or a path like `my_crate::`.
+fn is_crate_tail(bytes: &[u8], pos: usize) -> bool {
+    if pos == 0 {
+        return false;
+    }
+    let prev = bytes[pos - 1];
+    is_ident_char(prev) || prev == b':' || prev == b'$'
+}
+
+/// The segment(s) a `crate::` names: a brace group's members, or one identifier.
+fn refs_after(bytes: &[u8], from: usize) -> Vec<String> {
+    let mut i = from;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if bytes.get(i) == Some(&b'{') {
+        return brace_group_segments(bytes, i);
+    }
+    match bytes.get(i).is_some_and(|&b| is_ident_char(b)) {
+        true => vec![read_ident(bytes, &mut i)],
+        false => Vec::new(),
+    }
 }
 
 /// Check one module against its allowlist.

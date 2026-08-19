@@ -177,10 +177,7 @@ fn parse_tmux_version(version_str: &str) -> Result<(u32, u32)> {
         "Cannot parse tmux major version from: {version_str}"
     ))?;
     // Minor might have a trailing letter (e.g., "3a"), strip non-digits.
-    let minor_str: String = parts[1]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
+    let minor_str: String = parts[1].chars().take_while(char::is_ascii_digit).collect();
     let minor: u32 = minor_str.parse().context(format!(
         "Cannot parse tmux minor version from: {version_str}"
     ))?;
@@ -445,22 +442,59 @@ impl ControlMode {
                         }
                     };
                     let changed = control_mode::diff_polled_hook_states(&mut last, &body);
-                    if changed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(mut events) = events.lock() {
-                        for ev in changed {
-                            if events.len() >= SUB_EVENTS_CAP {
-                                events.pop_front();
-                            }
-                            events.push_back(ev);
-                        }
-                    }
+                    Self::queue_sub_events(&events, changed);
                 }
             });
         if let Err(e) = spawned {
             warn!("failed to spawn the psmux hook poller: {e}");
         }
+    }
+
+    /// Append polled hook changes to the subscription queue, oldest dropped
+    /// first once it is full — the same bound the passive tmux subscription
+    /// honours.
+    fn queue_sub_events(
+        events: &Arc<Mutex<VecDeque<(String, String)>>>,
+        changed: Vec<(String, String)>,
+    ) {
+        if changed.is_empty() {
+            return;
+        }
+        let Ok(mut events) = events.lock() else {
+            return;
+        };
+        for ev in changed {
+            if events.len() >= SUB_EVENTS_CAP {
+                events.pop_front();
+            }
+            events.push_back(ev);
+        }
+    }
+
+    /// One newline-terminated control-mode line, or `None` at EOF / on an I/O
+    /// error (both of which end the reader).
+    ///
+    /// Lossy conversion: tmux control mode is mostly ASCII, but raw bytes can
+    /// appear (e.g. in `%extended-output`). Replacing invalid sequences with
+    /// U+FFFD is safe — the octal-encoded payload in `%output` lines is always
+    /// valid ASCII.
+    fn next_control_line(
+        reader: &mut BufReader<std::process::ChildStdout>,
+        line_buf: &mut Vec<u8>,
+    ) -> Option<String> {
+        line_buf.clear();
+        match reader.read_until(b'\n', line_buf) {
+            Ok(0) => return None,
+            Ok(_) => {}
+            Err(e) => {
+                debug!("Control reader I/O error: {e}");
+                return None;
+            }
+        }
+        if line_buf.last() == Some(&b'\n') {
+            line_buf.pop();
+        }
+        Some(String::from_utf8_lossy(line_buf).into_owned())
     }
 
     /// Background thread that reads and dispatches control mode output.
@@ -483,25 +517,7 @@ impl ControlMode {
         let mut collecting: Option<Vec<String>> = None;
         let mut line_buf = Vec::new();
 
-        loop {
-            line_buf.clear();
-            match reader.read_until(b'\n', &mut line_buf) {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(e) => {
-                    debug!("Control reader I/O error: {e}");
-                    break;
-                }
-            }
-            if line_buf.last() == Some(&b'\n') {
-                line_buf.pop();
-            }
-            // Lossy conversion: tmux control mode is mostly ASCII, but raw
-            // bytes can appear (e.g., in %extended-output). Replacing
-            // invalid sequences with U+FFFD is safe — the octal-encoded
-            // payload in %output lines is always valid ASCII.
-            let line = String::from_utf8_lossy(&line_buf);
-
+        while let Some(line) = Self::next_control_line(&mut reader, &mut line_buf) {
             match control_mode::parse_notification(&line) {
                 Notification::Output { pane_id, data } => {
                     Self::dispatch_output(&pane_senders, &pane_id, data);
@@ -526,12 +542,7 @@ impl ControlMode {
                     value,
                 } => {
                     if name == crate::session::REMOTE_HOOK_SUBSCRIPTION && !value.is_empty() {
-                        if let Ok(mut events) = sub_events.lock() {
-                            if events.len() >= SUB_EVENTS_CAP {
-                                events.pop_front();
-                            }
-                            events.push_back((pane_id, value));
-                        }
+                        Self::queue_sub_events(&sub_events, vec![(pane_id, value)]);
                     }
                 }
                 Notification::Other(text) => {
@@ -1814,7 +1825,7 @@ fn list_window_names() -> Vec<String> {
     }
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .map(|s| s.to_string())
+        .map(str::to_string)
         .collect()
 }
 
@@ -1956,7 +1967,7 @@ fn heartbeat_loop_command(cli_path: &Path) -> String {
 pub fn resolve_cli_binary() -> std::path::PathBuf {
     let cli_name = format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX);
     if let Ok(exe) = std::env::current_exe() {
-        if exe.file_name().and_then(|n| n.to_str()) == Some(cli_name.as_str()) {
+        if exe.file_name().and_then(std::ffi::OsStr::to_str) == Some(cli_name.as_str()) {
             return exe;
         }
         if let Some(dir) = exe.parent() {

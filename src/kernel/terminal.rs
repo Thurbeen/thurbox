@@ -717,47 +717,7 @@ impl Terminals {
             let runtime = self.runtime.clone();
             std::thread::spawn(move || {
                 let _guard = runtime.as_ref().map(|handle| handle.enter());
-                let mut readied = already_ready;
-                // Same rule attach uses: ready once per backend, and only for one
-                // a session actually lives on. An offline host fails here and is
-                // simply not discovered this round.
-                if !already_ready {
-                    match backend.ensure_ready() {
-                        Ok(()) => readied = true,
-                        Err(e) => {
-                            tracing::warn!(
-                                "could not ready {backend_name} to list its windows: {e:#}"
-                            );
-                            let _ = tx.send(Discovered {
-                                backend: backend_name,
-                                readied: false,
-                                panes: None,
-                            });
-                            return;
-                        }
-                    }
-                }
-                let panes = match backend.discover() {
-                    Ok(found) => {
-                        let mut by_name: WindowPanes = HashMap::new();
-                        for window in found {
-                            by_name
-                                .entry(window.name)
-                                .or_default()
-                                .push(window.backend_id);
-                        }
-                        Some(by_name)
-                    }
-                    Err(e) => {
-                        tracing::warn!("could not list windows on {backend_name}: {e:#}");
-                        None
-                    }
-                };
-                let _ = tx.send(Discovered {
-                    backend: backend_name,
-                    readied,
-                    panes,
-                });
+                let _ = tx.send(discover_windows(&backend, backend_name, already_ready));
             });
         }
     }
@@ -1550,6 +1510,51 @@ impl Terminals {
         // A session that went away keeps no stale title.
         self.meta.retain(|id, _| self.live.contains_key(id));
         &self.meta
+    }
+}
+
+/// One backend's window inventory, on the discovery worker.
+///
+/// Split out of [`Terminals::refresh_discovery`] so the throttle and the spawn
+/// stay readable beside the two fallible host calls this makes.
+fn discover_windows(
+    backend: &std::sync::Arc<dyn crate::agent::SessionBackend>,
+    name: String,
+    already_ready: bool,
+) -> Discovered {
+    // Same rule attach uses: ready once per backend, and only for one a session
+    // actually lives on. An offline host fails here and is simply not discovered
+    // this round.
+    if !already_ready {
+        if let Err(e) = backend.ensure_ready() {
+            tracing::warn!("could not ready {name} to list its windows: {e:#}");
+            return Discovered {
+                backend: name,
+                readied: false,
+                panes: None,
+            };
+        }
+    }
+    let panes = match backend.discover() {
+        Ok(found) => {
+            let mut by_name: WindowPanes = HashMap::new();
+            for window in found {
+                by_name
+                    .entry(window.name)
+                    .or_default()
+                    .push(window.backend_id);
+            }
+            Some(by_name)
+        }
+        Err(e) => {
+            tracing::warn!("could not list windows on {name}: {e:#}");
+            None
+        }
+    };
+    Discovered {
+        backend: name,
+        readied: true,
+        panes,
     }
 }
 

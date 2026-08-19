@@ -123,14 +123,12 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             if title.trim().is_empty() {
                 return Err("title must not be empty".into());
             }
-            let status = parse_status(status.as_deref())?;
             let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
-            let action = resolve_action(session, repo, worktree, base, agent, extra_repos, db)?;
             let new = NewTask {
                 title,
                 description: blank_to_none(description),
-                status,
-                action,
+                status: parse_status(status.as_deref())?,
+                action: resolve_action(session, repo, worktree, base, agent, extra_repos, db)?,
                 source: source
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
@@ -169,34 +167,15 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             external_url,
         } => {
             let mut task = load(db, id)?;
-            if let Some(t) = title {
-                if t.trim().is_empty() {
-                    return Err("title must not be empty".into());
-                }
-                task.title = t;
-            }
-            // Passing --description always sets it (trimmed-empty → cleared).
-            if let Some(d) = description {
-                task.description = blank_to_none(Some(d));
-            }
-            if let Some(s) = status {
-                task.status = parse_status(Some(&s))?;
-            }
-            // External-sync fields: passing the flag sets it; an empty string
-            // clears the two external_* to NULL. A blank --source is ignored
-            // (source is NOT NULL).
-            if let Some(s) = source {
-                let s = s.trim();
-                if !s.is_empty() {
-                    task.source = s.to_string();
-                }
-            }
-            if let Some(e) = external_id {
-                task.external_id = blank_to_none(Some(e));
-            }
-            if let Some(u) = external_url {
-                task.external_url = blank_to_none(Some(u));
-            }
+            apply_edits(
+                &mut task,
+                title,
+                description,
+                status,
+                source,
+                external_id,
+                external_url,
+            )?;
             db.update_task(&task)
                 .map_err(|e| format!("update_task: {e}"))?;
             let task = load(db, id)?;
@@ -220,6 +199,48 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             Ok(CommandOutput::new(json, human))
         }
     }
+}
+
+/// Fold the `edit` flags that were passed into `task`.
+///
+/// Every field follows the same rule: passing the flag sets it. `--description`
+/// and the two `external_*` clear to NULL when passed empty; a blank `--source`
+/// is ignored, since the column is NOT NULL.
+#[allow(clippy::too_many_arguments)]
+fn apply_edits(
+    task: &mut Task,
+    title: Option<String>,
+    description: Option<String>,
+    status: Option<String>,
+    source: Option<String>,
+    external_id: Option<String>,
+    external_url: Option<String>,
+) -> Result<(), String> {
+    if let Some(t) = title {
+        if t.trim().is_empty() {
+            return Err("title must not be empty".into());
+        }
+        task.title = t;
+    }
+    if let Some(d) = description {
+        task.description = blank_to_none(Some(d));
+    }
+    if let Some(s) = status {
+        task.status = parse_status(Some(&s))?;
+    }
+    if let Some(s) = source
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        task.source = s;
+    }
+    if let Some(e) = external_id {
+        task.external_id = blank_to_none(Some(e));
+    }
+    if let Some(u) = external_url {
+        task.external_url = blank_to_none(Some(u));
+    }
+    Ok(())
 }
 
 /// Render the task list as an aligned table (or a friendly empty line).

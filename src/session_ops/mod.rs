@@ -46,25 +46,8 @@ pub fn run_exec_command(command: &str) -> (AutomationRunStatus, String) {
         Ok(out) => out,
         Err(e) => return (AutomationRunStatus::Error, format!("spawn failed: {e}")),
     };
-    // Keep the last 500 chars of each stream. Single pass via a capped ring so a
-    // huge stream isn't walked twice (count + skip) or materialized in full.
-    const TAIL_CHARS: usize = 500;
-    let tail = |s: &[u8]| -> String {
-        let t = String::from_utf8_lossy(s);
-        let t = t.trim();
-        let mut ring: std::collections::VecDeque<char> =
-            std::collections::VecDeque::with_capacity(TAIL_CHARS + 1);
-        for c in t.chars() {
-            if ring.len() == TAIL_CHARS {
-                ring.pop_front();
-            }
-            ring.push_back(c);
-        }
-        ring.into_iter().collect()
-    };
-    let stdout = tail(&out.stdout);
-    let stderr = tail(&out.stderr);
-    let mut detail = stdout;
+    let mut detail = exec_tail(&out.stdout);
+    let stderr = exec_tail(&out.stderr);
     if !stderr.is_empty() {
         if !detail.is_empty() {
             detail.push('\n');
@@ -72,21 +55,35 @@ pub fn run_exec_command(command: &str) -> (AutomationRunStatus, String) {
         detail.push_str(&stderr);
     }
     if out.status.success() {
-        let msg = if detail.is_empty() {
-            "ok".into()
-        } else {
-            detail
+        let msg = match detail.is_empty() {
+            true => "ok".to_string(),
+            false => detail,
         };
-        (AutomationRunStatus::Success, msg)
-    } else {
-        let code = out.status.code().map_or("signal".into(), |c| c.to_string());
-        let msg = if detail.is_empty() {
-            format!("exit {code}")
-        } else {
-            format!("exit {code}: {detail}")
-        };
-        (AutomationRunStatus::Error, msg)
+        return (AutomationRunStatus::Success, msg);
     }
+    let code = out.status.code().map_or("signal".into(), |c| c.to_string());
+    let msg = match detail.is_empty() {
+        true => format!("exit {code}"),
+        false => format!("exit {code}: {detail}"),
+    };
+    (AutomationRunStatus::Error, msg)
+}
+
+/// The trailing 500 chars of one captured stream, trimmed. Single pass via a
+/// capped ring so a huge stream isn't walked twice (count + skip) or
+/// materialized in full.
+fn exec_tail(stream: &[u8]) -> String {
+    const TAIL_CHARS: usize = 500;
+    let text = String::from_utf8_lossy(stream);
+    let mut ring: std::collections::VecDeque<char> =
+        std::collections::VecDeque::with_capacity(TAIL_CHARS + 1);
+    for c in text.trim().chars() {
+        if ring.len() == TAIL_CHARS {
+            ring.pop_front();
+        }
+        ring.push_back(c);
+    }
+    ring.into_iter().collect()
 }
 
 /// Decide whether to pass the agent's resume group vs starting fresh when

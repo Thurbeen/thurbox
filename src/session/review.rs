@@ -332,53 +332,15 @@ pub struct ChangedFile {
 /// A binary file's counts arrive as `-`, which is not zero and not a number; such a
 /// file is reported with zero counts rather than dropped, since it did change.
 pub fn parse_changed_files(numstat_z: &str, name_status_z: &str) -> Vec<ChangedFile> {
-    let mut statuses: std::collections::BTreeMap<String, (FileStatus, Option<String>)> =
-        std::collections::BTreeMap::new();
-    let mut fields = name_status_z.split('\0').filter(|f| !f.is_empty());
-    while let Some(token) = fields.next() {
-        let status = match token.as_bytes().first() {
-            Some(b'A') => FileStatus::Added,
-            Some(b'D') => FileStatus::Deleted,
-            Some(b'R') | Some(b'C') => FileStatus::Renamed,
-            _ => FileStatus::Modified,
-        };
-        // A rename or copy names both sides; everything else names one.
-        let renamed = matches!(status, FileStatus::Renamed);
-        let first = match fields.next() {
-            Some(path) => path,
-            None => break,
-        };
-        match renamed {
-            true => match fields.next() {
-                Some(new_path) => {
-                    statuses.insert(new_path.to_string(), (status, Some(first.to_string())));
-                }
-                None => break,
-            },
-            false => {
-                statuses.insert(first.to_string(), (status, None));
-            }
-        }
-    }
-
+    let statuses = parse_name_status(name_status_z);
     let mut out = Vec::new();
     let mut fields = numstat_z.split('\0').filter(|f| !f.is_empty());
     while let Some(record) = fields.next() {
         let mut parts = record.split('\t');
         let added = parts.next().unwrap_or_default();
         let removed = parts.next().unwrap_or_default();
-        let path = parts.next().unwrap_or_default();
-        // An empty path field means the two following records are the old and new
-        // names; `-z` is what makes that unambiguous.
-        let path = match path.is_empty() {
-            true => {
-                let _old = fields.next();
-                match fields.next() {
-                    Some(new_path) => new_path.to_string(),
-                    None => break,
-                }
-            }
-            false => path.to_string(),
+        let Some(path) = numstat_path(parts.next().unwrap_or_default(), &mut fields) else {
+            break;
         };
         // `-` for a binary file: it changed, and it has no line counts.
         let count = |field: &str| field.parse::<usize>().unwrap_or(0);
@@ -395,6 +357,43 @@ pub fn parse_changed_files(numstat_z: &str, name_status_z: &str) -> Vec<ChangedF
         });
     }
     out
+}
+
+/// The status half of [`parse_changed_files`]: `--name-status -z` into
+/// `new path -> (status, old path)`.
+fn parse_name_status(
+    name_status_z: &str,
+) -> std::collections::BTreeMap<String, (FileStatus, Option<String>)> {
+    let mut statuses = std::collections::BTreeMap::new();
+    let mut fields = name_status_z.split('\0').filter(|f| !f.is_empty());
+    while let Some(token) = fields.next() {
+        let status = match token.as_bytes().first() {
+            Some(b'A') => FileStatus::Added,
+            Some(b'D') => FileStatus::Deleted,
+            Some(b'R') | Some(b'C') => FileStatus::Renamed,
+            _ => FileStatus::Modified,
+        };
+        let Some(first) = fields.next() else { break };
+        // A rename or copy names both sides; everything else names one.
+        if matches!(status, FileStatus::Renamed) {
+            let Some(new_path) = fields.next() else { break };
+            statuses.insert(new_path.to_string(), (status, Some(first.to_string())));
+        } else {
+            statuses.insert(first.to_string(), (status, None));
+        }
+    }
+    statuses
+}
+
+/// The path a `--numstat -z` record names. An empty path field means the two
+/// following records are the old and new names; `-z` is what makes that
+/// unambiguous. `None` = the record was truncated mid-rename.
+fn numstat_path<'a>(field: &str, fields: &mut impl Iterator<Item = &'a str>) -> Option<String> {
+    if !field.is_empty() {
+        return Some(field.to_string());
+    }
+    let _old = fields.next();
+    fields.next().map(str::to_string)
 }
 
 /// Apply a file-header metadata line (mode / rename / `---` / `+++`) to `f`,

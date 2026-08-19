@@ -208,86 +208,8 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 human,
             ))
         }
-        Action::Delete { uuid, force } => {
-            let session = resolve(db, &uuid)?;
-            let report = crate::session_ops::delete_session_headless(db, session.id, force)?;
-            let mut human = format!("Deleted session '{}' ({})", session.name, session.id);
-            if force {
-                let mut detail: Vec<(&str, String)> = vec![
-                    ("killed window", report.killed_window.to_string()),
-                    (
-                        "removed worktrees",
-                        report.removed_worktrees.len().to_string(),
-                    ),
-                    (
-                        "disabled automations",
-                        report.disabled_automations.to_string(),
-                    ),
-                ];
-                if !report.worktree_errors.is_empty() {
-                    detail.push(("worktree errors", report.worktree_errors.join("; ")));
-                }
-                if let Some(err) = &report.remote_teardown_error {
-                    detail.push(("remote teardown error", err.clone()));
-                }
-                for line in output::kv(&detail).lines() {
-                    human.push_str(&format!("\n  {line}"));
-                }
-            }
-            Ok(CommandOutput::new(
-                json!({
-                    "deleted": true,
-                    "id": session.id.to_string(),
-                    "name": session.name,
-                    "forced": force,
-                    "killed_window": report.killed_window,
-                    "removed_worktrees": report.removed_worktrees,
-                    "worktree_errors": report.worktree_errors,
-                    "disabled_automations": report.disabled_automations,
-                    "remote_teardown_error": report.remote_teardown_error,
-                }),
-                human,
-            ))
-        }
-        Action::Restore { uuid, best_effort } => {
-            let id: SessionId = uuid
-                .parse()
-                .map_err(|_| format!("Invalid session UUID: {uuid}"))?;
-            let deleted = db
-                .get_deleted_session_by_id(id)
-                .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
-                .ok_or_else(|| format!("Deleted session not found: {uuid}"))?;
-            // A force-deleted session lost its uncommitted work; restoring it only
-            // recovers committed branch state, so require an explicit opt-in.
-            if deleted.force_deleted && !best_effort {
-                return Err(format!(
-                    "Session '{}' was force-deleted; pass --best-effort to recover committed work (uncommitted/untracked changes are gone)",
-                    deleted.name
-                ));
-            }
-            // `restore_session` clears `deleted_at` and `force_deleted`; a running
-            // TUI re-creates worktrees + the tmux window on its next sync.
-            db.restore_session(deleted.id)
-                .map_err(|e| format!("restore_session: {e}"))?;
-            let best_effort_recovery = deleted.force_deleted;
-            let human = if best_effort_recovery {
-                format!(
-                    "Restored session '{}' ({}) — best-effort: uncommitted work was not recovered",
-                    deleted.name, deleted.id
-                )
-            } else {
-                format!("Restored session '{}' ({})", deleted.name, deleted.id)
-            };
-            Ok(CommandOutput::new(
-                json!({
-                    "restored": true,
-                    "id": deleted.id.to_string(),
-                    "name": deleted.name,
-                    "best_effort": best_effort_recovery,
-                }),
-                human,
-            ))
-        }
+        Action::Delete { uuid, force } => delete_session(db, &uuid, force),
+        Action::Restore { uuid, best_effort } => restore_deleted(db, &uuid, best_effort),
         Action::Restart { uuid } => {
             let session = resolve(db, &uuid)?;
             crate::session_ops::restart_session_headless(db, session.id)?;
@@ -359,6 +281,96 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             ))
         }
     }
+}
+
+/// Delete a session, reporting what `--force` teardown actually managed.
+fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutput, String> {
+    let session = resolve(db, uuid)?;
+    let report = crate::session_ops::delete_session_headless(db, session.id, force)?;
+    let mut human = format!("Deleted session '{}' ({})", session.name, session.id);
+    if force {
+        for line in output::kv(&force_delete_detail(&report)).lines() {
+            human.push_str(&format!("\n  {line}"));
+        }
+    }
+    Ok(CommandOutput::new(
+        json!({
+            "deleted": true,
+            "id": session.id.to_string(),
+            "name": session.name,
+            "forced": force,
+            "killed_window": report.killed_window,
+            "removed_worktrees": report.removed_worktrees,
+            "worktree_errors": report.worktree_errors,
+            "disabled_automations": report.disabled_automations,
+            "remote_teardown_error": report.remote_teardown_error,
+        }),
+        human,
+    ))
+}
+
+/// The human half of a `--force` delete: teardown counts, plus whichever of the
+/// two best-effort failures happened.
+fn force_delete_detail(
+    report: &crate::session_ops::ForceDeleteReport,
+) -> Vec<(&'static str, String)> {
+    let mut detail = vec![
+        ("killed window", report.killed_window.to_string()),
+        (
+            "removed worktrees",
+            report.removed_worktrees.len().to_string(),
+        ),
+        (
+            "disabled automations",
+            report.disabled_automations.to_string(),
+        ),
+    ];
+    if !report.worktree_errors.is_empty() {
+        detail.push(("worktree errors", report.worktree_errors.join("; ")));
+    }
+    if let Some(err) = &report.remote_teardown_error {
+        detail.push(("remote teardown error", err.clone()));
+    }
+    detail
+}
+
+/// Revive a soft-deleted session. A running TUI re-creates its worktrees and
+/// tmux window on the next sync.
+fn restore_deleted(db: &Database, uuid: &str, best_effort: bool) -> Result<CommandOutput, String> {
+    let id: SessionId = uuid
+        .parse()
+        .map_err(|_| format!("Invalid session UUID: {uuid}"))?;
+    let deleted = db
+        .get_deleted_session_by_id(id)
+        .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
+        .ok_or_else(|| format!("Deleted session not found: {uuid}"))?;
+    // A force-deleted session lost its uncommitted work; restoring it only
+    // recovers committed branch state, so require an explicit opt-in.
+    if deleted.force_deleted && !best_effort {
+        return Err(format!(
+            "Session '{}' was force-deleted; pass --best-effort to recover committed work (uncommitted/untracked changes are gone)",
+            deleted.name
+        ));
+    }
+    // `Database::restore_session` clears `deleted_at` and `force_deleted`.
+    db.restore_session(deleted.id)
+        .map_err(|e| format!("restore_session: {e}"))?;
+    let human = match deleted.force_deleted {
+        true => format!(
+            "Restored session '{}' ({}) — best-effort: uncommitted work was not recovered",
+            deleted.name, deleted.id
+        ),
+        false => format!("Restored session '{}' ({})", deleted.name, deleted.id),
+    };
+    Ok(CommandOutput::new(
+        json!({
+            "restored": true,
+            "id": deleted.id.to_string(),
+            "name": deleted.name,
+            "best_effort": deleted.force_deleted,
+        }),
+        human,
+    ))
 }
 
 /// Resolve the session a `signal` targets: an explicit `--session` UUID, else

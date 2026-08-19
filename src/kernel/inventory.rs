@@ -275,7 +275,7 @@ pub fn rows(
 
         let error = error
             .filter(|error| blames(error, path))
-            .map(|error| error.to_string());
+            .map(ToString::to_string);
 
         out.push(Row {
             name: loaded

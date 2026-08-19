@@ -183,73 +183,22 @@ pub fn deliver(
     // Reported as the strongest thing that happened: a package whose pane was
     // updated and whose module was already current is an update.
     let mut outcome = Outcome::Current;
-    // Ranked by what most needs the reader's attention, not by how much work was
-    // done. `Kept` and `Deleted` both mean "you will NOT see the new version", and
-    // a package whose module updated while its pane was left alone has to report
-    // the pane — otherwise an edit silently costing you an update reads as a clean
-    // update.
-    let mut escalate = |candidate: Outcome| {
-        let rank = |outcome: Outcome| match outcome {
-            Outcome::Current => 0,
-            Outcome::Updated => 1,
-            Outcome::Installed => 2,
-            Outcome::Deleted => 3,
-            Outcome::Kept => 4,
-            Outcome::Removed => 5,
-        };
-        if rank(candidate) > rank(outcome) {
-            outcome = candidate;
-        }
-    };
 
     for payload in payloads {
-        let path = dir.join(&payload.file);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        }
-        let existing = std::fs::read_to_string(&path).ok();
-        let delivered = match recorded.get(&payload.file) {
-            Some(recorded) => Delivered::Digest(recorded.as_str()),
-            None if tombstoned.contains(&payload.file) => Delivered::Tombstoned,
-            None => Delivered::Never,
-        };
-
-        let action = decide(existing.as_deref(), delivered, &payload.contents);
-        match action {
-            Action::Write | Action::Update => {
-                std::fs::write(&path, &payload.contents)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                files.insert(payload.file.clone(), digest(&payload.contents));
-                escalate(if action == Action::Write {
-                    Outcome::Installed
-                } else {
-                    Outcome::Updated
-                });
+        let (effect, candidate) = deliver_payload(dir, payload, &recorded, &tombstoned)?;
+        match effect {
+            Effect::Recorded(digest) => {
+                files.insert(payload.file.clone(), digest);
             }
-            Action::Settle => {
-                files.insert(payload.file.clone(), digest(&payload.contents));
-            }
-            // Theirs. The record is carried through UNCHANGED — recording the
-            // digest now on disk would make the user's edit look like our own
-            // delivery, and the very next run would decide it was safe to
-            // overwrite. `bundled::materialize` leaves the manifest alone on
-            // `Preserve` for exactly this reason; "the last thing we wrote" is
-            // what makes an edit detectable, so it must not be overwritten with
-            // what the user wrote.
-            Action::Preserve => {
+            // The record is carried through UNCHANGED — see `Action::Preserve`.
+            Effect::Unchanged => {
                 if let Some(recorded) = recorded.get(&payload.file) {
                     files.insert(payload.file.clone(), recorded.clone());
                 }
-                escalate(Outcome::Kept);
             }
-            // Deleted, and recorded as such so the next run leaves it alone. Written
-            // out rather than inferred from a missing digest, which is also what a
-            // newly-added file looks like.
-            Action::Tombstone | Action::Leave => {
-                removed.push(payload.file.clone());
-                escalate(Outcome::Deleted);
-            }
+            Effect::Tombstoned => removed.push(payload.file.clone()),
         }
+        escalate(&mut outcome, candidate);
     }
 
     lock.record(LockEntry {
@@ -261,6 +210,84 @@ pub fn deliver(
         removed,
     });
     Ok(outcome)
+}
+
+/// What one payload's delivery does to the lock record.
+enum Effect {
+    /// Written (or already current): record this digest.
+    Recorded(String),
+    /// The user's edit stands: carry the recorded digest through untouched.
+    Unchanged,
+    /// The user deleted it: drop the digest so convergence stops offering it.
+    Tombstoned,
+}
+
+/// Deliver one payload and report both what the lock should say and how strongly
+/// it wants reporting.
+fn deliver_payload(
+    dir: &Path,
+    payload: &Payload,
+    recorded: &BTreeMap<String, String>,
+    tombstoned: &[String],
+) -> Result<(Effect, Outcome), String> {
+    let path = dir.join(&payload.file);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let existing = std::fs::read_to_string(&path).ok();
+    let delivered = match recorded.get(&payload.file) {
+        Some(recorded) => Delivered::Digest(recorded.as_str()),
+        None if tombstoned.contains(&payload.file) => Delivered::Tombstoned,
+        None => Delivered::Never,
+    };
+
+    match decide(existing.as_deref(), delivered, &payload.contents) {
+        action @ (Action::Write | Action::Update) => {
+            std::fs::write(&path, &payload.contents)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let outcome = match action == Action::Write {
+                true => Outcome::Installed,
+                false => Outcome::Updated,
+            };
+            Ok((Effect::Recorded(digest(&payload.contents)), outcome))
+        }
+        Action::Settle => Ok((
+            Effect::Recorded(digest(&payload.contents)),
+            Outcome::Current,
+        )),
+        // Theirs. The record is carried through UNCHANGED — recording the digest
+        // now on disk would make the user's edit look like our own delivery, and
+        // the very next run would decide it was safe to overwrite.
+        // `bundled::materialize` leaves the manifest alone on `Preserve` for
+        // exactly this reason; "the last thing we wrote" is what makes an edit
+        // detectable, so it must not be overwritten with what the user wrote.
+        Action::Preserve => Ok((Effect::Unchanged, Outcome::Kept)),
+        // Deleted, and recorded as such so the next run leaves it alone. Written
+        // out rather than inferred from a missing digest, which is also what a
+        // newly-added file looks like.
+        Action::Tombstone | Action::Leave => Ok((Effect::Tombstoned, Outcome::Deleted)),
+    }
+}
+
+/// Raise `current` to `candidate` when the candidate more needs the reader's
+/// attention.
+///
+/// Ranked by that, not by how much work was done. `Kept` and `Deleted` both mean
+/// "you will NOT see the new version", and a package whose module updated while
+/// its pane was left alone has to report the pane — otherwise an edit silently
+/// costing you an update reads as a clean update.
+fn escalate(current: &mut Outcome, candidate: Outcome) {
+    let rank = |outcome: Outcome| match outcome {
+        Outcome::Current => 0,
+        Outcome::Updated => 1,
+        Outcome::Installed => 2,
+        Outcome::Deleted => 3,
+        Outcome::Kept => 4,
+        Outcome::Removed => 5,
+    };
+    if rank(candidate) > rank(*current) {
+        *current = candidate;
+    }
 }
 
 /// Take back the files one record delivered, for an entry the spec no longer
@@ -619,7 +646,7 @@ fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Resul
              --as plugins/NN_name.lua"
                 .to_string()
         })?
-        .filter_map(|entry| entry.ok())
+        .filter_map(Result::ok)
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| name.ends_with(".lua"))
         .collect();

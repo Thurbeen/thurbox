@@ -960,490 +960,532 @@ struct App {
 impl App {
     fn run(&mut self, mut terminal: DefaultTerminal) -> Result<(), Box<dyn Error>> {
         // Consecutive input failures, reset by the first event that reads
-        // cleanly. See the poll below for why one is survivable.
+        // cleanly. See `drain_input` for why one is survivable.
         let mut input_failures: u32 = 0;
         while !self.quit {
             Counters::bump(&self.perf.iterations);
-            if self.watcher.changed() {
-                self.reload_at = Some(Instant::now() + DEBOUNCE);
+            self.poll_reload();
+            self.apply_commands(&mut terminal);
+            self.poll_command_bus();
+            self.sync_terminals_and_agents();
+            self.serve_worker_stores();
+            self.apply_external_requests();
+            self.paint_if_due(&mut terminal)?;
+            self.drain_input(&mut input_failures)?;
+        }
+        Ok(())
+    }
+
+    /// The interface directory and `settings.toml`, both edited from outside.
+    fn poll_reload(&mut self) {
+        if self.watcher.changed() {
+            self.reload_at = Some(Instant::now() + DEBOUNCE);
+        }
+        // The settings file, edited from outside. A live change is already in
+        // force by the time this returns; the other two outcomes are the ones
+        // worth saying out loud.
+        match self.config.poll() {
+            Some(thurbox::kernel::config::Reloaded::Live) => {
+                self.toast("settings reloaded".to_string());
+                self.dirty = true;
             }
-            // The settings file, edited from outside. A live change is already in
-            // force by the time this returns; the other two outcomes are the ones
-            // worth saying out loud.
-            match self.config.poll() {
-                Some(thurbox::kernel::config::Reloaded::Live) => {
-                    self.toast("settings reloaded".to_string());
+            Some(thurbox::kernel::config::Reloaded::NeedsRestart) => {
+                self.toast("settings reloaded — some changes apply on restart".to_string());
+                self.dirty = true;
+            }
+            Some(thurbox::kernel::config::Reloaded::Failed(error)) => {
+                self.report(format!("settings: {error}"), Level::Error);
+            }
+            None => {}
+        }
+        if self.reload_at.is_some_and(|at| Instant::now() >= at) {
+            self.reload_at = None;
+            self.reload_interface();
+            self.refresh_sources();
+            self.collect_declarations();
+            self.clamp_focus();
+            self.dirty = true;
+        }
+    }
+
+    /// Commands plugins issued last frame, handed to the bus.
+    ///
+    /// Draining here rather than inside the render call is what keeps `command()`
+    /// a queue push and nothing more.
+    fn apply_commands(&mut self, terminal: &mut DefaultTerminal) {
+        for command in self.host.drain_commands() {
+            if self.apply_local_command(&command, terminal) {
+                continue;
+            }
+            self.dispatch_tracked(command);
+        }
+    }
+
+    /// The commands the loop applies itself, because they touch something no
+    /// worker thread can reach — in-process state, the tty, the interface's own
+    /// files. `true` = handled here; `false` = hand it to a worker.
+    fn apply_local_command(
+        &mut self,
+        command: &thurbox::kernel::command::Command,
+        terminal: &mut DefaultTerminal,
+    ) -> bool {
+        use thurbox::kernel::command::Command;
+        match command {
+            // Theme is applied here rather than dispatched: it mutates in-process
+            // state a worker thread cannot reach, and it is instant, so nothing is
+            // gained by making it asynchronous.
+            Command::Theme { name } => {
+                if let Err(e) = self.themes.select(name, snapshots_db().as_ref()) {
+                    self.report(e, Level::Error);
+                }
+            }
+            // Open a link, or copy it where nothing can open one — a remote
+            // session or a bare tty has no browser, and spawning an opener there
+            // goes nowhere.
+            Command::OpenLink { url } => self.open_or_copy_link(url),
+            // Editing the interface's own files. Applied here because it is two
+            // file operations and the watcher turns the write into a reload — a
+            // worker would only add a race.
+            Command::Plugin { file, edit } => self.apply_plugin_edit(file, *edit),
+            // Focus is the loop's own state, so it is applied here.
+            Command::Focus { plugin, toggle } => self.apply_focus_command(plugin, *toggle),
+            Command::Shell { session } => self.apply_shell_command(session),
+            Command::Program {
+                owner,
+                name,
+                program,
+                argv,
+                close,
+            } => self.apply_program(owner, name, program, argv, *close),
+            // The editor wants a controlling tty, which only this thread can hand
+            // it — see `Command::Editor`.
+            Command::Editor { session } => self.apply_editor_command(session, terminal),
+            Command::Diff { session } => {
+                // Drop the answer; the request at the top of the next iteration
+                // recomputes it on the worker.
+                self.diffs.invalidate(session);
+                self.dirty = true;
+            }
+            // Copy needs the vt100 screen and the tty, neither of which a worker
+            // thread can reach.
+            Command::Copy { session } => self.apply_copy_command(session),
+            // Settings live in the registry, which is in-process too.
+            Command::Setting { key, value } => {
+                let (plugin, id) = key.split_once('.').unwrap_or((key.as_str(), ""));
+                if let Err(e) = self.registry.set_setting(plugin, id, value.clone()) {
+                    self.report(e, Level::Error);
+                }
+            }
+            // Repository memory is a read the flow also writes, so note the write
+            // and drop the cached rows when it lands. Still dispatched.
+            Command::Bookmark { .. } => {
+                self.bookmark_in_flight = true;
+                return false;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// `Command::Focus`: move focus, or return whence it came.
+    fn apply_focus_command(&mut self, plugin: &str, toggle: bool) {
+        let Some(index) = self.host.index_of(plugin) else {
+            return;
+        };
+        let position = self
+            .host
+            .focusable()
+            .iter()
+            .position(|candidate| *candidate == index);
+        // Already here, and asked to toggle: go back where the last focus change
+        // came from. That memory is `focus_return`, which is the same one `Esc`
+        // uses — so a pane reached by its own key leaves by either.
+        if toggle && position == Some(self.focus) {
+            let back = self.focus_return;
+            if self.host.focusable().get(back).is_some() {
+                self.focus_return = self.focus;
+                self.focus = back;
+                self.dirty = true;
+            }
+            return;
+        }
+        // Through `focus_plugin`, not by assigning `focus`: it records where focus
+        // came from, and holds a request for a slot the arrangement has not placed
+        // yet rather than refusing it (`kernel::focus::defer_until_placed`) —
+        // which is what a pane opening itself needs. Assigning directly skipped
+        // both, so a pane reached from a plugin command could not be left with
+        // `Esc`.
+        self.focus_plugin(index);
+        self.dirty = true;
+    }
+
+    /// `Command::Shell`: a companion shell beside a session's agent.
+    fn apply_shell_command(&mut self, session: &str) {
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        // Resolved from the snapshot rather than the live
+        // `Session`: an adopted one carries no cwd of its own.
+        let cwd = self
+            .snapshots
+            .current()
+            .session(session)
+            .and_then(|row| self.terminals.launch_cwd(row));
+        if let Err(e) = self
+            .terminals
+            .open_shell(session, rows, cols, cwd.as_deref())
+        {
+            self.report(format!("could not open a shell: {e}"), Level::Error);
+        } else {
+            // Its window outlives this process, so the id has to
+            // as well — otherwise the next start forgets the
+            // shell and orphans the window it left running.
+            self.remember_shell(session);
+        }
+    }
+
+    /// `Command::Editor`: hand the configured editor this thread's tty.
+    fn apply_editor_command(&mut self, session: &str, terminal: &mut DefaultTerminal) {
+        let dirs = self
+            .snapshots
+            .current()
+            .session(session)
+            .map(|row| row.member_dirs.clone())
+            .unwrap_or_default();
+        self.toast(match open_editor(terminal, &dirs) {
+            Ok(message) => message,
+            Err(e) => e,
+        });
+    }
+
+    /// `Command::Copy`: the focused session's visible screen to the clipboard.
+    fn apply_copy_command(&mut self, session: &str) {
+        match self.terminals.visible_text(session) {
+            Some(text) => {
+                let outcome = thurbox::clipboard::copy(
+                    &text,
+                    self.clipboard.as_mut(),
+                    thurbox::session::settings::global().clipboard.provider,
+                );
+                self.toast(match outcome {
+                    Ok(route) => {
+                        format!(
+                            "copied {} lines{}",
+                            text.lines().count(),
+                            route.toast_suffix()
+                        )
+                    }
+                    Err(e) => format!("copy failed: {e}"),
+                });
+            }
+            None => self.report(
+                "nothing to copy — this session has no live terminal yet",
+                Level::Error,
+            ),
+        }
+    }
+
+    /// The command bus, and the snapshot a finished command invalidates.
+    fn poll_command_bus(&mut self) {
+        // A completed command changes what the rows say, so refresh at once
+        // rather than waiting out the interval — that is what makes a
+        // delete feel immediate instead of arriving up to 400ms later.
+        if self.commands.poll() {
+            self.report_finished_commands();
+            // A session you just asked for is the one you want to be looking at.
+            // The id is knowable only once the spawn finished, so it arrives with
+            // the completion rather than with the command — and the list follows
+            // an id until it appears, which is what carries this across the
+            // frames between "created" and "in the snapshot". Of several
+            // finishing at once the last to finish wins; there is one caret and
+            // one selection either way.
+            if let Some(created) = self.commands.take_created().pop() {
+                self.focus_on_session(&created);
+            }
+            // Wait for the last one: two adds in quick succession would
+            // otherwise re-read between them and publish a list missing the
+            // second.
+            if self.bookmark_in_flight
+                && !self
+                    .commands
+                    .inflight()
+                    .iter()
+                    .any(|item| item.kind == "bookmark")
+            {
+                self.bookmark_in_flight = false;
+                self.repos.invalidate_bookmarks();
+            }
+            self.snapshots.refresh();
+            self.dirty = true;
+        } else {
+            self.snapshots.refresh_if_due();
+        }
+    }
+
+    /// Terminals and agents, plus the per-tick derivations that read them.
+    fn sync_terminals_and_agents(&mut self) {
+        // Attach to any session that gained a pane, and drop the ones that
+        // went away. Sized to the screen as a starting point; each surface
+        // resizes its own pane to its real rect when it paints.
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        self.terminals.sync(self.snapshots.current(), rows, cols);
+        // New agent output, noticed the way v1 notices it: one lock-free sum
+        // of atomics per iteration, marking the screen dirty. Without this a
+        // printing agent is drawn only when the 250ms floor comes round.
+        let output_gen = self.terminals.output_generation();
+        if output_gen != self.last_output_gen {
+            self.last_output_gen = output_gen;
+            self.dirty = true;
+        }
+        // The stuck-`working` fallback, run here because it asks the
+        // terminals a question and they have just been synced — and run
+        // every tick rather than at refresh, because output moves between
+        // two reads of the database.
+        let terminals = &self.terminals;
+        if self
+            .snapshots
+            .apply_output_quiescence(|id| terminals.millis_since_output(id))
+            > 0
+        {
+            self.dirty = true;
+        }
+        // A session whose agent is gone gets it back, which is what v1 does
+        // at restore and what makes a session survive a reboot.
+        self.respawn_missing_agents();
+        // And the shell it had open, whose window outlived the interface.
+        self.readopt_shells();
+        // Programs plugins asked for. Served here because resolving a
+        // session to a directory and a machine is the loop's knowledge, not
+        // a store's — the store owns the bounds and the queue.
+        self.serve_runs();
+        // A remote agent's hooks cannot call `thurbox-cli` — they set a tmux pane
+        // option, which arrives here over the control-mode subscription. Draining
+        // it into the same columns a local signal writes is the whole of remote
+        // status: the dot, the acknowledgment and the notification are all
+        // downstream of that one write.
+        let events = self.terminals.drain_hook_events();
+        if !events.is_empty() && self.snapshots.apply_hook_states(events, Instant::now()) > 0 {
+            self.dirty = true;
+        }
+    }
+
+    /// The worker-backed stores: diffs, repository reads, the deletion reaper,
+    /// update checks and metrics.
+    fn serve_worker_stores(&mut self) {
+        // The selected session's diff, computed on a worker. Requesting is
+        // idempotent, so calling it every frame costs nothing after the
+        // first.
+        //
+        // Driven by the *selection*, not by `focused_session`: the latter is
+        // re-derived each frame from the focused plugin's session surface, so
+        // only a pane drawing a terminal ever asked for one. A pane that shows
+        // a diff draws no terminal by definition, and would never be handed the
+        // thing it exists to show. The selection is what "the session the user
+        // is looking at" actually means, and the session list publishes it.
+        let wanted = self
+            .host
+            .shared_string("selected")
+            .or_else(|| self.focused_session.clone());
+        if let Some(id) = wanted {
+            if let Some(row) = self.snapshots.current().session(&id) {
+                if let Some(cwd) = row.cwd.clone() {
+                    // `base_branch`, never `branch`. Against its own branch a
+                    // session diffs to nothing, and publishing that as `ready`
+                    // is a confident wrong answer.
+                    self.diffs
+                        .request(&id, cwd, row.base_branch.clone(), &row.backend);
+                }
+            }
+        }
+        if self.diffs.poll() {
+            self.dirty = true;
+        }
+
+        // The creation flow's reads. It asks by leaving a key in `store`,
+        // which is written the moment its handler runs, so a request made
+        // on a keystroke is served on the very next iteration. Requesting
+        // is idempotent, so asking every iteration costs three lookups.
+        let wants = self.repo_wants();
+        self.repos.serve(&wants);
+        if self.repos.poll() {
+            self.dirty = true;
+        }
+
+        // A session that has stayed deleted past its undo window keeps its
+        // worktrees and loses its agent — the reap v1 does when the undo
+        // expires.
+        for session in self
+            .reaper
+            .observe(self.snapshots.current(), Instant::now())
+        {
+            self.commands
+                .dispatch(thurbox::kernel::command::Command::Reap { session });
+        }
+
+        // An update that replaced binaries is worth saying once; a check that
+        // merely found a release shows up in the header instead.
+        if let Some(message) = self.updates.poll() {
+            self.toast(message);
+        }
+
+        // Machine, statusline and account metrics. Both calls are gated
+        // internally (an interval, and one sample in flight at a time), so
+        // running them every iteration costs a comparison.
+        self.metrics.sample(self.metric_subjects());
+        if self.metrics.poll() {
+            self.dirty = true;
+        }
+    }
+
+    /// State another process left for this one, and the notifications that
+    /// follow from it.
+    fn apply_external_requests(&mut self) {
+        // A focus request from another process: a clicked notification's
+        // action callback, or `thurbox-cli session focus`, both of which
+        // leave a row in the database for whoever is running the interface.
+        // Taken atomically, so two instances cannot both claim it.
+        if let Some(id) = self.snapshots.take_focus_request() {
+            self.focus_on_session(&id);
+        }
+
+        // Acknowledge a finished turn on the way out of it: moving the
+        // selection off a `done` session is what retires its filled dot.
+        // Read from the store because the selection belongs to the session
+        // list, which is a plugin.
+        let selected = self.host.shared_string("selected");
+        if selected != self.last_selected_session {
+            if let Some(left) = self.last_selected_session.take() {
+                self.snapshots.acknowledge(&left);
+            }
+            self.last_selected_session = selected;
+            self.dirty = true;
+        }
+
+        // Notify on the blocked edge, observed where status is read so the
+        // rule cannot drift from what the list shows.
+        self.notifier
+            .observe(self.snapshots.current(), self.focused_session.as_deref());
+    }
+
+    /// Demand-driven paint: when something changed, or when the forced-redraw
+    /// floor elapsed.
+    ///
+    /// `draw` diffs each plugin's tree and clears `dirty` when every one matched,
+    /// so an idle screen settles at the floor.
+    fn paint_if_due(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn Error>> {
+        let since_paint = self.last_paint.elapsed();
+        let due = self.dirty && since_paint >= MIN_FRAME_INTERVAL;
+        if due || since_paint >= FORCE_REDRAW_INTERVAL {
+            // Published HERE rather than every iteration: a plugin only reads
+            // `thurbox.*` while it renders, so rebuilding those tables on a tick
+            // that paints nothing is pure waste. At `drain_input`'s 10ms poll
+            // that was 100 rebuilds a second to feed a screen that redraws four
+            // times.
+            self.republish();
+            let painted = terminal.draw(|frame| self.draw(frame))?;
+            // Cloned so the borrow of `terminal` ends here: the two
+            // corrections below both need it back.
+            let buffer = painted.buffer.clone();
+            // A modal captures input, so it owns the caret — or nothing
+            // does. The panes underneath still draw, and one with a text
+            // field claims the cursor as it goes; a frame that ends with a
+            // cursor position SHOWS it, so it would blink behind the modal,
+            // which reads as the screen refreshing wrongly rather than as a
+            // misplaced cursor. Corrected after the frame because a `Frame`'s
+            // cursor can be set but never unset, and the modal draws last.
+            if self.modals.is_open() {
+                match self.modals.caret() {
+                    Some(position) => {
+                        terminal.show_cursor()?;
+                        terminal.set_cursor_position(position)?;
+                    }
+                    None => terminal.hide_cursor()?,
+                }
+            }
+            // After the backend flushed, so the escapes cannot interleave
+            // with ratatui's own output.
+            self.paint_terminal_hyperlinks(&buffer);
+            self.last_paint = Instant::now();
+            self.frames += 1;
+            Counters::bump(&self.perf.frames);
+        } else {
+            Counters::bump(&self.perf.skipped);
+        }
+        Ok(())
+    }
+
+    /// Drain EVERY pending event, not one per iteration, and dispatch each.
+    ///
+    /// Reading one event per 10ms poll cannot keep up with a mouse: a single drag
+    /// emits events far faster than 100/s, so the queue grew without bound. That
+    /// is felt as an unresponsive mouse, and the backlog outlives the process —
+    /// the leftover reports are what printed `\x1b[<35;92;31M` into the terminal
+    /// afterwards.
+    ///
+    /// The batch is also what `thurbox.*` is published for: once, before the first
+    /// event that runs Lua, rather than once per event. A handler has to read
+    /// something current, and nothing between two events of one batch can change
+    /// what it would say — the snapshot is refreshed at the top of the iteration,
+    /// and a command a handler queues is drained on the next one. Per event, a
+    /// held-down key paid for the whole publish (every session's links, the
+    /// interface inventory, the plugin lock) on every repeat.
+    fn drain_input(&mut self, input_failures: &mut u32) -> Result<(), Box<dyn Error>> {
+        let mut published = false;
+        let mut waited = false;
+        loop {
+            // Only the first read waits; the rest take what is already queued.
+            let timeout = if waited { Duration::ZERO } else { TICK };
+            waited = true;
+            let event = match next_event(timeout) {
+                Ok(Some(event)) => {
+                    *input_failures = 0;
+                    event
+                }
+                Ok(None) => break,
+                // Input is not worth the process. A terminal can hand
+                // crossterm a sequence it cannot parse — a burst of keys
+                // interleaving with a mouse report is enough — and
+                // propagating that error exited thurbox with every session
+                // detached. Logged, dropped, and retried next iteration; only
+                // a stream that keeps failing (a closed stdin, say) is fatal,
+                // since polling a dead terminal would otherwise spin.
+                Err(e) => {
+                    *input_failures += 1;
+                    tracing::warn!("reading input failed: {e}");
+                    if *input_failures > INPUT_FAILURE_LIMIT {
+                        return Err(Box::new(e));
+                    }
+                    break;
+                }
+            };
+            match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    self.publish_for_batch(&mut published);
+                    self.on_key(&key);
                     self.dirty = true;
                 }
-                Some(thurbox::kernel::config::Reloaded::NeedsRestart) => {
-                    self.toast("settings reloaded — some changes apply on restart".to_string());
+                // Dropped rather than merely uncaptured when the feature is
+                // off, so the flag stays authoritative even if a terminal
+                // reports mouse events unasked. v1 does the same in
+                // `App::update`.
+                Event::Mouse(mouse) if self.mouse => {
+                    self.publish_for_batch(&mut published);
+                    self.on_mouse(mouse);
                     self.dirty = true;
                 }
-                Some(thurbox::kernel::config::Reloaded::Failed(error)) => {
-                    self.report(format!("settings: {error}"), Level::Error);
+                // A bracketed paste from the terminal itself. Routed to
+                // whatever has focus, exactly as `ctrl+v` is: a modal's
+                // text field if one is open, else the focused terminal.
+                Event::Paste(text) => {
+                    self.publish_for_batch(&mut published);
+                    self.on_paste(text);
+                    self.dirty = true;
                 }
-                None => {}
-            }
-            if self.reload_at.is_some_and(|at| Instant::now() >= at) {
-                self.reload_at = None;
-                self.reload_interface();
-                self.refresh_sources();
-                self.collect_declarations();
-                self.clamp_focus();
-                self.dirty = true;
-            }
-
-            // Refreshed here, on the kernel's schedule — never inside a plugin
-            // call, which is what keeps every plugin read immediate.
-            // Commands plugins issued last frame, handed to the bus. Draining
-            // here rather than inside the render call is what keeps `command()`
-            // a queue push and nothing more.
-            for command in self.host.drain_commands() {
-                // Theme is applied here rather than dispatched: it mutates
-                // in-process state a worker thread cannot reach, and it is
-                // instant, so nothing is gained by making it asynchronous.
-                match &command {
-                    thurbox::kernel::command::Command::Theme { name } => {
-                        if let Err(e) = self.themes.select(name, snapshots_db().as_ref()) {
-                            self.report(e, Level::Error);
-                        }
-                        continue;
-                    }
-                    // Copy needs the vt100 screen and the tty, neither of
-                    // which a worker thread can reach.
-                    // Open a link, or copy it where nothing can open one —
-                    // a remote session or a bare tty has no browser, and
-                    // spawning an opener there goes nowhere.
-                    thurbox::kernel::command::Command::OpenLink { url } => {
-                        let url = url.clone();
-                        self.open_or_copy_link(&url);
-                        continue;
-                    }
-                    // Editing the interface's own files. Applied here because
-                    // it is two file operations and the watcher turns the
-                    // write into a reload — a worker would only add a race.
-                    thurbox::kernel::command::Command::Plugin { file, edit } => {
-                        let (file, edit) = (file.clone(), *edit);
-                        self.apply_plugin_edit(&file, edit);
-                        continue;
-                    }
-                    // Focus is the loop's own state, so it is applied here.
-                    thurbox::kernel::command::Command::Focus { plugin, toggle } => {
-                        if let Some(index) = self.host.index_of(plugin) {
-                            let position = self
-                                .host
-                                .focusable()
-                                .iter()
-                                .position(|candidate| *candidate == index);
-                            // Already here, and asked to toggle: go back where the
-                            // last focus change came from. That memory is
-                            // `focus_return`, which is the same one `Esc` uses — so
-                            // a pane reached by its own key leaves by either.
-                            if *toggle && position == Some(self.focus) {
-                                let back = self.focus_return;
-                                if self.host.focusable().get(back).is_some() {
-                                    self.focus_return = self.focus;
-                                    self.focus = back;
-                                    self.dirty = true;
-                                }
-                            } else {
-                                // Through `focus_plugin`, not by assigning `focus`:
-                                // it records where focus came from, and holds a
-                                // request for a slot the arrangement has not
-                                // placed yet rather than refusing it
-                                // (`kernel::focus::defer_until_placed`) — which is
-                                // what a pane opening itself needs. Assigning
-                                // directly skipped both, so a pane reached from a
-                                // plugin command could not be left with `Esc`.
-                                self.focus_plugin(index);
-                                self.dirty = true;
-                            }
-                        }
-                        continue;
-                    }
-                    thurbox::kernel::command::Command::Shell { session } => {
-                        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-                        let session = session.clone();
-                        // Resolved from the snapshot rather than the live
-                        // `Session`: an adopted one carries no cwd of its own.
-                        let cwd = self
-                            .snapshots
-                            .current()
-                            .session(&session)
-                            .and_then(|row| self.terminals.launch_cwd(row));
-                        if let Err(e) =
-                            self.terminals
-                                .open_shell(&session, rows, cols, cwd.as_deref())
-                        {
-                            self.report(format!("could not open a shell: {e}"), Level::Error);
-                        } else {
-                            // Its window outlives this process, so the id has to
-                            // as well — otherwise the next start forgets the
-                            // shell and orphans the window it left running.
-                            self.remember_shell(&session);
-                        }
-                        continue;
-                    }
-                    thurbox::kernel::command::Command::Program {
-                        owner,
-                        name,
-                        program,
-                        argv,
-                        close,
-                    } => {
-                        self.apply_program(owner, name, program, argv, *close);
-                        continue;
-                    }
-                    // The editor wants a controlling tty, which only this
-                    // thread can hand it — see `Command::Editor`.
-                    thurbox::kernel::command::Command::Editor { session } => {
-                        let dirs = self
-                            .snapshots
-                            .current()
-                            .session(session)
-                            .map(|row| row.member_dirs.clone())
-                            .unwrap_or_default();
-                        self.toast(match open_editor(&mut terminal, &dirs) {
-                            Ok(message) => message,
-                            Err(e) => e,
-                        });
-                        continue;
-                    }
-                    thurbox::kernel::command::Command::Diff { session } => {
-                        // Drop the answer; the request at the top of the next
-                        // iteration recomputes it on the worker.
-                        self.diffs.invalidate(session);
-                        self.dirty = true;
-                        continue;
-                    }
-                    thurbox::kernel::command::Command::Copy { session } => {
-                        match self.terminals.visible_text(session) {
-                            Some(text) => {
-                                let outcome = thurbox::clipboard::copy(
-                                    &text,
-                                    self.clipboard.as_mut(),
-                                    thurbox::session::settings::global().clipboard.provider,
-                                );
-                                self.toast(match outcome {
-                                    Ok(route) => {
-                                        format!(
-                                            "copied {} lines{}",
-                                            text.lines().count(),
-                                            route.toast_suffix()
-                                        )
-                                    }
-                                    Err(e) => format!("copy failed: {e}"),
-                                });
-                            }
-                            None => self.report(
-                                "nothing to copy — this session has no live terminal yet",
-                                Level::Error,
-                            ),
-                        }
-                        continue;
-                    }
-                    // Settings live in the registry, which is in-process too.
-                    thurbox::kernel::command::Command::Setting { key, value } => {
-                        let (plugin, id) = key.split_once('.').unwrap_or((key.as_str(), ""));
-                        if let Err(e) = self.registry.set_setting(plugin, id, value.clone()) {
-                            self.report(e, Level::Error);
-                        }
-                        continue;
-                    }
-                    // Repository memory is a read the flow also writes, so
-                    // note the write and drop the cached rows when it lands.
-                    thurbox::kernel::command::Command::Bookmark { .. } => {
-                        self.bookmark_in_flight = true;
-                    }
-                    _ => {}
-                }
-                self.dispatch_tracked(command.clone());
-            }
-            // A completed command changes what the rows say, so refresh at once
-            // rather than waiting out the interval — that is what makes a
-            // delete feel immediate instead of arriving up to 400ms later.
-            if self.commands.poll() {
-                self.report_finished_commands();
-                // A session you just asked for is the one you want to be
-                // looking at. The id is knowable only once the spawn finished,
-                // so it arrives with the completion rather than with the
-                // command — and the list follows an id until it appears, which
-                // is what carries this across the frames between "created" and
-                // "in the snapshot". Of several finishing at once the last to
-                // finish wins; there is one caret and one selection either way.
-                if let Some(created) = self.commands.take_created().pop() {
-                    self.focus_on_session(&created);
-                }
-                // Wait for the last one: two adds in quick succession would
-                // otherwise re-read between them and publish a list missing the
-                // second.
-                if self.bookmark_in_flight
-                    && !self
-                        .commands
-                        .inflight()
-                        .iter()
-                        .any(|item| item.kind == "bookmark")
-                {
-                    self.bookmark_in_flight = false;
-                    self.repos.invalidate_bookmarks();
-                }
-                self.snapshots.refresh();
-                self.dirty = true;
-            } else {
-                self.snapshots.refresh_if_due();
-            }
-            // Attach to any session that gained a pane, and drop the ones that
-            // went away. Sized to the screen as a starting point; each surface
-            // resizes its own pane to its real rect when it paints.
-            let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-            self.terminals.sync(self.snapshots.current(), rows, cols);
-            // A remote agent's hooks cannot call `thurbox-cli` — they set a tmux
-            // pane option, which arrives here over the control-mode
-            // subscription. Draining it into the same columns a local signal
-            // writes is the whole of remote status: the dot, the acknowledgment
-            // and the notification are all downstream of that one write.
-            // New agent output, noticed the way v1 notices it: one lock-free sum
-            // of atomics per iteration, marking the screen dirty. Without this a
-            // printing agent is drawn only when the 250ms floor comes round.
-            let output_gen = self.terminals.output_generation();
-            if output_gen != self.last_output_gen {
-                self.last_output_gen = output_gen;
-                self.dirty = true;
-            }
-            // The stuck-`working` fallback, run here because it asks the
-            // terminals a question and they have just been synced — and run
-            // every tick rather than at refresh, because output moves between
-            // two reads of the database.
-            let terminals = &self.terminals;
-            if self
-                .snapshots
-                .apply_output_quiescence(|id| terminals.millis_since_output(id))
-                > 0
-            {
-                self.dirty = true;
-            }
-            // A session whose agent is gone gets it back, which is what v1 does
-            // at restore and what makes a session survive a reboot.
-            self.respawn_missing_agents();
-            // And the shell it had open, whose window outlived the interface.
-            self.readopt_shells();
-            // Programs plugins asked for. Served here because resolving a
-            // session to a directory and a machine is the loop's knowledge, not
-            // a store's — the store owns the bounds and the queue.
-            self.serve_runs();
-            let events = self.terminals.drain_hook_events();
-            if !events.is_empty() && self.snapshots.apply_hook_states(events, Instant::now()) > 0 {
-                self.dirty = true;
-            }
-            // The selected session's diff, computed on a worker. Requesting is
-            // idempotent, so calling it every frame costs nothing after the
-            // first.
-            //
-            // Driven by the *selection*, not by `focused_session`: the latter is
-            // re-derived each frame from the focused plugin's session surface, so
-            // only a pane drawing a terminal ever asked for one. A pane that shows
-            // a diff draws no terminal by definition, and would never be handed the
-            // thing it exists to show. The selection is what "the session the user
-            // is looking at" actually means, and the session list publishes it.
-            let wanted = self
-                .host
-                .shared_string("selected")
-                .or_else(|| self.focused_session.clone());
-            if let Some(id) = wanted {
-                if let Some(row) = self.snapshots.current().session(&id) {
-                    if let Some(cwd) = row.cwd.clone() {
-                        // `base_branch`, never `branch`. Against its own branch a
-                        // session diffs to nothing, and publishing that as `ready`
-                        // is a confident wrong answer.
-                        self.diffs
-                            .request(&id, cwd, row.base_branch.clone(), &row.backend);
-                    }
-                }
-            }
-            if self.diffs.poll() {
-                self.dirty = true;
-            }
-
-            // The creation flow's reads. It asks by leaving a key in `store`,
-            // which is written the moment its handler runs, so a request made
-            // on a keystroke is served on the very next iteration. Requesting
-            // is idempotent, so asking every iteration costs three lookups.
-            let wants = self.repo_wants();
-            self.repos.serve(&wants);
-            if self.repos.poll() {
-                self.dirty = true;
-            }
-
-            // A session that has stayed deleted past its undo window keeps its
-            // worktrees and loses its agent — the reap v1 does when the undo
-            // expires.
-            for session in self
-                .reaper
-                .observe(self.snapshots.current(), Instant::now())
-            {
-                self.commands
-                    .dispatch(thurbox::kernel::command::Command::Reap { session });
-            }
-
-            // An update that replaced binaries is worth saying once; a check that
-            // merely found a release shows up in the header instead.
-            if let Some(message) = self.updates.poll() {
-                self.toast(message);
-            }
-
-            // Machine, statusline and account metrics. Both calls are gated
-            // internally (an interval, and one sample in flight at a time), so
-            // running them every iteration costs a comparison.
-            self.metrics.sample(self.metric_subjects());
-            if self.metrics.poll() {
-                self.dirty = true;
-            }
-
-            // A focus request from another process: a clicked notification's
-            // action callback, or `thurbox-cli session focus`, both of which
-            // leave a row in the database for whoever is running the interface.
-            // Taken atomically, so two instances cannot both claim it.
-            if let Some(id) = self.snapshots.take_focus_request() {
-                self.focus_on_session(&id);
-            }
-
-            // Acknowledge a finished turn on the way out of it: moving the
-            // selection off a `done` session is what retires its filled dot.
-            // Read from the store because the selection belongs to the session
-            // list, which is a plugin.
-            let selected = self.host.shared_string("selected");
-            if selected != self.last_selected_session {
-                if let Some(left) = self.last_selected_session.take() {
-                    self.snapshots.acknowledge(&left);
-                }
-                self.last_selected_session = selected;
-                self.dirty = true;
-            }
-
-            // Notify on the blocked edge, observed where status is read so the
-            // rule cannot drift from what the list shows.
-            self.notifier
-                .observe(self.snapshots.current(), self.focused_session.as_deref());
-
-            // Demand-driven: paint when something changed, or when the floor
-            // elapsed. `draw` diffs each plugin's tree and clears `dirty` when
-            // every one matched, so an idle screen settles at the floor.
-            let since_paint = self.last_paint.elapsed();
-            let due = self.dirty && since_paint >= MIN_FRAME_INTERVAL;
-            if due || since_paint >= FORCE_REDRAW_INTERVAL {
-                // Published HERE rather than every iteration: a plugin only
-                // reads `thurbox.*` while it renders, so rebuilding those
-                // tables on a tick that paints nothing is pure waste. At the
-                // 10ms poll above that was 100 rebuilds a second to feed a
-                // screen that redraws four times.
-                self.republish();
-                let painted = terminal.draw(|frame| self.draw(frame))?;
-                // Cloned so the borrow of `terminal` ends here: the two
-                // corrections below both need it back.
-                let buffer = painted.buffer.clone();
-                // A modal captures input, so it owns the caret — or nothing
-                // does. The panes underneath still draw, and one with a text
-                // field claims the cursor as it goes; a frame that ends with a
-                // cursor position SHOWS it, so it would blink behind the modal,
-                // which reads as the screen refreshing wrongly rather than as a
-                // misplaced cursor. Corrected after the frame because a `Frame`'s
-                // cursor can be set but never unset, and the modal draws last.
-                if self.modals.is_open() {
-                    match self.modals.caret() {
-                        Some(position) => {
-                            terminal.show_cursor()?;
-                            terminal.set_cursor_position(position)?;
-                        }
-                        None => terminal.hide_cursor()?,
-                    }
-                }
-                // After the backend flushed, so the escapes cannot interleave
-                // with ratatui's own output.
-                self.paint_terminal_hyperlinks(&buffer);
-                self.last_paint = Instant::now();
-                self.frames += 1;
-                Counters::bump(&self.perf.frames);
-            } else {
-                Counters::bump(&self.perf.skipped);
-            }
-
-            // Drain EVERY pending event, not one per iteration.
-            //
-            // Reading one event per 10ms poll cannot keep up with a mouse: a
-            // single drag emits events far faster than 100/s, so the queue grew
-            // without bound. That is felt as an unresponsive mouse, and the
-            // backlog outlives the process — the leftover reports are what
-            // printed `\x1b[<35;92;31M` into the terminal afterwards.
-            //
-            // The batch is also what `thurbox.*` is published for: once, before
-            // the first event that runs Lua, rather than once per event. A
-            // handler has to read something current, and nothing between two
-            // events of one batch can change what it would say — the snapshot is
-            // refreshed at the top of the iteration, and a command a handler
-            // queues is drained on the next one. Per event, a held-down key paid
-            // for the whole publish (every session's links, the interface
-            // inventory, the plugin lock) on every repeat.
-            let mut published = false;
-            let mut waited = false;
-            loop {
-                // Only the first read waits; the rest take what is already queued.
-                let timeout = if waited { Duration::ZERO } else { TICK };
-                waited = true;
-                let event = match next_event(timeout) {
-                    Ok(Some(event)) => {
-                        input_failures = 0;
-                        event
-                    }
-                    Ok(None) => break,
-                    // Input is not worth the process. A terminal can hand
-                    // crossterm a sequence it cannot parse — a burst of keys
-                    // interleaving with a mouse report is enough — and
-                    // propagating that error exited thurbox with every session
-                    // detached. Logged, dropped, and retried next iteration; only
-                    // a stream that keeps failing (a closed stdin, say) is fatal,
-                    // since polling a dead terminal would otherwise spin.
-                    Err(e) => {
-                        input_failures += 1;
-                        tracing::warn!("reading input failed: {e}");
-                        if input_failures > INPUT_FAILURE_LIMIT {
-                            return Err(Box::new(e));
-                        }
-                        break;
-                    }
-                };
-                match event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.publish_for_batch(&mut published);
-                        self.on_key(&key);
-                        self.dirty = true;
-                    }
-                    // Dropped rather than merely uncaptured when the feature is
-                    // off, so the flag stays authoritative even if a terminal
-                    // reports mouse events unasked. v1 does the same in
-                    // `App::update`.
-                    Event::Mouse(mouse) if self.mouse => {
-                        self.publish_for_batch(&mut published);
-                        self.on_mouse(mouse);
-                        self.dirty = true;
-                    }
-                    // A bracketed paste from the terminal itself. Routed to
-                    // whatever has focus, exactly as `ctrl+v` is: a modal's
-                    // text field if one is open, else the focused terminal.
-                    Event::Paste(text) => {
-                        self.publish_for_batch(&mut published);
-                        self.on_paste(text);
-                        self.dirty = true;
-                    }
-                    Event::Resize(..) => self.dirty = true,
-                    _ => {}
-                }
+                Event::Resize(..) => self.dirty = true,
+                _ => {}
             }
         }
         Ok(())
     }
 
-    /// What the metrics sampler should measure this round: every session in the
-    /// snapshot, with the handle needed to resolve its pane's root process.
     fn metric_subjects(&self) -> Vec<Subject> {
         self.snapshots
             .current()
@@ -1771,6 +1813,136 @@ impl App {
         u16::from(live_message || !self.commands.inflight().is_empty())
     }
 
+    /// Step 2: each placed slot divides its rect among its plugins, by their
+    /// DECLARED sizes — which is why this can happen before rendering.
+    fn draw_slots(
+        &mut self,
+        frame: &mut Frame,
+        placed: &[thurbox::kernel::layout::SlotRect],
+        focused_plugin: Option<usize>,
+    ) {
+        for slot in placed {
+            // A band is a slot the KERNEL occupies: the arrangement names and
+            // places it exactly as it does a pane's region, and the contents come
+            // from here rather than from any plugin. Drawing one runs no Lua, so
+            // no plugin can break it.
+            if let Some(band) = Band::from_slot(&slot.slot) {
+                self.render_band(frame, slot.rect, band);
+                continue;
+            }
+            let members = self.host.in_slot(&slot.slot);
+            if members.is_empty() {
+                continue;
+            }
+            match self.host.slot_mode(&slot.slot) {
+                SlotMode::Switch => self.draw_switch_slot(frame, slot, &members, focused_plugin),
+                SlotMode::Stack => self.draw_stack_slot(frame, slot, &members, focused_plugin),
+            }
+        }
+    }
+
+    /// One visible occupant; the rest are alternatives waiting to be selected.
+    ///
+    /// The focused plugin wins, so tabbing into a pane brings it forward.
+    fn draw_switch_slot(
+        &mut self,
+        frame: &mut Frame,
+        slot: &thurbox::kernel::layout::SlotRect,
+        members: &[usize],
+        focused_plugin: Option<usize>,
+    ) {
+        let visible = members
+            .iter()
+            .position(|index| focused_plugin == Some(*index))
+            .unwrap_or_else(|| {
+                self.slot_selection
+                    .get(&slot.slot)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(members.len().saturating_sub(1))
+            });
+        self.slot_selection.insert(slot.slot.clone(), visible);
+        if let Some(&index) = members.get(visible) {
+            self.draw_plugin(frame, index, slot.rect, focused_plugin == Some(index));
+        }
+    }
+
+    /// Every occupant, stacked vertically by declared size.
+    fn draw_stack_slot(
+        &mut self,
+        frame: &mut Frame,
+        slot: &thurbox::kernel::layout::SlotRect,
+        members: &[usize],
+        focused_plugin: Option<usize>,
+    ) {
+        let sizes: Vec<_> = members.iter().map(|i| self.host.plugins[*i].size).collect();
+        let rects = thurbox::kernel::layout::divide_slot(slot.rect, Axis::Vertical, &sizes, 0);
+        for (nth, &index) in members.iter().enumerate() {
+            let Some(&rect) = rects.get(nth) else {
+                continue;
+            };
+            if rect.width == 0 || rect.height == 0 {
+                continue;
+            }
+            self.draw_plugin(frame, index, rect, focused_plugin == Some(index));
+        }
+    }
+
+    /// Step 2b: floats, above the arrangement.
+    ///
+    /// A plugin only floats on the frames it returns a float node, so a modal
+    /// opens and closes with no separate channel for the kernel to keep in sync.
+    fn draw_floats(&mut self, frame: &mut Frame, area: Rect) {
+        self.grabbed = None;
+        self.drawn_floats.clear();
+        for index in self.host.floating() {
+            let probe = RenderContext {
+                width: area.width,
+                height: area.height,
+                focused: true,
+                elapsed: self.started.elapsed().as_secs_f64(),
+                frame: self.frames,
+            };
+            let Ok(rendered) = self.host.render(index, probe) else {
+                continue;
+            };
+            let Some(float) = rendered.float else {
+                // Not floating this frame: a closed modal draws nothing at all.
+                continue;
+            };
+            let rect = Self::float_rect(area, float);
+            // Dim what is beneath, so the float reads as above rather than
+            // merely drawn later.
+            frame.render_widget(ratatui::widgets::Clear, rect);
+            let mut hits = Vec::new();
+            paint::render_recording(frame, rect, &rendered.node, &self.terminals, &mut hits);
+            // Recorded after every pane, so a float's targets win the overlap for
+            // the same reason its cells do. Its whole rect goes in first — a
+            // click that misses every button still lands on the modal rather than
+            // on the pane it covers.
+            self.push_targets(index, Some(rect), hits);
+            // The topmost float takes input; later plugins win, matching the
+            // order they are painted in.
+            self.grabbed = Some(index);
+            // Settled like a pane, by comparing what it drew — not marked changed
+            // for simply being open. Unconditional, an open float held `dirty` set
+            // forever, so the whole interface rebuilt every Lua tree at the frame
+            // cap for as long as the creation wizard was up. A float that really
+            // does animate still repaints: the 250 ms floor paints it, its tree
+            // differs, and that marks the change.
+            let unchanged = self
+                .last_floats
+                .get(&index)
+                .is_some_and(|(last, node)| *last == rect && node == &rendered.node);
+            if !unchanged {
+                self.changed_this_frame = true;
+            }
+            self.last_floats
+                .insert(index, (rect, rendered.node.clone()));
+            self.drawn_floats.insert(index);
+        }
+    }
+
     fn draw(&mut self, frame: &mut Frame) {
         self.errors.clear();
         self.focused_session = None;
@@ -1830,108 +2002,12 @@ impl App {
         let focusable = self.host.focusable();
         let focused_plugin = focusable.get(self.focus).copied();
 
-        for slot in &placed {
-            // A band is a slot the KERNEL occupies: the arrangement names and
-            // places it exactly as it does a pane's region, and the contents come
-            // from here rather than from any plugin. Drawing one runs no Lua, so
-            // no plugin can break it.
-            if let Some(band) = Band::from_slot(&slot.slot) {
-                self.render_band(frame, slot.rect, band);
-                continue;
-            }
-            let members = self.host.in_slot(&slot.slot);
-            if members.is_empty() {
-                continue;
-            }
-            match self.host.slot_mode(&slot.slot) {
-                // One visible occupant; the rest are alternatives waiting to be
-                // selected. The focused plugin wins, so tabbing into a pane
-                // brings it forward.
-                SlotMode::Switch => {
-                    let visible = members
-                        .iter()
-                        .position(|index| focused_plugin == Some(*index))
-                        .unwrap_or_else(|| {
-                            self.slot_selection
-                                .get(&slot.slot)
-                                .copied()
-                                .unwrap_or(0)
-                                .min(members.len().saturating_sub(1))
-                        });
-                    self.slot_selection.insert(slot.slot.clone(), visible);
-                    if let Some(&index) = members.get(visible) {
-                        self.draw_plugin(frame, index, slot.rect, focused_plugin == Some(index));
-                    }
-                }
-                SlotMode::Stack => {
-                    let sizes: Vec<_> =
-                        members.iter().map(|i| self.host.plugins[*i].size).collect();
-                    let rects =
-                        thurbox::kernel::layout::divide_slot(slot.rect, Axis::Vertical, &sizes, 0);
-                    for (nth, &index) in members.iter().enumerate() {
-                        let Some(&rect) = rects.get(nth) else {
-                            continue;
-                        };
-                        if rect.width == 0 || rect.height == 0 {
-                            continue;
-                        }
-                        self.draw_plugin(frame, index, rect, focused_plugin == Some(index));
-                    }
-                }
-            }
-        }
+        self.draw_slots(frame, &placed, focused_plugin);
 
         // 2b. Floats, above the arrangement. A plugin only floats on the
         //     frames it returns a float node, so a modal opens and closes with
         //     no separate channel for the kernel to keep in sync.
-        self.grabbed = None;
-        self.drawn_floats.clear();
-        for index in self.host.floating() {
-            let probe = RenderContext {
-                width: area.width,
-                height: area.height,
-                focused: true,
-                elapsed: self.started.elapsed().as_secs_f64(),
-                frame: self.frames,
-            };
-            let Ok(rendered) = self.host.render(index, probe) else {
-                continue;
-            };
-            let Some(float) = rendered.float else {
-                // Not floating this frame: a closed modal draws nothing at all.
-                continue;
-            };
-            let rect = Self::float_rect(area, float);
-            // Dim what is beneath, so the float reads as above rather than
-            // merely drawn later.
-            frame.render_widget(ratatui::widgets::Clear, rect);
-            let mut hits = Vec::new();
-            paint::render_recording(frame, rect, &rendered.node, &self.terminals, &mut hits);
-            // Recorded after every pane, so a float's targets win the overlap
-            // for the same reason its cells do. Its whole rect goes in first —
-            // a click that misses every button still lands on the modal rather
-            // than on the pane it covers.
-            self.push_targets(index, Some(rect), hits);
-            // The topmost float takes input; later plugins win, matching the
-            // order they are painted in.
-            self.grabbed = Some(index);
-            // Settled like a pane, by comparing what it drew — not marked changed
-            // for simply being open. Unconditional, an open float held `dirty` set
-            // forever, so the whole interface rebuilt every Lua tree at the frame
-            // cap for as long as the creation wizard was up. A float that really
-            // does animate still repaints: the 250 ms floor paints it, its tree
-            // differs, and that marks the change.
-            let unchanged = self
-                .last_floats
-                .get(&index)
-                .is_some_and(|(last, node)| *last == rect && node == &rendered.node);
-            if !unchanged {
-                self.changed_this_frame = true;
-            }
-            self.last_floats
-                .insert(index, (rect, rendered.node.clone()));
-            self.drawn_floats.insert(index);
-        }
+        self.draw_floats(frame, area);
 
         // System modals, above the arrangement and above every plugin float —
         // they are not in the layout, so nothing below could shrink them and
@@ -2128,293 +2204,116 @@ impl App {
             frame: self.frames,
         };
         Counters::bump(&self.perf.renders);
-        match self.host.render(index, ctx) {
-            Ok(rendered) => {
-                let node = rendered.node;
-                // A plugin that floats is drawn above the arrangement instead,
-                // so it takes no room in its slot.
-                if rendered.float.is_some() {
-                    return;
-                }
-                if focused {
-                    // The session, for everything that is about sessions — the
-                    // focus label, the info the bands show, `Ctrl+O`.
-                    self.focused_session = node.first_session_surface().map(str::to_string);
-                    // And whatever this pane is actually showing, which is where
-                    // raw input goes. `input = "session"` never meant "the
-                    // selected session"; it meant "what this pane is showing", and
-                    // a plugin's own program is now one of the things that can be.
-                    self.focused_surface = node.first_live_surface().map(str::to_string);
-                }
-
-                // Decoration: another plugin may restyle this tree. A decorator
-                // that fails costs its decoration, not the pane — so the
-                // original is what gets drawn.
-                let slot = self.host.plugins[index].slot.clone();
-                let mut node = node;
-                for decorator in self.host.decorators_of(&slot) {
-                    match self.host.decorate(decorator, &node, ctx) {
-                        Ok(decorated) => node = decorated,
-                        Err(e) => self.errors.push(e),
-                    }
-                }
-                // A surface's cells live OUTSIDE the tree, so tree equality
-                // cannot tell whether it changed. Its own output stamp can: a
-                // pane whose agent has said nothing since the last paint is as
-                // settled as a pane of text, which is what lets a screen with a
-                // live terminal on it idle at the redraw floor instead of
-                // repainting at the frame cap forever. v1 gates the same way,
-                // off the same atomic (`detect_output_redraw`).
-                if self.last_trees.len() <= index {
-                    self.last_trees.resize(index + 1, None);
-                }
-                let surface_moved = match node.first_session_surface() {
-                    Some(surface) => {
-                        let stamp = self.terminals.output_stamp(surface);
-                        let previous = self.last_output_painted.get(surface).copied();
-                        if let Some(stamp) = stamp {
-                            self.last_output_painted.insert(surface.to_string(), stamp);
-                        }
-                        // An unattached surface has no stamp and nothing to
-                        // show, so it is settled rather than perpetually new.
-                        stamp.is_some() && previous != stamp
-                    }
-                    None => false,
-                };
-                let unchanged = self.last_trees[index].as_ref() == Some(&node) && !surface_moved;
-                if !unchanged {
-                    self.changed_this_frame = true;
-                }
-                self.last_trees[index] = Some(node.clone());
-                let mut hits = Vec::new();
-                paint::render_recording(frame, rect, &node, &self.terminals, &mut hits);
-                // The pane's own rect is only a target when focus can rest on
-                // it. A footer click must reach the pill it landed on and
-                // nothing else — v1 likewise records no `FocusPane` for panes
-                // that cannot hold focus.
-                let fallback = self.host.plugins[index].focusable.then_some(rect);
-                self.push_targets(index, fallback, hits);
-            }
+        let rendered = match self.host.render(index, ctx) {
+            Ok(rendered) => rendered,
             Err(e) => {
                 paint::render_error(frame, rect, &e.plugin, &e.message);
                 Counters::bump(&self.perf.failures);
                 self.errors.push(e);
+                return;
+            }
+        };
+        // A plugin that floats is drawn above the arrangement instead, so it
+        // takes no room in its slot.
+        if rendered.float.is_some() {
+            return;
+        }
+        if focused {
+            // The session, for everything that is about sessions — the focus
+            // label, the info the bands show, `Ctrl+O`.
+            self.focused_session = rendered.node.first_session_surface().map(str::to_string);
+            // And whatever this pane is actually showing, which is where raw
+            // input goes. `input = "session"` never meant "the selected
+            // session"; it meant "what this pane is showing", and a plugin's own
+            // program is now one of the things that can be.
+            self.focused_surface = rendered.node.first_live_surface().map(str::to_string);
+        }
+
+        let node = self.decorate_tree(index, rendered.node, ctx);
+        if self.last_trees.len() <= index {
+            self.last_trees.resize(index + 1, None);
+        }
+        // Stamped unconditionally, before the tree comparison can short-circuit
+        // it: skipping the stamp on a frame whose tree changed would make the
+        // *next* frame see output that had already been painted.
+        let surface_moved = self.surface_moved(&node);
+        let unchanged = self.last_trees[index].as_ref() == Some(&node) && !surface_moved;
+        if !unchanged {
+            self.changed_this_frame = true;
+        }
+        self.last_trees[index] = Some(node.clone());
+        let mut hits = Vec::new();
+        paint::render_recording(frame, rect, &node, &self.terminals, &mut hits);
+        // The pane's own rect is only a target when focus can rest on it. A
+        // footer click must reach the pill it landed on and nothing else — v1
+        // likewise records no `FocusPane` for panes that cannot hold focus.
+        let fallback = self.host.plugins[index].focusable.then_some(rect);
+        self.push_targets(index, fallback, hits);
+    }
+
+    /// Let every decorator of this plugin's slot restyle its tree.
+    ///
+    /// A decorator that fails costs its decoration, not the pane — so the
+    /// original is what gets drawn.
+    fn decorate_tree(
+        &mut self,
+        index: usize,
+        node: thurbox::kernel::node::Node,
+        ctx: RenderContext,
+    ) -> thurbox::kernel::node::Node {
+        let slot = self.host.plugins[index].slot.clone();
+        let mut node = node;
+        for decorator in self.host.decorators_of(&slot) {
+            match self.host.decorate(decorator, &node, ctx) {
+                Ok(decorated) => node = decorated,
+                Err(e) => self.errors.push(e),
             }
         }
+        node
+    }
+
+    /// Whether this tree's session surface has printed since it was last
+    /// painted.
+    ///
+    /// A surface's cells live OUTSIDE the tree, so tree equality cannot tell
+    /// whether it changed. Its own output stamp can: a pane whose agent has said
+    /// nothing since the last paint is as settled as a pane of text, which is
+    /// what lets a screen with a live terminal on it idle at the redraw floor
+    /// instead of repainting at the frame cap forever. v1 gates the same way, off
+    /// the same atomic (`detect_output_redraw`).
+    fn surface_moved(&mut self, node: &thurbox::kernel::node::Node) -> bool {
+        let Some(surface) = node.first_session_surface() else {
+            return false;
+        };
+        let stamp = self.terminals.output_stamp(surface);
+        let previous = self.last_output_painted.get(surface).copied();
+        if let Some(stamp) = stamp {
+            self.last_output_painted.insert(surface.to_string(), stamp);
+        }
+        // An unattached surface has no stamp and nothing to show, so it is
+        // settled rather than perpetually new.
+        stamp.is_some() && previous != stamp
     }
 
     fn on_key(&mut self, key: &KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-
-        // A system modal takes input before anything else — that is what makes
-        // it modal rather than a pane drawn on top. Two things still get
-        // through: the escape route (quit, reload, the perf HUD), and another
-        // modal's own opening chord, since opening one closes another. While
-        // help is capturing, neither does — binding `ctrl+q` has to be
-        // possible, and the kernel can allow it because it knows the capture
-        // lasts exactly one keystroke.
-        if self.modals.is_open() {
-            if self.modals.captures_everything() {
-                self.dispatch_modal_key(key);
-                return;
-            }
-            if let Some(kind) = self.modal_chord(key) {
-                self.toggle_modal(kind);
-                return;
-            }
-            if !thurbox::kernel::modals::escapes(key) {
-                self.dispatch_modal_key(key);
-                return;
-            }
-        }
-
-        // The reserved minimum: focus, reload and quit always work, even if a
-        // plugin consumes every key it is offered.
-        //
-        // Quit is Ctrl+Q, not Ctrl+C: with a live terminal attached, Ctrl+C has
-        // to reach the agent so a turn can be interrupted. v1 reserves the same
-        // chord for the same reason.
-        match key.code {
-            KeyCode::Char('q') if ctrl => {
-                self.quit = true;
-                return;
-            }
-            // F10, not F5: v1 spends F1-F9 and F12 on real UI (F5 is the tasks
-            // panel), so the dev reload takes one of the two keys v1 leaves
-            // free rather than shadowing a pane the user expects.
-            KeyCode::F(10) => {
-                self.reload_interface();
-                self.collect_declarations();
-                self.clamp_focus();
-                return;
-            }
-            // Tab is NOT a focus key: it belongs to the agent. See RESERVED.
-            // v1 binds focus movement to Ctrl+H/Ctrl+L as well, and refuses to
-            // let a focused terminal keep either: they are how you get *out* of
-            // one, so they cannot be among the chords handed to the agent.
-            KeyCode::Char('h') if ctrl => return self.cycle_focus(-1),
-            KeyCode::Char('l') if ctrl => return self.cycle_focus(1),
-            // The HUD reports on this loop, so it is the kernel's own key
-            // rather than a plugin's — nothing a plugin does can hide it. v1
-            // spends F12 on the same thing for the same reason.
-            // The one reserved key that is a *feature*: v1 gates the HUD behind
-            // `[features] perf_hud` because opening it also turns on wall-clock
-            // timing collection, which is not free.
-            KeyCode::F(12) if self.config.features().perf_hud => {
-                self.hud = !self.hud;
-                self.dirty = true;
-                return;
-            }
-
-            // Copy and paste are reserved, like v1's: they must work from any
-            // pane, and `Ctrl+C` must not reach the agent when there is a
-            // selection to copy — that is the one case where thurbox wins the
-            // chord back from the terminal.
-            KeyCode::Char('c') if ctrl && self.selection.is_some() => {
-                // No focused session required: a selection over the session
-                // list, a modal or the footer is still a selection, and v1
-                // copies it. Only the fall-back-to-whole-screen path needs a
-                // terminal, because only a terminal HAS a screen.
-                let session = self.focused_session.clone();
-                self.copy_selection_or_screen(session.as_deref());
-                return;
-            }
-            KeyCode::Char('v') if ctrl => {
-                self.paste_into_focused();
-                return;
-            }
-            _ => {}
-        }
-
-        let press = to_press(key);
-
-        // A float takes every key while it is up — that is what makes it a
-        // modal rather than merely a pane drawn on top. The reserved chords
-        // above still work, so a modal can never trap you.
-        if let Some(plugin) = self
-            .grabbed
-            .and_then(|index| self.host.plugins.get(index))
-            .map(|plugin| plugin.name.clone())
-        {
-            let index = self.grabbed.expect("just resolved through it");
-            if let Some(action) = self
-                .registry
-                .resolve(&press, Some(&plugin))
-                .map(|b| b.action.clone())
-            {
-                match self.host.on_action(index, &action) {
-                    Ok(true) => return,
-                    Ok(false) => {}
-                    Err(e) => self.errors.push(e),
-                }
-            }
-            match self.host.on_key(index, &press) {
-                Ok(_) => {}
-                Err(e) => self.errors.push(e),
-            }
+        if self.dispatch_to_modal(key) {
             return;
         }
-
-        // A declared key first: the registry resolves the chord to an action
-        // and the plugin that owns it. This is the path that can be rebound,
-        // conflict-checked and listed in help.
-        let focused_name = self
-            .host
-            .focusable()
-            .get(self.focus)
-            .and_then(|index| self.host.plugins.get(*index))
-            .map(|plugin| plugin.name.clone());
-        if let Some((plugin, action, passthrough)) = self
-            .registry
-            .resolve(&press, focused_name.as_deref())
-            .map(|binding| {
-                (
-                    binding.plugin.clone(),
-                    binding.action.clone(),
-                    binding.passthrough,
-                )
-            })
-        {
-            // v1's terminal passthrough: a chord the agent's own line editing
-            // needs is left to the pty while a terminal has focus, and the
-            // command stays reachable from every other pane (and its F-key
-            // alternate). Gated on the bound chord, so rebinding a passthrough
-            // action onto a free key makes it work in the terminal again.
-            let defer_to_agent = passthrough
-                && self.focused_wants_session_input()
-                && is_ctrl_letter_chord(&canonical_chord(&press));
-            // A chord the kernel declared for itself opens a system modal;
-            // there is no plugin to hand it to.
-            if !defer_to_agent && plugin == thurbox::kernel::modals::OWNER {
-                if let Some(kind) = ModalKind::from_action(&action) {
-                    self.toggle_modal(kind);
-                    return;
-                }
-            }
-            if !defer_to_agent {
-                if let Some(index) = self.host.index_of(&plugin) {
-                    match self.host.on_action(index, &action) {
-                        Ok(true) => return,
-                        Ok(false) => {}
-                        Err(e) => self.errors.push(e),
-                    }
-                }
-            }
+        if self.dispatch_reserved(key) {
+            return;
         }
-
-        // Then raw keys: the focused plugin, then the non-focusable listeners.
-        let focusable = self.host.focusable();
-        let mut order: Vec<usize> = focusable.get(self.focus).copied().into_iter().collect();
-        order.extend(
-            (0..self.host.plugins.len()).filter(|index| !self.host.plugins[*index].focusable),
-        );
-
-        for index in order {
-            match self.host.on_key(index, &press) {
-                Ok(true) => return,
-                Ok(false) => {}
-                Err(e) => {
-                    // A throwing handler must not swallow the key or the app.
-                    self.errors.push(e);
-                }
-            }
+        let press = to_press(key);
+        if self.dispatch_grabbed(&press) {
+            return;
         }
-
-        // Nothing claimed it. If the focused plugin asked for raw session input
-        // and its surface names a live session, the key belongs to the agent.
-        //
-        // The kernel does not know which plugin is "the terminal": it knows one
-        // declared `input = "session"` and which session the tree it returned
-        // pointed at. Replace that plugin and this still works.
-        if self.focused_wants_session_input() {
-            if let Some(surface) = self.focused_surface.clone() {
-                if let Some(bytes) = key_to_bytes(key.code, key.modifiers) {
-                    // Whether it lands is the terminal's business; either way
-                    // the key belongs to the pane that asked for raw input and
-                    // is not offered to anything else.
-                    //
-                    // Routed by what the pane is SHOWING. A program pane's keys go
-                    // to that program and to nothing else — and a pane with nothing
-                    // behind it swallows nothing, since neither send finds a
-                    // target.
-                    let delivered = match self.terminals.program_key(&surface).cloned() {
-                        Some(program) => self.terminals.send_to_program(&program, bytes),
-                        None => self.terminals.send(&surface, bytes),
-                    };
-                    // Delivered means consumed, which is what the rule above says
-                    // and what this now enforces. Falling through sent `Esc` to a
-                    // program AND dismissed the pane under it in one keypress — a
-                    // game opening its menu on a pane nobody is looking at.
-                    //
-                    // Gated on delivery rather than on having tried, because both
-                    // sends already report it: a surface naming a session that is
-                    // no longer live must not swallow the key, or `Esc` traps the
-                    // user in a pane showing a dead terminal.
-                    if delivered {
-                        return;
-                    }
-                }
-            }
+        if self.dispatch_declared(&press) {
+            return;
+        }
+        if self.dispatch_raw(&press) {
+            return;
+        }
+        if self.dispatch_session_input(key) {
+            return;
         }
 
         // An `Esc` no pane claimed means "leave this one" — the v2 spelling of
@@ -2434,6 +2333,230 @@ impl App {
         // the theme picker -- or any pane that does not claim Esc -- killed the
         // application. Quit is Ctrl+Q, reserved at the top of this function;
         // v1 has no bare-key quit either.
+    }
+
+    /// A system modal takes input before anything else — that is what makes it
+    /// modal rather than a pane drawn on top.
+    ///
+    /// Two things still get through: the escape route (quit, reload, the perf
+    /// HUD), and another modal's own opening chord, since opening one closes
+    /// another. While help is capturing, neither does — binding `ctrl+q` has to
+    /// be possible, and the kernel can allow it because it knows the capture
+    /// lasts exactly one keystroke.
+    fn dispatch_to_modal(&mut self, key: &KeyEvent) -> bool {
+        if !self.modals.is_open() {
+            return false;
+        }
+        if self.modals.captures_everything() {
+            self.dispatch_modal_key(key);
+            return true;
+        }
+        if let Some(kind) = self.modal_chord(key) {
+            self.toggle_modal(kind);
+            return true;
+        }
+        if !thurbox::kernel::modals::escapes(key) {
+            self.dispatch_modal_key(key);
+            return true;
+        }
+        false
+    }
+
+    /// The reserved minimum: focus, reload and quit always work, even if a
+    /// plugin consumes every key it is offered.
+    ///
+    /// Quit is Ctrl+Q, not Ctrl+C: with a live terminal attached, Ctrl+C has to
+    /// reach the agent so a turn can be interrupted. v1 reserves the same chord
+    /// for the same reason.
+    fn dispatch_reserved(&mut self, key: &KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('q') if ctrl => self.quit = true,
+            // F10, not F5: v1 spends F1-F9 and F12 on real UI (F5 is the tasks
+            // panel), so the dev reload takes one of the two keys v1 leaves
+            // free rather than shadowing a pane the user expects.
+            KeyCode::F(10) => {
+                self.reload_interface();
+                self.collect_declarations();
+                self.clamp_focus();
+            }
+            // Tab is NOT a focus key: it belongs to the agent. See RESERVED.
+            // v1 binds focus movement to Ctrl+H/Ctrl+L as well, and refuses to
+            // let a focused terminal keep either: they are how you get *out* of
+            // one, so they cannot be among the chords handed to the agent.
+            KeyCode::Char('h') if ctrl => self.cycle_focus(-1),
+            KeyCode::Char('l') if ctrl => self.cycle_focus(1),
+            // The HUD reports on this loop, so it is the kernel's own key rather
+            // than a plugin's — nothing a plugin does can hide it. v1 spends F12
+            // on the same thing for the same reason.
+            // The one reserved key that is a *feature*: v1 gates the HUD behind
+            // `[features] perf_hud` because opening it also turns on wall-clock
+            // timing collection, which is not free.
+            KeyCode::F(12) if self.config.features().perf_hud => {
+                self.hud = !self.hud;
+                self.dirty = true;
+            }
+            // Copy and paste are reserved, like v1's: they must work from any
+            // pane, and `Ctrl+C` must not reach the agent when there is a
+            // selection to copy — that is the one case where thurbox wins the
+            // chord back from the terminal.
+            KeyCode::Char('c') if ctrl && self.selection.is_some() => {
+                // No focused session required: a selection over the session
+                // list, a modal or the footer is still a selection, and v1
+                // copies it. Only the fall-back-to-whole-screen path needs a
+                // terminal, because only a terminal HAS a screen.
+                let session = self.focused_session.clone();
+                self.copy_selection_or_screen(session.as_deref());
+            }
+            KeyCode::Char('v') if ctrl => self.paste_into_focused(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// A float takes every key while it is up — that is what makes it a modal
+    /// rather than merely a pane drawn on top.
+    ///
+    /// The reserved chords still work, so a modal can never trap you.
+    fn dispatch_grabbed(&mut self, press: &KeyPress) -> bool {
+        let Some(plugin) = self
+            .grabbed
+            .and_then(|index| self.host.plugins.get(index))
+            .map(|plugin| plugin.name.clone())
+        else {
+            return false;
+        };
+        let index = self.grabbed.expect("just resolved through it");
+        if let Some(action) = self
+            .registry
+            .resolve(press, Some(&plugin))
+            .map(|b| b.action.clone())
+        {
+            match self.host.on_action(index, &action) {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(e) => self.errors.push(e),
+            }
+        }
+        if let Err(e) = self.host.on_key(index, press) {
+            self.errors.push(e);
+        }
+        true
+    }
+
+    /// A declared key: the registry resolves the chord to an action and the
+    /// plugin that owns it.
+    ///
+    /// This is the path that can be rebound, conflict-checked and listed in
+    /// help. Falls through (`false`) when nothing claimed the chord — including
+    /// when it was deferred to the agent.
+    fn dispatch_declared(&mut self, press: &KeyPress) -> bool {
+        let focused_name = self
+            .host
+            .focusable()
+            .get(self.focus)
+            .and_then(|index| self.host.plugins.get(*index))
+            .map(|plugin| plugin.name.clone());
+        let Some((plugin, action, passthrough)) = self
+            .registry
+            .resolve(press, focused_name.as_deref())
+            .map(|binding| {
+                (
+                    binding.plugin.clone(),
+                    binding.action.clone(),
+                    binding.passthrough,
+                )
+            })
+        else {
+            return false;
+        };
+        // v1's terminal passthrough: a chord the agent's own line editing needs
+        // is left to the pty while a terminal has focus, and the command stays
+        // reachable from every other pane (and its F-key alternate). Gated on
+        // the bound chord, so rebinding a passthrough action onto a free key
+        // makes it work in the terminal again.
+        let defer_to_agent = passthrough
+            && self.focused_wants_session_input()
+            && is_ctrl_letter_chord(&canonical_chord(press));
+        if defer_to_agent {
+            return false;
+        }
+        // A chord the kernel declared for itself opens a system modal; there is
+        // no plugin to hand it to.
+        if plugin == thurbox::kernel::modals::OWNER {
+            if let Some(kind) = ModalKind::from_action(&action) {
+                self.toggle_modal(kind);
+                return true;
+            }
+        }
+        let Some(index) = self.host.index_of(&plugin) else {
+            return false;
+        };
+        match self.host.on_action(index, &action) {
+            Ok(true) => true,
+            Ok(false) => false,
+            Err(e) => {
+                self.errors.push(e);
+                false
+            }
+        }
+    }
+
+    /// Raw keys: the focused plugin, then the non-focusable listeners.
+    fn dispatch_raw(&mut self, press: &KeyPress) -> bool {
+        let focusable = self.host.focusable();
+        let mut order: Vec<usize> = focusable.get(self.focus).copied().into_iter().collect();
+        order.extend(
+            (0..self.host.plugins.len()).filter(|index| !self.host.plugins[*index].focusable),
+        );
+        for index in order {
+            match self.host.on_key(index, press) {
+                Ok(true) => return true,
+                Ok(false) => {}
+                // A throwing handler must not swallow the key or the app.
+                Err(e) => self.errors.push(e),
+            }
+        }
+        false
+    }
+
+    /// Nothing claimed it. If the focused plugin asked for raw session input and
+    /// its surface names a live session, the key belongs to the agent.
+    ///
+    /// The kernel does not know which plugin is "the terminal": it knows one
+    /// declared `input = "session"` and which session the tree it returned
+    /// pointed at. Replace that plugin and this still works.
+    fn dispatch_session_input(&mut self, key: &KeyEvent) -> bool {
+        if !self.focused_wants_session_input() {
+            return false;
+        }
+        let Some(surface) = self.focused_surface.clone() else {
+            return false;
+        };
+        let Some(bytes) = key_to_bytes(key.code, key.modifiers) else {
+            return false;
+        };
+        // Whether it lands is the terminal's business; either way the key belongs
+        // to the pane that asked for raw input and is not offered to anything
+        // else.
+        //
+        // Routed by what the pane is SHOWING. A program pane's keys go to that
+        // program and to nothing else — and a pane with nothing behind it
+        // swallows nothing, since neither send finds a target.
+        let delivered = match self.terminals.program_key(&surface).cloned() {
+            Some(program) => self.terminals.send_to_program(&program, bytes),
+            None => self.terminals.send(&surface, bytes),
+        };
+        // Delivered means consumed, which is what the rule above says and what
+        // this now enforces. Falling through sent `Esc` to a program AND
+        // dismissed the pane under it in one keypress — a game opening its menu
+        // on a pane nobody is looking at.
+        //
+        // Gated on delivery rather than on having tried, because both sends
+        // already report it: a surface naming a session that is no longer live
+        // must not swallow the key, or `Esc` traps the user in a pane showing a
+        // dead terminal.
+        delivered
     }
 
     /// The modal this keystroke opens, if it is one of the kernel's own chords.

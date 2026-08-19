@@ -503,7 +503,7 @@ fn matching_dir_names(parent: &Path, prefix: &str) -> Vec<String> {
         return Vec::new();
     };
     entries
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_str()?.to_string();

@@ -561,41 +561,61 @@ fn flatten(bookmarks: &[Bookmark], local: bool) -> Vec<BookmarkRow> {
     // shared by two folders, a folder nested inside another.
     let mut emitted: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     for bookmark in bookmarks {
-        if !bookmark.is_parent {
-            if !covered.contains(&bookmark.repo_path) && emitted.insert(bookmark.repo_path.clone())
-            {
-                let mut it = row(&bookmark.repo_path, None, false, bookmark.is_git);
-                it.label = bookmark.label.clone();
-                rows.push(it);
-            }
-            continue;
-        }
-        if !emitted.insert(bookmark.repo_path.clone()) {
-            continue;
-        }
-        let mut header = row(&bookmark.repo_path, None, true, None);
-        header.label = bookmark.label.clone();
-        rows.push(header);
-        let parent = display(&bookmark.repo_path);
-        // Live-scanned members are repositories by construction; persisted ones
-        // carry whatever was established when they were imported.
-        let scanned_members = scanned
-            .get(&bookmark.repo_path)
-            .into_iter()
-            .flatten()
-            .map(|path| (path, Some(true)));
-        let persisted_members = persisted
-            .get(&bookmark.repo_path)
-            .into_iter()
-            .flatten()
-            .map(|child| (&child.repo_path, child.is_git));
-        for (path, is_git) in scanned_members.chain(persisted_members) {
-            if emitted.insert(path.clone()) {
-                rows.push(row(path, Some(parent.clone()), false, is_git));
-            }
+        if bookmark.is_parent {
+            push_folder(&mut rows, &mut emitted, bookmark, &scanned, &persisted);
+        } else if !covered.contains(&bookmark.repo_path) {
+            push_standalone(&mut rows, &mut emitted, bookmark);
         }
     }
     rows
+}
+
+/// One repository not covered by any folder above it.
+fn push_standalone(
+    rows: &mut Vec<BookmarkRow>,
+    emitted: &mut std::collections::HashSet<PathBuf>,
+    bookmark: &Bookmark,
+) {
+    if !emitted.insert(bookmark.repo_path.clone()) {
+        return;
+    }
+    let mut it = row(&bookmark.repo_path, None, false, bookmark.is_git);
+    it.label = bookmark.label.clone();
+    rows.push(it);
+}
+
+/// A folder header followed by its members, live-scanned ones first.
+fn push_folder(
+    rows: &mut Vec<BookmarkRow>,
+    emitted: &mut std::collections::HashSet<PathBuf>,
+    bookmark: &Bookmark,
+    scanned: &HashMap<PathBuf, Vec<PathBuf>>,
+    persisted: &HashMap<&PathBuf, Vec<&Bookmark>>,
+) {
+    if !emitted.insert(bookmark.repo_path.clone()) {
+        return;
+    }
+    let mut header = row(&bookmark.repo_path, None, true, None);
+    header.label = bookmark.label.clone();
+    rows.push(header);
+    let parent = display(&bookmark.repo_path);
+    // Live-scanned members are repositories by construction; persisted ones
+    // carry whatever was established when they were imported.
+    let scanned_members = scanned
+        .get(&bookmark.repo_path)
+        .into_iter()
+        .flatten()
+        .map(|path| (path, Some(true)));
+    let persisted_members = persisted
+        .get(&bookmark.repo_path)
+        .into_iter()
+        .flatten()
+        .map(|child| (&child.repo_path, child.is_git));
+    for (path, is_git) in scanned_members.chain(persisted_members) {
+        if emitted.insert(path.clone()) {
+            rows.push(row(path, Some(parent.clone()), false, is_git));
+        }
+    }
 }
 
 /// The git repositories directly under each folder bookmark, scanned now.

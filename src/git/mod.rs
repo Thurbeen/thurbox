@@ -671,10 +671,7 @@ pub(crate) fn host_shell_c(host: &HostDef, script: &str) -> Command {
 pub(crate) fn host_powershell_c(host: &HostDef, script: &str) -> Command {
     use base64::Engine as _;
 
-    let utf16: Vec<u8> = script
-        .encode_utf16()
-        .flat_map(|unit| unit.to_le_bytes())
-        .collect();
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
     let mut cmd = host_launcher(host);
     cmd.args(["powershell", "-NoProfile", "-EncodedCommand"])
@@ -930,8 +927,8 @@ pub fn repo_display_name(path: &Path) -> Option<String> {
     }
     let name = repo_name_from_remote(path).or_else(|| {
         path.file_name()
-            .and_then(|f| f.to_str())
-            .map(|s| s.to_string())
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_string)
     })?;
     if let Ok(mut guard) = cache.lock() {
         guard.insert(path.to_path_buf(), name.clone());
@@ -954,7 +951,7 @@ pub fn scan_child_repos(parent: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     let mut repos: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
         .filter(|e| {
             !e.file_name()
@@ -1065,7 +1062,7 @@ fn list_dir_entries_local(dir: &Path) -> DirListing {
         return DirListing::Entries(Vec::new());
     };
     let mut names: Vec<(String, bool)> = entries
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         // `path().is_dir()` follows symlinks, matching the remote `test -d`.
         .filter(|e| e.path().is_dir())
         .filter_map(|e| {
@@ -1677,7 +1674,7 @@ pub fn default_branch_from_remote_on(host: Option<&HostDef>, repo_path: &Path) -
     }
 
     let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    full_ref.strip_prefix("origin/").map(|s| s.to_string())
+    full_ref.strip_prefix("origin/").map(str::to_string)
 }
 
 /// Add an existing branch as a worktree (no `-b` flag — branch must already exist).

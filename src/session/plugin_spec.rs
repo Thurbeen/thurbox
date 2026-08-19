@@ -289,7 +289,7 @@ pub struct PackageFile {
 
 impl PackageManifest {
     /// The file name a package manifest goes by.
-    pub const FILE: &'static str = "plugin.toml";
+    pub const FILE: &str = "plugin.toml";
 
     pub fn parse(text: &str) -> Result<Self, String> {
         let manifest: Self = toml::from_str(text).map_err(|e| e.to_string())?;

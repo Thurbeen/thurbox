@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use super::snapshot::Snapshot;
+use super::snapshot::{SessionRow, Snapshot};
 use crate::session::settings::NotificationSettings;
 
 /// Status that means the agent is waiting on the user.
@@ -85,22 +85,12 @@ impl Notifier {
         let floor = Duration::from_secs(self.settings.min_interval_secs);
 
         for row in &snapshot.sessions {
-            let was = self.previous.get(&row.id).cloned();
-            self.previous.insert(row.id.clone(), row.status.clone());
+            let was = self.previous.insert(row.id.clone(), row.status.clone());
 
             // The *edge*, not the state: a session that is already blocked when
             // the interface starts has not just asked for anything.
             let Some(previous) = was else { continue };
-            if previous == row.status {
-                continue;
-            }
-            // Blocked always notifies; finishing does so only when asked for.
-            let worth_raising = row.status == BLOCKED
-                || (row.status == DONE && self.settings.also_on_waiting && previous != BLOCKED);
-            if !worth_raising {
-                continue;
-            }
-            if self.settings.suppress_for_active && active == Some(row.id.as_str()) {
+            if previous == row.status || !self.worth_raising(&previous, row, active) {
                 continue;
             }
             // The floor is per session: an agent flipping between states must not
@@ -114,28 +104,7 @@ impl Notifier {
             }
             self.last_raised.insert(row.id.clone(), now);
             raised.push(row.id.clone());
-
-            // A row whose id will not parse cannot be focused from the
-            // notification, so there is nothing useful to deliver.
-            if let (Some(sender), Some(id)) =
-                (&self.sender, crate::kernel::snapshot::parse_id(&row.id))
-            {
-                let blocked = row.status == BLOCKED;
-                sender.send(crate::notifications::Notification {
-                    title: if blocked {
-                        format!("{} needs you", row.name)
-                    } else {
-                        format!("{} finished", row.name)
-                    },
-                    body: if blocked {
-                        format!("{} is waiting for input", row.agent)
-                    } else {
-                        format!("{} finished its turn", row.agent)
-                    },
-                    session_id: id,
-                    sound: self.settings.sound,
-                });
-            }
+            self.deliver(row);
         }
 
         // Sessions that went away stop being tracked, or a deleted-and-recreated
@@ -145,6 +114,48 @@ impl Notifier {
         self.last_raised.retain(|id, _| live(id));
 
         raised
+    }
+
+    /// Whether this transition is one the user asked to hear about.
+    ///
+    /// Blocked always notifies; finishing does so only when asked for. A
+    /// notification for the session you are already looking at is noise, so it is
+    /// suppressed when configured.
+    fn worth_raising(&self, previous: &str, row: &SessionRow, active: Option<&str>) -> bool {
+        let wanted = row.status == BLOCKED
+            || (row.status == DONE && self.settings.also_on_waiting && previous != BLOCKED);
+        if !wanted {
+            return false;
+        }
+        !(self.settings.suppress_for_active && active == Some(row.id.as_str()))
+    }
+
+    /// Hand one notification to the delivery layer.
+    ///
+    /// A row whose id will not parse cannot be focused from the notification, so
+    /// there is nothing useful to deliver.
+    fn deliver(&self, row: &SessionRow) {
+        let (Some(sender), Some(id)) = (&self.sender, crate::kernel::snapshot::parse_id(&row.id))
+        else {
+            return;
+        };
+        let blocked = row.status == BLOCKED;
+        let (title, body) = match blocked {
+            true => (
+                format!("{} needs you", row.name),
+                format!("{} is waiting for input", row.agent),
+            ),
+            false => (
+                format!("{} finished", row.name),
+                format!("{} finished its turn", row.agent),
+            ),
+        };
+        sender.send(crate::notifications::Notification {
+            title,
+            body,
+            session_id: id,
+            sound: self.settings.sound,
+        });
     }
 }
 

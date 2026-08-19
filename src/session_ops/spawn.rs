@@ -802,42 +802,74 @@ fn rewrite_config_path_args(
         if path_under_root(&arg, config_root) {
             match map(&arg) {
                 Some(new) => out.push(new),
-                None => {
-                    tracing::warn!("dropping agent arg for remote spawn: {arg}");
-                    // A `--flag=value` token is self-contained — never a
-                    // dangling flag for the dropped path — so popping it would
-                    // eat an unrelated (possibly already-rewritten) arg.
-                    if out
-                        .last()
-                        .is_some_and(|prev| prev.starts_with('-') && !prev.contains('='))
-                    {
-                        out.pop();
-                    }
-                }
+                None => drop_path_arg(&mut out, &arg),
             }
             continue;
         }
-        // `--flag=<path>` form: rewrite the value in place, or drop the whole
-        // token (it is self-contained — nothing precedes it to pop).
-        if let Some((flag, value)) = arg.split_once('=') {
-            if flag.starts_with('-') && path_under_root(value, config_root) {
-                match map(value) {
-                    Some(new) => out.push(format!("{flag}={new}")),
-                    None => tracing::warn!("dropping agent arg for remote spawn: {arg}"),
-                }
-                continue;
-            }
+        match rewrite_flag_value(&arg, config_root, &mut map) {
+            Rewritten::Replaced(new) => out.push(new),
+            Rewritten::Unchanged => out.push(arg),
+            Rewritten::Dropped => {}
         }
-        out.push(arg);
     }
     out
+}
+
+/// Drop a bare path arg, plus the flag in front of it when the two belong
+/// together.
+///
+/// A `--flag=value` token is self-contained — never a dangling flag for the
+/// dropped path — so popping it would eat an unrelated (possibly
+/// already-rewritten) arg.
+fn drop_path_arg(out: &mut Vec<String>, arg: &str) {
+    tracing::warn!("dropping agent arg for remote spawn: {arg}");
+    if out
+        .last()
+        .is_some_and(|prev| prev.starts_with('-') && !prev.contains('='))
+    {
+        out.pop();
+    }
+}
+
+/// What [`rewrite_flag_value`] decided about one `--flag=value` token.
+enum Rewritten {
+    /// Not a config path in `--flag=value` form; keep the arg as it is.
+    Unchanged,
+    Replaced(String),
+    Dropped,
+}
+
+/// The `--flag=<path>` form: rewrite the value in place, or drop the whole token
+/// (it is self-contained — nothing precedes it to pop).
+fn rewrite_flag_value(
+    arg: &str,
+    config_root: &str,
+    map: &mut impl FnMut(&str) -> Option<String>,
+) -> Rewritten {
+    let Some((flag, value)) = arg.split_once('=') else {
+        return Rewritten::Unchanged;
+    };
+    if !flag.starts_with('-') || !path_under_root(value, config_root) {
+        return Rewritten::Unchanged;
+    }
+    match map(value) {
+        Some(new) => Rewritten::Replaced(format!("{flag}={new}")),
+        None => {
+            tracing::warn!("dropping agent arg for remote spawn: {arg}");
+            Rewritten::Dropped
+        }
+    }
 }
 
 /// A human-friendly label for a member directory in the symlink workspace:
 /// the git repo display name, falling back to the final path component.
 fn dir_label(path: &std::path::Path) -> String {
     crate::git::repo_display_name(path)
-        .or_else(|| path.file_name().and_then(|s| s.to_str()).map(String::from))
+        .or_else(|| {
+            path.file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(String::from)
+        })
         .unwrap_or_else(|| "repo".to_string())
 }
 

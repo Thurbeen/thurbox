@@ -111,27 +111,24 @@ pub fn load_or_seed_with_warnings() -> (Vec<ThemeEntry>, Vec<String>) {
         return (Vec::new(), Vec::new());
     }
 
-    let file = match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(&path) {
         Ok(contents) => {
             match super::agent_config::parse_toml_reporting_unknown::<ThemesFile>(
                 &contents,
                 "themes.toml",
             ) {
                 Ok((file, warnings)) => return_resolved(file, warnings),
-                Err(e) => {
-                    return (
-                        Vec::new(),
-                        vec![format!(
-                            "themes.toml: {}; no custom themes",
-                            super::agent_config::compact_toml_error(&e.to_string())
-                        )],
-                    )
-                }
+                Err(e) => (
+                    Vec::new(),
+                    vec![format!(
+                        "themes.toml: {}; no custom themes",
+                        super::agent_config::compact_toml_error(&e.to_string())
+                    )],
+                ),
             }
         }
-        Err(e) => return (Vec::new(), vec![format!("Failed to read themes.toml: {e}")]),
-    };
-    file
+        Err(e) => (Vec::new(), vec![format!("Failed to read themes.toml: {e}")]),
+    }
 }
 
 fn return_resolved(file: ThemesFile, mut warnings: Vec<String>) -> (Vec<ThemeEntry>, Vec<String>) {

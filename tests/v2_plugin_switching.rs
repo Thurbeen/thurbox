@@ -43,7 +43,7 @@ fn interface(files: &[(&str, String)]) -> (tempfile::TempDir, std::path::PathBuf
 
 fn loaded(ui: &std::path::Path, disabled: &[&str]) -> LuaHost {
     let host = LuaHost::new(ui);
-    host.set_disabled(disabled.iter().map(|s| s.to_string()).collect());
+    host.set_disabled(disabled.iter().copied().map(str::to_string).collect());
     let mut host = host;
     host.reload();
     host

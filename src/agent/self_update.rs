@@ -98,7 +98,7 @@ fn parse_checksum(checksums: &str, artifact: &str) -> Option<String> {
         .lines()
         .find(|line| line.contains(artifact))
         .and_then(|line| line.split_whitespace().next())
-        .map(|s| s.to_string())
+        .map(str::to_string)
 }
 
 /// Verify `file`'s SHA256 against `expected`, shelling out to `sha256sum`
@@ -159,7 +159,7 @@ fn stage_binary(src: &Path, dest: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("no parent dir for {}", dest.display()))?;
     let name = dest
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("bad destination name {}", dest.display()))?;
     let staged = dir.join(format!(".{name}.new"));
     std::fs::copy(src, &staged)

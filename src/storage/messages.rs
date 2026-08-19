@@ -408,6 +408,36 @@ mod tests {
         );
     }
 
+    /// One claimer in [`concurrent_claims_deliver_each_message_exactly_once`]:
+    /// claim until the inbox is drained, recording every id and counting any
+    /// claimed twice.
+    fn drain_inbox(
+        path: &std::path::Path,
+        to: SessionId,
+        seen: &std::sync::Mutex<std::collections::HashSet<i64>>,
+        dupes: &std::sync::Mutex<usize>,
+    ) {
+        let db = Database::open(path).unwrap();
+        loop {
+            let batch = db.claim_messages(to, Some(3)).unwrap();
+            if batch.is_empty() {
+                // Could be a transient empty between other threads' batches;
+                // confirm the inbox is actually drained before giving up.
+                if db.count_unread_messages(to).unwrap() == 0 {
+                    return;
+                }
+                continue;
+            }
+            let mut seen = seen.lock().unwrap();
+            let mut dupes = dupes.lock().unwrap();
+            for m in batch {
+                if !seen.insert(m.id) {
+                    *dupes += 1;
+                }
+            }
+        }
+    }
+
     #[test]
     fn concurrent_claims_deliver_each_message_exactly_once() {
         // A file-based DB so several Database connections share one store, then
@@ -436,25 +466,7 @@ mod tests {
             let seen = Arc::clone(&seen);
             let dupes = Arc::clone(&dupes);
             handles.push(std::thread::spawn(move || {
-                let db = Database::open(&path).unwrap();
-                loop {
-                    let batch = db.claim_messages(to, Some(3)).unwrap();
-                    if batch.is_empty() {
-                        // Could be a transient empty between other threads' batches;
-                        // confirm the inbox is actually drained before giving up.
-                        if db.count_unread_messages(to).unwrap() == 0 {
-                            break;
-                        }
-                        continue;
-                    }
-                    let mut seen = seen.lock().unwrap();
-                    let mut dupes = dupes.lock().unwrap();
-                    for m in batch {
-                        if !seen.insert(m.id) {
-                            *dupes += 1;
-                        }
-                    }
-                }
+                drain_inbox(&path, to, &seen, &dupes);
             }));
         }
         for h in handles {

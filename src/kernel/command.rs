@@ -19,7 +19,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::registry::Value as SettingValue;
 use crate::session::SessionId;
@@ -837,55 +837,75 @@ impl CommandBus {
     /// snapshot immediately rather than waiting out the refresh interval —
     /// which is what makes a delete feel instant.
     pub fn poll(&mut self) -> bool {
-        let mut changed = false;
-
         // Phase changes first, so a command that reports and then finishes in
         // the same window does not show a stale stage.
+        let mut changed = self.drain_progress();
+        changed |= self.drain_finished();
+        changed |= self.sweep_expired_failures();
+        changed
+    }
+
+    /// Apply the stage each running command last reported.
+    fn drain_progress(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(update) = self.progress_rx.try_recv() {
-            if let Ok(mut list) = self.inflight.lock() {
-                if let Some(entry) = list.iter_mut().find(|entry| entry.id == update.id) {
-                    entry.phase = Phase::Stage(update.phase);
-                    changed = true;
-                }
+            let Ok(mut list) = self.inflight.lock() else {
+                continue;
+            };
+            if let Some(entry) = list.iter_mut().find(|entry| entry.id == update.id) {
+                entry.phase = Phase::Stage(update.phase);
+                changed = true;
             }
         }
+        changed
+    }
 
+    /// Retire completed commands: a success leaves the list, a failure lingers
+    /// long enough to be read.
+    fn drain_finished(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(done) = self.finished_rx.try_recv() {
             changed = true;
+            // Recorded before the lock: a poisoned mutex must not lose the
+            // session a command just created.
             if let Some(session) = done.created {
                 self.created.push(session);
             }
-            if let Ok(mut list) = self.inflight.lock() {
-                match done.error {
-                    // Success: the effect is in the database now, so the row
-                    // has nothing left to say.
-                    None => list.retain(|entry| entry.id != done.id),
-                    Some(error) => {
-                        if let Some(entry) = list.iter_mut().find(|entry| entry.id == done.id) {
-                            entry.phase = Phase::Failed;
-                            entry.error = Some(error);
-                        }
-                        self.failed_at.push((done.id, std::time::Instant::now()));
+            let Ok(mut list) = self.inflight.lock() else {
+                continue;
+            };
+            match done.error {
+                // Success: the effect is in the database now, so the row has
+                // nothing left to say.
+                None => list.retain(|entry| entry.id != done.id),
+                Some(error) => {
+                    if let Some(entry) = list.iter_mut().find(|entry| entry.id == done.id) {
+                        entry.phase = Phase::Failed;
+                        entry.error = Some(error);
                     }
+                    self.failed_at.push((done.id, std::time::Instant::now()));
                 }
             }
         }
+        changed
+    }
 
-        // Sweep failures that have been readable long enough.
+    /// Sweep failures that have been readable long enough.
+    fn sweep_expired_failures(&mut self) -> bool {
         let expired: Vec<u64> = self
             .failed_at
             .iter()
             .filter(|(_, at)| at.elapsed().as_millis() as u64 >= FAILURE_LINGER_MS)
             .map(|(id, _)| *id)
             .collect();
-        if !expired.is_empty() {
-            if let Ok(mut list) = self.inflight.lock() {
-                list.retain(|entry| !expired.contains(&entry.id));
-            }
-            self.failed_at.retain(|(id, _)| !expired.contains(id));
-            changed = true;
+        if expired.is_empty() {
+            return false;
         }
-        changed
+        if let Ok(mut list) = self.inflight.lock() {
+            list.retain(|entry| !expired.contains(&entry.id));
+        }
+        self.failed_at.retain(|(id, _)| !expired.contains(id));
+        true
     }
 
     /// The sessions completed commands brought into existence, oldest first.
@@ -1191,28 +1211,22 @@ fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
     // lets a bookmark be forgotten after its host has been taken out of
     // `hosts.toml`.
     if edit == BookmarkEdit::Remove {
-        let removed = db
-            .delete_repo_bookmark(host, &crate::paths::expand_tilde(path))
-            .map_err(|e| format!("forget repo: {e}"))?;
-        return if removed {
-            Ok(())
-        } else {
-            Err(format!("not a remembered repository: {path}"))
-        };
+        return bookmark_remove(&db, host, path);
     }
 
     // `""` is local; the flow's key is the same string `repo_bookmarks.host`
     // stores, so nothing is translated here.
-    let remote = if host.is_empty() {
-        None
-    } else {
-        let (registry, _warnings) = crate::agent::host_config::load_all_with_warnings();
-        Some(
-            registry
-                .resolve(host)
-                .cloned()
-                .ok_or_else(|| format!("no such host: {host}"))?,
-        )
+    let remote = match host.is_empty() {
+        true => None,
+        false => {
+            let (registry, _warnings) = crate::agent::host_config::load_all_with_warnings();
+            Some(
+                registry
+                    .resolve(host)
+                    .cloned()
+                    .ok_or_else(|| format!("no such host: {host}"))?,
+            )
+        }
     };
 
     let expanded = match remote.as_ref() {
@@ -1222,39 +1236,72 @@ fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
         None => crate::paths::expand_tilde(path),
     };
 
-    if edit == BookmarkEdit::Parent {
-        let children = match remote.as_ref() {
-            Some(host) => crate::git::scan_child_repos_on(host, &expanded.to_string_lossy())
-                .map_err(|e| format!("{e:#}"))?,
-            None => {
-                if !expanded.is_dir() {
-                    return Err(format!("Path not found: {}", expanded.display()));
-                }
-                crate::git::scan_child_repos(&expanded)
-            }
-        };
-        db.upsert_repo_bookmark_kind(host, &expanded, true)
-            .map_err(|e| format!("remember folder: {e}"))?;
-        // Replace rather than merge: re-importing is how a folder is refreshed,
-        // so a repository that has since been deleted must stop being offered.
-        db.replace_parent_children(host, &expanded, &children)
-            .map_err(|e| format!("remember folder contents: {e}"))?;
-        return if children.is_empty() {
-            // Not a failure — the folder is remembered — but the user asked a
-            // question and "none" is the answer, so it is reported rather than
-            // looking like an import that silently did nothing.
-            Err(format!(
-                "No repositories found under {}",
-                expanded.display()
-            ))
-        } else {
-            Ok(())
-        };
+    match edit {
+        BookmarkEdit::Parent => bookmark_parent(&db, host, remote.as_ref(), &expanded),
+        _ => bookmark_add(&db, host, remote.as_ref(), &expanded),
     }
+}
 
-    // Add: establish what it is, refuse what is not there, and record the
-    // git-ness so the flow knows whether worktree mode is even possible.
-    let is_git = match remote.as_ref() {
+/// Forget a remembered path.
+///
+/// Removal names a path that is already remembered — an absolute one, since the
+/// rows the flow offers come from the database — so it needs neither the
+/// filesystem nor the host. Done BEFORE the host is resolved, which is what lets
+/// a bookmark be forgotten after its host has been taken out of `hosts.toml`.
+fn bookmark_remove(db: &Database, host: &str, path: &str) -> Result<(), String> {
+    let removed = db
+        .delete_repo_bookmark(host, &crate::paths::expand_tilde(path))
+        .map_err(|e| format!("forget repo: {e}"))?;
+    match removed {
+        true => Ok(()),
+        false => Err(format!("not a remembered repository: {path}")),
+    }
+}
+
+/// Import a folder of repositories: remember the folder, then its members.
+fn bookmark_parent(
+    db: &Database,
+    host: &str,
+    remote: Option<&crate::session::HostDef>,
+    expanded: &std::path::Path,
+) -> Result<(), String> {
+    let children = match remote {
+        Some(host) => crate::git::scan_child_repos_on(host, &expanded.to_string_lossy())
+            .map_err(|e| format!("{e:#}"))?,
+        None => {
+            if !expanded.is_dir() {
+                return Err(format!("Path not found: {}", expanded.display()));
+            }
+            crate::git::scan_child_repos(expanded)
+        }
+    };
+    db.upsert_repo_bookmark_kind(host, expanded, true)
+        .map_err(|e| format!("remember folder: {e}"))?;
+    // Replace rather than merge: re-importing is how a folder is refreshed, so a
+    // repository that has since been deleted must stop being offered.
+    db.replace_parent_children(host, expanded, &children)
+        .map_err(|e| format!("remember folder contents: {e}"))?;
+    if children.is_empty() {
+        // Not a failure — the folder is remembered — but the user asked a
+        // question and "none" is the answer, so it is reported rather than
+        // looking like an import that silently did nothing.
+        return Err(format!(
+            "No repositories found under {}",
+            expanded.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Remember one path: establish what it is, refuse what is not there, and record
+/// the git-ness so the flow knows whether worktree mode is even possible.
+fn bookmark_add(
+    db: &Database,
+    host: &str,
+    remote: Option<&crate::session::HostDef>,
+    expanded: &std::path::Path,
+) -> Result<(), String> {
+    let is_git = match remote {
         Some(host) => match crate::git::classify_path_on(host, &expanded.to_string_lossy())
             .map_err(|e| format!("{e:#}"))?
         {
@@ -1272,14 +1319,14 @@ fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
             if !expanded.is_dir() {
                 return Err(format!("Path not found: {}", expanded.display()));
             }
-            Some(crate::git::is_git_repo(&expanded))
+            Some(crate::git::is_git_repo(expanded))
         }
     };
 
-    // Touches recency as well as adding, which is what lets the flow re-select
-    // a path that was already remembered: the row it asked for is the newest
-    // one (design.md D2).
-    db.upsert_repo_bookmark_checked(host, &expanded, is_git)
+    // Touches recency as well as adding, which is what lets the flow re-select a
+    // path that was already remembered: the row it asked for is the newest one
+    // (design.md D2).
+    db.upsert_repo_bookmark_checked(host, expanded, is_git)
         .map_err(|e| format!("remember repo: {e}"))
 }
 
@@ -1588,7 +1635,7 @@ fn reorder(db: &Database, id: SessionId, delta: i64) -> Result<(), String> {
     // Poisoning only means an earlier reorder panicked; the order is still
     // consistent on disk, so recovering is better than refusing every future
     // move.
-    let _guard = ORDER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = ORDER_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
 
     let mut sessions = db
         .list_active_sessions()
@@ -1647,7 +1694,7 @@ fn reorder(db: &Database, id: SessionId, delta: i64) -> Result<(), String> {
 /// never showed.
 fn order(db: &Database, list: &[String]) -> Result<(), String> {
     // Same lock as `reorder`: two concurrent renumberings must not interleave.
-    let _guard = ORDER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = ORDER_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
 
     let mut sessions = db
         .list_active_sessions()

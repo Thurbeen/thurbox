@@ -91,7 +91,7 @@ fn source_or_dest_filename<'a>(source: &'a Option<String>, dest: &'a str) -> &'a
     source.as_deref().unwrap_or_else(|| {
         std::path::Path::new(dest)
             .file_name()
-            .and_then(|s| s.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or(dest)
     })
 }

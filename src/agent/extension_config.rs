@@ -10,6 +10,7 @@
 //! extension's installer. Read/parse errors degrade gracefully (a bad manifest
 //! is skipped with a warning, never aborting startup).
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -267,10 +268,10 @@ pub fn list_manifests_with_warnings() -> (Vec<ExtensionDef>, Vec<String>) {
     };
     // Collect + sort filenames so the scan order is deterministic across runs.
     let mut stems: Vec<String> = entries
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("toml"))
-        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
+        .filter(|p| p.extension().and_then(OsStr::to_str) == Some("toml"))
+        .filter_map(|p| p.file_stem().and_then(OsStr::to_str).map(String::from))
         .collect();
     stems.sort();
 
@@ -578,7 +579,7 @@ pub fn remove_agent_patches(patches: &[AgentPatch]) -> Result<Vec<String>, Strin
 }
 
 fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, String> {
-    use toml_edit::{Array, DocumentMut};
+    use toml_edit::DocumentMut;
 
     if patches.is_empty() {
         return Ok(Vec::new());
@@ -601,56 +602,13 @@ fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, 
     };
 
     let mut changed = Vec::new();
-    for patch in patches {
-        if patch.append_args.is_empty() {
-            continue;
-        }
+    for patch in patches.iter().filter(|p| !p.append_args.is_empty()) {
         // A patch targets its named built-in agent AND every custom agent that
         // declared `hook_schema = "<patch.name>"` — so a rebranded-claude agent
         // gets the same `--settings` wiring. No `break`: fan out to all matches.
         for table in agents.iter_mut() {
-            // Snapshot the identity fields into owned strings first: the args
-            // mutation below reborrows `table` mutably.
-            let agent_name = table
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let hook_schema = table
-                .get("hook_schema")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let matches = agent_name.as_deref() == Some(patch.name.as_str())
-                || hook_schema.as_deref() == Some(patch.name.as_str());
-            if !matches {
-                continue;
-            }
-            // A hook_schema match with no `name` can't be patched — skip it.
-            let Some(agent_name) = agent_name else {
-                continue;
-            };
-            if table.get("args").is_none() {
-                table["args"] = toml_edit::value(Array::new());
-            }
-            let Some(args) = table.get_mut("args").and_then(|i| i.as_array_mut()) else {
-                continue;
-            };
-            let current: Vec<String> = args
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect();
-            let present = contains_subsequence(&current, &patch.append_args);
-            if add && !present {
-                for a in &patch.append_args {
-                    args.push(a.as_str());
-                }
-                changed.push(agent_name);
-            } else if !add && present {
-                let mut arr = Array::new();
-                for a in remove_subsequence(&current, &patch.append_args) {
-                    arr.push(a.as_str());
-                }
-                table["args"] = toml_edit::value(arr);
-                changed.push(agent_name);
+            if let Some(name) = patch_one_agent(table, patch, add) {
+                changed.push(name);
             }
         }
     }
@@ -660,6 +618,54 @@ fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, 
             .map_err(|e| format!("write {}: {e}", path.display()))?;
     }
     Ok(changed)
+}
+
+/// Add or remove one patch's `append_args` on one `[[agents]]` table.
+///
+/// `Some(name)` when the table was actually changed — a patch already applied (or
+/// already absent) is a no-op, which is what makes install/uninstall idempotent.
+fn patch_one_agent(table: &mut toml_edit::Table, patch: &AgentPatch, add: bool) -> Option<String> {
+    use toml_edit::Array;
+
+    // Snapshot the identity fields into owned strings first: the args mutation
+    // below reborrows `table` mutably.
+    let agent_name = table
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let hook_schema = table
+        .get("hook_schema")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let targeted = agent_name.as_deref() == Some(patch.name.as_str())
+        || hook_schema.as_deref() == Some(patch.name.as_str());
+    // A hook_schema match with no `name` can't be patched — skip it.
+    let agent_name = agent_name.filter(|_| targeted)?;
+
+    if table.get("args").is_none() {
+        table["args"] = toml_edit::value(Array::new());
+    }
+    let args = table.get_mut("args").and_then(|i| i.as_array_mut())?;
+    let current: Vec<String> = args
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    let present = contains_subsequence(&current, &patch.append_args);
+    if add && !present {
+        for a in &patch.append_args {
+            args.push(a.as_str());
+        }
+        return Some(agent_name);
+    }
+    if !add && present {
+        let mut arr = Array::new();
+        for a in remove_subsequence(&current, &patch.append_args) {
+            arr.push(a.as_str());
+        }
+        table["args"] = toml_edit::value(arr);
+        return Some(agent_name);
+    }
+    None
 }
 
 /// Whether `hay` contains `needle` as a contiguous subsequence.

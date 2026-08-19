@@ -520,36 +520,36 @@ pub fn resolve_backend(configured: NotificationBackend, probe: HostProbe) -> Del
                 DeliveryBackend::None
             }
         }
-        NotificationBackend::Auto => {
-            if probe.is_macos {
-                DeliveryBackend::Macos
-            } else if probe.is_windows {
-                // Native Windows: `powershell.exe` ships with the OS, so the
-                // WinRT toast path is always available. (Click-to-focus is not
-                // wired on Windows — the banner shows but is non-interactive.)
-                if probe.has_powershell {
-                    DeliveryBackend::WindowsToast
-                } else {
-                    DeliveryBackend::None
-                }
-            } else if probe.is_linux {
-                // Prefer dbus when a real notification daemon answers. The
-                // common WSL case has no daemon, so fall back to a Windows
-                // toast whenever interop (`powershell.exe`) is available —
-                // this also covers the unusual non-WSL Linux host with
-                // powershell on PATH, still better than dropping silently.
-                // Without either we have nothing (reported via `last_error`).
-                if probe.has_dbus_service {
-                    DeliveryBackend::Dbus
-                } else if probe.has_powershell {
-                    DeliveryBackend::WindowsToast
-                } else {
-                    DeliveryBackend::None
-                }
-            } else {
-                DeliveryBackend::None
-            }
-        }
+        NotificationBackend::Auto => resolve_auto(probe),
+    }
+}
+
+/// The `auto` half of [`resolve_backend`]: pick from what the host offers.
+fn resolve_auto(probe: HostProbe) -> DeliveryBackend {
+    let toast_or_none = |available: bool| match available {
+        true => DeliveryBackend::WindowsToast,
+        false => DeliveryBackend::None,
+    };
+    if probe.is_macos {
+        return DeliveryBackend::Macos;
+    }
+    if probe.is_windows {
+        // Native Windows: `powershell.exe` ships with the OS, so the WinRT
+        // toast path is always available. (Click-to-focus is not wired on
+        // Windows — the banner shows but is non-interactive.)
+        return toast_or_none(probe.has_powershell);
+    }
+    if !probe.is_linux {
+        return DeliveryBackend::None;
+    }
+    // Prefer dbus when a real notification daemon answers. The common WSL case
+    // has no daemon, so fall back to a Windows toast whenever interop
+    // (`powershell.exe`) is available — this also covers the unusual non-WSL
+    // Linux host with powershell on PATH, still better than dropping silently.
+    // Without either we have nothing (reported via `last_error`).
+    match probe.has_dbus_service {
+        true => DeliveryBackend::Dbus,
+        false => toast_or_none(probe.has_powershell),
     }
 }
 

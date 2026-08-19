@@ -748,76 +748,111 @@ fn path_display(path: &str) -> &str {
 }
 
 fn read_overrides() -> Overrides {
-    let mut bindings = BTreeMap::new();
-    let mut settings = BTreeMap::new();
-    let mut trusted = BTreeMap::new();
-    let mut disabled = BTreeSet::new();
-    let mut warnings = Vec::new();
-
     let Some(path) = overrides_path() else {
-        return (bindings, settings, trusted, disabled, warnings);
+        return Overrides::default();
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return (bindings, settings, trusted, disabled, warnings);
+        return Overrides::default();
     };
     let parsed: serde_json::Value = match serde_json::from_str(&text) {
         Ok(value) => value,
         Err(e) => {
-            warnings.push(format!("{}: {e}", path.display()));
-            return (bindings, settings, trusted, disabled, warnings);
+            let mut unreadable = Overrides::default();
+            unreadable.4.push(format!("{}: {e}", path.display()));
+            return unreadable;
         }
     };
-    if let Some(map) = parsed.get("bindings").and_then(|v| v.as_object()) {
-        for (action, chord) in map {
-            if let Some(chord) = chord.as_str() {
-                bindings.insert(action.clone(), normalise_chord(chord));
-            }
+
+    let mut warnings = Vec::new();
+    (
+        read_bindings(&parsed),
+        read_settings(&parsed),
+        read_trusted(&parsed, &mut warnings),
+        read_disabled(&parsed),
+        warnings,
+    )
+}
+
+/// The `bindings` half of `ui.json`: action id → chord, normalised.
+fn read_bindings(parsed: &serde_json::Value) -> BTreeMap<String, String> {
+    let mut bindings = BTreeMap::new();
+    let Some(map) = parsed.get("bindings").and_then(|v| v.as_object()) else {
+        return bindings;
+    };
+    for (action, chord) in map {
+        if let Some(chord) = chord.as_str() {
+            bindings.insert(action.clone(), normalise_chord(chord));
         }
     }
-    if let Some(map) = parsed.get("settings").and_then(|v| v.as_object()) {
-        for (key, value) in map {
-            if let Some(value) = json_to_value(value) {
-                settings.insert(key.clone(), value);
-            }
+    bindings
+}
+
+/// The `settings` half of `ui.json`: setting id → the value the user chose.
+fn read_settings(parsed: &serde_json::Value) -> BTreeMap<String, Value> {
+    let mut settings = BTreeMap::new();
+    let Some(map) = parsed.get("settings").and_then(|v| v.as_object()) else {
+        return settings;
+    };
+    for (key, value) in map {
+        if let Some(value) = json_to_value(value) {
+            settings.insert(key.clone(), value);
         }
     }
-    if let Some(map) = parsed.get("trusted").and_then(|v| v.as_object()) {
-        for (path, granted) in map {
-            // A bare string is what every release before managed panes wrote, and
-            // is still what an unmanaged file gets. Read first so an upgrade cannot
-            // forget a grant the user already made.
-            if let Some(digest) = granted.as_str() {
-                trusted.insert(path.clone(), Granted::Contents(digest.to_string()));
-            } else if let Some(object) = granted.as_object() {
-                let pin = object.get("pin").and_then(|v| v.as_str());
-                let digest = object.get("digest").and_then(|v| v.as_str());
-                match (pin, digest) {
-                    (Some(pin), Some(digest)) => {
-                        trusted.insert(
-                            path.clone(),
-                            Granted::Managed {
-                                pin: pin.to_string(),
-                                digest: digest.to_string(),
-                            },
-                        );
-                    }
-                    // A half-written grant is not one. Dropped rather than
-                    // guessed at, since guessing here means granting a capability
-                    // on the strength of a malformed file.
-                    _ => warnings.push(format!(
-                        "{}: trusted[{path}] is not a grant; ignoring it",
-                        path_display(path)
-                    )),
-                }
-            }
+    settings
+}
+
+/// The `trusted` half of `ui.json`: path → the grant made to it.
+fn read_trusted(
+    parsed: &serde_json::Value,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<String, Granted> {
+    let mut trusted = BTreeMap::new();
+    let Some(map) = parsed.get("trusted").and_then(|v| v.as_object()) else {
+        return trusted;
+    };
+    for (path, granted) in map {
+        if let Some(grant) = read_grant(granted) {
+            trusted.insert(path.clone(), grant);
+        } else if granted.is_object() {
+            // A half-written grant is not one. Dropped rather than guessed at,
+            // since guessing here means granting a capability on the strength of
+            // a malformed file.
+            warnings.push(format!(
+                "{}: trusted[{path}] is not a grant; ignoring it",
+                path_display(path)
+            ));
         }
     }
-    if let Some(list) = parsed.get("disabled").and_then(|v| v.as_array()) {
-        for path in list.iter().filter_map(|v| v.as_str()) {
-            disabled.insert(path.to_string());
-        }
+    trusted
+}
+
+/// The `disabled` half of `ui.json`: the files present but not loaded.
+fn read_disabled(parsed: &serde_json::Value) -> BTreeSet<String> {
+    let Some(list) = parsed.get("disabled").and_then(|v| v.as_array()) else {
+        return BTreeSet::new();
+    };
+    list.iter()
+        .filter_map(|v| v.as_str())
+        .map(str::to_string)
+        .collect()
+}
+
+/// One `trusted` entry, in either of the two forms `ui.json` carries.
+///
+/// A bare string is what every release before managed panes wrote, and is still
+/// what an unmanaged file gets. Read first so an upgrade cannot forget a grant the
+/// user already made. `None` = malformed, for the caller to report.
+fn read_grant(granted: &serde_json::Value) -> Option<Granted> {
+    if let Some(digest) = granted.as_str() {
+        return Some(Granted::Contents(digest.to_string()));
     }
-    (bindings, settings, trusted, disabled, warnings)
+    let object = granted.as_object()?;
+    let pin = object.get("pin").and_then(|v| v.as_str())?;
+    let digest = object.get("digest").and_then(|v| v.as_str())?;
+    Some(Granted::Managed {
+        pin: pin.to_string(),
+        digest: digest.to_string(),
+    })
 }
 
 /// Bring v1's `keybindings.json` overrides forward.
