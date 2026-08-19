@@ -620,6 +620,7 @@ local function render_repo(flow)
         value = flow.input.value or "",
         cursor = flow.input.cursor or 0,
         placeholder = "",
+        focused = flow.focus == "input",
         style = { fg = theme.text },
       },
       {

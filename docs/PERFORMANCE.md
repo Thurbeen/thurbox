@@ -78,7 +78,8 @@ rewrites the cells, so the escapes must follow each draw — and is gated on
 rows, so a session whose agent never printed a link pays a single emptiness
 check per frame. When links are present the scan is bounded (the newest 128
 runs × the visible rows) and the writes are a handful of short `queue!`s per
-visible run.
+visible run, bracketed in DECSC/DECRC so the caret the frame just placed is put
+back rather than left wherever the last run ended.
 
 ---
 

@@ -246,6 +246,7 @@ pub fn render_recording(
             value,
             cursor,
             placeholder,
+            focused,
             style,
             ..
         } => {
@@ -263,9 +264,16 @@ pub fn render_recording(
                 Paragraph::new(Line::from(text.clone()).style(line_style)),
                 inner,
             );
-            // A real caret, so a focused field reads as focused. Clamped into
-            // the rect so a cursor past the end cannot paint outside it.
-            if !showing_placeholder {
+            // A real caret, in the one field that claims it — empty or not. A
+            // field showing its placeholder is still the field being typed
+            // into: keying the caret on the value being non-empty instead, as
+            // this did, made the cursor blink into existence on the first
+            // keystroke and out of it on the last backspace, and handed it to
+            // whichever *other* field on screen happened to hold text. The
+            // placeholder is dim, so a caret at its start cannot be mistaken
+            // for one. Clamped into the rect so a cursor past the end cannot
+            // paint outside it.
+            if *focused {
                 let offset = (*cursor).min(value.chars().count());
                 let column = inner
                     .x

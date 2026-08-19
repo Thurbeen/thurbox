@@ -115,6 +115,11 @@ fn convert_table(table: &Table, path: &str, depth: usize, owner: &str) -> Result
             value: opt_string(table, "value", path)?.unwrap_or_default(),
             cursor: opt_u16(table, "cursor", path)?.unwrap_or(0) as usize,
             placeholder: opt_string(table, "placeholder", path)?.unwrap_or_default(),
+            // Absent means "not the one being typed into". A pane that draws one
+            // field and never says so gets no caret, which is visible at once —
+            // the alternative default hands the caret to every field on screen
+            // and the last one painted wins, which is not.
+            focused: opt_bool(table, "focused", path)?.unwrap_or(false),
             style: read_style_field(table, "style", path)?,
             frame,
             size,
@@ -719,6 +724,7 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
             value,
             cursor,
             placeholder,
+            focused,
             style,
             ..
         } => {
@@ -729,6 +735,7 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
             table
                 .set("placeholder", placeholder.clone())
                 .map_err(|e| e.to_string())?;
+            table.set("focused", *focused).map_err(|e| e.to_string())?;
             if let Some(style) = style_to_lua(lua, style)? {
                 table.set("style", style).map_err(|e| e.to_string())?;
             }

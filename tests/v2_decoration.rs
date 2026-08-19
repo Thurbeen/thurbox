@@ -157,6 +157,7 @@ fn every_field_survives_the_trip_out_and_back() {
                 value: "typed".into(),
                 cursor: 3,
                 placeholder: "hint".into(),
+                focused: true,
                 style: Style::default().fg(Color::Yellow),
             },
             Node::Surface {

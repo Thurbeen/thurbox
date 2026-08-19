@@ -1574,16 +1574,26 @@ fn drawn_label_cells(
 /// can open it.
 ///
 /// Written straight to stdout *after* the backend has flushed the frame, so it
-/// cannot interleave with ratatui's own output. The cursor is left wherever the
-/// last run ended; the next `draw` repositions it.
+/// cannot interleave with ratatui's own output.
+///
+/// Bracketed in DECSC/DECRC, because the frame has already placed the caret and
+/// this walks it away. `draw` positions the caret last and it stays *shown*, so
+/// a focused text field's caret was left sitting wherever the final link run
+/// ended — and, since the loop repaints on the forced-redraw floor, it jumped
+/// back to the field and away again several times a second. That reads as a
+/// cursor blinking in the wrong place rather than as one that moved, which is
+/// why it looked like a rendering fault. Restoring here rather than leaving it
+/// to the next `draw` keeps the two independent: any number of frames may pass
+/// before the next one, and every one of them is a frame with a stray caret.
 pub fn paint_hyperlinks(paints: &[HyperlinkPaint]) -> std::io::Result<()> {
-    use crossterm::cursor::MoveTo;
+    use crossterm::cursor::{MoveTo, RestorePosition, SavePosition};
     use crossterm::queue;
     use crossterm::style::{Print, PrintStyledContent, ResetColor};
     use ratatui::backend::IntoCrossterm;
     use std::io::Write;
 
     let mut out = std::io::stdout();
+    queue!(out, SavePosition)?;
     for paint in paints {
         queue!(
             out,
@@ -1600,6 +1610,7 @@ pub fn paint_hyperlinks(paints: &[HyperlinkPaint]) -> std::io::Result<()> {
             ResetColor
         )?;
     }
+    queue!(out, RestorePosition)?;
     out.flush()
 }
 

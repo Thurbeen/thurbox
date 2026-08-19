@@ -286,6 +286,9 @@ local function query_row(search, rows)
         value = search.field.value or "",
         cursor = search.field.cursor or 0,
         placeholder = "type to search sessions",
+        -- The strip is only drawn while searching, and while it is the query is
+        -- what the keyboard is aimed at.
+        focused = true,
         style = { fg = theme.text },
       },
       {

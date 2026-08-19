@@ -1796,6 +1796,73 @@ fn the_review_body_is_a_surface_not_a_tree() {
     assert!(screen.contains("+added"), "{screen}");
 }
 
+// --- text fields -----------------------------------------------------------
+
+/// Paint a tree and report where the caret ended up, if anywhere.
+fn painted_caret(node: &Node, width: u16, height: u16) -> Option<(u16, u16)> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| render(frame, frame.area(), node, &PlaceholderSurfaces))
+        .expect("draw");
+    let backend = terminal.backend();
+    let position = backend.cursor_position();
+    backend.cursor_visible().then_some((position.x, position.y))
+}
+
+fn field(value: &str, cursor: usize, focused: bool) -> Node {
+    Node::Input {
+        identity: Default::default(),
+        size: Default::default(),
+        frame: None,
+        value: value.into(),
+        cursor,
+        placeholder: "name".into(),
+        focused,
+        style: Default::default(),
+    }
+}
+
+#[test]
+fn an_empty_focused_field_still_owns_the_caret() {
+    // The caret used to be keyed on the value being non-empty, so the field you
+    // had just opened showed none until the first keystroke and lost it again on
+    // the last backspace. A field showing its placeholder is still the field
+    // being typed into.
+    assert_eq!(painted_caret(&field("", 0, true), 20, 1), Some((0, 0)));
+    assert_eq!(painted_caret(&field("ab", 2, true), 20, 1), Some((2, 0)));
+}
+
+#[test]
+fn only_the_focused_field_owns_the_caret() {
+    // Two fields on one screen and one caret: the creation flow's repo step
+    // draws a search box and a path box together. Ownership is declared, not
+    // inferred from which one holds text — inferring it put the caret in the
+    // other box, and painting order decided the winner.
+    let two = Node::Box {
+        identity: Default::default(),
+        size: Default::default(),
+        frame: None,
+        axis: thurbox::kernel::node::Axis::Vertical,
+        gap: 0,
+        children: vec![field("typed here", 4, true), field("stale", 5, false)],
+    };
+    assert_eq!(painted_caret(&two, 20, 2), Some((4, 0)));
+
+    let none = Node::Box {
+        identity: Default::default(),
+        size: Default::default(),
+        frame: None,
+        axis: thurbox::kernel::node::Axis::Vertical,
+        gap: 0,
+        children: vec![field("typed", 3, false)],
+    };
+    assert_eq!(
+        painted_caret(&none, 20, 2),
+        None,
+        "a field nobody is typing into must not take the caret"
+    );
+}
+
 // --- terminal affordances --------------------------------------------------
 
 #[test]

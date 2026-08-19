@@ -1164,6 +1164,16 @@ impl App {
             // delete feel immediate instead of arriving up to 400ms later.
             if self.commands.poll() {
                 self.report_finished_commands();
+                // A session you just asked for is the one you want to be
+                // looking at. The id is knowable only once the spawn finished,
+                // so it arrives with the completion rather than with the
+                // command — and the list follows an id until it appears, which
+                // is what carries this across the frames between "created" and
+                // "in the snapshot". Of several finishing at once the last to
+                // finish wins; there is one caret and one selection either way.
+                if let Some(created) = self.commands.take_created().pop() {
+                    self.focus_on_session(&created);
+                }
                 // Wait for the last one: two adds in quick succession would
                 // otherwise re-read between them and publish a list missing the
                 // second.
@@ -1294,13 +1304,7 @@ impl App {
             // leave a row in the database for whoever is running the interface.
             // Taken atomically, so two instances cannot both claim it.
             if let Some(id) = self.snapshots.take_focus_request() {
-                self.host.set_shared_string("focus_session", &id);
-                if let Some(index) = self.host.index_of("agent") {
-                    if let Some(position) = self.host.focusable().iter().position(|i| *i == index) {
-                        self.focus = position;
-                    }
-                }
-                self.dirty = true;
+                self.focus_on_session(&id);
             }
 
             // Acknowledge a finished turn on the way out of it: moving the
@@ -3501,6 +3505,23 @@ impl App {
             .iter()
             .filter_map(|row| Some((row.id.clone(), self.terminals.last_rect(&row.id)?)))
             .find(|(_, rect)| rect.contains(position))
+    }
+
+    /// Select a session and put the input focus on the pane that shows it.
+    ///
+    /// Shared by the two things that mean "look at this one": an outside focus
+    /// request (a clicked notification, `thurbox-cli session focus`) and a
+    /// session this instance just created. The selection travels through the
+    /// store rather than being set here, because the list is a plugin and it is
+    /// the only thing that knows the rendered order.
+    fn focus_on_session(&mut self, id: &str) {
+        self.host.set_shared_string("focus_session", id);
+        if let Some(index) = self.host.index_of("agent") {
+            if let Some(position) = self.host.focusable().iter().position(|i| *i == index) {
+                self.focus = position;
+            }
+        }
+        self.dirty = true;
     }
 
     /// Hand every visible OSC 8 run back to the terminal thurbox runs in.

@@ -741,6 +741,10 @@ struct Progress {
 struct Done {
     id: u64,
     error: Option<String>,
+    /// The session the command brought into existence, if it did — a creation
+    /// or a fork. Carried on the completion because that is the first moment
+    /// the id exists.
+    created: Option<String>,
 }
 
 /// How long a failed command stays readable before being swept.
@@ -756,6 +760,8 @@ pub struct CommandBus {
     next_id: AtomicU64,
     /// When each failure was recorded, so it can be swept after lingering.
     failed_at: Vec<(u64, std::time::Instant)>,
+    /// Sessions created since the loop last drained this, oldest first.
+    created: Vec<String>,
 }
 
 impl CommandBus {
@@ -770,6 +776,7 @@ impl CommandBus {
             progress_rx,
             next_id: AtomicU64::new(1),
             failed_at: Vec::new(),
+            created: Vec::new(),
         }
     }
 
@@ -799,17 +806,15 @@ impl CommandBus {
                     entry.started();
                 }
             }
-            let error = execute(&command, id, &progress).err();
-            let _ = finished.send(Done { id, error });
+            let (created, error) = match execute(&command, id, &progress) {
+                Ok(created) => (created, None),
+                Err(error) => (None, Some(error)),
+            };
+            let _ = finished.send(Done { id, error, created });
         });
         id
     }
 
-    /// Fold finished commands into the in-flight list.
-    ///
-    /// Returns true when anything completed, so the caller can refresh the
-    /// snapshot immediately rather than waiting out the refresh interval —
-    /// which is what makes a delete feel instant.
     /// Report a command finished, as a worker would.
     ///
     /// The worker path is a thread and a channel; a test that wants to observe
@@ -817,9 +822,20 @@ impl CommandBus {
     /// thread.
     #[doc(hidden)]
     pub fn finish_for_test(&self, id: u64, error: Option<String>) {
-        let _ = self.finished_tx.send(Done { id, error });
+        self.finish_outcome(id, error, None);
     }
 
+    /// As [`Self::finish_for_test`], but also naming a session the command
+    /// created — the other half of a completion the worker supplies.
+    fn finish_outcome(&self, id: u64, error: Option<String>, created: Option<String>) {
+        let _ = self.finished_tx.send(Done { id, error, created });
+    }
+
+    /// Fold finished commands into the in-flight list.
+    ///
+    /// Returns true when anything completed, so the caller can refresh the
+    /// snapshot immediately rather than waiting out the refresh interval —
+    /// which is what makes a delete feel instant.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
 
@@ -836,6 +852,9 @@ impl CommandBus {
 
         while let Ok(done) = self.finished_rx.try_recv() {
             changed = true;
+            if let Some(session) = done.created {
+                self.created.push(session);
+            }
             if let Ok(mut list) = self.inflight.lock() {
                 match done.error {
                     // Success: the effect is in the database now, so the row
@@ -867,6 +886,15 @@ impl CommandBus {
             changed = true;
         }
         changed
+    }
+
+    /// The sessions completed commands brought into existence, oldest first.
+    ///
+    /// Drained rather than read: the loop acts on each exactly once, and a
+    /// creation nobody consumed must not steer the selection again on the next
+    /// tick.
+    pub fn take_created(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.created)
     }
 
     /// Everything accepted but not yet done, for publishing to plugins.
@@ -912,7 +940,15 @@ impl Default for CommandBus {
 }
 
 /// Run one command. Called on the command's own thread, never the UI thread.
-fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<(), String> {
+///
+/// `Ok(Some(id))` when the command brought a session into existence: the id is
+/// not knowable when the command is issued — the spawn pipeline mints it — so it
+/// travels back with the completion instead.
+fn execute(
+    command: &Command,
+    id: u64,
+    progress: &Sender<Progress>,
+) -> Result<Option<String>, String> {
     // Handled by the loop before dispatch, because they mutate in-process state
     // the worker cannot reach. Reaching here means a caller bypassed that.
     if command.applied_on_ui_thread() {
@@ -931,26 +967,28 @@ fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<()
         extras,
     } = command
     {
-        return create(name, repo, branch, base, agent, host, extras, id, progress);
+        return create(name, repo, branch, base, agent, host, extras, id, progress)
+            .map(|session| Some(session.to_string()));
     }
 
     // Repository memory names a path, not a session, so it too runs before the
     // id parse.
     if let Command::Bookmark { host, path, edit } = command {
-        return bookmark(host, path, *edit);
+        return bookmark(host, path, *edit).map(|()| None);
     }
 
     // The settings file names nothing at all.
     if let Command::Configure { settings } = command {
         return crate::agent::settings_config::save_settings(settings)
-            .map_err(|e| format!("write settings.toml: {e}"));
+            .map_err(|e| format!("write settings.toml: {e}"))
+            .map(|()| None);
     }
 
     // Keyed by nothing at all: an explicit order names every session at once.
     if let Command::Order { list } = command {
         let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
         let db = Database::open(&path).map_err(|e| format!("open database: {e}"))?;
-        return order(&db, list);
+        return order(&db, list).map(|()| None);
     }
 
     // Tasks and automations are keyed by number, not by session id.
@@ -977,7 +1015,8 @@ fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<()
                 delete,
             } => automation(&db, *id, *enabled, *run_now, *delete),
             _ => unreachable!(),
-        };
+        }
+        .map(|()| None);
     }
 
     let id: SessionId = command
@@ -989,6 +1028,12 @@ fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<()
     // the very reads this is supposed to keep instant.
     let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
     let db = Database::open(&path).map_err(|e| format!("open database: {e}"))?;
+
+    // A fork mints a session too, so it reports its id the way creation does;
+    // every other command leaves the set of sessions as it found it.
+    if let Command::Fork { name, .. } = command {
+        return fork(&db, id, name).map(|session| Some(session.to_string()));
+    }
 
     match command {
         Command::Delete { force, .. } => {
@@ -1018,7 +1063,7 @@ fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<()
         Command::Reorder { delta, .. } => reorder(&db, id, *delta),
         // Handled above, before the session id is parsed.
         Command::Order { .. } => Ok(()),
-        Command::Fork { name, .. } => fork(&db, id, name),
+        Command::Fork { .. } => unreachable!("handled above, to report its new session"),
 
         Command::Sync { .. } => sync(&db, id),
         // Unreachable: guarded above, and kept exhaustive so adding a command
@@ -1041,6 +1086,7 @@ fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<()
         | Command::Focus { .. }
         | Command::Plugin { .. } => unreachable!("applied on the UI thread"),
     }
+    .map(|()| None)
 }
 
 /// Create a session.
@@ -1061,7 +1107,7 @@ fn create(
     extras: &[ExtraMember],
     id: u64,
     progress: &Sender<Progress>,
-) -> Result<(), String> {
+) -> Result<SessionId, String> {
     let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
     let db = Database::open(&path).map_err(|e| format!("open database: {e}"))?;
 
@@ -1125,7 +1171,7 @@ fn create(
         });
     };
     crate::session_ops::spawn::spawn_session_headless_with_progress(&db, request, Some(&report))
-        .map(|_| ())
+        .map(|spawned| spawned.session_id)
 }
 
 /// Remember, forget or import a repository path.
@@ -1238,7 +1284,7 @@ fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
 }
 
 /// Fork a session: a new one on the same repository, recording its parent.
-fn fork(db: &Database, id: SessionId, name: &str) -> Result<(), String> {
+fn fork(db: &Database, id: SessionId, name: &str) -> Result<SessionId, String> {
     let source = db
         .get_session_by_id(id)
         .map_err(|e| format!("get session: {e}"))?
@@ -1285,7 +1331,7 @@ fn fork(db: &Database, id: SessionId, name: &str) -> Result<(), String> {
         // Shared, not created — so the fork shows its branch and can be synced.
         inherit_worktrees: source.worktrees.clone(),
     };
-    crate::session_ops::spawn::spawn_session_headless(db, request).map(|_| ())
+    crate::session_ops::spawn::spawn_session_headless(db, request).map(|spawned| spawned.session_id)
 }
 
 /// Bring a session's worktree up to date with the branch it came from.
@@ -1844,6 +1890,41 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         panic!("the failure never surfaced");
+    }
+
+    #[test]
+    fn a_created_session_is_reported_once_and_then_drained() {
+        // What the loop needs to steer the selection onto a session the user
+        // just asked for. Drained rather than read, because a creation acted on
+        // twice would keep dragging the cursor back after the user moved it.
+        let mut bus = CommandBus::new();
+        let id = bus.dispatch(Command::Delete {
+            session: "not-a-uuid".into(),
+            force: false,
+        });
+        bus.finish_outcome(id, None, Some("the-new-session".into()));
+        bus.poll();
+
+        assert_eq!(bus.take_created(), vec!["the-new-session".to_string()]);
+        assert!(
+            bus.take_created().is_empty(),
+            "a creation must steer the selection once, not every tick"
+        );
+    }
+
+    #[test]
+    fn a_failed_creation_reports_no_session_to_focus() {
+        // The id would be a lie: nothing was spawned, so following it would
+        // leave the list chasing a session that never appears.
+        let mut bus = CommandBus::new();
+        let id = bus.dispatch(Command::Delete {
+            session: "not-a-uuid".into(),
+            force: false,
+        });
+        bus.finish_for_test(id, Some("worktree add failed".into()));
+        bus.poll();
+
+        assert!(bus.take_created().is_empty());
     }
 
     #[test]

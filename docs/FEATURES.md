@@ -236,6 +236,15 @@ not applicable.
    session. Skipped when only one agent is defined in
    `agents.toml`.
 
+**The new session is the one you end up looking at.** Creation is a command, so
+its id does not exist when the flow closes — the spawn pipeline mints it. It
+travels back with the completion (`CommandBus::take_created`), and the loop then
+selects that session and puts the input focus on the pane showing it, through the
+same `focus_session` path a clicked notification and `thurbox-cli session focus`
+use. The session list *follows the id* rather than a row number, so the selection
+lands correctly across the frames between "created" and "in the snapshot".
+`Ctrl+F` fork reports its new session the same way.
+
 A session is fully described by its repos and agent. There is no
 per-session model selection, permissions, prompt, tool, or skill
 configuration — those concerns belong to the agent CLI itself,
@@ -2329,8 +2338,16 @@ visually and only the terminal's hyperlink state is added. Windows
 Terminal, kitty, WezTerm and iTerm2 then underline the label on hover and
 open the user's own browser on Ctrl/Cmd+Click.
 
-Two properties keep this safe and cheap:
+Three properties keep this safe and cheap:
 
+- **Bracketed in DECSC/DECRC**: the draw places the caret last and leaves it
+  *shown*, so re-printing walks it away — a focused text field's caret was left
+  wherever the final run ended, and the forced-redraw floor put it back and took
+  it away again several times a second. That reads as a cursor blinking in the
+  wrong place, which is why it looked like a rendering fault rather than a moved
+  cursor. The pass saves and restores the position itself instead of leaving it
+  to the next `draw`: any number of frames may pass before that one, and every
+  one of them is a frame with a stray caret.
 - **Validated against what was drawn** (`helpers::drawn_label_cells`): a
   candidate is emitted only if the frame's cells still print that label
   there, so a covering overlay, a scrolled pane, or a repainted row

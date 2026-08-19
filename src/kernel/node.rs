@@ -221,6 +221,16 @@ pub enum Node {
         value: String,
         cursor: usize,
         placeholder: String,
+        /// Whether this field owns the terminal caret.
+        ///
+        /// A screen can hold several inputs — the creation flow's repo step
+        /// holds two — and there is exactly one caret, so ownership has to be
+        /// declared rather than guessed. It was guessed once, from the value
+        /// being non-empty, which put the caret in whichever field happened to
+        /// have text in it and took it away from an empty field you were
+        /// typing into: the cursor appeared on the first keystroke and vanished
+        /// on the last backspace.
+        focused: bool,
         style: Style,
         frame: Option<Frame>,
         size: Size,

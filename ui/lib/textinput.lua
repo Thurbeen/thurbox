@@ -183,8 +183,9 @@ end
 
 --- The field as a node: a framed one-line input, its label the frame's title.
 ---
---- `focused` drives the border, as it does for every other surface; the caret is
---- the kernel's, painted only where the value is non-empty.
+--- `focused` drives the border AND the caret: the kernel paints the caret in the
+--- one input that claims it, so a screen holding two fields puts it in the one
+--- being typed into rather than in whichever holds text.
 function textinput.node(field, opts)
   opts = opts or {}
   return {
@@ -193,6 +194,7 @@ function textinput.node(field, opts)
     value = field.value or "",
     cursor = field.cursor or 0,
     placeholder = opts.placeholder or "",
+    focused = opts.focused == true,
     style = { fg = theme.text },
     frame = {
       title = " " .. (opts.label or "") .. " ",

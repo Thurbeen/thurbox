@@ -248,6 +248,16 @@ widgets.panel("title", ctx.focused)
 widgets.gauge(0.7, { width = 20 })
 ```
 
+`input` carries one thing the other three do not: a claim on the **caret**. A
+screen can hold several fields and the terminal has one cursor, so the field
+being typed into says so with `focused = true` and the others say nothing — and
+a field that claims it keeps the caret whether or not it holds text, because a
+field showing its placeholder is still the field you are typing into.
+`lib/textinput.lua` passes its own `focused` option through, so a pane built on
+it already does the right thing; a raw `input` node that never sets the flag
+draws no caret at all, which is visible at once. A caret guessed from the value
+being non-empty is not: it wanders to whichever field happens to hold text.
+
 `surface` is the exception that proves the rule: it carries **cells**, for
 content positioned by character measurement rather than by structure — a live
 terminal, or a diff body. You place and frame it; the kernel fills it.
