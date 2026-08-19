@@ -14,6 +14,8 @@
 #   scripts/dev/sandbox.sh --fresh         # throwaway env, wiped on exit
 #   scripts/dev/sandbox.sh --profile foo   # named persistent profile
 #   scripts/dev/sandbox.sh --isolate-home  # full isolation (fresh HOME; no agent creds)
+#   scripts/dev/sandbox.sh --demo          # seed a demo repo + sessions, then launch
+#   scripts/dev/sandbox.sh --demo-big      # …and the large-diff repo as well
 #   scripts/dev/sandbox.sh --shell         # drop into a shell with the sandbox env
 #                                          #   (run `thurbox-cli ...` against the sandbox DB)
 #   scripts/dev/sandbox.sh -- session list # run `thurbox-cli <args>` in the sandbox
@@ -22,6 +24,11 @@
 # The interface materializes at `<sandbox>/thurbox-config/ui/` along with agents,
 # settings and the database, because THURBOX_CONFIG_DIR points there — which is
 # what `--fresh` then gives you a clean one of.
+#
+# A bare sandbox has NO repositories and NO sessions, which is the state most
+# bugs are reported against and is worth keeping as the default. `--demo` opts
+# into `demo-repo.sh`: a repository with one file of each git status, a session
+# whose branch has changes, and a session whose branch deliberately has none.
 #
 # The TUI is still launched FROM THE SANDBOX ROOT rather than the repo. That used
 # to be load-bearing: thurbox preferred a `./ui` in the working directory over the
@@ -51,6 +58,7 @@ die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 mode="persistent"
 profile="default"
 isolation="thurbox" # thurbox | full
+demo="" # "" | standard | big
 action="tui"        # tui | shell | cli | clean
 cli_args=()
 
@@ -59,10 +67,12 @@ while [ $# -gt 0 ]; do
         --fresh) mode="fresh"; shift ;;
         --profile) profile="${2:?--profile needs a name}"; shift 2 ;;
         --isolate-home) isolation="full"; shift ;;
+        --demo) demo="standard"; shift ;;
+        --demo-big) demo="big"; shift ;;
         --shell) action="shell"; shift ;;
         --clean) action="clean"; shift; case "${1:-}" in ""|-*) ;; *) profile="$1"; shift ;; esac ;;
         --) shift; action="cli"; cli_args=("$@"); break ;;
-        -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
 done
@@ -90,6 +100,15 @@ fi
 export TBX_IN_SANDBOX="$profile"
 
 log "sandbox root: $TBX_SANDBOX_ROOT ($mode, $isolation isolation)"
+
+# Seeded AFTER the init, so the seeder inherits this sandbox rather than
+# entering one of its own — it checks TBX_SANDBOX_ROOT and skips its own setup.
+# Idempotent per thing, so asking for it on every launch costs a few lookups.
+if [ -n "$demo" ]; then
+    demo_args=()
+    [ "$demo" = "big" ] && demo_args=(--big)
+    "$SCRIPT_DIR/demo-repo.sh" "${demo_args[@]}"
+fi
 
 # What to run in the sandbox env.
 run_in_sandbox() {

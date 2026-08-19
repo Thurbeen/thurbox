@@ -74,13 +74,26 @@ tui-ui *ARGS:
 sandbox *ARGS:
     scripts/dev/sandbox.sh {{ARGS}}
 
+# The interface lives inside the sandbox root, so a throwaway sandbox is already a
+# clean interface directory. There is no separate recipe for that; there was one
+# (`sandbox-fresh-ui`) which ran exactly this and claimed to do something else.
+
 # Run the dev TUI in a throwaway sandbox (wiped on exit).
 sandbox-fresh:
     scripts/dev/sandbox.sh --fresh
 
-# Throwaway sandbox with a clean interface directory each run.
-sandbox-fresh-ui:
-    scripts/dev/sandbox.sh --fresh
+# A bare `sandbox` deliberately starts empty — the state most bugs are reported
+# against. These opt in: one repository with a file of each git status, a session
+# whose branch has changes, and one whose branch deliberately has none. Idempotent,
+# so running either again costs a few lookups and changes nothing.
+
+# Seed a demo repository + sessions into the persistent sandbox, then launch.
+sandbox-demo:
+    scripts/dev/sandbox.sh --demo
+
+# As sandbox-demo, plus a 400-file repository whose diff is past the 4 MiB cap.
+sandbox-demo-big:
+    scripts/dev/sandbox.sh --demo-big
 
 # Drop into a shell with the sandbox env (run `thurbox-cli …` by hand).
 sandbox-shell:
