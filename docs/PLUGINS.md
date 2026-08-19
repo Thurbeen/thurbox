@@ -202,7 +202,21 @@ that throws costs its own pane and nothing else.
 | `files.list/read` | Directory entries and file text, rooted at a session's directory |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
 | `thurbox.bookmarks/browse/branches` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list — each served only while `store.want_bookmarks`/`want_browse`/`want_branches` asks for it |
-| `require` | Loads `lib/*.lua`, and nothing outside the plugin directory |
+| `require` | Loads **any** `.lua` under the interface directory, and nothing outside it |
+
+That is worth stating on its own, because it is easy to read `require` as "the
+`lib/` the interface shipped": **a pure-Lua library can be vendored into a plugin's
+own repository and required from there**, with no kernel change and no capability.
+`require("your-pane.vendor.thing")` resolves like any other path, and `plugin
+install git+…` is already the delivery mechanism for a repository that carries more
+than one file. A Lua tokenizer, a date library, a pretty-printer — none of those
+need anything added to the sandbox.
+
+What that does *not* reach is native code. `package` is absent, so there is no
+`loadlib` and no C module: anything with a compiled component (tree-sitter, PCRE2)
+is out, and would be out even with a grant, because Lua runs on the loop thread and
+a blocking call there freezes the frame. `run` and a program pane exist precisely
+because they are off the render path by construction.
 
 **There is no filesystem, no process spawning and no network.** Not because they
 are blocked — because they are not there. A capability you were not granted is
