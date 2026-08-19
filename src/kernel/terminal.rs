@@ -100,6 +100,9 @@ pub const WANT_CONTENT: &str = "want_content";
 /// cannot disagree about what they read.
 const CONTENT_LINE_CAP: usize = 500;
 
+/// The suffix that addresses a session's companion shell as its own surface.
+const SHELL_SUFFIX: &str = "#shell";
+
 /// A session we have attached to, plus the size we last told it about.
 struct Live {
     session: crate::agent::Session,
@@ -114,6 +117,36 @@ struct Live {
     /// that rect. The two take turns in one rect, so a pointer landing in it
     /// has to be told which pane it is over.
     shell_visible: Cell<bool>,
+}
+
+impl Live {
+    /// The parser of the pane currently *painted* into this session's rect.
+    ///
+    /// The agent and its companion shell take turns in one rect, so every reader
+    /// that answers "what is on screen" — the text a copy takes, the links a
+    /// click resolves, the screen a search scans — has to ask this rather than
+    /// reach for `session.parser`. Reaching for it directly is what made copying
+    /// out of a shell fail: a one-line selection read the agent's blank row and
+    /// reported "nothing to copy", and a taller one copied the agent's text from
+    /// under the shell the user was looking at.
+    fn visible_parser(&self) -> &Arc<std::sync::Mutex<crate::agent::SessionParser>> {
+        match (self.shell_visible.get(), &self.session.shell_pane) {
+            (true, Some(shell)) => &shell.parser,
+            _ => &self.session.parser,
+        }
+    }
+
+    /// Send bytes to the pane currently painted into this session's rect.
+    ///
+    /// The write half of [`Self::visible_parser`], beside it so the two cannot
+    /// come to disagree: a wheel tick answered by one pane must not be delivered
+    /// to the other.
+    fn send_visible_input(&self, bytes: Vec<u8>) -> anyhow::Result<()> {
+        match (self.shell_visible.get(), &self.session.shell_pane) {
+            (true, Some(shell)) => shell.send_input(bytes),
+            _ => self.session.send_input(bytes),
+        }
+    }
 }
 
 /// Owns every live terminal, keyed by session id.
@@ -755,7 +788,7 @@ impl Terminals {
         // your keystrokes reach. Without this leg the shell drew but could not
         // be typed into, which only became visible once it stopped being a pane
         // of its own and became a tab of the terminal.
-        if let Some(id) = session.strip_suffix("#shell") {
+        if let Some(id) = session.strip_suffix(SHELL_SUFFIX) {
             return match self
                 .live
                 .get(id)
@@ -771,14 +804,38 @@ impl Terminals {
         }
     }
 
+    /// The live entry a surface key names, and the parser it is showing.
+    ///
+    /// One resolver for both spellings a surface arrives as: an explicit
+    /// `<id>#shell` asks for the shell, and a bare id asks for whichever pane is
+    /// painted into that session's rect ([`Live::visible_parser`]). Every reader
+    /// of a grid goes through it, so a copy, a click on a link and a content
+    /// search cannot disagree about which of the two panes the user is looking
+    /// at.
+    fn surface_parser(
+        &self,
+        surface: &str,
+    ) -> Option<(&Live, &Arc<std::sync::Mutex<crate::agent::SessionParser>>)> {
+        if let Some(id) = surface.strip_suffix(SHELL_SUFFIX) {
+            let live = self.live.get(id)?;
+            return Some((live, &live.session.shell_pane.as_ref()?.parser));
+        }
+        let live = self.live.get(surface)?;
+        Some((live, live.visible_parser()))
+    }
+
     /// The visible contents of a session's terminal, as text.
+    ///
+    /// Visible is meant literally: a session showing its companion shell reports
+    /// the shell's screen, because that is the one the user is reading and the one
+    /// a copy or a search is about.
     ///
     /// Read here rather than in a worker because the parser lives beside a
     /// `!Send` VM — which is the compile-time guarantee working, not an
     /// inconvenience.
     pub fn visible_text(&self, session: &str) -> Option<String> {
-        let live = self.live.get(session)?;
-        let parser = live.session.parser.lock().ok()?;
+        let (_, parser) = self.surface_parser(session)?;
+        let parser = parser.lock().ok()?;
         let screen = parser.screen();
         let (rows, cols) = screen.size();
         let mut out = String::new();
@@ -1107,8 +1164,8 @@ impl Terminals {
         selection: &crate::session::selection::Selection,
         pane_origin: (u16, u16),
     ) -> Option<String> {
-        let live = self.live.get(session)?;
-        let parser = live.session.parser.lock().ok()?;
+        let (_, parser) = self.surface_parser(session)?;
+        let parser = parser.lock().ok()?;
         Some(crate::session::selection::extract_text_from_screen(
             parser.screen(),
             selection,
@@ -1171,11 +1228,7 @@ impl Terminals {
         else {
             return false;
         };
-        let shell = live.shell_visible.get();
-        let parser = match (shell, &live.session.shell_pane) {
-            (true, Some(pane)) => &pane.parser,
-            _ => &live.session.parser,
-        };
+        let parser = live.visible_parser();
         // Only the SGR encoding is emitted below, so a pane asking for one of
         // the older ones is left to the local fallback rather than sent bytes it
         // would misread.
@@ -1200,11 +1253,7 @@ impl Terminals {
         // Xterm wheel buttons: 64 up, 65 down. SGR press is `CSI < Cb ; Cx ; Cy M`.
         let button = if up { 64 } else { 65 };
         let bytes = format!("\x1b[<{button};{col};{row}M").into_bytes();
-        let sent = match (shell, &live.session.shell_pane) {
-            (true, Some(pane)) => pane.send_input(bytes),
-            _ => live.session.send_input(bytes),
-        };
-        match sent {
+        match live.send_visible_input(bytes) {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!("forwarding a wheel tick to the pty failed: {e}");
@@ -1226,10 +1275,10 @@ impl Terminals {
     /// is what a terminal honours, so listing both would offer the same link
     /// twice.
     pub fn links(&self, session: &str) -> Vec<(String, usize, usize)> {
-        let Some(live) = self.live.get(session) else {
+        let Some((_, parser)) = self.surface_parser(session) else {
             return Vec::new();
         };
-        let Ok(parser) = live.session.parser.lock() else {
+        let Ok(parser) = parser.lock() else {
             return Vec::new();
         };
         let rows = crate::session::links::extract_screen_rows(parser.screen());
@@ -1260,8 +1309,8 @@ impl Terminals {
     /// only when it declines, because for a rich-text link the escape is the
     /// *only* place the target exists — the screen holds nothing but the label.
     pub fn url_at(&self, session: &str, row: usize, col: usize) -> Option<String> {
-        let live = self.live.get(session)?;
-        let parser = live.session.parser.lock().ok()?;
+        let (_, parser) = self.surface_parser(session)?;
+        let parser = parser.lock().ok()?;
         let rows = crate::session::links::extract_screen_rows(parser.screen());
         rows.get(row)
             .and_then(|text| parser.callbacks().hyperlinks().resolve(text, col))
@@ -1282,10 +1331,10 @@ impl Terminals {
     /// or a repainted row emit nothing instead of a link over cells that no
     /// longer show it.
     pub fn hyperlink_paints(&self, session: &str, buf: &Buffer) -> Vec<HyperlinkPaint> {
-        let Some(live) = self.live.get(session) else {
+        let Some((live, parser)) = self.surface_parser(session) else {
             return Vec::new();
         };
-        let Ok(parser) = live.session.parser.lock() else {
+        let Ok(parser) = parser.lock() else {
             return Vec::new();
         };
         // A session whose agent never printed a link pays one bool check per
@@ -1428,7 +1477,7 @@ impl Terminals {
                 .get(key)
                 .map(|slot| slot.pane.last_output_at());
         }
-        if let Some(id) = surface.strip_suffix("#shell") {
+        if let Some(id) = surface.strip_suffix(SHELL_SUFFIX) {
             return self
                 .live
                 .get(id)
@@ -1643,7 +1692,7 @@ impl SurfaceProvider for Terminals {
     fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool {
         // A session's shell is addressed as `<id>#shell`, so it is a second
         // surface over the same primitive rather than a second node kind.
-        if let Some(id) = session.strip_suffix("#shell") {
+        if let Some(id) = session.strip_suffix(SHELL_SUFFIX) {
             let Some(live) = self.live.get(id) else {
                 return false;
             };
