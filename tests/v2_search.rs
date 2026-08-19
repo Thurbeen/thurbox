@@ -552,3 +552,104 @@ fn every_match_still_paints_when_the_results_fill_the_strip() {
         );
     }
 }
+
+/// The pane draws the match, and the selection bar must not paint over it.
+///
+/// Previewing moves this list's cursor ONTO the result, so the row carrying the
+/// highlight is always the selected one — which made this the one row where the
+/// match was invisible: the bar patched `fg` over every span, leaving the matched
+/// characters in the selection's own colour with only their underline to show
+/// for it. v1 layered the two the other way round (`highlight_style` is built on
+/// top of the row's base style), and this pins that order.
+#[test]
+fn a_match_keeps_its_colour_under_the_selection_bar() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+    use thurbox::kernel::node::parse_color;
+    use thurbox::kernel::paint::{render as paint_render, PlaceholderSurfaces};
+
+    const WIDTH: u16 = 40;
+    const HEIGHT: u16 = 10;
+
+    let themes = Themes::load(None);
+    let roles = themes.roles();
+    let colour =
+        |role: &str| -> Color { parse_color(roles.get(role).expect("role")).expect("colour") };
+    let accent = colour("accent");
+    let selection_bg = colour("selection_bg");
+
+    // Paint the session list, optionally with a query in force.
+    let cells = |query: Option<&str>| -> Vec<(String, Color, Color)> {
+        let host = host();
+        if let Some(text) = query {
+            open(&host);
+            type_query(&host, text);
+            // The strip previews as it renders, which is what selects the row.
+            render(&host, PLUGIN);
+            assert_eq!(selected(&host).as_deref(), Some("bbb"));
+        } else {
+            render(&host, SESSIONS);
+        }
+        publish(&host);
+        let index = host.index_of(SESSIONS).expect("no sessions plugin");
+        let node = host
+            .render(
+                index,
+                RenderContext {
+                    width: WIDTH,
+                    height: HEIGHT,
+                    focused: true,
+                    elapsed: 0.0,
+                    frame: 0,
+                },
+            )
+            .expect("render")
+            .node;
+        let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("terminal");
+        terminal
+            .draw(|frame| paint_render(frame, frame.area(), &node, &PlaceholderSurfaces))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..HEIGHT)
+            .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let cell = &buffer[(x, y)];
+                (cell.symbol().to_string(), cell.fg, cell.bg)
+            })
+            .collect()
+    };
+
+    // `fb` matches `fix-branch` and nothing else, so the two lit characters are
+    // its `f` and its `b`.
+    let searched = cells(Some("fb"));
+    let bar: Vec<&(String, Color, Color)> = searched
+        .iter()
+        .filter(|(_, _, bg)| *bg == selection_bg)
+        .collect();
+    assert!(
+        !bar.is_empty(),
+        "the previewed row should carry the selection bar"
+    );
+    let lit: Vec<&str> = bar
+        .iter()
+        .filter(|(_, fg, _)| *fg == accent)
+        .map(|(symbol, _, _)| symbol.as_str())
+        .collect();
+    assert_eq!(
+        lit,
+        vec!["f", "b"],
+        "the matched characters must keep the accent through the selection bar"
+    );
+
+    // The control: with nothing searched, nothing in the bar is accent — so the
+    // assertion above is reading the highlight and not some other affordance
+    // that happens to be lit.
+    let resting = cells(None);
+    assert!(
+        !resting
+            .iter()
+            .any(|(_, fg, bg)| *bg == selection_bg && *fg == accent),
+        "an unsearched row has no matched characters to light"
+    );
+}

@@ -146,6 +146,15 @@ still a switch slot, so the next pane to share it inherits the fix.)
 reports about itself, `can_focus` for where focus may go. A pane that brings
 itself forward by being focused needs the second one.
 
+There is a third fact underneath both, and it is a matter of *timing*: a pane can
+open its own slot. The search strip shows itself and asks for focus in one action,
+and `panels.show` is only read by the arrangement — so at the moment the request
+is judged, the slot it named does not exist yet and focus is refused for a rect
+that is one frame away. `defer_until_placed` is the answer: a request focus cannot
+take is held for exactly one layout and re-asked there, which is why `ctrl+/`
+leaves you typing in the strip rather than in the pane underneath it. Exactly one
+layout, because a slot still unplaced then is one nothing brings forward.
+
 ## Settings are two halves of one screen
 
 `settings.toml` and a plugin's declared settings are edited from the same

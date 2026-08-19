@@ -50,14 +50,26 @@ end
 
 --- ratatui's `Style::patch` over every span: the overlay wins for the fields it
 --- sets, the span keeps the rest.
-local function patch_spans(spans, style)
-  for _, span in ipairs(spans) do
+---
+--- `keep_fg` names spans whose COLOUR is a signal of its own — the characters a
+--- search query matched. They still take everything else the overlay sets, so the
+--- selection bar paints through them (a bar with a gap in it is not a bar), but
+--- their foreground survives it. v1 layered the same two the same way round:
+--- `highlight_style` was built ON TOP of the row's base style
+--- (`src/ui/highlight.rs`), so an accent match stayed accent on the selected row.
+--- Patching over it left the match wearing the selection's own colour with only
+--- its underline showing — on the one row the strip was pointing at, since
+--- previewing a result moves this list's cursor onto it.
+local function patch_spans(spans, style, keep_fg)
+  for index, span in ipairs(spans) do
     local merged = {}
     for key, value in pairs(span.style or {}) do
       merged[key] = value
     end
     for key, value in pairs(style) do
-      merged[key] = value
+      if not (keep_fg and keep_fg[index] and key == "fg") then
+        merged[key] = value
+      end
     end
     span.style = merged
   end
@@ -568,15 +580,19 @@ local function session_line(item, inner_width, elapsed, is_selected, work)
   local hits = name_hits(session, query)
   local name_style = is_selected and { fg = theme.role("selection_fg"), bold = true }
     or { fg = theme.text }
+  -- Which spans the search highlight owns, by position in `spans`. The overlays
+  -- below are told, so the selection bar cannot repaint a match — see
+  -- `patch_spans`. Identity on the style table is what marks one: `fuzzy.spans`
+  -- hands back the very table it was given for a matched run.
+  local matched_spans = nil
   if hits then
-    for _, span in
-      ipairs(fuzzy.spans(session.name or "?", hits, name_style, {
-        fg = theme.accent,
-        bold = true,
-        underline = true,
-      }))
-    do
+    local hit_style = { fg = theme.accent, bold = true, underline = true }
+    matched_spans = {}
+    for _, span in ipairs(fuzzy.spans(session.name or "?", hits, name_style, hit_style)) do
       spans[#spans + 1] = span
+      if span.style == hit_style then
+        matched_spans[#spans] = true
+      end
     end
   else
     spans[#spans + 1] = { text = session.name or "?", style = name_style }
@@ -599,7 +615,7 @@ local function session_line(item, inner_width, elapsed, is_selected, work)
       bg = theme.role("selection_bg"),
       fg = theme.role("selection_fg"),
       bold = true,
-    })
+    }, matched_spans)
   elseif hover.id(session.id) then
     -- v1's row hover: a subtle band marking what a click would hit. Only the
     -- BACKGROUND is tinted — each cell keeps its own fg, so the status dot and

@@ -305,6 +305,12 @@ separate answers in `kernel::focus`. Conflating them cost the old plugins pane e
 way in it had — the ring skipped it, and its own opening chord was undone a frame
 later by the guard that keeps focus off closed columns.
 
+A pane may open **its own** column and ask for focus in the same action — show the
+panel, then `command("focus", { text = name })`, the way `65_search.lua` does. The
+slot does not exist until the arrangement runs again, so the kernel holds that
+request for one layout and takes it there; you do not have to wait a frame or press
+the chord twice.
+
 Because layout resolves *before* render, anything the arrangement needs to know
 cannot live inside a render function. Panel visibility therefore lives in
 `lib/panels.lua`, which keeps it in `store` so it survives a reload:

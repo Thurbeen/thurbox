@@ -73,6 +73,25 @@ pub fn can_focus(placement: Placement) -> bool {
     placement.floats || placement.slot_placed
 }
 
+/// Must a focus request wait for the arrangement to run again?
+///
+/// [`can_focus`] is asked against the placement of the frame that already
+/// painted, and a pane that opens *its own slot* has not been placed in one yet:
+/// the search strip asks the arrangement for a row and asks for focus in the same
+/// action, and the arrangement only runs again on the next frame. Judged there,
+/// the request is refused for a slot that is about to exist — so the chord opened
+/// the strip and left focus behind it, and every character typed went to the pane
+/// underneath.
+///
+/// So a request focus cannot take now is *held for one layout* and re-asked once
+/// the arrangement has run. Exactly one, deliberately: a slot still not placed
+/// then is one nothing brings forward (a closed column, a pane turned off in the
+/// Interface tab), so the request expires rather than following focus around —
+/// which is [`can_focus`]'s own guarantee, one frame later.
+pub fn defer_until_placed(placement: Placement) -> bool {
+    !can_focus(placement)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +168,18 @@ mod tests {
         // Unchanged, and for the same reason a switch alternate keeps it:
         // focusing a float is part of what opens it.
         assert!(can_focus(it));
+    }
+
+    #[test]
+    fn a_pane_that_opens_its_own_slot_holds_its_focus_request() {
+        // The search strip: the chord that shows it also asks for focus, and the
+        // slot it asked for is not placed until the arrangement runs again. The
+        // request has to survive that frame or the strip opens unfocused.
+        assert!(defer_until_placed(placement(false, None)));
+        // Once the slot is there, nothing is deferred — it is taken.
+        assert!(!defer_until_placed(placement(true, None)));
+        // A float needs no slot, so its request is honoured at once.
+        assert!(!defer_until_placed(float(false)));
     }
 
     #[test]

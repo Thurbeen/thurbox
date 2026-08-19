@@ -179,6 +179,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         updates: thurbox::kernel::updates::Updates::start(config.features()),
         slot_selection: std::collections::HashMap::new(),
         visible_slots: std::collections::HashSet::new(),
+        pending_focus: None,
         click_targets: Vec::new(),
         last_area: Rect::new(0, 0, 0, 0),
         selected_text: None,
@@ -744,6 +745,13 @@ struct App {
     /// keeps Tab from parking focus on a pane nobody can see — v1's rule that a
     /// panel is "a cycle stop only while visible".
     visible_slots: std::collections::HashSet<String>,
+    /// A focus request whose slot the arrangement had not placed yet.
+    ///
+    /// Held for exactly one layout and re-asked there. See
+    /// `kernel::focus::defer_until_placed`: a pane that opens its own slot asks
+    /// for focus a frame before the slot exists, and judging that request against
+    /// the frame that already painted refuses the focus its chord existed to give.
+    pending_focus: Option<usize>,
     /// Every identified node of the frame just painted, in paint order.
     ///
     /// Rebuilt each frame and scanned in reverse, so the innermost node under a
@@ -1605,6 +1613,12 @@ impl App {
         };
         let placed = resolve(&region, area);
         self.visible_slots = placed.iter().map(|s| s.slot.clone()).collect();
+        // A focus request that named a slot this layout has only just placed —
+        // the search strip's, which shows itself and asks for focus in one
+        // action. Taken here because this is the first moment the slot exists,
+        // and before the guard below, which would otherwise read the pane as one
+        // focus cannot rest on and walk straight off it.
+        self.apply_pending_focus();
         // Closing the column you were standing in must not strand focus on it.
         // Corrected here rather than at key time because the toggle only shows
         // up in the arrangement on the frame AFTER it is flipped.
@@ -3215,8 +3229,13 @@ impl App {
     }
 
     /// Move focus onto a plugin, if focus can rest there at all.
+    ///
+    /// A request focus cannot take is *held for one layout* rather than dropped —
+    /// see `kernel::focus::defer_until_placed` for why, and `apply_pending_focus`,
+    /// which re-asks it once the arrangement has run.
     fn focus_plugin(&mut self, index: usize) {
-        if !self.can_focus_plugin(index) {
+        if thurbox::kernel::focus::defer_until_placed(self.placement(index)) {
+            self.pending_focus = Some(index);
             return;
         }
         if let Some(position) = self.host.focusable().iter().position(|i| *i == index) {
@@ -3224,6 +3243,23 @@ impl App {
                 self.focus_return = self.focus;
             }
             self.focus = position;
+        }
+    }
+
+    /// Take a focus request that was waiting for its slot to be placed.
+    ///
+    /// Attempted once and then forgotten, whether or not it landed: a slot still
+    /// not placed is one the arrangement declines to give (a column closed, a pane
+    /// turned off), and a request that outlived its layout would chase focus
+    /// across frames the user has since moved on from. Which is also why the check
+    /// is here rather than left to `focus_plugin`: that one re-arms the request it
+    /// cannot honour, so calling it blind would make the wait permanent.
+    fn apply_pending_focus(&mut self) {
+        let Some(index) = self.pending_focus.take() else {
+            return;
+        };
+        if self.can_focus_plugin(index) {
+            self.focus_plugin(index);
         }
     }
 
