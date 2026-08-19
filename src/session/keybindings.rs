@@ -735,6 +735,14 @@ impl KeyChord {
             parts.push("cmd");
         }
         let key = match self.code {
+            // Two characters cannot be written literally and read back:
+            // `parse` trims its input, so a lone space would come back empty,
+            // and it splits on '+', so a literal plus would come back as two
+            // empty halves. Both get a word instead — which is also what the
+            // help screen and the F1 editor show, where a space used to render
+            // as nothing at all.
+            KeyCode::Char(' ') => "space".into(),
+            KeyCode::Char('+') => "plus".into(),
             KeyCode::Char(c) => c.to_string(),
             KeyCode::F(n) => format!("f{n}"),
             KeyCode::Enter => "enter".into(),
@@ -777,18 +785,28 @@ impl KeyChord {
 
     /// Parse `"ctrl+n"`, `"f1"`, `"shift+pageup"`, `"cmd+j"`. Case-insensitive.
     /// `cmd`/`super`/`command`/`win` all mean the SUPER modifier (`cmd` is the
-    /// canonical display form).
+    /// canonical display form). `space`/`plus` name the two keys that cannot be
+    /// written literally (see [`display`](Self::display)); a literal `" "` is
+    /// still accepted, because releases up to 1.8.6 wrote the Space chord that
+    /// way and those files must keep loading.
     pub fn parse(s: &str) -> Option<Self> {
-        let lc = s.trim().to_ascii_lowercase();
-        if lc.is_empty() {
+        let lc = s.to_ascii_lowercase();
+        // Split before trimming: a key token that *is* a space is meaningful,
+        // and `s.trim()` on the whole string would have destroyed it.
+        let parts: Vec<&str> = lc.split('+').collect();
+        let (key_raw, mod_parts) = parts.split_last()?;
+        let key_part = if *key_raw == " " {
+            "space"
+        } else {
+            key_raw.trim()
+        };
+        if key_part.is_empty() {
             return None;
         }
-        let parts: Vec<&str> = lc.split('+').map(str::trim).collect();
-        let (key_part, mod_parts) = parts.split_last()?;
 
         let mut mods = KeyModifiers::NONE;
-        for p in mod_parts {
-            match *p {
+        for p in mod_parts.iter().map(|p| p.trim()) {
+            match p {
                 "ctrl" | "control" => mods |= KeyModifiers::CONTROL,
                 "alt" | "meta" => mods |= KeyModifiers::ALT,
                 "shift" => mods |= KeyModifiers::SHIFT,
@@ -797,11 +815,13 @@ impl KeyChord {
             }
         }
 
-        let code = match *key_part {
+        let code = match key_part {
             "enter" | "return" => KeyCode::Enter,
             "esc" | "escape" => KeyCode::Esc,
             "tab" => KeyCode::Tab,
             "backtab" => KeyCode::BackTab,
+            "space" => KeyCode::Char(' '),
+            "plus" => KeyCode::Char('+'),
             "left" => KeyCode::Left,
             "right" => KeyCode::Right,
             "up" => KeyCode::Up,
@@ -1065,11 +1085,62 @@ mod tests {
 
     #[test]
     fn chord_parse_round_trip() {
-        let cases = ["ctrl+n", "f1", "shift+pageup", "alt+enter", "q"];
+        let cases = [
+            "ctrl+n",
+            "f1",
+            "shift+pageup",
+            "alt+enter",
+            "q",
+            "space",
+            "ctrl+space",
+            "plus",
+        ];
         for c in cases {
             let chord = KeyChord::parse(c).expect(c);
             assert_eq!(chord.display(), c);
         }
+    }
+
+    #[test]
+    fn space_is_named_rather_than_written_literally() {
+        // Regression (#944): `display` wrote a lone " " for the Space chord and
+        // `parse` trimmed it back to nothing, so every save from the F1 editor
+        // produced a file that reloaded as `invalid chord " "`.
+        assert_eq!(KeyChord::plain(' ').display(), "space");
+        assert_eq!(KeyChord::plain(' ').compact(), "space");
+        assert_eq!(KeyChord::parse("space"), Some(KeyChord::plain(' ')));
+        assert_eq!(KeyChord::parse("SPACE"), Some(KeyChord::plain(' ')));
+    }
+
+    #[test]
+    fn a_literal_space_chord_still_parses() {
+        // What releases up to 1.8.6 wrote; those files must keep loading.
+        assert_eq!(KeyChord::parse(" "), Some(KeyChord::plain(' ')));
+        assert_eq!(
+            KeyChord::parse("ctrl+ "),
+            Some(KeyChord::normalized(
+                KeyModifiers::CONTROL,
+                KeyCode::Char(' ')
+            ))
+        );
+        // Splitting before trimming must not turn blank input into a key.
+        assert_eq!(KeyChord::parse(""), None);
+        assert_eq!(KeyChord::parse("   "), None);
+        assert_eq!(KeyChord::parse("ctrl+"), None);
+    }
+
+    #[test]
+    fn plus_is_named_rather_than_written_literally() {
+        // The other character `parse` cannot read back: it splits on '+'.
+        assert_eq!(KeyChord::plain('+').display(), "plus");
+        assert_eq!(KeyChord::parse("plus"), Some(KeyChord::plain('+')));
+        assert_eq!(
+            KeyChord::parse("ctrl+plus"),
+            Some(KeyChord::normalized(
+                KeyModifiers::CONTROL,
+                KeyCode::Char('+')
+            ))
+        );
     }
 
     #[test]
@@ -1277,6 +1348,19 @@ mod tests {
                 "{action:?}"
             );
         }
+    }
+
+    #[test]
+    fn saving_the_defaults_reloads_without_a_single_warning() {
+        // The F1 editor persists the whole map on every rebind, so anything the
+        // defaults cannot serialize becomes a warning on the next launch and an
+        // exit-1 from `config validate` (#944). Comparing effective bindings —
+        // what `json_round_trip` above does — misses that entirely, because an
+        // unparsable chord falls back to the compiled-in default and still
+        // compares equal.
+        let json = KeyBindings::default().to_json().unwrap();
+        let (_, warnings) = KeyBindings::from_json_with_warnings(&json).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
