@@ -194,7 +194,7 @@ pub(crate) fn provision_agent_hooks_on_host(
     let asset = remote_asset_for(agent)?;
     // Windows/psmux hosts are deferred: these payloads' hook commands run
     // through `sh`, and each agent's Windows config dir / hook shell differs.
-    if host.mux() == "psmux" {
+    if host.is_windows() {
         return Some(format!(
             "{agent} hooks not provisioned on psmux host '{}'",
             host.name
@@ -422,7 +422,7 @@ pub(crate) fn poll_remote_hook_states(db: &crate::storage::Database) -> usize {
         let Some(host) = hosts.get_by_backend(&backend_name) else {
             continue;
         };
-        if host.mux() == "psmux" && !crate::session::psmux_hook_rewrite_supported() {
+        if host.is_windows() && !crate::session::psmux_hook_rewrite_supported() {
             continue;
         }
         let polled = match crate::agent::tmux::list_remote_hook_states(host) {

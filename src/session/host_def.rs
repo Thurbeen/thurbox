@@ -141,6 +141,23 @@ impl HostDef {
             .clone()
             .unwrap_or_else(|| "tmux".to_string())
     }
+
+    /// Whether this host is **native Windows** — no POSIX shell, `\` paths,
+    /// PowerShell rather than `sh`.
+    ///
+    /// The multiplexer is the proxy for the platform: `psmux` is a
+    /// native-Windows tmux clone (ConPTY, no WSL), so choosing it *is* the
+    /// declaration that the host is Windows. There is no separate platform
+    /// field to disagree with, and a WSL distro is Linux inside — it runs
+    /// `tmux` — so it is correctly not Windows here.
+    ///
+    /// The name is spelled out rather than shared with `agent::transport`'s
+    /// `DEFAULT_MUX` / `TmuxTransport::uses_psmux` (which asks the *protocol*
+    /// question, not the platform one): `session` is the leaf module and may
+    /// reference nothing, so the two must be kept in step by hand.
+    pub fn is_windows(&self) -> bool {
+        self.mux() == "psmux"
+    }
 }
 
 /// All configured remote hosts, in declaration order.
@@ -163,11 +180,33 @@ impl HostRegistry {
     }
 
     /// Look up a host by its `ssh:<name>` or `wsl:<name>` backend name.
+    ///
+    /// The prefix selects *a* backend spelling but is **not** checked against
+    /// the host's own [`kind`](HostDef::kind): `ssh:ubuntu` finds a host named
+    /// `ubuntu` even if it is a WSL distro. That is deliberate — a name is
+    /// unique across kinds (`host_config::load_all` dedupes by it), and the only
+    /// way the two disagree is a persisted `backend_type` written before the
+    /// host's kind was changed, where resolving to the host that now carries
+    /// that name is what lets the session re-adopt instead of going
+    /// unreachable.
     pub fn get_by_backend(&self, backend_name: &str) -> Option<&HostDef> {
         let bare = backend_name
             .strip_prefix(SSH_BACKEND_PREFIX)
             .or_else(|| backend_name.strip_prefix(WSL_BACKEND_PREFIX))?;
         self.get(bare)
+    }
+
+    /// Look up a host by **either** spelling: the `ssh:`/`wsl:` backend name or
+    /// the bare name.
+    ///
+    /// The two spellings both circulate as "the host" and which one a caller
+    /// holds depends on where it came from — a session row and the interface's
+    /// host picker carry the backend name, `hosts.toml` and `--host` carry the
+    /// bare one. Resolving only one of them is the mistake this exists to stop:
+    /// the new-session flow handed `spawn` a backend name and every remote
+    /// creation failed with "Unknown host 'ssh:devbox'".
+    pub fn resolve(&self, key: &str) -> Option<&HostDef> {
+        self.get_by_backend(key).or_else(|| self.get(key))
     }
 
     /// All host names in declaration order.
@@ -184,6 +223,90 @@ impl HostRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn registry() -> HostRegistry {
+        HostRegistry {
+            config_version: None,
+            hosts: vec![
+                HostDef {
+                    name: "devbox".into(),
+                    destination: "me@devbox".into(),
+                    ..Default::default()
+                },
+                HostDef::wsl("Ubuntu"),
+                HostDef {
+                    name: "winbox".into(),
+                    destination: "me@winbox".into(),
+                    multiplexer: Some("psmux".into()),
+                    ..Default::default()
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn resolve_accepts_both_spellings_of_a_host() {
+        // Which spelling a caller holds depends on where it came from, and
+        // resolving only one of them refused every session the new-session flow
+        // tried to create on a host ("Unknown host 'ssh:devbox'").
+        let hosts = registry();
+        for key in ["devbox", "ssh:devbox"] {
+            assert_eq!(
+                hosts.resolve(key).map(|h| h.name.as_str()),
+                Some("devbox"),
+                "{key} should resolve"
+            );
+        }
+        for key in ["Ubuntu", "wsl:Ubuntu"] {
+            assert_eq!(
+                hosts.resolve(key).map(|h| h.name.as_str()),
+                Some("Ubuntu"),
+                "{key} should resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_does_not_invent_a_host() {
+        let hosts = registry();
+        for key in ["", "nope", "ssh:nope", "wsl:nope", "ssh:", "devbox2"] {
+            assert!(hosts.resolve(key).is_none(), "{key} must not resolve");
+        }
+    }
+
+    #[test]
+    fn the_backend_prefix_is_not_checked_against_the_hosts_kind() {
+        // A name is unique across kinds, so the prefix carries no information
+        // the name does not — and the one case where they disagree is a
+        // persisted `backend_type` written before the host's kind changed, where
+        // matching on the name is what lets the session re-adopt rather than go
+        // unreachable. Asserted so the leniency is a decision, not an accident.
+        let hosts = registry();
+        assert_eq!(
+            hosts.resolve("ssh:Ubuntu").map(|h| h.kind),
+            Some(HostKind::Wsl)
+        );
+        assert_eq!(
+            hosts.resolve("wsl:devbox").map(|h| h.kind),
+            Some(HostKind::Ssh)
+        );
+    }
+
+    #[test]
+    fn is_windows_is_declared_by_the_multiplexer_alone() {
+        let hosts = registry();
+        assert!(hosts.resolve("winbox").expect("winbox").is_windows());
+        // Every other shape is POSIX: the default, an explicit `tmux`, and a
+        // WSL distro (Linux inside, whatever machine hosts it).
+        assert!(!hosts.resolve("devbox").expect("devbox").is_windows());
+        assert!(!hosts.resolve("Ubuntu").expect("Ubuntu").is_windows());
+        let explicit_tmux = HostDef {
+            name: "box".into(),
+            multiplexer: Some("tmux".into()),
+            ..Default::default()
+        };
+        assert!(!explicit_tmux.is_windows());
+    }
 
     #[test]
     fn backend_name_prefixes_with_ssh() {

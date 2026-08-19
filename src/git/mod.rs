@@ -74,8 +74,8 @@ fn run_git(mut cmd: Command, what: &str) -> Result<()> {
         .output()
         .with_context(|| format!("failed to run {what}"))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("{what} failed: {}", stderr.trim());
+        let stderr = reportable_stderr(&output.stderr);
+        anyhow::bail!("{what} failed: {stderr}");
     }
     Ok(())
 }
@@ -174,8 +174,8 @@ pub fn head_commit(repo: &Path) -> Result<String> {
         .output()
         .context("failed to run git rev-parse")?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git rev-parse failed: {}", stderr.trim());
+        let stderr = reportable_stderr(&output.stderr);
+        anyhow::bail!("git rev-parse failed: {stderr}");
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
@@ -190,8 +190,8 @@ pub fn is_dirty(repo: &Path) -> Result<bool> {
         .output()
         .context("failed to run git status")?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git status failed: {}", stderr.trim());
+        let stderr = reportable_stderr(&output.stderr);
+        anyhow::bail!("git status failed: {stderr}");
     }
     Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
 }
@@ -263,9 +263,19 @@ fn remote_home_cache() -> &'static Mutex<HashMap<String, String>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Resolve the `$HOME` directory on a host (over SSH or inside a WSL distro),
+/// Resolve the home directory on a host (over SSH or inside a WSL distro),
 /// caching the result.
+///
+/// A **native-Windows** host has no `$HOME`, and asking anyway is worse than
+/// failing: `echo $HOME` under `cmd`/PowerShell prints the string `$HOME` and
+/// exits 0, so the bogus value was accepted and every `~`-relative path became
+/// a literal `$HOME/…`. Such a host is routed to
+/// [`remote_home_windows`] (`%USERPROFILE%`) instead — the same cache, since a
+/// host is one platform or the other and never both.
 pub(crate) fn remote_home(host: &HostDef) -> Result<String> {
+    if host.is_windows() {
+        return remote_home_windows(host);
+    }
     let key = host.backend_name();
     if let Ok(guard) = remote_home_cache().lock() {
         if let Some(home) = guard.get(&key) {
@@ -280,8 +290,8 @@ pub(crate) fn remote_home(host: &HostDef) -> Result<String> {
         .output()
         .context("failed to resolve host $HOME")?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("`echo $HOME` on {key} failed: {}", stderr.trim());
+        let stderr = reportable_stderr(&output.stderr);
+        anyhow::bail!("`echo $HOME` on {key} failed: {stderr}");
     }
     let home = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if home.is_empty() {
@@ -385,15 +395,216 @@ pub fn remove_remote_workspace(host: &HostDef, id: &str) -> Result<()> {
     )
 }
 
+/// The reportable part of a command's stderr: the transport's own advisories
+/// and serialization removed, so what is left is what actually went wrong.
+///
+/// Applied to local git too, not only a remote host: a `git clone`/`git fetch`
+/// runs over ssh through `GIT_SSH_COMMAND`, so it carries the same advisory.
+///
+/// OpenSSH ≥ 10 prints a three-line block on **stderr**, each line marked with
+/// its own `**`, for every connection whose key exchange is not post-quantum —
+/// which is every connection to a server still on an older OpenSSH, Windows
+/// hosts very much included:
+///
+/// ```text
+/// ** WARNING: connection is not using a post-quantum key exchange algorithm.
+/// ** This session may be vulnerable to "store now, decrypt later" attacks.
+/// ** The server may need to be upgraded. See https://openssh.com/pq.html
+/// ```
+///
+/// It is informational and the command still runs, but it is *first* in the
+/// buffer, so reporting stderr verbatim made every remote failure read as
+/// "connection is not using a post-quantum key…" and buried the real cause
+/// below the fold. Suppressing it at the source is not an option, because
+/// `LogLevel=ERROR` would equally hide `Permission denied` and
+/// `WarnWeakCrypto=no` is fatal on the older clients that never warn anyway.
+///
+/// Returns **empty** when nothing reportable was there — only advisories, or a
+/// CLIXML envelope with no error in it. The caller then reports the exit status
+/// rather than pasting the noise back in, which would recreate the very
+/// confusion this removes.
+fn reportable_stderr(stderr: &[u8]) -> String {
+    /// OpenSSH's marker for an advisory it prints without failing.
+    const SSH_ADVISORY_PREFIX: &str = "**";
+
+    let raw = String::from_utf8_lossy(stderr);
+    let without_advisories = raw
+        .lines()
+        .filter(|line| !line.trim_start().starts_with(SSH_ADVISORY_PREFIX))
+        .collect::<Vec<_>>()
+        .join("\n");
+    decode_clixml(&without_advisories).unwrap_or_else(|| without_advisories.trim().to_string())
+}
+
+/// Recover the human text from PowerShell's CLIXML stderr serialization.
+///
+/// `powershell.exe` does not write error records as text when its stderr is
+/// redirected (which it always is here) — it writes a `#< CLIXML` document
+/// whose messages sit in `<S S="Error">` nodes with CRLF encoded as
+/// `_x000D__x000A_`. Reported verbatim that is unreadable, so a Windows host's
+/// real failures arrived as `#< CLIXML <Objs Version=…` — the same class of
+/// defect as the post-quantum advisory: a message that names nothing.
+///
+/// The envelope is removed whole — the `#< CLIXML` marker and every `<Objs …>`
+/// document — with each document replaced by the text of its error records.
+/// Removing only the records would leave the scaffolding behind, and a document
+/// often carries no error at all (PowerShell emits a `progress` record for
+/// "Preparing modules for first use"), so the useful line ends up buried in
+/// XML either way. Text outside a document is a native command's own stderr and
+/// is kept verbatim.
+///
+/// `None` when the input is not CLIXML, so the POSIX path is untouched;
+/// `Some("")` when it was CLIXML carrying nothing to say, so the caller falls
+/// back to the exit status instead of the markup. Scanned rather than parsed as
+/// XML: this is one fixed shape from one producer, and a diagnostic string is
+/// not worth an XML dependency.
+fn decode_clixml(stderr: &str) -> Option<String> {
+    /// The line PowerShell opens the serialization with.
+    const CLIXML_MARKER: &str = "#< CLIXML";
+    const DOCUMENT_OPEN: &str = "<Objs";
+    const DOCUMENT_CLOSE: &str = "</Objs>";
+
+    if !stderr.contains(CLIXML_MARKER) {
+        return None;
+    }
+    let body = strip_lines_equal_to(stderr, CLIXML_MARKER);
+
+    let mut out = String::new();
+    let mut rest = body.as_str();
+    while let Some(start) = rest.find(DOCUMENT_OPEN) {
+        out.push_str(&rest[..start]);
+        let from_open = &rest[start..];
+        // A truncated document is consumed whole rather than half-emitted.
+        let (document, tail) = match from_open.find(DOCUMENT_CLOSE) {
+            Some(end) => from_open.split_at(end + DOCUMENT_CLOSE.len()),
+            None => (from_open, ""),
+        };
+        out.push_str(&clixml_error_text(document));
+        rest = tail;
+    }
+    out.push_str(rest);
+
+    Some(join_non_blank_lines(&out))
+}
+
+/// The decoded text of every error record in one CLIXML document.
+fn clixml_error_text(document: &str) -> String {
+    const RECORD_OPEN: &str = "<S S=\"Error\">";
+    const RECORD_CLOSE: &str = "</S>";
+
+    let mut text = String::new();
+    let mut rest = document;
+    while let Some(open) = rest.find(RECORD_OPEN) {
+        rest = &rest[open + RECORD_OPEN.len()..];
+        let Some(close) = rest.find(RECORD_CLOSE) else {
+            break;
+        };
+        text.push_str(&rest[..close]);
+        rest = &rest[close..];
+    }
+    unescape_clixml(&text)
+}
+
+/// Decode CLIXML's `_xNNNN_` character escapes and the five XML entities.
+///
+/// An `_x` that does not open a well-formed escape is literal text, so it is
+/// passed through rather than guessed at.
+fn unescape_clixml(text: &str) -> String {
+    /// What follows the opening `_x`: four hex digits and a closing `_`.
+    const ESCAPE_TAIL_LEN: usize = 5;
+
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("_x") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        match decode_hex_escape(after) {
+            Some(ch) => {
+                out.push(ch);
+                rest = &after[ESCAPE_TAIL_LEN..];
+            }
+            None => {
+                out.push_str("_x");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    // `&amp;` last, so an escaped ampersand cannot re-open one of the others.
+    out.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// The character `NNNN_` names, when `after` opens one — four hex digits then a
+/// closing underscore. `None` for anything else.
+fn decode_hex_escape(after: &str) -> Option<char> {
+    let hex = after.get(..4)?;
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) || after.as_bytes().get(4) != Some(&b'_') {
+        return None;
+    }
+    char::from_u32(u32::from_str_radix(hex, 16).ok()?)
+}
+
+/// `text` without the lines that are exactly `marker`.
+fn strip_lines_equal_to(text: &str, marker: &str) -> String {
+    text.lines()
+        .filter(|line| line.trim() != marker)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The non-blank lines of `text`, de-duplicated and joined.
+///
+/// CLIXML error records each end in an encoded CRLF, so decoding one yields
+/// trailing blanks; consecutive duplicates come from a record repeated across
+/// the envelope's streams.
+fn join_non_blank_lines(text: &str) -> String {
+    let mut lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    lines.dedup();
+    lines.join("\n").trim().to_string()
+}
+
 /// Map a finished remote command to `Ok(stdout)`, or an error carrying the
-/// trimmed remote stderr when it exited non-zero. Shared by every remote
-/// helper below so their failures read uniformly.
+/// remote stderr when it exited non-zero. Shared by every remote helper below
+/// so their failures read uniformly.
 fn remote_output_or_stderr(output: std::process::Output, action: &str) -> Result<Vec<u8>> {
     if output.status.success() {
         return Ok(output.stdout);
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    anyhow::bail!("remote {action} failed: {}", stderr.trim())
+    let detail = reportable_stderr(&output.stderr);
+    // A command that failed silently still has to say *something*; its exit
+    // code is more use than a blank after the colon.
+    if detail.is_empty() {
+        anyhow::bail!("remote {action} failed: {}", describe_exit(&output.status));
+    }
+    anyhow::bail!("remote {action} failed: {detail}")
+}
+
+/// A remote command's exit status, for when it printed nothing to explain
+/// itself.
+///
+/// `255` is worth naming because it is not the command's: ssh reserves it for
+/// its own failures, so it means the host was never reached rather than that
+/// the command ran and failed. Phrased without naming ssh — the same helper
+/// serves the `wsl.exe` transport, which has no such convention.
+fn describe_exit(status: &std::process::ExitStatus) -> String {
+    /// ssh's reserved code for "the connection itself failed".
+    const SSH_TRANSPORT_FAILURE: i32 = 255;
+
+    match status.code() {
+        Some(SSH_TRANSPORT_FAILURE) => {
+            "exit 255, no error output — the host was likely never reached".to_string()
+        }
+        Some(code) => format!("exit {code}, no error output"),
+        None => "killed by a signal".to_string(),
+    }
 }
 
 /// Run `script` on `host` via [`host_shell_c`], discarding stdout. See
@@ -431,6 +642,58 @@ pub(crate) fn host_shell_c(host: &HostDef, script: &str) -> Command {
             .arg(posix_quote(script));
     }
     cmd
+}
+
+/// Build a `<launcher> powershell -NoProfile -EncodedCommand <base64>`
+/// [`Command`] — [`host_shell_c`] for a **native-Windows** host, which has no
+/// `sh` at all (`sh -c …` there fails with PowerShell's
+/// `CommandNotFoundException`, which is what made the repo picker unable to
+/// list a directory on a Windows host).
+///
+/// `-EncodedCommand` rather than `-Command` because the script must cross two
+/// shells that both rewrite it. ssh space-joins its trailing args into one
+/// string that the host's **default sshd shell** parses — and that shell is
+/// commonly PowerShell itself, which expands `$…` inside double quotes: a
+/// probe reading `$PSVersionTable` came back with the *outer* shell's expansion
+/// (`System.Collections.Hashtable`) substituted into it. Base64 is
+/// `[A-Za-z0-9+/=]` only, so neither `cmd` nor PowerShell finds anything to
+/// interpret and the script arrives byte-exact.
+///
+/// The payload is **UTF-16LE**, which is what `-EncodedCommand` decodes.
+pub(crate) fn host_powershell_c(host: &HostDef, script: &str) -> Command {
+    use base64::Engine as _;
+
+    let utf16: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
+    let mut cmd = host_launcher(host);
+    cmd.args(["powershell", "-NoProfile", "-EncodedCommand"])
+        .arg(encoded);
+    cmd
+}
+
+/// Run a probe on `host` in whichever dialect the host speaks: `posix` through
+/// [`host_shell_c`], or `windows` (PowerShell) through [`host_powershell_c`].
+///
+/// The one dispatch point for the platform, so a probe cannot be POSIX-only by
+/// omission — and each pair of scripts is written to emit the **same line
+/// protocol**, which is why every parser below stays transport-neutral and
+/// untouched by the Windows path.
+fn host_probe(host: &HostDef, posix: &str, windows: &str) -> Command {
+    if host.is_windows() {
+        host_powershell_c(host, windows)
+    } else {
+        host_shell_c(host, posix)
+    }
+}
+
+/// Quote `s` as a PowerShell single-quoted literal. Only `'` is special inside
+/// one (doubled to escape); `\` and `$` are literal, which is what makes it the
+/// right quote for a Windows path.
+fn powershell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 /// Write `bytes` to `remote_path` on `host`, creating the parent directory.
@@ -518,8 +781,8 @@ pub(crate) fn remote_home_windows(host: &HostDef) -> Result<String> {
         .output()
         .context("failed to resolve host %USERPROFILE%")?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("resolving %USERPROFILE% on {key} failed: {}", stderr.trim());
+        let stderr = reportable_stderr(&output.stderr);
+        anyhow::bail!("resolving %USERPROFILE% on {key} failed: {stderr}");
     }
     let home = String::from_utf8_lossy(&output.stdout)
         .trim()
@@ -600,8 +863,8 @@ pub(crate) fn remote_dir_exists(host: &HostDef, dir: &str) -> Result<bool> {
         Some(0) => Ok(true),
         Some(REMOTE_PROBE_NEGATIVE) => Ok(false),
         _ => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("remote dir probe failed: {}", stderr.trim())
+            let stderr = reportable_stderr(&output.stderr);
+            anyhow::bail!("remote dir probe failed: {stderr}")
         }
     }
 }
@@ -630,8 +893,8 @@ pub(crate) fn read_remote_file(host: &HostDef, path: &str) -> Result<Option<Stri
         // Anything else includes `cat`'s own failure (e.g. permission denied,
         // exit 1) — surface its stderr rather than misreporting the file type.
         _ => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("remote file read failed: {}", stderr.trim())
+            let stderr = reportable_stderr(&output.stderr);
+            anyhow::bail!("remote file read failed: {stderr}")
         }
     }
 }
@@ -734,13 +997,36 @@ pub fn list_dir_entries_on(host: Option<&HostDef>, dir: &str) -> Result<DirListi
         return Ok(list_dir_entries_local(&paths::expand_tilde(dir)));
     };
     let dir = expand_remote_tilde(host, dir)?;
-    let output = host_shell_c(host, &list_dir_entries_script(&dir))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to list remote directory")?;
+    let output = host_probe(
+        host,
+        &list_dir_entries_script(&dir),
+        &list_dir_entries_script_windows(&dir),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .context("failed to list remote directory")?;
     let stdout = remote_output_or_stderr(output, "dir listing")?;
     Ok(parse_dir_listing(&String::from_utf8_lossy(&stdout)))
+}
+
+/// The [`list_dir_entries_on`] script for a **native-Windows** host, emitting
+/// the identical line protocol to [`list_dir_entries_script`] so the same
+/// parser reads both. `-Force` includes hidden entries, matching the POSIX
+/// loop's `* .*`; a directory that exists but cannot be enumerated throws
+/// (`-ErrorAction Stop`) and exits non-zero, so its stderr surfaces as a real
+/// error rather than an empty listing.
+fn list_dir_entries_script_windows(dir: &str) -> String {
+    format!(
+        "$d={q}\n\
+         if (-not (Test-Path -LiteralPath $d -PathType Container)) {{ \
+         Write-Output '!missing'; exit 0 }}\n\
+         Get-ChildItem -LiteralPath $d -Force -Directory -ErrorAction Stop | ForEach-Object {{ \
+         if (Test-Path -LiteralPath ($_.FullName + '/.git')) \
+         {{ Write-Output ('g ' + $_.Name) }} else {{ Write-Output ('d ' + $_.Name) }} }}\n\
+         exit 0",
+        q = powershell_quote(dir),
+    )
 }
 
 /// The [`list_dir_entries_on`] shell script (`dir` already tilde-expanded,
@@ -812,13 +1098,30 @@ fn parse_dir_listing(stdout: &str) -> DirListing {
 /// from a worker thread.
 pub fn classify_path_on(host: &HostDef, path: &str) -> Result<PathClass> {
     let path = expand_remote_tilde(host, path)?;
-    let output = host_shell_c(host, &classify_path_script(&path))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to check remote path")?;
+    let output = host_probe(
+        host,
+        &classify_path_script(&path),
+        &classify_path_script_windows(&path),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .context("failed to check remote path")?;
     let stdout = remote_output_or_stderr(output, "path check")?;
     parse_path_class(&String::from_utf8_lossy(&stdout))
+}
+
+/// The [`classify_path_on`] script for a **native-Windows** host, emitting the
+/// same single word as [`classify_path_script`].
+fn classify_path_script_windows(path: &str) -> String {
+    format!(
+        "$p={q}\n\
+         if (-not (Test-Path -LiteralPath $p -PathType Container)) {{ Write-Output 'missing' }}\n\
+         elseif (Test-Path -LiteralPath ($p + '/.git')) {{ Write-Output 'git' }}\n\
+         else {{ Write-Output 'dir' }}\n\
+         exit 0",
+        q = powershell_quote(path),
+    )
 }
 
 /// The [`classify_path_on`] shell script (`path` already tilde-expanded).
@@ -848,11 +1151,15 @@ fn parse_path_class(stdout: &str) -> Result<PathClass> {
 /// nothing.
 pub fn scan_child_repos_on(host: &HostDef, parent: &str) -> Result<Vec<PathBuf>> {
     let parent = expand_remote_tilde(host, parent)?;
-    let output = host_shell_c(host, &scan_child_repos_script(&parent))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to scan remote parent directory")?;
+    let output = host_probe(
+        host,
+        &scan_child_repos_script(&parent),
+        &scan_child_repos_script_windows(&parent),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .context("failed to scan remote parent directory")?;
     let stdout = remote_output_or_stderr(output, "parent scan")?;
     let parent = Path::new(&parent);
     collect_scanned_children(parent, &String::from_utf8_lossy(&stdout))
@@ -868,6 +1175,33 @@ fn scan_child_repos_script(parent: &str) -> String {
          for e in *; do if [ -d \"$e\" ] && [ -e \"$e/.git\" ]; then \
          printf '%s\\n' \"$e\"; fi; done; exit 0",
         q = posix_quote(parent),
+    )
+}
+
+/// The [`scan_child_repos_on`] script for a **native-Windows** host, emitting
+/// the same one-name-per-line output as [`scan_child_repos_script`].
+///
+/// The `.`-prefix filter is explicit because that is the contract being
+/// mirrored — the POSIX `*` glob's, which is about the *name*, whereas "hidden"
+/// on Windows is a file attribute. Omitting `-Force` additionally skips a
+/// directory carrying that attribute, so this is marginally stricter than the
+/// POSIX twin; both refuse the same `.`-prefixed names, which is the rule
+/// callers rely on.
+///
+/// Unlike the POSIX script's `cd … || exit 1`, a missing parent has no shell
+/// message to surface, so one is written explicitly — an exit code alone would
+/// reach the user as a bare "parent scan failed".
+fn scan_child_repos_script_windows(parent: &str) -> String {
+    format!(
+        "$d={q}\n\
+         if (-not (Test-Path -LiteralPath $d -PathType Container)) {{ \
+         [Console]::Error.WriteLine('no such directory: ' + $d); exit 1 }}\n\
+         Get-ChildItem -LiteralPath $d -Directory -ErrorAction Stop \
+         | Where-Object {{ -not $_.Name.StartsWith('.') }} \
+         | Where-Object {{ Test-Path -LiteralPath ($_.FullName + '/.git') }} \
+         | ForEach-Object {{ Write-Output $_.Name }}\n\
+         exit 0",
+        q = powershell_quote(parent),
     )
 }
 
@@ -933,7 +1267,7 @@ pub fn list_branches_on(host: Option<&HostDef>, repo_path: &Path) -> Result<Vec<
         .context("failed to run git branch")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = reportable_stderr(&output.stderr);
         anyhow::bail!("git branch failed: {stderr}");
     }
 
@@ -1044,8 +1378,8 @@ fn run_diff(host: Option<&HostDef>, worktree: &Path, args: &[&str]) -> Option<St
     full.extend_from_slice(args);
     let output = git_command(host, worktree, &full).output().ok()?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("git {args:?} failed: {}", stderr.trim());
+        let stderr = reportable_stderr(&output.stderr);
+        warn!("git {args:?} failed: {stderr}");
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -1086,7 +1420,7 @@ pub fn create_worktree_on(
     .context("failed to run git worktree add")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = reportable_stderr(&output.stderr);
         anyhow::bail!("git worktree add failed: {stderr}");
     }
 
@@ -1144,7 +1478,7 @@ pub fn remove_worktree_on(
     .context("failed to run git worktree remove")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = reportable_stderr(&output.stderr);
         anyhow::bail!("git worktree remove failed: {stderr}");
     }
 
@@ -1223,7 +1557,7 @@ pub fn add_existing_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> 
         .context("failed to run git worktree add (existing branch)")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = reportable_stderr(&output.stderr);
         anyhow::bail!("git worktree add (existing) failed: {stderr}");
     }
 
@@ -1327,7 +1661,7 @@ fn git_stash(host: Option<&HostDef>, worktree_path: &Path) -> Result<bool> {
         .context("failed to run git stash")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = reportable_stderr(&output.stderr);
         anyhow::bail!("git stash failed: {stderr}");
     }
 
@@ -1347,7 +1681,7 @@ pub fn git_fetch_on(host: Option<&HostDef>, worktree_path: &Path) -> Result<()> 
         .context("failed to run git fetch")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = reportable_stderr(&output.stderr);
         anyhow::bail!("git fetch failed: {stderr}");
     }
 
@@ -1364,7 +1698,7 @@ fn git_rebase_onto(host: Option<&HostDef>, worktree_path: &Path, base_ref: &str)
     if !output.status.success() {
         let _ = git_command(host, worktree_path, &["rebase", "--abort"]).output();
 
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = reportable_stderr(&output.stderr);
         anyhow::bail!("rebase conflict: {stderr}");
     }
 
@@ -1378,7 +1712,7 @@ fn git_stash_pop(host: Option<&HostDef>, worktree_path: &Path) -> Result<()> {
         .context("failed to run git stash pop")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = reportable_stderr(&output.stderr);
         anyhow::bail!("git stash pop failed: {stderr}");
     }
 
@@ -2369,6 +2703,303 @@ mod tests {
             .chain(["-e", "sh", "-c", "mkdir -p /a && ln -s /b /a/b"])
             .collect();
         assert_eq!(args, expected);
+    }
+
+    /// A Windows host, declared the only way thurbox declares one.
+    fn windows_host() -> HostDef {
+        HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        }
+    }
+
+    /// The advisory OpenSSH ≥ 10 prints on stderr for every non-PQ connection.
+    const PQ_ADVISORY: &str = "\
+** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to \"store now, decrypt later\" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html";
+
+    #[test]
+    fn the_post_quantum_advisory_is_not_reported_as_the_error() {
+        // Verbatim, this block is FIRST in the buffer, so every remote failure
+        // read as "connection is not using a post-quantum key…" and the real
+        // cause was pushed below the fold — or off the end of a narrow band.
+        let stderr = format!("{PQ_ADVISORY}\nfatal: not a git repository");
+        assert_eq!(
+            reportable_stderr(stderr.as_bytes()),
+            "fatal: not a git repository"
+        );
+    }
+
+    #[test]
+    fn an_advisory_alone_leaves_nothing_to_report() {
+        // Not the advisory again as a consolation prize: empty, so the caller
+        // reports the exit status, which at least concerns the failure.
+        assert_eq!(reportable_stderr(PQ_ADVISORY.as_bytes()), "");
+    }
+
+    #[test]
+    fn powershell_clixml_stderr_is_decoded_to_its_message() {
+        // Captured verbatim from a real Windows SSH host: `powershell.exe` does
+        // not write error records as text when stderr is redirected, so this
+        // markup is what a Windows failure actually arrives as.
+        let stderr = format!(
+            "{PQ_ADVISORY}\n#< CLIXML\n<Objs Version=\"1.1.0.1\" \
+             xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">\
+             <Obj S=\"progress\" RefId=\"0\"><TN RefId=\"0\">\
+             <T>System.Management.Automation.PSCustomObject</T></TN><MS>\
+             <I64 N=\"SourceId\">1</I64><PR N=\"Record\">\
+             <AV>Preparing modules for first use.</AV></PR></MS></Obj>\
+             <S S=\"Error\">Get-ChildItem : Access to the path is \
+             denied._x000D__x000A_</S>\
+             <S S=\"Error\">    + CategoryInfo : PermissionDenied_x000D__x000A_</S>\
+             </Objs>"
+        );
+        let decoded = reportable_stderr(stderr.as_bytes());
+        assert_eq!(
+            decoded,
+            "Get-ChildItem : Access to the path is denied.\n    + CategoryInfo : PermissionDenied"
+        );
+        assert!(!decoded.contains("CLIXML"), "envelope survived: {decoded}");
+        assert!(!decoded.contains("<Objs"), "envelope survived: {decoded}");
+        assert!(
+            !decoded.contains("Preparing modules"),
+            "a progress record is not an error: {decoded}"
+        );
+    }
+
+    #[test]
+    fn clixml_carrying_no_error_reports_the_exit_status_instead() {
+        // The shape a script that exits non-zero *silently* produces: an
+        // envelope with only a progress record. Reporting it verbatim is how
+        // `#< CLIXML <Objs Version=…` reached the user.
+        let stderr = "#< CLIXML\n<Objs Version=\"1.1.0.1\"><Obj S=\"progress\" \
+                      RefId=\"0\"><AV>Preparing modules for first use.</AV></Obj></Objs>";
+        assert_eq!(reportable_stderr(stderr.as_bytes()), "");
+    }
+
+    #[test]
+    fn a_native_commands_own_stderr_survives_the_envelope() {
+        // `[Console]::Error.WriteLine` and any native command write raw text,
+        // which can be interleaved with an envelope. Both halves are kept.
+        let stderr = "#< CLIXML\nno such directory: C:/Users/me/nope\n\
+                      <Objs Version=\"1.1.0.1\"><Obj S=\"progress\" RefId=\"0\" /></Objs>";
+        assert_eq!(
+            reportable_stderr(stderr.as_bytes()),
+            "no such directory: C:/Users/me/nope"
+        );
+    }
+
+    #[test]
+    fn posix_stderr_is_passed_through_untouched() {
+        // No advisory, no envelope: the POSIX path must be unaffected.
+        assert_eq!(
+            reportable_stderr(b"sh: 1: cd: can't cd to /nope"),
+            "sh: 1: cd: can't cd to /nope"
+        );
+    }
+
+    #[test]
+    fn the_advisory_is_filtered_off_crlf_output_too() {
+        // ssh's real output is CRLF-terminated, which is how it arrives from a
+        // Windows host — the filter must not depend on bare LF.
+        let stderr = "** WARNING: connection is not using a post-quantum \
+                      key exchange algorithm.\r\n\
+                      ** The server may need to be upgraded.\r\n\
+                      fatal: repository '/nope' does not exist\r\n";
+        assert_eq!(
+            reportable_stderr(stderr.as_bytes()),
+            "fatal: repository '/nope' does not exist"
+        );
+    }
+
+    #[test]
+    fn a_line_merely_containing_asterisks_is_not_an_advisory() {
+        // Only a LEADING `**` marks one; git's own output must survive.
+        let stderr = "error: pathspec '**/*.rs' did not match any file";
+        assert_eq!(reportable_stderr(stderr.as_bytes()), stderr);
+    }
+
+    #[test]
+    fn a_malformed_underscore_x_is_literal_text() {
+        // `_x` only opens an escape when four hex digits and a `_` follow.
+        // Guessing otherwise would corrupt a message that merely contains `_x`.
+        for text in [
+            "_x",
+            "_xZZZZ_",
+            "_x00_",
+            "_x000D",
+            "path_x_thing",
+            "_x000Dtail",
+        ] {
+            assert_eq!(unescape_clixml(text), text, "{text} must pass through");
+        }
+        // `from_str_radix` accepts a leading sign, so this once decoded to a
+        // character: four *hex digits* are required, not four parseable chars.
+        assert_eq!(unescape_clixml("_x+12_"), "_x+12_");
+    }
+
+    #[test]
+    fn a_well_formed_underscore_x_decodes_and_keeps_its_surroundings() {
+        assert_eq!(unescape_clixml("a_x000D__x000A_b"), "a\r\nb");
+        assert_eq!(unescape_clixml("_x0041_"), "A");
+        // Lower-case hex is valid too.
+        assert_eq!(unescape_clixml("_x000d_"), "\r");
+    }
+
+    #[test]
+    fn xml_entities_decode_with_the_ampersand_last() {
+        assert_eq!(
+            unescape_clixml("&lt;Objs&gt; &quot;x&quot; &apos;y&apos;"),
+            "<Objs> \"x\" 'y'"
+        );
+        // `&amp;lt;` is a literal `&lt;`, which only holds if `&amp;` is
+        // substituted after the others rather than before.
+        assert_eq!(unescape_clixml("&amp;lt;"), "&lt;");
+        assert_eq!(unescape_clixml("a &amp; b"), "a & b");
+    }
+
+    #[test]
+    fn describe_exit_names_sshs_reserved_code_without_claiming_ssh() {
+        use std::os::unix::process::ExitStatusExt;
+
+        // 255 means the command never ran, which is a different sentence from
+        // "the command failed" — but the same helper serves `wsl.exe`, which
+        // has no such convention, so it must not say ssh.
+        let transport = std::process::ExitStatus::from_raw(255 << 8);
+        let described = describe_exit(&transport);
+        assert!(described.contains("255"), "{described}");
+        assert!(described.contains("never reached"), "{described}");
+        assert!(!described.contains("ssh"), "{described}");
+
+        let ordinary = std::process::ExitStatus::from_raw(1 << 8);
+        assert_eq!(describe_exit(&ordinary), "exit 1, no error output");
+
+        let signalled = std::process::ExitStatus::from_raw(9);
+        assert_eq!(describe_exit(&signalled), "killed by a signal");
+    }
+
+    #[test]
+    fn powershell_quote_doubles_only_the_single_quote() {
+        assert_eq!(powershell_quote("C:/Users/me"), "'C:/Users/me'");
+        assert_eq!(powershell_quote("o'brien"), "'o''brien'");
+        // `\` and `$` are literal inside a single-quoted PowerShell string,
+        // which is exactly why it is the right quote for a Windows path.
+        assert_eq!(powershell_quote(r"C:\Users\$env:X"), r"'C:\Users\$env:X'");
+        assert_eq!(powershell_quote(""), "''");
+    }
+
+    #[test]
+    fn a_psmux_host_is_a_windows_host_and_a_wsl_distro_is_not() {
+        assert!(windows_host().is_windows());
+        assert!(!host("me@box", None).is_windows());
+        // A distro runs `tmux` inside Linux, whatever the machine hosting it.
+        assert!(!HostDef::wsl("Ubuntu").is_windows());
+    }
+
+    #[test]
+    fn a_windows_host_is_probed_with_powershell_not_sh() {
+        // `sh -c …` on a native-Windows host fails with PowerShell's
+        // CommandNotFoundException — which is what stopped the repo picker
+        // listing a directory there at all.
+        let cmd = host_probe(&windows_host(), "test -d /a", "Test-Path /a");
+        let (prog, args) = program_and_args(&cmd);
+        assert_eq!(prog, "ssh");
+        assert!(
+            args.iter().any(|a| a == "powershell"),
+            "expected the powershell transport; got {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("test -d")),
+            "the posix script must not be sent to a windows host: {args:?}"
+        );
+        // And a POSIX host still gets `sh`, untouched.
+        let (_, posix) = program_and_args(&host_probe(&host("me@box", None), "test -d /a", "x"));
+        assert!(
+            posix.iter().any(|a| a == posix_quote("sh").as_str()),
+            "{posix:?}"
+        );
+    }
+
+    #[test]
+    fn the_powershell_payload_is_utf16le_base64_so_no_shell_can_rewrite_it() {
+        use base64::Engine as _;
+
+        // ssh space-joins its args for the host's default sshd shell to parse,
+        // and that shell is commonly PowerShell, which expands `$…` inside
+        // double quotes: a probe reading `$PSVersionTable` came back with the
+        // OUTER shell's expansion substituted in. Base64 has nothing to expand.
+        let script = "$d='C:/a'; Write-Output \"$d & 'x'\"";
+        let cmd = host_powershell_c(&windows_host(), script);
+        let (_, args) = program_and_args(&cmd);
+        let encoded = args.last().expect("payload");
+        assert!(
+            encoded
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'='),
+            "payload must be inert base64: {encoded}"
+        );
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("valid base64");
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(
+            String::from_utf16(&units).expect("utf-16le"),
+            script,
+            "-EncodedCommand decodes UTF-16LE; the script must arrive byte-exact"
+        );
+        assert!(args.iter().any(|a| a == "-NoProfile"), "{args:?}");
+    }
+
+    #[test]
+    fn the_windows_probe_scripts_quote_a_path_holding_a_quote() {
+        // `'` is the only character special inside a PowerShell single-quoted
+        // literal — `\` and `$` are not, which is what makes it right for a
+        // Windows path.
+        let path = "C:/Users/o'brien/repos";
+        for script in [
+            list_dir_entries_script_windows(path),
+            classify_path_script_windows(path),
+            scan_child_repos_script_windows(path),
+        ] {
+            assert!(
+                script.contains("'C:/Users/o''brien/repos'"),
+                "quote not doubled: {script}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_windows_probe_scripts_emit_the_same_protocol_as_the_posix_ones() {
+        // The point of the pair: every parser below stays transport-neutral.
+        assert_eq!(
+            parse_dir_listing("!missing"),
+            DirListing::Missing,
+            "the windows listing writes the same sentinel"
+        );
+        let listing = list_dir_entries_script_windows("C:/a");
+        assert!(listing.contains("'!missing'"), "{listing}");
+        assert!(listing.contains("'g '"), "{listing}");
+        assert!(listing.contains("'d '"), "{listing}");
+        // Hidden entries are included, matching the POSIX loop's `* .*`.
+        assert!(listing.contains("-Force"), "{listing}");
+
+        let classify = classify_path_script_windows("C:/a");
+        for word in ["'missing'", "'git'", "'dir'"] {
+            assert!(classify.contains(word), "{word} missing from {classify}");
+        }
+
+        // The scan skips `.`-prefixed names (the POSIX `*` glob's rule) and says
+        // why it failed rather than exiting mute.
+        let scan = scan_child_repos_script_windows("C:/a");
+        assert!(scan.contains("StartsWith('.')"), "{scan}");
+        assert!(scan.contains("[Console]::Error.WriteLine"), "{scan}");
+        assert!(!scan.contains("-Force"), "hidden must stay skipped: {scan}");
     }
 
     #[test]

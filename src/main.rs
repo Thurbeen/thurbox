@@ -2865,12 +2865,16 @@ impl App {
         let focus_label = bands::focus_label(self.focused_session.as_deref(), &focused_plugin);
         // Work in flight outranks a toast while it runs: creation phases
         // routinely outlast the retention window, which is why they are progress
-        // rather than a message.
-        let inflight = self.commands.inflight();
-        let progress = inflight.first().map(|item| match &item.subject {
-            Some(subject) => format!("{} {subject}…", item.kind),
-            None => format!("{}…", item.kind),
-        });
+        // rather than a message. `first_running` rather than the whole list,
+        // because progress outranking a message makes a *failed* entry hide the
+        // error explaining it — see [`CommandBus::first_running`].
+        let progress = self
+            .commands
+            .first_running()
+            .map(|item| match &item.subject {
+                Some(subject) => format!("{} {subject}…", item.kind),
+                None => format!("{}…", item.kind),
+            });
         let message = self
             .status
             .as_ref()

@@ -265,9 +265,7 @@ impl RepoStore {
         if key.is_empty() {
             return None;
         }
-        self.hosts
-            .get_by_backend(key)
-            .or_else(|| self.hosts.get(key))
+        self.hosts.resolve(key)
     }
 
     /// The rows for `host`, once they have been asked for.

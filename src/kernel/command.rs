@@ -862,6 +862,22 @@ impl CommandBus {
             .unwrap_or_default()
     }
 
+    /// The first command that is still *running*, for the progress line.
+    ///
+    /// A failed entry stays in the list for `FAILURE_LINGER_MS` so a pane can
+    /// draw a failed row, and that is longer than a message is retained — so
+    /// describing one as progress does not merely mislabel it, it hides the
+    /// error explaining the failure for the whole time that error is readable.
+    /// The failure is reported through the message band instead.
+    pub fn first_running(&self) -> Option<InFlight> {
+        self.inflight
+            .lock()
+            .ok()?
+            .iter()
+            .find(|entry| entry.phase != Phase::Failed)
+            .cloned()
+    }
+
     /// Whether any command is in flight for a session.
     pub fn is_busy(&self, session: &str) -> bool {
         self.inflight
@@ -1132,8 +1148,7 @@ fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
         let (registry, _warnings) = crate::agent::host_config::load_all_with_warnings();
         Some(
             registry
-                .get_by_backend(host)
-                .or_else(|| registry.get(host))
+                .resolve(host)
                 .cloned()
                 .ok_or_else(|| format!("no such host: {host}"))?,
         )
@@ -1814,6 +1829,63 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         panic!("the failure never surfaced");
+    }
+
+    #[test]
+    fn a_failed_command_is_not_reported_as_work_in_flight() {
+        // The progress line is derived from this, and it outranks the message
+        // band. A failure lingers longer than a message is retained, so counting
+        // it as progress hid the error for exactly as long as the error existed.
+        let mut bus = CommandBus::new();
+        let id = bus.dispatch(Command::Delete {
+            session: "not-a-uuid".into(),
+            force: false,
+        });
+        bus.finish_for_test(id, Some("bad session id".into()));
+        bus.poll();
+
+        assert_eq!(bus.inflight().len(), 1, "the failed row is still drawable");
+        assert!(
+            bus.first_running().is_none(),
+            "a failure must not be described as work in progress"
+        );
+    }
+
+    #[test]
+    fn a_failure_is_skipped_to_find_the_work_still_running_behind_it() {
+        // The failure is FIRST in the list, so a `first()` would stop there and
+        // report nothing in flight while a creation was genuinely running — the
+        // band would go quiet mid-spawn.
+        let mut bus = CommandBus::new();
+        let failed = bus.dispatch(Command::Delete {
+            session: "not-a-uuid".into(),
+            force: false,
+        });
+        bus.finish_for_test(failed, Some("bad session id".into()));
+        bus.poll();
+        let running = bus.dispatch(Command::Restore {
+            session: "s1".into(),
+            best_effort: false,
+        });
+
+        let found = bus.first_running().expect("the running command");
+        assert_eq!(found.id, running);
+        assert_ne!(found.phase, Phase::Failed);
+    }
+
+    #[test]
+    fn work_in_flight_is_reported_as_running() {
+        // The other half of the contract: an ordinary in-flight command must
+        // still drive the progress line.
+        let bus = CommandBus::new();
+        assert!(bus.first_running().is_none(), "nothing dispatched yet");
+        let id = bus.dispatch(Command::Restore {
+            session: "s1".into(),
+            best_effort: false,
+        });
+        let found = bus.first_running().expect("the dispatched command");
+        assert_eq!(found.id, id);
+        assert_eq!(found.kind, "restore");
     }
 
     #[test]

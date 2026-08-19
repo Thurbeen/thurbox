@@ -88,7 +88,7 @@ fn remote_read_command(
         let mut c = wsl_command(&host.distro_name());
         c.arg("-e").arg("sh").arg("-c").arg(posix_script);
         c
-    } else if host.mux() == "psmux" {
+    } else if host.is_windows() {
         let mut c = ssh_command(&host.destination, &host.ssh_opts);
         c.args(windows_args);
         c

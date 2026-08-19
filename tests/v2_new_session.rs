@@ -994,6 +994,11 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
     let Some(Command::Create { host: target, .. }) = issued.first() else {
         panic!("expected a create, got {issued:?}");
     };
+    // The BACKEND name, because that is the key repository memory is scoped by
+    // and the flow carries one host string, not two. `spawn::resolve_host` is
+    // therefore required to accept this spelling as well as the bare `devbox`
+    // the CLI's `--host` takes — it accepted only the bare one once, and every
+    // session created on a host failed with "Unknown host 'ssh:devbox'".
     assert_eq!(target.as_deref(), Some("ssh:devbox"));
 }
 

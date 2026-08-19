@@ -109,7 +109,7 @@ pub(crate) fn rewrite_hook_signals_for_remote(contents: &str) -> String {
 /// shipped config file — and such a name would break every other
 /// `-L <socket>` invocation anyway.
 pub(crate) fn remote_signal_target(host: &crate::session::HostDef) -> RemoteSignalTarget {
-    if host.mux() == "psmux" {
+    if host.is_windows() {
         let socket = crate::agent::tmux::host_socket(host);
         let safe: String = socket
             .chars()

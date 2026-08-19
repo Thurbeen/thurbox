@@ -557,7 +557,7 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
                 super::builtin_hooks::rewrite_hook_signals_for_target(&contents, &target);
             // A psmux host is native Windows — no `sh`/`cat` for the POSIX
             // stream copy, so the payload goes via the PowerShell variant.
-            let copied = if host.mux() == "psmux" {
+            let copied = if host.is_windows() {
                 crate::git::copy_bytes_to_remote_windows(host, contents.as_bytes(), &remote_path)
             } else {
                 crate::git::copy_bytes_to_remote(host, contents.as_bytes(), &remote_path)
@@ -635,16 +635,16 @@ pub(crate) fn adapt_def_for_launch(
 }
 
 /// The home dir to expand `{home}` against for a launch on `host`: the remote
-/// `$HOME` for a POSIX SSH/WSL host, or the Windows home for a psmux host.
+/// `$HOME` for a POSIX SSH/WSL host, or `%USERPROFILE%` for a Windows one.
 /// `None` when it can't be resolved (host down, no client) — the caller then
 /// leaves the token unexpanded and warns.
+///
+/// The platform choice lives in [`crate::git::remote_home`], not here: a second
+/// copy of it is a second thing to keep in step, and this one used to be the
+/// only place that made it — so every *other* caller silently got `$HOME` on a
+/// Windows host, where that is the literal string.
 pub(crate) fn resolve_launch_home(host: &HostDef) -> Option<String> {
-    let result = if host.mux() == "psmux" {
-        crate::git::remote_home_windows(host)
-    } else {
-        crate::git::remote_home(host)
-    };
-    match result {
+    match crate::git::remote_home(host) {
         Ok(home) => Some(home),
         Err(e) => {
             tracing::warn!("cannot resolve home for host '{}': {e:#}", host.name);
@@ -674,7 +674,7 @@ fn def_references_home(def: &crate::session::AgentDef) -> bool {
 ///   case);
 /// - a POSIX root outside the local home is mirrored at the same absolute path.
 fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
-    if host.mux() == "psmux" {
+    if host.is_windows() {
         if !psmux_hook_rewrite_supported() {
             tracing::warn!(
                 "stripping local agent-config args for host '{}': psmux hook rewrite \
@@ -846,12 +846,17 @@ fn dir_label(path: &std::path::Path) -> String {
 /// `None`/empty → the local backend. A named host must exist in `hosts.toml`
 /// **or** be an auto-discovered local WSL distro, otherwise an error is
 /// returned listing the available hosts.
+///
+/// Either spelling is accepted — the bare name the CLI's `--host` takes, or the
+/// `ssh:`/`wsl:` backend name the interface's host picker carries — because both
+/// reach here and a bare-name-only lookup silently refused every session the
+/// new-session flow tried to create on a host.
 fn resolve_host(host_name: Option<&str>) -> Result<(String, Option<HostDef>), String> {
     let Some(name) = host_name.filter(|n| !n.is_empty()) else {
         return Ok((LOCAL_TMUX_BACKEND_TYPE.to_string(), None));
     };
     let registry = crate::agent::host_config::load_all();
-    match registry.get(name) {
+    match registry.resolve(name) {
         Some(h) => Ok((h.backend_name(), Some(h.clone()))),
         None => {
             let available = registry.names().join(", ");
@@ -1208,6 +1213,33 @@ mod tests {
         let (backend_type, host) = resolve_host(Some("devbox")).unwrap();
         assert_eq!(backend_type, "ssh:devbox");
         assert_eq!(host.unwrap().destination, "me@devbox");
+    }
+
+    #[test]
+    fn resolve_host_accepts_the_backend_name_the_interface_carries() {
+        // The new-session flow's host picker hands on `hosts.backend`, so this is
+        // the spelling every creation on a host arrives with. Refusing it made
+        // remote creation fail for every session started from the interface
+        // while `--host devbox` kept working, which is why both spellings are
+        // one lookup now.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let path = crate::agent::host_config::hosts_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[[hosts]]\nname = \"devbox\"\ndestination = \"me@devbox\"\n\
+             [[hosts]]\nname = \"ubuntu\"\nkind = \"wsl\"\n",
+        )
+        .unwrap();
+
+        let (backend_type, host) = resolve_host(Some("ssh:devbox")).unwrap();
+        assert_eq!(backend_type, "ssh:devbox");
+        assert_eq!(host.unwrap().destination, "me@devbox");
+
+        let (backend_type, host) = resolve_host(Some("wsl:ubuntu")).unwrap();
+        assert_eq!(backend_type, "wsl:ubuntu");
+        assert_eq!(host.unwrap().name, "ubuntu");
     }
 
     #[test]

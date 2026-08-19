@@ -563,6 +563,66 @@ summary; this is the reference to read before touching that path.
   `deferred_prompt_script`) sends `send-paste` where tmux gets
   `send-keys -l <ESC[200~…>`. Probed by `windows-vm.sh test` (probe C).
 
+### A Windows host speaks PowerShell, not `sh`
+
+psmux is the *multiplexer*; the divergence above is about its wire protocol.
+Independent of it, `multiplexer = "psmux"` also declares that the **host is
+native Windows** (`HostDef::is_windows` — the multiplexer is the proxy for the
+platform, since a WSL distro runs `tmux` inside Linux), and a Windows host has
+no POSIX shell at all. Every remote probe was `sh -c <script>`, which there
+fails with PowerShell's `CommandNotFoundException` — so the repo picker could
+not list a directory, classify a committed path, or import a folder of repos on
+a Windows host.
+
+- **One dispatch point, two dialects.** `git::host_probe(host, posix,
+  windows)` picks `host_shell_c` or `host_powershell_c`, and each pair of
+  scripts emits the **same line protocol** (`!missing`, `g <name>`/`d <name>`,
+  `git`/`dir`/`missing`, one name per line) so every parser stays
+  transport-neutral. A probe cannot become POSIX-only by omission.
+- **`-EncodedCommand`, not `-Command`.** The script crosses two shells that both
+  rewrite it: ssh space-joins its trailing args, and the host's default sshd
+  shell — commonly PowerShell itself — expands `$…` inside double quotes. A
+  probe reading `$PSVersionTable` came back with the *outer* shell's expansion
+  (`System.Collections.Hashtable`) substituted in. UTF-16LE base64 is
+  `[A-Za-z0-9+/=]`, so neither `cmd` nor PowerShell finds anything to
+  interpret. Paths inside the script are PowerShell single-quoted
+  (`powershell_quote`: only `'` is special, so `\` and `$` in a Windows path
+  are literal).
+- **There is no `$HOME`.** `echo $HOME` under `cmd`/PowerShell prints the string
+  `$HOME` and exits 0, so the bogus value was accepted and every `~`-relative
+  path became a literal `$HOME/…`. `git::remote_home` routes a Windows host to
+  `%USERPROFILE%`; that choice lives there and nowhere else, because the one
+  other copy of it (`spawn::resolve_launch_home`) was the only caller getting it
+  right.
+
+### A remote error has to name the failure
+
+Two layers of transport noise sat in front of every error message a command
+reported, both removed by `git::reportable_stderr` — which every helper in the
+module reports through, local git included, because a `clone`/`fetch` runs over
+ssh via `GIT_SSH_COMMAND` and carries the same advisory:
+
+- **OpenSSH's post-quantum advisory.** OpenSSH ≥ 10 prints a three-line `**
+  WARNING: connection is not using a post-quantum key exchange algorithm.` block
+  on **stderr** for every connection to a server on an older OpenSSH — Windows
+  hosts very much included. It is informational and the command still runs, but
+  it is *first* in the buffer, so reporting stderr verbatim made every remote
+  failure read as a key-exchange problem and pushed the real cause below the
+  fold. Suppressing it at the source is not an option: `LogLevel=ERROR` would
+  equally hide `Permission denied`, and `WarnWeakCrypto=no` is fatal on the
+  older clients that never warn anyway — so the `**` lines are filtered from the
+  *reported* text. When they are all there was, the exit status is reported
+  instead (`describe_exit`), never the advisory again.
+- **PowerShell's CLIXML stderr.** `powershell.exe` does not write error records
+  as text when its stderr is redirected (which it always is here) — it writes a
+  `#< CLIXML` document whose messages sit in `<S S="Error">` nodes with CRLF
+  encoded as `_x000D__x000A_`, so a Windows failure arrived as `#< CLIXML <Objs
+  Version=…`. `decode_clixml` strips the envelope whole and inlines the error
+  text; a document carrying only a `progress` record (PowerShell's "Preparing
+  modules for first use") decodes to nothing, so the exit status is reported
+  rather than the markup. Raw text interleaved with an envelope — what
+  `[Console]::Error.WriteLine` and any native command produce — is kept.
+
 ---
 
 ---

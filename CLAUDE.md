@@ -645,6 +645,22 @@ through the one-shot CLI `psmux send-paste` (`control_mode::PsmuxPaste`). Each
 workaround has non-obvious quoting/tokenizing constraints — **read the psmux
 divergences subsection of ADR-13 in `docs/ARCHITECTURE.md` before touching this
 path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).
+
+`multiplexer = "psmux"` also declares the **host is native Windows**
+(`HostDef::is_windows` — the multiplexer is the proxy for the platform, since a
+WSL distro runs `tmux` inside Linux), and a Windows host has no POSIX shell. So
+each remote probe ships **two scripts emitting one line protocol** —
+`git::host_probe` picks `sh -c` or `powershell -EncodedCommand`
+(`host_powershell_c`; UTF-16LE base64, because ssh space-joins its args for a
+default sshd shell that is commonly PowerShell and expands `$…` inside them) —
+and `git::remote_home` resolves `%USERPROFILE%` rather than `$HOME`, which under
+`cmd`/PowerShell prints the literal string and exits 0. Remote error *messages*
+are cleaned in one place (`git::reportable_stderr`): OpenSSH ≥ 10's three-line
+post-quantum advisory is dropped (it is informational, on stderr, and **first**,
+so it used to be the whole reported error), and PowerShell's `#< CLIXML` stderr
+envelope is decoded to the message inside it. See the two subsections after
+"psmux divergences" in ADR-13.
+
 Each host registers a backend named
 `ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`, registered lazily in
 `main.rs` from `host_config::load_all_with_warnings`: discovery/down hosts must
