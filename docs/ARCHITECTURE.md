@@ -1116,7 +1116,7 @@ gate (`kernel::consent`) before anything changes. See `docs/RELEASING.md`.
 table that is converted and painted — so the loop settles aggressively and every
 cached answer carries an age. And v1 surfaces are owed rather than ported: code
 review, the file viewer and the info panel have no equivalent, and tasks,
-automations, the restore list and the perf HUD are `thurbox-cli` only. Tracked in
+automations and the restore list are `thurbox-cli` only. Tracked in
 `openspec/changes/v2-parity-gaps/`.
 
 **Rejected**:

@@ -16,6 +16,40 @@ worktrees are first-class citizens.
 [![Website](https://img.shields.io/badge/Website-thurbox.thurbeen.eu-blue)](https://thurbox.thurbeen.eu/)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Thurbeen_thurbox&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Thurbeen_thurbox)
 
+> [!IMPORTANT]
+> **v2 is out, and it is not a drop-in v1.** The interface is now Lua plugins on
+> a Rust kernel, and some v1 surfaces did not come with it:
+>
+> | Gone from the interface | v1 chord | Where it lives now |
+> |---|---|---|
+> | Code review | `Ctrl+X` / `F7` | nothing yet |
+> | File viewer | `Ctrl+E` / `F3` | nothing yet |
+> | Info panel | `Ctrl+B` / `F2` | nothing yet |
+> | Tasks panel | `Ctrl+W` / `F5` | `thurbox-cli task` |
+> | Automations pane | `Ctrl+P` | `thurbox-cli automation` |
+> | Restore list | `Ctrl+U` | `thurbox-cli session restore` |
+>
+> Each freed chord is deliberately left **unbound** rather than reused, so no
+> muscle memory quietly does something else. Everything outside the interface —
+> sessions, agents, worktrees, remote hosts, automations, your database — is
+> unchanged.
+>
+> **Upgrading** asks once, on the first v2 launch of a profile with v1 history,
+> before anything changes. **To stay on v1**, answer `q` at that prompt: it turns
+> auto-update off and prints the reinstall command. Or reinstall it yourself:
+>
+> ```bash
+> # export, not a prefix: `VERSION=… curl | sh` binds it to curl, not to the sh
+> export VERSION=v1.8.6
+> curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+> ```
+>
+> Then set `auto_update = false` under `[features]` in
+> `~/.config/thurbox/settings.toml`, or the next launch pulls v2 back. v1 is
+> maintained on the [`1.x`](https://github.com/Thurbeen/thurbox/tree/1.x) branch;
+> newer 1.x patches are on the
+> [releases page](https://github.com/Thurbeen/thurbox/releases).
+
 ![Thurbox Demo](./docs/media/thurbox-demo.gif)
 
 ## Installation
@@ -956,11 +990,10 @@ capability, granted per plugin and only after you trust it.
 See [docs/PLUGINS.md](docs/PLUGINS.md) and
 [docs/V2-KERNEL.md](docs/V2-KERNEL.md).
 
-**Moving from v1?** Code review, the file viewer and the info panel
-have no equivalent yet; tasks, automations, the restore list and the
-perf HUD moved to `thurbox-cli`. thurbox asks once on the first
-launch after the upgrade before changing anything, and v1 is
-maintained on the `1.x` branch.
+**Moving from v1?** Some panes are owed rather than ported, and some
+moved to `thurbox-cli`. The note at the top of this file has the list,
+what asks you before anything changes, and how to stay on v1 — which
+is maintained on the `1.x` branch.
 
 ## Documentation
 

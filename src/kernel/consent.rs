@@ -23,14 +23,16 @@ use crate::storage::Database;
 ///
 /// Stated here rather than in prose so the gate, the release notes and the docs
 /// cannot drift: this is the list, and it is the only list.
-pub const GONE: [(&str, &str, &str); 7] = [
+///
+/// The perf HUD is deliberately *not* here, having been listed once by mistake:
+/// `F12` still opens it, gated on `[features] perf_hud` exactly as in v1.
+pub const GONE: [(&str, &str, &str); 6] = [
     ("code review", "Ctrl+X / F7", ""),
     ("file viewer", "Ctrl+E / F3", ""),
     ("info panel", "Ctrl+B / F2", ""),
-    ("tasks panel", "F5", "thurbox-cli task"),
+    ("tasks panel", "Ctrl+W / F5", "thurbox-cli task"),
     ("automations pane", "Ctrl+P", "thurbox-cli automation"),
     ("restore list", "Ctrl+U", "thurbox-cli session restore"),
-    ("perf HUD", "F12", "thurbox-cli perf"),
 ];
 
 /// thurbox's mark, as `scripts/install.sh` prints it. Shared shape on purpose:
