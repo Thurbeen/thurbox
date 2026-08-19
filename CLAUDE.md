@@ -1344,8 +1344,16 @@ What survived, because it is not view code:
   why they live in `session` rather than beside a renderer.
 - **`storage::review`** — `review_comments` + `review_marks` (schema v38), keyed on
   the write-once `sessions.base_branch`. Comments already written are still there.
-- **`git::diff_against{,_on}`** and **`kernel::diff`** — diffs are produced on a
-  worker and published into the snapshot, bounded at `MAX_DIFF_BYTES`.
+- **`git::diff_against{,_on}`** (a base branch) / **`git::working_diff_on`** (the
+  uncommitted changes) and **`kernel::diff`** — diffs are produced on a worker and
+  published into the snapshot, bounded at `MAX_DIFF_BYTES`. The working-tree one
+  folds in **untracked files** (`git diff --no-index -- /dev/null <path>`, capped at
+  `git::UNTRACKED_FILE_CAP`, overflow reported as `untracked_omitted`): `git diff
+  HEAD` cannot show a file git has never been told about, which made the default
+  target report "no changes" after an agent wrote new ones. There is deliberately no
+  body-only `git diff HEAD` helper — having one is how that omission happened.
+  Rationale + the rejected temporary-index approach: ADR-P6's diff bullets in
+  `docs/PERFORMANCE.md`.
 
 So a review plugin has its data layer waiting for it. Two rules from the v1 design
 still apply if you build one: **1 logical diff row = 1 selectable unit** (wrapping

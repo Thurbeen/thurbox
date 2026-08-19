@@ -375,8 +375,8 @@ uses for git stats and worktree creation.
 `src/app`; the reasoning survives because the successor is the same shape. The
 kernel's `DiffStore` computes on a worker and publishes into the snapshot, which a
 plugin reads as `thurbox.diffs[<session>]` — `pending` / `failed` / `ready`, with
-`files`, `body` and `truncated`. Three things about it are worth stating because
-each was wrong once:
+`files`, `body`, `truncated`, `raw_bytes` and `untracked_omitted`. Five things
+about it are worth stating because each was wrong once:
 
 - **The base is `sessions.base_branch`, never the session's own branch.** The loop
   passed `SessionRow.branch` — a session's *own* worktree branch — so the range was
@@ -397,6 +397,25 @@ each was wrong once:
   -M -z` plus `--name-status -M -z`: two cheap commands, ~12 KB for four hundred files
   against a 4 MiB body, joined on the new path. A failure to list fails the diff rather
   than reporting a partial list as complete.
+- **The uncommitted diff has to include untracked files.** `git diff HEAD` cannot
+  show a file git has never been told about, and a new file is the most common thing
+  a coding agent produces — so a session with **no** base branch, which is exactly
+  the scratch worktree someone watches an agent work in, reported "no changes" after
+  three files had been written. v1 had the same gap; the consequence is worse here
+  because that is the default target. `git::working_diff_on` now folds each
+  untracked file in as `git diff --no-index -- /dev/null <path>`, which emits an
+  ordinary `new file mode` patch and needed nothing downstream to change: the
+  numstat record arrives in the *rename* shape (empty path, `/dev/null`, real name),
+  which `parse_changed_files` already handled. The body, the counts and the statuses
+  come back from **one** call so they cannot disagree about which files they covered.
+  The rejected alternative is the instructive one: a temporary index
+  (`GIT_INDEX_FILE` + `git add -A` + `git diff --cached`) gets everything in one
+  process and **writes loose objects into the repository being reviewed** — for a
+  pane refreshing every few seconds against a worktree an agent is editing, a reader
+  mutating what it reads. Bounded at `git::UNTRACKED_FILE_CAP` (200) since each file
+  costs a process, and what was left out is reported as `untracked_omitted` rather
+  than folded into `truncated`: a short *list* and a cut *body* are different
+  failures and read differently.
 - **A cached diff can be discarded.** `command("diff", { session })` invalidates,
   and the next frame recomputes. Without it a diff was computed once per session per
   process and never again — a diff frozen at first sight while the agent kept

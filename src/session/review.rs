@@ -591,6 +591,53 @@ mod tests {
         assert_eq!((files[2].added, files[2].removed), (2, 1));
     }
 
+    /// The body half of the same route: a `--no-index` patch for an untracked file
+    /// whose path contains a space, which git terminates with a **TAB** on the
+    /// `+++` line. Trimmed, or every such file would be keyed on a path with an
+    /// invisible tab on the end and its comments would anchor to nothing.
+    #[test]
+    fn an_untracked_patch_with_a_spaced_path_keeps_the_path_clean() {
+        let patch = "diff --git a/sub dir/has space.txt b/sub dir/has space.txt\n\
+                     new file mode 100644\n\
+                     index 0000000..bd4269f\n\
+                     --- /dev/null\n\
+                     +++ b/sub dir/has space.txt\t\n\
+                     @@ -0,0 +1 @@\n\
+                     +spaced\n";
+        let files = parse_unified_diff(patch);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].path, "sub dir/has space.txt");
+        assert_eq!(files[0].status, FileStatus::Added);
+        assert_eq!(
+            files[0].old_path, None,
+            "`--- /dev/null` is not an old path"
+        );
+    }
+
+    /// An **untracked** file reaches the list through `git diff --no-index --
+    /// /dev/null <path>`, and the two commands disagree about its shape: numstat
+    /// uses the *rename* form (an empty path field, then `/dev/null`, then the
+    /// real name) while name-status uses the plain `A` form.
+    ///
+    /// Both already parse — which is why `--no-index` was chosen over a temporary
+    /// index — and this pins that, because the coupling is invisible from either
+    /// side. Bytes captured verbatim from git.
+    #[test]
+    fn an_untracked_file_arrives_in_the_rename_shape_and_is_not_a_rename() {
+        let numstat = "3\t0\t\x00/dev/null\x00new.txt\x00";
+        let name_status = "A\x00new.txt\x00";
+
+        let files = parse_changed_files(numstat, name_status);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].path, "new.txt", "the real name, not /dev/null");
+        assert_eq!(files[0].status, FileStatus::Added);
+        assert_eq!((files[0].added, files[0].removed), (3, 0));
+        assert_eq!(
+            files[0].old_path, None,
+            "the /dev/null pair must not read as a rename from it"
+        );
+    }
+
     /// A binary file changed, and has no line counts. It is reported with zero rather
     /// than dropped: `-` is not a number, and a file missing from the list is worse
     /// than one with nothing to count.

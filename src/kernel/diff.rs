@@ -48,6 +48,14 @@ pub enum Diff {
         /// The diff's size before any cut, in bytes, so a truncation banner can be
         /// specific about what is missing.
         raw_bytes: usize,
+        /// Untracked files found but not represented, because there were more
+        /// than `git`'s per-file cap allows.
+        ///
+        /// Distinct from [`truncated`](Self::Ready::truncated), which is about
+        /// bytes: a short *list* and a cut *body* are different failures and read
+        /// differently. `0` when everything is accounted for, which is the
+        /// ordinary case.
+        untracked_omitted: usize,
     },
     Failed(String),
 }
@@ -151,15 +159,16 @@ impl Default for DiffStore {
 /// same argument through `code_review`; passing `None` unconditionally is how a
 /// remote session came to be diffed against a path that does not exist here.
 fn compute(worktree: &Path, base: Option<&str>, host: Option<&crate::session::HostDef>) -> Diff {
-    // Against the base branch when there is one, else the uncommitted changes —
-    // which is what a session with no base branch has to show.
-    let raw = match base {
-        Some(base) => crate::git::diff_against_on(host, worktree, base),
-        None => crate::git::diff_working_on(host, worktree),
+    let sources = match read_sources(worktree, base, host) {
+        Ok(sources) => sources,
+        Err(failure) => return Diff::Failed(failure.to_string()),
     };
-    let Some(raw) = raw else {
-        return Diff::Failed("could not read the diff".to_string());
-    };
+    let Sources {
+        raw,
+        numstat,
+        name_status,
+        untracked_omitted,
+    } = sources;
 
     let truncated = raw.len() > MAX_DIFF_BYTES;
     // The size before the cut, so a pane can say "4.0 of 20.3 MB" rather than
@@ -191,35 +200,79 @@ fn compute(worktree: &Path, base: Option<&str>, host: Option<&crate::session::Ho
     // totals to match, and nothing said so. `truncated` is about bytes; a reviewer
     // scrolling a list that ends early has no way to know.
     //
-    // A failure here fails the diff rather than falling back to the body's own
-    // files. These are the cheap commands: if they cannot run, the expensive one that
-    // just did was luck, and reporting a partial list as complete is the fault this
-    // exists to remove.
-    let files = match (
-        crate::git::diff_numstat_on(host, worktree, base),
-        crate::git::diff_name_status_on(host, worktree, base),
-    ) {
-        (Some(numstat), Some(name_status)) => {
-            crate::session::review::parse_changed_files(&numstat, &name_status)
-                .into_iter()
-                .map(|file| FileSummary {
-                    path: file.path,
-                    added: file.added,
-                    removed: file.removed,
-                    status: file.status.glyph(),
-                    old_path: file.old_path,
-                })
-                .collect()
-        }
-        _ => return Diff::Failed("could not list the changed files".to_string()),
-    };
+    // A failure reading them fails the diff rather than falling back to the body's
+    // own files (see `read_sources`). These are the cheap commands: if they cannot
+    // run, the expensive one that just did was luck, and reporting a partial list as
+    // complete is the fault this exists to remove.
+    let files = crate::session::review::parse_changed_files(&numstat, &name_status)
+        .into_iter()
+        .map(|file| FileSummary {
+            path: file.path,
+            added: file.added,
+            removed: file.removed,
+            status: file.status.glyph(),
+            old_path: file.old_path,
+        })
+        .collect();
 
     Diff::Ready {
         files,
         body: raw.lines().map(str::to_string).collect(),
         truncated,
         raw_bytes,
+        untracked_omitted,
     }
+}
+
+/// The three raw git outputs a diff is rendered from, plus what was left out.
+struct Sources {
+    raw: String,
+    numstat: String,
+    name_status: String,
+    untracked_omitted: usize,
+}
+
+/// Read the diff, the counts and the statuses for whichever target is asked for.
+///
+/// Against the base branch when there is one, else the uncommitted changes —
+/// which is what a session with no base branch has to show. The two are gathered
+/// differently: `base..HEAD` is committed history, so its body and file list are
+/// independent commands, while the working tree has to fold in **untracked
+/// files** and therefore comes back from [`crate::git::working_diff_on`] as one
+/// consistent set. Asking for them separately there would let the body describe a
+/// file the list omitted.
+///
+/// `Err` carries the message to report, keeping "could not read the diff" and
+/// "could not list the changed files" distinct — the second means the cheap
+/// commands failed after the expensive one worked, which is worth telling apart.
+fn read_sources(
+    worktree: &Path,
+    base: Option<&str>,
+    host: Option<&crate::session::HostDef>,
+) -> Result<Sources, &'static str> {
+    let Some(base) = base else {
+        let working =
+            crate::git::working_diff_on(host, worktree).ok_or("could not read the diff")?;
+        return Ok(Sources {
+            raw: working.body,
+            numstat: working.numstat_z,
+            name_status: working.name_status_z,
+            untracked_omitted: working
+                .untracked_total
+                .saturating_sub(working.untracked_shown),
+        });
+    };
+    let raw = crate::git::diff_against_on(host, worktree, base).ok_or("could not read the diff")?;
+    let (numstat, name_status) = crate::git::diff_numstat_on(host, worktree, Some(base))
+        .zip(crate::git::diff_name_status_on(host, worktree, Some(base)))
+        .ok_or("could not list the changed files")?;
+    Ok(Sources {
+        raw,
+        numstat,
+        name_status,
+        // `base..HEAD` is committed history; nothing untracked can be in it.
+        untracked_omitted: 0,
+    })
 }
 
 #[cfg(test)]
@@ -290,6 +343,7 @@ mod tests {
             body: Vec::new(),
             truncated: false,
             raw_bytes: 0,
+            untracked_omitted: 0,
         };
         assert_ne!(pending, empty);
     }
@@ -339,28 +393,45 @@ mod tests {
     /// complete. The body here is deliberately pushed past `MAX_DIFF_BYTES`, and every
     /// file must still be listed with its true counts — derived from the capped text,
     /// this listed only the files that fit.
+    /// Run `git` in `repo` with the location variables scrubbed.
+    ///
+    /// The pre-commit hook exports `GIT_DIR` and friends, so an unscrubbed call
+    /// from the suite lands in the real repository (see CLAUDE.md → Testing).
+    fn git_in(repo: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_CONFIG_PARAMETERS")
+            .env_remove("GIT_CONFIG_COUNT")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}");
+    }
+
+    /// A repository with one commit on `main`, ready to be dirtied.
+    fn repo_with_a_base_commit(home: &tempfile::TempDir) -> PathBuf {
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        git_in(&repo, &["init", "-q", "-b", "main"]);
+        git_in(&repo, &["config", "user.email", "t@example.com"]);
+        git_in(&repo, &["config", "user.name", "T"]);
+        std::fs::write(repo.join("tracked.txt"), "one\n").expect("write");
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-q", "-m", "base"]);
+        repo
+    }
+
     #[test]
     fn a_capped_body_still_lists_every_changed_file() {
         let home = tempfile::tempdir().expect("tempdir");
         let repo = home.path().join("repo");
         std::fs::create_dir_all(&repo).expect("mkdir");
-        let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                // The pre-commit hook exports these; unscrubbed, a test's git call
-                // lands in the real repository.
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_WORK_TREE")
-                .env_remove("GIT_INDEX_FILE")
-                .env_remove("GIT_CONFIG_PARAMETERS")
-                .env_remove("GIT_CONFIG_COUNT")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_SYSTEM", "/dev/null")
-                .output()
-                .expect("git");
-            assert!(out.status.success(), "git {args:?}");
-        };
+        let git = |args: &[&str]| git_in(&repo, args);
         git(&["init", "-q", "-b", "main"]);
         git(&["config", "user.email", "t@example.com"]);
         git(&["config", "user.name", "T"]);
@@ -410,6 +481,161 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The bug this exists for: **a new file is the most common thing an agent
+    /// produces, and `git diff HEAD` cannot show one.**
+    ///
+    /// A session with no base branch — the scratch worktree someone watches an
+    /// agent work in — reported "no changes" after three files had been written.
+    #[test]
+    fn an_untracked_file_is_in_the_body_and_the_file_list() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let repo = repo_with_a_base_commit(&home);
+        // A tracked edit alongside, so the fix cannot work by replacing the
+        // tracked half rather than adding to it.
+        std::fs::write(repo.join("tracked.txt"), "one\ntwo\n").expect("write");
+        std::fs::write(repo.join("new.txt"), "alpha\nbeta\ngamma\n").expect("write");
+
+        let Diff::Ready {
+            files,
+            body,
+            untracked_omitted,
+            ..
+        } = compute(&repo, None, None)
+        else {
+            panic!("expected a ready diff");
+        };
+
+        assert_eq!(untracked_omitted, 0, "nothing was left out");
+        let new = files
+            .iter()
+            .find(|file| file.path == "new.txt")
+            .expect("the untracked file is listed");
+        assert_eq!(new.added, 3, "with its real line count");
+        assert_eq!(new.removed, 0);
+        assert_eq!(new.status, "A", "an untracked file is an addition");
+        assert_eq!(
+            new.old_path, None,
+            "not a rename, despite the /dev/null pair"
+        );
+        assert!(
+            files.iter().any(|file| file.path == "tracked.txt"),
+            "the tracked edit is still there: {files:?}"
+        );
+
+        let text = body.join("\n");
+        assert!(text.contains("new file mode"), "{text}");
+        assert!(text.contains("+++ b/new.txt"), "{text}");
+        assert!(text.contains("+alpha"), "the contents are shown: {text}");
+        assert!(text.contains("+two"), "and the tracked edit too: {text}");
+    }
+
+    #[test]
+    fn an_ignored_file_is_not_smuggled_in_as_untracked() {
+        // `--exclude-standard` is what keeps build output out; without it a
+        // scratch worktree's `target/` would drown the review.
+        let home = tempfile::tempdir().expect("tempdir");
+        let repo = repo_with_a_base_commit(&home);
+        std::fs::write(repo.join(".gitignore"), "ignored.txt\n").expect("write");
+        std::fs::write(repo.join("ignored.txt"), "noise\n").expect("write");
+        std::fs::write(repo.join("wanted.txt"), "signal\n").expect("write");
+
+        let Diff::Ready { files, .. } = compute(&repo, None, None) else {
+            panic!("expected a ready diff");
+        };
+        let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+        assert!(paths.contains(&"wanted.txt"), "{paths:?}");
+        assert!(paths.contains(&".gitignore"), "itself untracked: {paths:?}");
+        assert!(!paths.contains(&"ignored.txt"), "{paths:?}");
+    }
+
+    #[test]
+    fn an_untracked_path_with_a_space_and_a_binary_file_both_survive() {
+        // git appends a TAB to a `+++` path containing a space, which looks like
+        // corruption the first time you meet it, and a binary file has counts of
+        // `-` rather than numbers.
+        let home = tempfile::tempdir().expect("tempdir");
+        let repo = repo_with_a_base_commit(&home);
+        std::fs::create_dir_all(repo.join("sub dir")).expect("mkdir");
+        std::fs::write(repo.join("sub dir/has space.txt"), "spaced\n").expect("write");
+        std::fs::write(repo.join("bin.dat"), [0u8, 1, 2, 0, 255]).expect("write");
+
+        let Diff::Ready { files, .. } = compute(&repo, None, None) else {
+            panic!("expected a ready diff");
+        };
+        let spaced = files
+            .iter()
+            .find(|file| file.path == "sub dir/has space.txt")
+            .expect("the spaced path, without a trailing tab");
+        assert_eq!(spaced.added, 1);
+        assert_eq!(spaced.status, "A");
+        let binary = files
+            .iter()
+            .find(|file| file.path == "bin.dat")
+            .expect("the binary file is listed");
+        assert_eq!(
+            (binary.added, binary.removed),
+            (0, 0),
+            "`-` counts read as zero rather than failing the parse"
+        );
+    }
+
+    #[test]
+    fn a_base_branch_diff_is_committed_history_and_gains_no_untracked_files() {
+        // `base..HEAD` cannot contain an uncommitted file, and folding one in
+        // would make the review claim work was committed that was not.
+        let home = tempfile::tempdir().expect("tempdir");
+        let repo = repo_with_a_base_commit(&home);
+        git_in(&repo, &["checkout", "-q", "-b", "work"]);
+        std::fs::write(repo.join("committed.txt"), "in history\n").expect("write");
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-q", "-m", "work"]);
+        std::fs::write(repo.join("untracked.txt"), "not in history\n").expect("write");
+
+        let Diff::Ready {
+            files,
+            untracked_omitted,
+            ..
+        } = compute(&repo, Some("main"), None)
+        else {
+            panic!("expected a ready diff");
+        };
+        let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, vec!["committed.txt"], "{paths:?}");
+        assert_eq!(
+            untracked_omitted, 0,
+            "no untracked file was in scope, so none was omitted"
+        );
+    }
+
+    #[test]
+    fn more_untracked_files_than_the_cap_reports_what_it_left_out() {
+        // A short LIST is a different failure from a cut BODY, so it gets its own
+        // signal: silently stopping at the cap would read as a complete review.
+        let home = tempfile::tempdir().expect("tempdir");
+        let repo = repo_with_a_base_commit(&home);
+        let extra = 3;
+        let total = crate::git::UNTRACKED_FILE_CAP + extra;
+        for index in 0..total {
+            std::fs::write(repo.join(format!("new{index:04}.txt")), "x\n").expect("write");
+        }
+
+        let Diff::Ready {
+            files,
+            untracked_omitted,
+            truncated,
+            ..
+        } = compute(&repo, None, None)
+        else {
+            panic!("expected a ready diff");
+        };
+        assert_eq!(untracked_omitted, extra);
+        assert_eq!(files.len(), crate::git::UNTRACKED_FILE_CAP);
+        assert!(
+            !truncated,
+            "the BODY was not over the byte cap; the two bounds are separate"
+        );
     }
 
     #[test]

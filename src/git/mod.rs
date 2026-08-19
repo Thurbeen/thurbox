@@ -1292,11 +1292,10 @@ pub fn diff_against_on(host: Option<&HostDef>, worktree: &Path, base: &str) -> O
     run_diff(host, worktree, &["diff", "--no-color", &range])
 }
 
-/// Raw unified diff of the worktree's **uncommitted** changes vs `HEAD`
-/// (staged + unstaged), for the review view's "working changes" target.
-pub fn diff_working_on(host: Option<&HostDef>, worktree: &Path) -> Option<String> {
-    run_diff(host, worktree, &["diff", "--no-color", "HEAD"])
-}
+// The "working changes" target is [`working_diff_on`], below. There is
+// deliberately no diff-body-only counterpart to [`diff_against_on`] for it: one
+// would be `git diff HEAD`, which silently omits untracked files, and having it
+// available is how that omission happened.
 
 /// The **complete** list of changed files as `--numstat -M -z`, with exact counts.
 ///
@@ -1368,7 +1367,7 @@ pub fn list_commits_on(
 }
 
 /// Run a `git` command and capture stdout, logging + returning `None` on
-/// failure. Shared by the review-view diff/log helpers.
+/// failure. Shared by the review-view diff/log/listing helpers.
 ///
 /// `core.quotepath=false` keeps non-ASCII paths verbatim (git otherwise
 /// C-quotes them, e.g. `"caf\303\251.rs"`), so the parser keys comments/marks on
@@ -1383,6 +1382,141 @@ fn run_diff(host: Option<&HostDef>, worktree: &Path, args: &[&str]) -> Option<St
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// How many untracked files a working-tree diff represents.
+///
+/// Each costs a process, so an un-ignored build directory in a scratch worktree
+/// would otherwise turn one review into thousands of `git` invocations. The
+/// number *found* is reported alongside, so a list that stops early says so
+/// instead of reading as complete.
+pub const UNTRACKED_FILE_CAP: usize = 200;
+
+/// A worktree's uncommitted state, in the three shapes `kernel::diff` needs.
+///
+/// One type rather than three calls because untracked files have to be folded
+/// into all three, and gathering them once is what stops the body, the counts
+/// and the statuses disagreeing about which files they covered.
+pub struct WorkingDiff {
+    /// Unified diff text, tracked changes followed by one patch per untracked
+    /// file.
+    pub body: String,
+    /// `--numstat -M -z` records, likewise extended.
+    pub numstat_z: String,
+    /// `--name-status -M -z` records, likewise extended.
+    pub name_status_z: String,
+    /// Untracked files found, before [`UNTRACKED_FILE_CAP`].
+    pub untracked_total: usize,
+    /// How many of them the three fields above actually describe.
+    pub untracked_shown: usize,
+}
+
+/// The uncommitted diff of a worktree — staged, unstaged **and untracked**.
+///
+/// `git diff HEAD` cannot show a file git has never been told about, and a new
+/// file is the most common thing a coding agent produces: a session with no base
+/// branch, which is exactly the scratch worktree someone watches an agent work
+/// in, reported "no changes" after three files had been written. So each
+/// untracked file is diffed against nothing
+/// (`git diff --no-index -- /dev/null <path>`), which emits an ordinary
+/// `new file mode` patch and needs nothing downstream to change.
+///
+/// The obvious one-process alternative — a temporary index (`GIT_INDEX_FILE`,
+/// `git add -A`, `git diff --cached`) — is refused: it writes loose objects into
+/// the repository being reviewed, and for a pane refreshing every few seconds
+/// against a worktree an agent is editing, that is a reader mutating what it
+/// reads. Not destructive (blobs are content-addressed and gc prunes them), just
+/// not a reviewer's business.
+pub fn working_diff_on(host: Option<&HostDef>, worktree: &Path) -> Option<WorkingDiff> {
+    let mut body = run_diff(host, worktree, &["diff", "--no-color", "HEAD"])?;
+    let mut numstat_z = diff_numstat_on(host, worktree, None)?;
+    let mut name_status_z = diff_name_status_on(host, worktree, None)?;
+
+    let untracked = untracked_files_on(host, worktree)?;
+    let mut shown = 0;
+    for path in untracked.iter().take(UNTRACKED_FILE_CAP) {
+        let Some(patch) = untracked_diff_on(host, worktree, path, &["--no-color"]) else {
+            continue;
+        };
+        // Empty output means the file went away between the listing and here —
+        // an agent deleting its own scratch file, which costs nothing to skip.
+        if patch.is_empty() {
+            continue;
+        }
+        let Some(counts) = untracked_diff_on(host, worktree, path, &["--numstat", "-z"]) else {
+            continue;
+        };
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(&patch);
+        numstat_z.push_str(&counts);
+        // `A\0<path>\0` is byte-identical to what `--name-status -z` prints for
+        // one of these — an untracked file is always an addition — so it is built
+        // rather than asked for, halving the processes per file.
+        name_status_z.push_str("A\0");
+        name_status_z.push_str(path);
+        name_status_z.push('\0');
+        shown += 1;
+    }
+
+    Some(WorkingDiff {
+        body,
+        numstat_z,
+        name_status_z,
+        untracked_total: untracked.len(),
+        untracked_shown: shown,
+    })
+}
+
+/// The worktree's untracked, non-ignored files. `--exclude-standard` is what
+/// keeps `.gitignore`d build output out; `-z` is what keeps a path with a space
+/// or a newline in it whole.
+fn untracked_files_on(host: Option<&HostDef>, worktree: &Path) -> Option<Vec<String>> {
+    let out = run_diff(
+        host,
+        worktree,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    Some(
+        out.split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// One untracked file's diff against nothing, with `extra` selecting the shape
+/// (the patch, or `--numstat -z`).
+///
+/// `--no-index` exits **1** whenever the two paths differ, which for a file
+/// against `/dev/null` is always — so unlike every other git call here a
+/// non-zero status is the answer, not a failure. A file that vanished since the
+/// listing also exits 1, with empty output, which is why that race needs no
+/// handling beyond ignoring an empty patch. Anything above 1 is a real error
+/// (128 = not a repository) and drops the file.
+///
+/// `/dev/null` is understood by Git for Windows too (verified against a psmux
+/// host), so this needs no platform branch.
+fn untracked_diff_on(
+    host: Option<&HostDef>,
+    worktree: &Path,
+    path: &str,
+    extra: &[&str],
+) -> Option<String> {
+    let mut args = vec!["-c", "core.quotepath=false", "diff", "--no-index"];
+    args.extend_from_slice(extra);
+    // `--` so a path that begins with a dash is a path, not a flag.
+    args.extend_from_slice(&["--", "/dev/null", path]);
+    let output = git_command(host, worktree, &args).output().ok()?;
+    match output.status.code() {
+        Some(0 | 1) => Some(String::from_utf8_lossy(&output.stdout).into_owned()),
+        _ => {
+            let stderr = reportable_stderr(&output.stderr);
+            warn!("git diff --no-index for {path} failed: {stderr}");
+            None
+        }
+    }
 }
 
 /// Create a git worktree on a new branch and return the worktree directory path.

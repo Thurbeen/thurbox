@@ -1585,11 +1585,16 @@ impl LuaHost {
                     body,
                     truncated,
                     raw_bytes,
+                    untracked_omitted,
                 } => {
                     item.set("state", "ready").map_err(|e| e.to_string())?;
                     item.set("truncated", *truncated)
                         .map_err(|e| e.to_string())?;
                     item.set("raw_bytes", *raw_bytes as i64)
+                        .map_err(|e| e.to_string())?;
+                    // A short file list is a different failure from a cut body,
+                    // so it is its own field rather than folded into `truncated`.
+                    item.set("untracked_omitted", *untracked_omitted as i64)
                         .map_err(|e| e.to_string())?;
                     let list = self.lua.create_table().map_err(|e| e.to_string())?;
                     for (index, file) in files.iter().enumerate() {
