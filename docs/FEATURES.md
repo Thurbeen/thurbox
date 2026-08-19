@@ -647,12 +647,17 @@ editor of choice can open them as a workspace.
 
 ## Code Review (native)
 
-> **Not in the interface.** The view was deleted with `src/ui`; there is no
-> replacement yet, and this is the largest thing owed to v1. The data layer
-> survived and is waiting for a plugin: `session::review` (pure diff types +
+> **Not in the binary.** The view was deleted with `src/ui`; the data layer
+> survived and a plugin took it up:
+> [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review), the
+> first consumer of `thurbox.diffs` anywhere, which reclaims `Ctrl+X` / `F7` and
+> installs with
+> `thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review`.
+> What it builds on is still here: `session::review` (pure diff types +
 > `parse_unified_diff`), `storage::review` (`review_comments` + `review_marks`,
 > schema v38), and `kernel::diff` (diffs on a worker, published into the snapshot).
-> `openspec/changes/v2-code-review/` has the design. v1 keeps the view on `v1.x`.
+> `openspec/changes/v2-code-review/` has the design that was written for a native
+> replacement. v1 keeps the view on `v1.x`.
 
 Thurbox ships a **native, built-in** tuicr-like review view (`Ctrl+X`, `F7` alternate): a
 GitHub-style continuous diff of the active session's worktree
@@ -2026,9 +2031,10 @@ active terminal can also briefly be empty during spawn.
 
 ## Info Panel Separators
 
-> **Not in the interface.** The info panel went with `src/ui` and has no
-> replacement yet. Kept because the grouping it argues for is what a plugin
-> rebuilding it should reproduce.
+> **Not in the binary.** The info panel went with `src/ui` and was rebuilt as
+> [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel), which
+> reproduces the grouping this section argues for. Kept because that is the reason
+> it argues for it.
 
 Section boundaries in the info panel use styled `──────` separator
 lines instead of blank lines, improving visual structure.

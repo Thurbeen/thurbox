@@ -44,7 +44,7 @@ breadcrumb: 'Comparison'
                   <code>agents.toml</code>
                 </td>
                 <td><strong>&#x2713;</strong> (one session, many repos)</td>
-                <td>&#x2717; (1.x had a native in-TUI diff)</td>
+                <td><strong>&#x2713;</strong> (in-TUI diff, as an installable pane)</td>
                 <td>Linux &middot; macOS &middot; Windows</td>
                 <td><strong>&#x2713;</strong> (SSH hosts)</td>
                 <td>MIT</td>
@@ -213,10 +213,13 @@ breadcrumb: 'Comparison'
             It is also the only one whose
             <strong>interface is data rather than product</strong>
             &mdash; every pane is a Lua file you can move, disable or replace, which is a kind of
-            extensibility a packaged GUI cannot offer at all. What the GUI tools still have is a
-            click-to-review visual diff, which
-            <a href="deprecated.html#code-review">thurbox 1.x had and 2.x has not replaced yet</a>
-            . They also trade footprint and scriptability for a gentler on-ramp &mdash; and the most
+            extensibility a packaged GUI cannot offer at all. The click-to-review visual diff the
+            GUI tools lead with is
+            <a href="deprecated.html#code-review">one <code>plugin install</code> away</a>
+            &mdash; a pane
+            (<a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a>)
+            rather than something baked into the binary. They also trade footprint and
+            scriptability for a gentler on-ramp &mdash; and the most
             polished of them,
             <a href="https://github.com/github/app" target="_blank" rel="noopener">GitHub&rsquo;s Copilot App</a>,
             also ties you to a single vendor&rsquo;s agent and a paid subscription, where Thurbox stays

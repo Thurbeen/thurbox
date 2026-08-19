@@ -795,7 +795,9 @@ auto_update = true    # download+verify+replace the binaries on startup</code></
               <strong>Five keys are accepted and ignored.</strong>
               <code>tasks</code>, <code>file_viewer</code>, <code>info_panel</code>,
               <code>code_review</code> and <code>global_search</code> gated
-              <a href="deprecated.html">panes that no longer exist</a>, and nothing reads them now.
+              <a href="deprecated.html">panes the binary no longer draws</a>, and nothing reads them
+              now &mdash; including the plugins that give two of those panes back, which are turned
+              on and off from the Interface tab like any other.
               They are still parsed rather than rejected, so an existing
               <code>settings.toml</code> keeps loading instead of failing on an unknown key &mdash;
               but setting one has no effect, in either direction.

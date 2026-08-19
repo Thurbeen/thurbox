@@ -19,8 +19,9 @@ breadcrumb: 'Interface'
 <div class="info-box">
   <p>
     <strong>Moved from v1?</strong>
-    Several panes have no equivalent here yet &mdash; code review, the file viewer and the info
-    panel are gone, and tasks, automations, the restore list and the perf HUD moved to
+    Several panes are not in the binary any more &mdash; code review and the info panel are
+    <a href="#v1-panes">plugins you install</a>, the file viewer has no replacement, and tasks,
+    automations, the restore list and the perf HUD moved to
     <code>thurbox-cli</code>. thurbox asks once, on the first launch after the upgrade, before
     changing anything. v1 stays maintained on the <code>v1.x</code> branch.
   </p>
@@ -250,6 +251,66 @@ breadcrumb: 'Interface'
   <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/PLUGINS.md">docs/PLUGINS.md</a>; the
   kernel's own shape and constraints are in
   <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/V2-KERNEL.md">docs/V2-KERNEL.md</a>.
+</p>
+
+<h2 id="v1-panes">
+  Two of v1's panes, as plugins
+  <a href="#v1-panes" class="heading-anchor">#</a>
+</h2>
+<p>
+  The strongest test of &ldquo;the interface is a directory&rdquo; is whether a surface thurbox
+  itself dropped can be given back without touching the binary. Two of them have been, each
+  maintained as its own repository:
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Pane</th>
+      <th>What it gives back</th>
+      <th>What it asks for</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a>
+      </td>
+      <td>
+        v1's diff reviewer &mdash; the branch, a single commit or the uncommitted changes, a
+        changed-files tree, notes you send back to the agent. Takes the centre slot beside the
+        agent and reclaims <kbd>Ctrl</kbd>+<kbd>X</kbd> / <kbd>F7</kbd>, with no change to your
+        arrangement
+      </td>
+      <td>
+        <code>run</code>, and only for the two targets the kernel does not compute; untrusted it
+        still draws the branch diff
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a>
+      </td>
+      <td>
+        v1's info panel &mdash; session, git, agent, usage and system readouts in a column beside
+        the terminal. Reclaims <kbd>F2</kbd>; being a column, it wants one line in your
+        <code>layout.lua</code>
+      </td>
+      <td>Nothing &mdash; every readout is already in the snapshot</td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  Both carry more than a single Lua file, so both install by cloning:
+</p>
+<pre data-wrap><code class="language-bash">thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel</code></pre>
+<p>
+  Neither is bundled and neither is vendored into thurbox, which is the point: they are ordinary
+  panes on the same terms as one you write, recorded in your
+  <code>plugins.toml</code>
+  and pinned by your
+  <code>plugins.lock</code>. What each still lacks, and what remains owed to v1 altogether, is on
+  <a href="deprecated.html">deprecated surfaces</a>.
 </p>
 
 <h2 id="v1">

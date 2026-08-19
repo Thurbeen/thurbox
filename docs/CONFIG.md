@@ -280,11 +280,15 @@ in `ui.json`. That does strictly more than a flag could: it works for a
 plugin *you* wrote, which no compiled-in flag could know about.
 
 Five keys are **accepted and ignored**: `tasks`, `file_viewer`,
-`info_panel`, `code_review` and `global_search`. They gated v1 panes that
-no longer exist, and nothing reads them now. They are still parsed rather
-than rejected, so an existing `settings.toml` keeps loading instead of
-failing on an unknown key — but setting one has no effect in either
-direction. Same for `three_panel_min_cols` above.
+`info_panel`, `code_review` and `global_search`. They gated v1 panes the
+binary no longer draws, and nothing reads them now — not even the plugins
+that give `code_review` and `info_panel` back
+([`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review),
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)),
+which are switched on and off from the Interface tab like any other pane.
+They are still parsed rather than rejected, so an existing `settings.toml`
+keeps loading instead of failing on an unknown key — but setting one has no
+effect in either direction. Same for `three_panel_min_cols` above.
 
 | Key | Default | Controls |
 |-----|---------|----------|

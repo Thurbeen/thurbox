@@ -685,7 +685,9 @@ easier to believe from a pane you added yourself than from prose.
 
 **They are examples, not a catalogue.** They are here to be read and copied from,
 not a set thurbox maintains on your behalf — installing one is a convenience over
-`cp`, and it becomes yours the moment you edit it.
+`cp`, and it becomes yours the moment you edit it. For panes meant to be *used*
+rather than read, see [Panes that give a v1 surface back](#panes-that-give-a-v1-surface-back)
+below.
 
 | Example | What it is |
 |---|---|
@@ -760,6 +762,46 @@ A low `priority` is right for anything optional: the band drops the least import
 entries first when it runs out of width. `plugin check` **warns** about a pane in this
 state, and `plugin install` says it at the moment you install one — but it does not fail
 either, because you may have meant it.
+
+## Panes that give a v1 surface back
+
+Two of the surfaces v2 dropped are maintained as panes, each in its own repository
+rather than in the interface directory thurbox ships. They are not examples: they are
+what a plugin looks like when it has to carry v1's behaviour, and they are the answer
+to "code review is gone" and "the info panel is gone".
+
+| Pane | What it gives back |
+|---|---|
+| [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) | v1's diff reviewer — the branch, a commit or the working changes, a changed-files tree, notes you send back to the agent. Reclaims `Ctrl+X` / `F7` |
+| [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) | v1's info panel — session, git, agent, usage and system readouts in a column beside the terminal. Reclaims `F2` |
+
+Both carry more than one file, so both install by **cloning** the repository
+([A plugin that carries more than Lua](#a-plugin-that-carries-more-than-lua)):
+
+```bash
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel
+```
+
+They differ in the two ways that matter here, which is most of why they are worth
+reading:
+
+- **Placement.** The review pane takes the `center` switch slot beside the agent and
+  declares a pill, so it needs no `layout.lua` edit and the action band advertises it
+  the moment it is installed — the switch-slot problem above, solved the way that
+  section says to solve it. The info panel is a column, so it needs its one line in
+  `layout.lua`, and its README carries the `max` that stops a label-and-value panel
+  being handed a third of a wide screen.
+- **Capabilities.** The info panel asks for **nothing**: every readout is in the
+  snapshot, including the metrics the kernel gathers on its own workers. The review
+  pane asks for `run`, and only for the two targets the kernel does not compute (the
+  uncommitted working changes, and a single commit) — untrusted it still draws the
+  kernel's `thurbox.diffs`, and the target picker names the choices it cannot serve
+  rather than hiding them. That is the shape to copy for an optional capability.
+
+The third missing surface, the file viewer, has no pane — by nobody having written
+one rather than by anything withheld: `files.list/read` is published, rooted at a
+session's directory.
 
 ## Managing panes
 

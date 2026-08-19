@@ -31,6 +31,14 @@ shared and unmigrated, and declining turns auto-update off and prints how to
 reinstall 1.x. What is still owed to v1 is listed in
 `openspec/changes/v2-parity-gaps/`.
 
+Two of those surfaces are answered by panes rather than by the kernel, which is
+the mechanism working as designed:
+[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) (v1's diff
+reviewer, the first consumer of `thurbox.diffs`) and
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) (v1's info
+panel, drawn entirely from the snapshot). Each is its own repository, installed by
+clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
+
 ## Shape
 
 ```text

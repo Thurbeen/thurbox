@@ -20,19 +20,31 @@ worktrees are first-class citizens.
 > **v2 is out, and it is not a drop-in v1.** The interface is now Lua plugins on
 > a Rust kernel, and some v1 surfaces did not come with it:
 >
-> | Gone from the interface | v1 chord | Where it lives now |
+> | Gone from the binary | v1 chord | Where it lives now |
 > |---|---|---|
-> | Code review | `Ctrl+X` / `F7` | nothing yet |
+> | Code review | `Ctrl+X` / `F7` | the [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) plugin |
 > | File viewer | `Ctrl+E` / `F3` | nothing yet |
-> | Info panel | `Ctrl+B` / `F2` | nothing yet |
+> | Info panel | `Ctrl+B` / `F2` | the [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) plugin |
 > | Tasks panel | `Ctrl+W` / `F5` | `thurbox-cli task` |
 > | Automations pane | `Ctrl+P` | `thurbox-cli automation` |
 > | Restore list | `Ctrl+U` | `thurbox-cli session restore` |
 >
-> Each freed chord is deliberately left **unbound** rather than reused, so no
-> muscle memory quietly does something else. Everything outside the interface —
-> sessions, agents, worktrees, remote hosts, automations, your database — is
-> unchanged.
+> Two of them have been rebuilt as **plugins**, each its own repository, and
+> installing one is a clone:
+>
+> ```bash
+> thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+> thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel
+> ```
+>
+> The review pane takes the centre slot beside the agent and reclaims `Ctrl+X` /
+> `F7` on its own; the info panel wants one line in your `layout.lua` to give the
+> column a place (its README has it).
+>
+> Each freed chord is otherwise deliberately left **unbound** rather than reused,
+> so no muscle memory quietly does something else. Everything outside the
+> interface — sessions, agents, worktrees, remote hosts, automations, your
+> database — is unchanged.
 >
 > **Upgrading** asks once, on the first v2 launch of a profile with v1 history,
 > before anything changes. **To stay on v1**, answer `q` at that prompt: it turns
@@ -198,7 +210,7 @@ several repos. Thurbox optimizes the boring-but-load-bearing end of that list.
 
 | Tool | Interface | Session backend | Agents | Multi-repo session | Code review | Platforms | Remote / SSH | License |
 |------|-----------|-----------------|--------|--------------------|-------------|-----------|--------------|---------|
-| **Thurbox** | TUI | **Real tmux** (+ psmux on Windows) | **Any CLI** — data in `agents.toml` | **✓** (one session, many repos) | **✓** (native in-TUI diff) | Linux · macOS · Windows | **✓** (SSH hosts) | MIT |
+| **Thurbox** | TUI | **Real tmux** (+ psmux on Windows) | **Any CLI** — data in `agents.toml` | **✓** (one session, many repos) | **✓** (in-TUI diff, as an installable pane) | Linux · macOS · Windows | **✓** (SSH hosts) | MIT |
 | [GitHub Copilot App](https://github.com/github/app) | Desktop GUI | App-managed (worktrees + GitHub cloud envs) | Copilot (GitHub's agent) | ✗ | Agent Merge (PR review) | Linux · macOS · Windows | GitHub-hosted cloud envs | Proprietary (paid Copilot) |
 | [Conductor](https://www.conductor.build/) | Native GUI | App-managed PTY | Claude, Codex, Cursor | ✗ | Visual diff (GUI) | macOS only | Cloud Workspaces | Free (closed source) |
 | [Herdr](https://herdr.dev/) | TUI | **Own** multiplexer (Rust) | Claude, Codex + many (any CLI) | ✗ | ✗ | Linux · macOS | Runs on a remote box | AGPL-3.0 |
@@ -234,17 +246,19 @@ point):
 - **Mouse support in the terminal.** Clickable session rows, buttons, and
   scrollbars, plus drag-to-select — a gentler on-ramp than most TUIs, while
   staying fully keyboard-first (and toggleable via `[features] mouse`).
-- **Native code review, in the terminal.** A built-in, GitHub-style diff
-  reviewer (`Ctrl+X`) — browse the branch, a commit, or working changes in a folder
-  tree, leave classified comments, fold reviewed files, then send the review
-  back to the agent to address. The click-to-review visual diff that used to be
-  a GUI-only perk, without leaving the TUI.
+- **Code review, in the terminal.** A GitHub-style diff reviewer (`Ctrl+X`) —
+  browse the branch, a commit, or working changes in a folder tree, leave
+  classified comments, fold reviewed files, then send the review back to the
+  agent to address. The click-to-review visual diff that used to be a GUI-only
+  perk, without leaving the TUI. It ships as a pane you install
+  ([`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review)),
+  not in the binary — the interface is plugins, review included.
 
 On top of that, Thurbox is the only entry here that is terminal-native **and**
 runs on Windows **and** over SSH, and it ships a full headless CLI
 (`thurbox-cli`) plus cron-like automations to drive and schedule fleets of
-agents with no GUI at all — now with its own native code-review view, so the
-click-to-review visual diff is no longer a GUI-only trade-off. The GUI tools
+agents with no GUI at all — with a code-review pane one `plugin install` away, so
+the click-to-review visual diff is no longer a GUI-only trade-off. The GUI tools
 still trade footprint and that scriptability for a gentler on-ramp — and the
 most polished of them, [GitHub's Copilot App](https://github.com/github/app),
 also ties you to a single vendor's agent and a paid subscription, where Thurbox
@@ -367,10 +381,15 @@ result; `Esc` restores exactly what you had.
 
 ### Code Review
 
-> **Not in the current interface**, and no replacement yet. `1.x` keeps it;
-> see [docs/v1](https://github.com/Thurbeen/thurbox/tree/v1.x/docs).
+> **Not in the binary** — it is a plugin now:
+> [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review), which
+> rebuilds v1's reviewer on the plugin kernel and reclaims `Ctrl+X` / `F7`.
+> Install it with
+> `thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review`.
+> `1.x` still draws it natively; see
+> [docs/v1](https://github.com/Thurbeen/thurbox/tree/v1.x/docs).
 
-A native, GitHub-style diff reviewer (`Ctrl+X`, `F7` alternate) — no external tool. Browse the
+A GitHub-style diff reviewer (`Ctrl+X`, `F7` alternate) — no external tool. Browse the
 branch (`<base>..HEAD`), a single commit, or the uncommitted changes; the
 changed files show as a **folder tree** with colored statuses, and the diff is
 syntax-highlighted. Leave classified comments (issue / suggestion / note /
@@ -390,8 +409,12 @@ keyboard-driven, with unified or side-by-side layout.
 
 ### Info Panel & Live Metrics
 
-> **Not in the current interface.** Machine and agent metrics are still
-> collected and published to plugins; there is no pane drawing them yet.
+> **Not in the binary** — it is a plugin now:
+> [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel), which
+> draws v1's panel from the snapshot and the metrics the kernel publishes, and
+> asks for no capability at all. Install it with
+> `thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel`,
+> then give the column a place in your `layout.lua` (its README has the line).
 
 `Ctrl+B` (`F2`) shows per-session details with live CPU/RAM and agent
 metrics, right beside the terminal.
@@ -729,8 +752,12 @@ cannot drift from what is running.
 Gone with the panes they opened: `Ctrl+X`/`F7` (code review), `Ctrl+E`/`F3`
 (file viewer), `Ctrl+B`/`F2` (info panel), `F5` (tasks), `Ctrl+P`
 (automations — now the creation flow's folder import) and `Ctrl+U` (restore
-list). See [docs/V2-KERNEL.md](docs/V2-KERNEL.md), or the `v1.x` branch if you
-need them.
+list). Two of them come back with a pane you install:
+[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) claims
+`Ctrl+X`/`F7` again, and
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) claims
+`F2`. See [docs/V2-KERNEL.md](docs/V2-KERNEL.md), or the `v1.x` branch if you
+need the rest.
 
 Every chord is rebindable from the `F1` editor; rebindings persist to
 `~/.config/thurbox/ui.json`, beside the plugins you have turned off and the
@@ -989,6 +1016,14 @@ filesystem, no network and no process. Running a program is one
 capability, granted per plugin and only after you trust it.
 See [docs/PLUGINS.md](docs/PLUGINS.md) and
 [docs/V2-KERNEL.md](docs/V2-KERNEL.md).
+
+A pane does not have to be one you wrote:
+[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review)
+and [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)
+give back two of v1's surfaces (commands in the note at the top).
+`plugin install` records each in `plugins.toml` with the commit it
+resolved to in `plugins.lock`, so `plugin sync` reproduces the same
+interface on another machine.
 
 **Moving from v1?** Some panes are owed rather than ported, and some
 moved to `thurbox-cli`. The note at the top of this file has the list,

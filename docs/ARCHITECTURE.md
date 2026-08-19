@@ -1114,9 +1114,13 @@ gate (`kernel::consent`) before anything changes. See `docs/RELEASING.md`.
 
 **Cost, accepted**: a frame is more expensive — every pane is a Lua call returning a
 table that is converted and painted — so the loop settles aggressively and every
-cached answer carries an age. And v1 surfaces are owed rather than ported: code
-review, the file viewer and the info panel have no equivalent, and tasks,
-automations and the restore list are `thurbox-cli` only. Tracked in
+cached answer carries an age. And v1 surfaces are owed rather than ported: the
+file viewer has no equivalent, and tasks, automations and the restore list are
+`thurbox-cli` only. Code review and the info panel came back the way the design
+intended — as panes, outside the binary:
+[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) and
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel), each its
+own repository, installed by clone. What is still owed is tracked in
 `openspec/changes/v2-parity-gaps/`.
 
 **Rejected**:

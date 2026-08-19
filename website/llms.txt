@@ -19,9 +19,9 @@
 - [Comparison](https://thurbox.thurbeen.eu/docs/comparison.html): how Thurbox compares to Conductor, Claude Squad, Cursor, and other parallel coding-agent tools.
 - [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, winget, Chocolatey, or from source; prerequisites.
 - [Configuration](https://thurbox.thurbeen.eu/docs/configuration.html): every config file and knob — agents.toml, hosts.toml, settings.toml, themes, keybindings.
-- [Deprecated surfaces](https://thurbox.thurbeen.eu/docs/deprecated.html): the six panes 1.x had that the current interface does not — code review, file viewer, info panel, and the tasks/automations/restore panes that moved to thurbox-cli.
+- [Deprecated surfaces](https://thurbox.thurbeen.eu/docs/deprecated.html): the six panes 1.x had that the current interface does not — code review and the info panel, now the installable thurbox-code-review and thurbox-info-panel plugins; the file viewer, with no replacement; and the tasks/automations/restore panes that moved to thurbox-cli.
 - [Using v1](https://thurbox.thurbeen.eu/docs/v1.html): thurbox 1.x is still maintained — what it has that the current interface does not, how to stay on it or go back, and what it will receive.
-- [The Interface](https://thurbox.thurbeen.eu/docs/v2-interface.html): every pane is an editable Lua plugin — how to move, disable, replace or write one, and what the kernel refuses a plugin.
+- [The Interface](https://thurbox.thurbeen.eu/docs/v2-interface.html): every pane is an editable Lua plugin — how to move, disable, replace or write one, what the kernel refuses a plugin, and the two v1 panes (thurbox-code-review, thurbox-info-panel) you install as plugins.
 - [Architecture](https://thurbox.thurbeen.eu/docs/architecture.html): the Elm Architecture, module isolation, the tmux session backend, and design decisions.
 
 ## Extensions

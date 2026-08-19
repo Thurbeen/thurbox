@@ -1362,10 +1362,18 @@ overflow the banner.
 
 ## Code review
 
-**The view is gone.** v1's native diff reviewer (`ui/code_review.rs` +
-`app/code_review.rs`) went with `src/ui`; there is no replacement yet, and it is the
-largest single thing v2 owes v1 (`openspec/changes/v2-code-review/` has the design,
-`v2-parity-gaps` tracks it). v1 keeps it on the `v1.x` branch.
+**The view is gone from the binary.** v1's native diff reviewer
+(`ui/code_review.rs` + `app/code_review.rs`) went with `src/ui`
+(`openspec/changes/v2-code-review/` has the design that was written for a native
+replacement, `v2-parity-gaps` tracks it); v1 keeps it on the `v1.x` branch. It came
+back **as a pane**, in its own repository:
+[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) —
+installed by clone (`thurbox-cli plugin install
+git+https://github.com/Thurbeen/thurbox-code-review`), takes the `center` switch
+slot beside the agent, reclaims `Ctrl+X`/`F7`, and is the first consumer of
+`thurbox.diffs` anywhere. It is not vendored here and not bundled: a change to the
+snapshot's diff shape or to `command("focus", { toggle })` breaks it, so treat it as
+a downstream consumer of that contract.
 
 What survived, because it is not view code:
 
@@ -1719,6 +1727,14 @@ thurbox-cli plugin list           # the inventory the Interface tab shows
 thurbox-cli plugin install top    # a distributed pane, recorded in plugins.toml
 thurbox-cli plugin sync           # make the directory match the spec
 ```
+
+Two of v1's surfaces are maintained as **out-of-tree panes**, each its own
+repository, installed by clone:
+[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) (the diff
+reviewer, asks for `run` only for the targets the kernel does not compute) and
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) (v1's info
+panel, no capabilities — everything from the snapshot). Neither is bundled or
+vendored; both are downstream consumers of the published `thurbox.*` shape.
 
 Two **example** panes live in `ui-plugins/` (`tasks`, `top`) and install by bare
 name; `docs/examples/{plugin,composite,layout}.lua` are copied by hand. They are

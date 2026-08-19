@@ -1,15 +1,18 @@
 ---
 layout: docs.njk
 title: 'Deprecated surfaces — Thurbox Docs'
-description: 'The six panes thurbox 1.x had that the current interface does not: what each one did, where its data lives now, and what it would take to bring one back.'
+description: 'The six panes thurbox 1.x had that the current interface does not: what each one did, where its data lives now, and which of them a plugin gives back.'
 currentPage: 'deprecated'
 breadcrumb: 'Deprecated'
 ---
 <h1>Deprecated surfaces</h1>
 <p>
   thurbox 2.0 replaced the interface, and six of 1.x's panes did not come with it. This page is
-  where they are documented &mdash; what each did, what its chord was, and where its data lives now
-  &mdash; so nothing you were relying on is simply undocumented.
+  where they are documented &mdash; what each did, what its chord was, and where it lives now
+  &mdash; so nothing you were relying on is simply undocumented. Two of the six have since been
+  rebuilt as
+  <a href="v2-interface.html#v1-panes">panes you install</a>, which is the interface-as-plugins
+  claim being cashed rather than a special case.
 </p>
 
 <div class="info-box">
@@ -17,7 +20,8 @@ breadcrumb: 'Deprecated'
     <strong>No data was dropped.</strong>
     Every record these panes edited is still in the same database at the same schema version. Three
     of the six were only ever views onto records <code>thurbox-cli</code> can already read and write,
-    so those features are intact and merely have no pane. The other three have no replacement yet.
+    so those features are intact and merely have no pane. Of the other three, code review and the
+    info panel are back as installable plugins; only the file viewer has no replacement.
   </p>
 </div>
 
@@ -38,20 +42,26 @@ breadcrumb: 'Deprecated'
     <tr>
       <td><a href="#code-review">Code review</a></td>
       <td><kbd>Ctrl</kbd>+<kbd>X</kbd> / <kbd>F7</kbd></td>
-      <td>No replacement</td>
-      <td>The largest gap. 1.x keeps it.</td>
+      <td>A plugin</td>
+      <td>
+        <a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a>
+        &mdash; and it takes the chord back
+      </td>
     </tr>
     <tr>
       <td><a href="#file-viewer">File viewer</a></td>
       <td><kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>F3</kbd></td>
       <td>No replacement</td>
-      <td>1.x keeps it.</td>
+      <td>1.x keeps it. Nothing is withheld &mdash; nobody has written the pane.</td>
     </tr>
     <tr>
       <td><a href="#info-panel">Info panel</a></td>
       <td><kbd>Ctrl</kbd>+<kbd>B</kbd> / <kbd>F2</kbd></td>
-      <td>No replacement</td>
-      <td>1.x keeps it.</td>
+      <td>A plugin</td>
+      <td>
+        <a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a>
+        &mdash; one line in your arrangement
+      </td>
     </tr>
     <tr>
       <td><a href="#tasks">Tasks pane</a></td>
@@ -79,14 +89,23 @@ breadcrumb: 'Deprecated'
   mailbox queue, themes, notifications, and the whole of <code>thurbox-cli</code>.
 </p>
 
-<h2 id="no-replacement">
-  Gone, with nothing in their place
-  <a href="#no-replacement" class="heading-anchor">#</a>
+<h2 id="not-in-the-binary">
+  Gone from the binary
+  <a href="#not-in-the-binary" class="heading-anchor">#</a>
 </h2>
 <p>
-  These three drew things the kernel does not yet publish to a plugin. They are tracked in the
-  repository under <code>openspec/changes/v2-parity-gaps/</code>, which is also the honest answer to
-  &ldquo;when&rdquo;: they are written down and prioritised, not scheduled.
+  These three were rendering, not records, so none of them could move to
+  <code>thurbox-cli</code>. Two are back as panes maintained outside thurbox, each its own
+  repository, each installed by cloning it:
+</p>
+<pre data-wrap><code class="language-bash">thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel</code></pre>
+<p>
+  Installing a pane records it in <code>plugins.toml</code> with the commit it resolved to in
+  <code>plugins.lock</code>, so <code>thurbox-cli plugin sync</code> reproduces the same interface
+  on your next machine, and <code>plugin update</code> moves it forward when you ask. What is still
+  owed is tracked in the repository under <code>openspec/changes/v2-parity-gaps/</code>, which is
+  also the honest answer to &ldquo;when&rdquo;: written down and prioritised, not scheduled.
 </p>
 
 <h3 id="code-review">Code review</h3>
@@ -128,6 +147,22 @@ breadcrumb: 'Deprecated'
   Comments and reviewed-marks are still in SQLite, keyed per session against the session's
   write-once base branch &mdash; so a review you left in 1.x is still there if you go back to it.
 </p>
+<div class="info-box">
+  <p>
+    <strong>Back as a pane:</strong>
+    <a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a>
+    rebuilds all of the above on the plugin kernel and is the first consumer of the diffs the
+    kernel computes on its workers. It needs no change to your arrangement &mdash; it takes the
+    centre slot beside the agent and declares itself to the action band, so
+    <kbd>Ctrl</kbd>+<kbd>X</kbd> / <kbd>F7</kbd> work again the moment it is installed. Two
+    keys are spelled differently on purpose: <code>r</code> is refresh, as it is in every other
+    pane, and marking a file seen is <code>m</code>. It asks for one capability
+    (<code>run</code>) and only for the two review targets the kernel does not compute for
+    itself &mdash; the uncommitted working changes and a single commit; untrusted, it still
+    draws the branch diff and the target picker names what it cannot serve rather than hiding
+    it.
+  </p>
+</div>
 
 <h3 id="file-viewer">File viewer</h3>
 <p>
@@ -146,12 +181,18 @@ breadcrumb: 'Deprecated'
   (<code>Sync:</code>), and whether its status hooks were wired or degraded
   (<code>Hooks:</code>) &mdash; alongside host metrics and agent usage.
 </p>
-<p>
-  Of the three, this is the one most nearly buildable today: a plugin can already read the session
-  snapshot, and <a href="v2-interface.html#running-programs">a plugin that runs a program</a> can get
-  <code>git status</code> for itself. What it cannot yet read is the metrics the kernel gathers on
-  its own workers.
-</p>
+<div class="info-box">
+  <p>
+    <strong>Back as a pane:</strong>
+    <a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a>
+    draws all of it &mdash; the session readouts, the worktree state, host metrics and agent usage
+    &mdash; and asks for <strong>no capability at all</strong>, because every number is already in
+    the snapshot the kernel publishes. It is a column rather than a centre view, so it wants one
+    line in your <code>layout.lua</code> to say where the column goes; its README carries the line,
+    including the <code>max</code> width that stops a panel of labels and values being handed a
+    third of a wide screen.
+  </p>
+</div>
 
 <h2 id="cli">
   Still here, just without a pane
