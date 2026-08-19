@@ -220,7 +220,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         focus_return: initial_focus,
         reload_at: None,
         errors: Vec::new(),
-        deferred_focus: None,
         links: std::collections::HashMap::new(),
         link_stamps: std::collections::HashMap::new(),
         content: std::collections::HashMap::new(),
@@ -907,17 +906,6 @@ struct App {
     last_output_gen: u64,
     /// Plugin holding an exclusive key grab this frame, if any.
     grabbed: Option<usize>,
-    /// A pane that asked for focus before it was on screen.
-    ///
-    /// Focus may only rest on a slot the *last painted frame* placed
-    /// (`kernel::focus::can_focus`), and a pane opening itself writes its
-    /// visibility to `store` — so the arrangement only learns about it on the
-    /// next paint. A `focus` command drained in between was therefore refused
-    /// and dropped: `ctrl+/` opened the search strip and left focus on the
-    /// agent, which is not a cosmetic difference — every letter of the query
-    /// went to the agent's terminal instead. Held over the paint that places the
-    /// slot and applied there, so the strip is focused on the frame it appears.
-    deferred_focus: Option<usize>,
     /// Programs plugins asked to be run, and what they printed.
     runs: thurbox::kernel::runs::RunStore,
     /// Every file of the interface, as of the last painted frame.
@@ -1058,19 +1046,16 @@ impl App {
                                     self.focus = back;
                                     self.dirty = true;
                                 }
-                            } else if self.can_focus_plugin(index) {
-                                // Through `focus_plugin`, not by assigning `focus`:
-                                // it records where focus came from and refuses a
-                                // pane focus cannot rest on. Assigning directly
-                                // skipped both, so a pane reached from a plugin
-                                // command could not be left with `Esc` — the user
-                                // had to walk out with the focus cycle.
-                                self.focus_plugin(index);
-                                self.dirty = true;
                             } else {
-                                // Not on screen yet — it is opening itself this
-                                // very frame. See `deferred_focus`.
-                                self.deferred_focus = Some(index);
+                                // Through `focus_plugin`, not by assigning `focus`:
+                                // it records where focus came from, and holds a
+                                // request for a slot the arrangement has not
+                                // placed yet rather than refusing it
+                                // (`kernel::focus::defer_until_placed`) — which is
+                                // what a pane opening itself needs. Assigning
+                                // directly skipped both, so a pane reached from a
+                                // plugin command could not be left with `Esc`.
+                                self.focus_plugin(index);
                                 self.dirty = true;
                             }
                         }
@@ -1371,19 +1356,6 @@ impl App {
                 // After the backend flushed, so the escapes cannot interleave
                 // with ratatui's own output.
                 self.paint_terminal_hyperlinks(&buffer);
-                // The frame that just painted is what placed the slots, so a
-                // pane that asked for focus while it was still invisible can be
-                // answered now — before this iteration reads any input, so the
-                // first key after the one that opened it lands in the right pane.
-                // Dropped rather than retried if the paint did not place it: the
-                // pane declined to draw, and a request that outlives that would
-                // steal focus later for no visible reason.
-                if let Some(index) = self.deferred_focus.take() {
-                    if self.can_focus_plugin(index) {
-                        self.focus_plugin(index);
-                        self.dirty = true;
-                    }
-                }
                 self.last_paint = Instant::now();
                 self.frames += 1;
                 Counters::bump(&self.perf.frames);
