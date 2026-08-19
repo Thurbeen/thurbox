@@ -63,6 +63,17 @@ once, before the interface takes the terminal, and declining turns `auto_update`
 off and prints how to reinstall 1.x. That gate is the only reason replacing an
 interface under an unchanged binary name is defensible.
 
+Such a cut is a **maintenance release**, and `cd.yml` treats it as one: it
+compares the version being cut against every existing tag and, when it is behind
+the highest, publishes the GitHub Release with `make_latest: false` and skips
+Homebrew, AUR, Chocolatey and winget. The tag, the four-platform build and the
+release assets are unchanged — what is withheld is every pointer that means "the
+current thurbox" rather than a version. Without it a 1.8.x cut would take the
+`releases/latest` pointer the installers resolve and rewrite the tap and the
+PKGBUILDs to it, walking 2.x users backwards. The test is the version, not the
+ref, so a hotfix from any branch that really is the newest still ships
+everywhere.
+
 ## Checklist for a release that changes artifacts
 
 - [ ] `thurbox` and `thurbox-cli` are still in **both** archive steps of `cd.yml`
