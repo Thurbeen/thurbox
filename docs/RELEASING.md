@@ -74,6 +74,17 @@ PKGBUILDs to it, walking 2.x users backwards. The test is the version, not the
 ref, so a hotfix from any branch that really is the newest still ships
 everywhere.
 
+Two things had to be repaired before that dispatch could reach a tag at all, and
+both are worth knowing because neither is reachable from a `main` release — they
+were broken from the moment 2.x took `main` and nothing noticed, since v1.8.6 was
+cut while v1 still *was* `main`. `cog.toml`'s `branch_whitelist` carries `v*.x`
+beside `main`, without which `cog bump` refuses on the maintenance branch ("No
+patterns matched in [main] for branch 'v1.x'") before creating anything. And the
+tag is pushed by refspec rather than by `ad-m/github-push-action`, which defaults
+its `branch` to the repository's default: harmless from `main`, where that is the
+ref already checked out, but from `v1.x` it tries to push that branch's tip onto
+`main`, is rejected as a non-fast-forward, and the tag never leaves the runner.
+
 ## Checklist for a release that changes artifacts
 
 - [ ] `thurbox` and `thurbox-cli` are still in **both** archive steps of `cd.yml`
