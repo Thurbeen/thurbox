@@ -596,6 +596,37 @@ impl SnapshotStore {
         applied
     }
 
+    /// Re-derive every `working` row against terminal quiescence, returning how
+    /// many rows changed.
+    ///
+    /// Called each tick rather than folded into `refresh`, because the answer
+    /// moves with the agent's output and `refresh` runs on the database's
+    /// cadence — a row read once and left alone would report a turn as finished
+    /// for as long as the snapshot stood.
+    ///
+    /// Re-derived from `hook_state` rather than adjusted from `status`, so the
+    /// pass is idempotent and reverses itself: a session that goes quiet and
+    /// then prints again is `working` once more without a database read.
+    ///
+    /// `quiet_for` is asked only about the rows that are actually `working`, and
+    /// answers `None` for a session with no live pane. A closure rather than a
+    /// map because the answer is one atomic load and a map would allocate every
+    /// tick to carry the sessions nobody asked about (ADR-P10).
+    pub fn apply_output_quiescence(&mut self, quiet_for: impl Fn(&str) -> Option<u64>) -> usize {
+        let mut changed = 0;
+        for row in &mut self.current.sessions {
+            if row.hook_state.as_deref() != Some("working") {
+                continue;
+            }
+            let derived = with_output_quiescence("working", quiet_for(&row.id));
+            if row.status != derived {
+                row.status = derived;
+                changed += 1;
+            }
+        }
+        changed
+    }
+
     /// Record — or forget — the pane id of a session's companion shell.
     ///
     /// Written straight through and corrected in place, like `acknowledge`: this
@@ -874,24 +905,13 @@ fn read_hosts() -> Vec<HostRow> {
 
 /// Map the persisted hook state onto a status name.
 ///
-/// Mirrors v1's derivation, including the stuck-`working` fallback: agents fire
-/// no hook when a turn is interrupted, so a `working` state that has not moved
-/// for a while is reported as idle rather than spinning forever. The stored row
-/// is not touched — this is a read-time decision, exactly as v1 does it.
+/// The stuck-`working` fallback is deliberately **not** here: it is a question
+/// about the terminal, not the row, so it belongs to the per-frame fold in
+/// [`with_output_quiescence`]. The stored row is never touched — every rule in
+/// this file is a read-time decision, exactly as v1 does it.
 pub fn derive_status(state: Option<&str>, state_at: Option<i64>, seen_at: Option<i64>) -> String {
-    /// How long a `working` state may stand without an update before it is
-    /// treated as finished. v1 uses the same 10s bound.
-    const WORKING_STALE_MS: i64 = 10_000;
-
     match state {
-        Some("working") => {
-            let stale = state_at.is_some_and(|at| now_ms().saturating_sub(at) > WORKING_STALE_MS);
-            if stale {
-                "idle".to_string()
-            } else {
-                "working".to_string()
-            }
-        }
+        Some("working") => "working".to_string(),
         Some("blocked") => "blocked".to_string(),
         Some("done") => {
             // Acknowledged once the user moved off it, which v1 records by
@@ -908,6 +928,38 @@ pub fn derive_status(state: Option<&str>, state_at: Option<i64>, seen_at: Option
         }
         _ => "idle".to_string(),
     }
+}
+
+/// How long a `working` session may produce **no terminal output** before it is
+/// reported as idle. v1 uses the same 10s bound.
+///
+/// The signal is output, not the age of the hook state, and the difference is
+/// the whole point: a turn that runs for a minute is still `working` the whole
+/// minute, because the agent is printing throughout. Keying on the hook's
+/// timestamp instead ends every turn after ten seconds and starts it again at
+/// the next hook — a spinner that stops early and restarts, which is precisely
+/// what the fallback exists to avoid.
+const WORKING_QUIET_MS: u64 = 10_000;
+
+/// Fold terminal quiescence into a `working` session's status.
+///
+/// Agents fire no hook when a turn is **interrupted** (Esc / Ctrl+C) and none
+/// when they return to the idle prompt, so a `working` state can stand forever
+/// with nothing running behind it. TUI agents animate their in-progress line
+/// while a turn runs (Claude's `(Xs · esc to interrupt)` ticks every second), so
+/// a genuinely live turn is never quiet for `WORKING_QUIET_MS` and only the
+/// stuck state falls through.
+///
+/// `quiet_for_ms` is `None` when the session has no live pane — nothing can be
+/// producing output, so that reads as quiet too. This is where v1's `exited →
+/// Idle` branch lands: a pane whose stream ended is dropped from the live set.
+/// Only `working` is time-gated; `blocked` is a standing request for input and
+/// says nothing about output.
+pub fn with_output_quiescence(status: &str, quiet_for_ms: Option<u64>) -> String {
+    if status == "working" && quiet_for_ms.unwrap_or(u64::MAX) > WORKING_QUIET_MS {
+        return "idle".to_string();
+    }
+    status.to_string()
 }
 
 /// Fold what the terminal store knows into a session's status.
@@ -1017,11 +1069,42 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_working_state_falls_back_to_idle() {
+    fn a_long_turn_stays_working_however_old_its_hook_is() {
+        // The regression this guards: keyed on the hook's own timestamp, every
+        // turn reported itself finished ten seconds in and started again at the
+        // next hook — a spinner that stopped early and restarted. How long ago
+        // the agent said "working" says nothing about whether it still is.
+        let long_ago = now_ms() - 600_000;
+        assert_eq!(
+            derive_status(Some("working"), Some(long_ago), None),
+            "working"
+        );
+    }
+
+    #[test]
+    fn a_quiet_working_session_falls_back_to_idle() {
         // Agents fire no hook on interrupt, so without this a cancelled turn
-        // would spin forever. v1 guards the same way.
-        let long_ago = now_ms() - 60_000;
-        assert_eq!(derive_status(Some("working"), Some(long_ago), None), "idle");
+        // would spin forever. v1 guards the same way, on the same signal.
+        assert_eq!(
+            with_output_quiescence("working", Some(WORKING_QUIET_MS + 1)),
+            "idle"
+        );
+    }
+
+    #[test]
+    fn a_printing_working_session_stays_working() {
+        assert_eq!(with_output_quiescence("working", Some(0)), "working");
+        assert_eq!(
+            with_output_quiescence("working", Some(WORKING_QUIET_MS)),
+            "working"
+        );
+    }
+
+    #[test]
+    fn a_working_session_with_no_live_pane_is_idle() {
+        // Nothing can be producing output, which is where v1's exited → Idle
+        // branch lands: a pane whose stream ended leaves the live set.
+        assert_eq!(with_output_quiescence("working", None), "idle");
     }
 
     #[test]
@@ -1030,6 +1113,12 @@ mod tests {
         assert_eq!(
             derive_status(Some("blocked"), Some(long_ago), None),
             "blocked"
+        );
+        // A session waiting on you produces no output while it waits.
+        assert_eq!(with_output_quiescence("blocked", None), "blocked");
+        assert_eq!(
+            with_output_quiescence("done", Some(WORKING_QUIET_MS * 10)),
+            "done"
         );
     }
 

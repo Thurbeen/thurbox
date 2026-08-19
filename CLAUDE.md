@@ -89,7 +89,8 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   `v2_search`, `v2_new_session`, `v2_terminal_pane`, `v2_session_lifetime`,
   `v2_keymap`, `v2_focus`, `v2_modals`, `v2_chrome`, `v2_mouse`, `v2_hover`,
   `v2_decoration`, `v2_plugin_{authoring,commands,lifecycle,settings,switching}`,
-  `v2_repo_memory`, `v2_remote_status`, `v2_core_settings`, `v2_attach_by_name`.
+  `v2_repo_memory`, `v2_remote_status`, `v2_session_status`, `v2_core_settings`,
+  `v2_attach_by_name`.
   Several build an interface in a tempdir from the embedded copy, so delivery and
   loading are exercised together.
 - **`tests/kernel_limits.rs`** — instruction and memory ceilings, in their own file
@@ -1261,14 +1262,16 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
   fresh spawn seeds **nothing** — a never-reported session is `Idle`, and the
   agent's hooks drive it from there (so an idle, just-booted agent doesn't look
   stuck working).
-- **Derivation.** The snapshot carries each session's `hook_state` and
-  `SnapshotStore` folds attach state into the published status
-  (`with_reachability`) — exited → `Idle`; a *remote* session with no live pane →
-  `Unreachable`; else the persisted state (`working`/`blocked`; `idle`/none →
-  `Idle`). A local session is never unreachable: this is its machine, and a missing
-  pane there means the agent was not launched. The rows are read on the snapshot's
-  own schedule rather than per frame, gated on `PRAGMA data_version` moving (see
-  `docs/PERFORMANCE.md` ADR-P6). `done` shows as `Done` (blue)
+- **Derivation.** The snapshot carries each session's `hook_state` and folds
+  attach state into the published status — a *remote* session with no live pane
+  → `Unreachable` (`with_reachability`); a `working` one gone quiet → `Idle`
+  (the fallback below, which subsumes exited → `Idle`); else the persisted state
+  (`working`/`blocked`; `idle`/none → `Idle`). A local session is never
+  unreachable: this is its machine, and a missing pane there means the agent was
+  not launched. The rows are read on the snapshot's own schedule rather than per
+  frame, gated on `PRAGMA data_version` moving (see `docs/PERFORMANCE.md`
+  ADR-P6) — but the quiescence fallback is re-derived every tick, since output
+  moves between reads. `done` shows as `Done` (blue)
   **whether focused or not** — so a turn you're watching visibly completes — and
   becomes `Idle` only when you **move focus off it** (acknowledge it): the focus
   change vs. `last_active_session_id` marks the just-left `done` session `seen`
@@ -1277,12 +1280,20 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
 - **Stuck-`working` fallback.** Hooks can miss the turn-end edge: Claude Code
   fires **no hook on interrupt** (Esc/Ctrl+C) nor when it returns to the idle
   prompt, so an interrupted (or crashed) turn would leave `hook_state = working`
-  forever. `derive_session_status` guards with an **output-quiescence fallback**
-  (`WORKING_OUTPUT_STALE_MS`, 10 s): a `working` session with no terminal output
-  for that long is treated as `Idle`. TUI agents animate their progress line
-  (Claude's `(Xs · esc to interrupt)` ticks every second) so a genuinely-live turn
-  never trips it; only `working` is time-gated. The DB row is left untouched — the
-  override is purely per-tick derivation, like exited → `Idle`.
+  forever. `snapshot::with_output_quiescence` guards with an **output-quiescence
+  fallback** (`WORKING_QUIET_MS`, 10 s): a `working` session with no terminal
+  output for that long is treated as `Idle`, and so is one with no live pane —
+  which is where v1's exited → `Idle` branch lands, since a pane whose stream
+  ended leaves the live set. TUI agents animate their progress line (Claude's
+  `(Xs · esc to interrupt)` ticks every second) so a genuinely-live turn never
+  trips it; only `working` is time-gated. The signal is **terminal output, never
+  the age of the hook state**: keyed on `hook_state_at` instead, every turn
+  reports itself finished ten seconds in and starts again at the next hook — a
+  spinner that stops early and restarts. Applied by `SnapshotStore::
+  apply_output_quiescence` on the loop's own tick rather than in `refresh`
+  (whose cadence is the database's) and re-derived from `hook_state` each pass,
+  so it reverses itself when output resumes. The DB row is left untouched — the
+  override is purely per-tick derivation.
 - **Per-session only.** Status renders on the session's own row (and in the
   ` Sessions ` panel border title, one dot per session). Repo-group headers
   (`ui::project_list::group_header_line`) carry **no** status — a rolled-up group

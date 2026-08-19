@@ -1132,6 +1132,18 @@ impl App {
                 self.last_output_gen = output_gen;
                 self.dirty = true;
             }
+            // The stuck-`working` fallback, run here because it asks the
+            // terminals a question and they have just been synced — and run
+            // every tick rather than at refresh, because output moves between
+            // two reads of the database.
+            let terminals = &self.terminals;
+            if self
+                .snapshots
+                .apply_output_quiescence(|id| terminals.millis_since_output(id))
+                > 0
+            {
+                self.dirty = true;
+            }
             // A session whose agent is gone gets it back, which is what v1 does
             // at restore and what makes a session survive a reboot.
             self.respawn_missing_agents();
