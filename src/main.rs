@@ -534,8 +534,8 @@ fn open_editor(
 
 /// Find the plugin directory.
 ///
-/// In order: `THURBOX_UI_DIR`, a `./ui` dev checkout, then the user's own copy
-/// — materialized from the embedded interface on first run, preserving anything
+/// Two rules, in order: `THURBOX_UI_DIR`, then the user's own copy —
+/// materialized from the embedded interface on first run, preserving anything
 /// they edited. A missing or unwritable config directory is not fatal: the
 /// embedded copies are written somewhere throwaway and used from there, because
 /// no interface at all is the one outcome worth avoiding (design.md D11).

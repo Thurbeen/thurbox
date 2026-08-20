@@ -3,13 +3,15 @@
 thurbox v2 is a session engine with a Lua-driven renderer. The kernel owns no
 pane: the session list, the terminal and every other surface that shows *your
 work* is a plugin under `ui/`. The bundled set is currently **three** — the
-session list, the agent pane, and the pane that lists the interface's own files
-— plus the new-session flow, which floats rather than filling a slot; the
-interface was cut back to its core and v1's other surfaces are listed
-with their gaps in `openspec/changes/v2-parity-gaps/`. It does own the **system modals** — help,
-settings and the theme picker — which are chrome about thurbox itself rather
-than panes (see below). Written for someone about to change the kernel; if you
-want to *write* a plugin, read `docs/PLUGINS.md`.
+session list, the agent pane and the search strip — plus the new-session flow and
+the confirmation, which float rather than filling a slot; the interface was cut
+back to its core and v1's other surfaces are listed with their gaps in
+`openspec/changes/v2-parity-gaps/`. It does own the **system modals** — help,
+settings, the theme picker and the interface's own file list — which are chrome
+about thurbox itself rather than panes (see below). The file list was a pane and
+is deliberately no longer one: it is how a broken interface is recovered, so it
+must not be a file the interface loads. Written for someone about to change the
+kernel; if you want to *write* a plugin, read `docs/PLUGINS.md`.
 
 Writing a plugin starts at `docs/PLUGINS.md` — **Start here**, which is four
 `thurbox-cli plugin` commands and needs no terminal.
@@ -48,9 +50,9 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
    layout    rects before render         lib/theme     roles
    convert   table <-> node              lib/widgets   list, gauge, panel…
    paint     node -> ratatui             lib/tree      decoration helper
-   host      VM, reload, isolation       plugins/*     2 panes
+   host      VM, reload, isolation       plugins/*     3 panes + 2 floats
    registry  keys + settings
-   modals    help, settings, theme
+   modals    help, settings, theme, files
    snapshot  the read side
    command   the write side
    config    the user's settings, live and restart-only
@@ -204,6 +206,19 @@ other. Modularity moved one level down — plugins contribute **data**
 renders it, so declaring one table field is enough to appear in either. The
 theme picker takes no contribution at all: there is nothing a plugin could add
 to a list of palettes.
+
+The **file list** — settings' Interface tab (`kernel::modals::interface`) — is here
+for a second reason on top of those three. It is the recovery tool: it is where a
+file that failed to load is reported with its error, where a bundled file is
+restored (`r`) and where a plugin of the user's own is switched off (`space`) to get
+a working interface back. A recovery tool that is itself a plugin can be the thing
+that is broken, so a bad edit would take away the view you would use to undo it.
+Being chrome also fixed its reachability: as a centre-slot pane it needed a chord of
+its own, and that chord was `F11` — the one F-key terminals commonly claim for
+fullscreen. Note the asymmetry the modal has to make legible, since the kernel is
+the only thing that knows it: `r` writes back a copy the *binary* holds, so it has
+no answer for a file the user wrote (`space` is that answer) or one a package
+delivered (`thurbox-cli plugin sync` is).
 
 The one genuinely modal input in the product lives here too: while help is
 capturing a chord, **every** key is data, `ctrl+q` included. A plugin could

@@ -234,8 +234,15 @@ spec; nothing edits the lock. Commit both and this interface reproduces elsewher
 (which files are off, which are trusted, and any rebindings). Editing a shipped
 file is fine — delivery stops overwriting it once you have. Deleting one is how
 you remove it, and the Interface tab (`Ctrl+,` → `]`) will `r` restore it from
-the binary. So there is no way to break this directory that a restore cannot
-undo.
+the binary. So no edit or deletion of a file thurbox ships is unrecoverable.
+
+A file **you** added is the case `r` cannot help with — thurbox ships no version
+of it to put back, and it says so instead. The way back there is `space` on its
+row: the file stays exactly where it is and is simply not loaded, which is enough
+to get a working interface while you fix it. An installed pane
+(the row reads `from <src>`) is put back by the manager that placed it,
+`thurbox-cli plugin sync`. The tab sorts failures to the top and shows the load
+error of the selected row, so the broken file is the first thing on the list.
 
 ## Full documentation
 

@@ -431,13 +431,9 @@ impl InterfaceTab {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        // The directory the interface was loaded from. Cheap to draw and the
-        // answer to the one confusion nothing else resolves: a `./ui` beside the
-        // working directory wins over your own copy, so edits that "did nothing"
-        // are usually edits to a file that is not the one running.
-        // Where the files are, and — said out loud — that adding one is putting
-        // a file there. Both answer confusions nothing else can: a `./ui` beside
-        // the working directory wins over the user's copy, so edits that "did
+        // Where the files are, and — said out loud — that adding one is putting a
+        // file there. Both answer confusions nothing else can: `THURBOX_UI_DIR`
+        // and a dev build each move the live directory, so edits that "did
         // nothing" are usually edits to a file that is not the one running; and
         // "how do I add a pane" otherwise lives only in the guide.
         frame.render_widget(

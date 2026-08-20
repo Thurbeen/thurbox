@@ -585,6 +585,7 @@ you can open in an editor.
 | A pane — the session list included | `ui/plugins/*.lua` |
 | Where the panes go, and at what widths | `ui/layout.lua` |
 | Which panes load at all | `Ctrl+,` → Interface tab (`]`) |
+| A pane that broke the interface | the same tab — `r` to restore, `space` to turn off |
 | Panes somebody else wrote | `ui/plugins.toml` → `thurbox-cli plugin sync` |
 | Which agent CLIs you can launch | `agents.toml` |
 | Remote SSH machines and WSL distros | `hosts.toml` |
@@ -691,6 +692,30 @@ to its digest, so a trusted file that changes reads `trusted · modified`. It is
 deliberately not a sandbox; thurbox's position is that it can only refuse to run
 things unasked. See [docs/PLUGINS.md](docs/PLUGINS.md) and
 [docs/V2-KERNEL.md](docs/V2-KERNEL.md).
+
+### When a pane breaks the interface
+
+Editing the thing you are looking at means the thing you are looking at can
+break, so the way back is chrome rather than a pane: `Ctrl+,` → `]` cannot be
+edited away by anything in the directory. A file that failed to load sorts to the
+top of that list with its error underneath, and what undoes it depends on where
+that file came from.
+
+| The file | The way back |
+|---|---|
+| a pane thurbox ships, edited or deleted | `r` — the shipped copy comes out of the binary |
+| a pane **you** wrote | `space` — off, untouched on disk, and the interface loads without it |
+| an installed pane (`from <src>`) | `thurbox-cli plugin sync` |
+| the whole directory | it never loaded, so the embedded copies are running — fix the file from inside them |
+
+`r` restores; it cannot restore a file thurbox never shipped, and says so instead
+of guessing. That is why the second row is `space`, which is also the key for
+bisecting *which* of several files is at fault. Both reload immediately.
+
+With no terminal to trust, `thurbox-cli plugin check` reports the same failure and
+exits non-zero, and `plugin list` / `plugin dir` print the same inventory and
+directory. Full detail:
+[docs/PLUGINS.md → When something goes wrong](docs/PLUGINS.md#when-something-goes-wrong).
 
 ### Panes you did not write
 

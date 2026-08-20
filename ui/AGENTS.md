@@ -104,3 +104,8 @@ install one — neither fails, because you may have meant it.
 screen, not one pane. Prefer adding a file over editing those two. Anything shipped
 with thurbox can be restored (`Ctrl+,` → `]` → `r`), so a bad edit is recoverable —
 but only if you say what you changed.
+
+A file **you** added has no shipped copy to restore, so the way back for it is
+`space` on its row in that same tab: turned off, untouched on disk, and the
+interface loads without it. `thurbox-cli plugin check` reports the failure with no
+TTY, which is the one you can run yourself.

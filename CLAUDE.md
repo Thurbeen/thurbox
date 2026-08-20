@@ -1679,10 +1679,21 @@ thirds of the core rows are restart-only, which made it read as "my settings do
 not survive a restart".
 
 `]` switches to the **Interface tab** (`kernel::modals::interface`): every file, where
-it came from (bundled / edited / yours / removed), whether it is on screen, and
-`r` restore · `d` delete · `space` turn off · `t` trust. It was a pane once — an
-honest test of whether the plugin API could build a pane that lists panes — and is
-chrome now because a recovery tool must not be the thing that is broken.
+it came from (bundled / edited / yours / installed / removed), whether it is on
+screen, and `r` restore · `d` delete · `space` turn off · `t` trust. It was a pane
+once — an honest test of whether the plugin API could build a pane that lists panes
+— and is chrome now because a recovery tool must not be the thing that is broken.
+
+It is therefore **the recovery path for a broken interface**, and the shape of that
+is not symmetric: a `failed` row sorts to the top with its load error in the footer,
+but `r` only writes back a copy thurbox *ships* — it refuses for a file the user
+wrote ("thurbox ships no version of it") and points an installed pane at
+`thurbox-cli plugin sync`. For a pane of the user's own the way back is `space`:
+present on disk, not loaded, so nothing tried to load it and its error is silent
+until it is switched on. Each of the four keys reloads the interface, so the result
+is on the next frame. Documented for users in `docs/PLUGINS.md` → **When something
+goes wrong**; the same three answers with no TTY are `plugin list` / `plugin dir` /
+`plugin check`.
 
 `settings.toml` is **live-reloaded** (mtime poll): an outside edit re-applies the
 live half and toasts, noting a restart when `restart_only_differs` says so.

@@ -154,6 +154,7 @@ interface you edit — there is no second, privileged copy running underneath.
 | remove one | delete the file |
 | undo either | settings → Interface, select it, `r` |
 | turn one off | settings → Interface, select it, `space` |
+| get back a working interface after a bad edit | [When something goes wrong](#when-something-goes-wrong) |
 
 **Deleting is how you remove.** A file thurbox wrote and can no longer find is
 recorded as removed and is not written again — not on the next start, and not by
@@ -546,7 +547,9 @@ the pane.
 file is not touched: it stays exactly where it is and is simply not loaded. That
 is the thing to reach for when you want a pane gone for an afternoon, when you
 are bisecting a problem, or when a plugin you are writing has broken the
-interface — turning it off is enough to get a working one back.
+interface — turning it off is enough to get a working one back, and for a pane you
+wrote it is the *only* way back, since `r` has no shipped copy to restore
+([When something goes wrong](#when-something-goes-wrong)).
 
 **`d` is not that.** It deletes. For a file thurbox ships that is recoverable
 (`r` writes the shipped copy back); for **a file you wrote there is no copy**,
@@ -707,18 +710,88 @@ is the first thing every user of your plugin will see.
 - If your whole plugin directory will not load, the **embedded copies** run
   instead, so you can fix the file from inside the thing it broke.
 
-Three escape hatches, in increasing order of how much you give up:
+### Settings → Interface: the way back
 
-- **Settings → Interface** lists every file with its state, and restores one at a time. It also
-  names the directory in use — if your edits appear to do nothing, they are
-  probably to a file that is not the one loaded (a `./ui` beside the working
-  directory is only used when `THURBOX_UI_DIR` names it). Outside the interface,
-  `thurbox-cli plugin list` and `thurbox-cli plugin dir` answer the same two
-  questions, and `thurbox-cli plugin check` reports a load failure without
-  starting anything.
+`Ctrl+,` (or `F6`), then `]`. It is **chrome, not a pane** — a recovery tool that
+was itself a plugin could be the thing that is broken, so nothing you do to the
+directory can take it away. It lists every file the interface is made of, what
+state that file is in and where it came from; the header line is the directory in
+force, which is the answer to "my edits did nothing" — they are usually edits to a
+file that is not the one loaded.
+
+**Trouble sorts to the top**, so a failure never sits below thirty healthy rows:
+
+| | State | Means |
+|---|---|---|
+| `✗` | `failed` | on disk, did not load. Select the row and the **error is in the footer** |
+| `⊘` | `removed` | thurbox ships it, you deleted it, delivery has stopped writing it |
+| `◌` | `no slot` | it loaded, and `layout.lua` places nothing in its slot — so it never draws |
+| `◍` | `off` | present and intact, deliberately not loaded |
+| `●` | `on screen` | drawing now |
+| `◐` | `on demand` | a float or a modal, at rest |
+| `○` | `hidden` | loaded, not currently drawn |
+| `·` | | not a pane — `layout.lua`, a `lib/` module |
+
+Four keys act on the selected row:
+
+| Key | Does |
+|---|---|
+| `r` | **restore** — write the copy thurbox ships back over the file |
+| `space` | **off / on** — the file is untouched, simply not loaded |
+| `d` | **remove** — deletes. Asked twice, and the confirmation says whether it can be undone |
+| `t` | **trust** — grant or withdraw the capabilities the file declares |
+
+Each of the four reloads the interface, so the result is on screen immediately
+rather than at the next start, and each says what it did.
+
+### What `r` can put back, and what it cannot
+
+`r` means "put back what thurbox ships, and forget what happened to this file",
+which is why it covers both undo cases for a shipped pane — an edit and a
+deletion. It has **nothing to put back for a file thurbox never shipped**, and it
+says so rather than doing something. So which recovery you have depends on where
+the file came from, and the row's own tail is what tells you:
+
+| The row shows | The file is | The way back |
+|---|---|---|
+| no tail at all | a bundled pane, as shipped | `r`, though there is nothing to undo |
+| `edited` | a bundled pane you changed | `r` — the shipped copy is in the binary |
+| `removed` | a bundled pane you deleted | `r` |
+| `yours` | one you wrote | **`space`**, then fix the file. `r` reports that thurbox ships no version of it |
+| `from <src>` | an installed pane | `thurbox-cli plugin sync` — the manager that put it there puts it back. `r` says so and refuses |
+
+A pane you wrote yourself is therefore the one case with no restore, and `space`
+is what you reach for: turning it off is enough to get a working interface back
+while you fix it, and it is also how you bisect which of several files is at
+fault. Remember that **a disabled plugin reports nothing** — nothing tried to
+load it, so its error reappears only when you turn it back on.
+
+`layout.lua` and the `lib/` modules are the files whose mistakes cost the whole
+screen rather than one pane; both are ordinary rows here, and both are restorable
+with `r` while they are the ones thurbox shipped. If the *whole* directory will
+not load, the embedded copies are already running — so you are fixing the file
+from inside a working interface, not from a blank one.
+
+### The same answers without a terminal
+
+- `thurbox-cli plugin list` — the inventory above, as text.
+- `thurbox-cli plugin dir` — the directory in force, and which rule chose it.
+- `thurbox-cli plugin check` — loads the interface the way `thurbox` does and
+  exits non-zero on a failure, including on a pane that loaded but which no
+  arrangement places (it prints the `layout.lua` line to add).
+
+None of the three starts a TUI, which is what makes them the tools for a coding
+agent, a CI check, or a terminal you cannot currently trust.
+
+### Two bigger hammers
+
 - **Delete `.bundled.json`** and the next start re-delivers every bundled file,
   forgetting which ones you had removed. Your own files are untouched.
 - **Delete the whole directory** for the shipped interface exactly as it ships.
+
+Neither touches `ui.json`, which lives beside the directory rather than in it: a
+pane you turned off is still off after both, and a trust you granted is still
+recorded. If a decision is what you want to undo, undo it in the Interface tab.
 
 ## Examples you can install
 
