@@ -405,15 +405,16 @@ impl Terminals {
 
         // Only pay for discovery while something needs it, and never for a remote
         // row: a remote spawn drives control mode and records the real pane id, so
-        // a remote row without one is not something a window name can fix.
+        // a remote row is not something a window name can fix.
+        //
+        // A row that already names a pane is surveyed too — a persisted pane id is
+        // a hint rather than a fact, see [`Self::pane_is_stale`] — which costs
+        // nothing extra: one listing per backend, throttled by
+        // `DISCOVERY_INTERVAL`.
         let unresolved: Vec<(&str, &str)> = snapshot
             .sessions
             .iter()
-            .filter(|row| {
-                row.backend_id.is_none()
-                    && !self.live.contains_key(&row.id)
-                    && !self.attaching.contains_key(&row.id)
-            })
+            .filter(|row| !self.live.contains_key(&row.id) && !self.attaching.contains_key(&row.id))
             .map(|row| (row.id.as_str(), row.backend.as_str()))
             .filter(|(_, backend)| !crate::session::is_remote_backend(backend))
             .collect();
@@ -446,9 +447,14 @@ impl Terminals {
             if self.live.contains_key(&row.id) || self.attaching.contains_key(&row.id) {
                 continue;
             }
+            // The row's own pane id, unless a listing contradicts it: a
+            // contradicted one is worth less than the window name that produced
+            // it, and falling through to `None` here is also what lets
+            // [`Self::missing_agents`] relaunch a session whose window is gone for
+            // good.
             let candidate = match row.backend_id.clone() {
-                Some(id) => Some(id),
-                None => self.pane_by_name(&row.backend, &row.name),
+                Some(id) if !self.pane_is_stale(row, &id) => Some(id),
+                _ => self.pane_by_name(&row.backend, &row.name),
             };
             // The same attempt would fail the same way; a different one is worth
             // making.
@@ -504,10 +510,18 @@ impl Terminals {
             .filter_map(|row| {
                 let live = self.live.get(&row.id)?;
                 let remote = crate::session::is_remote_backend(&row.backend);
-                let moved = row
-                    .backend_id
-                    .as_deref()
-                    .is_some_and(|id| !id.is_empty() && id != live.session.backend_id());
+                let moved = row.backend_id.as_deref().is_some_and(|id| {
+                    !id.is_empty()
+                        && id != live.session.backend_id()
+                        // Locally the only way a row's id can differ from the pane
+                        // being held is that the id is a phantom: a local restart
+                        // records no id at all, it forgets instead. So a local id
+                        // may evict a live pane only when a listing actually places
+                        // it in this session's window — otherwise an id left over
+                        // from a previous tmux server drops the pane just resolved
+                        // by name, on every frame, forever.
+                        && (remote || self.pane_placed(row, id))
+                });
                 (live.session.has_exited() || moved)
                     .then(|| (row.id.clone(), row.backend_id.clone(), remote))
             })
@@ -720,6 +734,49 @@ impl Terminals {
                 let _ = tx.send(discover_windows(&backend, backend_name, already_ready));
             });
         }
+    }
+
+    /// Whether a listing has contradicted the pane id a row carries.
+    ///
+    /// The database's `backend_id` is a *hint*: tmux hands out fresh pane ids every
+    /// time its server starts, so after a reboot every persisted id names a pane
+    /// that is not there. v1 never hit this — its restore matched windows by name
+    /// and respawned what it could not find, so a stored id could not outlive its
+    /// server.
+    ///
+    /// Read as "does this session's own window hold that pane" rather than "does
+    /// the pane exist", because a restarted server reissues ids from `%0`: `%1`
+    /// after a reboot is somebody else's agent, and attaching to it would send this
+    /// session's keystrokes there.
+    fn pane_is_stale(&self, row: &super::snapshot::SessionRow, pane: &str) -> bool {
+        self.surveyed_since(row) && !self.pane_placed(row, pane)
+    }
+
+    /// Whether this row's backend has been listed since the row appeared.
+    ///
+    /// The freshness half of every question asked of a listing, and the reason
+    /// absence means anything at all: a listing that predates the row cannot speak
+    /// for it. An unsurveyed backend — every remote one, which is never asked —
+    /// therefore answers nothing.
+    fn surveyed_since(&self, row: &super::snapshot::SessionRow) -> bool {
+        let surveys = self.surveys.get(&row.backend).copied().unwrap_or(0);
+        let seen_at = self.waiting_since.get(&row.id).copied().unwrap_or(surveys);
+        surveys > seen_at
+    }
+
+    /// Whether the latest listing puts `pane` in the window this session's name
+    /// produces.
+    ///
+    /// The *positive* reading, deliberately without the freshness gate: "a listing
+    /// says this pane is yours" is an assertion, where "no listing mentions it" is
+    /// only an absence — and absence is the half that has to know how old the
+    /// listing is.
+    fn pane_placed(&self, row: &super::snapshot::SessionRow, pane: &str) -> bool {
+        let window = crate::agent::tmux::agent_window_name(&row.name);
+        self.discovered
+            .get(&row.backend)
+            .and_then(|windows| windows.get(&window))
+            .is_some_and(|panes| panes.iter().any(|known| known == pane))
     }
 
     /// The pane of the window a session's name would have produced.
@@ -1365,18 +1422,22 @@ impl Terminals {
             .iter()
             .filter(|row| !self.live.contains_key(&row.id))
             .filter(|row| !self.attaching.contains_key(&row.id))
-            // A row that names a pane is not missing its agent — it is failing to
-            // attach to one, which is a different problem with a different fix.
-            .filter(|row| row.backend_id.as_deref().unwrap_or_default().is_empty())
-            // A survey that predates the row cannot speak for it: a session
-            // created after the last window listing is simply not in it, and
-            // relaunching on that silence kills the agent the spawn just started.
-            // The backend has to have been read again *since* the row appeared.
-            .filter(|row| {
-                let surveys = self.surveys.get(&row.backend).copied().unwrap_or(0);
-                let seen_at = self.waiting_since.get(&row.id).copied().unwrap_or(surveys);
-                surveys > seen_at
-            })
+            // A listing that predates the row cannot speak for it: a session
+            // created after the last one is simply not in it, and relaunching on
+            // that silence kills the agent the spawn just started. So everything
+            // below is read from a listing taken *since* the row appeared.
+            .filter(|row| self.surveyed_since(row))
+            // A row that names a live pane is not missing its agent — it is failing
+            // to attach to one, which is a different problem with a different fix.
+            // A row naming a pane the listing does not place in its window *is*
+            // missing it: that is the phantom id a restarted tmux server left
+            // behind, and nothing else will clear it.
+            .filter(
+                |row| match row.backend_id.as_deref().filter(|id| !id.is_empty()) {
+                    None => true,
+                    Some(pane) => !self.pane_placed(row, pane),
+                },
+            )
             .filter(|row| self.pane_by_name(&row.backend, &row.name).is_none())
             .map(|row| row.id.clone())
             .collect()
@@ -1827,6 +1888,94 @@ mod tests {
             Some("%1"),
             "the pane that failed is remembered, so the same one is not retried"
         );
+    }
+
+    /// Seed a completed survey of `backend`: one listing, having found `windows`.
+    fn surveyed(terminals: &mut Terminals, backend: &str, windows: &[(&str, &[&str])]) {
+        terminals.surveys.insert(backend.to_string(), 1);
+        terminals.discovered.insert(
+            backend.to_string(),
+            windows
+                .iter()
+                .map(|(window, panes)| {
+                    (
+                        (*window).to_string(),
+                        panes.iter().map(|p| (*p).to_string()).collect(),
+                    )
+                })
+                .collect(),
+        );
+    }
+
+    /// A rebooted machine leaves every persisted pane id naming a pane that no
+    /// longer exists. Retrying one fails on `resize-window` — `can't find pane` —
+    /// once per retry interval for the life of the process, which is what this
+    /// stops: the contradicted id is dropped, and the session is reported as
+    /// missing its agent so it can be relaunched.
+    #[test]
+    fn a_pane_id_a_restarted_server_invalidated_is_dropped_rather_than_retried() {
+        let mut terminals = Terminals::new();
+        let snapshot = snapshot(vec![row("a", "local-tmux", Some("%822"))]);
+        // The row was already waiting when the survey ran, so the survey speaks
+        // for it — and it found no window of this session's.
+        terminals.waiting_since.insert("a".to_string(), 0);
+        surveyed(&mut terminals, "local-tmux", &[("tb-other", &["%1"])]);
+
+        terminals.sync(&snapshot, 24, 80);
+
+        assert_eq!(
+            terminals.failed["a"].pane, None,
+            "the stale id must not be what was tried"
+        );
+        assert_eq!(terminals.failure("a"), Some("session has no pane yet"));
+        assert_eq!(
+            terminals.missing_agents(&snapshot),
+            vec!["a".to_string()],
+            "a session whose window is gone needs its agent relaunched"
+        );
+    }
+
+    /// The pane exists, but under another session's window — which is exactly what
+    /// a restarted server produces, since it reissues ids from `%0`. Attaching
+    /// would aim this session's keystrokes at somebody else's agent.
+    #[test]
+    fn a_pane_id_reissued_to_another_window_is_stale() {
+        let mut terminals = Terminals::new();
+        let row = row("a", "local-tmux", Some("%1"));
+        terminals.waiting_since.insert("a".to_string(), 0);
+        surveyed(&mut terminals, "local-tmux", &[("tb-other", &["%1"])]);
+
+        assert!(terminals.pane_is_stale(&row, "%1"));
+    }
+
+    #[test]
+    fn a_pane_id_the_survey_confirms_is_kept() {
+        let mut terminals = Terminals::new();
+        let row = row("a", "local-tmux", Some("%1"));
+        terminals.waiting_since.insert("a".to_string(), 0);
+        surveyed(&mut terminals, "local-tmux", &[("tb-demo", &["%1"])]);
+
+        assert!(!terminals.pane_is_stale(&row, "%1"));
+        assert!(
+            terminals.missing_agents(&snapshot(vec![row])).is_empty(),
+            "a session whose pane is right there must never be relaunched"
+        );
+    }
+
+    /// The freshness rule `missing_agents` already lives by, applied to the same
+    /// question: a listing that predates the row cannot speak for it, and a
+    /// backend nobody has surveyed — every remote one, which is never asked —
+    /// answers nothing at all.
+    #[test]
+    fn an_unsurveyed_backend_contradicts_nothing() {
+        let mut terminals = Terminals::new();
+        let row = row("a", "ssh:devbox", Some("%1"));
+        assert!(!terminals.pane_is_stale(&row, "%1"));
+
+        // A survey the row is not old enough to be judged by is no better.
+        surveyed(&mut terminals, "ssh:devbox", &[("tb-other", &["%9"])]);
+        terminals.waiting_since.insert("a".to_string(), 1);
+        assert!(!terminals.pane_is_stale(&row, "%1"));
     }
 
     #[test]

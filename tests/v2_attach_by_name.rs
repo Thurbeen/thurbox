@@ -224,3 +224,60 @@ async fn two_windows_of_the_same_name_are_refused_rather_than_guessed() {
     tmux(&["kill-server"]);
     assert!(!attached, "an ambiguous window name must not be guessed at");
 }
+
+/// A pane id the database carries but tmux does not: the state a reboot leaves
+/// behind, since a restarted server hands out fresh ids from `%0`.
+///
+/// It used to be trusted verbatim, so the attach failed on `resize-window`
+/// (`can't find pane: %999`) every retry interval for the life of the process,
+/// while the session that could have been relaunched was skipped precisely
+/// *because* it named a pane. v1 never hit it: its restore matched windows by
+/// name and respawned what it could not find.
+///
+/// The second half is why this is driven in a loop rather than asserted once:
+/// resolving the window by name is not enough on its own. The row still *claims*
+/// the phantom id, and a live pane the row does not claim used to be dropped as
+/// "moved" — so the session attached and was evicted again on every frame.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_pane_id_gives_way_to_the_window_that_is_really_there() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", home.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    tmux(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-demo",
+        "sh -c 'while :; do sleep 1; done'",
+    ]);
+
+    let mut terminals = Terminals::new();
+    let mut stale = row("demo");
+    stale.backend_id = Some("%999".into());
+    let rows = snapshot(vec![stale]);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut attached = false;
+    while std::time::Instant::now() < deadline && !attached {
+        terminals.sync(&rows, 24, 80);
+        attached = terminals.is_attached("11111111-1111-1111-1111-111111111111");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let failure = terminals
+        .failure("11111111-1111-1111-1111-111111111111")
+        .unwrap_or_default()
+        .to_string();
+    tmux(&["kill-server"]);
+
+    assert!(
+        attached,
+        "the window is right there under the name the session produces: {failure}"
+    );
+}
