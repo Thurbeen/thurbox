@@ -595,6 +595,18 @@
   border-top: 1px solid var(--border);
 }
 
+/* Underlined rather than colour-only: the caption is muted grey, so a red link
+   inside it would be the one thing on the page carrying meaning by hue alone. */
+.doom-overlay__link {
+  color: var(--doom-red-bright);
+  text-decoration: underline;
+}
+
+.doom-overlay__link:hover,
+.doom-overlay__link:focus-visible {
+  color: var(--text-primary);
+}
+
 /* ---- Step numbers ---- */
 
 /* Squared and beveled like every other panel — a round badge was the one

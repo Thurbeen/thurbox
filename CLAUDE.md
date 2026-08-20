@@ -1399,11 +1399,13 @@ diff types stay in `session` (architecture rule).
 
 ## Demo Video
 
-> **The recordings are stale.** Every clip under `docs/media/` was recorded against
+> **The VHS recordings are stale.** Every clip a tape produces was recorded against
 > v1 and shows panes the interface no longer has — code review, the file viewer, the
 > tasks and automations panels. The tapes themselves drive v1 chords, so they need
 > rewriting before re-recording is worth doing. Until then the website and README
 > advertise an interface that is gone. This is the most visible inaccuracy left.
+> `doom-easter-egg.mp4` is the exception: it is not a tape, and it was re-recorded
+> against v2 when Doom became a plugin (below).
 
 The media is **generated**, not hand-recorded. One script drives the *real* TUI via
 [VHS](https://github.com/charmbracelet/vhs) (needs `vhs` + `ffmpeg` + `ttyd` +
@@ -1436,6 +1438,17 @@ is shared by every dev build, so without a private socket directory the cleanup
 
 `.github/workflows/pages.yml` copies the mp4s into `website/assets/` at deploy time
 and `README.md` embeds the gifs, so regenerating them propagates everywhere.
+
+**The website's `iddqd` easter egg is a separate recording.**
+`scripts/demo/record-doom.sh` writes `docs/media/doom-easter-egg.mp4` plus its
+poster, and it is not a VHS tape: asciinema records the real TUI and agg rasterises
+the cast. Doom is a **plugin** there, not an agent — the script installs
+[`thurbox-doom`](https://github.com/Thurbeen/thurbox-doom) into the throwaway
+interface directory, seeds the `program` grant the settings modal would have written
+(trust is a decision made *in* a running interface, so there is deliberately no CLI
+for it), and presses `f7`. Everything the clip keeps is timed from that press, so
+read the phase comments before changing any of the numbers — including which frame
+becomes the poster, since Doom flashes the whole view red when the player is hit.
 
 ## Architecture (plugin kernel)
 
