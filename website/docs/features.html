@@ -27,11 +27,11 @@ breadcrumb: 'Features'
             <a href="#v1-map" class="heading-anchor">#</a>
           </h3>
           <p>
-            v1 drew every surface from the binary. v2 draws none of them from the binary &mdash;
-            which is what makes the interface yours, and also means a surface can be
-            <em>bundled</em>, <em>installable</em>, or <em>owed</em>.
-            <a href="deprecated.html">Deprecated surfaces</a>
-            covers the last group in detail.
+            v1 drew every surface from the binary, so the only question was which chord opened it.
+            v2 draws
+            <strong>none</strong>
+            of them from the binary &mdash; which is what makes the interface yours, and means each
+            surface is now bundled, installable, CLI-only, or owed.
           </p>
           <table>
             <thead>
@@ -39,116 +39,118 @@ breadcrumb: 'Features'
                 <th>Surface</th>
                 <th>In v1</th>
                 <th>In v2</th>
-                <th>How you get it</th>
+                <th>Where it lives</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td>Session list</td>
-                <td>built in</td>
-                <td><strong>Bundled pane</strong></td>
-                <td><code>10_sessions.lua</code> &mdash; edit it, move it, turn it off</td>
+                <td>on screen</td>
+                <td>bundled</td>
+                <td><code>10_sessions.lua</code></td>
               </tr>
               <tr>
                 <td>Agent terminal</td>
-                <td>built in</td>
-                <td><strong>Bundled pane</strong></td>
-                <td><code>20_agent.lua</code>, with the <kbd>Ctrl</kbd>+<kbd>T</kbd> shell</td>
+                <td>on screen</td>
+                <td>bundled</td>
+                <td><code>20_agent.lua</code></td>
               </tr>
               <tr>
                 <td><a href="#global-search">Global search</a></td>
-                <td>built in</td>
-                <td><strong>Bundled pane</strong></td>
-                <td><code>65_search.lua</code> &mdash; sessions and their screens</td>
+                <td><kbd>Ctrl</kbd>+<kbd>/</kbd></td>
+                <td>bundled</td>
+                <td><code>65_search.lua</code></td>
               </tr>
               <tr>
                 <td>Session creation</td>
-                <td>built in</td>
-                <td><strong>Bundled float</strong></td>
-                <td><code>70_new_session.lua</code>, <kbd>Ctrl</kbd>+<kbd>N</kbd></td>
+                <td><kbd>Ctrl</kbd>+<kbd>N</kbd></td>
+                <td>bundled</td>
+                <td><code>70_new_session.lua</code> (a float)</td>
+              </tr>
+              <tr>
+                <td><a href="#responsive-ui">The arrangement</a></td>
+                <td>fixed, compiled in</td>
+                <td>bundled</td>
+                <td><code>ui/layout.lua</code></td>
               </tr>
               <tr>
                 <td><a href="#themes">Themes</a> &middot; settings &middot; help</td>
-                <td>built in</td>
-                <td><strong>Kernel chrome</strong></td>
-                <td>
-                  <kbd>Ctrl</kbd>+<kbd>Y</kbd> &middot; <kbd>Ctrl</kbd>+<kbd>,</kbd> &middot;
-                  <kbd>F1</kbd> &mdash; panes contribute rows to them
-                </td>
+                <td><kbd>Ctrl</kbd>+<kbd>Y</kbd> &middot; <kbd>Ctrl</kbd>+<kbd>,</kbd> &middot; <kbd>F1</kbd></td>
+                <td>kernel chrome</td>
+                <td>the same chords</td>
               </tr>
               <tr>
                 <td>Code review</td>
-                <td>built in, <kbd>Ctrl</kbd>+<kbd>X</kbd></td>
-                <td><strong>A pane you install</strong></td>
-                <td>
-                  <a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a>
-                  &mdash; reclaims the chord itself
-                </td>
+                <td><kbd>Ctrl</kbd>+<kbd>X</kbd> / <kbd>F7</kbd></td>
+                <td>installable</td>
+                <td><a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a></td>
               </tr>
               <tr>
                 <td>Info panel</td>
-                <td>built in, <kbd>Ctrl</kbd>+<kbd>B</kbd> / <kbd>F2</kbd></td>
-                <td><strong>A pane you install</strong></td>
-                <td>
-                  <a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a>
-                  &mdash; plus one <code>layout.lua</code> line
-                </td>
+                <td><kbd>Ctrl</kbd>+<kbd>B</kbd> / <kbd>F2</kbd></td>
+                <td>installable</td>
+                <td><a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a></td>
+              </tr>
+              <tr>
+                <td>CPU / RAM gauges</td>
+                <td>&mdash;</td>
+                <td>installable</td>
+                <td><code>thurbox-cli plugin install top</code></td>
+              </tr>
+              <tr>
+                <td>Panes anyone else wrote</td>
+                <td>&mdash;</td>
+                <td>installable</td>
+                <td><code>ui/plugins.toml</code></td>
               </tr>
               <tr>
                 <td><a href="#tasks">Tasks</a></td>
-                <td>built in, <kbd>Ctrl</kbd>+<kbd>W</kbd> / <kbd>F5</kbd></td>
-                <td><strong>CLI, no pane yet</strong></td>
-                <td>
-                  <code>thurbox-cli task</code>; <code>ui-plugins/tasks</code> is an example pane
-                  over the same records
-                </td>
+                <td><kbd>Ctrl</kbd>+<kbd>W</kbd> / <kbd>F5</kbd></td>
+                <td>CLI only</td>
+                <td><code>thurbox-cli task</code></td>
               </tr>
               <tr>
                 <td><a href="#automations">Automations</a></td>
-                <td>built in, <kbd>Ctrl</kbd>+<kbd>P</kbd></td>
-                <td><strong>CLI, no pane yet</strong></td>
-                <td>
-                  <code>thurbox-cli automation</code> &mdash; they still fire with the TUI closed
-                </td>
+                <td><kbd>Ctrl</kbd>+<kbd>P</kbd></td>
+                <td>CLI only</td>
+                <td><code>thurbox-cli automation</code></td>
               </tr>
               <tr>
                 <td>Restore list</td>
-                <td>built in, <kbd>Ctrl</kbd>+<kbd>U</kbd></td>
-                <td><strong>CLI, no pane yet</strong></td>
+                <td><kbd>Ctrl</kbd>+<kbd>U</kbd></td>
+                <td>CLI only</td>
                 <td><code>thurbox-cli session restore</code></td>
               </tr>
               <tr>
                 <td>File viewer</td>
-                <td>built in, <kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>F3</kbd></td>
-                <td><strong>Owed</strong></td>
-                <td>Nothing yet &mdash; the one surface with no replacement</td>
-              </tr>
-              <tr>
-                <td><a href="#responsive-ui">The arrangement</a></td>
-                <td>compiled-in breakpoints</td>
-                <td><strong>A file you edit</strong></td>
-                <td><code>ui/layout.lua</code> &mdash; new in v2</td>
-              </tr>
-              <tr>
-                <td>CPU / RAM gauges</td>
-                <td>&#10007;</td>
-                <td><strong>A pane you install</strong></td>
-                <td><code>thurbox-cli plugin install top</code> &mdash; new in v2</td>
-              </tr>
-              <tr>
-                <td>Panes anyone else wrote</td>
-                <td>&#10007;</td>
-                <td><strong><code>plugins.toml</code></strong></td>
-                <td>
-                  <code>thurbox-cli plugin install</code> / <code>sync</code> &mdash; new in v2
-                </td>
+                <td><kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>F3</kbd></td>
+                <td>owed</td>
+                <td>&mdash;</td>
               </tr>
             </tbody>
           </table>
           <p>
-            The chords freed by the four owed surfaces are deliberately left
+            <strong>Bundled</strong>
+            means it ships with thurbox and is yours to edit, move or delete &mdash; including the
+            arrangement, which v1 compiled in.
+            <strong>Installable</strong>
+            ones sit in
+            <code>plugins.toml</code>
+            on exactly the same terms: the review pane reclaims its chord by itself, the info panel
+            wants one
+            <code>layout.lua</code>
+            line, and the two rows marked
+            &mdash;
+            are things v1 had no answer for at all.
+            <strong>CLI only</strong>
+            means the records and the commands are all there and nobody has written the pane yet;
+            <code>ui-plugins/tasks</code>
+            is an example pane over the same task records. The chords of the four paneless surfaces
+            stay
             <strong>unbound</strong>
-            rather than reused, so no muscle memory quietly does something else.
+            rather than being reused, so no muscle memory quietly does something else.
+            <a href="deprecated.html">Deprecated surfaces</a>
+            covers what is owed in detail.
           </p>
 
           <h2 id="session-orchestration">

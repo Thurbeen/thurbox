@@ -308,30 +308,37 @@ as of June 2026; check each project for the latest.
 
 ### What v1 had, and where it is in v2
 
-v1 drew every surface from the binary. v2 draws none of them from the binary —
-which is what makes the interface yours, and also means a surface can be
-*bundled*, *installable*, or *owed*. This is the full map; the note at the top
-of this file is the short, urgent version of the last four rows.
+v1 drew every surface from the binary, so the only question was which chord
+opened it. v2 draws **none** of them from the binary — which is what makes the
+interface yours, and means each surface is now bundled, installable, CLI-only,
+or owed.
 
-| Surface | In v1 | In v2 | How you get it |
+| Surface | In v1 | In v2 | Where it lives |
 |---|---|---|---|
-| Session list | built in | **bundled pane** | `10_sessions.lua` — edit it, move it, turn it off |
-| Agent terminal | built in | **bundled pane** | `20_agent.lua` (the `Ctrl+T` shell too) |
-| Global search | built in | **bundled pane** | `65_search.lua` — sessions and their screens |
-| Session creation | built in | **bundled float** | `70_new_session.lua`, `Ctrl+N` |
-| Themes · settings · help | built in | **kernel chrome** | `Ctrl+Y` · `Ctrl+,` · `F1`; panes contribute rows |
-| Code review | built in, `Ctrl+X` | **a pane you install** | [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) — reclaims `Ctrl+X`/`F7` itself |
-| Info panel | built in, `Ctrl+B`/`F2` | **a pane you install** | [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) — plus one `layout.lua` line |
-| Tasks | built in, `Ctrl+W`/`F5` | **CLI, no pane yet** | `thurbox-cli task`; `ui-plugins/tasks` is an example pane over the same records |
-| Automations | built in, `Ctrl+P` | **CLI, no pane yet** | `thurbox-cli automation` — they still fire with the TUI closed |
-| Restore list | built in, `Ctrl+U` | **CLI, no pane yet** | `thurbox-cli session restore` |
-| File viewer | built in, `Ctrl+E`/`F3` | **owed** | nothing yet — the one surface with no replacement |
-| The arrangement | compiled-in breakpoints | **a file you edit** | `ui/layout.lua` — new in v2 |
-| CPU / RAM gauges | ✗ | **a pane you install** | `thurbox-cli plugin install top` — new in v2 |
-| Panes anyone else wrote | ✗ | **`plugins.toml`** | `plugin install` / `sync` — new in v2 |
+| Session list | on screen | bundled | `10_sessions.lua` |
+| Agent terminal | on screen | bundled | `20_agent.lua` |
+| Global search | `Ctrl+/` | bundled | `65_search.lua` |
+| Session creation | `Ctrl+N` | bundled | `70_new_session.lua` (a float) |
+| The arrangement | fixed, compiled in | bundled | `ui/layout.lua` |
+| Themes · settings · help | `Ctrl+Y` · `Ctrl+,` · `F1` | kernel chrome | the same chords |
+| Code review | `Ctrl+X` / `F7` | installable | [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) |
+| Info panel | `Ctrl+B` / `F2` | installable | [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) |
+| CPU / RAM gauges | — | installable | `thurbox-cli plugin install top` |
+| Panes anyone else wrote | — | installable | `ui/plugins.toml` |
+| Tasks | `Ctrl+W` / `F5` | CLI only | `thurbox-cli task` |
+| Automations | `Ctrl+P` | CLI only | `thurbox-cli automation` |
+| Restore list | `Ctrl+U` | CLI only | `thurbox-cli session restore` |
+| File viewer | `Ctrl+E` / `F3` | owed | — |
 
-The chords freed by the four owed surfaces are deliberately left **unbound**
-rather than reused, so no muscle memory quietly does something else.
+**Bundled** means it ships with thurbox and is yours to edit, move or delete —
+including the arrangement, which v1 compiled in. **Installable** ones sit in
+`plugins.toml` on exactly the same terms: the review pane reclaims `Ctrl+X`/`F7`
+by itself, the info panel wants one `layout.lua` line, and the two rows marked
+`—` are things v1 had no answer for at all. **CLI only** means the records and the
+commands are all there and nobody has written the pane yet — `ui-plugins/tasks`
+is an example pane over the same task records. The chords of the four paneless
+surfaces stay **unbound** rather than being reused, so no muscle memory quietly
+does something else.
 
 <table>
 <tr>
@@ -573,18 +580,23 @@ kernel, reads a directory, and draws whatever Lua it finds there. Everything the
 tool *is* — its panes, its agents, its hosts, its colours, its chords — is a file
 you can open in an editor.
 
-| What | Where you change it | When it takes effect |
-|---|---|---|
-| The panes themselves | `~/.config/thurbox/ui/plugins/*.lua` | `F10`, or on save |
-| Where each pane goes | `~/.config/thurbox/ui/layout.lua` | `F10`, or on save |
-| Which panes load at all | `Ctrl+,` → Interface tab (`]`) | next frame |
-| Panes other people wrote | `plugins.toml` + `thurbox-cli plugin sync` | on sync |
-| Agents you can launch | `~/.config/thurbox/agents.toml` | next session |
-| Remote SSH / WSL hosts | `~/.config/thurbox/hosts.toml` | next session |
-| Themes | `Ctrl+Y`, or `~/.config/thurbox/themes.toml` | live |
-| Keybindings | the `F1` editor → `~/.config/thurbox/ui.json` | live |
-| Core + plugin settings | `Ctrl+,` → `~/.config/thurbox/settings.toml` | live (`⟳` = restart) |
-| Whole workflows | `thurbox-cli extension install <name>` | on install |
+| What you change | Where |
+|---|---|
+| A pane — the session list included | `ui/plugins/*.lua` |
+| Where the panes go, and at what widths | `ui/layout.lua` |
+| Which panes load at all | `Ctrl+,` → Interface tab (`]`) |
+| Panes somebody else wrote | `ui/plugins.toml` → `thurbox-cli plugin sync` |
+| Which agent CLIs you can launch | `agents.toml` |
+| Remote SSH machines and WSL distros | `hosts.toml` |
+| Colours | `Ctrl+Y`, or `themes.toml` |
+| Chords | the `F1` editor, or `ui.json` |
+| Core and plugin settings | `Ctrl+,`, or `settings.toml` |
+
+All of it lives under `~/.config/thurbox/`. Panes and the arrangement reload on
+`F10` or when you save; colours, chords and most settings apply live (the
+settings panel marks the restart-only ones `⟳`); a changed agent or host applies
+to the next session you create. Whole workflows are a layer above all of this —
+`thurbox-cli extension install flow` and the like.
 
 ### Ask the agent to do it
 
