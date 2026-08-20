@@ -128,7 +128,14 @@ forced-redraw floor (`FORCE_REDRAW_INTERVAL`) elapses, never on every iteration.
 `MIN_FRAME_INTERVAL` is the floor between two paints. What marks the screen dirty:
 any input, a resize, a reload, a worker result, and **new agent output** —
 `Terminals::output_generation` is summed each iteration, which is what stops a
-printing agent being drawn at 4 fps.
+printing agent being drawn at 4 fps. A **reflow** — the arrangement placing a
+slot at a new rect, so a column opened or closed — additionally forces one *full*
+repaint (`Terminal::clear` before the paint): the cell diff is only correct while
+ratatui and the terminal agree on a glyph's width, and where they cannot (a flag,
+an emoji presentation sequence) the pane that closed leaves characters behind.
+`kernel::paint::normalize_ambiguous_width` strips the one such disagreement that
+is strippable — `U+FE0F` — from every painted cell, panes and vt100 surfaces
+alike.
 
 A frame is more expensive than v1's, structurally: every pane is a Lua call
 returning a table that is converted to nodes and painted. So the loop settles

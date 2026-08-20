@@ -241,6 +241,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         last_floats: std::collections::HashMap::new(),
         drawn_floats: std::collections::HashSet::new(),
         last_paint: Instant::now(),
+        last_placed: Vec::new(),
+        pending_clear: false,
         dirty: true,
         changed_this_frame: false,
         last_output_painted: std::collections::HashMap::new(),
@@ -889,6 +891,21 @@ struct App {
     /// reading the cache instead is what reported a closed modal as visible.
     drawn_floats: std::collections::HashSet<usize>,
     last_paint: Instant,
+    /// The slot rects the arrangement placed last frame, and whether the screen
+    /// owes a full repaint because they moved.
+    ///
+    /// A pane opening or closing reflows every column beside it, and a cell the
+    /// diff believes it already printed is a cell it will not print again. That
+    /// is fine while ratatui's model of a cell's width matches the terminal's,
+    /// and grapheme clusters exist where it cannot: a regional-indicator flag is
+    /// two columns to `unicode-width` and a different number to several
+    /// emulators, so glyphs from the pane that just closed survive in the column
+    /// that replaced it. `normalize_ambiguous_width` removes the one such
+    /// disagreement it can (see `kernel::paint`); this covers the rest by making
+    /// the toggle itself the forced redraw the leftovers otherwise wait for.
+    last_placed: Vec<thurbox::kernel::layout::SlotRect>,
+    /// Set when `last_placed` moved; consumed by the next paint.
+    pending_clear: bool,
     /// Set by anything that invalidates the screen outside the tree diff:
     /// input, a reload, a resize, a completed command.
     dirty: bool,
@@ -1380,6 +1397,13 @@ impl App {
             // that was 100 rebuilds a second to feed a screen that redraws four
             // times.
             self.republish();
+            // Before the frame, not after: clearing resets the diff's memory of
+            // the screen, so the draw that follows prints every cell rather than
+            // only the ones it thinks moved.
+            if self.pending_clear {
+                self.pending_clear = false;
+                terminal.clear()?;
+            }
             let painted = terminal.draw(|frame| self.draw(frame))?;
             // Cloned so the borrow of `terminal` ends here: the two
             // corrections below both need it back.
@@ -1973,6 +1997,13 @@ impl App {
             }
         };
         let placed = resolve(&region, area);
+        // A reflow owes a full repaint — see `last_placed`. Marked as a change so
+        // the clearing paint follows immediately rather than at the redraw floor.
+        if self.last_placed != placed {
+            self.last_placed = placed.clone();
+            self.pending_clear = true;
+            self.changed_this_frame = true;
+        }
         self.visible_slots = placed.iter().map(|s| s.slot.clone()).collect();
         // A focus request that named a slot this layout has only just placed —
         // the search strip's, which shows itself and asks for focus in one
@@ -2128,7 +2159,10 @@ impl App {
             paint::render_error(frame, error_area(area), "reload failed", &error);
         }
 
-        // Last, so it covers every pane, float and toast painted above.
+        // Last, so both cover every pane, float and toast painted above. The
+        // width normalisation goes first: it changes symbols, and the repaint
+        // below reads styles, so neither can undo the other.
+        paint::normalize_ambiguous_width(frame.buffer_mut());
         self.repaint_theme_background(frame);
     }
 

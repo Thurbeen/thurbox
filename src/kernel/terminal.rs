@@ -25,7 +25,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::Frame;
 use tui_term::widget::PseudoTerminal;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::paint::SurfaceProvider;
 use super::snapshot::Snapshot;
@@ -1703,9 +1703,16 @@ fn cell_style(cell: &ratatui::buffer::Cell) -> Style {
 /// rect a node was given is wider than the glyphs in it, and linking the
 /// padding would put the underline (and the click target the emulator draws)
 /// across the whole row. Interior blanks stay — they are inside the label.
-/// Ratatui's filler cell after a wide glyph is skipped for the reason
-/// `drawn_label_cells` advances by display width: re-printing the wide glyph
-/// moves the cursor over both cells itself.
+///
+/// The walk advances by each cell's DISPLAY WIDTH, for the reason
+/// `drawn_label_cells` does: re-printing a wide glyph moves the cursor over both
+/// its columns itself, so the filler ratatui leaves beside it must not be
+/// printed as well. Reading that filler as "the cell is empty" is not enough —
+/// ratatui writes a BLANK there, which is indistinguishable from a space inside
+/// the label — and a printed row one column longer than the cells it came from
+/// shifts every glyph after the first wide one. Out here that damage is
+/// permanent: this print is outside the frame diff, so the next frame repaints
+/// only the cells it thinks moved and the shifted glyphs stay.
 pub fn drawn_link_paints(buf: &Buffer, rect: Rect, url: &str) -> Vec<HyperlinkPaint> {
     let mut paints = Vec::new();
     for y in rect.top()..rect.bottom() {
@@ -1714,20 +1721,25 @@ pub fn drawn_link_paints(buf: &Buffer, rect: Rect, url: &str) -> Vec<HyperlinkPa
         // no link at all rather than a link with no text in it.
         let mut start = None;
         let mut cells: Vec<(String, Style)> = Vec::new();
-        for x in rect.left()..rect.right() {
+        let mut x = rect.left();
+        while x < rect.right() {
             // Outside the frame entirely: nothing further along this row is
             // drawn either.
             let Some(cell) = buf.cell(Position::new(x, y)) else {
                 break;
             };
             let symbol = cell.symbol();
+            // A width of zero is a cell a wide glyph already covered, so it
+            // cannot advance the walk on its own.
+            let width = UnicodeWidthStr::width(symbol).max(1) as u16;
+            x = x.saturating_add(width);
             if symbol.is_empty() {
                 continue;
             }
             if start.is_none() && symbol.trim().is_empty() {
                 continue;
             }
-            start.get_or_insert(x);
+            start.get_or_insert(x.saturating_sub(width));
             cells.push((symbol.to_string(), cell_style(cell)));
         }
         // Trailing padding, trimmed the way the leading padding was skipped.
@@ -2281,6 +2293,29 @@ mod tests {
 
         assert!(drawn_link_paints(&buf, Rect::new(0, 0, 20, 0), "u").is_empty());
         assert!(drawn_link_paints(&buf, Rect::new(0, 5, 20, 1), "u").is_empty());
+    }
+
+    /// A wide glyph is one cell and two columns, and ratatui leaves a BLANK in
+    /// the second. Re-printing that blank puts a space inside the label and
+    /// shifts every glyph after it one column right — the row this print lands
+    /// on is then permanently out of step with the frame the diff believes it
+    /// painted.
+    #[test]
+    fn a_wide_glyph_does_not_re_print_the_filler_beside_it() {
+        let buf = buffer_with(20, 1, &["docs 漢字 x"]);
+        let paints = drawn_link_paints(&buf, Rect::new(0, 0, 20, 1), "https://example.test/w");
+
+        assert_eq!(paints.len(), 1);
+        assert_eq!(paints[0].x, 0);
+        let printed: String = paints[0]
+            .cells
+            .iter()
+            .map(|(symbol, _)| symbol.as_str())
+            .collect();
+        assert_eq!(printed, "docs 漢字 x");
+        // The genuine space between the glyphs and `x` survives: only the cells
+        // a wide glyph already covers are skipped.
+        assert_eq!(paints[0].cells.len(), "docs 漢字 x".chars().count());
     }
 
     /// One paint per row, all naming the same url: that is how a wrapped link is

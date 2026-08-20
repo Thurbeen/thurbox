@@ -714,6 +714,20 @@ marks the screen dirty:
   API: a spinner's tree differs each frame, so it keeps the loop awake by itself,
   and a static pane costs one comparison
 
+**One frame is deliberately NOT a diff: a reflow.** When the arrangement places a
+slot at a different rect — a side column opening or closing, the search strip, the
+message band taking its row — the next paint is preceded by `Terminal::clear`, so
+every cell is printed rather than only the ones the diff believes moved. The diff is
+correct exactly while ratatui's idea of a cell's width matches the terminal's, and
+grapheme clusters exist where it cannot: a regional-indicator flag is two columns to
+`unicode-width` and a different number to several emulators, so a pane that closes
+leaves glyphs in the column that replaced it, and they survive until something else
+happens to repaint those cells. `kernel::paint::normalize_ambiguous_width` removes
+the one disagreement that can be removed (the emoji-presentation selector, stripped
+from every painted cell); this covers the rest by spending one full repaint on an
+event the user just caused. It is bounded by how often a layout moves, which is a
+keypress — not a frame.
+
 **Why the settling had to get stricter**: two things marked every frame changed
 unconditionally and so pinned the loop at the frame cap — an open float, and a
 non-empty text selection. With the creation wizard up, that meant rebuilding every

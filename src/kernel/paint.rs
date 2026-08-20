@@ -7,7 +7,8 @@
 //! walks it with rects rather than computing them: a `box` divides its own
 //! rect among children ([`super::node::divide`]) and recurses.
 
-use ratatui::layout::Rect;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Borders as RatBorders, Clear, Paragraph, Wrap};
@@ -338,6 +339,57 @@ pub fn render_error(frame: &mut Frame, area: Rect, title: &str, message: &str) {
     );
 }
 
+/// The emoji-presentation selector, the one codepoint that makes a cell's width
+/// a matter of opinion.
+const VARIATION_SELECTOR_16: char = '\u{FE0F}';
+
+/// Strip the emoji-presentation selector (`U+FE0F`) from every cell of a
+/// painted frame.
+///
+/// A cell is one column or two, `unicode-width` calls an emoji-presentation
+/// sequence two, and a terminal is free to disagree — Windows Terminal and
+/// Ghostty draw many of them in one. Both answers damage the screen, in opposite
+/// directions. Drawn two columns wide, the row receives the emoji *and* the
+/// blank ratatui pairs with it, so it emits three columns for two cells and
+/// wraps into the next row. Drawn one column wide, the trailing column is left
+/// holding whatever was there before, because the diff only prints a cell whose
+/// contents changed — which is the leftover glyphs a pane opening or closing
+/// exposes, since the diff believes those columns already say what the frame
+/// says.
+///
+/// Guessing which kind of terminal this is would settle neither, so the
+/// ambiguity is removed instead: without the selector the base glyph is one
+/// column everywhere, and the blank ratatui already reserved beside it keeps the
+/// row the width it was measured at. Applied to the finished frame, so it covers
+/// panes, bands, modals and the vt100 surfaces alike — an agent printing `✔️`
+/// corrupts a row exactly as a plugin does.
+///
+/// The clusters it cannot help (a regional-indicator flag is two columns here
+/// and a different number there) are why a reflow repaints in full — see
+/// `App::last_placed`.
+pub fn normalize_ambiguous_width(buf: &mut Buffer) {
+    let area = buf.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let Some(cell) = buf.cell_mut(Position::new(x, y)) else {
+                continue;
+            };
+            if !cell.symbol().contains(VARIATION_SELECTOR_16) {
+                continue;
+            }
+            let stripped: String = cell
+                .symbol()
+                .chars()
+                .filter(|c| *c != VARIATION_SELECTOR_16)
+                .collect();
+            // A cell holding nothing but the selector would print nothing at
+            // all, which is the leftover this exists to prevent.
+            cell.set_symbol(if stripped.is_empty() { " " } else { &stripped });
+        }
+    }
+}
+
+/// Shrink a rect by `padding` on every side, never past zero.
 fn build_block(spec: &NodeFrame) -> Block<'static> {
     let mut block = Block::default().style(spec.style);
     block = match spec.borders {
@@ -372,7 +424,6 @@ fn build_block(spec: &NodeFrame) -> Block<'static> {
     block
 }
 
-/// Shrink a rect by `padding` on every side, never past zero.
 fn pad(area: Rect, padding: u16) -> Rect {
     if padding == 0 {
         return area;
@@ -389,11 +440,43 @@ fn pad(area: Rect, padding: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     use crate::kernel::convert::to_node;
     use mlua::{Lua, Value};
+
+    /// The emoji-presentation selector is what makes a cell's width a matter of
+    /// opinion between ratatui and the terminal, and the leftover glyphs a pane
+    /// toggle used to expose are that disagreement showing. Stripped, the glyph
+    /// is one column everywhere.
+    #[test]
+    fn variation_selector_is_stripped_from_painted_cells() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 6, 1));
+        buffer.set_string(0, 0, "⚠️a", ratatui::style::Style::default());
+        assert!(buffer[(0, 0)].symbol().contains('\u{FE0F}'));
+
+        normalize_ambiguous_width(&mut buffer);
+
+        assert_eq!(buffer[(0, 0)].symbol(), "⚠");
+        // The blank ratatui reserved beside it stays, so nothing after the glyph
+        // moves: the row is the width it was measured at.
+        assert_eq!(buffer[(1, 0)].symbol(), " ");
+        assert_eq!(buffer[(2, 0)].symbol(), "a");
+    }
+
+    /// A cell holding nothing but the selector would print nothing at all, which
+    /// is the leftover the pass exists to prevent.
+    #[test]
+    fn lone_variation_selector_becomes_a_blank() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
+        buffer[(0, 0)].set_symbol("\u{FE0F}");
+
+        normalize_ambiguous_width(&mut buffer);
+
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+    }
 
     /// Render a Lua-authored tree and return the screen as text lines.
     fn screen(source: &str, width: u16, height: u16) -> Vec<String> {

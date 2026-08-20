@@ -431,7 +431,7 @@ leg with a browser to reach. The chord is resolved against `url:` nodes directly
 as well, so it still works in an emulator with no OSC 8 support, or on a bare
 tty.
 
-Three consequences worth knowing:
+Four consequences worth knowing:
 
 - The cells are read back out of the **frame just drawn**, not out of your tree,
   so a node clipped by its pane, covered by a modal or under a float contributes
@@ -441,6 +441,12 @@ Three consequences worth knowing:
   row. Interior blanks stay, so ` Open MR !123 ` links as `Open MR !123`.
 - A node spanning several rows emits one link per row, all naming the same url —
   which is how a wrapped link is spelled in OSC 8 anyway.
+- The re-print is written **outside the frame diff**, so it has to spend exactly
+  as many columns as the cells it came from. A wide glyph is one cell and two
+  columns, and re-printing it moves the cursor over both — so the blank ratatui
+  leaves beside it is skipped rather than printed. Getting that wrong is
+  permanent, not transient: the next frame repaints only the cells it believes
+  moved, so a row shifted by one column stays shifted.
 
 `command("open", { text = url })` is the imperative half, for a link you open
 from a keypress rather than a click. The field is `text`, not `url`.
