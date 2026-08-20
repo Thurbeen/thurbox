@@ -9,7 +9,7 @@
 use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
-use thurbox::kernel::snapshot::{SessionRow, Snapshot};
+use thurbox::kernel::snapshot::{GitState, SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 
 const PLUGIN: &str = "sessions";
@@ -53,7 +53,7 @@ fn snapshot() -> Snapshot {
     }
 }
 
-fn publish(host: &LuaHost) {
+fn publish_in(host: &LuaHost, snapshot: &Snapshot) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -61,7 +61,7 @@ fn publish(host: &LuaHost) {
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
-        snapshot: &snapshot(),
+        snapshot,
         attach_errors: &Default::default(),
         inflight: &[],
         themes: &themes,
@@ -86,7 +86,11 @@ fn publish(host: &LuaHost) {
 
 /// Render the list, which is also what publishes the selection.
 fn render(host: &LuaHost) {
-    publish(host);
+    render_in(host, &snapshot());
+}
+
+fn render_in(host: &LuaHost, snapshot: &Snapshot) {
+    publish_in(host, snapshot);
     let index = host.index_of(PLUGIN).expect("no sessions plugin");
     host.render(
         index,
@@ -102,7 +106,11 @@ fn render(host: &LuaHost) {
 }
 
 fn press(host: &LuaHost, chord: &str) {
-    publish(host);
+    press_in(host, &snapshot(), chord);
+}
+
+fn press_in(host: &LuaHost, snapshot: &Snapshot, chord: &str) {
+    publish_in(host, snapshot);
     let index = host.index_of(PLUGIN).expect("no sessions plugin");
     let mut key = KeyPress {
         name: chord.to_string(),
@@ -198,5 +206,144 @@ fn a_session_that_went_away_does_not_freeze_the_selection() {
         host.shared_string("selected").as_deref(),
         Some("aaa"),
         "the cursor stayed on a row that exists"
+    );
+}
+
+/// A worktree with nothing in it that a delete could not put back.
+fn clean() -> GitState {
+    GitState {
+        files_changed: 0,
+        insertions: 0,
+        deletions: 0,
+        untracked: 0,
+        dirty: false,
+        ahead: 0,
+        behind: 0,
+    }
+}
+
+/// Render the confirmation float and return what it drew, so a test can ask
+/// whether a question was put at all — and what it itemised.
+fn confirm_tree(host: &LuaHost, snapshot: &Snapshot) -> String {
+    publish_in(host, snapshot);
+    let index = host.index_of("confirm").expect("no confirm plugin");
+    let rendered = host
+        .render(
+            index,
+            RenderContext {
+                width: 60,
+                height: 12,
+                focused: false,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render the confirmation");
+    format!("{:?}", rendered.node)
+}
+
+#[test]
+fn force_deleting_a_clean_session_does_not_ask() {
+    // v1's rule, in `App::delete_active_session`: `assess_delete_risk` returning
+    // `Some(risk)` opened `ConfirmDelete`, `None` deleted on the keystroke. v2
+    // asked every time, which is how the answer to a question stops being a
+    // decision.
+    let host = host();
+    let mut snapshot = snapshot();
+    snapshot.sessions[0].git = Some(clean());
+    render_in(&host, &snapshot);
+    press_in(&host, &snapshot, "D");
+
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Delete {
+            session: "aaa".into(),
+            force: true,
+        }],
+        "a known-clean session is torn down on the keystroke"
+    );
+    assert!(
+        !confirm_tree(&host, &snapshot).contains("Confirm"),
+        "and no question was put: a worktree directory alone is not work at risk"
+    );
+}
+
+#[test]
+fn force_deleting_a_session_with_work_asks_first_and_says_what_is_lost() {
+    let host = host();
+    let mut snapshot = snapshot();
+    snapshot.sessions[0].git = Some(GitState {
+        files_changed: 2,
+        untracked: 1,
+        dirty: true,
+        ahead: 3,
+        ..clean()
+    });
+    snapshot.sessions[0].worktree_count = 1;
+    render_in(&host, &snapshot);
+    press_in(&host, &snapshot, "D");
+
+    assert!(
+        host.drain_commands().is_empty(),
+        "nothing is torn down until the question is answered"
+    );
+    let tree = confirm_tree(&host, &snapshot);
+    assert!(tree.contains("and its worktree?"), "the question: {tree}");
+    assert!(
+        tree.contains("3 uncommitted or untracked file(s)"),
+        "{tree}"
+    );
+    assert!(
+        tree.contains("3 commit(s) not pushed anywhere else"),
+        "{tree}"
+    );
+    assert!(
+        tree.contains("its worktree directory"),
+        "listed as what else goes, once a question is owed: {tree}"
+    );
+}
+
+#[test]
+fn a_clean_primary_does_not_speak_for_the_other_worktrees() {
+    // The snapshot stats one directory per session, so on a multi-worktree
+    // session a clean answer covers the primary and nothing else. v1 assessed
+    // every worktree it was about to remove; not being able to is unknown.
+    let host = host();
+    let mut snapshot = snapshot();
+    snapshot.sessions[0].git = Some(clean());
+    snapshot.sessions[0].worktree_count = 2;
+    render_in(&host, &snapshot);
+    press_in(&host, &snapshot, "D");
+
+    assert!(
+        host.drain_commands().is_empty(),
+        "a checkout nobody read must not be torn down unasked"
+    );
+    let tree = confirm_tree(&host, &snapshot);
+    assert!(
+        tree.contains("its other worktrees could not be read"),
+        "{tree}"
+    );
+    assert!(
+        tree.contains("its 2 worktree directories"),
+        "and what goes is counted, not assumed singular: {tree}"
+    );
+}
+
+#[test]
+fn a_state_that_could_not_be_read_asks_rather_than_assume_clean() {
+    // `git` is nil for a stat that has not run, a directory that is not a
+    // worktree, and a host that could not be reached. v1 folded all three into
+    // `DeleteRisk::unknown()` and confirmed.
+    let host = host();
+    let snapshot = snapshot();
+    assert!(snapshot.sessions[0].git.is_none());
+    render_in(&host, &snapshot);
+    press_in(&host, &snapshot, "D");
+
+    assert!(host.drain_commands().is_empty(), "it must not delete blind");
+    assert!(
+        confirm_tree(&host, &snapshot).contains("its state could not be read"),
+        "and it says why it is asking"
     );
 }

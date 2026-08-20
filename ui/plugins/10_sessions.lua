@@ -759,32 +759,82 @@ local function soft_delete()
   return settings.features.soft_delete ~= false
 end
 
---- What deleting this session would destroy, itemised.
+--- What deleting this session would destroy, itemised — or nil when it would
+--- destroy nothing.
 ---
---- v1's `DeleteRisk::from_stats`: uncommitted files, commits that exist nowhere
---- else, and — the case that matters most — a worktree whose state could not be
---- read at all, which is reported rather than assumed clean.
+--- v1's `DeleteRisk::from_stats`, its decision included: work is at risk when
+--- there are uncommitted or untracked files, commits that exist nowhere else,
+--- or — the case that matters most — a state that could not be read at all,
+--- which is reported rather than assumed clean. Everything else is a
+--- known-clean session, and nil says so.
+---
+--- The worktree *directory* is deliberately not a reason to ask: force-delete
+--- removes the checkout and leaves the branch, so a clean one comes back from
+--- it. It is listed as context for a question already owed, never as the cause.
 local function at_risk(session)
-  local lines = {}
   local git = session.git
-  if (session.worktrees or 0) > 0 and not git then
-    lines[#lines + 1] = "its worktree state could not be read"
-    return lines
-  end
   if not git then
-    return lines
+    -- Not computed yet, not a git worktree, or a host that could not be
+    -- reached. v1 confirms rather than assume clean.
+    return { "its state could not be read" }
   end
-  local dirty = (git.files or 0) + (git.untracked or 0)
-  if dirty > 0 then
-    lines[#lines + 1] = dirty .. " uncommitted or untracked file(s)"
+
+  local lines = {}
+  local uncommitted = (git.files or 0) + (git.untracked or 0)
+  if uncommitted > 0 then
+    lines[#lines + 1] = uncommitted .. " uncommitted or untracked file(s)"
+  elseif git.dirty then
+    -- `dirty` is any `status --porcelain` output, so it outlives a count of
+    -- zero (a mode change, a submodule). Still work, still unrecoverable.
+    lines[#lines + 1] = "uncommitted changes"
   end
   if (git.ahead or 0) > 0 then
     lines[#lines + 1] = git.ahead .. " commit(s) not pushed anywhere else"
   end
-  if (session.worktrees or 0) > 0 then
+
+  -- Everything above speaks for the session's *primary* directory, which is the
+  -- only one the snapshot stats. v1 inspected every worktree it was about to
+  -- remove, so on a session that owns several the rest are unknown rather than
+  -- clean — a reason to ask in its own right.
+  local worktrees = session.worktrees or 0
+  if worktrees > 1 then
+    lines[#lines + 1] = "its other worktrees could not be read"
+  end
+
+  if #lines == 0 then
+    return nil
+  end
+
+  -- What else goes, once a question is owed. Never the reason for one.
+  if worktrees == 1 then
     lines[#lines + 1] = "its worktree directory"
+  elseif worktrees > 1 then
+    lines[#lines + 1] = "its " .. worktrees .. " worktree directories"
   end
   return lines
+end
+
+--- Delete for good, asking first only when there is something to lose.
+---
+--- v1's `App::delete_active_session`: it assessed the risk and opened
+--- `ConfirmDelete` only for `Some(risk)`, deleting a known-clean session on the
+--- keystroke. Asking about nothing trains the answer, which is the opposite of
+--- what a confirmation is for.
+---
+--- The question travels through `store`, so the confirm plugin needs to know
+--- nothing about sessions.
+local function delete_for_good(session, question)
+  local lines = at_risk(session)
+  if not lines then
+    command("delete", { session = session.id, force = true })
+    return
+  end
+  store.confirm = {
+    question = question,
+    lines = lines,
+    command = "delete",
+    options = { session = session.id, force = true },
+  }
 end
 
 --- The chord bound to opening the creation flow, if anything is.
@@ -1397,26 +1447,19 @@ return {
         state.deleted = id
         command("delete", { session = id })
       else
-        -- The switch is off, so this key deletes for real. v1 asks first and
-        -- itemises what would be lost, because there is no undo to fall back on.
+        -- The switch is off, so this key deletes for real. v1 asks first when
+        -- there is work to lose, because there is no undo to fall back on.
         local session = items[at].session
-        store.confirm = {
-          question = "Delete " .. (session.name or "this session") .. " for good?",
-          lines = at_risk(session),
-          command = "delete",
-          options = { session = id, force = true },
-        }
+        delete_for_good(session, "Delete " .. (session.name or "this session") .. " for good?")
       end
     elseif action == "sessions.force_delete" and id then
-      -- Destructive: ask first. The question travels through `store`, so the
-      -- confirm plugin needs to know nothing about sessions.
+      -- Destructive, and undone by nothing — but only worth a question when it
+      -- would take work with it.
       local session = items[at].session
-      store.confirm = {
-        question = "Delete " .. (session.name or "this session") .. " and its worktree?",
-        lines = at_risk(session),
-        command = "delete",
-        options = { session = id, force = true },
-      }
+      delete_for_good(
+        session,
+        "Delete " .. (session.name or "this session") .. " and its worktree?"
+      )
     elseif action == "sessions.restart" and id then
       command("restart", { session = id })
     elseif action == "sessions.fork" and id then
