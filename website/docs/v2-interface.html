@@ -16,6 +16,20 @@ breadcrumb: 'Interface'
   it.
 </p>
 
+<div class="info-box warning">
+  <p>
+    <strong>2.x is the unstable line.</strong>
+    Everything on this page is published and usable, but it is still settling: the kernel, the
+    <code>thurbox.*</code>
+    snapshot a pane reads, and the panes thurbox ships can all change between releases, and a change
+    there can break panes you wrote or installed. The latest
+    <strong>stable</strong>
+    release is
+    <a href="https://github.com/Thurbeen/thurbox/releases/tag/v1.8.7">v1.8.7</a>, on the
+    <a href="v1.html">1.x line</a>.
+  </p>
+</div>
+
 <div class="info-box">
   <p>
     <strong>Moved from v1?</strong>
@@ -412,11 +426,11 @@ thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel</c
   <a href="#v1" class="heading-anchor">#</a>
 </h2>
 <p>
-  It is maintained on the <code>v1.x</code> branch and still gets patch releases. The first-launch
-  prompt prints the exact command; the short version is to pin a 1.x version and turn auto-update
-  off so nothing moves you again:
+  It is the stable line, maintained on the <code>v1.x</code> branch and still getting patch
+  releases. The first-launch prompt prints the exact command; the short version is to pin a 1.x
+  version and turn auto-update off so nothing moves you again:
 </p>
-<pre><code class="language-bash">export VERSION=v1.8.6
+<pre><code class="language-bash">export VERSION=v1.8.7
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 <p>
   Declining the prompt does both of those for you and tells you what it did.

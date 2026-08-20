@@ -26,7 +26,15 @@ it are data files you edit too. No fork, no recompile, no restart.
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Thurbeen_thurbox&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Thurbeen_thurbox)
 
 > [!IMPORTANT]
-> **v2 is out, and it is not a drop-in v1.** The interface is now Lua plugins on
+> **v2 is unstable. The latest stable release is v1 —
+> [v1.8.7](https://github.com/Thurbeen/thurbox/releases/tag/v1.8.7).**
+> v2 is published and usable, but it is still moving: the plugin kernel, the
+> `thurbox.*` snapshot shape and the bundled panes are all subject to change
+> between releases, and a change there can break panes you wrote or installed.
+> Use it if you want the customizable interface and can absorb that; stay on v1
+> if you want the version that does not move under you.
+>
+> **v2 is also not a drop-in v1.** The interface is now Lua plugins on
 > a Rust kernel — which is what makes it fully customizable, and is also why some
 > v1 surfaces did not come with it. They were compiled-in panes; they are panes
 > anyone can write now, and two of them have already been rewritten that way:
@@ -61,24 +69,33 @@ it are data files you edit too. No fork, no recompile, no restart.
 > [What v1 had, and where it is in v2](#what-v1-had-and-where-it-is-in-v2).
 >
 > **Upgrading** asks once, on the first v2 launch of a profile with v1 history,
-> before anything changes. **To stay on v1**, answer `q` at that prompt: it turns
-> auto-update off and prints the reinstall command. Or reinstall it yourself:
+> before anything changes. **To stay on v1** — the stable line — answer `q` at
+> that prompt: it turns auto-update off and prints the reinstall command. Or
+> install it yourself:
 >
 > ```bash
 > # export, not a prefix: `VERSION=… curl | sh` binds it to curl, not to the sh
-> export VERSION=v1.8.6
+> export VERSION=v1.8.7
 > curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 > ```
 >
 > Then set `auto_update = false` under `[features]` in
-> `~/.config/thurbox/settings.toml`, or the next launch pulls v2 back. v1 is
-> maintained on the [`v1.x`](https://github.com/Thurbeen/thurbox/tree/v1.x) branch;
-> newer 1.x patches are on the
-> [releases page](https://github.com/Thurbeen/thurbox/releases).
+> `~/.config/thurbox/settings.toml`, or the next launch pulls the unstable v2
+> back. v1 is maintained on the
+> [`v1.x`](https://github.com/Thurbeen/thurbox/tree/v1.x) branch; 1.x patches are
+> on the [releases page](https://github.com/Thurbeen/thurbox/releases).
 
 ![Thurbox Demo](./docs/media/thurbox-demo.gif)
 
 ## Installation
+
+> [!NOTE]
+> The latest release is **v2, which is unstable**. Every route below takes it by
+> default. The latest **stable** release is **v1.8.7**; to install that instead,
+> pin the version on the shell installer (`VERSION`) or the PowerShell one
+> (`THURBOX_VERSION`), or build from the `v1.x` branch. The package-manager
+> channels (winget, Chocolatey, Homebrew, AUR) always publish the newest
+> release and have no way to pin v1.
 
 **One-liner:**
 
@@ -86,16 +103,19 @@ it are data files you edit too. No fork, no recompile, no restart.
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
-Installs the latest release to `~/.local/bin` with checksum
-verification and platform auto-detection.
+Installs the latest release — currently the unstable v2 — to `~/.local/bin`
+with checksum verification and platform auto-detection.
 
 **Options:**
 
 ```bash
+# Latest stable (v1)
+VERSION=v1.8.7 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+
 # Custom directory
 INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 
-# Pin a version
+# Pin any version
 VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
@@ -114,8 +134,9 @@ irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 
 Installs the latest `x86_64-pc-windows-msvc` release to
 `%LOCALAPPDATA%\Programs\thurbox` (added to your user `PATH`) with checksum
 verification. Pin a version or directory with the `THURBOX_VERSION` /
-`THURBOX_INSTALL_DIR` env vars. Needs [psmux](https://github.com/psmux/psmux)
-as the multiplexer.
+`THURBOX_INSTALL_DIR` env vars — `$env:THURBOX_VERSION = 'v1.8.7'` before the
+`irm` line installs the latest stable instead. Needs
+[psmux](https://github.com/psmux/psmux) as the multiplexer.
 
 **winget (Windows):**
 
@@ -182,6 +203,7 @@ your preferred helper.)
 sudo pacman -S --needed git tmux rust   # Arch deps; use your distro's equivalent
 git clone https://github.com/Thurbeen/thurbox.git
 cd thurbox
+git checkout v1.x                       # omit for the unstable v2 on main
 cargo build --release
 # binary at target/release/thurbox
 ```
@@ -1315,10 +1337,11 @@ architectural decisions with rationale, see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); for the kernel itself, see
 [docs/V2-KERNEL.md](docs/V2-KERNEL.md).
 
-**Moving from v1?** Some panes are owed rather than ported, and some moved to
-`thurbox-cli`. The note at the top of this file has the list, what asks you
-before anything changes, and how to stay on v1 — which is maintained on the
-`v1.x` branch.
+**Moving from v1?** v2 is the unstable line: some panes are owed rather than
+ported, some moved to `thurbox-cli`, and the kernel's plugin contract can still
+change between releases. The note at the top of this file has the list, what
+asks you before anything changes, and how to stay on the stable v1 — which is
+maintained on the `v1.x` branch.
 
 ## Documentation
 

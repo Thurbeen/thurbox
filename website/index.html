@@ -26,6 +26,14 @@ footer: true
               <strong>Lua file in a directory you own</strong>
               &mdash; the session list included. Turn one off, reorder them, or write your own.
             </p>
+            <p class="hero-stability">
+              <span class="badge badge-yellow">v2 &middot; unstable</span>
+              The latest release is v2, and it is still moving &mdash; the plugin kernel, the
+              snapshot panes read, and the panes it ships can change between releases. The latest
+              <strong>stable</strong>
+              release is v1.8.7 &mdash;
+              <a href="docs/v1.html">how to stay on v1</a>.
+            </p>
             <div class="hero-ctas">
               <a href="#installation" class="btn btn-primary">Get Started</a>
               <a href="#customizable" class="btn btn-secondary">See it move</a>
@@ -115,11 +123,22 @@ footer: true
           <div class="install-panel" role="tabpanel" id="panel-script" aria-labelledby="tab-script">
             <p>
               Linux &amp; macOS. Auto-detects your platform, verifies checksums, and installs the
-              latest release to
+              latest release &mdash; currently the unstable v2 &mdash; to
               <code>~/.local/bin</code>
               .
             </p>
             <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+            <p>
+              For the latest
+              <strong>stable</strong>
+              release instead, pin v1 &mdash;
+              <code>export</code>
+              on its own line, or the
+              <code>sh</code>
+              reading from the pipe never sees it:
+            </p>
+            <pre data-wrap><code class="language-bash">export VERSION=v1.8.7
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
           </div>
 
           <div
@@ -140,6 +159,13 @@ footer: true
               ).
             </p>
             <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
+            <p>
+              For the latest
+              <strong>stable</strong>
+              release, set
+              <code>$env:THURBOX_VERSION = 'v1.8.7'</code>
+              first.
+            </p>
           </div>
 
           <div class="install-panel" role="tabpanel" id="panel-winget" aria-labelledby="tab-winget" hidden>
@@ -1124,8 +1150,8 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
               <p><code>export INSTALL_DIR=/usr/local/bin</code></p>
             </div>
             <div class="install-alt-item">
-              <h4>Pin a Version</h4>
-              <p><code>export VERSION=v1.8.6</code></p>
+              <h4>Latest stable (v1)</h4>
+              <p><code>export VERSION=v1.8.7</code></p>
             </div>
             <div class="install-alt-item">
               <h4>Full Guide</h4>

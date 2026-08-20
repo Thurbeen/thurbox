@@ -12,6 +12,19 @@ breadcrumb: 'Installation'
             <a href="#from-binary" class="heading-anchor">#</a>
           </h2>
 
+          <div class="info-box warning">
+            <p>
+              <strong>The newest release is 2.x, and 2.x is unstable.</strong>
+              Every route on this page installs it by default. The latest stable release is
+              <a href="https://github.com/Thurbeen/thurbox/releases/tag/v1.8.7">v1.8.7</a>
+              on the 1.x line &mdash;
+              <a href="#specific-version">pin a version</a>
+              to install that instead. The package-manager channels below always carry the newest
+              release and cannot pin 1.x. See
+              <a href="v1.html">using v1</a>.
+            </p>
+          </div>
+
           <p>
             The install script downloads the latest release, detects your platform, and verifies
             checksums automatically.
@@ -49,11 +62,12 @@ breadcrumb: 'Installation'
           <pre data-wrap><code class="language-bash">export INSTALL_DIR=/usr/local/bin
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
-          <h3>Specific version</h3>
-          <pre data-wrap><code class="language-bash">export VERSION=v1.8.6
+          <h3 id="specific-version">Specific version</h3>
+          <pre data-wrap><code class="language-bash">export VERSION=v1.8.7
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
           <p>
-            Pinning is also how you
+            Pinning is how you take the stable line rather than the unstable newest release, and how
+            you
             <a href="v1.html">stay on 1.x</a>
             &mdash; the newest patch is on the
             <a href="https://github.com/Thurbeen/thurbox/releases">releases page</a>.
@@ -81,6 +95,11 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             as the multiplexer.
           </p>
           <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
+          <p>
+            Set
+            <code>$env:THURBOX_VERSION = 'v1.8.7'</code>
+            before that line for the latest stable release instead of the newest one.
+          </p>
 
           <h3>Available platforms</h3>
           <table>

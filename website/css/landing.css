@@ -116,6 +116,24 @@
   color: var(--text-secondary);
 }
 
+/* Stability notice under the hero copy. Sized and centred like .subtitle above
+   it rather than boxed: the hero is centre-aligned, so a rule down one side has
+   nothing to align to. The yellow badge carries the signal. */
+.hero-stability {
+  max-width: 600px;
+  margin: 0 auto var(--space-xl);
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.hero-stability .badge {
+  margin-right: var(--space-sm);
+}
+
+.hero-stability strong {
+  color: var(--text-primary);
+}
+
 .agent-support {
   display: flex;
   flex-wrap: wrap;

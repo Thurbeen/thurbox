@@ -60,6 +60,20 @@ breadcrumb: 'FAQ'
   <a href="installation.html">installation</a> for details.
 </p>
 
+<h2 id="which-version">Which version should I install?</h2>
+<p>
+  <strong>1.x is the latest stable line</strong> (newest release
+  <a href="https://github.com/Thurbeen/thurbox/releases/tag/v1.8.7">v1.8.7</a>), and the one to run
+  if you want a version that does not change under you. <strong>2.x is unstable</strong>: it is
+  where the customizable Lua interface lives, but its kernel, the snapshot panes read, and the panes
+  it ships can still change between releases &mdash; which can break panes you wrote or installed.
+  Every installer takes the newest release unless you pin a version, so 2.x is what you get by
+  default. See
+  <a href="installation.html#specific-version">pinning a version</a>
+  and
+  <a href="v1.html">using v1</a>.
+</p>
+
 <h2 id="platforms">
   Which platforms does Thurbox run on? Does it support remote machines?
 </h2>
@@ -123,6 +137,14 @@ breadcrumb: 'FAQ'
         "acceptedAnswer": {
           "@type": "Answer",
           "text": "On Linux or macOS, run: curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh. It is also available via Homebrew (brew install thurbeen/thurbox/thurbox), the AUR (thurbox or thurbox-bin), and on Windows via winget (winget install Thurbeen.thurbox) or Chocolatey (choco install thurbox). Both of those channels are moderated and only get a new version every 30 days, so the PowerShell installer (irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex) is the recommended route on Windows. You can also build from source with cargo build --release."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which version should I install?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "1.x is the latest stable line (newest release v1.8.7), and the one to run if you want a version that does not change under you. 2.x is unstable: it is where the customizable Lua interface lives, but its kernel, the snapshot panes read, and the panes it ships can still change between releases — which can break panes you wrote or installed. Every installer takes the newest release unless you pin a version (export VERSION=v1.8.7 for the shell script, $env:THURBOX_VERSION = 'v1.8.7' for PowerShell), so 2.x is what you get by default."
         }
       },
       {
