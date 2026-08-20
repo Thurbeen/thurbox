@@ -1,7 +1,7 @@
 ---
 layout: base.njk
 title: 'Thurbox — TUI Agentic IDE'
-description: 'Thurbox runs any coding-agent CLI (Claude Code, Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe, pi, Oh My Pi) in persistent tmux panes — sessions, agents, and git worktrees as first-class citizens.'
+description: 'Thurbox runs any coding-agent CLI (Claude Code, Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe, pi, Oh My Pi) in persistent tmux panes — with a fully customizable interface: every pane is a Lua file you can edit, move, turn off or replace.'
 root: '.'
 extraCss: ['landing.css']
 footer: true
@@ -507,6 +507,41 @@ cp docs/examples/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
             <em>the selected session runs on</em>
             , which means picking a session over SSH shows you that host's load &mdash; without the
             plugin knowing what SSH is.
+          </p>
+        </div>
+
+        <!-- The on-ramp that needs no Lua at all. The prompts are deliberately
+             styled unlike the <pre> blocks around them, so nobody pastes one
+             into a shell. -->
+        <div class="ui-lab__demo">
+          <p class="ui-lab__demo-lede">
+            <strong>Or just ask the agent.</strong>
+            You do not have to learn Lua to change any of this. thurbox
+            <em>runs coding agents</em>, and the interface is a directory of plain text files those
+            agents can read &mdash; so point a session at it and say what you want:
+          </p>
+          <pre data-wrap><code class="language-bash">thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui</code></pre>
+          <ul class="prompts">
+            <li>Install the info panel plugin.</li>
+            <li>
+              Add a new pane on the left with CPU and RAM usage. There is a
+              <code>top</code>
+              example plugin &mdash; install it and give it a slot in the layout.
+            </li>
+            <li>Move the search strip to the bottom, and make the session column 30% wide.</li>
+          </ul>
+          <p class="ui-lab__demo-note">
+            It works because the directory ships an
+            <code>AGENTS.md</code>
+            that any coding CLI loads as context without being asked &mdash; so
+            &ldquo;install a plugin&rdquo; is read as
+            <code>thurbox-cli plugin install</code>
+            rather than an npm request, and the agent knows
+            <code>thurbox-cli plugin check</code>
+            is how it verifies its own work. Press
+            <kbd>F10</kbd>
+            and the change is on your screen.
+            <a href="docs/v2-interface.html#ask-the-agent">The worked example &rarr;</a>
           </p>
         </div>
       </div>

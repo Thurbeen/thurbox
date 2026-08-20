@@ -56,6 +56,10 @@ it are data files you edit too. No fork, no recompile, no restart.
 > interface — sessions, agents, worktrees, remote hosts, automations, your
 > database — is unchanged.
 >
+> The table above lists only what *left*. For the full map — what is bundled,
+> what installs, what is owed, and what v2 gained — see
+> [What v1 had, and where it is in v2](#what-v1-had-and-where-it-is-in-v2).
+>
 > **Upgrading** asks once, on the first v2 launch of a profile with v1 history,
 > before anything changes. **To stay on v1**, answer `q` at that prompt: it turns
 > auto-update off and prints the reinstall command. Or reinstall it yourself:
@@ -301,6 +305,33 @@ as of June 2026; check each project for the latest.
 > fork — so the "right" tool is increasingly the one you shape for yourself.
 
 ## Features
+
+### What v1 had, and where it is in v2
+
+v1 drew every surface from the binary. v2 draws none of them from the binary —
+which is what makes the interface yours, and also means a surface can be
+*bundled*, *installable*, or *owed*. This is the full map; the note at the top
+of this file is the short, urgent version of the last four rows.
+
+| Surface | In v1 | In v2 | How you get it |
+|---|---|---|---|
+| Session list | built in | **bundled pane** | `10_sessions.lua` — edit it, move it, turn it off |
+| Agent terminal | built in | **bundled pane** | `20_agent.lua` (the `Ctrl+T` shell too) |
+| Global search | built in | **bundled pane** | `65_search.lua` — sessions and their screens |
+| Session creation | built in | **bundled float** | `70_new_session.lua`, `Ctrl+N` |
+| Themes · settings · help | built in | **kernel chrome** | `Ctrl+Y` · `Ctrl+,` · `F1`; panes contribute rows |
+| Code review | built in, `Ctrl+X` | **a pane you install** | [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) — reclaims `Ctrl+X`/`F7` itself |
+| Info panel | built in, `Ctrl+B`/`F2` | **a pane you install** | [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) — plus one `layout.lua` line |
+| Tasks | built in, `Ctrl+W`/`F5` | **CLI, no pane yet** | `thurbox-cli task`; `ui-plugins/tasks` is an example pane over the same records |
+| Automations | built in, `Ctrl+P` | **CLI, no pane yet** | `thurbox-cli automation` — they still fire with the TUI closed |
+| Restore list | built in, `Ctrl+U` | **CLI, no pane yet** | `thurbox-cli session restore` |
+| File viewer | built in, `Ctrl+E`/`F3` | **owed** | nothing yet — the one surface with no replacement |
+| The arrangement | compiled-in breakpoints | **a file you edit** | `ui/layout.lua` — new in v2 |
+| CPU / RAM gauges | ✗ | **a pane you install** | `thurbox-cli plugin install top` — new in v2 |
+| Panes anyone else wrote | ✗ | **`plugins.toml`** | `plugin install` / `sync` — new in v2 |
+
+The chords freed by the four owed surfaces are deliberately left **unbound**
+rather than reused, so no muscle memory quietly does something else.
 
 <table>
 <tr>
@@ -554,6 +585,70 @@ you can open in an editor.
 | Keybindings | the `F1` editor → `~/.config/thurbox/ui.json` | live |
 | Core + plugin settings | `Ctrl+,` → `~/.config/thurbox/settings.toml` | live (`⟳` = restart) |
 | Whole workflows | `thurbox-cli extension install <name>` | on install |
+
+### Ask the agent to do it
+
+You do not have to learn Lua to change the interface. thurbox runs coding
+agents, and the interface is a directory of plain text files those agents can
+read — so the shortest path to a change is usually to point a session at that
+directory and ask in English:
+
+```bash
+thurbox-cli plugin dir          # prints the directory
+thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui
+```
+
+Then prompts like these do the whole job:
+
+> - *Install the info panel plugin.*
+> - *Add a new pane on the left with CPU and RAM usage. There is a `top` example
+>   plugin — install it and give it a slot in the layout.*
+> - *Move the search strip to the bottom, and make the session column 30% wide.*
+> - *The session list is too noisy — drop the repo group headers and show the
+>   branch instead of the agent name.*
+
+That works because the directory ships an **`AGENTS.md`** that any coding CLI
+loads as context without being asked. It is what stops "install a plugin" being
+read as an npm request, tells the agent that `thurbox-cli plugin check` is how
+it verifies its own work, and warns it off the mistakes that are invisible until
+runtime. Press `F10` and the change is on your screen.
+
+#### What that second prompt actually does
+
+Worth seeing once, because **every** interface change has this shape — a pane,
+and a slot for it:
+
+1. **The pane.** `thurbox-cli plugin install top` delivers `plugins/85_top.lua`
+   and records the entry in `plugins.toml`. It declares `slot = "top"` and the
+   `run` capability.
+2. **The slot.** `ui/layout.lua` decides where a slot goes, so putting it on the
+   left is putting it first in the column list:
+
+   ```lua
+   local columns = {}
+   if filled(ctx, "top") then
+     columns[#columns + 1] = { slot = "top", pct = 20, min = 24 }
+   end
+   if panels.shown("sessions") and filled(ctx, "sessions") then
+     columns[#columns + 1] = { slot = "sessions", pct = 25, min = 20 }
+   end
+   columns[#columns + 1] = { slot = "center" }
+   ```
+
+Then `F10` — and trust it, settings → Interface → `t`, because it shells out to
+`top` and an untrusted plugin does not get `run` **at all**. Until you do, it
+draws the reason rather than a blank pane.
+
+Two things that follow from the split, and are easy to miss: the plugin manager
+never writes `layout.lua` (placement stays yours, which is why step 2 is a
+separate edit), and a pane that loads but which no arrangement places draws
+nothing while looking perfectly healthy — `thurbox-cli plugin check` is what
+fails on that, and prints the line to add.
+
+The `top` pane also reads the machine **the selected session runs on**, because
+`run` executes in that session's directory on that session's host. Select a
+session running over SSH and you are looking at that box's load — without the
+plugin knowing what SSH is.
 
 ### The interface is a directory you can edit
 

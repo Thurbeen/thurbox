@@ -812,3 +812,40 @@
     display: none;
   }
 }
+
+/* ---- Prompt examples ----
+   Things you SAY to an agent, not commands you run. Deliberately unlike the
+   <pre> blocks around them: dashed, italic, no copy affordance, so nobody
+   pastes one into a shell. */
+.prompts {
+  list-style: none;
+  margin: 0 0 var(--space-lg);
+  padding: 0;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.prompts li {
+  position: relative;
+  padding: var(--space-sm) var(--space-md);
+  padding-left: var(--space-xl);
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border);
+  border-radius: var(--border-radius-sm);
+  color: var(--text-secondary);
+  font-style: italic;
+  line-height: 1.6;
+}
+
+.prompts li::before {
+  content: '\203A';
+  position: absolute;
+  left: var(--space-md);
+  color: var(--accent);
+  font-style: normal;
+  font-weight: 700;
+}
+
+.prompts li code {
+  font-style: normal;
+}

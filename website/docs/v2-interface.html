@@ -38,6 +38,100 @@ breadcrumb: 'Interface'
   in the database, not the interface.
 </p>
 
+<h2 id="ask-the-agent">
+  You can just ask the agent
+  <a href="#ask-the-agent" class="heading-anchor">#</a>
+</h2>
+<p>
+  You do not have to learn Lua to change the interface. thurbox runs coding agents, and the
+  interface is a directory of plain text files those agents can read &mdash; so the shortest path to
+  a change is usually to point a session at that directory and ask in English.
+</p>
+<pre data-wrap><code class="language-bash">thurbox-cli plugin dir          # prints the directory
+thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui</code></pre>
+<p>Then prompts like these do the whole job:</p>
+<ul class="prompts">
+  <li>Install the info panel plugin.</li>
+  <li>
+    Add a new pane on the left with CPU and RAM usage. There is a
+    <code>top</code>
+    example plugin &mdash; install it and give it a slot in the layout.
+  </li>
+  <li>Move the search strip to the bottom, and make the session column 30% wide.</li>
+  <li>
+    The session list is too noisy &mdash; drop the repo group headers and show the branch instead of
+    the agent name.
+  </li>
+</ul>
+<p>
+  That works because the directory ships an
+  <code>AGENTS.md</code>
+  that any coding CLI loads as context without being asked. It is what stops &ldquo;install a
+  plugin&rdquo; being read as an npm request, tells the agent that
+  <code>thurbox-cli plugin check</code>
+  is how it verifies its own work, and warns it off the mistakes that are invisible until runtime
+  &mdash; building under a recursively watched directory, or writing inside a cloned plugin's own
+  working copy. Press
+  <kbd>F10</kbd>
+  and the change is on your screen.
+</p>
+
+<h3 id="ask-the-agent-worked">
+  What the second prompt actually does
+  <a href="#ask-the-agent-worked" class="heading-anchor">#</a>
+</h3>
+<p>
+  Worth seeing once, because
+  <strong>every</strong>
+  interface change has this shape &mdash; a pane, and a slot for it.
+</p>
+<p>
+  <strong>1. The pane.</strong>
+  <code>thurbox-cli plugin install top</code>
+  delivers
+  <code>plugins/85_top.lua</code>
+  and records the entry in
+  <code>plugins.toml</code>. It declares
+  <code>slot = "top"</code>
+  and the
+  <code>run</code>
+  capability.
+</p>
+<p>
+  <strong>2. The slot.</strong>
+  <code>ui/layout.lua</code>
+  decides where a slot goes, so putting it on the left is putting it first in the column list:
+</p>
+<pre><code class="language-lua">local columns = {}
+if filled(ctx, "top") then
+  columns[#columns + 1] = { slot = "top", pct = 20, min = 24 }
+end
+if panels.shown("sessions") and filled(ctx, "sessions") then
+  columns[#columns + 1] = { slot = "sessions", pct = 25, min = 20 }
+end
+columns[#columns + 1] = { slot = "center" }</code></pre>
+<p>
+  Then
+  <kbd>F10</kbd>
+  &mdash; and trust it (settings &rarr; Interface &rarr;
+  <kbd>t</kbd>), because it shells out to
+  <code>top</code>
+  and an untrusted plugin does not get
+  <code>run</code>
+  <strong>at all</strong>. Until you do, it draws the reason rather than a blank pane.
+</p>
+<div class="info-box">
+  <p>
+    Two things follow from that split and are easy to miss. The plugin manager
+    <strong>never writes</strong>
+    <code>layout.lua</code>
+    &mdash; placement stays yours, which is why step 2 is a separate edit. And a pane that loads but
+    which no arrangement places draws nothing while looking perfectly healthy:
+    <code>thurbox-cli plugin check</code>
+    is what fails on that, and prints the line to add.
+  </p>
+</div>
+
 <h2 id="every-pane-is-a-plugin">
   Every pane is a plugin
   <a href="#every-pane-is-a-plugin" class="heading-anchor">#</a>
