@@ -23,7 +23,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::chrome::{self, Chrome, Hits, Pill, Replay};
-use crate::kernel::registry::{Binding, Registry, HELP_SECTIONS};
+use crate::kernel::registry::{Binding, Registry, HELP_SECTIONS, QUIT_CHORD};
 
 /// Narrowest the chord column gets, from v1's `help_line` (`{key:<16}`).
 ///
@@ -50,7 +50,7 @@ const KEY_WIDTH: usize = 16;
 /// the settings tabs because they belong to a modal rather than to the registry
 /// — a key nobody can discover is a key nobody uses.
 const RESERVED_ROWS: [(&str, &str); 7] = [
-    ("ctrl+q", "Quit"),
+    (QUIT_CHORD, "Quit"),
     ("f10", "Reload plugins"),
     ("ctrl+h / ctrl+l", "Focus previous / next pane"),
     ("f12", "Perf counters"),

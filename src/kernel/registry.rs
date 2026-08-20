@@ -134,6 +134,14 @@ pub struct Conflict {
     pub shadowed: String,
 }
 
+/// The chord that quits, spelled once.
+///
+/// It is reserved (below), listed in help, and carried by the action band's Quit
+/// entry — three places that must agree about a chord *no binding backs*, since
+/// quit is handled before the registry is consulted. The other four reserved
+/// chords need no such constant: nothing outside this table spells them out.
+pub const QUIT_CHORD: &str = "ctrl+q";
+
 /// Chords the kernel keeps for itself.
 ///
 /// The escape route: a plugin that consumes every key it is offered must not be
@@ -150,7 +158,7 @@ pub struct Conflict {
 // every coding agent uses Tab for completion — taking it for focus movement
 // makes the pane unusable for the thing the pane exists to run. Focus moves on
 // Ctrl+H/Ctrl+L, which v1 reserves for exactly this reason.
-pub const RESERVED: [&str; 5] = ["ctrl+q", "f10", "ctrl+h", "ctrl+l", "f12"];
+pub const RESERVED: [&str; 5] = [QUIT_CHORD, "f10", "ctrl+h", "ctrl+l", "f12"];
 
 /// Everything declared, plus what the user changed.
 #[derive(Default)]

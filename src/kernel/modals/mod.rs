@@ -114,12 +114,11 @@ pub fn bindings() -> Vec<Binding> {
 /// resolves the chord from the registry, so an entry cannot advertise a chord
 /// the keyboard does not honour, and rebinding one moves its entry with it.
 ///
-/// v1's footer also carries `Quit`. It is absent because quit is not a declared
-/// action — `ctrl+q` is handled before the registry is consulted, so it has no
-/// binding for an entry to resolve against, and an entry naming an unknown
-/// action is dropped by design. Giving quit a declaration is a change of its
-/// own, since a *rebindable* quit is exactly what the reserved chord exists to
-/// prevent.
+/// v1's footer also carries `Quit`, and this list deliberately does not: quit is
+/// not a declared action — `ctrl+q` is handled before the registry is consulted,
+/// so it has no binding for an entry to resolve against, and giving it one would
+/// make it rebindable, which is exactly what the reserved chord exists to
+/// prevent. The band carries that entry itself instead (`bands::quit_entry`).
 pub fn pills() -> Vec<Pill> {
     [
         (ModalKind::Help, "Help", 90),

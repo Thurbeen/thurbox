@@ -25,7 +25,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::registry::{Pill, Registry};
+use super::registry::{Pill, Registry, QUIT_CHORD};
 use super::theme::Themes;
 
 /// How severe a message is. v1's `StatusLevel`, and the same three.
@@ -171,7 +171,8 @@ pub struct Hit {
 pub struct Entry {
     pub label: String,
     /// The chord actually bound, which is what the user must press. `None` when
-    /// the action is reachable but unbound.
+    /// the action is reachable but unbound. The Quit entry's is *reserved* rather
+    /// than bound — see [`quit_entry`], the one entry no binding backs.
     pub chord: Option<String>,
     pub action: String,
     pub priority: i64,
@@ -288,6 +289,32 @@ pub fn fit(mut entries: Vec<Entry>, width: usize) -> Vec<Entry> {
         entries.pop();
     }
     entries
+}
+
+/// The action the Quit entry runs.
+///
+/// Quit is **reserved, not declared**: `ctrl+q` is handled before the registry is
+/// consulted (`dispatch_reserved`), so no binding exists for an entry to resolve
+/// against — and none may, because a *rebindable* quit is what the reserved chord
+/// exists to prevent. So the band carries this entry itself and the loop routes a
+/// press on it directly, which is why the action name lives here rather than in a
+/// declaration table.
+pub const QUIT_ACTION: &str = "core.quit";
+
+/// v1's rightmost footer pill, and the only entry with no binding behind it.
+///
+/// The chord is [`QUIT_CHORD`] — the very string the reserved table
+/// refuses to rebind — put through `compact_chord` like every other entry's, so
+/// the one action the registry cannot resolve still reads identically to the ones
+/// it can. Its priority is below any declared entry's so it renders last, which
+/// is v1's `FOOTER_BUTTONS` order.
+pub fn quit_entry() -> Entry {
+    Entry {
+        label: "Quit".to_string(),
+        chord: Some(compact_chord(QUIT_CHORD)),
+        action: QUIT_ACTION.to_string(),
+        priority: i64::MIN,
+    }
 }
 
 /// The action band's left cluster, in v1's four parts
@@ -484,22 +511,27 @@ fn render_message(frame: &mut Frame, area: Rect, state: &BandState<'_>) {
 }
 
 /// v1 `ui::status_bar::render_footer`: the left cluster, then the entries
-/// right-aligned and shed lowest-priority-first when the width runs out.
+/// right-aligned and shed lowest-priority-first when the width runs out — around
+/// a Quit entry that never sheds.
 fn render_action(frame: &mut Frame, area: Rect, state: &BandState<'_>) -> Vec<Hit> {
     let all = entries(state.registry.pills(), state.registry);
     // The left cluster is bounded by what the entries leave, so it can never run
     // underneath them.
-    let fitted = fit(all, usize::from(area.width).saturating_sub(2));
+    let budget = usize::from(area.width).saturating_sub(2);
+    // Quit's cells come off the top rather than being left to `fit`: v1 sheds
+    // Theme → Settings → Help around it and keeps Quit at every width, because
+    // the button that gets you out must not be the one that disappears. The
+    // declared entries then fit into what is left instead of competing with it.
+    let quit = quit_entry();
+    let reserved = entries_width(std::slice::from_ref(&quit)) + ENTRY_GAP;
+    let mut fitted = fit(all, budget.saturating_sub(reserved));
+    fitted.push(quit);
     let block = entries_width(&fitted);
     let left_width = usize::from(area.width).saturating_sub(block);
 
     let left = fit_to_budget(left_spans(state), left_width);
     if !left.is_empty() {
         frame.render_widget(Paragraph::new(Line::from(left)), area);
-    }
-
-    if fitted.is_empty() {
-        return Vec::new();
     }
 
     // Placed left-to-right from where the right-aligned block starts, so the
@@ -696,6 +728,26 @@ mod tests {
 
         // Nothing fits: an empty run rather than a truncated label.
         assert!(fit(resolved, 3).is_empty());
+    }
+
+    #[test]
+    fn quit_is_advertised_with_the_reserved_chord_and_renders_last() {
+        // The one entry not resolved from the registry, because quit has no
+        // binding to resolve — but it must read like every other entry, and sort
+        // behind them the way v1's footer puts `Quit` last.
+        let quit = quit_entry();
+        assert_eq!(quit.display(), "Quit · ^Q");
+        assert_eq!(quit.action, QUIT_ACTION);
+
+        let registry = registry_with(
+            vec![binding("help.open", "f1")],
+            vec![pill("help.open", "Help", 0)],
+        );
+        let declared = entries(registry.pills(), &registry);
+        assert!(
+            quit.priority < declared[0].priority,
+            "quit must sort behind a declared entry, even an unprioritised one"
+        );
     }
 
     #[test]

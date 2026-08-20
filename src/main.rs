@@ -3524,6 +3524,13 @@ impl App {
     /// footer does. Falling back to the clicked plugin covers an action a
     /// plugin handles without declaring a key for it.
     fn run_clicked_action(&mut self, action: &str, clicked: usize) {
+        // Quit is reserved rather than declared, so it has no binding for the
+        // registry lookup below to resolve: the band carries the entry itself
+        // and the press lands here. The mouse half of `dispatch_reserved`.
+        if action == bands::QUIT_ACTION {
+            self.quit = true;
+            return;
+        }
         // The footer names these by action, as it names a pane's — so a pill
         // reaches a modal the same way its chord does.
         if let Some(kind) = ModalKind::from_action(action) {

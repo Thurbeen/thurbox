@@ -342,6 +342,9 @@ fn the_action_band_carries_the_focus_the_counts_and_the_entries() {
     assert!(row.contains("Help · F1"), "{row}");
     assert!(row.contains("Theme · F4"), "{row}");
     assert!(row.contains("Settings · F6"), "{row}");
+    // v1's rightmost pill, and the only entry the registry does not resolve:
+    // quit is reserved rather than declared, so the band carries it itself.
+    assert!(row.contains("Quit · ^Q"), "{row}");
     assert!(
         !row.contains("Shell"),
         "the shell is offered by the tab strip, not twice: {row}"
@@ -397,8 +400,11 @@ fn every_entry_is_a_button_with_a_hitbox_over_its_own_label() {
             ClickVerb::Action(action) => action,
             other => panic!("an entry must be an action, got {other:?}"),
         };
+        // Quit is the one exception, and by design: it is reserved rather than
+        // declared, so there is no binding for it to be found under.
         assert!(
-            registry.bindings().iter().any(|b| b.action == action),
+            action == thurbox::kernel::bands::QUIT_ACTION
+                || registry.bindings().iter().any(|b| b.action == action),
             "{action} is not declared anywhere"
         );
         // The hitbox covers the label the user is aiming at.
@@ -456,6 +462,27 @@ fn the_left_cluster_gives_up_its_parts_tail_first() {
     busy.automation_count = 2;
     let with_autos = band_row(thurbox::kernel::bands::Band::Action, &busy, 160);
     assert!(with_autos.contains("2 automation(s)"), "{with_autos}");
+}
+
+#[test]
+fn quit_outlives_every_other_entry_when_the_band_narrows() {
+    // v1 sheds Theme → Settings → Help and keeps `Quit` at any width: the button
+    // that gets you out must not be the one that disappears.
+    let themes = Themes::load(None);
+    let host = host();
+    let registry = action_registry(&host);
+    let state = band_state(&registry, &themes, None);
+
+    let wide = band_row(thurbox::kernel::bands::Band::Action, &state, 160);
+    assert!(wide.contains("Help · F1"), "{wide}");
+    assert!(wide.contains("Quit · ^Q"), "{wide}");
+
+    let narrow = band_row(thurbox::kernel::bands::Band::Action, &state, 20);
+    assert!(narrow.contains("Quit · ^Q"), "quit survives: {narrow}");
+    assert!(
+        !narrow.contains("Help"),
+        "the declared entries shed around it: {narrow}"
+    );
 }
 
 #[test]
