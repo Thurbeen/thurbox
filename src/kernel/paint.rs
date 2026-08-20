@@ -7,7 +7,7 @@
 //! walks it with rects rather than computing them: a `box` divides its own
 //! rect among children ([`super::node::divide`]) and recurses.
 
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -366,7 +366,7 @@ const VARIATION_SELECTOR_16: char = '\u{FE0F}';
 ///
 /// The clusters it cannot help (a regional-indicator flag is two columns here
 /// and a different number there) are why a reflow repaints in full — see
-/// `App::last_placed`.
+/// [`force_full_repaint`] and `App::last_placed`.
 pub fn normalize_ambiguous_width(buf: &mut Buffer) {
     let area = buf.area;
     for y in area.top()..area.bottom() {
@@ -389,7 +389,37 @@ pub fn normalize_ambiguous_width(buf: &mut Buffer) {
     }
 }
 
-/// Shrink a rect by `padding` on every side, never past zero.
+/// Mark every cell of a painted frame as one the diff must print, so the next
+/// flush repaints the whole screen.
+///
+/// This is what a reflow owes (see `App::last_placed`): the cell diff is only
+/// correct while ratatui's idea of a glyph's width matches the terminal's, and
+/// where they cannot agree the pane that just closed leaves characters behind in
+/// the column that replaced it.
+///
+/// Erasing the screen first would do the same job and is what `Terminal::clear`
+/// is for, but it is the wrong instrument here, for three reasons. It flushes a
+/// blank screen and the repaint arrives in the *next* flush, so every pane
+/// toggle blinks. It asks the terminal where the cursor is first — a synchronous
+/// round trip on the input stream, on a keypress. And it is unnecessary: what a
+/// reflow actually needs is not an empty terminal but a print of every cell, and
+/// [`CellDiffOption::AlwaysUpdate`] says exactly that without emitting anything
+/// of its own. The screen goes straight from the old arrangement to the new one.
+///
+/// The marks travel into the buffer the next frame is diffed against, so the
+/// frame after a reflow prints in full as well. That is one extra full write,
+/// invisible and bounded by how often a layout moves — which is a keypress.
+pub fn force_full_repaint(buf: &mut Buffer) {
+    let area = buf.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+                cell.set_diff_option(CellDiffOption::AlwaysUpdate);
+            }
+        }
+    }
+}
+
 fn build_block(spec: &NodeFrame) -> Block<'static> {
     let mut block = Block::default().style(spec.style);
     block = match spec.borders {
@@ -424,6 +454,7 @@ fn build_block(spec: &NodeFrame) -> Block<'static> {
     block
 }
 
+/// Shrink a rect by `padding` on every side, never past zero.
 fn pad(area: Rect, padding: u16) -> Rect {
     if padding == 0 {
         return area;
@@ -476,6 +507,26 @@ mod tests {
         normalize_ambiguous_width(&mut buffer);
 
         assert_eq!(buffer[(0, 0)].symbol(), " ");
+    }
+
+    /// A reflow repaints in full by marking the frame, not by erasing the
+    /// screen: every cell of an otherwise-identical frame has to reach the
+    /// terminal, and nothing may be emitted before it — an erase flushed on its
+    /// own is a blank screen the user sees.
+    #[test]
+    fn a_forced_repaint_prints_every_cell_of_an_unchanged_frame() {
+        let area = Rect::new(0, 0, 4, 2);
+        let mut previous = Buffer::empty(area);
+        previous.set_string(0, 0, "abcd", Style::default());
+        let mut next = previous.clone();
+        assert_eq!(previous.diff_iter(&next).count(), 0);
+
+        force_full_repaint(&mut next);
+
+        assert_eq!(
+            previous.diff_iter(&next).count(),
+            usize::from(area.width) * usize::from(area.height)
+        );
     }
 
     /// Render a Lua-authored tree and return the screen as text lines.

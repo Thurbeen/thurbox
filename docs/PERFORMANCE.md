@@ -716,17 +716,29 @@ marks the screen dirty:
 
 **One frame is deliberately NOT a diff: a reflow.** When the arrangement places a
 slot at a different rect — a side column opening or closing, the search strip, the
-message band taking its row — the next paint is preceded by `Terminal::clear`, so
-every cell is printed rather than only the ones the diff believes moved. The diff is
-correct exactly while ratatui's idea of a cell's width matches the terminal's, and
-grapheme clusters exist where it cannot: a regional-indicator flag is two columns to
-`unicode-width` and a different number to several emulators, so a pane that closes
-leaves glyphs in the column that replaced it, and they survive until something else
-happens to repaint those cells. `kernel::paint::normalize_ambiguous_width` removes
-the one disagreement that can be removed (the emoji-presentation selector, stripped
-from every painted cell); this covers the rest by spending one full repaint on an
-event the user just caused. It is bounded by how often a layout moves, which is a
-keypress — not a frame.
+message band taking its row — every cell of that frame is printed rather than only
+the ones the diff believes moved. The diff is correct exactly while ratatui's idea
+of a cell's width matches the terminal's, and grapheme clusters exist where it
+cannot: a regional-indicator flag is two columns to `unicode-width` and a different
+number to several emulators, so a pane that closes leaves glyphs in the column that
+replaced it, and they survive until something else happens to repaint those cells.
+`kernel::paint::normalize_ambiguous_width` removes the one disagreement that can be
+removed (the emoji-presentation selector, stripped from every painted cell); this
+covers the rest by spending one full repaint on an event the user just caused. It is
+bounded by how often a layout moves, which is a keypress — not a frame.
+
+**How that full repaint is asked for matters as much as that it happens.**
+`kernel::paint::force_full_repaint` marks every cell of the finished frame
+`CellDiffOption::AlwaysUpdate`, so the flush that follows prints all of them. The
+obvious instrument, `Terminal::clear`, is the wrong one on three counts: it flushes
+an erase on its own and the repaint only arrives in the *next* flush, so the whole
+interface visibly blinked on every pane toggle; it queries the terminal for the
+cursor position first, which is a synchronous round trip on the input stream, on a
+keypress; and a reflow never needed an empty terminal in the first place — it needed
+every cell printed, which is what the marks say and nothing more. The cost is that
+the marks land in the buffer the next frame is diffed against, so the frame after a
+reflow prints in full too: one extra full write, invisible, on the same keypress
+bound.
 
 **Why the settling had to get stricter**: two things marked every frame changed
 unconditionally and so pinned the loop at the frame cap — an open float, and a

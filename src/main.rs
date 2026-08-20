@@ -242,7 +242,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         drawn_floats: std::collections::HashSet::new(),
         last_paint: Instant::now(),
         last_placed: Vec::new(),
-        pending_clear: false,
         dirty: true,
         changed_this_frame: false,
         last_output_painted: std::collections::HashMap::new(),
@@ -891,8 +890,8 @@ struct App {
     /// reading the cache instead is what reported a closed modal as visible.
     drawn_floats: std::collections::HashSet<usize>,
     last_paint: Instant,
-    /// The slot rects the arrangement placed last frame, and whether the screen
-    /// owes a full repaint because they moved.
+    /// The slot rects the arrangement placed last frame — the signal that the
+    /// screen owes a full repaint, because they moved.
     ///
     /// A pane opening or closing reflows every column beside it, and a cell the
     /// diff believes it already printed is a cell it will not print again. That
@@ -901,11 +900,15 @@ struct App {
     /// two columns to `unicode-width` and a different number to several
     /// emulators, so glyphs from the pane that just closed survive in the column
     /// that replaced it. `normalize_ambiguous_width` removes the one such
-    /// disagreement it can (see `kernel::paint`); this covers the rest by making
-    /// the toggle itself the forced redraw the leftovers otherwise wait for.
+    /// disagreement it can (see `kernel::paint`); this covers the rest by
+    /// marking the reflowed frame `paint::force_full_repaint`, which prints
+    /// every cell of it.
+    ///
+    /// Deliberately NOT `Terminal::clear`: erasing flushes a blank screen and
+    /// leaves the repaint to the next flush, so every toggle blinks the whole
+    /// interface. The frame is the same either way — only the empty one in
+    /// between is avoided.
     last_placed: Vec<thurbox::kernel::layout::SlotRect>,
-    /// Set when `last_placed` moved; consumed by the next paint.
-    pending_clear: bool,
     /// Set by anything that invalidates the screen outside the tree diff:
     /// input, a reload, a resize, a completed command.
     dirty: bool,
@@ -1397,13 +1400,6 @@ impl App {
             // that was 100 rebuilds a second to feed a screen that redraws four
             // times.
             self.republish();
-            // Before the frame, not after: clearing resets the diff's memory of
-            // the screen, so the draw that follows prints every cell rather than
-            // only the ones it thinks moved.
-            if self.pending_clear {
-                self.pending_clear = false;
-                terminal.clear()?;
-            }
             let painted = terminal.draw(|frame| self.draw(frame))?;
             // Cloned so the borrow of `terminal` ends here: the two
             // corrections below both need it back.
@@ -1997,11 +1993,12 @@ impl App {
             }
         };
         let placed = resolve(&region, area);
-        // A reflow owes a full repaint — see `last_placed`. Marked as a change so
-        // the clearing paint follows immediately rather than at the redraw floor.
-        if self.last_placed != placed {
+        // A reflow owes a full repaint — see `last_placed`. Marked as a change
+        // too, so this frame is the one that pays it rather than whichever one
+        // the redraw floor gets to next.
+        let reflowed = self.last_placed != placed;
+        if reflowed {
             self.last_placed = placed.clone();
-            self.pending_clear = true;
             self.changed_this_frame = true;
         }
         self.visible_slots = placed.iter().map(|s| s.slot.clone()).collect();
@@ -2159,11 +2156,16 @@ impl App {
             paint::render_error(frame, error_area(area), "reload failed", &error);
         }
 
-        // Last, so both cover every pane, float and toast painted above. The
-        // width normalisation goes first: it changes symbols, and the repaint
-        // below reads styles, so neither can undo the other.
+        // Last, so all three cover every pane, float and toast painted above,
+        // and in this order: the width normalisation changes symbols and the
+        // background repaint reads styles, so neither can undo the other, and
+        // the reflow's forced print comes after both because it is the finished
+        // cells that have to reach the terminal.
         paint::normalize_ambiguous_width(frame.buffer_mut());
         self.repaint_theme_background(frame);
+        if reflowed {
+            paint::force_full_repaint(frame.buffer_mut());
+        }
     }
 
     /// Repaint cells that fell back to terminal-default colours with the active
