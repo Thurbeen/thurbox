@@ -558,7 +558,10 @@ impl Command {
         if kind == "open" {
             return match text.filter(|t| !t.is_empty()) {
                 Some(url) => Ok(Command::OpenLink { url }),
-                None => Err("command \"open\" needs a url".to_string()),
+                // Names the field, because the field is what goes wrong:
+                // `{ url = ... }` is what "needs a url" invites, and it parses
+                // to no text and so to no visible effect at all.
+                None => Err("command \"open\" needs a url in text".to_string()),
             };
         }
         // Theme is global; every other command acts on one session.

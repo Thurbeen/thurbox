@@ -2349,12 +2349,20 @@ That gesture matters: no escape sequence says "open this URL", so a
 terminal-side click is the *only* way a thurbox on a remote host can open
 a browser on the machine the user is sitting at.
 
-So after each frame is flushed, `App::paint_terminal_hyperlinks`
+So after each frame is flushed, `App::paint_outer_hyperlinks`
 re-prints the visible runs wrapped in OSC 8 — the same glyphs with the
 same styles, read back out of the drawn frame, so nothing changes
 visually and only the terminal's hyperlink state is added. Windows
 Terminal, kitty, WezTerm and iTerm2 then underline the label on hover and
 open the user's own browser on Ctrl/Cmd+Click.
+
+**An interface pane rides the same pass**, via the `url:<link>` click verb
+(`ClickVerb::Url`). It has to: a plugin returns cells and the kernel paints
+them, so nothing in that path can put an escape on the wire — the identical
+text in a pane was not Ctrl+Click-able while an agent's transcript was, and
+on a remote host the outer terminal is the only leg with a browser to reach.
+The verb's nodes are read out of the drawn frame like a session's runs, and
+`docs/PLUGINS.md` has the authoring side.
 
 Three properties keep this safe and cheap:
 
@@ -2371,6 +2379,13 @@ Three properties keep this safe and cheap:
   there, so a covering overlay, a scrolled pane, or a repainted row
   yields nothing instead of escapes written over current content. A label
   clipped by the pane's right edge is linked as far as it is visible.
+  A `url:` node has no label to match — its text lives in the plugin's
+  tree, already through wrapping, alignment and scroll — so the covering
+  surfaces are checked directly instead (`App::link_paint_obscured`: a
+  modal owns the screen, a float owns its rect). Without it a modal over
+  such a node would link the modal's own glyphs. Blank cells either side
+  of the node's glyphs are trimmed, since the rect a node is given is
+  wider than the text in it.
 - **Off the hot path when unused**: the pass bails on
   `HyperlinkTable::is_empty()` before computing layout or scanning the
   screen, so a session whose agent never printed a link pays one check

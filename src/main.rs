@@ -1402,7 +1402,7 @@ impl App {
             }
             // After the backend flushed, so the escapes cannot interleave
             // with ratatui's own output.
-            self.paint_terminal_hyperlinks(&buffer);
+            self.paint_outer_hyperlinks(&buffer);
             self.last_paint = Instant::now();
             self.frames += 1;
             Counters::bump(&self.perf.frames);
@@ -3423,13 +3423,21 @@ impl App {
         // action and leaves focus where it was. v1's footer pills behave the same
         // — you press Help without leaving the terminal you were in.
         if let Some(hit) = self.band_target_at(x, y) {
-            if let Some(ClickVerb::Action(action)) = hit.identity.click_verb() {
+            match hit.identity.click_verb() {
                 // `clicked` is only the fallback owner, and a band has no plugin
                 // to fall back to; the action's own declaration is what resolves
                 // it, exactly as for a pill drawn by a pane.
-                self.run_clicked_action(&action, self.focus);
-                self.dirty = true;
-                return;
+                Some(ClickVerb::Action(action)) => {
+                    self.run_clicked_action(&action, self.focus);
+                    self.dirty = true;
+                    return;
+                }
+                Some(ClickVerb::Url(url)) => {
+                    self.open_or_copy_link(&url);
+                    self.dirty = true;
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -3490,6 +3498,12 @@ impl App {
                 if let Some(index) = self.host.index_of(&plugin) {
                     self.focus_plugin(index);
                 }
+                true
+            }
+            // The same opener a `Ctrl+Click` on an agent's link rides, so the
+            // two cannot open the same URL in two different places.
+            Some(ClickVerb::Url(url)) => {
+                self.open_or_copy_link(&url);
                 true
             }
             // A pane that paints itself cell by cell (the theme picker, the
@@ -3588,7 +3602,16 @@ impl App {
     ///
     /// Silent when there is not: v1 emits no toast for a control-click on plain
     /// text, because the chord is also how you click *through* the terminal.
+    ///
+    /// A pane's `url:` node is resolved as well as a session's OSC 8 run. The
+    /// re-printed escapes already hand the chord to the outer terminal wherever
+    /// it understands them, so this leg is what makes the same press work in an
+    /// emulator that does not — or on a bare tty.
     fn open_clicked_link(&mut self, x: u16, y: u16) {
+        if let Some(url) = self.clicked_node_url(x, y) {
+            self.open_or_copy_link(&url);
+            return;
+        }
         let Some((session, rect)) = self.surface_at(x, y) else {
             return;
         };
@@ -3597,6 +3620,37 @@ impl App {
         if let Some(url) = self.terminals.url_at(&session, row, col) {
             self.open_or_copy_link(&url);
         }
+    }
+
+    /// The link a painted node declares under a point.
+    ///
+    /// Bands before panes, the order `on_click` resolves a plain press in. But
+    /// **every** target under the point is considered, innermost first, rather
+    /// than only the topmost one: a `url:` box with a styled child inside it
+    /// records the child last, so the topmost-only rule the other verbs follow
+    /// would leave the chord finding nothing over cells the paint pass had
+    /// already wrapped in OSC 8 — the two legs of one verb disagreeing, with
+    /// nothing to see. `Ctrl+Click` is a link gesture and nothing else, so
+    /// looking past a node that declares no link costs no other behaviour.
+    fn clicked_node_url(&self, x: u16, y: u16) -> Option<String> {
+        let position = ratatui::layout::Position::new(x, y);
+        let bands = self
+            .band_targets
+            .iter()
+            .rev()
+            .map(|hit| (hit.rect, &hit.identity));
+        let panes = self
+            .click_targets
+            .iter()
+            .rev()
+            .map(|target| (target.rect, &target.identity));
+        bands
+            .chain(panes)
+            .filter(|(rect, _)| rect.contains(position))
+            .find_map(|(_, identity)| match identity.click_verb() {
+                Some(ClickVerb::Url(url)) => Some(url),
+                _ => None,
+            })
     }
 
     /// Open a link, or copy it where nothing can open one.
@@ -3656,21 +3710,70 @@ impl App {
         self.dirty = true;
     }
 
-    /// Hand every visible OSC 8 run back to the terminal thurbox runs in.
+    /// Hand every visible link back to the terminal thurbox runs in.
     ///
     /// The only route to a browser when the agent is on a remote host: the
     /// outer terminal opens the link, so it has to be told the runs are links.
     /// Every attached session is offered rather than only the focused one,
     /// because the paints are validated against the drawn buffer — a session
     /// not painted this frame contributes nothing on its own.
-    fn paint_terminal_hyperlinks(&self, buf: &ratatui::buffer::Buffer) {
+    ///
+    /// A pane's [`ClickVerb::Url`] nodes ride the same leg, which is the whole
+    /// point of the verb: a plugin hands the kernel cells and can emit no
+    /// escape of its own, so this is the only place its content can become a
+    /// link the outer terminal knows about.
+    fn paint_outer_hyperlinks(&self, buf: &ratatui::buffer::Buffer) {
         let mut paints = Vec::new();
         for row in &self.snapshots.current().sessions {
             paints.extend(self.terminals.hyperlink_paints(&row.id, buf));
         }
+        // A band's hit carries no plugin, which is also what makes it unable to
+        // be its own float — hence the `Option`.
+        let panes = self
+            .click_targets
+            .iter()
+            .map(|target| (Some(target.plugin), target.rect, &target.identity));
+        let bands = self
+            .band_targets
+            .iter()
+            .map(|hit| (None, hit.rect, &hit.identity));
+        for (plugin, rect, identity) in panes.chain(bands) {
+            let Some(ClickVerb::Url(url)) = identity.click_verb() else {
+                continue;
+            };
+            if self.link_paint_obscured(plugin, rect) {
+                continue;
+            }
+            paints.extend(thurbox::kernel::terminal::drawn_link_paints(
+                buf, rect, &url,
+            ));
+        }
         if !paints.is_empty() {
             let _ = thurbox::kernel::terminal::paint_hyperlinks(&paints);
         }
+    }
+
+    /// Is something drawn over these cells, so that linking them would link
+    /// somebody else's glyphs?
+    ///
+    /// `hyperlink_paints` gets this for free by matching the glyphs it expects
+    /// against the frame — a run the frame no longer prints there drops out. A
+    /// pane's node has no label to match (the text is in the plugin's tree, and
+    /// wrapping and scroll have moved it since), so what covers it is checked
+    /// directly instead: a modal owns the whole screen while it is up, and a
+    /// float owns its rect. Without this a modal over a `url:` node would make
+    /// the modal's own text `Ctrl+Click` to that url.
+    fn link_paint_obscured(&self, plugin: Option<usize>, rect: Rect) -> bool {
+        if self.modals.is_open() {
+            return true;
+        }
+        self.drawn_floats.iter().any(|index| {
+            Some(*index) != plugin
+                && self
+                    .last_floats
+                    .get(index)
+                    .is_some_and(|(float, _)| float.intersects(rect))
+        })
     }
 
     /// Arm a drag-to-select over the terminal surface under the point.

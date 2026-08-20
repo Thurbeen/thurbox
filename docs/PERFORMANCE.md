@@ -70,13 +70,16 @@ stays stale longer than a blink. The black-box smoke test
 post-keystroke frame paint.
 
 **One pass rides along after each paint**:
-`App::paint_terminal_hyperlinks` re-emits the frame's OSC 8 hyperlinks so the
+`App::paint_outer_hyperlinks` re-emits the frame's OSC 8 hyperlinks so the
 outer terminal can offer its own open-link gesture (see the Clickable URLs
 section of `docs/FEATURES.md`). It is bound to the *painted* frames — ratatui
 rewrites the cells, so the escapes must follow each draw — and is gated on
 `HyperlinkTable::is_empty()` **before** it computes layout or extracts screen
 rows, so a session whose agent never printed a link pays a single emptiness
-check per frame. When links are present the scan is bounded (the newest 128
+check per frame. The pane half (a `url:` node, `ClickVerb::Url`) walks the
+hitboxes the paint just recorded, which costs one `split_once` per target — no
+allocation unless a role actually is a verb — and reads cells only for the
+targets that are one. When links are present the scan is bounded (the newest 128
 runs × the visible rows) and the writes are a handful of short `queue!`s per
 visible run, bracketed in DECSC/DECRC so the caret the frame just placed is put
 back rather than left wherever the last run ended.

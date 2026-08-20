@@ -1673,16 +1673,81 @@ fn drawn_label_cells(
         if !cell.symbol().starts_with(ch) {
             return None;
         }
-        cells.push((
-            cell.symbol().to_string(),
-            Style::new()
-                .fg(cell.fg)
-                .bg(cell.bg)
-                .add_modifier(cell.modifier),
-        ));
+        cells.push((cell.symbol().to_string(), cell_style(cell)));
         cx = cx.saturating_add(width);
     }
     (!cells.is_empty()).then_some(cells)
+}
+
+/// The style a drawn cell carries, as re-printing it needs it back.
+fn cell_style(cell: &ratatui::buffer::Cell) -> Style {
+    Style::new()
+        .fg(cell.fg)
+        .bg(cell.bg)
+        .add_modifier(cell.modifier)
+}
+
+/// One paint per drawn row of `rect`, so a node a plugin painted can be a link
+/// the outer terminal opens. Every row names the same url, which is how a
+/// wrapped link is spelled in OSC 8 anyway.
+///
+/// The pane counterpart of `drawn_label_cells`, and it differs in the one way
+/// a pane differs from a vt100 grid: there is no label to match the glyphs
+/// against, because the text lives in the plugin's tree and has already been
+/// through wrapping, alignment and scroll by the time it reaches the frame. So
+/// the frame is the source of truth outright — whatever the node's rect
+/// actually shows is what gets linked, which keeps the property that a node
+/// clipped by its pane or drawn nowhere contributes nothing.
+///
+/// Blank cells are trimmed from either end because a pane indents its text: the
+/// rect a node was given is wider than the glyphs in it, and linking the
+/// padding would put the underline (and the click target the emulator draws)
+/// across the whole row. Interior blanks stay — they are inside the label.
+/// Ratatui's filler cell after a wide glyph is skipped for the reason
+/// `drawn_label_cells` advances by display width: re-printing the wide glyph
+/// moves the cursor over both cells itself.
+pub fn drawn_link_paints(buf: &Buffer, rect: Rect, url: &str) -> Vec<HyperlinkPaint> {
+    let mut paints = Vec::new();
+    for y in rect.top()..rect.bottom() {
+        // The first glyph's column, and `None` while the row has shown none:
+        // only a non-blank cell sets it, so a row the plugin left blank yields
+        // no link at all rather than a link with no text in it.
+        let mut start = None;
+        let mut cells: Vec<(String, Style)> = Vec::new();
+        for x in rect.left()..rect.right() {
+            // Outside the frame entirely: nothing further along this row is
+            // drawn either.
+            let Some(cell) = buf.cell(Position::new(x, y)) else {
+                break;
+            };
+            let symbol = cell.symbol();
+            if symbol.is_empty() {
+                continue;
+            }
+            if start.is_none() && symbol.trim().is_empty() {
+                continue;
+            }
+            start.get_or_insert(x);
+            cells.push((symbol.to_string(), cell_style(cell)));
+        }
+        // Trailing padding, trimmed the way the leading padding was skipped.
+        // It cannot empty `cells`: the cell that set `start` is not blank.
+        while cells
+            .last()
+            .is_some_and(|(symbol, _)| symbol.trim().is_empty())
+        {
+            cells.pop();
+        }
+        if let Some(x) = start {
+            paints.push(HyperlinkPaint {
+                x,
+                y,
+                url: url.to_string(),
+                cells,
+            });
+        }
+    }
+    paints
 }
 
 /// Re-print each run wrapped in OSC 8, so the terminal thurbox itself runs in
@@ -2156,5 +2221,78 @@ mod tests {
         let all: Vec<ProgramKey> = stale_program_keys(keys.iter(), &[]);
         assert_eq!(all.len(), 2);
         let _ = watch;
+    }
+
+    /// A buffer with `text` written into row `y` starting at column 0, the rest
+    /// left as the blanks a pane's padding is.
+    fn buffer_with(width: u16, height: u16, rows: &[&str]) -> Buffer {
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        for (y, text) in rows.iter().enumerate() {
+            buf.set_string(0, y as u16, text, Style::default());
+        }
+        buf
+    }
+
+    /// The glyphs, and only the glyphs: a pane indents its text, and linking a
+    /// node's whole rect would underline the padding either side of it.
+    #[test]
+    fn a_nodes_drawn_cells_are_the_link_and_its_padding_is_not() {
+        let buf = buffer_with(30, 1, &["  https://example.test/a   "]);
+        let paints = drawn_link_paints(&buf, Rect::new(0, 0, 30, 1), "https://example.test/a");
+
+        assert_eq!(paints.len(), 1);
+        let paint = &paints[0];
+        assert_eq!((paint.x, paint.y), (2, 0));
+        assert_eq!(paint.url, "https://example.test/a");
+        let printed: String = paint
+            .cells
+            .iter()
+            .map(|(symbol, _)| symbol.as_str())
+            .collect();
+        assert_eq!(printed, "https://example.test/a");
+    }
+
+    /// Interior blanks are inside the label, so a linked button keeps its own
+    /// spacing — only the ends are trimmed.
+    #[test]
+    fn interior_blanks_stay_inside_the_label() {
+        let buf = buffer_with(20, 1, &[" Open MR !123 "]);
+        let paints = drawn_link_paints(&buf, Rect::new(0, 0, 20, 1), "https://example.test/1");
+
+        assert_eq!(paints.len(), 1);
+        assert_eq!(paints[0].x, 1);
+        let printed: String = paints[0]
+            .cells
+            .iter()
+            .map(|(symbol, _)| symbol.as_str())
+            .collect();
+        assert_eq!(printed, "Open MR !123");
+    }
+
+    /// A row the plugin left blank is not a link with no text in it — it is not
+    /// a link. Same for a rect the frame is too small to hold.
+    #[test]
+    fn a_blank_row_yields_no_link() {
+        let buf = buffer_with(20, 2, &["   ", "  x"]);
+        // Row 0 is blank: only row 1 contributes.
+        let paints = drawn_link_paints(&buf, Rect::new(0, 0, 20, 2), "https://example.test");
+        assert_eq!(paints.len(), 1);
+        assert_eq!((paints[0].x, paints[0].y), (2, 1));
+
+        assert!(drawn_link_paints(&buf, Rect::new(0, 0, 20, 0), "u").is_empty());
+        assert!(drawn_link_paints(&buf, Rect::new(0, 5, 20, 1), "u").is_empty());
+    }
+
+    /// One paint per row, all naming the same url: that is how a wrapped link is
+    /// spelled in OSC 8, and a multi-row node is the same shape.
+    #[test]
+    fn every_drawn_row_of_a_node_carries_the_same_url() {
+        let buf = buffer_with(20, 2, &["  first", "  second"]);
+        let paints = drawn_link_paints(&buf, Rect::new(0, 0, 20, 2), "https://example.test");
+
+        assert_eq!(paints.len(), 2);
+        assert!(paints.iter().all(|p| p.url == "https://example.test"));
+        assert_eq!(paints[0].y, 0);
+        assert_eq!(paints[1].y, 1);
     }
 }

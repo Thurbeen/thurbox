@@ -108,6 +108,19 @@ pub enum ClickVerb {
     /// `ClickAction::FocusPane` and `CentralTab`, which in v2 are the same act:
     /// a `switch` slot shows whichever occupant holds focus.
     Focus(String),
+    /// `url:<link>` — open the link, through the very opener (and the same
+    /// copy-to-clipboard fallback) a `Ctrl+Click` on an agent's own OSC 8 run
+    /// rides, so a pane's link and a transcript's link cannot open in two
+    /// different places.
+    ///
+    /// The one verb whose value is not a name the kernel resolves, and the
+    /// reason it is a verb at all: the node's drawn cells are also re-printed
+    /// wrapped in OSC 8, which is what hands `Ctrl+Click` over them to the
+    /// terminal thurbox itself runs in — the only leg with a browser to reach
+    /// when the interface is on the far end of an ssh connection. A pane emits
+    /// no escapes of its own, so without this there is no route from painted
+    /// pane content to a link the outer terminal knows about.
+    Url(String),
 }
 
 impl ClickVerb {
@@ -123,6 +136,9 @@ impl ClickVerb {
             "action" => Some(ClickVerb::Action(rest.to_string())),
             "key" => Some(ClickVerb::Key(rest.to_string())),
             "focus" => Some(ClickVerb::Focus(rest.to_string())),
+            // `split_once` stopped at the FIRST colon, which is what leaves a
+            // url's own scheme separator and its `//` intact.
+            "url" => Some(ClickVerb::Url(rest.to_string())),
             _ => None,
         }
     }
@@ -689,6 +705,23 @@ mod tests {
             ClickVerb::parse(Some("focus:review")),
             Some(ClickVerb::Focus("review".to_string()))
         );
+    }
+
+    /// A url is the one verb value with structure of its own, and both halves
+    /// of that structure are colons the parse must not eat: the scheme's
+    /// separator and the `//` after it.
+    #[test]
+    fn a_url_verb_keeps_the_links_own_colons() {
+        assert_eq!(
+            ClickVerb::parse(Some("url:https://example.test/a:b?q=1#f")),
+            Some(ClickVerb::Url("https://example.test/a:b?q=1#f".to_string()))
+        );
+        assert_eq!(
+            ClickVerb::parse(Some("url:mailto:someone@example.test")),
+            Some(ClickVerb::Url("mailto:someone@example.test".to_string()))
+        );
+        assert_eq!(ClickVerb::parse(Some("url:")), None);
+        assert_eq!(ClickVerb::parse(Some("url:   ")), None);
     }
 
     #[test]

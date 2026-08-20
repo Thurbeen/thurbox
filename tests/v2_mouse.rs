@@ -164,9 +164,71 @@ fn a_verb_is_read_off_the_role_and_nothing_else_is() {
         ClickVerb::parse(Some("focus:shell")),
         Some(ClickVerb::Focus("shell".into()))
     );
+    // A url's own colons belong to the url: the verb is read off the FIRST one
+    // and everything after it is the link.
+    assert_eq!(
+        ClickVerb::parse(Some("url:https://example.test/a?q=1")),
+        Some(ClickVerb::Url("https://example.test/a?q=1".into()))
+    );
     // `row` is what widgets.lua writes for an ordinary list row, and it must
     // keep meaning "ask the plugin" rather than becoming a kernel verb.
     assert!(ClickVerb::parse(Some("row")).is_none());
+}
+
+/// The seam the loop uses to turn a pane's `url:` node into a link the outer
+/// terminal can open: the recorded hit's rect, read back out of the frame that
+/// was just painted.
+///
+/// Asserted here rather than in the kernel's own tests because it is the
+/// *combination* that has to hold — a hitbox is recorded for the node, and the
+/// cells at that rect are the ones the plugin drew. A node whose rect drifted
+/// from its glyphs would link the wrong text without either half looking wrong.
+#[test]
+fn a_pane_url_node_becomes_a_link_over_the_cells_it_drew() {
+    use thurbox::kernel::node::{Node, Run, Size};
+    use thurbox::kernel::terminal::drawn_link_paints;
+
+    let url = "https://example.test/some/page";
+    let node = Node::Text {
+        // Indented, as a pane indents its text: the padding must not be linked.
+        lines: vec![vec![Run::plain(format!("  {url}"))]],
+        align: Default::default(),
+        wrap: false,
+        scroll: 0,
+        frame: None,
+        size: Size::default(),
+        identity: Identity {
+            role: Some(format!("url:{url}")),
+            ..Identity::default()
+        },
+    };
+
+    let mut hits = Vec::new();
+    let mut terminal = Terminal::new(TestBackend::new(40, 1)).expect("terminal");
+    let painted = terminal
+        .draw(|frame| render_recording(frame, frame.area(), &node, &PlaceholderSurfaces, &mut hits))
+        .expect("draw");
+
+    assert_eq!(hits.len(), 1, "the node carries a role, so it is a target");
+    assert_eq!(
+        hits[0].identity.click_verb(),
+        Some(ClickVerb::Url(url.into())),
+        "and the loop reads a url verb off it"
+    );
+
+    let paints = drawn_link_paints(painted.buffer, hits[0].rect, url);
+    assert_eq!(paints.len(), 1);
+    assert_eq!(paints[0].url, url);
+    assert_eq!(
+        paints[0].x, 2,
+        "the two-space indent is not part of the link"
+    );
+    let printed: String = paints[0]
+        .cells
+        .iter()
+        .map(|(symbol, _)| symbol.as_str())
+        .collect();
+    assert_eq!(printed, url);
 }
 
 // ── recording ─────────────────────────────────────────────────────────────

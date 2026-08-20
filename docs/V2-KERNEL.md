@@ -227,6 +227,20 @@ Change the recording order and the collapse chevron on a pane's border silently
 starts focusing the pane instead. v1 spells the same rule the other way round
 (specific targets recorded first, first match wins).
 
+**A pane cannot emit an escape, so a link has to be re-printed for it.** A
+plugin returns cells; the kernel paints them. Nothing in that path can put an
+OSC 8 sequence on the wire, which is why a url a pane draws was not
+`Ctrl+Click`-able even though the identical text in an agent's transcript was —
+the transcript's runs are re-printed wrapped in the escape after the frame
+flushes (`paint_outer_hyperlinks`), and only sessions were offered to that
+leg. The `url:<link>` click verb is that asymmetry closed: the verb's nodes ride
+the same re-print, so the outer terminal owns the chord over them, and the
+kernel resolves the chord against them too for an emulator that does not
+understand OSC 8. The cells are read back out of the frame just drawn rather
+than off the tree, so wrapping, alignment and scroll need not be re-derived —
+and the covering surfaces are checked explicitly, because a pane's node has no
+label to match against the buffer the way a vt100 run does.
+
 **Terminal encodings differ, and folding them belongs in the kernel.** A legacy
 terminal sends a bare `J` with no SHIFT; a kitty-protocol one sends `j` plus
 SHIFT. `ctrl+/` arrives as one of three things. `registry::canonical_chord`

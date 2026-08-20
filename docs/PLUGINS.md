@@ -402,6 +402,7 @@ verb and the kernel answers it without calling you at all:
 { type = "text", len = 8, role = "action:themes.open", text = " Theme " }
 { type = "text", len = 5, role = "key:ctrl+q",         text = " Quit " }
 { type = "text", len = 7, role = "focus:notes",        text = " Notes " }
+{ type = "text", len = 1, role = "url:" .. mr.url,     text = { … } }
 ```
 
 - `action:<id>` runs a declared action, on whichever plugin declared it — so one
@@ -410,6 +411,38 @@ verb and the kernel answers it without calling you at all:
   a button and its letter cannot come to mean different things.
 - `focus:<plugin>` focuses that plugin, which in a `switch` slot is also how its
   view is brought forward.
+- `url:<link>` opens the link, and is the one verb that also changes how the
+  node is *painted* — see below.
+
+### `url:` is a link, not just a click
+
+The value is the whole rest of the role, so a url keeps its own `:` and `//`
+(`url:https://example.test/a`, `url:mailto:me@example.test`). A plain click hands
+it to the same opener a `Ctrl+Click` on a link in an agent's transcript rides —
+including the copy-to-clipboard fallback that carries the url back over ssh — so
+a pane's link and a transcript's link cannot open in two different places.
+
+What the other verbs do not do: the node's **drawn cells are re-printed wrapped
+in OSC 8**, so `Ctrl+Click` over them is answered by the terminal thurbox itself
+runs in. That matters because a pane hands the kernel cells and can emit no
+escape of its own, and because on a remote host the outer terminal is the only
+leg with a browser to reach. The chord is resolved against `url:` nodes directly
+as well, so it still works in an emulator with no OSC 8 support, or on a bare
+tty.
+
+Three consequences worth knowing:
+
+- The cells are read back out of the **frame just drawn**, not out of your tree,
+  so a node clipped by its pane, covered by a modal or under a float contributes
+  no link — the same rule an agent's own runs follow.
+- Blank cells are trimmed from either end, because the rect a node was given is
+  wider than the glyphs in it and linking the padding would underline the whole
+  row. Interior blanks stay, so ` Open MR !123 ` links as `Open MR !123`.
+- A node spanning several rows emits one link per row, all naming the same url —
+  which is how a wrapped link is spelled in OSC 8 anyway.
+
+`command("open", { text = url })` is the imperative half, for a link you open
+from a keypress rather than a click. The field is `text`, not `url`.
 
 Everything else — a list row, most often — is offered to the plugin that painted
 it:
