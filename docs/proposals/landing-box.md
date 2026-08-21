@@ -2,343 +2,358 @@
 
 **Status:** draft — implementation not yet greenlit
 **Author:** <thomas@spotpay.us>
-**Related:** `docs/FEATURES.md` (operator/coder/debugger roles), `docs/MCP_ROLES.md`, `~/dev/skills/thurbox/.claude/skills/start-session/SKILL.md`
+**Related:** `~/.config/thurbox/ui/plugins/70_new_session.lua` (reference:
+existing session-creation pane), `~/.config/thurbox/ui/AGENTS.md`,
+`~/.config/thurbox/ui/README.md` (five rules), `~/dev/skills/thurbox/.claude/skills/start-session/SKILL.md`
 
 ## Problem
 
-Thurbox has three "operator-shaped" slots (operator, debugger, dispatcher). In
-practice one of those slots is spent as a scratchpad for **new work
-initiation** — the user types a short prompt ("investigate sentry 733…", "add
-a bulk-transfer endpoint"), the operator classifies it and spawns a dedicated
-worktree session via `/start-session`, and then the operator's context is
-polluted with routing metadata that has no long-term value. A week in, that
-operator's transcript is mostly spawn receipts and the user has to `/clear` it
-anyway.
+Three "operator-shaped" thurbox session slots exist today (operator, debugger,
+dispatcher). In practice one gets spent as a scratchpad for **new work
+initiation** — the user types a short prompt ("investigate sentry 733…",
+"add a bulk-transfer endpoint"), the operator classifies it and spawns a
+dedicated worktree session via `/start-session`, and then the operator's
+context is polluted with routing metadata that has no long-term value. A
+week in, that operator's transcript is mostly spawn receipts and the user
+has to `/clear` it anyway.
 
 The desired shape is **ChatGPT's landing input**: an always-available textbox
 whose sole purpose is "turn this sentence into a fresh session." Zero
-accumulated state. The user's mental model becomes:
+accumulated state. No slot spent.
 
-- **operator #1** — accumulated ops/customer state (real long-lived work)
-- **operator #2** — accumulated triage/investigation state (real long-lived work)
-- **landing box** — fire-and-forget spawn input, no history retained
+## The customization surface I initially missed
 
-## Prior art in this repo
+Thurbox v2's interface **is** the Lua directory at
+`~/.config/thurbox/ui/plugins/`. Every pane on screen is a file there,
+live-reloaded on save. The kernel exposes:
 
-The primitives already exist. This proposal is about assembling them.
+- Four node kinds: `text`, `box`, `input`, `surface`.
+- Snapshot reads via a global `thurbox` table (`thurbox.sessions`, `.agents`,
+  `.repos`, `.settings`, …).
+- Kernel-write via a global `command(name, args)` — accepted synchronously,
+  applied on a worker. Examples already in the tree: `command("create", …)`,
+  `command("fork", …)`, `command("delete", …)`, `command("focus", …)`,
+  `command("bookmark", …)`.
+- A `lib/` of shared widgets (`textinput`, `theme`, `widgets`) that every
+  pane imports.
+- `thurbox-cli plugin new <name>` writes a starter that already loads;
+  `thurbox-cli plugin check` fails on both load errors and the silent
+  "loaded-but-nothing-drawn" case, printing the `layout.lua` line to add.
 
-### `thurbox-cli session create --json` — the spawn CLI
+The 1,487-line `70_new_session.lua` is proof of the ceiling: a full 6-step
+wizard (`host → repo → base → name → branch → agent → create`) in one file,
+ending in exactly:
 
-Synchronous, returns the new session UUID. Called by the `/start-session`
-skill today; it is the "non-interactive handle" the ask referenced.
-
-```bash
-thurbox-cli session create \
-  --name landing-2026-08-21-abc \
-  --repo-path /Users/tch/code/spotpay/backend \
-  --agent claude-coder \
-  --worktree-branch coder-bulk-transfer \
-  --base-branch main \
-  --json
+```lua
+command("create", {
+  text   = flow.name.value,
+  repo   = flow.primary,
+  branch = flow.base and flow.branch.value or nil,
+  base   = flow.base,
+  agent  = agent,
+  host   = (flow.host ~= "" and flow.host) or nil,
+  extras = flow.extras or {},
+})
 ```
 
-By the time it returns, the worktree exists, the tmux window is live, and the
-role wrapper (`~/.local/bin/thurbox-role-<role>`) has finished MCP setup
-(`scripts/role.sh <role>`) and launched claude. No idle-wait required — the
-`/start-session` skill then pipes the prompt in via `tmux paste-buffer -p`.
+A landing-box pane is **that same call**, minus the six wizard steps —
+defaults for repo/base/agent, name derived from the prompt, and one extra
+step: piping the prompt into the newly-created session.
 
-### `/start-session` skill — classification + naming + spawn
+## Design options (revised)
 
-At `~/dev/skills/thurbox/.claude/skills/start-session/SKILL.md`. Already does
-everything the landing box needs:
+### (a) Native Lua pane — **recommended**
 
-- **Role classification** from prompt keywords (sentry/CI/crash → `debugger`;
-  feature/refactor → `coder`; admin lookup → `operator`).
-- **Worktree name derivation** (short kebab-case, role-prefixed).
-- **Repo defaulting**: `git rev-parse --path-format=absolute --git-common-dir`
-  → main repo, so if the landing session lives in
-  `/Users/tch/code/spotpay/backend` it will spawn backend worktrees by
-  default. No new alias config needed.
-- **Prompt injection** via `tmux -L thurbox paste-buffer -p` (bracketed
-  paste), followed by a separate `send-keys Enter`.
-- **Suffix appending**: PR-creation instructions + self-monitor block.
-- **Hard rule** in the skill header: *"ALWAYS SPAWN, NEVER DO THE WORK
-  YOURSELF."*
+One file, `~/.config/thurbox/ui/plugins/05_landing.lua` (early `order` so it
+sits at the top). Shape:
 
-### Role layering
+```lua
+local textinput = require("lib.textinput")
+local theme     = require("lib.theme")
+local widgets   = require("lib.widgets")
 
-- `~/.config/thurbox/agents.toml` — `[[agents]]` entry per role, pointing
-  `command = "thurbox-role-<role>"`.
-- `~/.local/bin/thurbox-role-<role>` — a symlink to the shared wrapper. The
-  wrapper reads `$0` to pick model + permission mode, runs
-  `scripts/role.sh <role>` in the current worktree (which templates
-  `.claude/roles/<role>.mcp.json` into `.mcp.json`), then `exec`s claude with
-  `--add-dir ~/dev/skills/thurbox/` so the `/start-session` skill is in
-  scope.
-- `.claude/roles/<role>.mcp.json` in the target repo — which MCP servers this
-  role gets.
+local NAME = "landing"
+local DEFAULT_REPO  = "/Users/tch/code/spotpay/backend"
+local DEFAULT_BASE  = "main"
 
-## Design options
+-- Keyword classifier. Same table as the /start-session skill.
+local function classify(prompt)
+  local p = prompt:lower()
+  if p:match("sentry") or p:match("crash") or p:match("ci fail")
+     or p:match("bug") or p:match("error") then
+    return "debugger"
+  end
+  if p:match("admin ") or p:match("lookup") or p:match("investigate user") then
+    return "operator"
+  end
+  return "coder"     -- default: proactive build work
+end
 
-### (a) A new `landing` role
+local function slug(prompt)
+  local s = prompt:lower():gsub("[^%w]+", "-"):gsub("^-+", ""):gsub("-+$", "")
+  return s:sub(1, 40)
+end
 
-- New file `.claude/roles/landing.mcp.json` in spotpay/backend (empty
-  `{"mcpServers": {}}` — the landing box needs no MCP servers, only bash +
-  the `/start-session` skill).
-- New wrapper symlink `~/.local/bin/thurbox-role-landing`.
-- New `[[agents]]` entry `claude-landing` in `~/.config/thurbox/agents.toml`.
-- A CLAUDE.md fragment (loaded via `.claude/settings.json` `additionalDirectories`
-  or committed into `.claude/roles/landing.md`, loaded by the wrapper via
-  `--append-system-prompt` — see below) that hard-codes the fire-and-forget
-  behaviour:
+local function submit(prompt)
+  local role = classify(prompt)
+  local name = role .. "-" .. slug(prompt)
+  command("create", {
+    text   = name,
+    repo   = DEFAULT_REPO,
+    base   = DEFAULT_BASE,
+    branch = name,
+    agent  = "claude-" .. role,
+    extras = { pending_prompt = prompt },   -- see § Prompt injection
+  })
+end
 
-  > On every user message: your only action is to call the `/start-session`
-  > skill with the message verbatim as the prompt. Do not perform, plan, or
-  > read anything related to the task. Do not answer questions. Do not
-  > acknowledge except to report the spawn UUID.
-  >
-  > **Escape hatch:** if the message begins with `!keep`, do NOT spawn — treat
-  > it as a normal chat message.
-
-**Pros:**
-
-- Data-driven. No thurbox core changes. Ships this week.
-- Uses the same layering that already governs operator/coder/debugger.
-- The `/start-session` skill's own classifier picks the downstream role — so
-  the landing box doesn't need its own classifier.
-- Repo defaulting is inherited for free (`/start-session` reads
-  `git rev-parse` in the landing session's cwd → backend).
-
-**Cons:**
-
-- The "only ever spawn, never do the work" rule is enforced only by prompt.
-  The model can drift, especially on ambiguous prompts. Mitigated by (i) the
-  `/start-session` skill's own "ALWAYS SPAWN" warning, which reinforces the
-  role rule, and (ii) the `Stop`-hook /clear defense below, which makes
-  drift *cheap* — even if the model does one wrong turn, the transcript is
-  wiped afterwards.
-
-### (b) A `UserPromptSubmit` hook that short-circuits the model
-
-`.claude/hooks/landing-spawn.sh` on this session only, wired into
-`.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/landing-spawn.sh" }] }
-    ]
-  }
+return {
+  name = NAME,
+  slot = "top",           -- placed via layout.lua; pinned in the arrangement
+  order = 5,
+  focusable = true,
+  keys = {
+    { key = "f3", action = "landing.focus", desc = "landing box",
+      scope = "global" },
+  },
+  render = function(ctx)
+    local input = state.input or textinput.new("")
+    state.input = input
+    return {
+      type = "box",
+      frame = widgets.panel("Landing", ctx.focused),
+      children = { widgets.textline({ input = input, prompt = "» " }) },
+    }
+  end,
+  on_key = function(key)
+    if key.name == "enter" then
+      local text = (state.input.value or ""):match("^%s*(.-)%s*$")
+      if text ~= "" then
+        submit(text)
+        textinput.clear(state.input)
+      end
+      return true
+    end
+    return textinput.key(state.input, key)
+  end,
 }
 ```
 
-The hook receives the prompt on stdin, calls `thurbox-cli session create`
-directly, sends the prompt to the new session via `tmux paste-buffer`, and
-emits a `UserPromptSubmit` `hookSpecificOutput` with
-`permissionDecision: "deny"` (and `permissionDecisionReason: "spawned
-session <uuid>"`) to block the prompt from ever reaching the model.
-`/clear` is unnecessary because the model never ran.
+Plus one line in `layout.lua`:
+
+```lua
+if filled(ctx, "top") then
+  columns[#columns + 1] = { slot = "top", pct = 100, min = 3, height = 3 }
+end
+```
 
 **Pros:**
 
-- Deterministic. Zero LLM drift. Zero model tokens spent per spawn.
-- Zero latency — no model turn required.
-- No `/clear` problem at all.
+- No session slot spent. The pane is *screen* real-estate, not a claude session.
+- No `/clear` semantics required. There is no landing session; each spawn is
+  a fresh worktree session and that's the end of it.
+- Kernel handles the create atomically; the SQLite writer serialises
+  concurrent submits.
+- Live-reload: iterate on the pane by saving. `thurbox-cli plugin check`
+  gates each save.
+- The 1,487-line `70_new_session.lua` already proves everything harder than
+  this works. AGENTS.md exists specifically to let an agent (this one, in a
+  future implementation session) safely edit the directory.
+- Reversible: `space` on the pane's row in `Ctrl+,` → `]` turns it off; the
+  file stays on disk, untouched.
 
 **Cons:**
 
-- Loses the `/start-session` skill's LLM-driven role classification and name
-  derivation. The hook has to either (i) hard-code `--agent claude-coder` for
-  every spawn, (ii) call a cheap secondary claude to classify (adds cost +
-  latency), or (iii) reimplement the classifier as keyword rules in bash.
-- Loses the auto-appended PR-creation and self-monitor suffixes (also
-  reimplementable in bash, but forks logic between the skill and the hook).
-- Escape hatch requires a stdin protocol (e.g. `!keep` prefix → hook exits 0
-  without blocking).
+- **Prompt injection to the just-created session is the load-bearing unknown.**
+  `command("create", …)` returns immediately; the pane doesn't get the UUID
+  synchronously. Three fallbacks, in order of preference — see the
+  "Prompt injection" section below.
+- Keyword-based classifier is dumber than the `/start-session` skill's
+  LLM-driven one. Acceptable because most spawns are unambiguously "coder"
+  or "debugger"; the escape hatch (§ Escape hatches) covers the rest.
 
-### (c) A thurbox-level "landing input" pane
+### (b) New `landing` role in `agents.toml`
 
-A pinned pane in the TUI (probably a `text` node with an `input` overlay)
-that is always visible and, on submit, invokes `thurbox-cli session create`
-directly without occupying a session slot at all. This is what the ChatGPT
-metaphor most literally maps to.
+A dedicated persistent claude session whose CLAUDE.md hard-codes
+"every message becomes `/start-session <message>`, then a `Stop` hook fires
+`/clear` via `tmux send-keys`."
 
 **Pros:**
 
-- The correct long-term shape. No slot spent. No `/clear` semantics. Fits
-  cleanly with the v2 "interface is data" pane model.
-- The pane can render lightweight spawn history (last N spawns as a scrolling
-  list) without any of that living in a claude transcript.
+- Uses the existing role-layering (`.claude/roles/landing.mcp.json` +
+  `thurbox-role-landing` wrapper).
+- Inherits the `/start-session` skill's LLM classifier + suffix injection.
 
 **Cons:**
 
-- Real feature work. Needs UI design (pane layout, focus handling, keyboard
-  routing), state (spawn history), and error handling. Weeks, not days.
-- Duplicates `/start-session` classification unless it shells out to a
-  claude to classify, which either burns tokens per submit or falls back to
-  keyword rules.
+- Costs a session slot (a 4th slot, or displaces an accumulating operator).
+- Model can drift; `/clear` via `Stop` hook is a layered defence but adds
+  moving parts.
+- Every spawn costs one model turn of tokens on the landing session, on top
+  of whatever the spawned session burns.
+- Every spawn incurs one full model round-trip of latency before the actual
+  work session even starts.
+
+### (c) `UserPromptSubmit` hook that short-circuits the model
+
+A hook on a dedicated claude session that intercepts each prompt, calls
+`thurbox-cli session create` + `session send` directly from bash, then emits
+a `UserPromptSubmit` `hookSpecificOutput` with `permissionDecision: "deny"`
+so the model never runs.
+
+**Pros:**
+
+- Deterministic. Zero model tokens per spawn. Zero model latency.
+
+**Cons:**
+
+- Still costs a session slot.
+- Reimplements classification + name derivation + suffix injection in bash,
+  forking logic from the `/start-session` skill.
 
 ## Recommendation
 
-**Ship (a) now. Design (c) after (a) proves the pattern out. Revisit (b) only
-if drift under (a) turns out to be a real problem.**
+**Ship (a). Fall back to (b) only if the prompt-injection question below
+turns out to have no clean answer.**
 
 Rationale:
 
-- (a) reuses every primitive already in place. Estimated code: ~40 lines
-  across one new symlink, one new agents.toml entry, one JSON, one small
-  CLAUDE.md fragment, and one Stop-hook script.
-- (a) is *reversible*: if the landing session drifts or the pattern doesn't
-  earn its keep, delete the agent + symlink and the slot goes back to being
-  a regular operator.
-- (b) trades away the classifier and suffix logic that already exists in the
-  skill. That logic is exactly the value the landing box adds vs. a raw
-  `thurbox-cli` command.
-- (c) is where this ends up. But building it first would gate learning
-  behind a UI project that hasn't been justified yet.
+- (a) matches the ChatGPT landing metaphor most literally: it's a *textbox*,
+  not a session.
+- (a) is the shape the customization surface was designed for. AGENTS.md
+  goes so far as to advertise "point a coding agent at this directory and
+  ask for a pane." The tooling (`plugin new`, `plugin check`, live reload)
+  is built around this workflow.
+- (a) frees all 3 existing operator slots for accumulated work.
+- (b) and (c) both consume a session slot for what should be UI. Reasonable
+  fallbacks, but only if (a) hits a wall.
 
-## How does `/clear` get triggered
+## Prompt injection — the load-bearing detail
 
-This is the delicate part of (a). Claude Code's `/clear` is a client-side
-slash command; the model cannot invoke it from inside a turn (typing
-`/clear` in an assistant message is just text, not a command). Options:
+`command("create", …)` fires and forgets; the UUID appears in
+`thurbox.sessions` on a later frame. Three ways to get the prompt into the
+new session, ranked by preference:
 
-1. **`Stop` hook that pipes `/clear` into the pane.** Claude Code fires
-   `Stop` after the model's final message of a turn. A hook script can:
+### Option 1 — extend `command("create")` with an `initial_prompt` field
 
-   ```bash
-   #!/usr/bin/env bash
-   # .claude/hooks/landing-clear.sh — fires from Stop hook
-   session_name="landing"  # tmux window suffix; wrapper exports this
-   sleep 0.1  # let the assistant's final render finish
-   tmux -L thurbox send-keys -t "thurbox:tb-${session_name}" "/clear" Enter
-   ```
+Small thurbox core change: after the tmux window is live and the agent
+launched, the kernel writes the initial prompt into the pane via the same
+`tmux paste-buffer -p ; send-keys Enter` sequence the `/start-session` skill
+uses today. The Lua pane just passes `initial_prompt = text` to `create`.
 
-   Wired via `.claude/settings.json`:
+Cleanest. Composable — every other pane that spawns sessions gains this too.
+Estimated: <100 lines of Rust in the session-create path.
 
-   ```json
-   { "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/landing-clear.sh" } ] } ] } }
-   ```
+### Option 2 — pane polls `thurbox.sessions`, then `command("send", …)`
 
-   This is the layered-defense counterpart to the CLAUDE.md rule. Even if the
-   model drifts and does something other than pure spawn, its context is
-   wiped anyway.
+If `command("send", { session = uuid, text = prompt })` is wired at the
+kernel level (the CLI `thurbox-cli session send` exists — the question is
+whether the same command is registered for the Lua write side), the pane
+stores the pending prompt keyed by session name, watches
+`thurbox.sessions` for the row to appear, then fires `send` and clears the
+pending entry. All in Lua, no core changes.
 
-   **Escape hatch integration:** the hook reads the transcript file (path
-   passed in the hook input JSON) and skips the clear if the last user
-   message starts with `!keep`. That keeps `!keep` conversations alive across
-   turns.
+I could not confirm from static inspection whether `send` is a valid
+`command(...)` name from Lua. `thurbox-cli plugin check` on a stub pane
+that calls it would answer this in <30s during implementation.
 
-2. **`thurbox-cli session restart`.** Kills the tmux window and respawns.
-   Cleaner in principle, but the current restart uses `--resume`, which
-   preserves history — not what we want. Would require either a
-   `--fresh` flag on `session restart` (small thurbox change) or the model
-   invoking `session delete <self>` + a lifecycle rule that respawns the
-   deleted session, which is fragile.
+### Option 3 — `run` capability shelling out to `thurbox-cli session send`
 
-3. **Do nothing; rely on `/compact`.** Not viable — compaction still keeps a
-   summary in context and eventually drifts.
+Least preferred: the pane declares `capabilities = { "run" }`; user grants
+it via `Ctrl+,` → `]` → `t`; on the frame the new session appears, the pane
+calls `run("send", { "thurbox-cli", "session", "send", uuid, prompt })`.
 
-**Chosen:** #1 (`Stop` hook + `send-keys /clear`). Simplest, uses only
-existing surfaces.
+Works today with no core changes. Downside: extra trust prompt, extra
+process per spawn.
+
+**Decision path for implementation:** try Option 2 first (`plugin check` on a
+one-liner reveals it in seconds). Fall back to Option 3 if `send` isn't
+exposed. Escalate to Option 1 only if we want the cleaner composable shape
+for reuse by other panes.
 
 ## Failure modes
 
 | Scenario | Behaviour under (a) |
 |----------|--------------------|
-| `/start-session` errors (repo missing, tmux full, worktree name collision) | Skill surfaces the error in the assistant message. Stop hook fires and clears. User re-sends corrected prompt. Trade-off: the error message is lost — acceptable because the CLI error is short and the retry is cheap. Could be mitigated by having the Stop hook append the last assistant message to `~/.local/share/thurbox/landing.log` before clearing. |
-| Prompt is a question, not a task ("what's the current PR queue?") | User prefixes with `!keep`. CLAUDE.md rule short-circuits: normal chat, no spawn, no clear. |
-| User wants to accumulate context ("investigate this Sentry with me first, then spawn") | Same escape hatch: `!keep`. When ready, remove the prefix and the next message becomes a spawn. |
-| Model drifts and starts doing the work locally | Stop hook still fires — transcript is wiped. Worst case is one wasted turn of model output. `/start-session` skill's own "ALWAYS SPAWN" warning reduces the odds. |
-| Two messages arrive back-to-back (user paste, or hook firing during typing) | Each `Stop` fires its own clear. Race: user is mid-typing the second message while the first turn's clear runs. In practice: `/clear` runs; the second message's characters that were already in the input buffer are lost between `/clear` and the next `Enter`. Mitigation: don't run `/clear` if the input buffer is non-empty (the hook could `tmux display-message -p '#{pane_current_command}'` or inspect the pane, but this is fiddly). Simpler mitigation: document the pattern as "wait for the spawn UUID to print before typing the next message." Acceptable for MVP. |
-| Spawn is slow (tmux backlog, worktree checkout) | The synchronous nature of `session create` makes the assistant message appear only after spawn completes. User sees the delay directly. No hidden queueing. |
+| `command("create", …)` refused (repo missing, name collision, worktree in-flight) | Kernel emits a failed command; the message band reports it (that's the standard mechanism the rest of the interface uses). The pane's input is not cleared until submit succeeds — user can correct and retry. |
+| Prompt is a question, not a task ("what's the current PR queue?") | Not applicable — there is no landing session to chat with. User asks in one of the operator sessions instead. |
+| User wants to accumulate context before spawning | Not applicable. Same as above: use an operator session. |
+| Pane loads but nothing draws | Exactly what `thurbox-cli plugin check` fails on, with the missing `layout.lua` line printed. Caught pre-commit if we wire it into the spotpay-backend hooks, otherwise on `F10` reload. |
+| Prompt injection fires before session boot is complete | The `/start-session` skill has proven the "paste on top of a booting claude" pattern works — claude buffers stdin during startup. If Option 1 is chosen, the kernel does the paste itself and can wait on backend-window-ready. |
+| Concurrent submits | SQLite serialises the create writes. Second submit waits ≤100ms. Two worktrees materialise back-to-back. |
+| Wrong classification | User re-types with an explicit prefix (`--role debugger …`) — the pane's `classify()` can recognise this leading token and skip auto-detection. Escape hatch documented below. |
+
+## Escape hatches
+
+- **Prefix `--role <role>`**: `classify()` recognises the leading token,
+  strips it, and uses the given role.
+- **Prefix `--repo <path>`**: same treatment; overrides `DEFAULT_REPO`.
+- **Empty submit**: no-op (guarded in `on_key`).
+- **`Esc` / focus-away**: input keeps its text across frames (state is
+  plugin-scoped and survives reloads). Nothing spawns until `Enter`.
 
 ## Repo defaulting
 
-Already handled by the `/start-session` skill (step 3 of its SKILL.md):
-
-- If `--repo` is given → use it as-is.
-- Otherwise → `git rev-parse --path-format=absolute --git-common-dir`, strip
-  trailing `/.git` → main repo path.
-
-The landing session's cwd is `/Users/tch/code/spotpay/backend` (the main
-backend repo, not a worktree). So the default resolves to backend without any
-new alias config. If the prompt names a different repo ("in infra, add …"),
-the skill's classifier is prompt-aware but repo detection is not — user must
-explicitly pass `--repo` in that case. The CLAUDE.md fragment should say so:
-
-> If the message names a repo other than backend ("in infra …", "in
-> render-deploy-action …"), forward the message to `/start-session` with an
-> explicit `--repo <path>`.
+`DEFAULT_REPO = "/Users/tch/code/spotpay/backend"` in the pane. Prompts that
+name another repo either use the `--repo` escape hatch or a small extension
+to `classify()` (e.g. `"in infra …"` → `repo = infra path`). Kept simple for
+MVP: hard-coded backend, `--repo` opt-out.
 
 ## Concurrency
 
-Two spawn requests back-to-back:
-
-- **Same tmux server, different windows:** `thurbox-cli session create` is
-  serialised at the SQLite level (single writer). Second call waits ≤100ms.
-- **Same landing session, two turns:** the second user message queues in
-  claude's input while the first turn is running. Once the first turn ends
-  (Stop hook fires clear), claude sees the second message on a clean
-  transcript. This is actually the desired behaviour.
-- **Clear firing while user is typing message 2:** see failure-modes table.
-  Documented, not automated, for MVP.
+- **Same submit fires twice (double-Enter):** input clears on the first
+  successful `command("create", …)` — the second Enter sees an empty input
+  and no-ops.
+- **Two submits in rapid succession:** each becomes its own `create` command.
+  SQLite writer serialises. Both sessions materialise; both prompts inject
+  independently (all three options are per-session, no cross-talk).
+- **Submit while a create is in-flight:** the pane could show a spinner
+  reading `thurbox.commands` (the pattern `70_new_session.lua` uses for
+  `bookmark_pending`), but MVP can skip and just let the second `create`
+  queue.
 
 ## Migration
 
-**Add as a 4th slot**, not a replacement. The three operator-shaped slots
-each represent accumulated state that would be destroyed by conversion. The
-landing box is additive: it takes over the "spawn new work" behaviour that
-was informally happening in operator #1, freeing that operator to
-accumulate real work.
-
-After 1-2 weeks of use:
-
-- If the landing box earns its keep, consider whether operator #1 can be
-  merged back down to 3 slots (landing + 2 accumulating operators).
-- If not, delete the agent + role file and revert to 3.
+- **Add the pane immediately.** Zero displacement — it's a screen slot, not
+  a session slot. All 3 operator sessions remain untouched.
+- **Observe for 1-2 weeks.** Do operators shed their "spawn scratchpad"
+  behaviour? Does the pane get used?
+- **If successful, no further migration needed.** If unused, `space` in the
+  interface tab turns it off; the file stays on disk for later revival.
 
 ## Concrete change list (for the followup implementation PR)
 
 Nothing in this PR — this PR is just the design doc. The implementation PR
-would touch:
+would touch **only the user's UI directory** (`~/.config/thurbox/ui/`), not
+this repo:
 
-1. **Thurbox user config** (`~/.config/thurbox/agents.toml`, not in-repo):
-   add `[[agents]] name = "claude-landing"` entry pointing to
-   `thurbox-role-landing`.
-2. **Shared wrapper** (`~/.local/bin/`): add symlink
-   `thurbox-role-landing → thurbox-role`.
-3. **Spotpay backend** (`/Users/tch/code/spotpay/backend`, separate PR
-   against that repo):
-   - `.claude/roles/landing.mcp.json` — empty `{"mcpServers": {}}`.
-   - `.claude/roles/landing.md` — the fire-and-forget CLAUDE.md fragment.
-     Loaded via `--append-system-prompt` in the wrapper when
-     `role == "landing"`, or committed and loaded via the existing settings
-     mechanism.
-   - `.claude/hooks/landing-clear.sh` — the Stop-hook script.
-   - `.claude/settings.json` — register the Stop hook, gated on
-     `$CLAUDE_PROJECT_DIR`-relative role detection so it fires only in
-     landing sessions (mechanism TBD in implementation PR — likely a
-     wrapper-exported env var like `THURBOX_ROLE=landing`).
-4. **Thurbox core** (this repo): none required for MVP. Optional future
-   work: a `session create --pinned` flag so the landing box is
-   auto-recreated on startup rather than manually spawned.
+1. `~/.config/thurbox/ui/plugins/05_landing.lua` — the pane above.
+2. `~/.config/thurbox/ui/layout.lua` — one-line addition for the `top`
+   slot (or reuse an existing slot if the arrangement already has one).
+3. Optional: a `plugins.toml` entry if we want to publish it as an
+   installable plugin later; MVP just lives in the user copy.
+
+Zero changes to the thurbox binary, zero changes to spotpay/backend, zero
+changes to `~/.config/thurbox/agents.toml`, unless Option 1 (kernel
+`initial_prompt`) is chosen — in which case the followup PR against
+`Thurbeen/thurbox` is <100 lines in the session-create path.
 
 ## Open questions for reviewers
 
-1. **CLAUDE.md fragment loading.** Best mechanism to inject role-specific
-   system-prompt text? Options: `--append-system-prompt "$(cat …)"` in the
-   wrapper, or `.claude/CLAUDE.md` with role-conditional sections. Prefer
-   the wrapper option because it keeps role behaviour off the default
-   session.
-2. **`!keep` prefix vs. an explicit slash command.** `!keep` is simple but
-   collides with the existing `!` bash-passthrough convention in some
-   terminals. Alternative: `.chat` prefix, or a `/landing keep` skill.
-3. **Should the Stop hook append the last assistant message to a log
-   before clearing?** Trades ~1KB/turn of disk for the ability to recover
-   error output after a bad spawn. Recommend: yes, with weekly rotation.
-4. **Startup UX.** Should thurbox auto-create the landing session on first
-   run if none exists? Or leave it manual? A pinned-session concept
-   (`session create --pinned`) would give a clean answer but is real
-   thurbox core work.
+1. **Prompt injection option 1 vs 2 vs 3.** Which of the three routes above
+   do we want? Cheapest to answer with a five-minute experiment during
+   implementation. Recommend: try Option 2 first, promote to Option 1 if we
+   see other panes benefit.
+2. **Slot choice.** `top` (full-width, 3 rows) vs. squeezing into an existing
+   pane. `top` is honest and unmissable; a bottom minibuffer is more subtle.
+3. **Classifier depth.** Keep the ~10-line keyword classifier in Lua, or
+   delegate classification to a spawned session by always spawning
+   `claude-coder` with a prompt of `"/start-session " .. text` (turning
+   every landing spawn into an intermediate "invoke the skill" session).
+   The latter reuses the skill's LLM classifier but costs one extra session
+   birth per submit. Recommend: keyword classifier first, escalate if
+   misclassification actually bites.
+4. **Suffix injection.** The `/start-session` skill appends PR-creation and
+   self-monitor blocks to every prompt. The pane should do the same before
+   `command("send", …)`. Trivial to hoist the suffixes into a Lua string
+   constant.
