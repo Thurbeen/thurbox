@@ -374,7 +374,7 @@ pub struct Rendered {
 /// moves every frame only invalidates what actually reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Epoch {
-    /// `SnapshotStore::generation`.
+    /// `SnapshotStore::version`.
     pub snapshot: u64,
     /// `Themes::version`.
     pub themes: u64,
@@ -415,7 +415,7 @@ type GroupKey = [u64; 4];
 pub const ANIMATION_HZ: f64 = 8.0;
 
 /// What a pure pane's cached tree was built for: the publish epoch, the parts of
-/// the render context it may depend on, and the animation tick.
+/// the render context it may depend on, and the plugin-state version.
 ///
 /// `ctx.frame` and `ctx.elapsed` are deliberately absent. They move every frame,
 /// so reading either here would mean never reusing anything. A pane may still

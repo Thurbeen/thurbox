@@ -874,7 +874,7 @@ the work wasted only after paying for it.
 **Choice**: give every published source a change-signal, then spend it twice.
 
 - **Signals** live with the mutation, never with the caller:
-  `SnapshotStore::generation`, `Themes::version`, `Registry::version`,
+  `SnapshotStore::version`, `Themes::version`, `Registry::version`,
   `Terminals::meta_version` and `failed_version`, plus one loop-side
   `data_epoch` fed by the `changed` flag each worker store's `poll` already
   returns. Deriving that last one from an existing return value means it cannot

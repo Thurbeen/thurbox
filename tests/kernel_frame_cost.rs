@@ -11,17 +11,17 @@ use thurbox::kernel::theme::Themes;
 use thurbox::storage::Database;
 
 #[test]
-fn a_snapshot_refresh_moves_the_generation() {
-    // The generation is what a reader compares to decide it can reuse what it
+fn a_snapshot_refresh_moves_the_version() {
+    // The version is what a reader compares to decide it can reuse what it
     // built last time. If a refresh left it still, every such reader would keep
     // showing what the database said before.
     let db = Database::open_in_memory().expect("db");
     let mut store = SnapshotStore::with_database(db);
 
-    let before = store.generation();
+    let before = store.version();
     store.refresh();
     assert_ne!(
-        store.generation(),
+        store.version(),
         before,
         "a refresh replaced the snapshot without saying so"
     );
@@ -31,41 +31,41 @@ fn a_snapshot_refresh_moves_the_generation() {
 fn every_refresh_moves_it_again() {
     // `taken_at_ms` is published and rendered as "5s ago", so even a refresh
     // that finds identical rows has changed something a plugin reads. A
-    // generation that only moved on *row* changes would freeze that label.
+    // version that only moved on *row* changes would freeze that label.
     let db = Database::open_in_memory().expect("db");
     let mut store = SnapshotStore::with_database(db);
 
-    let mut seen = store.generation();
+    let mut seen = store.version();
     for _ in 0..5 {
         store.refresh();
-        let now = store.generation();
-        assert_ne!(now, seen, "a later refresh did not move the generation");
+        let now = store.version();
+        assert_ne!(now, seen, "a later refresh did not move the version");
         seen = now;
     }
 }
 
 #[test]
-fn reading_the_snapshot_leaves_the_generation_alone() {
+fn reading_the_snapshot_leaves_the_version_alone() {
     // The other half, and the one that makes gating worth anything: if merely
     // looking moved the signal, nothing could ever be reused.
     let db = Database::open_in_memory().expect("db");
     let mut store = SnapshotStore::with_database(db);
     store.refresh();
 
-    let settled = store.generation();
+    let settled = store.version();
     for _ in 0..100 {
         let _ = store.current().sessions.len();
         let _ = store.current().taken_at_ms;
     }
     assert_eq!(
-        store.generation(),
+        store.version(),
         settled,
-        "reading the snapshot moved its generation"
+        "reading the snapshot moved its version"
     );
 }
 
 #[test]
-fn quiescence_moves_the_generation_only_when_it_re_derives_something() {
+fn quiescence_moves_the_version_only_when_it_re_derives_something() {
     // `apply_output_quiescence` runs every tick by design. It must move the
     // signal when it changes a status and leave it alone otherwise, or the
     // stuck-`working` fallback would invalidate every cached tree ~40 times a
@@ -74,13 +74,13 @@ fn quiescence_moves_the_generation_only_when_it_re_derives_something() {
     let mut store = SnapshotStore::with_database(db);
     store.refresh();
 
-    let settled = store.generation();
+    let settled = store.version();
     let changed = store.apply_output_quiescence(|_| None);
     assert_eq!(changed, 0, "an empty snapshot has nothing to re-derive");
     assert_eq!(
-        store.generation(),
+        store.version(),
         settled,
-        "a pass that changed nothing still moved the generation"
+        "a pass that changed nothing still moved the version"
     );
 }
 
@@ -671,30 +671,30 @@ fn a_moved_animation_clock_re_renders_a_pure_pane() {
 }
 
 #[test]
-fn a_re_stamped_snapshot_does_not_move_the_generation_within_a_second() {
+fn a_re_stamped_snapshot_does_not_move_the_version_within_a_second() {
     // `taken_at_ms` is published, but its only reader floors the difference to
     // whole seconds, so it is published to the second. Re-reading rows that did
-    // not change must therefore leave the generation alone — it used to move
+    // not change must therefore leave the version alone — it used to move
     // 2.5 times a second, which capped how long any pure pane could be cached
     // and was the dominant reason an idle interface kept re-rendering.
     let db = Database::open_in_memory().expect("db");
     let mut store = SnapshotStore::with_database(db);
     store.refresh();
 
-    let settled = store.generation();
+    let settled = store.version();
     let stamp = store.current().taken_at_ms;
     for _ in 0..50 {
         store.refresh_if_due();
     }
     assert_eq!(
-        store.generation(),
+        store.version(),
         settled,
-        "re-reading unchanged rows moved the generation"
+        "re-reading unchanged rows moved the version"
     );
     assert_eq!(
         store.current().taken_at_ms,
         stamp,
-        "the published instant moved without the generation saying so"
+        "the published instant moved without the version saying so"
     );
 }
 
@@ -710,5 +710,84 @@ fn the_published_instant_is_whole_seconds() {
         store.current().taken_at_ms % 1000,
         0,
         "taken_at_ms carries sub-second precision no reader can see"
+    );
+}
+
+// --- the signals the first round of tests left uncovered ---------------------
+
+#[test]
+fn declaring_and_setting_move_the_registrys_version_and_reading_does_not() {
+    // The registry gates the published `keys`, `settings` and `registry` groups,
+    // and those are among the largest. Reading it happens constantly — every
+    // key press resolves through it — so a read that moved the version would
+    // rebuild all three on every keystroke.
+    let mut registry = Registry::default();
+
+    let settled = registry.version();
+    for _ in 0..50 {
+        let _ = registry.is_disabled("ui/plugins/10_sessions.lua");
+    }
+    assert_eq!(
+        registry.version(),
+        settled,
+        "reading the registry moved its version"
+    );
+
+    registry.declare(Vec::new(), Vec::new());
+    assert_ne!(
+        registry.version(),
+        settled,
+        "declaring plugins did not move the registry's version"
+    );
+
+    let after_declare = registry.version();
+    let _ = registry.rebind("nonexistent-action", Some("ctrl+alt+f9"));
+    assert_ne!(
+        registry.version(),
+        after_declare,
+        "a rebinding attempt did not move the registry's version — the version \
+         is bumped at the top of each mutator precisely so an early return \
+         cannot publish a stale answer"
+    );
+}
+
+#[test]
+fn asking_terminals_for_metadata_is_not_itself_a_change() {
+    // `Terminals::meta` is mutated ON READ: it syncs each live agent's reported
+    // title before handing the map back, and it is called once per published
+    // frame. If merely asking counted as a change it would move the version ~40
+    // times a second and invalidate every cached tree — the exact failure that
+    // made the `store` write comparison worth 27%.
+    let mut terminals = thurbox::kernel::terminal::Terminals::new();
+
+    let settled = terminals.meta_version();
+    for _ in 0..50 {
+        let _ = terminals.meta();
+    }
+    assert_eq!(
+        terminals.meta_version(),
+        settled,
+        "reading agent metadata moved its version"
+    );
+}
+
+#[test]
+fn reading_attach_failures_is_not_itself_a_change() {
+    // The other half of the sessions group's key. `failures()` builds a fresh
+    // map on every publish, so — like `meta` above — the read must not be
+    // mistaken for a write. (`failures` takes `&self` today, so this also
+    // guards the day someone needs it to sync something first — as `meta` does.)
+    let terminals = thurbox::kernel::terminal::Terminals::new();
+    let settled = terminals.failed_version();
+
+    for _ in 0..50 {
+        let failures = terminals.failures();
+        assert!(failures.is_empty(), "nothing was asked to attach");
+    }
+
+    assert_eq!(
+        terminals.failed_version(),
+        settled,
+        "reading the failure set moved its version"
     );
 }

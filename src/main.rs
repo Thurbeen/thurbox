@@ -1565,12 +1565,23 @@ impl App {
         }
     }
 
+    /// Note that something a plugin reads has moved.
+    ///
+    /// Separate from [`Self::note_data_change`] because the callers inside
+    /// `republish` are already *in* the frame that will show the new value:
+    /// marking it dirty there would buy a second repaint of what is about to be
+    /// painted anyway.
+    fn note_published_change(&mut self) {
+        self.data_epoch = self.data_epoch.wrapping_add(1);
+    }
+
     /// Note that published data moved, and that the screen owes a frame.
     ///
-    /// The two go together everywhere they are used: something that changes what
-    /// a plugin would read is also something worth repainting for.
+    /// The two go together everywhere this is used: something that changes what
+    /// a plugin would read is also something worth repainting for, and worth
+    /// polling quickly again after.
     fn note_data_change(&mut self) {
-        self.data_epoch = self.data_epoch.wrapping_add(1);
+        self.note_published_change();
         self.dirty = true;
         self.last_activity = Instant::now();
     }
@@ -1907,7 +1918,7 @@ impl App {
             if self.terminals.last_rect(id).is_none() {
                 self.link_stamps.remove(id);
                 if self.links.remove(id).is_some() {
-                    self.data_epoch = self.data_epoch.wrapping_add(1);
+                    self.note_published_change();
                 }
                 continue;
             }
@@ -1934,7 +1945,7 @@ impl App {
                         true
                     };
                     if changed {
-                        self.data_epoch = self.data_epoch.wrapping_add(1);
+                        self.note_published_change();
                     }
                 }
                 // No live pane, so no screen and no links.
@@ -1969,7 +1980,7 @@ impl App {
             if self.content_generation.is_some() {
                 self.content = std::collections::HashMap::new();
                 self.content_generation = None;
-                self.data_epoch = self.data_epoch.wrapping_add(1);
+                self.note_published_change();
             }
             return;
         }
@@ -1978,7 +1989,7 @@ impl App {
             let scanned = self.terminals.screens(sessions);
             if scanned != self.content {
                 self.content = scanned;
-                self.data_epoch = self.data_epoch.wrapping_add(1);
+                self.note_published_change();
             }
             self.content_generation = Some(generation);
         }
@@ -2065,7 +2076,7 @@ impl App {
         let ui_dir = self.ui_dir.display().to_string();
         if let Err(e) = self.host.publish(&thurbox::kernel::host::Published {
             epoch: thurbox::kernel::host::Epoch {
-                snapshot: self.snapshots.generation(),
+                snapshot: self.snapshots.version(),
                 themes: self.themes.version(),
                 registry: self.registry.version(),
                 meta: self.terminals.meta_version(),
@@ -4512,15 +4523,14 @@ fn hud_area(area: Rect) -> Rect {
 /// merely mis-compare, and this runs on every painted frame.
 fn read_cells(frame: &mut Frame, rect: Rect) -> Vec<ratatui::buffer::Cell> {
     // `Frame` exposes only `buffer_mut`, hence the mutable borrow for a read.
-    let area = frame.buffer_mut().area;
-    let rect = rect.intersection(area);
+    // Taken once rather than per cell: this runs for every band on every
+    // painted frame.
+    let buffer = frame.buffer_mut();
+    let rect = rect.intersection(buffer.area);
     let mut cells = Vec::with_capacity(usize::from(rect.width) * usize::from(rect.height));
     for y in rect.top()..rect.bottom() {
         for x in rect.left()..rect.right() {
-            if let Some(cell) = frame
-                .buffer_mut()
-                .cell(ratatui::layout::Position::new(x, y))
-            {
+            if let Some(cell) = buffer.cell(ratatui::layout::Position::new(x, y)) {
                 cells.push(cell.clone());
             }
         }

@@ -129,7 +129,7 @@ impl Themes {
         self.active = resolve(Some(name), &self.custom);
         // Bumped where the palette actually changes, so a failed persist below
         // still reports the change that already happened in memory.
-        self.bump();
+        self.mark_changed();
         if let Some(db) = db {
             db.set_active_theme(name)
                 .map_err(|e| format!("persist theme: {e}"))?;
@@ -150,7 +150,7 @@ impl Themes {
             return Err(format!("unknown theme {name:?}"));
         }
         self.active = resolve(Some(name), &self.custom);
-        self.bump();
+        self.mark_changed();
         Ok(())
     }
 
@@ -167,7 +167,7 @@ impl Themes {
         self.version
     }
 
-    fn bump(&mut self) {
+    fn mark_changed(&mut self) {
         self.version = self.version.wrapping_add(1);
     }
 

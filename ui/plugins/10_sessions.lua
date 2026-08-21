@@ -1052,8 +1052,10 @@ return {
   focusable = true,
   -- This render reads `thurbox.*` and `ctx` and writes nothing, so the kernel
   -- may reuse the tree it returned while neither has changed. The working
-  -- spinner still animates: it advances on `ctx.elapsed` at the shared widget
-  -- rate, which is the one clock a pure pane is allowed.
+  -- spinner still animates: the kernel drops the cached tree when the shared
+  -- animation clock moves, and that clock ticks at the same rate
+  -- `widgets.status_glyph` advances the spinner at — but only while something
+  -- is actually animating, so an idle list settles instead of re-rendering.
   pure = true,
 
   -- Declared as DATA, not just handled. That is what lets the kernel list these

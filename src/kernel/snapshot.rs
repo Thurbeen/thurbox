@@ -337,7 +337,7 @@ pub struct SnapshotStore {
     /// changed. It is bumped **inside** each mutation rather than by callers,
     /// because a mutation that forgets to bump is the one failure here that is
     /// silent — see `tests/kernel_frame_cost.rs`.
-    generation: u64,
+    version: u64,
 }
 
 /// A remote hook event waiting for the session it names to appear.
@@ -378,7 +378,7 @@ impl SnapshotStore {
             last_refresh: None,
             last_data_version: None,
             pending_hooks: Vec::new(),
-            generation: 0,
+            version: 0,
         };
         store.refresh();
         store
@@ -397,22 +397,22 @@ impl SnapshotStore {
             last_refresh: None,
             last_data_version: None,
             pending_hooks: Vec::new(),
-            generation: 0,
+            version: 0,
         };
         store.refresh();
         store
     }
 
     /// The current snapshot. Always immediate.
-    /// How many times the snapshot has changed. See [`Self::generation`]'s field.
-    pub fn generation(&self) -> u64 {
-        self.generation
+    /// How many times the snapshot has changed. See [`Self::version`]'s field.
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     /// Record that the snapshot changed. Every write to `current` goes through
     /// a call to this in the same breath.
-    fn touch(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+    fn mark_changed(&mut self) {
+        self.version = self.version.wrapping_add(1);
     }
 
     pub fn current(&self) -> &Snapshot {
@@ -446,12 +446,12 @@ impl SnapshotStore {
             let restamped = self.current.taken_at_ms != stamp;
             self.current.taken_at_ms = stamp;
             // Git stats landing rewrite rows here, so this branch changes more
-            // than the timestamp — an unconditional touch used to cover both,
+            // than the timestamp — the unconditional bump it replaced covered both,
             // and dropping it without asking would have published a session's
             // new counts only on the next unrelated refresh.
             let git_moved = self.attach_git_stats();
             if restamped || git_moved {
-                self.touch();
+                self.mark_changed();
             }
             return false;
         }
@@ -552,7 +552,7 @@ impl SnapshotStore {
             .find(|row| row.id == session)
         {
             row.status = "idle".to_string();
-            self.touch();
+            self.mark_changed();
         }
     }
 
@@ -633,7 +633,7 @@ impl SnapshotStore {
             applied += 1;
         }
         if applied > 0 {
-            self.touch();
+            self.mark_changed();
         }
         applied
     }
@@ -667,7 +667,7 @@ impl SnapshotStore {
             }
         }
         if changed > 0 {
-            self.touch();
+            self.mark_changed();
         }
         changed
     }
@@ -743,7 +743,7 @@ impl SnapshotStore {
 
         let Some(database) = &self.database else {
             self.current.taken_at_ms = taken_at_ms;
-            self.touch();
+            self.mark_changed();
             return;
         };
 
@@ -752,7 +752,7 @@ impl SnapshotStore {
             Err(e) => {
                 self.current.error = Some(format!("list sessions: {e}"));
                 self.current.taken_at_ms = taken_at_ms;
-                self.touch();
+                self.mark_changed();
                 return;
             }
         };
@@ -912,7 +912,7 @@ impl SnapshotStore {
             error: None,
         };
         self.attach_git_stats();
-        self.touch();
+        self.mark_changed();
     }
 }
 
@@ -1093,7 +1093,7 @@ pub(crate) fn repo_name(cwd: &Option<PathBuf>, repo_path: Option<&PathBuf>) -> O
 /// Deliberately coarser than the clock. `taken_at_ms` is published, and its only
 /// reader is `widgets.now_ms` feeding `time_ago`, which floors the difference to
 /// whole seconds — so sub-second precision is unobservable to the interface,
-/// while re-stamping it moved [`SnapshotStore::generation`] 2.5 times a second
+/// while re-stamping it moved [`SnapshotStore::version`] 2.5 times a second
 /// and capped how long any pure pane could stay cached (`frame-cost`).
 ///
 /// Quantising the published *value* rather than delaying the signal is what

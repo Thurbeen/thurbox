@@ -176,7 +176,7 @@ generation counter — if you add a cache here, give it one.
 `republish` — the one call that rebuilds every `thurbox.*` table — runs once per
 painted frame and **once per input batch**, not once per event: a held-down key
 otherwise paid for it per repeat. Within it each group is **gated on a
-change-signal** (`SnapshotStore::generation`, `Themes`/`Registry::version`,
+change-signal** (`SnapshotStore::version`, `Themes`/`Registry::version`,
 `Terminals::meta_version`/`failed_version`, and the loop's `data_epoch`), so a
 group whose inputs did not move is not rebuilt; and a pane that declares
 `pure = true` has the tree it last returned reused instead of being run at all.

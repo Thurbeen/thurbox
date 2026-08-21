@@ -496,7 +496,7 @@ impl Terminals {
         let failures = self.failed.len();
         self.failed.retain(|id, _| present.contains(id.as_str()));
         if self.failed.len() != failures {
-            self.failed_version = self.failed_version.wrapping_add(1);
+            self.mark_failures_changed();
         }
     }
 
@@ -666,7 +666,7 @@ impl Terminals {
                         },
                     );
                     if self.failed.remove(&done.session).is_some() {
-                        self.failed_version = self.failed_version.wrapping_add(1);
+                        self.mark_failures_changed();
                     }
                 }
                 Err(e) => self.fail(&done.session, Some(done.pane), e),
@@ -702,13 +702,13 @@ impl Terminals {
     pub fn forget(&mut self, session: &str) {
         self.live.remove(session);
         if self.failed.remove(session).is_some() {
-            self.failed_version = self.failed_version.wrapping_add(1);
+            self.mark_failures_changed();
         }
     }
 
     /// Record why a session has no pane, and what was tried.
     fn fail(&mut self, session: &str, pane: Option<String>, message: String) {
-        self.failed_version = self.failed_version.wrapping_add(1);
+        self.mark_failures_changed();
         self.failed.insert(
             session.to_string(),
             Failure {
@@ -1577,6 +1577,7 @@ impl Terminals {
     /// costs one atomic load rather than two mutex locks and two `String`
     /// clones — the ADR-P10 reason v1 does the same.
     pub fn meta(&mut self) -> &HashMap<String, AgentMeta> {
+        let mut moved = false;
         for (id, live) in &mut self.live {
             if let Some((activity, notification)) = live.session.sync_agent_meta() {
                 let entry = self.meta.entry(id.clone()).or_default();
@@ -1588,15 +1589,15 @@ impl Terminals {
                 if entry.activity != activity || entry.notification != notification {
                     entry.activity = activity;
                     entry.notification = notification;
-                    self.meta_version = self.meta_version.wrapping_add(1);
+                    moved = true;
                 }
             }
         }
         // A session that went away keeps no stale title.
         let before = self.meta.len();
         self.meta.retain(|id, _| self.live.contains_key(id));
-        if self.meta.len() != before {
-            self.meta_version = self.meta_version.wrapping_add(1);
+        if moved || self.meta.len() != before {
+            self.mark_meta_changed();
         }
         &self.meta
     }
@@ -1604,6 +1605,14 @@ impl Terminals {
     /// How many times [`Self::meta`] has actually changed an entry.
     pub fn meta_version(&self) -> u64 {
         self.meta_version
+    }
+
+    fn mark_meta_changed(&mut self) {
+        self.meta_version = self.meta_version.wrapping_add(1);
+    }
+
+    fn mark_failures_changed(&mut self) {
+        self.failed_version = self.failed_version.wrapping_add(1);
     }
 
     /// How many times the set of attach failures has changed.

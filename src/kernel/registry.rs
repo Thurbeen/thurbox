@@ -269,12 +269,12 @@ impl Registry {
         self.version
     }
 
-    fn bump(&mut self) {
+    fn mark_changed(&mut self) {
         self.version = self.version.wrapping_add(1);
     }
 
     pub fn declare(&mut self, bindings: Vec<Binding>, settings: Vec<Setting>) {
-        self.bump();
+        self.mark_changed();
         self.declare_all(bindings, settings, Vec::new());
     }
 
@@ -412,7 +412,7 @@ impl Registry {
     /// transition, and a toggle they cannot predict is worse than one that does
     /// nothing.
     pub fn set_disabled(&mut self, path: &str, off: bool) -> Result<bool, String> {
-        self.bump();
+        self.mark_changed();
         if off {
             self.disabled.insert(path.to_string());
         } else {
@@ -448,7 +448,7 @@ impl Registry {
     /// The digest is taken from the contents at this moment, which is what makes
     /// "trusted, and since modified" a state the interface can report.
     pub fn trust(&mut self, path: &str, contents: &str) -> Result<(), String> {
-        self.bump();
+        self.mark_changed();
         self.trusted.insert(
             path.to_string(),
             Granted::Contents(super::bundled::digest(contents)),
@@ -466,7 +466,7 @@ impl Registry {
     /// source that re-tagged the same version with different contents would
     /// silently keep a capability the user granted to what the version used to be.
     pub fn trust_installed(&mut self, path: &str, pin: &str, contents: &str) -> Result<(), String> {
-        self.bump();
+        self.mark_changed();
         self.trusted.insert(
             path.to_string(),
             Granted::Managed {
@@ -480,7 +480,7 @@ impl Registry {
     /// Withdraw trust. Idempotent: revoking what was never trusted is not an
     /// error, because the user asked for a state, not for a transition.
     pub fn revoke(&mut self, path: &str) -> Result<(), String> {
-        self.bump();
+        self.mark_changed();
         self.trusted.remove(path);
         self.persist()
     }
@@ -514,7 +514,7 @@ impl Registry {
 
     /// Rebind an action, or clear the override when `chord` is `None`.
     pub fn rebind(&mut self, action: &str, chord: Option<&str>) -> Result<(), String> {
-        self.bump();
+        self.mark_changed();
         match chord {
             Some(chord) => {
                 let chord = normalise_chord(chord);
@@ -543,7 +543,7 @@ impl Registry {
         id: &str,
         value: Option<Value>,
     ) -> Result<(), String> {
-        self.bump();
+        self.mark_changed();
         let key = format!("{plugin}.{id}");
         let Some(declared) = self
             .settings
