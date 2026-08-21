@@ -245,9 +245,18 @@ pub fn notice(version: &str, skin: &Skin) -> String {
 /// On Windows that command is unrunnable, so the PowerShell installer is printed
 /// there instead, with the same pin expressed as `$env:THURBOX_VERSION`.
 pub fn downgrade_instructions(last_v1: &str, skin: &Skin) -> String {
+    downgrade_screen(last_v1, cfg!(windows), skin)
+}
+
+/// [`downgrade_instructions`] with the platform passed in rather than read from
+/// `cfg!`, so the tests can check **both** variants wherever they run.
+///
+/// Without this seam the Windows form is compiled everywhere and exercised only
+/// on the Windows runner, which is exactly how its over-wide line reached CI.
+fn downgrade_screen(last_v1: &str, windows: bool, skin: &Skin) -> String {
     let (a, m, t) = (&skin.accent, &skin.muted, &skin.text);
     let (safe, bold, r) = (&skin.safe, &skin.bold, &skin.reset);
-    let install = if cfg!(windows) {
+    let install = if windows {
         format!(
             "\x20     {a}{bold}$env:THURBOX_VERSION = '{last_v1}'{r}\n\
              \x20     {a}{bold}irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex{r}\n"
@@ -438,34 +447,41 @@ mod tests {
             reset: "\x1b[0m".to_string(),
         };
 
-        let screen = format!(
-            "{}{}",
-            notice("2.0.0", &painted),
-            downgrade_instructions(LAST_V1_RELEASE, &painted)
-        );
-        print!("{screen}");
+        // Both platform variants, on whichever platform is running: the Windows
+        // one is compiled everywhere and would otherwise only ever be measured
+        // by the Windows runner.
+        for windows in [false, true] {
+            let screen = format!(
+                "{}{}",
+                notice("2.0.0", &painted),
+                downgrade_screen(LAST_V1_RELEASE, windows, &painted)
+            );
+            print!("{screen}");
 
-        for line in screen.lines() {
-            let shown = visible(line);
-            // The installer command is one long URL that cannot be broken, and is
-            // meant to be copied rather than read; everything else must fit.
-            if shown.contains("install.sh") {
-                continue;
+            for line in screen.lines() {
+                let shown = visible(line);
+                // The installer command is one long URL that cannot be broken,
+                // and is meant to be copied rather than read; everything else
+                // must fit. Matched on the path both installers share, so
+                // neither is exempt by name.
+                if shown.contains("scripts/install.") {
+                    continue;
+                }
+                assert!(
+                    shown.chars().count() <= 80,
+                    "{} columns (windows={windows}): {shown:?}",
+                    shown.chars().count()
+                );
             }
-            assert!(
-                shown.chars().count() <= 80,
-                "{} columns: {shown:?}",
-                shown.chars().count()
-            );
-        }
 
-        // Painted output must always close its spans, or the colour bleeds into
-        // whatever the shell prints next.
-        for line in screen.lines().filter(|l| l.contains('\x1b')) {
-            assert!(
-                line.ends_with("\x1b[0m") || visible(line).is_empty(),
-                "a painted line has to reset: {line:?}"
-            );
+            // Painted output must always close its spans, or the colour bleeds
+            // into whatever the shell prints next.
+            for line in screen.lines().filter(|l| l.contains('\x1b')) {
+                assert!(
+                    line.ends_with("\x1b[0m") || visible(line).is_empty(),
+                    "a painted line has to reset (windows={windows}): {line:?}"
+                );
+            }
         }
     }
 
@@ -494,22 +510,24 @@ mod tests {
 
     #[test]
     fn the_downgrade_instruction_exports_and_disables_auto_update() {
-        let text = downgrade_instructions("v1.8.6", &Skin::plain());
-        if cfg!(windows) {
+        let posix = downgrade_screen("v1.8.6", false, &Skin::plain());
+        assert!(
+            posix.contains("export VERSION=v1.8.6"),
+            "a bare `VERSION=x curl | sh` sets it for curl, not for sh: {posix}"
+        );
+
+        let windows = downgrade_screen("v1.8.6", true, &Skin::plain());
+        assert!(
+            windows.contains("$env:THURBOX_VERSION = 'v1.8.6'") && windows.contains("install.ps1"),
+            "a Windows reader needs a command Windows can run: {windows}"
+        );
+
+        for text in [&posix, &windows] {
             assert!(
-                text.contains("$env:THURBOX_VERSION = 'v1.8.6'") && text.contains("install.ps1"),
-                "a Windows reader needs a command Windows can run: {text}"
-            );
-        } else {
-            assert!(
-                text.contains("export VERSION=v1.8.6"),
-                "a bare `VERSION=x curl | sh` sets it for curl, not for sh: {text}"
+                text.contains("Auto-update is off"),
+                "reinstalling 1.x is pointless if auto-update will undo it"
             );
         }
-        assert!(
-            text.contains("Auto-update is off"),
-            "reinstalling 1.x is pointless if auto-update will undo it"
-        );
     }
 
     #[test]
