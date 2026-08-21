@@ -35,7 +35,7 @@ breadcrumb: 'Interface'
     <strong>Moved from v1?</strong>
     Several panes are not in the binary any more &mdash; code review and the info panel are
     <a href="#v1-panes">plugins you install</a>, the file viewer has no replacement, and tasks,
-    automations, the restore list and the perf HUD moved to
+    automations and the perf HUD moved to
     <code>thurbox-cli</code>. thurbox asks once, on the first launch after the upgrade, before
     changing anything. v1 stays maintained on the <code>v1.x</code> branch.
   </p>
@@ -169,7 +169,8 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
     ├── 20_agent.lua        the agent terminal
     ├── 65_search.lua       global search
     ├── 60_confirm.lua      the confirm float
-    └── 70_new_session.lua  the new-session flow</pre>
+    ├── 70_new_session.lua  the new-session flow
+    └── 80_restore.lua      the restore list</pre>
   </div>
 </div>
 <p>

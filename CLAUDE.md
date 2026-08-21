@@ -918,9 +918,11 @@ session has work at risk** — uncommitted/untracked files, unmerged commits, or
 state that can't be verified (remote host / git error → confirm to be safe;
 `App::assess_delete_risk` + `modals::DeleteRisk::from_stats` over
 `git::worktree_stats`) — itemizing what would be lost; a known-clean session is
-deleted with no prompt. Restoring a force-deleted row via `Ctrl+U` (`Enter`) first
-confirms (`Modal::ConfirmRestore`, `ui::confirm_restore_modal`) since recovery is
-committed-state-only, then runs the normal restore path. The flag never changes
+deleted with no prompt. `Ctrl+U` lists the deleted rows (`ui/plugins/80_restore.lua`,
+a float) and `Enter` restores the one under the cursor; a **force-deleted** row
+asks first — through the shared `store.confirm` question, not a bespoke modal —
+since recovery is committed-state-only, and only then issues `restore` with
+`best_effort`. The flag never changes
 `thurbox-cli session delete`, which stays soft unless `--force`.
 
 ### Parent sessions (lead/worker)
@@ -1791,9 +1793,9 @@ its spelling differ):
 ## Writing an interface plugin
 
 The bundled set is deliberately small: `10_sessions`, `20_agent`, `65_search`, plus
-the creation flow (`70_new_session`, a float that occupies no slot) and
-`60_confirm`. What v1 had and this does not is listed in
-`openspec/changes/v2-parity-gaps/`.
+three floats that occupy no slot — the creation flow (`70_new_session`), the
+confirmation (`60_confirm`) and the restore list (`80_restore`, v1's `Ctrl+U`).
+What v1 had and this does not is listed in `openspec/changes/v2-parity-gaps/`.
 
 ```bash
 thurbox-cli plugin dir            # which directory is live, and which rule chose it

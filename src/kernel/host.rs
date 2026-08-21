@@ -1589,6 +1589,14 @@ impl LuaHost {
                     .map_err(|e| e.to_string())?;
                 item.raw_set("name", row.name.clone())
                     .map_err(|e| e.to_string())?;
+                item.raw_set("agent", row.agent.clone())
+                    .map_err(|e| e.to_string())?;
+                // Epoch millis, so `widgets.time_ago` can measure it against
+                // `taken_at_ms` — the instant these rows were read.
+                item.raw_set("deleted_at", row.deleted_at)
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("worktrees", row.worktrees)
+                    .map_err(|e| e.to_string())?;
                 // Restoring this one recovers committed work only.
                 item.raw_set("partial", row.partial)
                     .map_err(|e| e.to_string())?;

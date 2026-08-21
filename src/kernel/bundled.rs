@@ -79,6 +79,10 @@ pub const BUNDLED: &[(&str, &str)] = &[
         "plugins/70_new_session.lua",
         include_str!("../../ui/plugins/70_new_session.lua"),
     ),
+    (
+        "plugins/80_restore.lua",
+        include_str!("../../ui/plugins/80_restore.lua"),
+    ),
 ];
 
 /// Records which version of each bundled file was last written, so a user's

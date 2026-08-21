@@ -145,8 +145,9 @@ fn fire(host: &LuaHost, chord: &str) {
 /// below, in `CHORDS_AWAITING_THEIR_PANE`. They are listed rather than dropped so
 /// re-adding a pane has an obvious place to reconnect, and so the shortfall is
 /// counted rather than forgotten.
-const GLOBAL_CHORDS: [(&str, &str); 21] = [
+const GLOBAL_CHORDS: [(&str, &str); 22] = [
     ("ctrl+n", "new_session.open"),
+    ("ctrl+u", "restore.open"),
     // One declaration, three spellings: the kernel folds the encodings a
     // terminal may deliver `Ctrl+/` as, where v1 bound all three by hand.
     ("ctrl+/", "search.open"),
@@ -175,8 +176,7 @@ const GLOBAL_CHORDS: [(&str, &str); 21] = [
 /// v1 chords with no v2 owner, each named with the pane that would bring it
 /// back. Asserted to be *unbound* — a chord that silently resolved to something
 /// else would be worse than one that does nothing.
-const CHORDS_AWAITING_THEIR_PANE: [(&str, &str); 10] = [
-    ("ctrl+u", "restore"),
+const CHORDS_AWAITING_THEIR_PANE: [(&str, &str); 9] = [
     ("ctrl+p", "automations"),
     ("ctrl+w", "tasks"),
     ("ctrl+x", "review"),

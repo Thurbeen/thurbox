@@ -103,6 +103,14 @@ pub struct SessionRow {
 pub struct DeletedRow {
     pub id: String,
     pub name: String,
+    /// The agent it ran, which is what tells two same-named rows apart.
+    pub agent: String,
+    /// Epoch milliseconds, the same unit `taken_at_ms` carries: a plugin has no
+    /// clock, so an age is only computable against the snapshot's own instant.
+    pub deleted_at: u64,
+    /// Worktrees the row still carries, so a restore that has checkouts to
+    /// reattach can say so before it is chosen.
+    pub worktrees: usize,
     /// True when the worktree directory was removed as well, so restoring
     /// recovers committed work only. The distinction has to be visible *before*
     /// the choice, not after.
@@ -815,6 +823,9 @@ impl SnapshotStore {
                     .map(|row| DeletedRow {
                         id: row.id.to_string(),
                         name: row.name,
+                        agent: row.agent,
+                        deleted_at: row.deleted_at,
+                        worktrees: row.worktrees.len(),
                         partial: row.force_deleted,
                     })
                     .collect()

@@ -224,7 +224,14 @@ fn the_shipped_interface_checks_out() {
     // Every bundled pane, by name — this is also what catches a bundled file that
     // stopped loading.
     let loaded = checked["loaded"].to_string();
-    for pane in ["sessions", "agent", "new_session", "confirm", "search"] {
+    for pane in [
+        "sessions",
+        "agent",
+        "new_session",
+        "confirm",
+        "search",
+        "restore",
+    ] {
         assert!(loaded.contains(pane), "{pane} missing from {loaded}");
     }
     // `search` is the reason the unplaced check has to open every panel before it

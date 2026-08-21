@@ -3,8 +3,8 @@
 thurbox v2 is a session engine with a Lua-driven renderer. The kernel owns no
 pane: the session list, the terminal and every other surface that shows *your
 work* is a plugin under `ui/`. The bundled set is currently **three** — the
-session list, the agent pane and the search strip — plus the new-session flow and
-the confirmation, which float rather than filling a slot; the interface was cut
+session list, the agent pane and the search strip — plus the new-session flow, the
+confirmation and the restore list, which float rather than filling a slot; the interface was cut
 back to its core and v1's other surfaces are listed with their gaps in
 `openspec/changes/v2-parity-gaps/`. It does own the **system modals** — help,
 settings, the theme picker and the interface's own file list — which are chrome

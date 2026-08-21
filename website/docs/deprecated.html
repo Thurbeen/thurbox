@@ -75,12 +75,6 @@ breadcrumb: 'Deprecated'
       <td>Pane only</td>
       <td><code>thurbox-cli automation</code> &mdash; and they still fire on their own</td>
     </tr>
-    <tr>
-      <td><a href="#restore">Restore list</a></td>
-      <td><kbd>Ctrl</kbd>+<kbd>U</kbd></td>
-      <td>Pane only</td>
-      <td><code>thurbox-cli session restore</code></td>
-    </tr>
   </tbody>
 </table>
 <p>
@@ -241,21 +235,13 @@ thurbox-cli task edit &lt;id&gt; --status done</code></pre>
 thurbox-cli automation runs &lt;id&gt;   # the run history the pane used to render
 thurbox-cli automation run &lt;id&gt;    # fire one now</code></pre>
 
-<h3 id="restore">Restore deleted sessions</h3>
-<p>
-  <kbd>Ctrl</kbd>+<kbd>U</kbd> listed soft-deleted sessions to revive. Deletion is still soft by
-  default and <kbd>Ctrl</kbd>+<kbd>Z</kbd> still undoes the delete you just made, so the pane's
-  urgent case is covered in the interface; the list of everything deleted earlier is
-  <code>thurbox-cli session restore</code>.
-</p>
-
 <h2 id="chords">
   Their chords are unbound, not reused
   <a href="#chords" class="heading-anchor">#</a>
 </h2>
 <p>
   <kbd>Ctrl</kbd>+<kbd>X</kbd>, <kbd>Ctrl</kbd>+<kbd>E</kbd>, <kbd>Ctrl</kbd>+<kbd>B</kbd>,
-  <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>P</kbd>, <kbd>Ctrl</kbd>+<kbd>U</kbd> and
+  <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>P</kbd> and
   <kbd>F2</kbd>/<kbd>F3</kbd>/<kbd>F5</kbd>/<kbd>F7</kbd> do nothing rather than something else. That
   is deliberate and it is asserted by a test: muscle memory that finds nothing is a much smaller
   problem than muscle memory that finds a different feature. When one of these panes returns &mdash;

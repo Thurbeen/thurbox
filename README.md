@@ -46,7 +46,6 @@ it are data files you edit too. No fork, no recompile, no restart.
 > | Info panel | `Ctrl+B` / `F2` | the [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) plugin |
 > | Tasks panel | `Ctrl+W` / `F5` | `thurbox-cli task` |
 > | Automations pane | `Ctrl+P` | `thurbox-cli automation` |
-> | Restore list | `Ctrl+U` | `thurbox-cli session restore` |
 >
 > Installing a plugin is a clone:
 >
@@ -370,6 +369,7 @@ or owed.
 | Agent terminal | on screen | bundled | `20_agent.lua` |
 | Global search | `Ctrl+/` | bundled | `65_search.lua` |
 | Session creation | `Ctrl+N` | bundled | `70_new_session.lua` (a float) |
+| Restore list | `Ctrl+U` | bundled | `80_restore.lua` (a float) |
 | The arrangement | fixed, compiled in | bundled | `ui/layout.lua` |
 | Themes · settings · help | `Ctrl+Y` · `Ctrl+,` · `F1` | kernel chrome | the same chords |
 | Code review | `Ctrl+X` / `F7` | installable | [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) |
@@ -378,7 +378,6 @@ or owed.
 | Panes anyone else wrote | — | installable | `ui/plugins.toml` |
 | Tasks | `Ctrl+W` / `F5` | CLI only | `thurbox-cli task` |
 | Automations | `Ctrl+P` | CLI only | `thurbox-cli automation` |
-| Restore list | `Ctrl+U` | CLI only | `thurbox-cli session restore` |
 | File viewer | `Ctrl+E` / `F3` | owed | — |
 
 **Bundled** means it ships with thurbox and is yours to edit, move or delete —
@@ -387,7 +386,7 @@ including the arrangement, which v1 compiled in. **Installable** ones sit in
 by itself, the info panel wants one `layout.lua` line, and the two rows marked
 `—` are things v1 had no answer for at all. **CLI only** means the records and the
 commands are all there and nobody has written the pane yet — `ui-plugins/tasks`
-is an example pane over the same task records. The chords of the four paneless
+is an example pane over the same task records. The chords of the three paneless
 surfaces stay **unbound** rather than being reused, so no muscle memory quietly
 does something else.
 
@@ -1077,6 +1076,7 @@ cannot drift from what is running.
 | `d` / `Ctrl+D` | Delete (reversible) | `10_sessions.lua` |
 | `Shift+D` | Delete it *and* its worktree, after confirming | `10_sessions.lua` |
 | `Ctrl+Z` | Undo the last delete | `10_sessions.lua` |
+| `Ctrl+U` | Restore a deleted session | `80_restore.lua` |
 | `r` / `Ctrl+R` | Restart the agent | `10_sessions.lua` |
 | `Ctrl+F` | Fork | `10_sessions.lua` |
 | `Ctrl+S` | Sync worktrees with their base | `10_sessions.lua` |
@@ -1084,9 +1084,9 @@ cannot drift from what is running.
 | `F9` | Hide the session list | `10_sessions.lua` |
 
 Gone with the panes they opened: `Ctrl+X`/`F7` (code review), `Ctrl+E`/`F3`
-(file viewer), `Ctrl+B`/`F2` (info panel), `F5` (tasks), `Ctrl+P`
-(automations — now the creation flow's folder import) and `Ctrl+U` (restore
-list). Two of them come back with a pane you install:
+(file viewer), `Ctrl+B`/`F2` (info panel), `F5` (tasks) and `Ctrl+P`
+(automations — now the creation flow's folder import). Two of them come back
+with a pane you install:
 [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) claims
 `Ctrl+X`/`F7` again, and
 [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) claims
