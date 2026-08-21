@@ -183,7 +183,14 @@ group whose inputs did not move is not rebuilt; and a pane that declares
 Both are ADR-P16, and both rest on one rule: a signal is bumped **inside** the
 mutation and only when the value actually changed — writing an unchanged value
 counts as no change, which is the difference between the gate saving 27% and
-saving nothing. The three reads in it that touch a screen or the
+saving nothing. The **animation clock** obeys it too: it lives in the epoch and
+the loop advances it only while something is actually animating, because a
+free-running one invalidated every pure pane on every idle frame. And the loop
+itself slows its input poll to `IDLE_TICK` once nothing has happened for
+`QUIESCENT_AFTER` — free, because `event::poll` returns the instant an event
+arrives, so only things that never wake the thread are delayed.
+
+The three reads in `republish` that touch a screen or the
 disk carry the age above (ADR-P14): link extraction is keyed on that session's
 `output_stamp` **and limited to surfaces actually on screen** (a link nothing
 painted can be neither clicked nor handed to the outer terminal, and the scan

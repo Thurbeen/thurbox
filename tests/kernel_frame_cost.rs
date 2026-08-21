@@ -589,3 +589,83 @@ fn writing_the_same_value_to_the_store_is_not_a_change() {
         "an unchanged store write invalidated a cached tree"
     );
 }
+
+#[test]
+fn a_still_animation_clock_lets_a_pure_pane_settle() {
+    // The bug this guards: the clock used to be read straight from
+    // `ctx.elapsed`, so it advanced 8 times a second whether or not anything on
+    // screen was moving. At the 4fps idle floor that invalidated every pure
+    // pane on every frame — 3 renders skipped out of 284 — and an idle
+    // interface re-ran all its Lua for a byte-identical tree.
+    //
+    // The clock now lives in the epoch and the loop advances it only while
+    // something animates, so an epoch that stands still is one a pane can be
+    // cached across, however much wall-clock time passes.
+    let (_dir, host) = two_panes();
+    let themes = Themes::load(None);
+    publish_at(&host, Epoch::default(), &Snapshot::default(), &themes);
+
+    let index = host.index_of("pure").expect("plugin");
+    let at = |elapsed: f64| {
+        host.render(
+            index,
+            thurbox::kernel::host::RenderContext {
+                width: 40,
+                height: 4,
+                focused: false,
+                elapsed,
+                frame: 0,
+            },
+        )
+        .expect("render")
+    };
+
+    let _ = at(0.0);
+    let settled = host.skipped_renders();
+    // Seconds of wall clock, and several frame numbers, with a still epoch.
+    for step in 1..=10 {
+        let _ = at(f64::from(step));
+    }
+    assert_eq!(
+        host.skipped_renders() - settled,
+        10,
+        "time passing re-rendered a pure pane while its epoch stood still"
+    );
+}
+
+#[test]
+fn a_moved_animation_clock_re_renders_a_pure_pane() {
+    // The other half: while something IS animating the loop advances the clock,
+    // and the pane must run again or the spinner freezes on screen.
+    let (_dir, host) = two_panes();
+    let themes = Themes::load(None);
+    let mut epoch = Epoch::default();
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+
+    let index = host.index_of("pure").expect("plugin");
+    let render = |host: &LuaHost| {
+        host.render(
+            index,
+            thurbox::kernel::host::RenderContext {
+                width: 40,
+                height: 4,
+                focused: false,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render")
+    };
+
+    let _ = render(&host);
+    let settled = host.skipped_renders();
+    epoch.animation += 1;
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+    let _ = render(&host);
+
+    assert_eq!(
+        host.skipped_renders(),
+        settled,
+        "the animation clock moved and the pane was still served from the cache"
+    );
+}

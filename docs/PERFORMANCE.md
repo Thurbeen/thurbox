@@ -926,11 +926,39 @@ review:**
   moved, so a coarse epoch captures it.
 - *Throttling the repaint rate* — v2 already paints fewer frames than v1.
 
-**Still open**: the remaining ~1.5x is the Lua boundary that is genuinely paid —
-the agent pane's own render on the frames its inputs really did move, the node
-paint, and `publish`'s ungated volatile groups (hover, commands, inventory).
-Note also that repaints are output-driven, so a cheaper frame partly becomes
-*more* frames: this change took 42% off the frame but 25% off CPU.
+**Follow-up, measured after the above landed.** The counters it added showed the
+gate barely working at rest: `renders skipped` was **3 of 284** on an idle
+interface. Three fixes:
+
+- **The animation clock was free-running.** It was read straight from
+  `ctx.elapsed` as `floor(elapsed * 8)`, so it advanced 8 times a second whether
+  or not anything was moving — and at the 4fps idle floor that invalidated every
+  pure pane on every frame. It now lives in `Epoch::animation`, advanced by the
+  loop only while something animates (a `working` session, a command in flight).
+  This was a bug against this capability's own requirement that an idle
+  interface rebuild nothing, not a tuning choice.
+- **An adaptive poll timeout.** The loop blocked in `event::poll(10ms)`
+  regardless, costing 94 wakes a second at rest — about half of idle CPU. After
+  `QUIESCENT_AFTER` with nothing happening it waits `IDLE_TICK` (50ms) instead.
+  This costs **no** input latency: `event::poll` returns the moment an event
+  arrives. What it delays is noticing what does *not* wake the thread — new
+  agent output, a worker result — and at rest there is none of the first. Still
+  well inside the 250ms redraw floor.
+- **`platform` is constant** and was rebuilt 33 times a second.
+
+| | v1.8.7 | after P16 | now |
+|---|---|---|---|
+| CPU (loaded) | 15.6% | 21.2% | **19.4%** |
+| CPU per frame | 3.1ms | 5.4ms | **4.2ms** |
+| CPU (idle) | 2.33% | 4.83% | **3.57%** |
+
+**Still open**: at rest the snapshot's generation still moves every
+`REFRESH_INTERVAL` (400ms) because `taken_at_ms` is published and rendered as
+"5s ago", which caps how long a pure pane can be cached — worth ~0.7% idle if
+the signal were quantised to the second that label actually shows. The rest is
+the Lua boundary genuinely paid, the node paint, and `publish`'s remaining
+volatile groups. Note throughout that repaints are output-driven, so a cheaper
+frame partly becomes *more* frames rather than less CPU.
 
 ---
 

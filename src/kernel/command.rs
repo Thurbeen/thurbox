@@ -921,6 +921,18 @@ impl CommandBus {
     }
 
     /// Everything accepted but not yet done, for publishing to plugins.
+    /// Whether anything is in flight, without cloning the list.
+    ///
+    /// The animation clock asks this on every published frame, and
+    /// [`Self::inflight`] clones under a lock — a second copy a frame to answer
+    /// a question about emptiness.
+    pub fn has_inflight(&self) -> bool {
+        self.inflight
+            .lock()
+            .map(|list| !list.is_empty())
+            .unwrap_or(false)
+    }
+
     pub fn inflight(&self) -> Vec<InFlight> {
         self.inflight
             .lock()

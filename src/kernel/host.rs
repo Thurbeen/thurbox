@@ -386,6 +386,16 @@ pub struct Epoch {
     pub failed: u64,
     /// The loop's own `data_epoch` — the worker stores, links, screen text.
     pub data: u64,
+    /// The shared animation clock, which advances **only while something is
+    /// actually animating** (a working session, a command in flight).
+    ///
+    /// A free-running clock here was a bug worth naming: it moved 8 times a
+    /// second whether or not anything on screen was moving, so at the 4fps idle
+    /// floor every pure pane missed its cache on every frame and re-ran for a
+    /// byte-identical tree. `frame-cost` requires an idle interface to rebuild
+    /// neither its groups nor its panes; a clock that never stops makes that
+    /// impossible to satisfy.
+    pub animation: u64,
 }
 
 /// The versions one group is built from, compared exactly.
@@ -395,30 +405,30 @@ pub struct Epoch {
 /// wrong answer nobody can see. Unused slots stay zero.
 type GroupKey = [u64; 4];
 
-/// How often a pure pane's tree may change on the clock alone, in Hz.
+/// How often the shared animation clock may advance, in Hz.
 ///
 /// Set to the rate `widgets.status_glyph` advances the working spinner at
 /// (`math.floor(elapsed * 8)`), so a cached tree is dropped exactly when the
 /// spinner would move to its next frame and never merely because time passed.
 /// Changing one without the other either freezes the animation or re-renders
-/// for nothing.
-const ANIMATION_HZ: f64 = 8.0;
+/// for nothing. The loop owns the counter — see [`Epoch::animation`].
+pub const ANIMATION_HZ: f64 = 8.0;
 
 /// What a pure pane's cached tree was built for: the publish epoch, the parts of
 /// the render context it may depend on, and the animation tick.
 ///
-/// `ctx.frame` is deliberately absent — it moves every frame, so including it
-/// would mean never reusing anything. `ctx.elapsed` enters only through
-/// [`ANIMATION_HZ`]: a pane may animate at the spinner's rate and still be pure,
-/// because at that granularity "the clock moved" is a real input rather than
-/// noise. Anything finer is not expressible, which is why a pane animating per
-/// *frame* may not declare `pure`.
+/// `ctx.frame` and `ctx.elapsed` are deliberately absent. They move every frame,
+/// so reading either here would mean never reusing anything. A pane may still
+/// animate and be pure, but only from the shared clock in [`Epoch::animation`],
+/// which advances at [`ANIMATION_HZ`] *and only while something is animating* —
+/// which is why a pane animating per frame, or on a schedule of its own, may not
+/// declare `pure`.
 ///
 /// The last field is [`StateVersion`]. A pure render may read `store` or
 /// `state` — the agent pane remembers a tab per session — and those are written
 /// by handlers, not by anything published, so without it a tree cached before a
 /// keypress would outlive it.
-type TreeKey = (Epoch, u16, u16, bool, u64, u64);
+type TreeKey = (Epoch, u16, u16, bool, u64);
 
 impl Epoch {
     /// An epoch that matches no previous one, so every group is rebuilt.
@@ -439,6 +449,7 @@ impl Epoch {
             meta: n,
             failed: n,
             data: n,
+            animation: n,
         }
     }
 }
@@ -2060,13 +2071,18 @@ impl LuaHost {
         // states every rule it actually needs — prefer a binary already on `PATH`,
         // fall back to a portable build, distinguish a libc variant, or say politely
         // that it has nothing for you. The kernel models none of that.
-        let platform = self.lua.create_table().map_err(|e| e.to_string())?;
-        platform
-            .raw_set("os", std::env::consts::OS)
-            .map_err(|e| e.to_string())?;
-        platform
-            .raw_set("arch", std::env::consts::ARCH)
-            .map_err(|e| e.to_string())?;
+        // Constant for the life of the process, so it is built once and then
+        // handed back — an all-zero key never moves.
+        let platform = self.group("platform", [0, 0, 0, 0], || {
+            let platform = self.lua.create_table().map_err(|e| e.to_string())?;
+            platform
+                .raw_set("os", std::env::consts::OS)
+                .map_err(|e| e.to_string())?;
+            platform
+                .raw_set("arch", std::env::consts::ARCH)
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Table(platform))
+        })?;
         table
             .raw_set("platform", platform)
             .map_err(|e| e.to_string())?;
@@ -2106,13 +2122,11 @@ impl LuaHost {
         // largest single cost in a frame: the session list rebuilt a
         // byte-identical tree on every frame under load (`frame-cost`).
         let key = self.published_epoch().map(|epoch| {
-            let tick = (ctx.elapsed * ANIMATION_HZ) as u64;
             (
                 epoch,
                 ctx.width,
                 ctx.height,
                 ctx.focused,
-                tick,
                 self.state_version.get(),
             )
         });

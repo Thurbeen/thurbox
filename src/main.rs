@@ -48,6 +48,24 @@ use thurbox::session::selection::{PaneBounds, Selection, TermPos};
 /// affordable because the expensive per-frame work below is gated on a paint
 /// actually being due.
 const TICK: Duration = Duration::from_millis(10);
+
+/// The input poll's timeout once nothing has happened for [`QUIESCENT_AFTER`].
+///
+/// `event::poll` returns the instant an event arrives, so lengthening this costs
+/// **no** input latency — a keystroke wakes the thread either way. What it slows
+/// is noticing things that do not wake it: new agent output, a worker result, a
+/// row another process wrote. At rest there is by definition none of the first,
+/// and a 50ms delay on the others is not perceptible; the first sign of activity
+/// puts the loop straight back on [`TICK`].
+///
+/// Worth 94 wakes a second against 20 on an idle interface, which was half its
+/// entire cost.
+const IDLE_TICK: Duration = Duration::from_millis(50);
+
+/// How long nothing must happen before the loop slows its poll to
+/// [`IDLE_TICK`]. Longer than a keypress-to-repaint round trip, so typing never
+/// crosses into the slow poll and back.
+const QUIESCENT_AFTER: Duration = Duration::from_millis(500);
 /// Editors save in bursts (write, rename, chmod); wait for the dust to settle.
 const DEBOUNCE: Duration = Duration::from_millis(120);
 /// Longest a frame may go unpainted when nothing has changed.
@@ -256,6 +274,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         first_frame_logged: false,
         process_start,
         data_epoch: 0,
+        last_activity: Instant::now(),
+        animation_tick: 0,
+        animation_step: 0,
         selection: None,
         notifier: {
             let settings = thurbox::session::settings::global();
@@ -838,6 +859,21 @@ struct App {
     /// True process start, taken before any startup phase — `started` is taken
     /// during construction and so misses everything before it.
     process_start: Instant,
+    /// When anything last happened — input, output, a worker result, a repaint
+    /// that changed something. Drives the poll timeout, nothing else.
+    last_activity: Instant,
+    /// The shared animation clock, advanced only while something is animating.
+    ///
+    /// Kept here rather than read from `ctx.elapsed` in the render, because
+    /// whether anything is animating is the loop's knowledge: a spinner turns
+    /// for a session that is *working*, and the creation flow's pending row for
+    /// a command in flight. With neither, the clock stands still and a pure
+    /// pane's tree survives — which is what lets an idle interface stop
+    /// rebuilding anything at all (`frame-cost`).
+    animation_tick: u64,
+    /// The last `elapsed * ANIMATION_HZ` step the tick was advanced for, so a
+    /// step is counted once however many frames fall inside it.
+    animation_step: u64,
     /// Moves whenever data the loop owns and publishes does — a worker store
     /// that took a result, the links or screen text just re-scanned, the
     /// in-flight command list, an attach failure.
@@ -1368,6 +1404,7 @@ impl App {
         let output_gen = self.terminals.output_generation();
         if output_gen != self.last_output_gen {
             self.last_output_gen = output_gen;
+            self.last_activity = Instant::now();
             // Deliberately NOT a data change: new agent output moves the vt100
             // grid a surface paints from, not anything published. Treating it as
             // one would move the epoch on every frame under a printing agent and
@@ -1504,6 +1541,30 @@ impl App {
             .observe(self.snapshots.current(), self.focused_session.as_deref());
     }
 
+    /// Advance the shared animation clock, but only while something is moving.
+    ///
+    /// Conservative in the safe direction: saying "animating" when nothing is
+    /// costs one cache miss, while saying "not animating" when something is
+    /// would freeze it on screen.
+    fn advance_animation(&mut self) {
+        let animating = self
+            .snapshots
+            .current()
+            .sessions
+            .iter()
+            .any(|row| row.status == "working")
+            || self.commands.has_inflight();
+        if !animating {
+            return;
+        }
+        let step =
+            (self.started.elapsed().as_secs_f64() * thurbox::kernel::host::ANIMATION_HZ) as u64;
+        if step != self.animation_step {
+            self.animation_step = step;
+            self.animation_tick = self.animation_tick.wrapping_add(1);
+        }
+    }
+
     /// Note that published data moved, and that the screen owes a frame.
     ///
     /// The two go together everywhere they are used: something that changes what
@@ -1511,6 +1572,19 @@ impl App {
     fn note_data_change(&mut self) {
         self.data_epoch = self.data_epoch.wrapping_add(1);
         self.dirty = true;
+        self.last_activity = Instant::now();
+    }
+
+    /// How long to wait for input before going round the loop again.
+    ///
+    /// See [`IDLE_TICK`]: this is a poll timeout, not a frame deadline, so
+    /// stretching it while nothing is happening costs responsiveness nowhere.
+    fn poll_timeout(&self) -> Duration {
+        if self.last_activity.elapsed() >= QUIESCENT_AFTER {
+            IDLE_TICK
+        } else {
+            TICK
+        }
     }
 
     /// Whether the wall-clock timing of ADR-P11 is being collected.
@@ -1713,11 +1787,19 @@ impl App {
         let mut waited = false;
         loop {
             // Only the first read waits; the rest take what is already queued.
-            let timeout = if waited { Duration::ZERO } else { TICK };
+            let timeout = if waited {
+                Duration::ZERO
+            } else {
+                self.poll_timeout()
+            };
             waited = true;
             let event = match next_event(timeout) {
                 Ok(Some(event)) => {
                     *input_failures = 0;
+                    // Anything the user does puts the loop back on the fast
+                    // poll, so the frames that follow a keystroke are not paced
+                    // by the idle timeout.
+                    self.last_activity = Instant::now();
                     event
                 }
                 Ok(None) => break,
@@ -1933,6 +2015,7 @@ impl App {
     /// Called just before a paint and before dispatching input — the only two
     /// moments Lua runs — rather than once per loop iteration.
     fn republish(&mut self) {
+        self.advance_animation();
         let sessions: Vec<String> = self
             .snapshots
             .current()
@@ -1988,6 +2071,7 @@ impl App {
                 meta: self.terminals.meta_version(),
                 failed: self.terminals.failed_version(),
                 data: self.data_epoch,
+                animation: self.animation_tick,
             },
             snapshot: self.snapshots.current(),
             attach_errors: &attach_errors,
