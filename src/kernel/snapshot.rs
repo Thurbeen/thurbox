@@ -442,11 +442,17 @@ impl SnapshotStore {
         }
         if self.rows_are_current() {
             self.last_refresh = Some(Instant::now());
-            self.current.taken_at_ms = now_ms();
-            self.attach_git_stats();
-            // `taken_at_ms` is published and `widgets.relative_time` renders it,
-            // so a reader that did not see this move would freeze at "5s ago".
-            self.touch();
+            let stamp = taken_at_stamp();
+            let restamped = self.current.taken_at_ms != stamp;
+            self.current.taken_at_ms = stamp;
+            // Git stats landing rewrite rows here, so this branch changes more
+            // than the timestamp — an unconditional touch used to cover both,
+            // and dropping it without asking would have published a session's
+            // new counts only on the next unrelated refresh.
+            let git_moved = self.attach_git_stats();
+            if restamped || git_moved {
+                self.touch();
+            }
             return false;
         }
         self.refresh();
@@ -477,7 +483,9 @@ impl SnapshotStore {
     /// decides whether a stat is worth running, by its age. Asking only for rows
     /// with no answer yet is what froze every session's diffstat at its first
     /// reading for the life of the process.
-    fn attach_git_stats(&mut self) {
+    /// Returns whether any row's stats actually changed, so a caller that is
+    /// deciding whether the snapshot moved can ask rather than assume.
+    fn attach_git_stats(&mut self) -> bool {
         self.git.drain();
         let present: std::collections::HashSet<&str> = self
             .current
@@ -488,8 +496,13 @@ impl SnapshotStore {
         self.git.retain(&present);
 
         let mut wanted: Vec<(String, PathBuf)> = Vec::new();
+        let mut moved = false;
         for row in &mut self.current.sessions {
-            row.git = self.git.known.get(&row.id).and_then(|stat| stat.state);
+            let stats = self.git.known.get(&row.id).and_then(|stat| stat.state);
+            if row.git != stats {
+                row.git = stats;
+                moved = true;
+            }
             if let Some(cwd) = row.cwd.clone() {
                 wanted.push((row.id.clone(), cwd));
             }
@@ -497,6 +510,7 @@ impl SnapshotStore {
         for (id, cwd) in wanted {
             self.git.request(&id, cwd);
         }
+        moved
     }
 
     /// Acknowledge a finished turn: stamp `seen_at` on a session whose state is
@@ -719,7 +733,7 @@ impl SnapshotStore {
     /// transient database lock degrades to stale data rather than a blank list.
     pub fn refresh(&mut self) {
         self.last_refresh = Some(Instant::now());
-        let taken_at_ms = now_ms();
+        let taken_at_ms = taken_at_stamp();
         // Recorded BEFORE the reads: a commit landing between the two would
         // otherwise be recorded as already-seen and never picked up.
         self.last_data_version = self
@@ -1072,6 +1086,21 @@ pub(crate) fn repo_name(cwd: &Option<PathBuf>, repo_path: Option<&PathBuf>) -> O
         .or(cwd.as_ref())
         .and_then(|path| path.file_name())
         .map(|name| name.to_string_lossy().to_string())
+}
+
+/// The instant a snapshot was taken, to the second.
+///
+/// Deliberately coarser than the clock. `taken_at_ms` is published, and its only
+/// reader is `widgets.now_ms` feeding `time_ago`, which floors the difference to
+/// whole seconds — so sub-second precision is unobservable to the interface,
+/// while re-stamping it moved [`SnapshotStore::generation`] 2.5 times a second
+/// and capped how long any pure pane could stay cached (`frame-cost`).
+///
+/// Quantising the published *value* rather than delaying the signal is what
+/// keeps "a plugin never reads a stale published value" true: the field means
+/// "when these rows were read, to the second", and it is never behind that.
+fn taken_at_stamp() -> i64 {
+    now_ms() / 1000 * 1000
 }
 
 fn now_ms() -> i64 {

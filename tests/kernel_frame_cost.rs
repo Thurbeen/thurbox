@@ -669,3 +669,46 @@ fn a_moved_animation_clock_re_renders_a_pure_pane() {
         "the animation clock moved and the pane was still served from the cache"
     );
 }
+
+#[test]
+fn a_re_stamped_snapshot_does_not_move_the_generation_within_a_second() {
+    // `taken_at_ms` is published, but its only reader floors the difference to
+    // whole seconds, so it is published to the second. Re-reading rows that did
+    // not change must therefore leave the generation alone — it used to move
+    // 2.5 times a second, which capped how long any pure pane could be cached
+    // and was the dominant reason an idle interface kept re-rendering.
+    let db = Database::open_in_memory().expect("db");
+    let mut store = SnapshotStore::with_database(db);
+    store.refresh();
+
+    let settled = store.generation();
+    let stamp = store.current().taken_at_ms;
+    for _ in 0..50 {
+        store.refresh_if_due();
+    }
+    assert_eq!(
+        store.generation(),
+        settled,
+        "re-reading unchanged rows moved the generation"
+    );
+    assert_eq!(
+        store.current().taken_at_ms,
+        stamp,
+        "the published instant moved without the generation saying so"
+    );
+}
+
+#[test]
+fn the_published_instant_is_whole_seconds() {
+    // The contract that makes the above honest rather than merely stale: the
+    // field means "when these rows were read, to the second", and every reader
+    // of it floors to seconds anyway.
+    let db = Database::open_in_memory().expect("db");
+    let mut store = SnapshotStore::with_database(db);
+    store.refresh();
+    assert_eq!(
+        store.current().taken_at_ms % 1000,
+        0,
+        "taken_at_ms carries sub-second precision no reader can see"
+    );
+}

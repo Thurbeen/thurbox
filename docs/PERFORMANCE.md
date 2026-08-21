@@ -952,12 +952,20 @@ interface. Three fixes:
 | CPU per frame | 3.1ms | 5.4ms | **4.2ms** |
 | CPU (idle) | 2.33% | 4.83% | **3.57%** |
 
-**Still open**: at rest the snapshot's generation still moves every
-`REFRESH_INTERVAL` (400ms) because `taken_at_ms` is published and rendered as
-"5s ago", which caps how long a pure pane can be cached — worth ~0.7% idle if
-the signal were quantised to the second that label actually shows. The rest is
-the Lua boundary genuinely paid, the node paint, and `publish`'s remaining
-volatile groups. Note throughout that repaints are output-driven, so a cheaper
+A fourth followed: at rest the snapshot's generation moved every
+`REFRESH_INTERVAL` (400ms) purely because `taken_at_ms` was re-stamped, which
+capped how long any pure pane could stay cached. That field is **published to
+the second** now (`taken_at_stamp`), because its only reader is
+`widgets.now_ms` feeding `time_ago`, which floors the difference to whole
+seconds — so the precision being dropped is precision no reader could ever see.
+Quantising the published *value* rather than delaying the signal is what keeps
+"a plugin never reads a stale published value" true. The unconditional touch it
+replaced was also covering git stats landing in the same branch, so
+`attach_git_stats` now reports whether it changed a row. Idle 3.57% -> 3.33%.
+
+**Still open**: the Lua boundary genuinely paid, the node paint, and `publish`'s
+remaining volatile groups (hover, commands, inventory, diffs, links, content,
+metrics, runs). Note throughout that repaints are output-driven, so a cheaper
 frame partly becomes *more* frames rather than less CPU.
 
 ---
