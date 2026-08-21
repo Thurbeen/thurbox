@@ -62,6 +62,9 @@ fn publish_in(host: &LuaHost, snapshot: &Snapshot) {
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
+        // Every group rebuilt on every publish: a test that gated them would be
+        // testing the memoization rather than the pane.
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors: &Default::default(),
         inflight: &[],
