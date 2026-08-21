@@ -988,7 +988,15 @@ a second. Typing has to feel instant. Watching a log scroll does not.
 **Choice**: a second floor, `OUTPUT_FRAME_INTERVAL` (33ms), used when the only
 thing owing a frame is new agent output. `App::input_dirty` marks the other
 kind — a keypress, a resize, a worker result someone asked for — and those keep
-the 16ms floor. Swept across the interval, one agent at 30 lines/s, 200x50:
+the 16ms floor. It is raised only through `App::note_input`, which sets it with
+`dirty`: a site that set just `dirty` would pace a keystroke at 33ms and look
+like nothing more than a slow terminal. The three intervals also only mean
+anything in relation to each other — output slower than input, both under the
+forced-redraw floor — and getting that wrong is silent in either direction (the
+split becomes a no-op, or the 250ms floor quietly becomes the real cadence), so
+the ordering is asserted rather than left to the definitions.
+
+Swept across the interval, one agent at 30 lines/s, 200x50:
 
 | floor | fps | interface | terminal | total |
 |---|---|---|---|---|
@@ -1005,9 +1013,12 @@ thurbox hands it fewer updates.
 resets the frame buffer before every draw, so there is nothing stale to erase
 across frames, and a live terminal covers its own rect — the `Clear` was a second
 full-grid write of ~9,000 cells for a frame about to overwrite them. It is kept
-for the branches that do *not* cover their rect (a smaller grid mid-resize, the
-detached notice, a cell surface). `normalize_ambiguous_width` also rejects a cell
-on a length compare before any substring search, since U+FE0F is three bytes and
+for the branches that do *not* cover their rect, each owning its own clear rather
+than being cleared by the caller: `kernel::terminal::clear_uncovered` for a grid
+still smaller than its rect a frame after a resize, and the detached and notice
+widgets for themselves. `normalize_ambiguous_width` also rejects a cell on a
+length compare (`VARIATION_SELECTOR_16_LEN`, derived from the selector rather
+than written out) before any substring search, since U+FE0F is three bytes and
 almost every cell is one.
 
 **Measured, paired, 3 runs each:**

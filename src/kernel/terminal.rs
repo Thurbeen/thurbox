@@ -1972,6 +1972,54 @@ impl SurfaceProvider for Terminals {
 mod tests {
     use super::*;
     use crate::kernel::snapshot::SessionRow;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Paint `x` into the top-left cell, run `clear_uncovered` over the whole
+    /// rect for a grid of `grid`, and report whether the cell survived.
+    fn survives_clear(rect: (u16, u16), grid: (u16, u16)) -> bool {
+        let (cols, rows) = rect;
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).expect("terminal");
+        let parser = vt100::Parser::new(grid.1, grid.0, 0);
+        terminal
+            .draw(|frame| {
+                frame.buffer_mut()[(0, 0)].set_symbol("x");
+                clear_uncovered(frame, Rect::new(0, 0, cols, rows), parser.screen());
+            })
+            .expect("draw");
+        terminal.backend().buffer()[(0, 0)].symbol() == "x"
+    }
+
+    /// The optimisation itself: a grid that covers its rect is about to
+    /// overwrite every cell, so clearing first was a second full-grid write for
+    /// nothing (ADR-P17). Asserted by leaving a mark the clear would erase.
+    #[test]
+    fn a_grid_that_covers_its_rect_is_not_cleared() {
+        assert!(
+            survives_clear((10, 4), (10, 4)),
+            "a covering grid still triggered a clear"
+        );
+    }
+
+    /// And the case that keeps it correct. A pane lags a resize by a frame, so
+    /// the grid can be smaller than the rect it is painted into; without the
+    /// clear the rows it never reaches would show whatever the layout left
+    /// underneath.
+    #[test]
+    fn a_grid_shorter_than_its_rect_still_clears() {
+        assert!(
+            !survives_clear((10, 4), (10, 2)),
+            "a grid with fewer rows than its rect left the uncovered part unclear"
+        );
+    }
+
+    #[test]
+    fn a_grid_narrower_than_its_rect_still_clears() {
+        assert!(
+            !survives_clear((10, 4), (6, 4)),
+            "a grid with fewer columns than its rect left the uncovered part unclear"
+        );
+    }
 
     fn row(id: &str, backend: &str, backend_id: Option<&str>) -> SessionRow {
         SessionRow {

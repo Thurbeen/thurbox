@@ -92,6 +92,9 @@ impl SurfaceProvider for PlaceholderSurfaces {
 /// What a session-backed surface shows when nothing live is behind it.
 /// A centred two-line notice, for a surface with nothing to paint.
 fn render_notice(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
+    // Clears its own rect: it stands in for a surface and paints only the few
+    // centred rows, so whatever the layout left underneath would show through.
+    frame.render_widget(Clear, area);
     let mut lines = Vec::new();
     let blank = usize::from(area.height).saturating_sub(2) / 2;
     for _ in 0..blank {
@@ -111,6 +114,8 @@ fn render_notice(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
 }
 
 fn render_detached(frame: &mut Frame, area: Rect, session: &str) {
+    // Clears its own rect, for the reason `render_notice` does.
+    frame.render_widget(Clear, area);
     let mut lines = Vec::new();
     let blank = usize::from(area.height).saturating_sub(3) / 2;
     for _ in 0..blank {
@@ -286,12 +291,13 @@ pub fn render_recording(
         }
 
         Node::Surface { source, scroll, .. } => {
-            // Cleared per branch rather than up front. `swap_buffers` resets the
-            // frame buffer before every draw, so there are no leftovers to
-            // erase across frames — and a live terminal covers its rect itself,
-            // so a blanket `Clear` was a second full-grid write of ~9,000 cells
-            // for a frame that was about to overwrite them all. The branches
-            // that do NOT cover their rect still clear.
+            // No blanket `Clear` here. `swap_buffers` resets the frame buffer
+            // before every draw, so nothing stale survives to be erased, and a
+            // live terminal covers its rect itself — clearing first was a second
+            // full-grid write of ~9,000 cells for a frame about to overwrite
+            // them (ADR-P17). Whatever does *not* cover its rect clears itself
+            // instead: the paragraph below, `render_notice`/`render_detached`,
+            // and `clear_uncovered` for a grid still catching up to a resize.
             match source {
                 SurfaceSource::Cells(cells) => {
                     frame.render_widget(Clear, inner);
@@ -300,20 +306,17 @@ pub fn render_recording(
                 }
                 SurfaceSource::Session(id) => {
                     if !surfaces.render_session(frame, inner, id, *scroll) {
-                        frame.render_widget(Clear, inner);
                         render_detached(frame, inner, id);
                     }
                 }
                 SurfaceSource::Program(id) => match surfaces.render_program(frame, inner, id) {
                     ProgramPaint::Painted => {}
                     ProgramPaint::NotStarted => {
-                        frame.render_widget(Clear, inner);
                         render_notice(frame, inner, "program surface", "nothing started here yet")
                     }
                     // Said rather than shown: the grid a finished program left
                     // behind looks exactly like one that is still running.
                     ProgramPaint::Exited(program) => {
-                        frame.render_widget(Clear, inner);
                         render_notice(frame, inner, &program, "exited")
                     }
                 },
@@ -350,6 +353,13 @@ pub fn render_error(frame: &mut Frame, area: Rect, title: &str, message: &str) {
 /// a matter of opinion.
 const VARIATION_SELECTOR_16: char = '\u{FE0F}';
 
+/// How many bytes [`VARIATION_SELECTOR_16`] occupies in UTF-8.
+///
+/// A symbol shorter than this cannot contain it, which rejects every ASCII cell
+/// on an integer compare — and this walks the whole buffer on every painted
+/// frame. Derived rather than written as `3` so the two cannot drift apart.
+const VARIATION_SELECTOR_16_LEN: usize = VARIATION_SELECTOR_16.len_utf8();
+
 /// Strip the emoji-presentation selector (`U+FE0F`) from every cell of a
 /// painted frame.
 ///
@@ -381,12 +391,8 @@ pub fn normalize_ambiguous_width(buf: &mut Buffer) {
             let Some(cell) = buf.cell_mut(Position::new(x, y)) else {
                 continue;
             };
-            // `len() < 3` rejects every ASCII cell — nearly all of them — with
-            // an integer compare, before the substring search. This walks the
-            // whole buffer on every painted frame, so the common case has to be
-            // as close to free as possible.
             let symbol = cell.symbol();
-            if symbol.len() < 3 || !symbol.contains(VARIATION_SELECTOR_16) {
+            if symbol.len() < VARIATION_SELECTOR_16_LEN || !symbol.contains(VARIATION_SELECTOR_16) {
                 continue;
             }
             let stripped: String = cell
@@ -507,6 +513,36 @@ mod tests {
         // moves: the row is the width it was measured at.
         assert_eq!(buffer[(1, 0)].symbol(), " ");
         assert_eq!(buffer[(2, 0)].symbol(), "a");
+    }
+
+    /// The fast path must not eat multi-byte glyphs that merely *look* like
+    /// candidates. `len < VARIATION_SELECTOR_16_LEN` rejects a cell before the
+    /// substring search, so the boundary — a symbol as long as the selector, or
+    /// longer, carrying no selector — is where a wrong comparison would corrupt
+    /// the screen rather than merely slow it down.
+    #[test]
+    fn multi_byte_glyphs_without_the_selector_are_left_alone() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 1));
+        // 2 bytes (below the threshold), 3 bytes (exactly at it), 4 bytes (above).
+        buffer[(0, 0)].set_symbol("é");
+        buffer[(1, 0)].set_symbol("中");
+        buffer[(2, 0)].set_symbol("𝄞");
+
+        normalize_ambiguous_width(&mut buffer);
+
+        assert_eq!(buffer[(0, 0)].symbol(), "é");
+        assert_eq!(buffer[(1, 0)].symbol(), "中");
+        assert_eq!(buffer[(2, 0)].symbol(), "𝄞");
+    }
+
+    /// The threshold is derived from the selector rather than written as `3`,
+    /// so this pins the two together: a symbol shorter than the selector cannot
+    /// contain it, and skipping it is what makes the common cell free.
+    #[test]
+    fn the_length_threshold_is_the_selectors_own_width() {
+        assert_eq!(VARIATION_SELECTOR_16_LEN, VARIATION_SELECTOR_16.len_utf8());
+        assert_eq!(VARIATION_SELECTOR_16_LEN, 3);
+        assert!("a".len() < VARIATION_SELECTOR_16_LEN);
     }
 
     /// A cell holding nothing but the selector would print nothing at all, which

@@ -128,7 +128,8 @@ forced-redraw floor (`FORCE_REDRAW_INTERVAL`) elapses, never on every iteration.
 There are **two floors between paints**, because typing has to feel instant and
 watching a log scroll does not: `MIN_FRAME_INTERVAL` (16 ms) when a person did
 something — a key, a resize, a worker result they asked for, tracked by
-`input_dirty` — and `OUTPUT_FRAME_INTERVAL` (33 ms) when the only thing owing a
+`input_dirty`, which is set with `dirty` through the one `App::note_input` and
+never alone — and `OUTPUT_FRAME_INTERVAL` (33 ms) when the only thing owing a
 frame is agent output. Applying the tight floor to both made a chatty agent drive
 60 paints a second to show 30 lines; the split is worth 30% of the loaded cost
 (ADR-P17). What marks the screen dirty:

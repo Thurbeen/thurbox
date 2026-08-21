@@ -1591,6 +1591,17 @@ impl App {
         self.data_epoch = self.data_epoch.wrapping_add(1);
     }
 
+    /// Note that a person did something — a key, a click, a paste, a resize.
+    ///
+    /// Distinct from [`Self::note_data_change`] only in what it does *not* do:
+    /// no published value moved, so nothing needs re-publishing. Both mark the
+    /// frame as owed to a person, which is what buys it [`MIN_FRAME_INTERVAL`]
+    /// rather than the slower floor agent output gets.
+    fn note_input(&mut self) {
+        self.dirty = true;
+        self.input_dirty = true;
+    }
+
     /// Note that published data moved, and that the screen owes a frame.
     ///
     /// The two go together everywhere this is used: something that changes what
@@ -1598,11 +1609,10 @@ impl App {
     /// polling quickly again after.
     fn note_data_change(&mut self) {
         self.note_published_change();
-        self.dirty = true;
         // A worker result or a row another process wrote is the answer to
         // something someone asked for, so it earns the tight floor. Only agent
         // output — which arrives whether or not anyone is looking — does not.
-        self.input_dirty = true;
+        self.note_input();
         self.last_activity = Instant::now();
     }
 
@@ -1860,8 +1870,7 @@ impl App {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     self.publish_for_batch(&mut published);
                     self.time_op("input_dispatch", |app| app.on_key(&key));
-                    self.dirty = true;
-                    self.input_dirty = true;
+                    self.note_input();
                 }
                 // Dropped rather than merely uncaptured when the feature is
                 // off, so the flag stays authoritative even if a terminal
@@ -1870,8 +1879,7 @@ impl App {
                 Event::Mouse(mouse) if self.mouse => {
                     self.publish_for_batch(&mut published);
                     self.on_mouse(mouse);
-                    self.dirty = true;
-                    self.input_dirty = true;
+                    self.note_input();
                 }
                 // A bracketed paste from the terminal itself. Routed to
                 // whatever has focus, exactly as `ctrl+v` is: a modal's
@@ -1879,13 +1887,9 @@ impl App {
                 Event::Paste(text) => {
                     self.publish_for_batch(&mut published);
                     self.on_paste(text);
-                    self.dirty = true;
-                    self.input_dirty = true;
+                    self.note_input();
                 }
-                Event::Resize(..) => {
-                    self.dirty = true;
-                    self.input_dirty = true;
-                }
+                Event::Resize(..) => self.note_input(),
                 _ => {}
             }
         }
@@ -4664,6 +4668,30 @@ fn to_press(key: &KeyEvent) -> KeyPress {
 mod tests {
     use super::*;
     use thurbox::kernel::host::Float;
+
+    /// The three intervals only mean anything in relation to each other, and
+    /// nothing enforces that at the definitions.
+    ///
+    /// Output must wait longer than input, or the split buys nothing; and both
+    /// must stay under the forced-redraw floor, or the floor becomes the real
+    /// cadence and the constant above it is silently dead — a setting that
+    /// looks tuned while doing nothing (ADR-P17).
+    #[test]
+    fn the_frame_floors_stand_in_the_right_order() {
+        assert!(
+            OUTPUT_FRAME_INTERVAL > MIN_FRAME_INTERVAL,
+            "output is paced no slower than input, so the split is a no-op"
+        );
+        assert!(
+            OUTPUT_FRAME_INTERVAL < FORCE_REDRAW_INTERVAL,
+            "output waits past the forced-redraw floor, which then sets the \
+             cadence instead — the constant would be dead"
+        );
+        assert!(
+            MIN_FRAME_INTERVAL < FORCE_REDRAW_INTERVAL,
+            "input waits past the forced-redraw floor"
+        );
+    }
 
     /// Startup says which interface loaded, but only when there is a question.
     ///
