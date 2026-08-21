@@ -13,7 +13,17 @@
 > Release lines: 1.x is the latest stable line (newest release v1.8.7) and gets
 > bug and security fixes; 2.x is published but unstable — its plugin kernel, the
 > snapshot panes read, and the panes it ships can change between releases. Every
-> installer takes the newest release (2.x) unless a version is pinned.
+> installer takes the newest release (2.x) unless a version is pinned, so 1.x is
+> the recommended install: run `export VERSION=v1.8.7` and then
+> `curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh`
+> on Linux/macOS, or `$env:THURBOX_VERSION = 'v1.8.7'` and then
+> `irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex`
+> on Windows. The version assignment must be its own line; as a pipeline prefix
+> it binds to curl, not to the sh reading from the pipe. Auto-update never
+> crosses a major version, so a 1.x install is told 2.x exists and is never moved
+> onto it; `thurbox-cli update --force` is the deliberate way across. The
+> package-manager channels (winget, Chocolatey, Homebrew, AUR) publish only the
+> newest release and cannot pin 1.x.
 >
 > Since 2.0 its defining feature is that the interface is fully customizable:
 > no UI is compiled into the binary. thurbox boots a Rust kernel that reads a

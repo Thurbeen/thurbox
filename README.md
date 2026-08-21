@@ -68,10 +68,13 @@ it are data files you edit too. No fork, no recompile, no restart.
 > what installs, what is owed, and what v2 gained — see
 > [What v1 had, and where it is in v2](#what-v1-had-and-where-it-is-in-v2).
 >
-> **Upgrading** asks once, on the first v2 launch of a profile with v1 history,
-> before anything changes. **To stay on v1** — the stable line — answer `q` at
-> that prompt: it turns auto-update off and prints the reinstall command. Or
-> install it yourself:
+> **Upgrading to v2 is never automatic.** Auto-update does not cross a major
+> version: a 1.x install is told 2.x exists and keeps updating along 1.x. You
+> cross on purpose, with `thurbox-cli update --force` or a fresh install. And the
+> first v2 launch of a profile with v1 history asks once, before anything changes
+> — answering `q` there prints the reinstall command for 1.x.
+>
+> **To go back to v1** — the stable line:
 >
 > ```bash
 > # export, not a prefix: `VERSION=… curl | sh` binds it to curl, not to the sh
@@ -79,9 +82,12 @@ it are data files you edit too. No fork, no recompile, no restart.
 > curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 > ```
 >
-> Then set `auto_update = false` under `[features]` in
-> `~/.config/thurbox/settings.toml`, or the next launch pulls the unstable v2
-> back. v1 is maintained on the
+> ```powershell
+> $env:THURBOX_VERSION = 'v1.8.7'
+> irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
+> ```
+>
+> v1 is maintained on the
 > [`v1.x`](https://github.com/Thurbeen/thurbox/tree/v1.x) branch; 1.x patches are
 > on the [releases page](https://github.com/Thurbeen/thurbox/releases).
 
@@ -89,54 +95,76 @@ it are data files you edit too. No fork, no recompile, no restart.
 
 ## Installation
 
-> [!NOTE]
-> The latest release is **v2, which is unstable**. Every route below takes it by
-> default. The latest **stable** release is **v1.8.7**; to install that instead,
-> pin the version on the shell installer (`VERSION`) or the PowerShell one
-> (`THURBOX_VERSION`), or build from the `v1.x` branch. The package-manager
-> channels (winget, Chocolatey, Homebrew, AUR) always publish the newest
-> release and have no way to pin v1.
+> [!IMPORTANT]
+> **Install v1 unless you specifically want v2's customizable interface.** v1.8.7
+> is the latest stable release; v2 is the newest one, and it is unstable. Every
+> installer takes the *newest* release unless you pin a version, so the
+> recommended commands below pin it. The package-manager channels (winget,
+> Chocolatey, Homebrew, AUR) publish only the newest release and **cannot** pin
+> v1 — on those channels the shell/PowerShell installers are the way to v1.
 
-**One-liner:**
+> [!NOTE]
+> **Windows support is experimental**, on either line. The core works (psmux as
+> the multiplexer, a native ConPTY backend, WSL distros as remote hosts) but sees
+> less testing than Linux/macOS — expect rough edges and please report issues.
+> Every Windows route needs [psmux](https://github.com/psmux/psmux) as the
+> multiplexer, installed separately.
+
+### Recommended: v1, the stable line
+
+**Linux / macOS:**
+
+```bash
+export VERSION=v1.8.7
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$env:THURBOX_VERSION = 'v1.8.7'
+irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
+```
+
+> [!WARNING]
+> **`export` / `$env:` on its own line is not a style choice.** In
+> `VERSION=v1.8.7 curl … | sh` the assignment binds to `curl`, and the `sh`
+> reading from the pipe never sees it — you get the newest release, silently.
+> Set the variable first, on its own line.
+
+That install stays on v1: thurbox's auto-update **never crosses a major
+version**, so a 1.x binary will not wake up running 2.x. It still *reports* that
+2.x exists; `thurbox-cli update --force` is the deliberate way across.
+
+### The newest release (v2, unstable)
+
+**Linux / macOS:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
-Installs the latest release — currently the unstable v2 — to `~/.local/bin`
-with checksum verification and platform auto-detection.
-
-**Options:**
-
-```bash
-# Latest stable (v1)
-VERSION=v1.8.7 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-
-# Custom directory
-INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-
-# Pin any version
-VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-```
-
-**Windows (PowerShell) — recommended:**
-
-> [!NOTE]
-> Windows support is **experimental** for now. The core works (psmux as the
-> multiplexer, a native ConPTY backend, WSL distros as remote hosts), but it
-> sees less testing than Linux/macOS — expect rough edges and please report
-> issues.
+**Windows (PowerShell):**
 
 ```powershell
 irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
 ```
 
-Installs the latest `x86_64-pc-windows-msvc` release to
-`%LOCALAPPDATA%\Programs\thurbox` (added to your user `PATH`) with checksum
-verification. Pin a version or directory with the `THURBOX_VERSION` /
-`THURBOX_INSTALL_DIR` env vars — `$env:THURBOX_VERSION = 'v1.8.7'` before the
-`irm` line installs the latest stable instead. Needs
-[psmux](https://github.com/psmux/psmux) as the multiplexer.
+Installs the latest release — currently the unstable v2 — with checksum
+verification and platform auto-detection, to `~/.local/bin` on Linux/macOS and
+`%LOCALAPPDATA%\Programs\thurbox` (added to your user `PATH`) on Windows.
+
+**Other options:**
+
+```bash
+# Custom directory
+export INSTALL_DIR=/usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+
+# Pin any version — PowerShell uses $env:THURBOX_VERSION / $env:THURBOX_INSTALL_DIR
+export VERSION=v1.0.0
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+```
 
 **winget (Windows):**
 
@@ -162,13 +190,14 @@ Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
 separately — there is no Chocolatey package for it).
 
 > [!TIP]
-> **On Windows, `irm … install.ps1 | iex` is the recommended route.** Both
-> winget-pkgs and the Chocolatey community repo are *manually moderated* and
-> rate-limited, so thurbox publishes to each **at most once every 30 days**
-> (intermediate releases are coalesced into the next submission). Those channels
-> therefore lag the newest build; the PowerShell installer and
-> [GitHub Releases](https://github.com/Thurbeen/thurbox/releases) always have it
-> immediately.
+> **On Windows, `irm … install.ps1 | iex` is the recommended route** — and the
+> only Windows route that can install v1. Both winget-pkgs and the Chocolatey
+> community repo are *manually moderated* and rate-limited, so thurbox publishes
+> to each **at most once every 30 days** (intermediate releases are coalesced
+> into the next submission). Those channels carry only the newest release,
+> lagging behind it; the PowerShell installer and
+> [GitHub Releases](https://github.com/Thurbeen/thurbox/releases) have every
+> version immediately.
 
 **Homebrew (macOS / Linux):**
 

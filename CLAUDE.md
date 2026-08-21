@@ -838,7 +838,9 @@ deactivate/status — manage opt-in extensions; see below), `version`
 (prints the running version; `--check` queries GitHub's latest release —
 gated on `[features] version_check`, on by default for 1.0), `update`
 (downloads, verifies, and replaces the installed binaries with the latest
-release — `--force` bypasses the up-to-date/dev-build guards; gated on
+release **within the current major** — a new major is reported, never installed,
+because 2.x replaced the whole interface; `--force` bypasses the
+up-to-date/dev-build/major guards; gated on
 `[features] auto_update`, on by default for 1.0; the TUI also runs this silently on
 startup when the flag is on), `notify`
 (diagnose OS desktop notifications: prints the detected delivery backend

@@ -13,16 +13,21 @@
 //!   the up-to-date / dev-build guards).
 //!
 //! It reuses the version-check plumbing ([`fetch_latest_release`],
-//! [`decide_update`], [`current_version`]) so dev builds (`0.0.0-dev`) never
-//! auto-update, and mirrors `scripts/install.sh` exactly: the same release
-//! artifacts, target-triple mapping, and SHA256 verification. Like the rest of
+//! [`decide_update`], [`crosses_major`], [`current_version`]) so dev builds
+//! (`0.0.0-dev`) never auto-update and **a new major is never installed
+//! automatically** — 2.x replaced v1's whole interface, so crossing that line is
+//! the user's decision, not a background download's. It mirrors
+//! `scripts/install.sh` exactly: the same release artifacts, target-triple
+//! mapping, and SHA256 verification. Like the rest of
 //! thurbox it adds no new crate dependency — downloads go through the
 //! `curl`/`wget` helpers and `tar` / `sha256sum`/`shasum` are shelled out to.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::agent::version_check::{current_version, decide_update, fetch_latest_release};
+use crate::agent::version_check::{
+    crosses_major, current_version, decide_update, fetch_latest_release,
+};
 
 /// GitHub release-download base for the thurbox repo (same repo as
 /// `scripts/install.sh`); the per-release directory is `<base>/v{version}/`.
@@ -41,6 +46,9 @@ pub enum UpdateOutcome {
     /// A development build — skipped (its version doesn't order against tags).
     /// Only returned when `force` is false.
     SkippedDevBuild { current: String },
+    /// A newer release exists but it is a new **major**, so it was reported and
+    /// not installed. Only returned when `force` is false.
+    SkippedMajor { current: String, latest: String },
 }
 
 /// Map an OS/arch pair to the release artifact's Rust target triple. Mirrors
@@ -231,9 +239,10 @@ fn install_binaries(extract_dir: &Path, install_dir: &Path) -> Result<Vec<String
 
 /// Download, verify, extract, and install the latest release in place.
 ///
-/// `force` bypasses the up-to-date and dev-build guards (re-downloads + replaces
-/// regardless). Best-effort and side-effect-free until the checksum passes — any
-/// failure before the swap leaves the installed binaries untouched.
+/// `force` bypasses the up-to-date, dev-build and major-version guards
+/// (re-downloads + replaces regardless). Best-effort and side-effect-free until
+/// the checksum passes — any failure before the swap leaves the installed
+/// binaries untouched.
 pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     let current = current_version().to_string();
 
@@ -245,6 +254,14 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     let latest = fetch_latest_release()?;
     if !force && decide_update(&current, &latest).is_none() {
         return Ok(UpdateOutcome::UpToDate { current, latest });
+    }
+
+    // A new major is a different program under the same binary name — 2.x
+    // replaced v1's compiled-in interface with the plugin kernel — so it is
+    // reported and left for the user to take deliberately. Without this a 1.x
+    // install silently woke up running 2.x.
+    if !force && crosses_major(&current, &latest) {
+        return Ok(UpdateOutcome::SkippedMajor { current, latest });
     }
 
     let target = current_target()?;

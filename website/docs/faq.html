@@ -68,7 +68,16 @@ breadcrumb: 'FAQ'
   where the customizable Lua interface lives, but its kernel, the snapshot panes read, and the panes
   it ships can still change between releases &mdash; which can break panes you wrote or installed.
   Every installer takes the newest release unless you pin a version, so 2.x is what you get by
-  default. See
+  default. Pinning v1 is one line before the installer:
+</p>
+<pre data-wrap><code class="language-bash">export VERSION=v1.8.7
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+<pre data-wrap><code class="language-powershell">$env:THURBOX_VERSION = 'v1.8.7'
+irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
+<p>
+  That pin holds: thurbox&rsquo;s auto-update never crosses a major version, so a 1.x install is
+  told 2.x exists and is never moved onto it. The package-manager channels (winget, Chocolatey,
+  Homebrew, AUR) publish only the newest release and cannot pin v1. See
   <a href="installation.html#specific-version">pinning a version</a>
   and
   <a href="v1.html">using v1</a>.
@@ -144,7 +153,7 @@ breadcrumb: 'FAQ'
         "name": "Which version should I install?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "1.x is the latest stable line (newest release v1.8.7), and the one to run if you want a version that does not change under you. 2.x is unstable: it is where the customizable Lua interface lives, but its kernel, the snapshot panes read, and the panes it ships can still change between releases — which can break panes you wrote or installed. Every installer takes the newest release unless you pin a version (export VERSION=v1.8.7 for the shell script, $env:THURBOX_VERSION = 'v1.8.7' for PowerShell), so 2.x is what you get by default."
+          "text": "1.x is the latest stable line (newest release v1.8.7), and the recommended one to install if you want a version that does not change under you. 2.x is unstable: it is where the customizable Lua interface lives, but its kernel, the snapshot panes read, and the panes it ships can still change between releases — which can break panes you wrote or installed. Every installer takes the newest release unless you pin a version, so 2.x is what you get by default. To install v1, set the version on its own line first and then run the installer: export VERSION=v1.8.7 followed by curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh on Linux or macOS, or $env:THURBOX_VERSION = 'v1.8.7' followed by irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex on Windows. That pin holds, because thurbox auto-update never crosses a major version: a 1.x install is told 2.x exists and is never moved onto it. The package-manager channels (winget, Chocolatey, Homebrew, AUR) publish only the newest release and cannot pin v1."
         }
       },
       {

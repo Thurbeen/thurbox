@@ -605,11 +605,30 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             best-effort. The replaced binary takes effect on the <strong>next launch</strong>, so the
             TUI shows an &ldquo;Updated to vX.Y.Z &mdash; restart to apply&rdquo; status line.
             <code>thurbox-cli update</code>
-            performs the same update on demand (<code>--force</code> bypasses the up-to-date and
-            dev-build guards); dev builds (<code>0.0.0-dev</code>) never auto-update.
+            performs the same update on demand (<code>--force</code> bypasses the up-to-date,
+            dev-build and major-version guards); dev builds (<code>0.0.0-dev</code>) never
+            auto-update.
             <code>version_check</code> and <code>auto_update</code> are independent &mdash; enable
             either or both.
           </p>
+          <div class="info-box">
+            <p>
+              <strong>Auto-update never crosses a major version.</strong>
+              A 1.x install is told that 2.x exists &mdash; the badge and
+              <code>thurbox-cli version --check</code>
+              both report it &mdash; and is never moved onto it; it keeps updating along 1.x. 2.x
+              replaced v1&rsquo;s compiled-in interface with the Lua plugin kernel, so a silent
+              crossing would hand you a different program under the same binary name.
+              <code>thurbox-cli update --force</code>
+              is the deliberate way across.
+            </p>
+            <p>
+              The guard lives in the binary, so only a build carrying it is protected: releases up
+              to v1.8.7 predate it. On an existing 1.8.x install,
+              <code>auto_update = false</code>
+              is the reliable hold until a 1.x patch carrying the guard ships.
+            </p>
+          </div>
 
           <h3 id="notifications"><code>[notifications]</code> &mdash; OS notification settings</h3>
           <p>

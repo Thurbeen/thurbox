@@ -53,23 +53,44 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
 
     match crate::agent::version_check::refresh_cache() {
         Ok((_, Some(status))) => {
+            // A new major is reported but never installed for you, so the two
+            // cases need different advice — pointing a 1.x user at the plain
+            // installer would hand them the 2.x line it is warning them about.
+            let latest = &status.latest;
+            let is_major = crate::agent::version_check::crosses_major(current, latest);
+            let (label, upgrade, summary) = if is_major {
+                (
+                    "available (new major)",
+                    format!(
+                        "thurbox-cli update --force (v{latest} is a NEW MAJOR — \
+                         not installed automatically)"
+                    ),
+                    format!(
+                        "New major available: {current} → {latest}. Not installed \
+                         automatically — `thurbox-cli update --force` takes it."
+                    ),
+                )
+            } else {
+                (
+                    "available",
+                    "thurbox-cli update".to_string(),
+                    format!("Update available: {current} → {latest}"),
+                )
+            };
             let human = kv(&[
                 ("current", current.to_string()),
-                ("latest", status.latest.clone()),
-                ("update", "available".to_string()),
-                (
-                    "upgrade",
-                    "curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
-                        .to_string(),
-                ),
+                ("latest", latest.clone()),
+                ("update", label.to_string()),
+                ("upgrade", upgrade),
             ]);
             CommandOutput::new(
                 json!({
                     "version": current,
-                    "latest": status.latest,
+                    "latest": latest,
                     "update_available": true,
+                    "major_upgrade": is_major,
                     "check_enabled": true,
-                    "summary": format!("Update available: {current} → {}", status.latest),
+                    "summary": summary,
                 }),
                 human,
             )

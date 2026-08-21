@@ -63,6 +63,36 @@ once, before the interface takes the terminal, and declining turns `auto_update`
 off and prints how to reinstall 1.x. That gate is the only reason replacing an
 interface under an unchanged binary name is defensible.
 
+### Auto-update does not cross a major, and that has to be shipped to v1
+
+`agent::version_check::crosses_major` stops `perform_update` installing a release
+whose major is higher than the running binary's; it is reported instead
+(`UpdateOutcome::SkippedMajor`, `thurbox-cli update --force` to take it anyway).
+This is what makes "stay on 1.x" a property of the binary rather than a setting
+the user has to remember.
+
+**It only protects a binary that carries it.** Every release up to v1.8.7 predates
+this commit, so those installs still resolve `releases/latest` to a 2.x tag and
+take it. Closing that needs a **1.x maintenance cut carrying this change**,
+released the way this section describes — dispatch `cd.yml` from `v1.x` with an
+explicit `version`, which publishes with `make_latest: false` and skips the
+package channels. Until such a cut exists, the only reliable hold for an existing
+1.x install is `auto_update = false`, which is what the consent gate writes.
+
+Note the ordering trap when you do cut it: the guard reads the running binary's
+own major, so it is the *1.x* build that must contain it. Landing it on `main`
+alone protects 2.x from a future 3.x and nobody else.
+
+The other way to protect those installs was to move GitHub's `releases/latest`
+pointer back to the newest 1.x tag, which every pre-guard binary and every
+installer resolves. **That was considered and rejected: 2.x stays `latest`.** It
+would have frozen auto-update for the whole 2.x population — a 2.x binary
+resolving a 1.x tag sees nothing newer and stops updating — and made the
+unpinned one-liner install 1.x, which is a different claim than "1.x is
+recommended". The cost is that the guard reaches existing 1.x installs only via
+the maintenance cut above, and until then `auto_update = false` is what holds
+them.
+
 Such a cut is a **maintenance release**, and `cd.yml` treats it as one: it
 compares the version being cut against every existing tag and, when it is behind
 the highest, publishes the GitHub Release with `make_latest: false` and skips

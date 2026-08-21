@@ -299,7 +299,7 @@ effect in either direction. Same for `three_panel_min_cols` above.
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `true` | TUI `Ctrl+D` soft-deletes (Ctrl+Z undo); off = hard delete after a confirmation prompt |
 | `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
-| `auto_update` | `true` | Silent self-update: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
+| `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
 
 `automations = false` is a full stop on the TUI side: the pane
 disappears (the session list takes the whole left column and `j`/`k`
@@ -356,11 +356,27 @@ terminal and is best-effort (any failure is logged and startup continues on
 the current version). The replaced binary takes effect on the **next launch**
 (the running process keeps its open file), so the TUI shows an "Updated to
 vX.Y.Z — restart to apply" status line. `thurbox-cli update` performs the
-same update on demand (with `--force` to bypass the up-to-date and dev-build
-guards); dev builds (`0.0.0-dev`) never auto-update. The default install
+same update on demand (with `--force` to bypass the up-to-date, dev-build and
+major-version guards); dev builds (`0.0.0-dev`) never auto-update. The default install
 location (`~/.local/bin`) is user-writable; a system-wide install in a
 root-owned directory will fail the replace (logged, non-fatal). `version_check`
 and `auto_update` are independent — enable either or both.
+
+**Auto-update never crosses a major version.** A 1.x install is told that 2.x
+exists (the badge, and `thurbox-cli version --check`, both report it) and is
+never moved onto it; it keeps updating along 1.x. This is not conservatism about
+version numbers — 2.x replaced v1's compiled-in interface with the Lua plugin
+kernel, so a silent crossing would hand someone a different program under the
+same binary name. `thurbox-cli update --force` is the deliberate way across, and
+the first v2 launch of a profile with v1 history still asks before anything
+changes. The guard is `agent::version_check::crosses_major`, and it applies to
+every future major too.
+
+> Only a binary that *carries* the guard is protected by it. Releases up to
+> v1.8.7 predate it, so an existing 1.8.x install with `auto_update = true` will
+> still take 2.x on its next launch until a 1.x maintenance cut ships this
+> commit. Until then, `auto_update = false` in `settings.toml` is the reliable
+> hold — which is exactly what the v1→v2 consent gate writes when you decline.
 
 `auto_update = true` also keeps **installed extensions** in step with the
 binary. Extension versions are pinned to the binary's release tag, so an

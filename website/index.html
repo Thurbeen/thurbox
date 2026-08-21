@@ -122,23 +122,24 @@ footer: true
 
           <div class="install-panel" role="tabpanel" id="panel-script" aria-labelledby="tab-script">
             <p>
-              Linux &amp; macOS. Auto-detects your platform, verifies checksums, and installs the
-              latest release &mdash; currently the unstable v2 &mdash; to
+              Linux &amp; macOS. Auto-detects your platform, verifies checksums, and installs to
               <code>~/.local/bin</code>
-              .
-            </p>
-            <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
-            <p>
-              For the latest
-              <strong>stable</strong>
-              release instead, pin v1 &mdash;
+              . This is the
+              <strong>recommended</strong>
+              command: it pins v1, the latest stable release.
               <code>export</code>
-              on its own line, or the
+              goes on its own line, or the
               <code>sh</code>
-              reading from the pipe never sees it:
+              reading from the pipe never sees it.
             </p>
             <pre data-wrap><code class="language-bash">export VERSION=v1.8.7
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+            <p>
+              Drop the pin to take the newest release instead &mdash; currently
+              <a href="docs/v1.html">v2, which is unstable</a>
+              :
+            </p>
+            <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
           </div>
 
           <div
@@ -151,21 +152,21 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             <p>
               Native Windows (PowerShell 5.1+), and the
               <strong>recommended route</strong>
-              &mdash; unlike winget and Chocolatey it always has the newest
-              release. Verifies checksums and installs to
+              on Windows &mdash; unlike winget and Chocolatey it can pin a
+              version. Verifies checksums and installs to
               <code>%LOCALAPPDATA%\Programs\thurbox</code>
               (added to your user
               <code>PATH</code>
-              ).
+              ). The pin below takes v1, the latest stable release.
+            </p>
+            <pre data-wrap><code class="language-powershell">$env:THURBOX_VERSION = 'v1.8.7'
+irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
+            <p>
+              Drop the pin to take the newest release instead &mdash; currently
+              <a href="docs/v1.html">v2, which is unstable</a>
+              :
             </p>
             <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
-            <p>
-              For the latest
-              <strong>stable</strong>
-              release, set
-              <code>$env:THURBOX_VERSION = 'v1.8.7'</code>
-              first.
-            </p>
           </div>
 
           <div class="install-panel" role="tabpanel" id="panel-winget" aria-labelledby="tab-winget" hidden>
@@ -1150,8 +1151,9 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
               <p><code>export INSTALL_DIR=/usr/local/bin</code></p>
             </div>
             <div class="install-alt-item">
-              <h4>Latest stable (v1)</h4>
+              <h4>Latest stable (v1) &mdash; recommended</h4>
               <p><code>export VERSION=v1.8.7</code></p>
+              <p><code>$env:THURBOX_VERSION = 'v1.8.7'</code></p>
             </div>
             <div class="install-alt-item">
               <h4>Full Guide</h4>

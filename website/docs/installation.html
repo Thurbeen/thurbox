@@ -17,14 +17,34 @@ breadcrumb: 'Installation'
               <strong>The newest release is 2.x, and 2.x is unstable.</strong>
               Every route on this page installs it by default. The latest stable release is
               <a href="https://github.com/Thurbeen/thurbox/releases/tag/v1.8.7">v1.8.7</a>
-              on the 1.x line &mdash;
-              <a href="#specific-version">pin a version</a>
-              to install that instead. The package-manager channels below always carry the newest
-              release and cannot pin 1.x. See
+              on the 1.x line, and it is the
+              <strong>recommended</strong>
+              one unless you specifically want 2.x&rsquo;s customizable Lua interface. Only the
+              shell and PowerShell installers can pin it; the package-manager channels below
+              always carry the newest release. See
               <a href="v1.html">using v1</a>.
             </p>
           </div>
 
+          <h3 id="recommended-v1">Recommended: install v1, the stable line</h3>
+          <p>Linux and macOS:</p>
+          <pre data-wrap><code class="language-bash">export VERSION=v1.8.7
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+          <p>Windows (PowerShell 5.1+):</p>
+          <pre data-wrap><code class="language-powershell">$env:THURBOX_VERSION = 'v1.8.7'
+irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
+          <p>
+            The pin holds after install: thurbox&rsquo;s auto-update
+            <strong>never crosses a major version</strong>, so a 1.x install is told that 2.x
+            exists and is never moved onto it.
+            <code>thurbox-cli update --force</code>
+            is the deliberate way across. (That guard is in the binary, and releases up to v1.8.7
+            predate it &mdash; if you are already running 1.8.x, set
+            <code>auto_update = false</code>
+            until a 1.x patch carrying it ships.)
+          </p>
+
+          <h3 id="newest-release">The newest release (2.x, unstable)</h3>
           <p>
             The install script downloads the latest release, detects your platform, and verifies
             checksums automatically.

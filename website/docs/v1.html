@@ -99,22 +99,40 @@ breadcrumb: 'Using v1'
   Staying on v1, or going back
   <a href="#staying" class="heading-anchor">#</a>
 </h2>
-<p>
-  Pin a 1.x version and turn auto-update off, or the next launch will bring you forward again:
-</p>
+<p>Pin a 1.x version. On Linux and macOS:</p>
 <pre data-wrap><code class="language-bash">export VERSION=v1.8.7
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+<p>On Windows:</p>
+<pre data-wrap><code class="language-powershell">$env:THURBOX_VERSION = 'v1.8.7'
+irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
 <p>
-  Then set <code>auto_update = false</code> under <code>[features]</code> in
-  <code>~/.config/thurbox/settings.toml</code>. Declining the first-launch prompt does both of these
-  for you and says so.
-</p>
-<p>
-  <code>export</code> matters: in <code>VERSION=x curl … | sh</code> the assignment binds to
-  <code>curl</code>, and the <code>sh</code> reading from the pipe never sees it. The newest 1.x patch
-  is on the
+  <code>export</code> / <code>$env:</code> on its own line matters: in
+  <code>VERSION=x curl … | sh</code> the assignment binds to <code>curl</code>, and the
+  <code>sh</code> reading from the pipe never sees it &mdash; you would get the newest release,
+  silently. The newest 1.x patch is on the
   <a href="https://github.com/Thurbeen/thurbox/releases">releases page</a>.
 </p>
+<div class="info-box">
+  <p>
+    <strong>Auto-update will not carry you into 2.x.</strong>
+    thurbox never crosses a major version on its own: a 1.x install is told that 2.x exists and
+    keeps updating along 1.x.
+    <code>thurbox-cli update --force</code>
+    is the deliberate way across, and the first 2.x launch of a profile with v1 history asks before
+    anything changes.
+  </p>
+  <p>
+    One caveat, because it decides what you should do today: that guard lives in the binary, and
+    releases up to v1.8.7 predate it. If you are already on 1.8.x, set
+    <code>auto_update = false</code>
+    under
+    <code>[features]</code>
+    in
+    <code>~/.config/thurbox/settings.toml</code>
+    until a 1.x patch carrying the guard ships. Declining the first-launch prompt writes that for
+    you and says so.
+  </p>
+</div>
 
 <h2 id="data">
   Your sessions are safe either way

@@ -242,14 +242,26 @@ pub fn notice(version: &str, skin: &Skin) -> String {
 /// The command exports `VERSION` rather than prefixing the pipeline because a
 /// prefix binds to `curl`, not to the `sh` reading from it. That is the reason,
 /// not something the prompt explains -- a person at a gate wants the command.
+/// On Windows that command is unrunnable, so the PowerShell installer is printed
+/// there instead, with the same pin expressed as `$env:THURBOX_VERSION`.
 pub fn downgrade_instructions(last_v1: &str, skin: &Skin) -> String {
     let (a, m, t) = (&skin.accent, &skin.muted, &skin.text);
     let (safe, bold, r) = (&skin.safe, &skin.bold, &skin.reset);
+    let install = if cfg!(windows) {
+        format!(
+            "\x20     {a}{bold}$env:THURBOX_VERSION = '{last_v1}'{r}\n\
+             \x20     {a}{bold}irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex{r}\n"
+        )
+    } else {
+        format!(
+            "\x20     {a}{bold}export VERSION={last_v1}{r}\n\
+             \x20     {a}{bold}curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh{r}\n"
+        )
+    };
     format!(
         "\n  {safe}●{r} {t}Staying on v1. Auto-update is off, so nothing moves you again.{r}\n\n\
          \x20   {m}Reinstall it with:{r}\n\n\
-         \x20     {a}{bold}export VERSION={last_v1}{r}\n\
-         \x20     {a}{bold}curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh{r}\n\n\
+         {install}\n\
          \x20   {m}Newer 1.x patches   {r}{t}https://github.com/Thurbeen/thurbox/releases{r}\n\
          \x20   {m}Change your mind    {r}{t}run thurbox again and answer yes{r}\n\n"
     )
@@ -260,7 +272,7 @@ pub fn downgrade_instructions(last_v1: &str, skin: &Skin) -> String {
 /// A concrete version because `install.sh` needs an exact tag; the instructions
 /// point at the releases page for any newer 1.x patch, so this going stale costs
 /// the reader nothing.
-pub const LAST_V1_RELEASE: &str = "v1.8.6";
+pub const LAST_V1_RELEASE: &str = "v1.8.7";
 
 /// Ask if this profile has to be asked, and act on the answer.
 ///
@@ -483,13 +495,28 @@ mod tests {
     #[test]
     fn the_downgrade_instruction_exports_and_disables_auto_update() {
         let text = downgrade_instructions("v1.8.6", &Skin::plain());
-        assert!(
-            text.contains("export VERSION=v1.8.6"),
-            "a bare `VERSION=x curl | sh` sets it for curl, not for sh: {text}"
-        );
+        if cfg!(windows) {
+            assert!(
+                text.contains("$env:THURBOX_VERSION = 'v1.8.6'") && text.contains("install.ps1"),
+                "a Windows reader needs a command Windows can run: {text}"
+            );
+        } else {
+            assert!(
+                text.contains("export VERSION=v1.8.6"),
+                "a bare `VERSION=x curl | sh` sets it for curl, not for sh: {text}"
+            );
+        }
         assert!(
             text.contains("Auto-update is off"),
             "reinstalling 1.x is pointless if auto-update will undo it"
         );
+    }
+
+    #[test]
+    fn the_pinned_v1_release_is_a_1_x_tag() {
+        // The gate hands this straight to an installer, so it has to be an exact
+        // tag on the line it is offering -- a 2.x version here would send a
+        // declining reader back to what they just declined.
+        assert!(LAST_V1_RELEASE.starts_with("v1."), "got: {LAST_V1_RELEASE}");
     }
 }

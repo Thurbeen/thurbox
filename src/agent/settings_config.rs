@@ -61,6 +61,10 @@ config_version = 1
 # also auto-refreshes any installed extension that the upgrade left stale
 # (self-heal, TUI startup + headless tick). `thurbox-cli update` does the same
 # binary update on demand. Set either to `false` to opt out.
+#
+# Neither crosses a MAJOR version. A 1.x install is told 2.x exists and is never
+# moved onto it, because 2.x replaced the whole interface with the Lua plugin
+# kernel. `thurbox-cli update --force` is the deliberate way across.
 # version_check = true    # GitHub update check (TUI badge + `version --check`)
 # auto_update = true      # silently download+verify+replace binaries on startup
 

@@ -80,6 +80,27 @@ fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
             ),
             )
         }
+        Ok(crate::agent::self_update::UpdateOutcome::SkippedMajor { current, latest }) => {
+            // Reported, not installed: `latest` is a new major line. Name both
+            // ways across, and pin by the running version rather than deriving
+            // its major — the exact tag is what an installer wants anyway.
+            let note = format!(
+                "v{latest} is a new major release. thurbox does not cross a major \
+                 version automatically — run `thurbox-cli update --force` to take \
+                 it, or reinstall pinned to v{current} to stay where you are."
+            );
+            CommandOutput::new(
+                json!({
+                    "version": current,
+                    "latest": latest,
+                    "updated": false,
+                    "update_enabled": true,
+                    "major_upgrade": true,
+                    "summary": note,
+                }),
+                format!("thurbox {current} (latest: {latest})\n{note}"),
+            )
+        }
         Ok(crate::agent::self_update::UpdateOutcome::SkippedDevBuild { current }) => {
             CommandOutput::new(
                 json!({

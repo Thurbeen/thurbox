@@ -3,7 +3,9 @@
 //! Both switches from `[features]` land here, and they are separate on purpose:
 //! `version_check` only *reports*, `auto_update` also *replaces binaries*. One
 //! makes a network call, the other makes a network call and writes to disk, so
-//! neither is inferred from the other.
+//! neither is inferred from the other. Neither crosses a **major** version: the
+//! badge shows a 2.x release to a 1.x install, and the installer half declines
+//! it ([`crate::agent::version_check::crosses_major`]).
 //!
 //! Sixth instance of the worker pattern, and the one with the longest tail: a
 //! release download can take a minute on a slow link. Nothing here is waited on —
@@ -75,6 +77,13 @@ impl Updates {
                         let _ = crate::agent::version_check::refresh_cache();
                         let _ = tx.send(Done::Installed(to));
                     }
+                    Ok(crate::agent::self_update::UpdateOutcome::SkippedMajor {
+                        current,
+                        latest,
+                    }) => tracing::info!(
+                        "auto-update: v{latest} is a new major over v{current} — reported, \
+                         not installed. `thurbox-cli update --force` takes it."
+                    ),
                     // Up to date, or a dev build — `perform_update` skips those
                     // itself, which is why nothing is decided here.
                     Ok(_) => {}

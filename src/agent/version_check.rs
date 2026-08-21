@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::extension_def::{compare_versions, is_dev_version};
+use crate::session::extension_def::{compare_versions, is_dev_version, major_version};
 
 /// GitHub "latest release" endpoint for the thurbox repo (same repo + API as
 /// `scripts/install.sh`).
@@ -81,6 +81,29 @@ pub fn decide_update(current: &str, latest: &str) -> Option<UpdateStatus> {
     } else {
         None
     }
+}
+
+/// Whether installing `latest` over `current` would cross a major version.
+///
+/// This is the 1.x → 2.x question, and it is deliberately asked separately from
+/// "is there a newer release". 2.x replaced the whole interface with the plugin
+/// kernel, so an update across that line is not a newer patch of what you are
+/// running — it is a different program wearing the same binary name. Auto-update
+/// therefore reports such a release but does not install it
+/// ([`crate::agent::self_update::perform_update`]); the user crosses on purpose.
+///
+/// `false` whenever the question cannot be answered from the two strings — a dev
+/// build, or a version with no readable major — because the guard exists to stop
+/// a *known* boundary crossing, not to block every update it cannot parse (those
+/// are already refused upstream by [`decide_update`]).
+pub fn crosses_major(current: &str, latest: &str) -> bool {
+    if is_dev_version(current.trim()) {
+        return false;
+    }
+    let (Some(c), Some(l)) = (major_version(current), major_version(latest)) else {
+        return false;
+    };
+    l > c
 }
 
 /// The running binary's version (thin wrapper over the shared
@@ -208,6 +231,31 @@ mod tests {
         assert!(decide_update("", "1.0.0").is_none());
         assert!(decide_update("1.0.0", "").is_none());
         assert!(decide_update("1.0.0", "   ").is_none());
+    }
+
+    #[test]
+    fn crossing_into_a_new_major_is_recognised() {
+        assert!(crosses_major("1.8.7", "2.0.0"));
+        assert!(crosses_major("1.8.7", "v2.2.2"));
+        assert!(crosses_major("2.2.2", "3.0.0"));
+    }
+
+    #[test]
+    fn staying_inside_a_major_is_not_a_crossing() {
+        assert!(!crosses_major("1.8.6", "1.8.7"));
+        assert!(!crosses_major("2.0.0", "2.2.2"));
+        // Same major, and going backwards, are both plainly not crossings.
+        assert!(!crosses_major("2.2.2", "2.2.2"));
+        assert!(!crosses_major("2.0.0", "1.8.7"));
+    }
+
+    #[test]
+    fn unreadable_or_dev_versions_are_not_crossings() {
+        // The guard stops a known boundary crossing; anything it cannot read is
+        // left to `decide_update`, which already refuses these.
+        assert!(!crosses_major("0.0.0-dev", "2.2.2"));
+        assert!(!crosses_major("1.8.7", "main"));
+        assert!(!crosses_major("", "2.0.0"));
     }
 
     #[test]

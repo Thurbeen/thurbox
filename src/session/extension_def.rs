@@ -431,6 +431,23 @@ pub fn is_dev_version(v: &str) -> bool {
     v.contains("-dev") || v.trim_start_matches('v').starts_with("0.0.0")
 }
 
+/// The major component of a dotted version string (optional leading `v`, any
+/// `-suffix` ignored), or `None` when there is no leading number to read.
+///
+/// Split out from [`compare_versions`] because a *major* difference is not just
+/// a bigger ordering: thurbox's 2.x line changed the whole interface, so
+/// crossing that boundary is a decision rather than a newer patch.
+pub fn major_version(v: &str) -> Option<u64> {
+    v.trim()
+        .trim_start_matches('v')
+        .split('-')
+        .next()?
+        .split('.')
+        .next()?
+        .parse::<u64>()
+        .ok()
+}
+
 /// Compare two dotted version strings (`a.b.c`, optional leading `v`, any
 /// `-suffix` ignored) numerically, component by component. Missing trailing
 /// components count as `0` (so `1.2` == `1.2.0`). Non-numeric components sort as
@@ -711,6 +728,20 @@ prompt = "tick"
         assert_eq!(compare_versions("2.0.0", "1.99.99"), Ordering::Greater);
         // Pre-release suffix is ignored for ordering.
         assert_eq!(compare_versions("0.113.0-rc1", "0.113.0"), Ordering::Equal);
+    }
+
+    #[test]
+    fn major_version_reads_the_leading_component() {
+        assert_eq!(major_version("1.8.7"), Some(1));
+        assert_eq!(major_version("v2.2.2"), Some(2));
+        assert_eq!(major_version("2"), Some(2));
+        assert_eq!(major_version("2.0.0-rc1"), Some(2));
+        assert_eq!(major_version("  v10.1.0 "), Some(10));
+        // Nothing numeric to read: report that rather than guessing a `0`,
+        // which `compare_versions` may do because ordering needs a number and a
+        // major-boundary decision needs a fact.
+        assert_eq!(major_version(""), None);
+        assert_eq!(major_version("main"), None);
     }
 
     #[test]

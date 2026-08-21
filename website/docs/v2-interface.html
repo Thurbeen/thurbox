@@ -428,10 +428,15 @@ thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel</c
 <p>
   It is the stable line, maintained on the <code>v1.x</code> branch and still getting patch
   releases. The first-launch prompt prints the exact command; the short version is to pin a 1.x
-  version and turn auto-update off so nothing moves you again:
+  version:
 </p>
 <pre><code class="language-bash">export VERSION=v1.8.7
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+<pre><code class="language-powershell">$env:THURBOX_VERSION = 'v1.8.7'
+irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
 <p>
-  Declining the prompt does both of those for you and tells you what it did.
+  Auto-update will not undo that &mdash; it never crosses a major version. Declining the prompt
+  also turns auto-update off outright and tells you what it did, which is the belt-and-braces
+  answer while releases up to v1.8.7, which predate the guard, are still what you would land on.
+  See <a href="v1.html">using v1</a>.
 </p>
