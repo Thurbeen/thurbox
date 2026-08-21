@@ -286,27 +286,34 @@ pub fn render_recording(
         }
 
         Node::Surface { source, scroll, .. } => {
-            // A surface is opaque: clear first, so whatever it paints is not
-            // composited over a sibling's leftovers.
-            frame.render_widget(Clear, inner);
+            // Cleared per branch rather than up front. `swap_buffers` resets the
+            // frame buffer before every draw, so there are no leftovers to
+            // erase across frames — and a live terminal covers its rect itself,
+            // so a blanket `Clear` was a second full-grid write of ~9,000 cells
+            // for a frame that was about to overwrite them all. The branches
+            // that do NOT cover their rect still clear.
             match source {
                 SurfaceSource::Cells(cells) => {
+                    frame.render_widget(Clear, inner);
                     let lines: Vec<Line> = cells.iter().map(|runs| to_line(runs)).collect();
                     frame.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), inner);
                 }
                 SurfaceSource::Session(id) => {
                     if !surfaces.render_session(frame, inner, id, *scroll) {
+                        frame.render_widget(Clear, inner);
                         render_detached(frame, inner, id);
                     }
                 }
                 SurfaceSource::Program(id) => match surfaces.render_program(frame, inner, id) {
                     ProgramPaint::Painted => {}
                     ProgramPaint::NotStarted => {
+                        frame.render_widget(Clear, inner);
                         render_notice(frame, inner, "program surface", "nothing started here yet")
                     }
                     // Said rather than shown: the grid a finished program left
                     // behind looks exactly like one that is still running.
                     ProgramPaint::Exited(program) => {
+                        frame.render_widget(Clear, inner);
                         render_notice(frame, inner, &program, "exited")
                     }
                 },
@@ -374,7 +381,12 @@ pub fn normalize_ambiguous_width(buf: &mut Buffer) {
             let Some(cell) = buf.cell_mut(Position::new(x, y)) else {
                 continue;
             };
-            if !cell.symbol().contains(VARIATION_SELECTOR_16) {
+            // `len() < 3` rejects every ASCII cell — nearly all of them — with
+            // an integer compare, before the substring search. This walks the
+            // whole buffer on every painted frame, so the common case has to be
+            // as close to free as possible.
+            let symbol = cell.symbol();
+            if symbol.len() < 3 || !symbol.contains(VARIATION_SELECTOR_16) {
                 continue;
             }
             let stripped: String = cell

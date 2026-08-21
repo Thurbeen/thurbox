@@ -98,6 +98,17 @@ const PERF_PUBLISH_INTERVAL: Duration = Duration::from_secs(5);
 /// what made v2 feel less responsive than v1.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
+/// The floor when the only thing owed a frame is new agent output.
+///
+/// Typing has to feel instant; watching a log scroll does not, and applying the
+/// 16ms floor to both meant a chatty agent drove ~60 paints a second to show 30
+/// lines. Measured across the interval (`docs/PERFORMANCE.md`, ADR-P17): 62fps
+/// costs 21.2% of a core, 30fps costs 14.4% and 20fps 13.1% — most of the saving
+/// arrives by 30, and below it the scroll starts to look stepped rather than
+/// smooth. So: 30fps for output, and a keystroke still repaints on the next
+/// frame.
+const OUTPUT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+
 /// Consecutive input-read failures tolerated before the loop gives up.
 ///
 /// One is a terminal handing crossterm bytes it cannot parse, which is a
@@ -275,6 +286,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         process_start,
         data_epoch: 0,
         last_activity: Instant::now(),
+        input_dirty: true,
         animation_tick: 0,
         animation_step: 0,
         selection: None,
@@ -859,6 +871,10 @@ struct App {
     /// True process start, taken before any startup phase — `started` is taken
     /// during construction and so misses everything before it.
     process_start: Instant,
+    /// Whether this frame is owed to something a person did — a keypress, a
+    /// resize, a worker result they asked for — rather than to an agent
+    /// printing. Only the first kind gets [`MIN_FRAME_INTERVAL`].
+    input_dirty: bool,
     /// When anything last happened — input, output, a worker result, a repaint
     /// that changed something. Drives the poll timeout, nothing else.
     last_activity: Instant,
@@ -1583,6 +1599,10 @@ impl App {
     fn note_data_change(&mut self) {
         self.note_published_change();
         self.dirty = true;
+        // A worker result or a row another process wrote is the answer to
+        // something someone asked for, so it earns the tight floor. Only agent
+        // output — which arrives whether or not anyone is looking — does not.
+        self.input_dirty = true;
         self.last_activity = Instant::now();
     }
 
@@ -1712,7 +1732,12 @@ impl App {
     /// so an idle screen settles at the floor.
     fn paint_if_due(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn Error>> {
         let since_paint = self.last_paint.elapsed();
-        let due = self.dirty && since_paint >= MIN_FRAME_INTERVAL;
+        let floor = if self.input_dirty {
+            MIN_FRAME_INTERVAL
+        } else {
+            OUTPUT_FRAME_INTERVAL
+        };
+        let due = self.dirty && since_paint >= floor;
         if due || since_paint >= FORCE_REDRAW_INTERVAL {
             // Published HERE rather than every iteration: a plugin only reads
             // `thurbox.*` while it renders, so rebuilding those tables on a tick
@@ -1753,6 +1778,7 @@ impl App {
             // with ratatui's own output.
             self.paint_outer_hyperlinks(&buffer);
             self.last_paint = Instant::now();
+            self.input_dirty = false;
             self.frames += 1;
             Counters::bump(&self.perf.frames);
             if !self.first_frame_logged {
@@ -1835,6 +1861,7 @@ impl App {
                     self.publish_for_batch(&mut published);
                     self.time_op("input_dispatch", |app| app.on_key(&key));
                     self.dirty = true;
+                    self.input_dirty = true;
                 }
                 // Dropped rather than merely uncaptured when the feature is
                 // off, so the flag stays authoritative even if a terminal
@@ -1844,6 +1871,7 @@ impl App {
                     self.publish_for_batch(&mut published);
                     self.on_mouse(mouse);
                     self.dirty = true;
+                    self.input_dirty = true;
                 }
                 // A bracketed paste from the terminal itself. Routed to
                 // whatever has focus, exactly as `ctrl+v` is: a modal's
@@ -1852,8 +1880,12 @@ impl App {
                     self.publish_for_batch(&mut published);
                     self.on_paste(text);
                     self.dirty = true;
+                    self.input_dirty = true;
                 }
-                Event::Resize(..) => self.dirty = true,
+                Event::Resize(..) => {
+                    self.dirty = true;
+                    self.input_dirty = true;
+                }
                 _ => {}
             }
         }

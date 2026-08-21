@@ -970,6 +970,79 @@ frame partly becomes *more* frames rather than less CPU.
 
 ---
 
+## ADR-P17: Separate the frame floor for output from the one for input
+
+**Context**: with ADR-P16 landed, a frame costs ~2.6ms and the interface still
+took ~19% of a core to show one agent printing 30 lines a second. Measuring the
+whole process tree against the same workload run bare (agent in a tmux pane, no
+thurbox) put bare at **1.20%** — agent 0.56, tmux 0.64. Two of those components
+are unavoidable for thurbox: the same agent, plus its own inner tmux (~0.9%),
+which is what makes a session survive a restart. So thurbox starts at roughly
+bare's *entire* cost before it paints anything, and parity is not a reachable
+target; the question is only how much of the rest is waste.
+
+The waste was the frame rate. `MIN_FRAME_INTERVAL` (16ms) was applied to every
+reason a frame was owed, so an agent printing 30 lines a second drove ~60 paints
+a second. Typing has to feel instant. Watching a log scroll does not.
+
+**Choice**: a second floor, `OUTPUT_FRAME_INTERVAL` (33ms), used when the only
+thing owing a frame is new agent output. `App::input_dirty` marks the other
+kind — a keypress, a resize, a worker result someone asked for — and those keep
+the 16ms floor. Swept across the interval, one agent at 30 lines/s, 200x50:
+
+| floor | fps | interface | terminal | total |
+|---|---|---|---|---|
+| 16ms | 62 | 19.08 | 0.84 | 21.24 |
+| **33ms** | **30** | **12.40** | **0.62** | **14.40** |
+| 50ms | 20 | 11.12 | 0.52 | 13.08 |
+| 100ms | 10 | 8.30 | 0.34 | 10.18 |
+
+Most of the saving arrives by 30fps and the curve flattens after; below it the
+scroll begins to look stepped. The terminal's own cost falls with it, because
+thurbox hands it fewer updates.
+
+**Also**: the surface paint stopped clearing its whole rect first. `swap_buffers`
+resets the frame buffer before every draw, so there is nothing stale to erase
+across frames, and a live terminal covers its own rect — the `Clear` was a second
+full-grid write of ~9,000 cells for a frame about to overwrite them. It is kept
+for the branches that do *not* cover their rect (a smaller grid mid-resize, the
+detached notice, a cell surface). `normalize_ambiguous_width` also rejects a cell
+on a length compare before any substring search, since U+FE0F is three bytes and
+almost every cell is one.
+
+**Measured, paired, 3 runs each:**
+
+| | interface | total |
+|---|---|---|
+| before | 16.80 | 18.72 |
+| the paint changes alone | — | ~18.4 |
+| the output floor alone | 11.36 | 13.20 |
+| both | 11.12 | **12.92** |
+
+**-31% overall.** Worth recording honestly: the paint changes were predicted at
+~13% and delivered **~2%**. `Clear` writes blank cells, which is cheap beside the
+terminal widget's per-cell read-convert-style work that still happens; and any
+per-frame saving is halved once the frame rate is. The frame *rate* was the
+money, not the frame *cost*.
+
+**Rejected**:
+
+- *Chasing bare* — arithmetically impossible while sessions live in tmux, since
+  the agent plus that tmux already exceed bare's total.
+- *Row-level surface diffing* — vt100 exposes `rows_diff`, but it emits terminal
+  byte streams for a multiplexer forwarding to a real terminal, not row indices a
+  ratatui cell buffer could use. It needs a per-row change signal that does not
+  exist yet.
+- *A lower floor than 30fps* — 20fps buys 1.3 more points and 10fps another 2.9,
+  against a visibly stepped scroll. Not worth it as a default.
+
+**Still open**: `publish` rebuilds 15 of its 25 groups every frame; painting is
+still whole-frame even for panes whose tree the cache knows is unchanged; and
+the vt100 surface repaint (~800us) is now the largest single line item in a
+frame.
+
+---
+
 ## ADR-P14: Publish once per input batch, and gate every screen read on a stamp
 
 **Choice**: `App::republish` — the call that rebuilds every `thurbox.*` table Lua can

@@ -125,7 +125,13 @@ sharing `e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL contract
 
 The loop is **demand-driven**: it paints when something changed or when the 250 ms
 forced-redraw floor (`FORCE_REDRAW_INTERVAL`) elapses, never on every iteration.
-`MIN_FRAME_INTERVAL` is the floor between two paints. What marks the screen dirty:
+There are **two floors between paints**, because typing has to feel instant and
+watching a log scroll does not: `MIN_FRAME_INTERVAL` (16 ms) when a person did
+something — a key, a resize, a worker result they asked for, tracked by
+`input_dirty` — and `OUTPUT_FRAME_INTERVAL` (33 ms) when the only thing owing a
+frame is agent output. Applying the tight floor to both made a chatty agent drive
+60 paints a second to show 30 lines; the split is worth 30% of the loaded cost
+(ADR-P17). What marks the screen dirty:
 any input, a resize, a reload, a worker result, and **new agent output** —
 `Terminals::output_generation` is summed each iteration, which is what stops a
 printing agent being drawn at 4 fps. A **reflow** — the arrangement placing a

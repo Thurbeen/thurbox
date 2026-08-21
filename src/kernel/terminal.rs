@@ -23,6 +23,7 @@ use std::sync::Arc;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
+use ratatui::widgets::Clear;
 use ratatui::Frame;
 use tui_term::widget::PseudoTerminal;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -1853,6 +1854,20 @@ pub fn paint_hyperlinks(paints: &[HyperlinkPaint]) -> std::io::Result<()> {
     out.flush()
 }
 
+/// Blank the rect only where the grid will not reach it.
+///
+/// The frame buffer is reset by `swap_buffers` before every draw, so there
+/// is nothing stale to erase across frames — a `Clear` over the whole rect
+/// was a second full-grid write for cells the terminal widget is about to
+/// overwrite anyway. It is still owed when the grid is *smaller* than its
+/// rect, which happens for a frame after a resize while the pane catches up.
+fn clear_uncovered(frame: &mut Frame, area: Rect, screen: &vt100::Screen) {
+    let (rows, cols) = screen.size();
+    if rows < area.height || cols < area.width {
+        frame.render_widget(Clear, area);
+    }
+}
+
 impl SurfaceProvider for Terminals {
     fn render_program(
         &self,
@@ -1915,6 +1930,7 @@ impl SurfaceProvider for Terminals {
             let Ok(parser) = shell.parser.lock() else {
                 return false;
             };
+            clear_uncovered(frame, area, parser.screen());
             frame.render_widget(
                 PseudoTerminal::new(parser.screen()).style(Style::default()),
                 area,
@@ -1943,6 +1959,7 @@ impl SurfaceProvider for Terminals {
         // Scrollback is a property of the screen, not of the widget, so it is
         // set before reading and left where the plugin asked for it.
         parser.screen_mut().set_scrollback(usize::from(scroll));
+        clear_uncovered(frame, area, parser.screen());
         frame.render_widget(
             PseudoTerminal::new(parser.screen()).style(Style::default()),
             area,
