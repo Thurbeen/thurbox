@@ -196,6 +196,13 @@ pub struct Registry {
     /// Whether this registry's overrides came from `ui.json`, and so whether
     /// writing them back is an edit or an erasure.
     origin: Origin,
+    /// Moves whenever anything published from this registry does — the
+    /// declarations, a rebinding, a setting, the disabled set, a trust grant.
+    ///
+    /// Bumped at the top of each mutator rather than on its success paths: over-
+    /// bumping costs one rebuild, while a path that returns early without
+    /// bumping publishes a stale answer (`frame-cost`).
+    version: u64,
 }
 
 /// Where a registry's overrides came from.
@@ -257,7 +264,17 @@ impl Registry {
     /// Overrides survive because they belong to the *user*, not to the plugin
     /// set — an override naming a plugin that is temporarily broken must come
     /// back when the plugin does.
+    /// How many times anything published from this registry has changed.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn bump(&mut self) {
+        self.version = self.version.wrapping_add(1);
+    }
+
     pub fn declare(&mut self, bindings: Vec<Binding>, settings: Vec<Setting>) {
+        self.bump();
         self.declare_all(bindings, settings, Vec::new());
     }
 
@@ -395,6 +412,7 @@ impl Registry {
     /// transition, and a toggle they cannot predict is worse than one that does
     /// nothing.
     pub fn set_disabled(&mut self, path: &str, off: bool) -> Result<bool, String> {
+        self.bump();
         if off {
             self.disabled.insert(path.to_string());
         } else {
@@ -430,6 +448,7 @@ impl Registry {
     /// The digest is taken from the contents at this moment, which is what makes
     /// "trusted, and since modified" a state the interface can report.
     pub fn trust(&mut self, path: &str, contents: &str) -> Result<(), String> {
+        self.bump();
         self.trusted.insert(
             path.to_string(),
             Granted::Contents(super::bundled::digest(contents)),
@@ -447,6 +466,7 @@ impl Registry {
     /// source that re-tagged the same version with different contents would
     /// silently keep a capability the user granted to what the version used to be.
     pub fn trust_installed(&mut self, path: &str, pin: &str, contents: &str) -> Result<(), String> {
+        self.bump();
         self.trusted.insert(
             path.to_string(),
             Granted::Managed {
@@ -460,6 +480,7 @@ impl Registry {
     /// Withdraw trust. Idempotent: revoking what was never trusted is not an
     /// error, because the user asked for a state, not for a transition.
     pub fn revoke(&mut self, path: &str) -> Result<(), String> {
+        self.bump();
         self.trusted.remove(path);
         self.persist()
     }
@@ -493,6 +514,7 @@ impl Registry {
 
     /// Rebind an action, or clear the override when `chord` is `None`.
     pub fn rebind(&mut self, action: &str, chord: Option<&str>) -> Result<(), String> {
+        self.bump();
         match chord {
             Some(chord) => {
                 let chord = normalise_chord(chord);
@@ -521,6 +543,7 @@ impl Registry {
         id: &str,
         value: Option<Value>,
     ) -> Result<(), String> {
+        self.bump();
         let key = format!("{plugin}.{id}");
         let Some(declared) = self
             .settings

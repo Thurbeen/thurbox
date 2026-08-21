@@ -306,6 +306,7 @@ fn publish_with(host: &thurbox::kernel::host::LuaHost, settings: &Settings) {
         ..Default::default()
     };
     host.publish(&thurbox::kernel::host::Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot,
         attach_errors: &Default::default(),
         inflight: &[],

@@ -76,6 +76,14 @@ else composes in `ui/lib/widgets.lua`. A prior attempt froze its catalog at six
 and reached sixteen, because it never built the userland layer and each new
 appearance had nowhere else to live. `tests/kernel_mvp.rs` asserts the count.
 
+**A pane's render is not guaranteed once per frame.** A pane that declares
+`pure = true` asserts its render is a function of the published tables and its
+render context, and the kernel then reuses the tree it last returned while both
+stand — skipping the Lua call and the table→node conversion, which together were
+the largest cost in a frame. Undeclared panes are called on every frame they are
+drawn on, exactly as before. See `docs/PLUGINS.md` → Traps for what disqualifies
+a pane, and ADR-P16 in `docs/PERFORMANCE.md` for the measurements.
+
 **2. Layout resolves before render.** Rects are computed first, then each plugin
 is called with its own. A plugin that does not know its width cannot wrap,
 truncate, or derive a scroll window — this was the single biggest gap the prior

@@ -60,7 +60,7 @@ impl Level {
 ///
 /// A slot the arrangement placed that is not one of these belongs to plugins,
 /// and is not this module's business.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Band {
     Identity,
     Message,

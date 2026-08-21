@@ -43,6 +43,7 @@ fn chip_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<(String, 
 
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot,
         attach_errors: &Default::default(),
         inflight: &[],
@@ -265,6 +266,7 @@ fn a_hovered_row_is_banded_and_keeps_its_own_colours() {
         let diffs = thurbox::kernel::diff::DiffStore::new();
         let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
         host.publish(&Published {
+            epoch: thurbox::kernel::host::Epoch::always_fresh(),
             snapshot: &snapshot,
             attach_errors: &Default::default(),
             inflight: &[],

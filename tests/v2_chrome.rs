@@ -84,6 +84,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot, themes: &Themes) {
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors: &Default::default(),
         inflight: &[],
@@ -854,4 +855,74 @@ fn the_welcome_screen_draws_no_strip() {
         .to_string();
     assert!(border.starts_with("┌ No Session "), "{border}");
     assert!(!border.contains("Agent"), "{border}");
+}
+
+/// The full cells a band paints, not just its symbols: the loop's settle check
+/// compares cells, so a band that repainted the same text in a different style
+/// would still keep it awake.
+fn band_cells(
+    band: thurbox::kernel::bands::Band,
+    state: &BandState<'_>,
+    width: u16,
+) -> Vec<ratatui::buffer::Cell> {
+    let mut terminal = Terminal::new(TestBackend::new(width, 1)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            thurbox::kernel::bands::render(frame, frame.area(), band, state);
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (0..width).map(|x| buffer[(x, 0)].clone()).collect()
+}
+
+#[test]
+fn a_band_repaints_identically_from_identical_state() {
+    // The premise the demand-driven redraw rests on. `render_band` decides a
+    // frame changed by comparing the cells a band just painted against the ones
+    // it painted last frame, so a band carrying anything time-varying — a
+    // clock, an uptime, an animation — would report a change on every single
+    // frame and the loop would never settle to the 250ms floor.
+    //
+    // It did exactly that once, for a much blunter reason: the band marked the
+    // frame changed for having been *drawn* at all, so an idle screen with no
+    // sessions repainted at the frame cap forever. This is the guard for the
+    // property that made fixing it possible.
+    let themes = Themes::load(None);
+    let registry = Registry::default();
+    let state = band_state(&registry, &themes, None);
+
+    for band in [
+        thurbox::kernel::bands::Band::Identity,
+        thurbox::kernel::bands::Band::Action,
+    ] {
+        let first = band_cells(band, &state, 110);
+        let again = band_cells(band, &state, 110);
+        assert!(
+            first == again,
+            "{band:?} painted differently from identical state — the loop cannot settle"
+        );
+    }
+}
+
+#[test]
+fn a_band_repaints_differently_when_what_it_says_changes() {
+    // The other half: if the comparison could not see a real change, a message
+    // appearing would never be painted. Cells rather than symbols, so a change
+    // of level (colour) counts too.
+    let themes = Themes::load(None);
+    let registry = Registry::default();
+
+    let quiet = band_state(&registry, &themes, None);
+    let noisy = band_state(
+        &registry,
+        &themes,
+        Some(("worktree created", thurbox::kernel::bands::Level::Info)),
+    );
+
+    let before = band_cells(thurbox::kernel::bands::Band::Message, &quiet, 110);
+    let after = band_cells(thurbox::kernel::bands::Band::Message, &noisy, 110);
+    assert!(
+        before != after,
+        "the message band painted the same cells with and without a message"
+    );
 }

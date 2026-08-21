@@ -132,6 +132,7 @@ fn publish(host: &LuaHost, world: &World) {
     registry.declare(bindings, settings);
     let diffs = thurbox::kernel::diff::DiffStore::new();
     host.publish(&Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &world.snapshot,
         attach_errors: &Default::default(),
         inflight: &[],

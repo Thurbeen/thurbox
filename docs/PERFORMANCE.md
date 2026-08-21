@@ -554,6 +554,38 @@ only** and never CI-asserted (the counters remain the sole regression gate):
   `data_version` (a full shared-state reload on their next poll) — an idle,
   default-config instance must never churn that row.
 
+**The v2 implementation** (the bullets above name v1 modules that went with
+`src/app`; the design carried over, the file names did not):
+
+- `kernel::perf` owns the whole layer — `DurationHistogram` (same fixed µs
+  buckets), `SlowOps` (same 16-slot ring), `Timings`, `Startup`, and
+  `snapshot_json`, which is the single owner of the published JSON shape.
+  `cli::perf` only renders whatever that produces, and
+  `tests/kernel_perf.rs` pairs the two so a key renamed on one side fails
+  rather than printing a silent zero.
+- **Three histograms, not two.** `frame` (the `terminal.draw` call) and `tick`
+  (one iteration's non-blocking work) are joined by **`republish`** — the
+  per-frame rebuild of every `thurbox.*` table. They are recorded so they
+  *decompose* rather than nest: `tick` is taken before the paint, so an
+  iteration is roughly tick + republish + frame + the input wait. Telling the
+  table rebuild apart from the painting is the difference between "frames are
+  expensive" and knowing why, and it is the number ADR-P14 should be read
+  against.
+- **Gating** is `App::perf_timing_active` — `perf_log` (cached from
+  `THURBOX_PERF_LOG` at construction) or the HUD being open — checked once per
+  iteration, so a default run pays one bool.
+- **Slow ops** wrap `interface_reload` (the whole reload: rebuild, sources,
+  declarations) and `input_dispatch` (a keypress, which runs plugin Lua and so
+  is where a slow plugin is felt). ≥5 ms rings, ≥100 ms also warns.
+- **Startup phases are v2's own**: config, DB open, theme activate, extension
+  heal, heartbeat, **`ui_build_ms`** (building the Lua interface — a cost v1
+  did not have) and `first_frame_ms`. There is no `restore_ms`: v2 has no
+  synchronous restore phase.
+- **The subscriber had to be restored.** v2's TUI shipped without one at all,
+  so every `tracing` call in the process — the panic hook's included — was
+  dropped rather than written. `main` now installs the daily rolling
+  `thurbox.log` appender v1 had, which is what makes the lines below exist.
+
 **Why**: the counters gate regressions in CI but were invisible in a live
 build, and they deliberately count rather than time — so a user-perceived
 stall ("opening review froze for 3 s") had no signal at all. The histograms
@@ -775,6 +807,130 @@ frame either.
   it, without a second way to keep the loop awake or a plugin that forgets to stop.
 - *Rendering panes in parallel* — one Lua VM, and the isolation model
   (`enter` stamps the current plugin per call) depends on calls being serial.
+
+---
+
+## ADR-P15: What a v2 frame actually costs, and the three cuts taken
+
+**Context**: v2 was measured against v1.8.7 under identical synthetic load
+(three agents each printing 30 lines/s, both binaries running *simultaneously*
+so machine noise hits them equally). v2 painted **fewer** frames than v1 and
+still used 2.5x the CPU, so the gap was never frame *rate* — it was the price
+of one frame. Attribution, release builds, with the observability of ADR-P11:
+
+| | v1.8.7 | v2 before | v2 after |
+|---|---|---|---|
+| CPU | 14.6% | 36.5% | 30.7% |
+| frames/s | 47 | 37 | 40 |
+| **CPU per frame** | **3.1ms** | **9.9ms** | **7.7ms** |
+
+Inside a v2 frame the draw was ~75% and `republish` ~25%; inside the draw, the
+Lua->node **conversion** cost more than running every plugin's Lua put together
+(session list: 897us of Lua, 3006us of conversion, for 187 nodes — ~14us *per
+node*). ratatui's own flush was never the problem (~0.6ms).
+
+**Choice**: three cuts, each measured on its own before/after pair:
+
+- **One `pairs` pass per node** (`convert::Fields`) instead of ~25 individually
+  keyed lookups — `read_size` alone was five, and each hashes its key and
+  crosses into the VM. Conversion 3.9ms -> 1.9ms a frame; **frame cost -25%**.
+  This is the same fix `read_style_field` already carried one level down.
+- **Borrowed error paths** (`convert::Crumb`) instead of
+  `&format!("{path}[{}]", index + 1)` per node — a `String` per node, growing
+  with depth, for text read only when something is malformed (~15% of
+  conversion).
+- **Link extraction only for surfaces on screen** (ADR-P14's stamp still
+  applies on top). Scanning every live pane's whole grid cost ~1.2ms a frame
+  with three sessions, for answers nothing could use; **1152us -> 320us**. This
+  restores v1's rule, which asked only the active session.
+
+`publish` also moved to `raw_set` on tables it created moments earlier and
+pre-sizes the ~30-field session row, which is worth ~5%.
+
+**Since closed** by ADR-P16, which added the change-signals this names as the
+prerequisite and then gated both the published groups and the pane renders on
+them.
+
+**Rejected**: *throttling the repaint rate* — v2 already paints fewer frames
+than v1; capping it further trades responsiveness for a number. Note the
+converse, which the measurements make plain: because repaints are
+**output-driven**, a cheaper frame becomes *more frames* rather than less CPU
+(the conversion cut took 25% off the frame but only 9% off CPU). Per-frame work
+is still the right target — it is what makes the interface able to keep up —
+but the CPU it returns is bounded by `MIN_FRAME_INTERVAL`.
+
+---
+
+## ADR-P16: Make a frame cost what changed, not what exists
+
+**Context**: ADR-P15 left v2 at 2.4x v1's CPU and 2.5x its cost per frame, with
+the gap identified as the Lua boundary — running each pane, converting the table
+it returns, and rebuilding every `thurbox.*` group, all once per painted frame.
+Instrumenting the tree diff showed why that was avoidable: under load the session
+list produced a **byte-identical tree on 200 of 200 renders**, and the agent pane
+repainted because its *surface* moved rather than its tree. The loop was proving
+the work wasted only after paying for it.
+
+**Choice**: give every published source a change-signal, then spend it twice.
+
+- **Signals** live with the mutation, never with the caller:
+  `SnapshotStore::generation`, `Themes::version`, `Registry::version`,
+  `Terminals::meta_version` and `failed_version`, plus one loop-side
+  `data_epoch` fed by the `changed` flag each worker store's `poll` already
+  returns. Deriving that last one from an existing return value means it cannot
+  drift from it.
+- **Gated publish**: each `thurbox.*` group names the versions it is built from
+  and is rebuilt only when one moves. The outer table is still assembled fresh
+  every frame, so a gating mistake can produce a stale *group* but never a torn
+  table. Keys are compared exactly (`[u64; 4]`), not hashed — a collision here
+  would serve a stale group, and "astronomically unlikely" is the wrong
+  guarantee for a wrong answer nobody can see.
+- **Pure panes**: a pane may declare `pure = true`, asserting its render is a
+  function of the published tables and its context. The kernel then reuses the
+  tree it last returned, keyed on the epoch, the rect, focus, an animation tick
+  and the plugin-state version. **Opt-in**, because a render may write `store`
+  (the search strip does) or animate, and neither is visible from outside the
+  VM; an undeclared pane behaves exactly as before.
+
+| | v1.8.7 | before P15 | after P15 | now |
+|---|---|---|---|---|
+| CPU | 15.6% | 36.5% | 31.0% | **23.1%** |
+| CPU per frame | 3.1ms | 9.9ms | 9.1ms | **5.2ms** |
+| gap to v1 (CPU) | — | 2.5x | 2.0x | **1.5x** |
+
+**Three things the implementation taught, each caught by a test rather than by
+review:**
+
+- **`taken_at_ms` is published**, and `widgets.relative_time` renders it, so the
+  snapshot's generation has to move on every refresh — not only when rows
+  change — or "5s ago" freezes. A change-signal is about what is *read*, not
+  about what feels significant.
+- **A pure render may read `store`/`state`**, which handlers write. Without that
+  in the key, the agent pane's per-session tab survived the keypress that
+  changed it. Seven tests failed; the hole was real.
+- **Writing an unchanged value must not count as a change.** The search strip
+  re-states one `store` key every frame; treating that as a write moved the
+  state version 40 times a second and invalidated every cached tree. With it,
+  the saving was 0%; without it, 27%. Every signal here compares before it
+  stores, for exactly this reason.
+
+**Rejected**:
+
+- *Opt-out caching* (`animated = true` to escape) — a performance change must
+  not be able to break a third-party pane that was never touched, and the
+  failure would be a pane that stops updating rather than an error.
+- *Read-tracking* (proxy `thurbox.*`, key on fields actually read) — the most
+  precise answer and needs no annotation, but it does not solve side effects
+  either and is a far larger change. Opt-in purity composes with adding it later.
+- *Per-pane dependency sets* — the measured waste is frames where *nothing*
+  moved, so a coarse epoch captures it.
+- *Throttling the repaint rate* — v2 already paints fewer frames than v1.
+
+**Still open**: the remaining ~1.5x is the Lua boundary that is genuinely paid —
+the agent pane's own render on the frames its inputs really did move, the node
+paint, and `publish`'s ungated volatile groups (hover, commands, inventory).
+Note also that repaints are output-driven, so a cheaper frame partly becomes
+*more* frames: this change took 42% off the frame but 25% off CPU.
 
 ---
 
@@ -1030,13 +1186,13 @@ worktree/spawn offload should ride with that branch or follow it.
 | I want to… | Do this |
 | --- | --- |
 | Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read the `startup` line in `thurbox.log` |
-| Break down startup time | Read the `startup` line's phase fields, then the per-phase lines that follow it. v1's `app_new_ms`/`theme_activate_ms` fields went with `src/app`; the kernel's phases are config, DB open, extension heal, host build and first paint |
-| Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~10 s cadence: counter deltas + frame/tick percentiles + slow ops) |
+| Break down startup time | Read the `startup` line's phase fields: `config_init_ms`, `db_open_ms`, `theme_activate_ms`, `extension_heal_ms`, `heartbeat_ms`, `ui_build_ms` (building the Lua interface) and `first_frame_ms` |
+| Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~1000 iterations: counter deltas + frame/republish/tick percentiles + slow ops) |
 | Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms), or the slow-op list in `perf_window` |
 | Watch perf live in the TUI | Press `F12` (perf HUD overlay; `[features] perf_hud`) |
 | Inspect a running TUI from outside | `thurbox-cli perf` (needs THURBOX_PERF_LOG or an open HUD in that TUI) |
-| Verify the status-hook cache (ADR-P6) | `hook_state_loads` in `thurbox-cli perf` stays flat while idle and moves +1 per external `session signal`. v1's `perf_hook_states` acceptance test went with `src/app`; the counter it asserted on is still published |
+| See what a frame costs | `thurbox-cli perf` — `frame` is the paint and `republish` the table rebuild beside it; a frame is roughly the two added together |
 | See binary size | Check the `Binary Size` CI job summary, or `cargo bloat --release --crates` |
 | Profile CPU | `cargo flamegraph --profile release-with-debug --bin thurbox` |
 | Verify no perf regression | `cargo nextest run -E 'test(kernel::perf)'` for the counters; the loop's settling is asserted per surface in `tests/v2_*.rs` |
-| Confirm idle CPU is low | Launch, leave it idle — `redraws_skipped` climbs while `frames_rendered` stays flat |
+| Confirm idle CPU is low | Launch, leave it idle — `idle skips` climbs while `frames` stays flat |

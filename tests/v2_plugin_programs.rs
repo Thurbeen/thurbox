@@ -299,6 +299,7 @@ fn a_plugin_can_read_the_platform_it_is_running_on() {
     let snapshot = thurbox::kernel::snapshot::Snapshot::default();
     let registry = thurbox::kernel::registry::Registry::default();
     host.publish(&thurbox::kernel::host::Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot,
         attach_errors: &Default::default(),
         inflight: &[],

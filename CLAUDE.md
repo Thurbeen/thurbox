@@ -141,12 +141,22 @@ cell of the reflowed frame as one the diff must print. It is deliberately **not*
 next flush, so every pane toggle blinked the whole interface.
 
 A frame is more expensive than v1's, structurally: every pane is a Lua call
-returning a table that is converted to nodes and painted. So the loop settles
+returning a table that is converted to nodes and painted. The **conversion** is
+the surprise in that sentence and the biggest single cost in a frame — bigger
+than running the plugins' Lua. `kernel::convert` therefore reads each node's
+fields in **one `pairs` pass** rather than ~25 keyed lookups, and builds its
+error paths as a borrowed chain (`Crumb`) rather than a `String` per node; both
+are measured in `docs/PERFORMANCE.md`. So the loop settles
 aggressively. `draw` compares each plugin's returned tree against the last one and
 only marks the frame changed when it differs; a float does the same against its own
-last tree and rect. Neither an open float nor a live text selection marks the frame
-changed by itself — both used to, which pinned the loop at the frame cap for as
-long as the creation wizard was open. The perf HUD is the deliberate exception: its
+last tree and rect, and a **chrome band** compares the *cells* it just painted
+against the ones it painted last frame — it has no tree to diff, and marking it
+changed for having been *drawn* held `dirty` set after every frame, which stopped
+the loop settling at all: an idle interface with no sessions repainted at the frame
+cap forever (~32% of a core, against ~6% once it settles). Neither an open float
+nor a live text selection marks the frame changed by itself — both used to,
+which pinned the loop at the frame cap for as long as the creation wizard was
+open. The perf HUD is the deliberate exception: its
 counters move every iteration, so it says so.
 
 Everything that touches the world runs on a worker and publishes back (rule 5):
@@ -165,9 +175,20 @@ generation counter — if you add a cache here, give it one.
 
 `republish` — the one call that rebuilds every `thurbox.*` table — runs once per
 painted frame and **once per input batch**, not once per event: a held-down key
-otherwise paid for it per repeat. The three reads in it that touch a screen or the
+otherwise paid for it per repeat. Within it each group is **gated on a
+change-signal** (`SnapshotStore::generation`, `Themes`/`Registry::version`,
+`Terminals::meta_version`/`failed_version`, and the loop's `data_epoch`), so a
+group whose inputs did not move is not rebuilt; and a pane that declares
+`pure = true` has the tree it last returned reused instead of being run at all.
+Both are ADR-P16, and both rest on one rule: a signal is bumped **inside** the
+mutation and only when the value actually changed — writing an unchanged value
+counts as no change, which is the difference between the gate saving 27% and
+saving nothing. The three reads in it that touch a screen or the
 disk carry the age above (ADR-P14): link extraction is keyed on that session's
-`output_stamp`, the search content scan on `output_generation`, and the interface
+`output_stamp` **and limited to surfaces actually on screen** (a link nothing
+painted can be neither clicked nor handed to the outer terminal, and the scan
+walks a whole vt100 grid — doing it for every live pane cost ~1.2ms a frame with
+three of them), the search content scan on `output_generation`, and the interface
 inventory's per-file digests on a `trust_stale` flag every path that changes the
 directory or a grant already sets.
 
@@ -184,7 +205,11 @@ stderr is scrolled away long before anyone looks.
 **Observability**: `F12` toggles the perf HUD (`[features] perf_hud`); launching with
 `THURBOX_PERF_LOG=1` writes `startup`, `perf_window` and `slow op` lines to
 `thurbox.log`; while either is active a JSON snapshot is published for
-`thurbox-cli perf`. Full rationale: `docs/PERFORMANCE.md`.
+`thurbox-cli perf`. Three histograms, kept separate so they **decompose** rather
+than nest: `frame` is the paint, `republish` is the per-frame table rebuild
+above, and `tick` is the rest of one iteration. `kernel::perf::snapshot_json`
+owns the published shape and `cli::perf` only renders it. Full rationale:
+`docs/PERFORMANCE.md`.
 
 ## Installation Script
 

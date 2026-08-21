@@ -38,6 +38,14 @@ pub struct Themes {
     custom: Vec<ThemeEntry>,
     /// Problems found while loading user themes. Surfaced, never fatal.
     pub warnings: Vec<String>,
+    /// Moves whenever the active palette or the set of choices does.
+    ///
+    /// Gates the published theme tables (`frame-cost`). Never restarts:
+    /// [`Self::refresh`] replaces the whole value, so it carries the old count
+    /// across rather than resetting to zero — a version that went backwards
+    /// could collide with one a reader had already seen and be mistaken for
+    /// "nothing changed".
+    version: u64,
 }
 
 impl Themes {
@@ -80,6 +88,7 @@ impl Themes {
             choices,
             custom,
             warnings,
+            version: 0,
         }
     }
 
@@ -118,6 +127,9 @@ impl Themes {
             return Err(format!("unknown theme {name:?}"));
         }
         self.active = resolve(Some(name), &self.custom);
+        // Bumped where the palette actually changes, so a failed persist below
+        // still reports the change that already happened in memory.
+        self.bump();
         if let Some(db) = db {
             db.set_active_theme(name)
                 .map_err(|e| format!("persist theme: {e}"))?;
@@ -138,13 +150,25 @@ impl Themes {
             return Err(format!("unknown theme {name:?}"));
         }
         self.active = resolve(Some(name), &self.custom);
+        self.bump();
         Ok(())
     }
 
     /// Reload from disk and the database, keeping the active choice if it still
     /// resolves. Called when `themes.toml` changes or another instance switches.
     pub fn refresh(&mut self, db: Option<&Database>) {
+        let seen = self.version;
         *self = Self::load(db);
+        self.version = seen.wrapping_add(1);
+    }
+
+    /// How many times the palette or the choices have changed.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn bump(&mut self) {
+        self.version = self.version.wrapping_add(1);
     }
 
     /// The active palette as role name → colour string, ready to publish.

@@ -784,6 +784,11 @@ return {
   name = NAME,
   slot = "center",
   slot_mode = "switch", -- review is still an occupant of its own
+  -- Pure: the tree is a surface node naming a session, not the terminal's
+  -- contents. What moves under a printing agent is the vt100 grid the surface
+  -- is painted from, which is not in the tree at all — so the tree can be
+  -- reused every frame and the pane still repaints.
+  pure = true,
   -- Keys this plugin does not handle go straight to the pty of whichever view
   -- is showing. That is what makes this an ordinary plugin rather than a kernel
   -- special case: replace the file and the terminal behaviour goes with it.

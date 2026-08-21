@@ -78,6 +78,7 @@ fn publish_with(host: &LuaHost, content: &std::collections::HashMap<String, Stri
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot(),
         attach_errors: &Default::default(),
         inflight: &[],
@@ -495,6 +496,7 @@ fn every_match_still_paints_when_the_results_fill_the_strip() {
             ..Snapshot::default()
         };
         host.publish(&Published {
+            epoch: thurbox::kernel::host::Epoch::always_fresh(),
             snapshot: &snap,
             attach_errors: &Default::default(),
             inflight: &[],

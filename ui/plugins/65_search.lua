@@ -366,6 +366,10 @@ return {
   name = NAME,
   slot = NAME,
   order = 65,
+  -- Deliberately NOT `pure`. This render writes to `store` — the debounced
+  -- `want_content` request and the pane-count hint — so a frame that skipped it
+  -- would skip those writes too, and the search would stop asking for the
+  -- terminal text it matches against.
   -- Focusable, and focused while it is open: that is what routes every typed
   -- character here instead of to the pane underneath. A float would grab input
   -- instead, but a float would also cover the matches — see the header.

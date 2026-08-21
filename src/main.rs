@@ -56,6 +56,14 @@ const DEBOUNCE: Duration = Duration::from_millis(120);
 /// what turns an idle app from ~20 fps into ~4. v1 uses the same floor.
 const FORCE_REDRAW_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Iterations between two `perf_window` log lines (~10s at the 10ms tick).
+const PERF_WINDOW_TICKS: u64 = 1000;
+
+/// How often the JSON snapshot is written while timing is active. Slower than
+/// the log line because it is a database write every other thurbox connection
+/// pays for with a `data_version` bump.
+const PERF_PUBLISH_INTERVAL: Duration = Duration::from_secs(5);
+
 /// The floor between two paints.
 ///
 /// The poll above runs every 10ms so input is noticed at once, but a frame here
@@ -134,8 +142,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // to `audit_retention_days` — and v1 loads them at the same point for the same
     // reason. Without this call `settings::global()` hands out `Settings::default`
     // and the whole file is ignored, however carefully it was written.
+    // File-based logging: stdout belongs to the TUI, so every `tracing` call in
+    // this process — the panic hook, a worker's warning, the perf lines below —
+    // has nowhere else to go. Without a subscriber they are not merely
+    // unformatted but *dropped*, which is how a reader thread could die and
+    // leave no trace anywhere. The guard is deliberately leaked: the appender's
+    // worker must outlive every later log call, including the panic hook's, and
+    // this runs once per process.
+    let log_dir = thurbox::paths::log_directory().unwrap_or_else(|| std::path::PathBuf::from("."));
+    std::fs::create_dir_all(&log_dir).ok();
+    let (writer, guard) =
+        tracing_appender::non_blocking(tracing_appender::rolling::daily(log_dir, "thurbox.log"));
+    Box::leak(Box::new(guard));
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("thurbox=debug".parse().unwrap_or_default()),
+        )
+        .with_writer(writer)
+        .with_ansi(false)
+        .init();
+
+    // Startup phases are timed unconditionally: this runs once, so the two
+    // `Instant` reads per phase cost nothing measurable, and the numbers are
+    // only *reported* when timing is active.
+    let process_start = Instant::now();
+    let mut startup = thurbox::kernel::perf::Startup::default();
+
+    let phase = Instant::now();
     let (config, config_warnings) = thurbox::kernel::config::Config::load();
+    startup.config_init_ms = phase.elapsed().as_millis() as u64;
+
     let mut startup_notices: Vec<String> = config_warnings;
+    let phase = Instant::now();
     if let Some(db) = snapshots_db() {
         startup_notices.extend(thurbox::session_ops::heal_active_extensions(&db));
         startup_notices.extend(thurbox::session_ops::ensure_builtin_hooks_extension(&db));
@@ -143,17 +182,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tracing::info!("{notice}");
         }
     }
+    startup.extension_heal_ms = phase.elapsed().as_millis() as u64;
 
     // The tmux heartbeat keeper, so a schedule keeps firing after this exits —
     // and, while it runs, at the keeper's 60s cadence rather than not at all.
     // Best-effort: a missing or old tmux just means no headless firing. Skipped
     // when the feature is off, exactly as v1 skips it.
+    let phase = Instant::now();
     if thurbox::session::settings::global().features.automations {
         let cli = thurbox::agent::tmux::resolve_cli_binary();
         if let Err(e) = thurbox::agent::tmux::ensure_automation_heartbeat(&cli) {
             tracing::warn!("could not arm the automation heartbeat: {e}");
         }
     }
+    startup.heartbeat_ms = phase.elapsed().as_millis() as u64;
 
     // The gate. v2 replaces v1 under the same binary name, so auto-update moves
     // people to a different interface without their asking -- and several surfaces
@@ -176,17 +218,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // back lives in `App::reload_interface` — called once below and on every
     // reload after. Deciding it twice is how the floor became a one-way door:
     // startup installed the fallback and every later reload rebuilt *that*.
+    let ui_phase = Instant::now();
     let host = LuaHost::new(&ui_dir);
 
     // Resolved before the move, since `focus` indexes into the host.
     let initial_focus = focus_index_of(&host, "agent");
+
+    // Hoisted out of the struct literal below so each phase can be timed
+    // separately; the construction order is unchanged.
+    let phase = Instant::now();
+    let snapshots = SnapshotStore::open();
+    startup.db_open_ms = phase.elapsed().as_millis() as u64;
+
+    let phase = Instant::now();
+    let themes = Themes::load(snapshots_db().as_ref());
+    startup.theme_activate_ms = phase.elapsed().as_millis() as u64;
 
     let mut app = App {
         host,
         sources: thurbox::kernel::bundled::sources(&ui_dir),
         watcher: Watcher::new(&ui_dir)?,
         ui_dir,
-        snapshots: SnapshotStore::open(),
+        snapshots,
         terminals: Terminals::new(),
         commands: CommandBus::new(),
         diffs: DiffStore::new(),
@@ -194,12 +247,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
         metrics: Metrics::new(),
         clipboard: arboard::Clipboard::new().ok(),
         perf: Counters::default(),
+        timings: thurbox::kernel::perf::Timings::default(),
+        startup,
+        perf_log: std::env::var_os("THURBOX_PERF_LOG").is_some(),
+        perf_window_base: thurbox::kernel::perf::Snapshot::default(),
+        perf_window_tick: 0,
+        perf_published_at: None,
+        first_frame_logged: false,
+        process_start,
+        data_epoch: 0,
         selection: None,
         notifier: {
             let settings = thurbox::session::settings::global();
             Notifier::new(settings.features.notifications, settings.notifications)
         },
-        themes: Themes::load(snapshots_db().as_ref()),
+        themes,
         updates: thurbox::kernel::updates::Updates::start(config.features()),
         slot_selection: std::collections::HashMap::new(),
         visible_slots: std::collections::HashSet::new(),
@@ -238,6 +300,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         started: Instant::now(),
         frames: 0,
         last_trees: Vec::new(),
+        last_bands: std::collections::HashMap::new(),
         last_floats: std::collections::HashMap::new(),
         drawn_floats: std::collections::HashSet::new(),
         last_paint: Instant::now(),
@@ -265,6 +328,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Declarations are collected once up front and again on every reload, so
     // a newly added plugin's keys appear in help with nothing else edited.
     app.collect_declarations();
+    // Everything from `LuaHost::new` to here is what it costs to have an
+    // interface at all — a v2-only startup phase, and the one a slow plugin
+    // shows up in.
+    app.startup.ui_build_ms = ui_phase.elapsed().as_millis() as u64;
     // Non-empty only on a profile's first wire-up or on a failure, so this is a
     // real signal rather than noise on every launch.
     if let Some(notice) = startup_notices.first() {
@@ -752,6 +819,34 @@ struct App {
     clipboard: Option<arboard::Clipboard>,
     notifier: Notifier,
     perf: Counters,
+    /// Wall-clock stats, populated only while timing is active (ADR-P11).
+    timings: thurbox::kernel::perf::Timings,
+    /// How long each startup phase took; published and logged once.
+    startup: thurbox::kernel::perf::Startup,
+    /// `THURBOX_PERF_LOG` was set, read once at construction. The other half of
+    /// [`Self::perf_timing_active`] is the HUD, which can be toggled.
+    perf_log: bool,
+    /// Counters as they stood when the current perf window opened, so the
+    /// `perf_window` line reports deltas rather than lifetime totals.
+    perf_window_base: thurbox::kernel::perf::Snapshot,
+    /// Iteration count at which the current perf window opened.
+    perf_window_tick: u64,
+    /// When the JSON snapshot was last written to the database.
+    perf_published_at: Option<Instant>,
+    /// The one-shot `startup` line is logged after the first painted frame.
+    first_frame_logged: bool,
+    /// True process start, taken before any startup phase — `started` is taken
+    /// during construction and so misses everything before it.
+    process_start: Instant,
+    /// Moves whenever data the loop owns and publishes does — a worker store
+    /// that took a result, the links or screen text just re-scanned, the
+    /// in-flight command list, an attach failure.
+    ///
+    /// The stores already answer "did anything land" from `poll`, so this reads
+    /// that rather than duplicating a counter inside each one: a signal derived
+    /// from the existing return value cannot drift from it. Combined with the
+    /// versions the kernel sources carry into [`Self::publish_epoch`].
+    data_epoch: u64,
     /// Active mouse text selection over a terminal surface, if any.
     selection: Option<Selection>,
     themes: Themes,
@@ -878,6 +973,9 @@ struct App {
     last_trees: Vec<Option<thurbox::kernel::node::Node>>,
     /// The last float each plugin painted, and where.
     ///
+    /// What each chrome band painted last frame, and where. Bands have no tree
+    /// to diff, so their cells are compared instead — see `render_band`.
+    last_bands: std::collections::HashMap<Band, (Rect, Vec<ratatui::buffer::Cell>)>,
     /// Kept apart from `last_trees` because a float is rendered in its own pass at
     /// its own rect, so the two would overwrite each other for a plugin that did
     /// both. Its purpose is the same: settle the loop when nothing moved.
@@ -984,13 +1082,28 @@ impl App {
         let mut input_failures: u32 = 0;
         while !self.quit {
             Counters::bump(&self.perf.iterations);
+            // One cached bool, so a default run pays nothing for the two
+            // `Instant` reads below (ADR-P11).
+            let timing = self.perf_timing_active();
+            let tick_start = timing.then(Instant::now);
+
             self.poll_reload();
             self.apply_commands(&mut terminal);
             self.poll_command_bus();
             self.sync_terminals_and_agents();
             self.serve_worker_stores();
             self.apply_external_requests();
+
+            // Recorded BEFORE the paint so `tick` and `frame` decompose rather
+            // than nest: the iteration is roughly tick + republish + frame +
+            // the input wait, and a number that contained the paint could not
+            // tell those apart.
+            if let Some(start) = tick_start {
+                self.timings.tick.record(start.elapsed());
+            }
+
             self.paint_if_due(&mut terminal)?;
+            self.report_perf();
             self.drain_input(&mut input_failures)?;
         }
         Ok(())
@@ -1020,9 +1133,11 @@ impl App {
         }
         if self.reload_at.is_some_and(|at| Instant::now() >= at) {
             self.reload_at = None;
-            self.reload_interface();
-            self.refresh_sources();
-            self.collect_declarations();
+            self.time_op("interface_reload", |app| {
+                app.reload_interface();
+                app.refresh_sources();
+                app.collect_declarations();
+            });
             self.clamp_focus();
             self.dirty = true;
         }
@@ -1234,7 +1349,7 @@ impl App {
                 self.repos.invalidate_bookmarks();
             }
             self.snapshots.refresh();
-            self.dirty = true;
+            self.note_data_change();
         } else {
             self.snapshots.refresh_if_due();
         }
@@ -1253,6 +1368,10 @@ impl App {
         let output_gen = self.terminals.output_generation();
         if output_gen != self.last_output_gen {
             self.last_output_gen = output_gen;
+            // Deliberately NOT a data change: new agent output moves the vt100
+            // grid a surface paints from, not anything published. Treating it as
+            // one would move the epoch on every frame under a printing agent and
+            // make the whole gate worthless (design.md — Risks).
             self.dirty = true;
         }
         // The stuck-`working` fallback, run here because it asks the
@@ -1316,7 +1435,7 @@ impl App {
             }
         }
         if self.diffs.poll() {
-            self.dirty = true;
+            self.note_data_change();
         }
 
         // The creation flow's reads. It asks by leaving a key in `store`,
@@ -1326,7 +1445,7 @@ impl App {
         let wants = self.repo_wants();
         self.repos.serve(&wants);
         if self.repos.poll() {
-            self.dirty = true;
+            self.note_data_change();
         }
 
         // A session that has stayed deleted past its undo window keeps its
@@ -1351,7 +1470,7 @@ impl App {
         // running them every iteration costs a comparison.
         self.metrics.sample(self.metric_subjects());
         if self.metrics.poll() {
-            self.dirty = true;
+            self.note_data_change();
         }
     }
 
@@ -1385,6 +1504,122 @@ impl App {
             .observe(self.snapshots.current(), self.focused_session.as_deref());
     }
 
+    /// Note that published data moved, and that the screen owes a frame.
+    ///
+    /// The two go together everywhere they are used: something that changes what
+    /// a plugin would read is also something worth repainting for.
+    fn note_data_change(&mut self) {
+        self.data_epoch = self.data_epoch.wrapping_add(1);
+        self.dirty = true;
+    }
+
+    /// Whether the wall-clock timing of ADR-P11 is being collected.
+    ///
+    /// One cached bool plus one field read, checked once per iteration: the
+    /// hot loop must not pay for observability nobody asked for.
+    fn perf_timing_active(&self) -> bool {
+        self.perf_log || self.hud
+    }
+
+    /// The reporting half of ADR-P11: the periodic `perf_window` log line and
+    /// the JSON snapshot `thurbox-cli perf` reads.
+    ///
+    /// Both are gated on timing being active. Publishing especially: each write
+    /// bumps every other thurbox connection's `data_version`, which costs them a
+    /// full shared-state reload on their next poll — an idle default instance
+    /// must never churn that row.
+    fn report_perf(&mut self) {
+        if !self.perf_timing_active() {
+            return;
+        }
+        // Mirrored from the host, which owns the two caches: the counters are
+        // the only way a skip is visible at all (`frame-cost`).
+        self.perf.renders_skipped.store(
+            self.host.skipped_renders(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.perf.groups_reused.store(
+            self.host.reused_groups(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let counters = self.perf.read();
+
+        // The window line: counter deltas plus this window's percentiles, then
+        // the timings reset so each window stands alone.
+        if self.perf_log
+            && counters.iterations.saturating_sub(self.perf_window_tick) >= PERF_WINDOW_TICKS
+        {
+            let window = counters.since(&self.perf_window_base);
+            let slow: Vec<String> = self
+                .timings
+                .slow_ops
+                .iter_recent()
+                .map(|op| format!("{}:{}ms", op.name, op.ms))
+                .collect();
+            tracing::info!(
+                iterations = window.iterations,
+                frames = window.frames,
+                skipped = window.skipped,
+                renders = window.renders,
+                failures = window.failures,
+                reloads = window.reloads,
+                frame_p50_us = self.timings.frame.percentile_us(50),
+                frame_p95_us = self.timings.frame.percentile_us(95),
+                frame_max_us = self.timings.frame.max_us(),
+                republish_p50_us = self.timings.republish.percentile_us(50),
+                republish_p95_us = self.timings.republish.percentile_us(95),
+                tick_p50_us = self.timings.tick.percentile_us(50),
+                tick_p95_us = self.timings.tick.percentile_us(95),
+                slow_ops = slow.join(" "),
+                "perf_window"
+            );
+            self.perf_window_base = counters;
+            self.perf_window_tick = counters.iterations;
+            self.timings.reset_window();
+        }
+
+        // The snapshot, on its own slower cadence: it is a database write, not
+        // a log line.
+        // `map_or(true, ..)` rather than `is_none_or`: the latter is stable
+        // since 1.82 and this crate's MSRV is 1.75.
+        let due = self
+            .perf_published_at
+            .map_or(true, |at| at.elapsed() >= PERF_PUBLISH_INTERVAL);
+        if !due {
+            return;
+        }
+        self.perf_published_at = Some(Instant::now());
+        let json = thurbox::kernel::perf::snapshot_json(
+            &counters,
+            &self.timings,
+            &self.startup,
+            self.snapshots.current().sessions.len(),
+        );
+        if let Some(db) = snapshots_db() {
+            if let Err(e) = db.set_perf_snapshot(&json.to_string()) {
+                // Never worth failing a frame over; the CLI simply reports the
+                // older snapshot, or none.
+                tracing::warn!("could not publish the perf snapshot: {e}");
+            }
+        }
+    }
+
+    /// Time a named synchronous operation, ringing it if it was slow enough to
+    /// be felt and warning if it was slow enough to be a stall.
+    ///
+    /// Always measured, unlike the histograms: the call sites are rare,
+    /// user-triggered operations rather than the hot loop, and an interactive
+    /// stall has to be attributable even when nobody had a HUD open.
+    fn time_op<T>(&mut self, name: &'static str, f: impl FnOnce(&mut Self) -> T) -> T {
+        let start = Instant::now();
+        let out = f(self);
+        let elapsed = start.elapsed();
+        if self.timings.record_op(name, elapsed) {
+            tracing::warn!(op = name, ms = elapsed.as_millis() as u64, "slow op");
+        }
+        out
+    }
+
     /// Demand-driven paint: when something changed, or when the forced-redraw
     /// floor elapsed.
     ///
@@ -1399,8 +1634,17 @@ impl App {
             // that paints nothing is pure waste. At `drain_input`'s 10ms poll
             // that was 100 rebuilds a second to feed a screen that redraws four
             // times.
+            let timing = self.perf_timing_active();
+            let republish_start = timing.then(Instant::now);
             self.republish();
+            if let Some(start) = republish_start {
+                self.timings.republish.record(start.elapsed());
+            }
+            let draw_start = timing.then(Instant::now);
             let painted = terminal.draw(|frame| self.draw(frame))?;
+            if let Some(start) = draw_start {
+                self.timings.frame.record(start.elapsed());
+            }
             // Cloned so the borrow of `terminal` ends here: the two
             // corrections below both need it back.
             let buffer = painted.buffer.clone();
@@ -1426,6 +1670,23 @@ impl App {
             self.last_paint = Instant::now();
             self.frames += 1;
             Counters::bump(&self.perf.frames);
+            if !self.first_frame_logged {
+                self.first_frame_logged = true;
+                self.startup.first_frame_ms = self.process_start.elapsed().as_millis() as u64;
+                if self.perf_log {
+                    let s = &self.startup;
+                    tracing::info!(
+                        config_init_ms = s.config_init_ms,
+                        db_open_ms = s.db_open_ms,
+                        theme_activate_ms = s.theme_activate_ms,
+                        extension_heal_ms = s.extension_heal_ms,
+                        heartbeat_ms = s.heartbeat_ms,
+                        ui_build_ms = s.ui_build_ms,
+                        first_frame_ms = s.first_frame_ms,
+                        "startup"
+                    );
+                }
+            }
         } else {
             Counters::bump(&self.perf.skipped);
         }
@@ -1479,7 +1740,7 @@ impl App {
             match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     self.publish_for_batch(&mut published);
-                    self.on_key(&key);
+                    self.time_op("input_dispatch", |app| app.on_key(&key));
                     self.dirty = true;
                 }
                 // Dropped rather than merely uncaptured when the feature is
@@ -1551,6 +1812,23 @@ impl App {
     /// screen per repeat for answers that could not have changed.
     fn refresh_links(&mut self, sessions: &[String]) {
         for id in sessions {
+            // Only surfaces that are ON SCREEN. Extracting links walks the whole
+            // vt100 grid and URL-scans every row, and doing that for every
+            // session with a live pane cost ~1.2ms a frame with three of them —
+            // for answers nothing could use, since a link that is not painted
+            // can be neither clicked nor handed to the outer terminal. v1 asked
+            // only the active session for the same reason.
+            //
+            // The rects are last frame's (this runs before the paint that
+            // clears them), so a surface that has just appeared gets its links
+            // on the following frame rather than this one.
+            if self.terminals.last_rect(id).is_none() {
+                self.link_stamps.remove(id);
+                if self.links.remove(id).is_some() {
+                    self.data_epoch = self.data_epoch.wrapping_add(1);
+                }
+                continue;
+            }
             match self.terminals.output_stamp(id) {
                 // Unchanged since the last scan: the answer stands.
                 Some(stamp) if self.link_stamps.get(id) == Some(&stamp) => {}
@@ -1560,10 +1838,21 @@ impl App {
                     // Absent rather than empty when there are none, which is the
                     // shape a plugin reads: `thurbox.links[id]` is nil for a
                     // session with no links, not a table with nothing in it.
-                    if found.is_empty() {
-                        self.links.remove(id);
+                    //
+                    // Compared before storing: a printing agent moves its stamp
+                    // every frame while the links on screen usually stay put, and
+                    // treating a re-scan as a change would move the epoch every
+                    // frame for nothing.
+                    let changed = if found.is_empty() {
+                        self.links.remove(id).is_some()
+                    } else if self.links.get(id) == Some(&found) {
+                        false
                     } else {
                         self.links.insert(id.clone(), found);
+                        true
+                    };
+                    if changed {
+                        self.data_epoch = self.data_epoch.wrapping_add(1);
                     }
                 }
                 // No live pane, so no screen and no links.
@@ -1598,12 +1887,17 @@ impl App {
             if self.content_generation.is_some() {
                 self.content = std::collections::HashMap::new();
                 self.content_generation = None;
+                self.data_epoch = self.data_epoch.wrapping_add(1);
             }
             return;
         }
         let generation = self.terminals.output_generation();
         if self.content_generation != Some(generation) {
-            self.content = self.terminals.screens(sessions);
+            let scanned = self.terminals.screens(sessions);
+            if scanned != self.content {
+                self.content = scanned;
+                self.data_epoch = self.data_epoch.wrapping_add(1);
+            }
             self.content_generation = Some(generation);
         }
     }
@@ -1687,6 +1981,14 @@ impl App {
         let inventory = std::mem::take(&mut self.inventory);
         let ui_dir = self.ui_dir.display().to_string();
         if let Err(e) = self.host.publish(&thurbox::kernel::host::Published {
+            epoch: thurbox::kernel::host::Epoch {
+                snapshot: self.snapshots.generation(),
+                themes: self.themes.version(),
+                registry: self.registry.version(),
+                meta: self.terminals.meta_version(),
+                failed: self.terminals.failed_version(),
+                data: self.data_epoch,
+            },
             snapshot: self.snapshots.current(),
             attach_errors: &attach_errors,
             inflight: &inflight,
@@ -2073,7 +2375,7 @@ impl App {
         // The counters, above the floats: a diagnostic a modal could cover
         // would be useless exactly when a modal is what you are diagnosing.
         if self.hud {
-            render_hud(frame, hud_area(area), &self.perf.read());
+            render_hud(frame, hud_area(area), &self.perf.read(), &self.timings);
             // The counters move on every iteration, so the HUD is never
             // settled — while it is up, the loop keeps painting.
             self.changed_this_frame = true;
@@ -3264,13 +3566,31 @@ impl App {
             themes: &self.themes,
         };
         if !bands::occupies(band, &state) {
+            // A band that occupied the last frame and does not occupy this one
+            // HAS changed the frame — the message band finishing is the case —
+            // so forgetting it is itself the signal.
+            if self.last_bands.remove(&band).is_some() {
+                self.changed_this_frame = true;
+            }
             return;
         }
         let hits = bands::render(frame, rect, band, &state);
         self.band_targets.extend(hits);
-        // A band drawn is a band that changed the frame; the message band in
-        // particular appears and disappears without any tree moving.
-        self.changed_this_frame = true;
+        // A band is chrome the kernel paints directly, so there is no tree to
+        // diff the way a plugin's is — and marking it changed for having been
+        // *drawn* is not the same question. It held `dirty` set after every
+        // single frame, which defeated the demand-driven redraw entirely: the
+        // loop never settled to the 250ms floor and repainted at the frame cap
+        // forever, on an idle screen with no sessions at all.
+        //
+        // The cells it just painted are the honest analog of a plugin's tree —
+        // exact, and immune to a new `BandState` field being forgotten here.
+        let painted = read_cells(frame, rect);
+        let entry = (rect, painted);
+        if self.last_bands.get(&band) != Some(&entry) {
+            self.changed_this_frame = true;
+            self.last_bands.insert(band, entry);
+        }
     }
 
     /// Record one plugin's hitboxes, its own rect first.
@@ -4091,8 +4411,8 @@ fn error_area(area: Rect) -> Rect {
 /// The corner the session list is not in, so the pane you are most likely to be
 /// watching while measuring is the one it does not cover.
 fn hud_area(area: Rect) -> Rect {
-    let width = 30.min(area.width);
-    let height = 8.min(area.height);
+    let width = 34.min(area.width);
+    let height = 15.min(area.height);
     Rect {
         x: area.x + area.width - width,
         y: area.y,
@@ -4101,12 +4421,51 @@ fn hud_area(area: Rect) -> Rect {
     }
 }
 
+/// The cells of one rect of the frame, for comparing against the last one.
+///
+/// Clipped to the buffer's own area: a rect the arrangement produced is trusted
+/// to be inside the frame, but reading out of bounds would panic rather than
+/// merely mis-compare, and this runs on every painted frame.
+fn read_cells(frame: &mut Frame, rect: Rect) -> Vec<ratatui::buffer::Cell> {
+    // `Frame` exposes only `buffer_mut`, hence the mutable borrow for a read.
+    let area = frame.buffer_mut().area;
+    let rect = rect.intersection(area);
+    let mut cells = Vec::with_capacity(usize::from(rect.width) * usize::from(rect.height));
+    for y in rect.top()..rect.bottom() {
+        for x in rect.left()..rect.right() {
+            if let Some(cell) = frame
+                .buffer_mut()
+                .cell(ratatui::layout::Position::new(x, y))
+            {
+                cells.push(cell.clone());
+            }
+        }
+    }
+    cells
+}
+
+/// Compact µs for the HUD's narrow columns; `cli::perf` formats the same way.
+fn fmt_hud_us(us: u64) -> String {
+    if us < 1_000 {
+        format!("{us}us")
+    } else if us < 1_000_000 {
+        format!("{:.1}ms", us as f64 / 1_000.0)
+    } else {
+        format!("{:.1}s", us as f64 / 1_000_000.0)
+    }
+}
+
 /// Paint the counters.
 ///
 /// Counts rather than timings, which is the whole point of `kernel::perf`: a
 /// number that says "an idle loop painted no frames" is exact, where one that
 /// says "idle was fast" is a coin toss on shared hardware.
-fn render_hud(frame: &mut Frame, area: Rect, counters: &thurbox::kernel::perf::Snapshot) {
+fn render_hud(
+    frame: &mut Frame,
+    area: Rect,
+    counters: &thurbox::kernel::perf::Snapshot,
+    timings: &thurbox::kernel::perf::Timings,
+) {
     use ratatui::style::{Color, Style};
     use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
@@ -4119,15 +4478,34 @@ fn render_hud(frame: &mut Frame, area: Rect, counters: &thurbox::kernel::perf::S
         .border_style(Style::default().fg(Color::Yellow))
         .title(" perf ");
     let inner = block.inner(area);
-    let text = format!(
-        "iterations {}\nframes     {}\nskipped    {}\nrenders    {}\nfailures   {}\nreloads    {}",
+    // Counters first — they are the exact half. The timings below them are
+    // wall-clock and so only ever indicative (ADR-P11).
+    let mut text = format!(
+        "iterations {}\nframes     {}\nskipped    {}\nrenders    {}\nreused r/g {}/{}\nfailures   {}\nreloads    {}\n",
         counters.iterations,
         counters.frames,
         counters.skipped,
         counters.renders,
+        counters.renders_skipped,
+        counters.groups_reused,
         counters.failures,
         counters.reloads,
     );
+    for (label, histogram) in [
+        ("frame", &timings.frame),
+        ("republ", &timings.republish),
+        ("tick", &timings.tick),
+    ] {
+        text.push_str(&format!(
+            "{label:<6} {} / {}\n",
+            fmt_hud_us(histogram.percentile_us(50)),
+            fmt_hud_us(histogram.max_us()),
+        ));
+    }
+    match timings.slow_ops.iter_recent().next() {
+        Some(op) => text.push_str(&format!("slow   {}:{}ms", op.name, op.ms)),
+        None => text.push_str("slow   none"),
+    }
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
     frame.render_widget(

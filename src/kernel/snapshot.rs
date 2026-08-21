@@ -330,6 +330,14 @@ pub struct SnapshotStore {
     /// The subscription's first report routinely arrives before the pane has
     /// been adopted, so an unmatched event is parked rather than lost.
     pending_hooks: Vec<PendingHook>,
+    /// Moves whenever anything in [`Self::current`] does.
+    ///
+    /// What gates the published tables and the pure-pane tree cache: a reader
+    /// that saw this value and sees it again knows nothing it could read has
+    /// changed. It is bumped **inside** each mutation rather than by callers,
+    /// because a mutation that forgets to bump is the one failure here that is
+    /// silent — see `tests/kernel_frame_cost.rs`.
+    generation: u64,
 }
 
 /// A remote hook event waiting for the session it names to appear.
@@ -370,6 +378,7 @@ impl SnapshotStore {
             last_refresh: None,
             last_data_version: None,
             pending_hooks: Vec::new(),
+            generation: 0,
         };
         store.refresh();
         store
@@ -388,12 +397,24 @@ impl SnapshotStore {
             last_refresh: None,
             last_data_version: None,
             pending_hooks: Vec::new(),
+            generation: 0,
         };
         store.refresh();
         store
     }
 
     /// The current snapshot. Always immediate.
+    /// How many times the snapshot has changed. See [`Self::generation`]'s field.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Record that the snapshot changed. Every write to `current` goes through
+    /// a call to this in the same breath.
+    fn touch(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     pub fn current(&self) -> &Snapshot {
         &self.current
     }
@@ -423,6 +444,9 @@ impl SnapshotStore {
             self.last_refresh = Some(Instant::now());
             self.current.taken_at_ms = now_ms();
             self.attach_git_stats();
+            // `taken_at_ms` is published and `widgets.relative_time` renders it,
+            // so a reader that did not see this move would freeze at "5s ago".
+            self.touch();
             return false;
         }
         self.refresh();
@@ -514,6 +538,7 @@ impl SnapshotStore {
             .find(|row| row.id == session)
         {
             row.status = "idle".to_string();
+            self.touch();
         }
     }
 
@@ -593,6 +618,9 @@ impl SnapshotStore {
             row.hook_state = Some(event.state);
             applied += 1;
         }
+        if applied > 0 {
+            self.touch();
+        }
         applied
     }
 
@@ -623,6 +651,9 @@ impl SnapshotStore {
                 row.status = derived;
                 changed += 1;
             }
+        }
+        if changed > 0 {
+            self.touch();
         }
         changed
     }
@@ -698,6 +729,7 @@ impl SnapshotStore {
 
         let Some(database) = &self.database else {
             self.current.taken_at_ms = taken_at_ms;
+            self.touch();
             return;
         };
 
@@ -706,6 +738,7 @@ impl SnapshotStore {
             Err(e) => {
                 self.current.error = Some(format!("list sessions: {e}"));
                 self.current.taken_at_ms = taken_at_ms;
+                self.touch();
                 return;
             }
         };
@@ -865,6 +898,7 @@ impl SnapshotStore {
             error: None,
         };
         self.attach_git_stats();
+        self.touch();
     }
 }
 

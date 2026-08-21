@@ -7,7 +7,7 @@
 
 use thurbox::kernel::command::{Args, Command, CommandBus};
 use thurbox::kernel::host::{LuaHost, RenderContext};
-use thurbox::kernel::perf::{Counters, Snapshot as Perf};
+use thurbox::kernel::perf::{snapshot_json, Counters, Snapshot as Perf, Startup, Timings};
 use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::storage::Database;
 
@@ -175,4 +175,90 @@ fn rendering_many_panes_stays_within_a_frame_budget() {
     );
 
     let _ = Perf::default();
+}
+
+#[test]
+fn the_published_snapshot_is_what_the_cli_renders() {
+    // The drift guard between the two halves of ADR-P11: `kernel::perf` owns
+    // the shape and `cli::perf` renders it, so a key renamed on one side and
+    // not the other prints a silent zero rather than failing. Both unit test
+    // suites pass in that world; only pairing them catches it.
+    let counters = Counters::default();
+    Counters::bump(&counters.frames);
+    Counters::bump(&counters.reloads);
+
+    let mut timings = Timings::default();
+    timings.frame.record(std::time::Duration::from_millis(6));
+    timings
+        .republish
+        .record(std::time::Duration::from_millis(2));
+    timings.tick.record(std::time::Duration::from_micros(400));
+    timings.record_op("interface_reload", std::time::Duration::from_millis(140));
+
+    let startup = Startup {
+        config_init_ms: 3,
+        db_open_ms: 11,
+        extension_heal_ms: 15,
+        ui_build_ms: 40,
+        first_frame_ms: 120,
+        ..Startup::default()
+    };
+
+    let json = snapshot_json(&counters.read(), &timings, &startup, 2);
+
+    let db = Database::open_in_memory().expect("db");
+    db.set_perf_snapshot(&json.to_string()).expect("publish");
+    let out = thurbox::cli::perf::run(&db).expect("render");
+
+    assert!(
+        out.failure.is_none(),
+        "a published snapshot is not a failure"
+    );
+    let human = &out.human;
+    // Every row the renderer promises, carrying the value the producer put in.
+    assert!(human.contains("sessions"), "missing sessions row: {human}");
+    assert!(human.contains("interface_reload"), "slow op lost: {human}");
+    assert!(human.contains("140ms"), "slow op duration lost: {human}");
+    assert!(
+        human.contains("republish"),
+        "republish histogram lost: {human}"
+    );
+    assert!(human.contains("ui 40ms"), "ui build phase lost: {human}");
+    assert!(
+        human.contains("first frame 120ms"),
+        "first-frame phase lost: {human}"
+    );
+    // And the machine half stays addressable by the documented keys.
+    assert_eq!(out.json["counters"]["frames"], 1);
+    assert_eq!(out.json["counters"]["reloads"], 1);
+    // The skip counters travel too: they are the only evidence a frame was made
+    // cheaper, so a rename that lost them would hide exactly what they exist for.
+    assert!(
+        human.contains("renders skipped"),
+        "skip counter lost: {human}"
+    );
+    assert!(
+        human.contains("groups reused"),
+        "reuse counter lost: {human}"
+    );
+    assert_eq!(out.json["session_count"], 2);
+}
+
+#[test]
+fn timing_costs_nothing_until_something_asks_for_it() {
+    // The gate of ADR-P11 in the shape a caller can hold: an untouched
+    // `Timings` reports no samples, so a run that never enabled timing
+    // publishes zeros rather than stale or invented numbers.
+    let timings = Timings::default();
+    let json = snapshot_json(
+        &Counters::default().read(),
+        &timings,
+        &Startup::default(),
+        0,
+    );
+    for key in ["frame", "republish", "tick"] {
+        assert_eq!(json[key]["samples"], 0, "{key} recorded without timing");
+        assert_eq!(json[key]["p50_us"], 0, "{key} invented a percentile");
+    }
+    assert!(json["slow_ops"].as_array().expect("array").is_empty());
 }

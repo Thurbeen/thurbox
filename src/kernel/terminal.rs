@@ -195,6 +195,11 @@ pub struct Terminals {
     /// generation-gated: an unchanged session reports nothing, so the previous
     /// value has to be kept somewhere.
     meta: HashMap<String, AgentMeta>,
+    /// Moves only when [`Self::meta`] actually writes or drops an entry.
+    meta_version: u64,
+    /// Moves whenever the set of attach failures does. Published on each
+    /// session row, so it gates that group alongside `meta_version`.
+    failed_version: u64,
     /// Attaches running on workers: session id → the backend it is on.
     ///
     /// Attaching is the one thing here that blocks for a *long* time — an ssh
@@ -379,6 +384,8 @@ impl Terminals {
             surveys: HashMap::new(),
             waiting_since: HashMap::new(),
             meta: HashMap::new(),
+            meta_version: 0,
+            failed_version: 0,
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
             discovering: std::collections::HashSet::new(),
@@ -486,7 +493,11 @@ impl Terminals {
             .map(|row| row.id.as_str())
             .collect();
         self.live.retain(|id, _| present.contains(id.as_str()));
+        let failures = self.failed.len();
         self.failed.retain(|id, _| present.contains(id.as_str()));
+        if self.failed.len() != failures {
+            self.failed_version = self.failed_version.wrapping_add(1);
+        }
     }
 
     /// Let go of a session whose pane died, so it is re-attached rather than
@@ -654,7 +665,9 @@ impl Terminals {
                             shell_visible: Cell::new(false),
                         },
                     );
-                    self.failed.remove(&done.session);
+                    if self.failed.remove(&done.session).is_some() {
+                        self.failed_version = self.failed_version.wrapping_add(1);
+                    }
                 }
                 Err(e) => self.fail(&done.session, Some(done.pane), e),
             }
@@ -688,11 +701,14 @@ impl Terminals {
     /// after the pane it needs is already there.
     pub fn forget(&mut self, session: &str) {
         self.live.remove(session);
-        self.failed.remove(session);
+        if self.failed.remove(session).is_some() {
+            self.failed_version = self.failed_version.wrapping_add(1);
+        }
     }
 
     /// Record why a session has no pane, and what was tried.
     fn fail(&mut self, session: &str, pane: Option<String>, message: String) {
+        self.failed_version = self.failed_version.wrapping_add(1);
         self.failed.insert(
             session.to_string(),
             Failure {
@@ -1564,13 +1580,35 @@ impl Terminals {
         for (id, live) in &mut self.live {
             if let Some((activity, notification)) = live.session.sync_agent_meta() {
                 let entry = self.meta.entry(id.clone()).or_default();
-                entry.activity = activity;
-                entry.notification = notification;
+                // Compared before assigning, not assigned blind. This runs on
+                // every publish, and a write that changed nothing would still
+                // move the version below and invalidate every cached tree —
+                // which is how a change-signal quietly becomes worthless
+                // (`frame-cost`).
+                if entry.activity != activity || entry.notification != notification {
+                    entry.activity = activity;
+                    entry.notification = notification;
+                    self.meta_version = self.meta_version.wrapping_add(1);
+                }
             }
         }
         // A session that went away keeps no stale title.
+        let before = self.meta.len();
         self.meta.retain(|id, _| self.live.contains_key(id));
+        if self.meta.len() != before {
+            self.meta_version = self.meta_version.wrapping_add(1);
+        }
         &self.meta
+    }
+
+    /// How many times [`Self::meta`] has actually changed an entry.
+    pub fn meta_version(&self) -> u64 {
+        self.meta_version
+    }
+
+    /// How many times the set of attach failures has changed.
+    pub fn failed_version(&self) -> u64 {
+        self.failed_version
     }
 }
 

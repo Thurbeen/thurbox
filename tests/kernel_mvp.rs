@@ -50,6 +50,7 @@ fn publish_with(
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&thurbox::kernel::host::Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors,
         inflight,

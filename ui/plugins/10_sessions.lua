@@ -1050,6 +1050,11 @@ return {
   slot = "sessions",
   order = 10,
   focusable = true,
+  -- This render reads `thurbox.*` and `ctx` and writes nothing, so the kernel
+  -- may reuse the tree it returned while neither has changed. The working
+  -- spinner still animates: it advances on `ctx.elapsed` at the shared widget
+  -- rate, which is the one clock a pure pane is allowed.
+  pure = true,
 
   -- Declared as DATA, not just handled. That is what lets the kernel list these
   -- in help, detect a clash with another plugin, and let you rebind them —

@@ -61,8 +61,38 @@ inventory `plugin list` does, and restores a file you broke. Open settings with
 
 ## Traps
 
-Nine mistakes that are invisible until runtime. Each cost real time in the
+Ten mistakes that are invisible until runtime. Each cost real time in the
 changes that built the bundled panes.
+
+**Declaring `pure` when your render is not.** A pane may declare that its render
+is a function of `thurbox.*` and `ctx` and nothing else:
+
+```lua
+return {
+  name = "notes",
+  slot = "left",
+  pure = true,   -- the kernel may reuse the tree I last returned
+  render = function(ctx) ... end,
+}
+```
+
+In exchange the kernel stops calling it on frames where nothing it can read has
+changed — which is most of them, and is the single largest saving available in a
+frame. But nothing checks the claim, and getting it wrong gives you a pane
+painted from a stale tree, with no error anywhere. Two things disqualify a pane:
+
+- **It writes `store` or `state` from inside `render`.** Those writes stop
+  happening on the frames the render is skipped. This is why the bundled search
+  strip is deliberately *not* pure — it leaves its content request in `store`
+  while rendering.
+- **It animates from `ctx.frame`, or from `ctx.elapsed` faster than the shared
+  widgets do.** Animating at the shared rate is fine — the working spinner does,
+  and the session list is pure — because the kernel keys a cached tree on that
+  same tick. Anything finer freezes.
+
+Reading `store`/`state` is fine, and so is `command(...)` from a handler. If you
+are unsure, leave it undeclared: a pane that says nothing behaves exactly as it
+always has, and the only cost is that it is no faster.
 
 **Reading `state` or `store` hands back a copy.** Mutating it changes nothing —
 the value is simply the old one on the next frame. Write the whole thing back:

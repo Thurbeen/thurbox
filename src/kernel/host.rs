@@ -17,7 +17,7 @@
 //! makes "plugins never touch the render thread" a compile error (D10).
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -109,6 +109,15 @@ enum Persisted {
 /// `store` is shared by every plugin; `state` is keyed by plugin file too, so
 /// two plugins can both use `state.index` without colliding.
 type Shared = Rc<RefCell<BTreeMap<String, Persisted>>>;
+/// How many times plugin state — shared or private — has been written.
+///
+/// A pure pane's tree may legitimately depend on `store` or `state`: the agent
+/// pane remembers which tab each session is on, and one pane can read a value
+/// another wrote. Neither is a published source, so without this a tree cached
+/// before a keypress would survive it (`frame-cost`). Coarse on purpose — any
+/// write invalidates every cached tree, which is right for something that
+/// happens on input rather than per frame.
+type StateVersion = Rc<std::cell::Cell<u64>>;
 type Private = Rc<RefCell<BTreeMap<(String, String), Persisted>>>;
 /// Commands a plugin issued this frame, drained by the loop.
 type Queue = Rc<RefCell<Vec<Command>>>;
@@ -179,6 +188,16 @@ pub struct Plugin {
     pub path: String,
     pub slot: String,
     pub focusable: bool,
+    /// Declared `pure = true`: this pane's render is a function of the published
+    /// tables and its render context, and of nothing else.
+    ///
+    /// An assertion the author makes, not a property the kernel can check — a
+    /// render may write to `store` or read a per-frame clock, and neither is
+    /// visible from outside the VM. Declaring it buys not being called on a
+    /// frame where nothing it can read has changed; declaring it wrongly buys a
+    /// pane painted from a stale tree. Opt-in for exactly that reason: a pane
+    /// that says nothing behaves as it always has (`frame-cost`).
+    pub pure: bool,
     /// Declared `input = "session"`: while this plugin holds focus, keys it
     /// does not handle are forwarded to the session its surface names.
     ///
@@ -347,7 +366,87 @@ pub struct Rendered {
 /// A struct rather than a parameter list because this grew from two to six in
 /// the course of one change, and each growth churned every call site. Adding
 /// something plugins can read should not be an edit to every test.
+/// The version each published source stood at when a frame was published.
+///
+/// A group rebuilt at one epoch and asked for again at the same one cannot have
+/// differed, which is the whole of the gate (`frame-cost`). Each group names the
+/// fields it is built from rather than taking the whole struct, so a source that
+/// moves every frame only invalidates what actually reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Epoch {
+    /// `SnapshotStore::generation`.
+    pub snapshot: u64,
+    /// `Themes::version`.
+    pub themes: u64,
+    /// `Registry::version`.
+    pub registry: u64,
+    /// `Terminals::meta_version`.
+    pub meta: u64,
+    /// `Terminals::failed_version`.
+    pub failed: u64,
+    /// The loop's own `data_epoch` — the worker stores, links, screen text.
+    pub data: u64,
+}
+
+/// The versions one group is built from, compared exactly.
+///
+/// A fixed array rather than a hash of them: a hash collision here would reuse a
+/// stale group, and "astronomically unlikely" is the wrong guarantee for a
+/// wrong answer nobody can see. Unused slots stay zero.
+type GroupKey = [u64; 4];
+
+/// How often a pure pane's tree may change on the clock alone, in Hz.
+///
+/// Set to the rate `widgets.status_glyph` advances the working spinner at
+/// (`math.floor(elapsed * 8)`), so a cached tree is dropped exactly when the
+/// spinner would move to its next frame and never merely because time passed.
+/// Changing one without the other either freezes the animation or re-renders
+/// for nothing.
+const ANIMATION_HZ: f64 = 8.0;
+
+/// What a pure pane's cached tree was built for: the publish epoch, the parts of
+/// the render context it may depend on, and the animation tick.
+///
+/// `ctx.frame` is deliberately absent — it moves every frame, so including it
+/// would mean never reusing anything. `ctx.elapsed` enters only through
+/// [`ANIMATION_HZ`]: a pane may animate at the spinner's rate and still be pure,
+/// because at that granularity "the clock moved" is a real input rather than
+/// noise. Anything finer is not expressible, which is why a pane animating per
+/// *frame* may not declare `pure`.
+///
+/// The last field is [`StateVersion`]. A pure render may read `store` or
+/// `state` — the agent pane remembers a tab per session — and those are written
+/// by handlers, not by anything published, so without it a tree cached before a
+/// keypress would outlive it.
+type TreeKey = (Epoch, u16, u16, bool, u64, u64);
+
+impl Epoch {
+    /// An epoch that matches no previous one, so every group is rebuilt.
+    ///
+    /// For a caller that holds no versions to report — a test, or any publish
+    /// outside the render loop. Without it such a caller would publish
+    /// `Epoch::default()` twice with *different* data and be handed the first
+    /// one's groups back, which is the stale answer this whole mechanism exists
+    /// to make impossible.
+    pub fn always_fresh() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        Self {
+            snapshot: n,
+            themes: n,
+            registry: n,
+            meta: n,
+            failed: n,
+            data: n,
+        }
+    }
+}
+
 pub struct Published<'a> {
+    /// Where each source stood, so a group that could not have changed is not
+    /// rebuilt. See [`Epoch`].
+    pub epoch: Epoch,
     pub snapshot: &'a Snapshot,
     /// Why a session's terminal is not live, keyed by session.
     pub attach_errors: &'a std::collections::HashMap<String, String>,
@@ -430,8 +529,35 @@ pub struct RenderContext {
 pub struct LuaHost {
     lua: Lua,
     ui_dir: PathBuf,
+    /// The epoch the last publish ran at, so `render` can key a tree on it
+    /// without the loop passing it twice.
+    epoch: RefCell<Option<Epoch>>,
+    /// How many pane renders and published groups were served from a cache.
+    ///
+    /// A skip is unobservable in what gets painted — that is the whole
+    /// correctness claim — so it is only ever visible as a count. Published
+    /// through the perf snapshot, and what `tests/kernel_frame_cost.rs` asserts
+    /// on, since it has nothing else to assert on (`frame-cost`).
+    skipped_renders: std::cell::Cell<u64>,
+    reused_groups: std::cell::Cell<u64>,
+    /// A pure pane's last converted tree, with the key it was built under.
+    ///
+    /// Keyed by plugin index. Dropped whenever the VM is rebuilt, alongside
+    /// [`Self::groups`] — a `Node` outlives the Lua it came from, but a tree
+    /// built by the previous version of a pane is not that pane's answer.
+    trees: RefCell<HashMap<usize, (TreeKey, Rendered)>>,
+    /// Published groups, each with the epoch it was built at.
+    ///
+    /// The outer `thurbox` table is still assembled fresh every frame from
+    /// these; only the nested group values are reused. That is deliberate — it
+    /// means a gating mistake can produce a stale *group* but never a torn
+    /// table, and it keeps the change local to the group builders
+    /// (`frame-cost`, design.md).
+    groups: RefCell<HashMap<&'static str, (GroupKey, Value)>>,
     store: Shared,
     state: Private,
+    /// Bumped by every `store`/`state` write; part of a pure pane's tree key.
+    state_version: StateVersion,
     /// The plugin currently being called, so `state` can namespace itself.
     ///
     /// This is the file *stem*, which is what `state` has always keyed by.
@@ -479,8 +605,14 @@ impl LuaHost {
         let mut host = Self {
             lua: new_vm().unwrap_or_else(|_| Lua::new()),
             ui_dir,
+            groups: RefCell::new(HashMap::new()),
+            trees: RefCell::new(HashMap::new()),
+            epoch: RefCell::new(None),
+            skipped_renders: std::cell::Cell::new(0),
+            reused_groups: std::cell::Cell::new(0),
             store: Shared::default(),
             state: Private::default(),
+            state_version: StateVersion::default(),
             current: Rc::new(RefCell::new(String::new())),
             current_path: Rc::new(RefCell::new(String::new())),
             queue: Queue::default(),
@@ -514,6 +646,11 @@ impl LuaHost {
     pub fn reload(&mut self) {
         match self.build() {
             Ok((lua, plugins, layout)) => {
+                // Before the VM they point into is dropped: a cached group is a
+                // handle into `self.lua`, so carrying one across a reload would
+                // hand the next publish a value belonging to a Lua that no
+                // longer exists.
+                self.forget_groups();
                 self.lua = lua;
                 self.plugins = plugins;
                 self.layout = layout;
@@ -536,6 +673,7 @@ impl LuaHost {
             self.roots.clone(),
             self.runs.clone(),
             self.current_path.clone(),
+            self.state_version.clone(),
         )
         .map_err(|e| e.to_string())?;
 
@@ -1149,8 +1287,58 @@ impl LuaHost {
     ///
     /// Called once per frame from the event loop — never from inside a plugin,
     /// which is what keeps every read immediate (design.md D5).
+    /// Build one published group, or hand back the one built at the same key.
+    ///
+    /// `key` combines only the versions that group actually reads, so a source
+    /// moving every frame invalidates what reads it and nothing else. The value
+    /// is a Lua reference, so reusing it costs a clone of a registry handle
+    /// rather than a rebuild of the table behind it.
+    fn group(
+        &self,
+        name: &'static str,
+        key: GroupKey,
+        build: impl FnOnce() -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        // Scoped so `build` can touch the cache without a double borrow.
+        if let Some((built_at, value)) = self.groups.borrow().get(name) {
+            if *built_at == key {
+                self.reused_groups.set(self.reused_groups.get() + 1);
+                return Ok(value.clone());
+            }
+        }
+        let value = build()?;
+        self.groups.borrow_mut().insert(name, (key, value.clone()));
+        Ok(value)
+    }
+
+    /// Forget every cached group, so the next publish rebuilds all of them.
+    ///
+    /// Called where the VM itself is replaced: the cached values are handles
+    /// into the Lua that is going away.
+    pub fn forget_groups(&self) {
+        self.groups.borrow_mut().clear();
+        self.trees.borrow_mut().clear();
+    }
+
+    /// Pane renders skipped because a pure pane's tree still stood.
+    pub fn skipped_renders(&self) -> u64 {
+        self.skipped_renders.get()
+    }
+
+    /// Published groups served from the cache rather than rebuilt.
+    pub fn reused_groups(&self) -> u64 {
+        self.reused_groups.get()
+    }
+
+    /// The epoch of the most recent publish, which a pure pane's tree is keyed
+    /// on. `None` before anything has been published.
+    fn published_epoch(&self) -> Option<Epoch> {
+        *self.epoch.borrow()
+    }
+
     pub fn publish(&self, world: &Published) -> Result<(), String> {
         let Published {
+            epoch,
             hovered,
             focus,
             snapshot,
@@ -1172,104 +1360,133 @@ impl LuaHost {
             wants,
         } = world;
         let table = self.lua.create_table().map_err(|e| e.to_string())?;
-        let sessions = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, row) in snapshot.sessions.iter().enumerate() {
-            let entry = self.lua.create_table().map_err(|e| e.to_string())?;
-            let set = |key: &str, value: Value| -> Result<(), String> {
-                entry.set(key, value).map_err(|e| e.to_string())
-            };
-            set("id", to_lua_string(&self.lua, &row.id)?)?;
-            set("name", to_lua_string(&self.lua, &row.name)?)?;
-            set("agent", to_lua_string(&self.lua, &row.agent)?)?;
-            let attach_error = attach_errors.get(&row.id).map(String::as_str);
-            set(
-                "status",
-                to_lua_string(
-                    &self.lua,
-                    &super::snapshot::with_reachability(&row.status, &row.backend, attach_error),
-                )?,
-            )?;
-            set("backend", to_lua_string(&self.lua, &row.backend)?)?;
-            set("repo", opt_lua_string(&self.lua, row.repo.as_deref())?)?;
-            set("branch", opt_lua_string(&self.lua, row.branch.as_deref())?)?;
-            // What the diff is taken against, so a pane can name the range it is
-            // showing rather than guessing. Distinct from `branch` above.
-            set(
-                "base_branch",
-                opt_lua_string(&self.lua, row.base_branch.as_deref())?,
-            )?;
-            set(
-                "host",
-                opt_lua_string(&self.lua, row.remote_host.as_deref())?,
-            )?;
-            set(
-                "parent",
-                opt_lua_string(&self.lua, row.parent_id.as_deref())?,
-            )?;
-            set(
-                "cwd",
-                opt_lua_string(
-                    &self.lua,
-                    row.cwd.as_ref().map(|p| p.to_string_lossy()).as_deref(),
-                )?,
-            )?;
-            entry
-                .set("worktrees", row.worktree_count)
-                .map_err(|e| e.to_string())?;
-            // Every repo the session spans, so a group can be labelled with all
-            // of them rather than just the primary.
-            let repos = self.lua.create_table().map_err(|e| e.to_string())?;
-            for (position, name) in row.repos.iter().enumerate() {
-                repos
-                    .set(position + 1, to_lua_string(&self.lua, name)?)
-                    .map_err(|e| e.to_string())?;
-            }
-            set("repos", Value::Table(repos))?;
-            // What the agent said about itself over its own terminal. Absent
-            // when it has said nothing, which a row must tell apart from an
-            // empty message.
-            let agent_meta = meta.get(&row.id);
-            set(
-                "activity",
-                opt_lua_string(&self.lua, agent_meta.and_then(|m| m.activity.as_deref()))?,
-            )?;
-            set(
-                "notification",
-                opt_lua_string(
-                    &self.lua,
-                    agent_meta.and_then(|m| m.notification.as_deref()),
-                )?,
-            )?;
-            // Manual position. Without this a plugin cannot honour the order a
-            // reorder command just wrote, and the list silently ignores it.
-            entry
-                .set("display_order", row.display_order)
-                .map_err(|e| e.to_string())?;
-            // Absent means "not computed yet", which a plugin must be able to
-            // tell apart from a clean tree.
-            if let Some(git) = row.git {
-                let stats = self.lua.create_table().map_err(|e| e.to_string())?;
-                stats
-                    .set("files", git.files_changed)
-                    .map_err(|e| e.to_string())?;
-                stats
-                    .set("insertions", git.insertions)
-                    .map_err(|e| e.to_string())?;
-                stats
-                    .set("deletions", git.deletions)
-                    .map_err(|e| e.to_string())?;
-                stats
-                    .set("untracked", git.untracked)
-                    .map_err(|e| e.to_string())?;
-                stats.set("dirty", git.dirty).map_err(|e| e.to_string())?;
-                stats.set("ahead", git.ahead).map_err(|e| e.to_string())?;
-                stats.set("behind", git.behind).map_err(|e| e.to_string())?;
-                entry.set("git", stats).map_err(|e| e.to_string())?;
-            }
-            // Why this session's terminal is not live, when it is not.
-            set("attach_error", opt_lua_string(&self.lua, attach_error)?)?;
-            sessions.set(index + 1, entry).map_err(|e| e.to_string())?;
-        }
+        // The largest group by a distance — a table per session with ~30 named
+        // fields and two nested tables — and one whose inputs move rarely: the
+        // snapshot's own generation, what each agent reported about itself, and
+        // whether an attach failed.
+        let sessions = self.group(
+            "sessions",
+            [epoch.snapshot, epoch.meta, epoch.failed, 0],
+            || {
+                let sessions = self.lua.create_table().map_err(|e| e.to_string())?;
+                for (index, row) in snapshot.sessions.iter().enumerate() {
+                    // Pre-sized: this row takes ~28 named fields, and a table grown one
+                    // field at a time rehashes itself on the way there — per session,
+                    // per frame.
+                    let entry = self
+                        .lua
+                        .create_table_with_capacity(0, 30)
+                        .map_err(|e| e.to_string())?;
+                    let set = |key: &str, value: Value| -> Result<(), String> {
+                        entry.raw_set(key, value).map_err(|e| e.to_string())
+                    };
+                    set("id", to_lua_string(&self.lua, &row.id)?)?;
+                    set("name", to_lua_string(&self.lua, &row.name)?)?;
+                    set("agent", to_lua_string(&self.lua, &row.agent)?)?;
+                    let attach_error = attach_errors.get(&row.id).map(String::as_str);
+                    set(
+                        "status",
+                        to_lua_string(
+                            &self.lua,
+                            &super::snapshot::with_reachability(
+                                &row.status,
+                                &row.backend,
+                                attach_error,
+                            ),
+                        )?,
+                    )?;
+                    set("backend", to_lua_string(&self.lua, &row.backend)?)?;
+                    set("repo", opt_lua_string(&self.lua, row.repo.as_deref())?)?;
+                    set("branch", opt_lua_string(&self.lua, row.branch.as_deref())?)?;
+                    // What the diff is taken against, so a pane can name the range it is
+                    // showing rather than guessing. Distinct from `branch` above.
+                    set(
+                        "base_branch",
+                        opt_lua_string(&self.lua, row.base_branch.as_deref())?,
+                    )?;
+                    set(
+                        "host",
+                        opt_lua_string(&self.lua, row.remote_host.as_deref())?,
+                    )?;
+                    set(
+                        "parent",
+                        opt_lua_string(&self.lua, row.parent_id.as_deref())?,
+                    )?;
+                    set(
+                        "cwd",
+                        opt_lua_string(
+                            &self.lua,
+                            row.cwd.as_ref().map(|p| p.to_string_lossy()).as_deref(),
+                        )?,
+                    )?;
+                    entry
+                        .raw_set("worktrees", row.worktree_count)
+                        .map_err(|e| e.to_string())?;
+                    // Every repo the session spans, so a group can be labelled with all
+                    // of them rather than just the primary.
+                    let repos = self.lua.create_table().map_err(|e| e.to_string())?;
+                    for (position, name) in row.repos.iter().enumerate() {
+                        repos
+                            .raw_set(position + 1, to_lua_string(&self.lua, name)?)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    set("repos", Value::Table(repos))?;
+                    // What the agent said about itself over its own terminal. Absent
+                    // when it has said nothing, which a row must tell apart from an
+                    // empty message.
+                    let agent_meta = meta.get(&row.id);
+                    set(
+                        "activity",
+                        opt_lua_string(&self.lua, agent_meta.and_then(|m| m.activity.as_deref()))?,
+                    )?;
+                    set(
+                        "notification",
+                        opt_lua_string(
+                            &self.lua,
+                            agent_meta.and_then(|m| m.notification.as_deref()),
+                        )?,
+                    )?;
+                    // Manual position. Without this a plugin cannot honour the order a
+                    // reorder command just wrote, and the list silently ignores it.
+                    entry
+                        .raw_set("display_order", row.display_order)
+                        .map_err(|e| e.to_string())?;
+                    // Absent means "not computed yet", which a plugin must be able to
+                    // tell apart from a clean tree.
+                    if let Some(git) = row.git {
+                        let stats = self.lua.create_table().map_err(|e| e.to_string())?;
+                        stats
+                            .raw_set("files", git.files_changed)
+                            .map_err(|e| e.to_string())?;
+                        stats
+                            .raw_set("insertions", git.insertions)
+                            .map_err(|e| e.to_string())?;
+                        stats
+                            .raw_set("deletions", git.deletions)
+                            .map_err(|e| e.to_string())?;
+                        stats
+                            .raw_set("untracked", git.untracked)
+                            .map_err(|e| e.to_string())?;
+                        stats
+                            .raw_set("dirty", git.dirty)
+                            .map_err(|e| e.to_string())?;
+                        stats
+                            .raw_set("ahead", git.ahead)
+                            .map_err(|e| e.to_string())?;
+                        stats
+                            .raw_set("behind", git.behind)
+                            .map_err(|e| e.to_string())?;
+                        entry.raw_set("git", stats).map_err(|e| e.to_string())?;
+                    }
+                    // Why this session's terminal is not live, when it is not.
+                    set("attach_error", opt_lua_string(&self.lua, attach_error)?)?;
+                    sessions
+                        .raw_set(index + 1, entry)
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(Value::Table(sessions))
+            },
+        )?;
         // A file read is rooted at a session's directory, so the roots follow
         // the snapshot rather than being asked for separately.
         {
@@ -1282,179 +1499,219 @@ impl LuaHost {
             }
         }
 
-        table.set("sessions", sessions).map_err(|e| e.to_string())?;
+        table
+            .raw_set("sessions", sessions)
+            .map_err(|e| e.to_string())?;
 
         // What a creation flow can choose among. Reads, so picking is plugin
         // state and only committing is a command.
-        let repos = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, repo) in snapshot.repos.iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("path", repo.path.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("name", repo.name.clone())
-                .map_err(|e| e.to_string())?;
-            repos.set(index + 1, item).map_err(|e| e.to_string())?;
-        }
-        table.set("repos", repos).map_err(|e| e.to_string())?;
+        // Built from the snapshot alone, so it changes when the database does
+        // and not once a frame.
+        let repos = self.group("repos", [epoch.snapshot, 0, 0, 0], || {
+            let repos = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, repo) in snapshot.repos.iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.raw_set("path", repo.path.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("name", repo.name.clone())
+                    .map_err(|e| e.to_string())?;
+                repos.raw_set(index + 1, item).map_err(|e| e.to_string())?;
+            }
+            Ok(Value::Table(repos))
+        })?;
+        table.raw_set("repos", repos).map_err(|e| e.to_string())?;
 
-        let agents = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, agent) in snapshot.agents.iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("name", agent.name.clone())
-                .map_err(|e| e.to_string())?;
-            // v1's picker labels a row `name  (command)` when the two differ, so
-            // the command travels with the name.
-            item.set("command", agent.command.clone())
-                .map_err(|e| e.to_string())?;
-            agents.set(index + 1, item).map_err(|e| e.to_string())?;
-        }
-        table.set("agents", agents).map_err(|e| e.to_string())?;
+        // Built from the snapshot alone, so it changes when the database does
+        // and not once a frame.
+        let agents = self.group("agents", [epoch.snapshot, 0, 0, 0], || {
+            let agents = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, agent) in snapshot.agents.iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.raw_set("name", agent.name.clone())
+                    .map_err(|e| e.to_string())?;
+                // v1's picker labels a row `name  (command)` when the two differ, so
+                // the command travels with the name.
+                item.raw_set("command", agent.command.clone())
+                    .map_err(|e| e.to_string())?;
+                agents.raw_set(index + 1, item).map_err(|e| e.to_string())?;
+            }
+            Ok(Value::Table(agents))
+        })?;
+        table.raw_set("agents", agents).map_err(|e| e.to_string())?;
         // What a bare launch would use, so a flow preselects it rather than
         // whichever agent happens to be first.
         table
-            .set("agent_default", snapshot.agent_default.clone())
+            .raw_set("agent_default", snapshot.agent_default.clone())
             .map_err(|e| e.to_string())?;
 
         // `name` identifies, `detail` distinguishes on screen, `backend` is what
         // a command and a bookmark scope are keyed by — a flow needs all three,
         // and none follows from another.
-        let hosts = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, host) in snapshot.hosts.iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("name", host.name.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("detail", host.detail.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("backend", host.backend.clone())
-                .map_err(|e| e.to_string())?;
-            hosts.set(index + 1, item).map_err(|e| e.to_string())?;
-        }
-        table.set("hosts", hosts).map_err(|e| e.to_string())?;
+        // Built from the snapshot alone, so it changes when the database does
+        // and not once a frame.
+        let hosts = self.group("hosts", [epoch.snapshot, 0, 0, 0], || {
+            let hosts = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, host) in snapshot.hosts.iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.raw_set("name", host.name.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("detail", host.detail.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("backend", host.backend.clone())
+                    .map_err(|e| e.to_string())?;
+                hosts.raw_set(index + 1, item).map_err(|e| e.to_string())?;
+            }
+            Ok(Value::Table(hosts))
+        })?;
+        table.raw_set("hosts", hosts).map_err(|e| e.to_string())?;
 
         self.publish_repo_reads(&table, repo_store, wants)?;
         self.publish_settings(&table, settings)?;
 
-        let deleted = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, row) in snapshot.deleted.iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("id", row.id.clone()).map_err(|e| e.to_string())?;
-            item.set("name", row.name.clone())
-                .map_err(|e| e.to_string())?;
-            // Restoring this one recovers committed work only.
-            item.set("partial", row.partial)
-                .map_err(|e| e.to_string())?;
-            deleted.set(index + 1, item).map_err(|e| e.to_string())?;
-        }
-        table.set("deleted", deleted).map_err(|e| e.to_string())?;
-
-        let tasks = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, row) in snapshot.tasks.iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("id", row.id).map_err(|e| e.to_string())?;
-            item.set("title", row.title.clone())
-                .map_err(|e| e.to_string())?;
-            item.set(
-                "description",
-                opt_lua_string(&self.lua, row.description.as_deref())?,
-            )
-            .map_err(|e| e.to_string())?;
-            item.set("status", row.status.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("source", row.source.clone())
-                .map_err(|e| e.to_string())?;
-            item.set(
-                "url",
-                opt_lua_string(&self.lua, row.external_url.as_deref())?,
-            )
-            .map_err(|e| e.to_string())?;
-            // Epoch seconds, so the detail view can date a task.
-            item.set("created_at", row.created_at)
-                .map_err(|e| e.to_string())?;
-            item.set("updated_at", row.updated_at)
-                .map_err(|e| e.to_string())?;
-            tasks.set(index + 1, item).map_err(|e| e.to_string())?;
-        }
-        table.set("tasks", tasks).map_err(|e| e.to_string())?;
-
-        let automations = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, row) in snapshot.automations.iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("id", row.id).map_err(|e| e.to_string())?;
-            item.set("name", row.name.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("schedule", row.schedule.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("action", row.action.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("enabled", row.enabled)
-                .map_err(|e| e.to_string())?;
-            item.set(
-                "last_outcome",
-                opt_lua_string(&self.lua, row.last_outcome.as_deref())?,
-            )
-            .map_err(|e| e.to_string())?;
-            item.set(
-                "last_detail",
-                opt_lua_string(&self.lua, row.last_detail.as_deref())?,
-            )
-            .map_err(|e| e.to_string())?;
-            // The whole history, not just the last outcome: v1's run-history
-            // pane lists every recent run, and a plugin cannot reconstruct
-            // those from `last_outcome` alone.
-            let runs = self.lua.create_table().map_err(|e| e.to_string())?;
-            for (position, run) in row.runs.iter().enumerate() {
-                let entry = self.lua.create_table().map_err(|e| e.to_string())?;
-                entry
-                    .set("started_at", run.started_at)
+        // Built from the snapshot alone, so it changes when the database does
+        // and not once a frame.
+        let deleted = self.group("deleted", [epoch.snapshot, 0, 0, 0], || {
+            let deleted = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, row) in snapshot.deleted.iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.raw_set("id", row.id.clone())
                     .map_err(|e| e.to_string())?;
-                entry
-                    .set("status", run.status.clone())
+                item.raw_set("name", row.name.clone())
                     .map_err(|e| e.to_string())?;
-                entry
-                    .set("detail", run.detail.clone())
+                // Restoring this one recovers committed work only.
+                item.raw_set("partial", row.partial)
                     .map_err(|e| e.to_string())?;
-                runs.set(position + 1, entry).map_err(|e| e.to_string())?;
+                deleted
+                    .raw_set(index + 1, item)
+                    .map_err(|e| e.to_string())?;
             }
-            item.set("runs", runs).map_err(|e| e.to_string())?;
-            automations
-                .set(index + 1, item)
-                .map_err(|e| e.to_string())?;
-        }
+            Ok(Value::Table(deleted))
+        })?;
         table
-            .set("automations", automations)
+            .raw_set("deleted", deleted)
+            .map_err(|e| e.to_string())?;
+
+        // Built from the snapshot alone, so it changes when the database does
+        // and not once a frame.
+        let tasks = self.group("tasks", [epoch.snapshot, 0, 0, 0], || {
+            let tasks = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, row) in snapshot.tasks.iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.raw_set("id", row.id).map_err(|e| e.to_string())?;
+                item.raw_set("title", row.title.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set(
+                    "description",
+                    opt_lua_string(&self.lua, row.description.as_deref())?,
+                )
+                .map_err(|e| e.to_string())?;
+                item.raw_set("status", row.status.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("source", row.source.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set(
+                    "url",
+                    opt_lua_string(&self.lua, row.external_url.as_deref())?,
+                )
+                .map_err(|e| e.to_string())?;
+                // Epoch seconds, so the detail view can date a task.
+                item.raw_set("created_at", row.created_at)
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("updated_at", row.updated_at)
+                    .map_err(|e| e.to_string())?;
+                tasks.raw_set(index + 1, item).map_err(|e| e.to_string())?;
+            }
+            Ok(Value::Table(tasks))
+        })?;
+        table.raw_set("tasks", tasks).map_err(|e| e.to_string())?;
+
+        // Built from the snapshot alone, so it changes when the database does
+        // and not once a frame.
+        let automations = self.group("automations", [epoch.snapshot, 0, 0, 0], || {
+            let automations = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, row) in snapshot.automations.iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.raw_set("id", row.id).map_err(|e| e.to_string())?;
+                item.raw_set("name", row.name.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("schedule", row.schedule.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("action", row.action.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("enabled", row.enabled)
+                    .map_err(|e| e.to_string())?;
+                item.raw_set(
+                    "last_outcome",
+                    opt_lua_string(&self.lua, row.last_outcome.as_deref())?,
+                )
+                .map_err(|e| e.to_string())?;
+                item.raw_set(
+                    "last_detail",
+                    opt_lua_string(&self.lua, row.last_detail.as_deref())?,
+                )
+                .map_err(|e| e.to_string())?;
+                // The whole history, not just the last outcome: v1's run-history
+                // pane lists every recent run, and a plugin cannot reconstruct
+                // those from `last_outcome` alone.
+                let runs = self.lua.create_table().map_err(|e| e.to_string())?;
+                for (position, run) in row.runs.iter().enumerate() {
+                    let entry = self.lua.create_table().map_err(|e| e.to_string())?;
+                    entry
+                        .raw_set("started_at", run.started_at)
+                        .map_err(|e| e.to_string())?;
+                    entry
+                        .raw_set("status", run.status.clone())
+                        .map_err(|e| e.to_string())?;
+                    entry
+                        .raw_set("detail", run.detail.clone())
+                        .map_err(|e| e.to_string())?;
+                    runs.raw_set(position + 1, entry)
+                        .map_err(|e| e.to_string())?;
+                }
+                item.raw_set("runs", runs).map_err(|e| e.to_string())?;
+                automations
+                    .raw_set(index + 1, item)
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(Value::Table(automations))
+        })?;
+        table
+            .raw_set("automations", automations)
             .map_err(|e| e.to_string())?;
         table
-            .set("taken_at_ms", snapshot.taken_at_ms)
+            .raw_set("taken_at_ms", snapshot.taken_at_ms)
             .map_err(|e| e.to_string())?;
         // The running release, for the header banner. v1 baked it into
         // `ui::status_bar::render_header` at compile time; a plugin cannot read
         // an env var, and hardcoding it in Lua would leave every shipped copy
         // claiming whatever version it was written against.
         table
-            .set("version", env!("THURBOX_VERSION"))
+            .raw_set("version", env!("THURBOX_VERSION"))
             .map_err(|e| e.to_string())?;
         // What the pointer is over, as `id` and `role`, so a plugin can match
         // whichever it used to mark the affordance.
         let hover = self.lua.create_table().map_err(|e| e.to_string())?;
         if let Some(identity) = hovered {
             if let Some(id) = &identity.id {
-                hover.set("id", id.clone()).map_err(|e| e.to_string())?;
+                hover.raw_set("id", id.clone()).map_err(|e| e.to_string())?;
             }
             if let Some(role) = &identity.role {
-                hover.set("role", role.clone()).map_err(|e| e.to_string())?;
+                hover
+                    .raw_set("role", role.clone())
+                    .map_err(|e| e.to_string())?;
             }
         }
-        table.set("hover", hover).map_err(|e| e.to_string())?;
+        table.raw_set("hover", hover).map_err(|e| e.to_string())?;
 
         // Which pane holds focus, by name. `ctx.focused` answers "am I?", but
         // the footer has to name whoever IS and is not focusable itself.
         table
-            .set("focus", focus.unwrap_or(""))
+            .raw_set("focus", focus.unwrap_or(""))
             .map_err(|e| e.to_string())?;
         // Published so a plugin can render how many times it has been reloaded
         // — the feedback that tells you a save actually took effect.
         table
-            .set("reloads", self.reloads)
+            .raw_set("reloads", self.reloads)
             .map_err(|e| e.to_string())?;
 
         // Work accepted but not yet visible in the rows above. Published so a
@@ -1463,104 +1720,129 @@ impl LuaHost {
         let commands = self.lua.create_table().map_err(|e| e.to_string())?;
         for (index, entry) in inflight.iter().enumerate() {
             let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("id", entry.id).map_err(|e| e.to_string())?;
-            item.set("kind", entry.kind).map_err(|e| e.to_string())?;
-            item.set("session", entry.session.clone())
+            item.raw_set("id", entry.id).map_err(|e| e.to_string())?;
+            item.raw_set("kind", entry.kind)
                 .map_err(|e| e.to_string())?;
-            item.set("phase", entry.phase.as_str())
+            item.raw_set("session", entry.session.clone())
                 .map_err(|e| e.to_string())?;
-            item.set(
+            item.raw_set("phase", entry.phase.as_str())
+                .map_err(|e| e.to_string())?;
+            item.raw_set(
                 "subject",
                 opt_lua_string(&self.lua, entry.subject.as_deref())?,
             )
             .map_err(|e| e.to_string())?;
-            item.set("error", opt_lua_string(&self.lua, entry.error.as_deref())?)
+            item.raw_set("error", opt_lua_string(&self.lua, entry.error.as_deref())?)
                 .map_err(|e| e.to_string())?;
-            commands.set(index + 1, item).map_err(|e| e.to_string())?;
+            commands
+                .raw_set(index + 1, item)
+                .map_err(|e| e.to_string())?;
         }
-        table.set("commands", commands).map_err(|e| e.to_string())?;
+        table
+            .raw_set("commands", commands)
+            .map_err(|e| e.to_string())?;
 
         // The active palette, as role -> colour. Plugins name roles and never
         // colours, so this is the only place a literal enters the UI — and
         // swapping it restyles every pane, including ones the theme's author
         // never saw (design.md D14).
-        let roles = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (role, colour) in themes.roles() {
-            roles.set(role, colour).map_err(|e| e.to_string())?;
-        }
-        let theme = self.lua.create_table().map_err(|e| e.to_string())?;
-        theme
-            .set("name", themes.active_name())
-            .map_err(|e| e.to_string())?;
-        theme.set("roles", roles).map_err(|e| e.to_string())?;
+        // Thirty-six palettes, each a table, rebuilt for every frame that was
+        // painted — and changed only when someone picks a different one.
+        let theme = self.group("theme", [epoch.themes, 0, 0, 0], || {
+            let roles = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (role, colour) in themes.roles() {
+                roles.raw_set(role, colour).map_err(|e| e.to_string())?;
+            }
+            let theme = self.lua.create_table().map_err(|e| e.to_string())?;
+            theme
+                .raw_set("name", themes.active_name())
+                .map_err(|e| e.to_string())?;
+            theme.raw_set("roles", roles).map_err(|e| e.to_string())?;
 
-        // The selectable list, so a picker can be an ordinary plugin.
-        let choices = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, choice) in themes.choices().iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("name", choice.name.clone())
+            // The selectable list, so a picker can be an ordinary plugin.
+            let choices = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, choice) in themes.choices().iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.raw_set("name", choice.name.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("display_name", choice.display_name.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("light", choice.is_light)
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("custom", choice.is_custom)
+                    .map_err(|e| e.to_string())?;
+                choices
+                    .raw_set(index + 1, item)
+                    .map_err(|e| e.to_string())?;
+            }
+            theme
+                .raw_set("choices", choices)
                 .map_err(|e| e.to_string())?;
-            item.set("display_name", choice.display_name.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("light", choice.is_light)
-                .map_err(|e| e.to_string())?;
-            item.set("custom", choice.is_custom)
-                .map_err(|e| e.to_string())?;
-            choices.set(index + 1, item).map_err(|e| e.to_string())?;
-        }
-        theme.set("choices", choices).map_err(|e| e.to_string())?;
-        table.set("theme", theme).map_err(|e| e.to_string())?;
+            Ok(Value::Table(theme))
+        })?;
+        table.raw_set("theme", theme).map_err(|e| e.to_string())?;
 
         // The registry, so help and settings can be plugins rendering what the
         // kernel collected — including declarations from plugins they have
         // never heard of.
-        let keys = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, binding) in registry.bindings().iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("plugin", binding.plugin.clone())
+        // Every declared binding and setting. Moves when a plugin is (re)declared,
+        // a chord is rebound or a setting is set — never within a frame.
+        let reg = self.group("registry", [epoch.registry, 0, 0, 0], || {
+            let keys = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, binding) in registry.bindings().iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.raw_set("plugin", binding.plugin.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("action", binding.action.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("key", binding.chord.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("default_key", binding.default_chord.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("desc", binding.description.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("scope", binding.scope.as_str())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("rebound", binding.chord != binding.default_chord)
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("group", binding.group.clone())
+                    .map_err(|e| e.to_string())?;
+                keys.raw_set(index + 1, item).map_err(|e| e.to_string())?;
+            }
+            let settings = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, setting) in registry.settings().iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.raw_set("plugin", setting.plugin.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("id", setting.id.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("desc", setting.description.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("type", setting.value.type_name())
+                    .map_err(|e| e.to_string())?;
+                set_value(&item, "value", &setting.value)?;
+                set_value(&item, "default", &setting.default)?;
+                settings
+                    .raw_set(index + 1, item)
+                    .map_err(|e| e.to_string())?;
+            }
+            let reg = self.lua.create_table().map_err(|e| e.to_string())?;
+            reg.raw_set("keys", keys).map_err(|e| e.to_string())?;
+            reg.raw_set("settings", settings)
                 .map_err(|e| e.to_string())?;
-            item.set("action", binding.action.clone())
+            // The section order help renders in, so a plugin choosing a `group` can
+            // see where it will land without hardcoding the list.
+            let sections = self.lua.create_table().map_err(|e| e.to_string())?;
+            for (index, name) in super::registry::HELP_SECTIONS.iter().enumerate() {
+                sections
+                    .raw_set(index + 1, *name)
+                    .map_err(|e| e.to_string())?;
+            }
+            reg.raw_set("sections", sections)
                 .map_err(|e| e.to_string())?;
-            item.set("key", binding.chord.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("default_key", binding.default_chord.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("desc", binding.description.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("scope", binding.scope.as_str())
-                .map_err(|e| e.to_string())?;
-            item.set("rebound", binding.chord != binding.default_chord)
-                .map_err(|e| e.to_string())?;
-            item.set("group", binding.group.clone())
-                .map_err(|e| e.to_string())?;
-            keys.set(index + 1, item).map_err(|e| e.to_string())?;
-        }
-        let settings = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, setting) in registry.settings().iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            item.set("plugin", setting.plugin.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("id", setting.id.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("desc", setting.description.clone())
-                .map_err(|e| e.to_string())?;
-            item.set("type", setting.value.type_name())
-                .map_err(|e| e.to_string())?;
-            set_value(&item, "value", &setting.value)?;
-            set_value(&item, "default", &setting.default)?;
-            settings.set(index + 1, item).map_err(|e| e.to_string())?;
-        }
-        let reg = self.lua.create_table().map_err(|e| e.to_string())?;
-        reg.set("keys", keys).map_err(|e| e.to_string())?;
-        reg.set("settings", settings).map_err(|e| e.to_string())?;
-        // The section order help renders in, so a plugin choosing a `group` can
-        // see where it will land without hardcoding the list.
-        let sections = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, name) in super::registry::HELP_SECTIONS.iter().enumerate() {
-            sections.set(index + 1, *name).map_err(|e| e.to_string())?;
-        }
-        reg.set("sections", sections).map_err(|e| e.to_string())?;
-        table.set("registry", reg).map_err(|e| e.to_string())?;
+            Ok(Value::Table(reg))
+        })?;
+        table.raw_set("registry", reg).map_err(|e| e.to_string())?;
 
         // The selected session's changes, when any have been asked for. The
         // *absence* of an entry is "not requested"; `pending` is "asked, not
@@ -1573,11 +1855,12 @@ impl LuaHost {
             let item = self.lua.create_table().map_err(|e| e.to_string())?;
             match diff {
                 super::diff::Diff::Pending => {
-                    item.set("state", "pending").map_err(|e| e.to_string())?;
+                    item.raw_set("state", "pending")
+                        .map_err(|e| e.to_string())?;
                 }
                 super::diff::Diff::Failed(error) => {
-                    item.set("state", "failed").map_err(|e| e.to_string())?;
-                    item.set("error", error.clone())
+                    item.raw_set("state", "failed").map_err(|e| e.to_string())?;
+                    item.raw_set("error", error.clone())
                         .map_err(|e| e.to_string())?;
                 }
                 super::diff::Diff::Ready {
@@ -1587,80 +1870,87 @@ impl LuaHost {
                     raw_bytes,
                     untracked_omitted,
                 } => {
-                    item.set("state", "ready").map_err(|e| e.to_string())?;
-                    item.set("truncated", *truncated)
+                    item.raw_set("state", "ready").map_err(|e| e.to_string())?;
+                    item.raw_set("truncated", *truncated)
                         .map_err(|e| e.to_string())?;
-                    item.set("raw_bytes", *raw_bytes as i64)
+                    item.raw_set("raw_bytes", *raw_bytes as i64)
                         .map_err(|e| e.to_string())?;
                     // A short file list is a different failure from a cut body,
                     // so it is its own field rather than folded into `truncated`.
-                    item.set("untracked_omitted", *untracked_omitted as i64)
+                    item.raw_set("untracked_omitted", *untracked_omitted as i64)
                         .map_err(|e| e.to_string())?;
                     let list = self.lua.create_table().map_err(|e| e.to_string())?;
                     for (index, file) in files.iter().enumerate() {
                         let entry = self.lua.create_table().map_err(|e| e.to_string())?;
                         entry
-                            .set("path", file.path.clone())
+                            .raw_set("path", file.path.clone())
                             .map_err(|e| e.to_string())?;
-                        entry.set("added", file.added).map_err(|e| e.to_string())?;
                         entry
-                            .set("removed", file.removed)
+                            .raw_set("added", file.added)
+                            .map_err(|e| e.to_string())?;
+                        entry
+                            .raw_set("removed", file.removed)
                             .map_err(|e| e.to_string())?;
                         // Both already known to the parser; a pane re-reading the
                         // body to recover them is the cost of dropping them here.
                         entry
-                            .set("status", file.status)
+                            .raw_set("status", file.status)
                             .map_err(|e| e.to_string())?;
                         entry
-                            .set(
+                            .raw_set(
                                 "old_path",
                                 opt_lua_string(&self.lua, file.old_path.as_deref())?,
                             )
                             .map_err(|e| e.to_string())?;
-                        list.set(index + 1, entry).map_err(|e| e.to_string())?;
+                        list.raw_set(index + 1, entry).map_err(|e| e.to_string())?;
                     }
-                    item.set("files", list).map_err(|e| e.to_string())?;
+                    item.raw_set("files", list).map_err(|e| e.to_string())?;
                     let lines = self.lua.create_table().map_err(|e| e.to_string())?;
                     for (index, line) in body.iter().enumerate() {
                         lines
-                            .set(index + 1, line.clone())
+                            .raw_set(index + 1, line.clone())
                             .map_err(|e| e.to_string())?;
                     }
-                    item.set("body", lines).map_err(|e| e.to_string())?;
+                    item.raw_set("body", lines).map_err(|e| e.to_string())?;
                 }
             }
             diff_table
-                .set(row.id.clone(), item)
+                .raw_set(row.id.clone(), item)
                 .map_err(|e| e.to_string())?;
         }
-        table.set("diffs", diff_table).map_err(|e| e.to_string())?;
+        table
+            .raw_set("diffs", diff_table)
+            .map_err(|e| e.to_string())?;
 
         let links_table = self.lua.create_table().map_err(|e| e.to_string())?;
         for (session, found) in links.iter() {
             let list = self.lua.create_table().map_err(|e| e.to_string())?;
             for (index, (url, row, col)) in found.iter().enumerate() {
                 let item = self.lua.create_table().map_err(|e| e.to_string())?;
-                item.set("url", url.clone()).map_err(|e| e.to_string())?;
-                item.set("row", *row).map_err(|e| e.to_string())?;
-                item.set("col", *col).map_err(|e| e.to_string())?;
-                list.set(index + 1, item).map_err(|e| e.to_string())?;
+                item.raw_set("url", url.clone())
+                    .map_err(|e| e.to_string())?;
+                item.raw_set("row", *row).map_err(|e| e.to_string())?;
+                item.raw_set("col", *col).map_err(|e| e.to_string())?;
+                list.raw_set(index + 1, item).map_err(|e| e.to_string())?;
             }
             links_table
-                .set(session.clone(), list)
+                .raw_set(session.clone(), list)
                 .map_err(|e| e.to_string())?;
         }
-        table.set("links", links_table).map_err(|e| e.to_string())?;
+        table
+            .raw_set("links", links_table)
+            .map_err(|e| e.to_string())?;
 
         // What each terminal is showing, for a content search. Empty unless
         // something asked, so an interface that never searches never pays for it.
         let content_table = self.lua.create_table().map_err(|e| e.to_string())?;
         for (session, text) in content.iter() {
             content_table
-                .set(session.clone(), text.clone())
+                .raw_set(session.clone(), text.clone())
                 .map_err(|e| e.to_string())?;
         }
         table
-            .set("content", content_table)
+            .raw_set("content", content_table)
             .map_err(|e| e.to_string())?;
 
         // Machine, per-agent and account metrics. Each is absent rather than
@@ -1672,16 +1962,16 @@ impl LuaHost {
             let system = metrics.system();
             let machine = self.lua.create_table().map_err(|e| e.to_string())?;
             machine
-                .set("cpu_percent", system.cpu_percent)
+                .raw_set("cpu_percent", system.cpu_percent)
                 .map_err(|e| e.to_string())?;
             machine
-                .set("memory_used", system.memory_used)
+                .raw_set("memory_used", system.memory_used)
                 .map_err(|e| e.to_string())?;
             machine
-                .set("memory_total", system.memory_total)
+                .raw_set("memory_total", system.memory_total)
                 .map_err(|e| e.to_string())?;
             metrics_table
-                .set("system", machine)
+                .raw_set("system", machine)
                 .map_err(|e| e.to_string())?;
 
             let per_session = self.lua.create_table().map_err(|e| e.to_string())?;
@@ -1690,39 +1980,39 @@ impl LuaHost {
                 let mut any = false;
                 if let Some(resources) = metrics.resources(&row.id) {
                     entry
-                        .set("cpu_percent", resources.cpu_percent)
+                        .raw_set("cpu_percent", resources.cpu_percent)
                         .map_err(|e| e.to_string())?;
                     entry
-                        .set("memory_bytes", resources.memory_bytes)
+                        .raw_set("memory_bytes", resources.memory_bytes)
                         .map_err(|e| e.to_string())?;
                     any = true;
                 }
                 if let Some(agent) = metrics.agent(&row.id) {
                     entry
-                        .set("agent", agent_metrics_table(&self.lua, agent)?)
+                        .raw_set("agent", agent_metrics_table(&self.lua, agent)?)
                         .map_err(|e| e.to_string())?;
                     any = true;
                 }
                 if let Some(usage) = metrics.usage(&row.agent, row.remote_host.as_deref()) {
                     if !usage.is_empty() {
                         entry
-                            .set("usage", usage_table(&self.lua, usage)?)
+                            .raw_set("usage", usage_table(&self.lua, usage)?)
                             .map_err(|e| e.to_string())?;
                         any = true;
                     }
                 }
                 if any {
                     per_session
-                        .set(row.id.clone(), entry)
+                        .raw_set(row.id.clone(), entry)
                         .map_err(|e| e.to_string())?;
                 }
             }
             metrics_table
-                .set("sessions", per_session)
+                .raw_set("sessions", per_session)
                 .map_err(|e| e.to_string())?;
         }
         table
-            .set("metrics", metrics_table)
+            .raw_set("metrics", metrics_table)
             .map_err(|e| e.to_string())?;
 
         // What the arrangement needs to know about the chrome bands, and nothing
@@ -1730,9 +2020,9 @@ impl LuaHost {
         // here, because placing a band and filling it are different jobs.
         let chrome = self.lua.create_table().map_err(|e| e.to_string())?;
         chrome
-            .set("status_rows", *status_rows)
+            .raw_set("status_rows", *status_rows)
             .map_err(|e| e.to_string())?;
-        table.set("chrome", chrome).map_err(|e| e.to_string())?;
+        table.raw_set("chrome", chrome).map_err(|e| e.to_string())?;
 
         // The interface's own files. One row per file rather than per loaded
         // plugin, because the ones worth acting on are exactly those that did
@@ -1742,7 +2032,7 @@ impl LuaHost {
         for (index, row) in inventory.iter().enumerate() {
             let entry = self.lua.create_table().map_err(|e| e.to_string())?;
             let set = |key: &str, value: Value| -> Result<(), String> {
-                entry.set(key, value).map_err(|e| e.to_string())
+                entry.raw_set(key, value).map_err(|e| e.to_string())
             };
             set("path", to_lua_string(&self.lua, &row.path)?)?;
             set("name", to_lua_string(&self.lua, &row.name)?)?;
@@ -1752,14 +2042,14 @@ impl LuaHost {
             set("state", to_lua_string(&self.lua, row.state.as_str())?)?;
             set("error", opt_lua_string(&self.lua, row.error.as_deref())?)?;
             inventory_table
-                .set(index + 1, entry)
+                .raw_set(index + 1, entry)
                 .map_err(|e| e.to_string())?;
         }
         table
-            .set("plugins", inventory_table)
+            .raw_set("plugins", inventory_table)
             .map_err(|e| e.to_string())?;
         table
-            .set("ui_dir", to_lua_string(&self.lua, ui_dir)?)
+            .raw_set("ui_dir", to_lua_string(&self.lua, ui_dir)?)
             .map_err(|e| e.to_string())?;
 
         // The machine this is running on, so a plugin delivering more than one
@@ -1772,27 +2062,30 @@ impl LuaHost {
         // that it has nothing for you. The kernel models none of that.
         let platform = self.lua.create_table().map_err(|e| e.to_string())?;
         platform
-            .set("os", std::env::consts::OS)
+            .raw_set("os", std::env::consts::OS)
             .map_err(|e| e.to_string())?;
         platform
-            .set("arch", std::env::consts::ARCH)
+            .raw_set("arch", std::env::consts::ARCH)
             .map_err(|e| e.to_string())?;
-        table.set("platform", platform).map_err(|e| e.to_string())?;
+        table
+            .raw_set("platform", platform)
+            .map_err(|e| e.to_string())?;
 
         // So a plugin can say "open" or "copy" before you press it.
         table
-            .set("can_open_links", *can_open)
+            .raw_set("can_open_links", *can_open)
             .map_err(|e| e.to_string())?;
         table
-            .set(
+            .raw_set(
                 "error",
                 opt_lua_string(&self.lua, snapshot.error.as_deref())?,
             )
             .map_err(|e| e.to_string())?;
 
+        *self.epoch.borrow_mut() = Some(*epoch);
         self.lua
             .globals()
-            .set("thurbox", table)
+            .raw_set("thurbox", table)
             .map_err(|e| e.to_string())
     }
 
@@ -1806,6 +2099,33 @@ impl LuaHost {
             phase: Phase::Render,
             message: "plugin index out of range".to_string(),
         })?;
+
+        // A pure pane asked at the same epoch, in the same rect, with the same
+        // focus, would return what it returned last time — so return that,
+        // skipping both the Lua call and the conversion. Measured, this is the
+        // largest single cost in a frame: the session list rebuilt a
+        // byte-identical tree on every frame under load (`frame-cost`).
+        let key = self.published_epoch().map(|epoch| {
+            let tick = (ctx.elapsed * ANIMATION_HZ) as u64;
+            (
+                epoch,
+                ctx.width,
+                ctx.height,
+                ctx.focused,
+                tick,
+                self.state_version.get(),
+            )
+        });
+        if plugin.pure {
+            if let Some(key) = key {
+                if let Some((built_at, rendered)) = self.trees.borrow().get(&index) {
+                    if *built_at == key {
+                        self.skipped_renders.set(self.skipped_renders.get() + 1);
+                        return Ok(rendered.clone());
+                    }
+                }
+            }
+        }
 
         let fail = |message: String| PluginError {
             plugin: plugin.name.clone(),
@@ -1849,7 +2169,15 @@ impl LuaHost {
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         let float = read_float(&value).map_err(fail)?;
         let node = convert::to_node(&value, &plugin.path).map_err(fail)?;
-        Ok(Rendered { node, float })
+        let rendered = Rendered { node, float };
+        if plugin.pure {
+            if let Some(key) = key {
+                self.trees
+                    .borrow_mut()
+                    .insert(index, (key, rendered.clone()));
+            }
+        }
+        Ok(rendered)
     }
 
     /// Offer a key to one plugin. `Ok(true)` means it consumed the key.
@@ -2256,6 +2584,11 @@ fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plugin, String>
         .map_err(|e| format!("{file}.focusable: {e}"))?
         .unwrap_or(false);
 
+    let pure = def
+        .get::<Option<bool>>("pure")
+        .map_err(|e| format!("{file}.pure: {e}"))?
+        .unwrap_or(false);
+
     let order = def
         .get::<Option<f64>>("order")
         .map_err(|e| format!("{file}.order: {e}"))?
@@ -2301,6 +2634,7 @@ fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plugin, String>
         file,
         slot,
         focusable,
+        pure,
         session_input,
         size,
         order,
@@ -2518,11 +2852,12 @@ fn install_api(
     roots: Roots,
     runs: Rc<RefCell<Vec<(String, super::runs::Ask)>>>,
     current_path: Rc<RefCell<String>>,
+    state_version: StateVersion,
 ) -> mlua::Result<()> {
     scrub_globals(lua)?;
     install_require(lua, ui_dir)?;
-    install_store(lua, "store", store, None)?;
-    install_private(lua, state, current)?;
+    install_store(lua, "store", store, state_version.clone(), None)?;
+    install_private(lua, state, current, state_version)?;
     install_command(lua, queue, current_path.clone())?;
     install_files(lua, roots)?;
     install_run(lua, runs, current_path)?;
@@ -2826,7 +3161,13 @@ fn install_require(lua: &Lua, ui_dir: &Path) -> mlua::Result<()> {
 }
 
 /// Install a persisted table under `global`, optionally namespaced per plugin.
-fn install_store(lua: &Lua, global: &str, store: Shared, _ns: Option<()>) -> mlua::Result<()> {
+fn install_store(
+    lua: &Lua,
+    global: &str,
+    store: Shared,
+    version: StateVersion,
+    _ns: Option<()>,
+) -> mlua::Result<()> {
     let table = lua.create_table()?;
     let meta = lua.create_table()?;
 
@@ -2846,13 +3187,24 @@ fn install_store(lua: &Lua, global: &str, store: Shared, _ns: Option<()>) -> mlu
         "__newindex",
         lua.create_function(move |_, (_, key, value): (Table, String, Value)| {
             let mut slot = write.borrow_mut();
-            match from_lua(&value) {
+            // Compared before storing. A pane may write the same value on every
+            // frame — the search strip re-states how many panes it is showing —
+            // and treating that as a change would move the version 40 times a
+            // second and invalidate every cached tree, which is the difference
+            // between this mechanism working and doing nothing at all.
+            let moved = match from_lua(&value) {
                 Some(persisted) => {
-                    slot.insert(key, persisted);
+                    if slot.get(&key) == Some(&persisted) {
+                        false
+                    } else {
+                        slot.insert(key, persisted);
+                        true
+                    }
                 }
-                None => {
-                    slot.remove(&key);
-                }
+                None => slot.remove(&key).is_some(),
+            };
+            if moved {
+                version.set(version.get().wrapping_add(1));
             }
             Ok(())
         })?,
@@ -2870,7 +3222,12 @@ fn install_store(lua: &Lua, global: &str, store: Shared, _ns: Option<()>) -> mlu
 /// it was. Nothing serialises it: a plugin's `state` dies with the process, and so
 /// does `store`. Anything a plugin needs after a restart has nowhere to go today —
 /// worth knowing before this word is chosen again.
-fn install_private(lua: &Lua, state: Private, current: Rc<RefCell<String>>) -> mlua::Result<()> {
+fn install_private(
+    lua: &Lua,
+    state: Private,
+    current: Rc<RefCell<String>>,
+    version: StateVersion,
+) -> mlua::Result<()> {
     let table = lua.create_table()?;
     let meta = lua.create_table()?;
 
@@ -2894,13 +3251,20 @@ fn install_private(lua: &Lua, state: Private, current: Rc<RefCell<String>>) -> m
         lua.create_function(move |_, (_, key, value): (Table, String, Value)| {
             let ns = write_ns.borrow().clone();
             let mut slot = write.borrow_mut();
-            match from_lua(&value) {
+            // Same rule as `store`: only a value that actually moved counts.
+            let moved = match from_lua(&value) {
                 Some(persisted) => {
-                    slot.insert((ns, key), persisted);
+                    if slot.get(&(ns.clone(), key.clone())) == Some(&persisted) {
+                        false
+                    } else {
+                        slot.insert((ns, key), persisted);
+                        true
+                    }
                 }
-                None => {
-                    slot.remove(&(ns, key));
-                }
+                None => slot.remove(&(ns, key)).is_some(),
+            };
+            if moved {
+                version.set(version.get().wrapping_add(1));
             }
             Ok(())
         })?,
