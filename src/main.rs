@@ -3201,6 +3201,16 @@ impl App {
                 failed: false,
             },
         );
+        // Accepting a command changes `thurbox.commands`, which panes draw from
+        // — the session list drops the row a `delete` names the moment one is
+        // accepted. Every such pane is `pure`, so without moving the published
+        // epoch here it is handed the tree it built *before* the command
+        // existed, and the change waits for whatever moves a signal next: the
+        // animation clock 125ms later, or the completion itself. The completion
+        // side already does this (see `poll_command_bus`); this is the other
+        // half, and it is what makes the acceptance visible on the next frame
+        // rather than eventually.
+        self.note_data_change();
     }
 
     /// Persist the pane id of a session's companion shell.

@@ -182,6 +182,16 @@ fn row(id: &str, name: &str) -> SessionRow {
 }
 
 fn publish_at(host: &LuaHost, epoch: Epoch, snapshot: &Snapshot, themes: &Themes) {
+    publish_at_with(host, epoch, snapshot, themes, &[]);
+}
+
+fn publish_at_with(
+    host: &LuaHost,
+    epoch: Epoch,
+    snapshot: &Snapshot,
+    themes: &Themes,
+    inflight: &[thurbox::kernel::command::InFlight],
+) {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
@@ -191,7 +201,7 @@ fn publish_at(host: &LuaHost, epoch: Epoch, snapshot: &Snapshot, themes: &Themes
         epoch,
         snapshot,
         attach_errors: &Default::default(),
-        inflight: &[],
+        inflight,
         themes,
         registry: &registry,
         diffs: &diffs,
@@ -449,6 +459,96 @@ fn a_moved_epoch_re_renders_a_pure_pane() {
         tree_of(&host, "pure").contains("beta"),
         "a pure pane kept its tree after the snapshot moved"
     );
+}
+
+#[test]
+fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
+    // The session list drops a row the moment its `delete` is accepted, so that
+    // a delete does not sit there wearing a tag until the worker is done. It
+    // reads that from `thurbox.commands` — and it is a PURE pane, so an accepted
+    // command that leaves every published signal standing is served the tree
+    // built before the command existed. The row then survives until whatever
+    // moves a signal next: the animation clock 125ms later, or the completion.
+    //
+    // Hence `dispatch_tracked` moves the data epoch as the command is accepted.
+    // This is that requirement, asserted where the caching lives: the in-flight
+    // list alone must not be expected to reach a pure pane.
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let host = LuaHost::new(dir);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let themes = Themes::load(None);
+    let sessions = host.index_of("sessions").expect("sessions pane");
+    let snapshot = Snapshot {
+        sessions: vec![row("aaa", "doomed"), row("bbb", "bystander")],
+        ..Snapshot::default()
+    };
+    let paint = |host: &LuaHost| {
+        format!(
+            "{:?}",
+            host.render(
+                sessions,
+                thurbox::kernel::host::RenderContext {
+                    width: 40,
+                    height: 10,
+                    focused: true,
+                    elapsed: 0.0,
+                    frame: 0,
+                },
+            )
+            .expect("render")
+            .node
+        )
+    };
+
+    let mut epoch = Epoch::default();
+    publish_at(&host, epoch, &snapshot, &themes);
+    assert!(
+        paint(&host).contains("doomed"),
+        "the row should start present"
+    );
+
+    // Let it settle first. The list publishes the selection as it renders, so
+    // its first pass moves the state version — which is part of the cache key —
+    // and the second pass is the one whose tree can be reused. A pane that never
+    // settled could not go stale either, which would make the rest of this test
+    // prove nothing.
+    let _ = paint(&host);
+    let settled = host.skipped_renders();
+    let _ = paint(&host);
+    assert_eq!(
+        host.skipped_renders() - settled,
+        1,
+        "the session list never settled, so this test cannot observe the cache"
+    );
+
+    let inflight = vec![thurbox::kernel::command::InFlight {
+        id: 1,
+        kind: "delete",
+        session: "aaa".to_string(),
+        subject: None,
+        phase: thurbox::kernel::command::Phase::Running,
+        error: None,
+    }];
+
+    // Accepted, but with every signal left standing: the pane never runs, so
+    // the row it drew before the delete existed is what stays on screen.
+    publish_at_with(&host, epoch, &snapshot, &themes, &inflight);
+    assert!(
+        paint(&host).contains("doomed"),
+        "the in-flight list reached a pure pane on its own — this test is \
+         asserting the caching that makes the epoch bump necessary, so if it \
+         fails the bump may no longer be needed"
+    );
+
+    // Moved, as the loop moves it the moment the command is accepted.
+    epoch.data += 1;
+    publish_at_with(&host, epoch, &snapshot, &themes, &inflight);
+    let screen = paint(&host);
+    assert!(
+        !screen.contains("doomed"),
+        "the deleted row outlived the epoch that carried its delete:\n{screen}"
+    );
+    assert!(screen.contains("bystander"), "{screen}");
 }
 
 #[test]

@@ -898,7 +898,7 @@ the work wasted only after paying for it.
 | CPU per frame | 3.1ms | 9.9ms | 9.1ms | **5.2ms** |
 | gap to v1 (CPU) | — | 2.5x | 2.0x | **1.5x** |
 
-**Three things the implementation taught, each caught by a test rather than by
+**Four things the implementation taught, each caught by a test rather than by
 review:**
 
 - **`taken_at_ms` is published**, and `widgets.relative_time` renders it, so the
@@ -913,6 +913,17 @@ review:**
   state version 40 times a second and invalidated every cached tree. With it,
   the saving was 0%; without it, 27%. Every signal here compares before it
   stores, for exactly this reason.
+- **`thurbox.commands` is read too, and accepting one had no signal.** The
+  in-flight list is published every frame, but only its *completion* side moved
+  the data epoch (`poll_command_bus`); submitting a command moved nothing. The
+  session list drops the row a `delete` names as soon as it is accepted, and
+  being pure it was handed the tree built before the command existed — so the
+  deleted row survived until the animation clock ticked 125ms later, or until
+  the delete finished, which is the wait the feature exists to avoid.
+  `dispatch_tracked` now moves the epoch as the command is accepted. Asserted by
+  `accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane`, which settles
+  the pane first — a pane that is never cached cannot go stale, so a test that
+  skips the settle proves nothing.
 
 **Rejected**:
 
