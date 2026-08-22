@@ -169,11 +169,12 @@ mod tests {
         let cmd = t.tmux_command("thurbox", &["has-session", "-t", "thurbox"]);
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "ssh");
-        // User opts, then the always-appended fail-fast hardening
-        // (crate::shell::SSH_HARDENING_OPTS), then the destination + remote cmd.
+        // User opts, then the always-appended set (fail-fast hardening plus
+        // multiplexing when the machine has an `~/.ssh` —
+        // crate::shell::ssh_appended_opts), then the destination + remote cmd.
         let mut expected: Vec<String> = vec!["-o".into(), "ControlMaster=auto".into()];
         expected.extend(
-            crate::shell::SSH_HARDENING_OPTS
+            crate::shell::ssh_appended_opts()
                 .iter()
                 .map(|s| s.to_string()),
         );
@@ -203,7 +204,7 @@ mod tests {
         let cmd = t.tmux_command("thurbox", &["has-session"]);
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "ssh");
-        let mut expected: Vec<String> = crate::shell::SSH_HARDENING_OPTS
+        let mut expected: Vec<String> = crate::shell::ssh_appended_opts()
             .iter()
             .map(|s| s.to_string())
             .collect();

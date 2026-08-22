@@ -553,11 +553,12 @@ fn git_command_remote_wraps_in_ssh() {
     );
     let (prog, args) = program_and_args(&cmd);
     assert_eq!(prog, "ssh");
-    // User ssh_opts first, then the always-appended fail-fast hardening
-    // (crate::shell::SSH_HARDENING_OPTS), then destination + remote git.
+    // User ssh_opts first, then the always-appended set (fail-fast hardening
+    // plus multiplexing when the machine has an `~/.ssh` —
+    // crate::shell::ssh_appended_opts), then destination + remote git.
     let mut expected: Vec<String> = vec!["-o".into(), "ControlMaster=auto".into()];
     expected.extend(
-        crate::shell::SSH_HARDENING_OPTS
+        crate::shell::ssh_appended_opts()
             .iter()
             .map(|s| s.to_string()),
     );

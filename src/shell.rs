@@ -55,15 +55,68 @@ pub const SSH_HARDENING_OPTS: [&str; 8] = [
     "ServerAliveCountMax=1",
 ];
 
+/// Connection-multiplexing options, appended with the hardening set when the
+/// user's `~/.ssh` directory exists (that is where the control socket lives).
+///
+/// Without a master connection every remote git call, probe and provisioning
+/// step pays a full TCP + auth handshake — ~300 ms to a LAN host, measured in
+/// `docs/PERFORMANCE.md` — and several paths make many such calls in a row.
+/// With one, the second and later round trips cost single-digit milliseconds.
+///
+/// `%C` is ssh's hash of host+port+user, so the socket path stays short
+/// (`sun_path` caps at ~104 bytes) and collision-free; the `~` is expanded by
+/// ssh itself. `ControlMaster=auto` degrades to a plain connection when the
+/// socket cannot be created, and — like the hardening set — these are appended
+/// after the caller's `ssh_opts`, so a user-configured `ControlMaster`/
+/// `ControlPath`/`ControlPersist` still wins.
+pub const SSH_MULTIPLEX_OPTS: [&str; 6] = [
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    "ControlPersist=60",
+    "-o",
+    "ControlPath=~/.ssh/thurbox-%C",
+];
+
+/// Whether `~/.ssh` exists, probed once per process.
+///
+/// The multiplexing socket lives there; on a machine without the directory the
+/// options are omitted entirely rather than risking a per-connection
+/// `muxserver_listen` warning on stderr, which remote error reporting would
+/// otherwise have to filter.
+fn ssh_dir_exists() -> bool {
+    static EXISTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *EXISTS.get_or_init(|| {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(|home| std::path::Path::new(&home).join(".ssh").is_dir())
+            .unwrap_or(false)
+    })
+}
+
+/// The options [`ssh_command`] appends after the caller's own: the hardening
+/// set, plus the multiplexing set when `~/.ssh` exists to hold the control
+/// socket. Public so tests can build exact expectations without re-deriving
+/// the directory probe.
+pub fn ssh_appended_opts() -> Vec<&'static str> {
+    let mut opts: Vec<&'static str> = SSH_HARDENING_OPTS.to_vec();
+    if ssh_dir_exists() {
+        opts.extend(SSH_MULTIPLEX_OPTS);
+    }
+    opts
+}
+
 /// Build an `ssh <opts> <hardening> <destination>` [`Command`], ready for the
 /// caller to append the remote command and its arguments.
 ///
 /// Every thurbox ssh use is non-interactive, so [`SSH_HARDENING_OPTS`] is always
-/// applied (after the caller's `ssh_opts`, which therefore take precedence).
+/// applied (after the caller's `ssh_opts`, which therefore take precedence),
+/// and [`SSH_MULTIPLEX_OPTS`] follows whenever `~/.ssh` exists to hold the
+/// control socket.
 pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.args(ssh_opts);
-    cmd.args(SSH_HARDENING_OPTS);
+    cmd.args(ssh_appended_opts());
     cmd.arg(destination);
     cmd
 }
@@ -142,9 +195,10 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        // Caller opts first, hardening appended, destination last.
+        // Caller opts first, the appended set (hardening + multiplexing when
+        // the machine has an `~/.ssh`), destination last.
         let mut expected: Vec<&str> = vec!["-p", "2222"];
-        expected.extend(SSH_HARDENING_OPTS);
+        expected.extend(ssh_appended_opts());
         expected.push("me@box");
         assert_eq!(args, expected);
     }

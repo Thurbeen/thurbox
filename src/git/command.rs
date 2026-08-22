@@ -61,17 +61,14 @@ pub(crate) fn git_program() -> Command {
 /// passphrase or a host-key confirmation, and an install runs from the command
 /// drain — so a prompt is a frozen interface, with no indication why. Two knobs
 /// cover it: `GIT_TERMINAL_PROMPT=0` stops git asking for HTTPS credentials, and
-/// `GIT_SSH_COMMAND` carries the same [`crate::shell::SSH_HARDENING_OPTS`] every
-/// other ssh use here applies. A clone that would have prompted fails with a
-/// message instead.
+/// `GIT_SSH_COMMAND` carries the same appended set every other ssh use here
+/// applies ([`crate::shell::ssh_appended_opts`] — hardening plus connection
+/// multiplexing, so repeated fetches against an ssh remote reuse one
+/// connection). A clone that would have prompted fails with a message instead.
 pub(super) fn non_interactive(cmd: &mut Command) {
     cmd.env("GIT_TERMINAL_PROMPT", "0");
-    let ssh = std::iter::once("ssh".to_string())
-        .chain(
-            crate::shell::SSH_HARDENING_OPTS
-                .iter()
-                .map(|o| o.to_string()),
-        )
+    let ssh = std::iter::once("ssh")
+        .chain(crate::shell::ssh_appended_opts())
         .collect::<Vec<_>>()
         .join(" ");
     cmd.env("GIT_SSH_COMMAND", ssh);
