@@ -305,6 +305,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         pending_focus: None,
         click_targets: Vec::new(),
         last_area: Rect::new(0, 0, 0, 0),
+        screen_size: crossterm::terminal::size().unwrap_or((80, 24)),
         selected_text: None,
         hovered: None,
         mouse: config.features().mouse,
@@ -945,6 +946,14 @@ struct App {
     /// A selection outside every terminal is anchored to this, so a drag over
     /// the session list or a modal has a rect to clamp against.
     last_area: Rect,
+    /// The terminal's size, seeded once at startup and updated from
+    /// `Event::Resize`.
+    ///
+    /// Cached because `terminal::size()` is a syscall and its two consumers run
+    /// on every iteration of a loop that polls every 10 ms — `readopt_shells`
+    /// already refused to pay it per iteration, and this extends the same
+    /// reasoning to the attach seed size.
+    screen_size: (u16, u16),
     /// The text under the current selection, read while the frame that painted
     /// it is still in hand.
     ///

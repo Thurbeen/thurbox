@@ -86,7 +86,10 @@ impl App {
                     self.on_paste(text);
                     self.note_input();
                 }
-                Event::Resize(..) => self.note_input(),
+                Event::Resize(cols, rows) => {
+                    self.screen_size = (cols, rows);
+                    self.note_input();
+                }
                 _ => {}
             }
         }

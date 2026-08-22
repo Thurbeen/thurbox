@@ -346,6 +346,9 @@ pub struct SnapshotStore {
     /// because a mutation that forgets to bump is the one failure here that is
     /// silent — see `tests/kernel_frame_cost.rs`.
     version: u64,
+    /// A focus request another process left, claimed during [`Self::refresh`]
+    /// and handed out by [`Self::take_focus_request`].
+    pending_focus: Option<String>,
 }
 
 /// A remote hook event waiting for the session it names to appear.
@@ -387,6 +390,7 @@ impl SnapshotStore {
             last_data_version: None,
             pending_hooks: Vec::new(),
             version: 0,
+            pending_focus: None,
         };
         store.refresh();
         store
@@ -406,6 +410,7 @@ impl SnapshotStore {
             last_data_version: None,
             pending_hooks: Vec::new(),
             version: 0,
+            pending_focus: None,
         };
         store.refresh();
         store
@@ -726,13 +731,17 @@ impl SnapshotStore {
 
     /// Take a pending "focus this session" request, if another process left one.
     ///
-    /// One `DELETE … RETURNING`, so the row is claimed atomically and two
-    /// instances cannot both act on it. v1 drains the same row in
-    /// `apply_pending_focus_request`.
-    pub fn take_focus_request(&self) -> Option<String> {
-        self.database
-            .as_ref()
-            .and_then(|database| database.take_pending_focus_session_id().ok().flatten())
+    /// The database probe lives in [`Self::refresh`], not here: the claiming
+    /// `DELETE … RETURNING` is a write statement that takes the WAL write lock
+    /// even when it matches nothing, so running it per loop iteration put
+    /// 20–100 write-lock cycles a second on the UI thread — and, behind the 5 s
+    /// busy timeout, a moment of contention with `thurbox-cli` or the heartbeat
+    /// could stall a frame for that long. The row can only appear via another
+    /// connection's commit, which is exactly what moves `data_version` and
+    /// brings `refresh` round, so riding that gate loses nothing but a
+    /// sub-interval of latency on a notification click.
+    pub fn take_focus_request(&mut self) -> Option<String> {
+        self.pending_focus.take()
     }
 
     /// Rebuild now.
@@ -754,6 +763,15 @@ impl SnapshotStore {
             self.mark_changed();
             return;
         };
+
+        // Claim any focus request here, where `data_version` movement already
+        // brought us: the claiming `DELETE … RETURNING` takes the write lock
+        // even on a miss, so it must not run per loop iteration (see
+        // `take_focus_request`). A request can only appear via another
+        // connection's commit, which is what triggers this refresh.
+        if let Ok(Some(id)) = database.take_pending_focus_session_id() {
+            self.pending_focus = Some(id);
+        }
 
         let sessions = match database.list_active_sessions() {
             Ok(sessions) => sessions,

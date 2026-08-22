@@ -327,10 +327,13 @@ impl App {
             self.toast(message);
         }
 
-        // Machine, statusline and account metrics. Both calls are gated
-        // internally (an interval, and one sample in flight at a time), so
-        // running them every iteration costs a comparison.
-        self.metrics.sample(self.metric_subjects());
+        // Machine, statusline and account metrics. Asked whether a sample is
+        // due before the subject list is built — `metric_subjects` clones four
+        // strings per session, which is worth paying once a second but not per
+        // iteration.
+        if self.metrics.wants_sample() {
+            self.metrics.sample(self.metric_subjects());
+        }
         if self.metrics.poll() {
             self.note_data_change();
         }
@@ -371,7 +374,7 @@ impl App {
         // Attach to any session that gained a pane, and drop the ones that
         // went away. Sized to the screen as a starting point; each surface
         // resizes its own pane to its real rect when it paints.
-        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let (cols, rows) = self.screen_size;
         self.terminals.sync(self.snapshots.current(), rows, cols);
         // New agent output, noticed the way v1 notices it: one lock-free sum
         // of atomics per iteration, marking the screen dirty. Without this a
@@ -543,13 +546,12 @@ impl App {
                     .map(|pane| (row.id.clone(), pane))
             })
             .collect();
-        // Asked before the size is: `terminal::size()` is a syscall, and this
-        // runs on every iteration of a loop that polls every 10ms. Almost always
-        // there is nothing to adopt.
+        // Asked before the size is so the common empty case stays free — and
+        // the size itself is the cached one, updated from `Event::Resize`.
         if wanted.is_empty() {
             return;
         }
-        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let (cols, rows) = self.screen_size;
         for (session, pane) in wanted {
             if self.terminals.readopt_shell(&session, &pane, rows, cols) {
                 self.dirty = true;

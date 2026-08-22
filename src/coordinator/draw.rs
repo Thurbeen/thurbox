@@ -699,7 +699,7 @@ impl App {
             .status
             .as_ref()
             .is_some_and(|(_, _, at)| at.elapsed() < STATUS_TTL);
-        u16::from(live_message || !self.commands.inflight().is_empty())
+        u16::from(live_message || self.commands.has_inflight())
     }
 
     /// Whether this tree's session surface has printed since it was last

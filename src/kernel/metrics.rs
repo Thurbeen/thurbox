@@ -147,10 +147,29 @@ impl Metrics {
             .get(&(agent.to_string(), host.map(str::to_string)))
     }
 
+    /// Whether the next [`Self::sample`] would actually start work — the
+    /// machine sample or the account-usage fetch is due.
+    ///
+    /// Asked before the subject list is built: assembling it clones four
+    /// strings per session, and doing that on every 10 ms iteration for a
+    /// once-per-second consumer was the same waste `serve_runs` already
+    /// refuses one function away.
+    pub fn wants_sample(&self) -> bool {
+        let sample_due = self
+            .last_sample
+            .map_or(true, |at| at.elapsed() >= SAMPLE_INTERVAL);
+        let usage_due = self
+            .last_usage
+            .map_or(true, |at| at.elapsed() >= USAGE_INTERVAL);
+        sample_due || usage_due
+    }
+
     /// Start a sample if one is due and none is running.
     ///
-    /// Called from the loop every frame; cheap after the first because the
-    /// interval and the parked collector both gate it.
+    /// Gate with [`Self::wants_sample`]; the interval and the parked collector
+    /// both re-check here, so an unguarded call is still safe. The per-session
+    /// prune rides the same cadence — a deleted session's numbers linger at
+    /// most one interval longer, which nothing renders.
     pub fn sample(&mut self, subjects: Vec<Subject>) {
         self.forget_gone(&subjects);
         self.sample_machine(&subjects);
