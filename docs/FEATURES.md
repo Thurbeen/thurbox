@@ -236,14 +236,15 @@ not applicable.
    session. Skipped when only one agent is defined in
    `agents.toml`.
 
-**The new session is the one you end up looking at.** Creation is a command, so
-its id does not exist when the flow closes — the spawn pipeline mints it. It
-travels back with the completion (`CommandBus::take_created`), and the loop then
-selects that session and puts the input focus on the pane showing it, through the
-same `focus_session` path a clicked notification and `thurbox-cli session focus`
-use. The session list *follows the id* rather than a row number, so the selection
-lands correctly across the frames between "created" and "in the snapshot".
-`Ctrl+F` fork reports its new session the same way.
+**Creating a session moves nothing.** The new row appears in the list and waits
+to be picked; the selection, the pane showing it and the keyboard all stay where
+they were. Creation is a command that finishes on a worker seconds after the flow
+closed, so the moment it lands is not a moment the user chose — steering the view
+then interrupted whatever they had gone back to reading, and made creating three
+sessions in a row a fight with the cursor. `Ctrl+F` fork behaves the same way.
+Selection is still *steerable*, by the two requests that are deliberate: a
+clicked notification and `thurbox-cli session focus`, both through
+`focus_session`, which the list follows by id rather than by row number.
 
 A session is fully described by its repos and agent. There is no
 per-session model selection, permissions, prompt, tool, or skill

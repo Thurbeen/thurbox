@@ -1377,16 +1377,14 @@ impl App {
         // delete feel immediate instead of arriving up to 400ms later.
         if self.commands.poll() {
             self.report_finished_commands();
-            // A session you just asked for is the one you want to be looking at.
-            // The id is knowable only once the spawn finished, so it arrives with
-            // the completion rather than with the command — and the list follows
-            // an id until it appears, which is what carries this across the
-            // frames between "created" and "in the snapshot". Of several
-            // finishing at once the last to finish wins; there is one caret and
-            // one selection either way.
-            if let Some(created) = self.commands.take_created().pop() {
-                self.focus_on_session(&created);
-            }
+            // A creation deliberately steers nothing. It finishes on a worker,
+            // so the moment it lands is not a moment the user chose: moving the
+            // selection — and with it what the agent pane shows and where the
+            // keyboard goes — pulled them out of whatever they were reading,
+            // several seconds after they asked. The new session appears in the
+            // list and waits to be picked. `focus_session` still exists for the
+            // two requests that ARE deliberate: a clicked notification and
+            // `thurbox-cli session focus`.
             // Wait for the last one: two adds in quick succession would
             // otherwise re-read between them and publish a list missing the
             // second.
