@@ -1098,10 +1098,26 @@ impl LuaHost {
     /// rather than applied directly because the *selection* belongs to the
     /// session list, which republishes it every frame; anything the kernel set
     /// behind its back would be overwritten immediately.
+    /// Bumps the state version exactly as the Lua `__newindex` path does —
+    /// without it, a pure pane consuming the key is served its cached tree on a
+    /// frame where nothing else moved, and the request sits unconsumed until
+    /// some unrelated signal ticks the epoch (the failure ADR-P16 records for
+    /// `thurbox.commands`).
     pub fn set_shared_string(&self, key: &str, value: &str) {
-        self.store
-            .borrow_mut()
-            .insert(key.to_string(), Persisted::Str(value.to_string()));
+        let moved = {
+            let mut store = self.store.borrow_mut();
+            let next = Persisted::Str(value.to_string());
+            if store.get(key) == Some(&next) {
+                false
+            } else {
+                store.insert(key.to_string(), next);
+                true
+            }
+        };
+        if moved {
+            self.state_version
+                .set(self.state_version.get().wrapping_add(1));
+        }
     }
 
     /// Put a boolean into the shared `store`.
@@ -1110,9 +1126,20 @@ impl LuaHost {
     /// flags: [`Self::placed_slots`] opens every column before resolving the
     /// arrangement, because a pane behind a closed toggle is not a missing pane.
     pub fn set_shared_bool(&self, key: &str, value: bool) {
-        self.store
-            .borrow_mut()
-            .insert(key.to_string(), Persisted::Bool(value));
+        let moved = {
+            let mut store = self.store.borrow_mut();
+            let next = Persisted::Bool(value);
+            if store.get(key) == Some(&next) {
+                false
+            } else {
+                store.insert(key.to_string(), next);
+                true
+            }
+        };
+        if moved {
+            self.state_version
+                .set(self.state_version.get().wrapping_add(1));
+        }
     }
 
     /// Indices of plugins that may float, in render order.
