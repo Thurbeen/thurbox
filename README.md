@@ -591,7 +591,7 @@ colours, so a pane you write looks right under all thirty-six.
 
 - **[Extensions](https://thurbeen.github.io/thurbox/docs/extensions.html)**
   *(experimental)* — opt-in, agent-agnostic add-ons that are **data, not
-  code**: `flow`, `forge`, `ci-shepherd`, `renovate`. One command installs,
+  code**: `flow`, `forge`, `ci-shepherd`, `renovate`, `ui-skill`. One command installs,
   activates, and self-heals each; the manifest format is documented, so your
   own is a TOML file.
 - **[Inter-session messages](#features)** — an agent-neutral mailbox queue
@@ -814,7 +814,9 @@ a different name — possible on equal terms.
   you removed stays unbound rather than being quietly reused.
 - **Extensions** — whole workflows (`flow`, `forge`, `ci-shepherd`, `renovate`)
   shipped as a declarative manifest that the binary knows how to install,
-  activate, and self-heal — without knowing what any of them *are*.
+  activate, and self-heal — without knowing what any of them *are*. `ui-skill`
+  is the small one: it teaches whichever agent you run how to edit thurbox's
+  own interface, from any session.
 
 ## Prerequisites
 

@@ -1,0 +1,83 @@
+# ui-skill extension manifest.
+#
+# Installs one agent skill — `thurbox-ui` — into every coding CLI's *personal*
+# skill directory, so an agent in any thurbox session knows how to change
+# thurbox's own interface without the user attaching the interface directory to
+# the session as an extra repo first.
+#
+#   thurbox-cli extension install ui-skill      # or: install ./extensions/ui-skill
+#   thurbox-cli extension uninstall ui-skill    # removes every copy it still owns
+#
+# It ships no session, no automation and no agent: the whole extension is one
+# Markdown file delivered to a handful of well-known paths. SKILL.md carries the
+# managed marker the installer looks for, so `install`/`update`/`uninstall` act on
+# thurbox's own copies and leave a copy the user has taken ownership of alone
+# (they drop the marker line and the file is theirs). `reinstall` and
+# `install --force` still overwrite, as they do for every extension.
+#
+# The skill deliberately hard-codes no paths: it opens with `thurbox-cli plugin
+# dir`, so one payload is correct for a release build, a dev build and a
+# THURBOX_UI_DIR override alike, and stays correct when the user moves it.
+
+name = "ui-skill"
+description = "Teach any coding agent how to edit thurbox's own interface (the `thurbox-ui` skill)"
+config_version = 1
+version = "1.0.0"                # this extension's own version; bump on changes
+min_thurbox_version = "0.113.0"  # needs the `extension install`/self-heal machinery
+# No `home`: defaults to `<config>/extensions/ui-skill` (override with --home).
+
+# --- payload laid down under home ---------------------------------------------
+#
+# The README is the local record of what was installed where. SKILL.md itself is
+# fetched from the install source for each destination below, not from here, so
+# editing a copy under home changes nothing — the README says so.
+
+[[files]]
+path = "README.md"
+
+# --- the skill, delivered to each CLI's personal skill dir ---------------------
+#
+# Every entry is guarded by `requires_dir`, so a CLI the user has not installed
+# is a no-op rather than a config tree conjured for an agent they do not run —
+# the same rule the built-in `hooks` extension uses for its per-agent drops. The
+# nested `skills/thurbox-ui/` dirs are created as needed.
+#
+# `source` is spelled out on each entry even though it matches the destination's
+# file name, because that default is easy to misread as "one payload per
+# destination". There is exactly one payload.
+#
+# SKILL.md is the cross-agent standard (YAML frontmatter + Markdown), so the
+# byte-identical file serves every one of these. If a CLI moves its skill dir,
+# fix the path here — no code change.
+
+# claude (Claude Code). Also the path opencode reads as its Claude-compatible
+# global location, so this one entry covers both when opencode's own dir is absent.
+[[external_files]]
+path = "~/.claude/skills/thurbox-ui/SKILL.md"
+source = "SKILL.md"
+requires_dir = "~/.claude"
+
+# codex (OpenAI Codex CLI) — skills live beside its own `.system` set.
+[[external_files]]
+path = "~/.codex/skills/thurbox-ui/SKILL.md"
+source = "SKILL.md"
+requires_dir = "~/.codex"
+
+# opencode — its native global skill dir (it also reads ~/.claude/skills).
+[[external_files]]
+path = "~/.config/opencode/skills/thurbox-ui/SKILL.md"
+source = "SKILL.md"
+requires_dir = "~/.config/opencode"
+
+# copilot (GitHub Copilot CLI) — personal skills; `/skills reload` picks it up.
+[[external_files]]
+path = "~/.copilot/skills/thurbox-ui/SKILL.md"
+source = "SKILL.md"
+requires_dir = "~/.copilot"
+
+# The agent-neutral convention several CLIs read as a shared personal location.
+# Nothing creates ~/.agents, so this writes only for a user who already uses it.
+[[external_files]]
+path = "~/.agents/skills/thurbox-ui/SKILL.md"
+source = "SKILL.md"
+requires_dir = "~/.agents"

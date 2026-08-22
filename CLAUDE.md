@@ -1184,6 +1184,23 @@ close it), and `task run` sends or spawns. Triggering advances `Todo → InProgr
   adoption). Version strategy is per-repo (`strategy` column: `patch`/`minor`/
   `major`/`all`, layered as a `RENOVATE_CONFIG` overlay) plus a global
   `renovate-config.json`. Spec: `RENOVATE.md`.
+- **`extensions/ui-skill/`** — the odd one out: it ships no session, no
+  automation and no agent. It installs a single **agent skill**, `thurbox-ui`,
+  into each coding CLI's *personal* skill directory
+  (`~/.claude/skills/`, `~/.codex/skills/`, `~/.config/opencode/skills/`,
+  `~/.copilot/skills/`, `~/.agents/skills/` — each guarded by `requires_dir`, so
+  a CLI the user does not have is skipped), so an agent in **any** session knows
+  how to change thurbox's own interface. It replaces the workaround of attaching
+  the interface directory to every session as an extra repo: a skill loads only
+  when the request is about the TUI, where an extra repo is in front of the agent
+  always. The payload is one `SKILL.md` — the short form of `ui/AGENTS.md` +
+  `ui/README.md` — and it hard-codes no paths, opening with `thurbox-cli plugin
+  dir` so one file is correct for a release build, a dev build and a
+  `THURBOX_UI_DIR` override alike. Delivery is the ordinary `[[external_files]]`
+  machinery, marker-guarded: `install`/`update`/`uninstall` act on thurbox's own
+  copies and leave one the user has taken ownership of alone (drop the `Managed
+  by` line and it is theirs), while `reinstall` and `install --force` overwrite
+  as they do everywhere else.
 > **Removed.** Four per-provider task-integration extensions
 > (`github-issues`, `gitlab-issues`, `linear`, `jira`) lived here and were deleted:
 > four near-identical trees, each carrying a provider's API shape, for a job that is

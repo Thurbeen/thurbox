@@ -48,6 +48,21 @@ misread, and both are worth knowing before you conclude a path is wrong:
 `thurbox-cli config show` prints the resolved `ui_dir` and `ui_json` alongside
 every other config path, which is the quickest way to see which set is in play.
 
+**Editing the interface from some other session.** The interface directory is a
+config path of yours, so a coding agent working in an unrelated repository has no
+reason to know it exists. Rather than attaching that directory to every session as
+an extra repo — where it sits in front of the agent whether or not the work is
+about the TUI — install the skill:
+
+```bash
+thurbox-cli extension install ui-skill
+```
+
+That drops one `SKILL.md` (`thurbox-ui`) into each coding CLI's personal skill
+directory, so the agent loads the short form of this page *when* a request is
+about changing the TUI, in any session. It is the ordinary extension machinery:
+`thurbox-cli extension uninstall ui-skill` takes every copy back.
+
 ```text
 <the directory plugin dir reports>/
   layout.lua                   how the screen is arranged

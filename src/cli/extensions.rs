@@ -514,12 +514,22 @@ fn health_summary(h: &crate::session_ops::ExtensionHealth) -> String {
 
 fn install_report_to_json(report: &crate::session_ops::InstallReport) -> Value {
     let version = report.version.as_deref().unwrap_or("?");
+    // Files written outside the home dir get their own clause rather than being
+    // folded into the payload count: an extension whose whole product is agent
+    // config drops (`ui-skill` writes nothing else) otherwise reports "0 file(s)"
+    // for a successful install. Omitted when empty, so the usual line is unchanged.
+    let external = if report.external_files_written.is_empty() {
+        String::new()
+    } else {
+        format!(", {} agent file(s)", report.external_files_written.len())
+    };
     let summary = format!(
-        "Installed '{}' {} → {} ({} file(s), {} session(s), {} automation(s))",
+        "Installed '{}' {} → {} ({} file(s){}, {} session(s), {} automation(s))",
         report.name,
         version,
         report.home,
         report.files_written.len(),
+        external,
         report.ensure.sessions_created.len(),
         report.ensure.automations_created.len(),
     );
@@ -533,6 +543,8 @@ fn install_report_to_json(report: &crate::session_ops::InstallReport) -> Value {
         "compat_warning": report.compat_warning,
         "files_written": report.files_written,
         "files_skipped": report.files_skipped,
+        "external_files_written": report.external_files_written,
+        "external_files_skipped": report.external_files_skipped,
         "symlinks_created": report.symlinks_created,
         "symlinks_skipped": report.symlinks_skipped,
         "agents_added": report.agents_added,

@@ -107,6 +107,10 @@ pub const OFFICIAL_EXTENSIONS: &[OfficialExtension] = &[
         name: "renovate",
         description: "Keeps local repos on up-to-date dependencies via Renovate's local platform",
     },
+    OfficialExtension {
+        name: "ui-skill",
+        description: "Teach any coding agent how to edit thurbox's own interface",
+    },
 ];
 
 /// Whether an install `target` is a **bare name** (not a URL or path) — i.e. it
@@ -788,6 +792,28 @@ pub fn remove_manifest_file(name: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bare-name install resolves against the official source, so a name in
+    /// [`OFFICIAL_EXTENSIONS`] with no `extensions/<name>/` behind it advertises
+    /// something `extension available` can list and `extension install` cannot
+    /// fetch.
+    #[test]
+    fn every_official_extension_has_a_shipped_manifest() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions");
+        for ext in OFFICIAL_EXTENSIONS {
+            assert!(
+                is_bare_name(ext.name),
+                "'{}' must install by bare name",
+                ext.name
+            );
+            assert!(
+                root.join(ext.name).join("extension.toml").is_file(),
+                "official extension '{}' has no extensions/{}/extension.toml",
+                ext.name,
+                ext.name
+            );
+        }
+    }
 
     fn write_manifest_file(name: &str, contents: &str) {
         let path = manifest_path(name).unwrap();

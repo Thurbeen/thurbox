@@ -480,6 +480,65 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 mod tests {
     use super::*;
 
+    /// Every manifest thurbox ships must parse, and every payload it names must
+    /// be in the directory beside it. A manifest that survives a payload rename
+    /// fails at install time on the user's machine, where the only symptom is a
+    /// fetch error for a file nobody thought about — so the check belongs here,
+    /// over the real `extensions/` tree, rather than over a string literal.
+    #[test]
+    fn shipped_manifests_parse_and_their_payloads_exist() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&root).expect("read extensions/") {
+            let dir = entry.expect("dir entry").path();
+            let manifest = dir.join("extension.toml");
+            if !manifest.is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&manifest).expect("read manifest");
+            let def: ExtensionDef = toml::from_str(&text)
+                .unwrap_or_else(|e| panic!("{} does not parse: {e}", manifest.display()));
+
+            let named = dir.file_name().and_then(|n| n.to_str()).expect("dir name");
+            assert_eq!(
+                def.name,
+                named,
+                "{} declares a name that is not its directory",
+                manifest.display()
+            );
+
+            // `source` defaults differ by kind (payload: the destination path;
+            // external/merge: the destination's file name), so ask each type.
+            let sources = def
+                .files
+                .iter()
+                .map(ExtensionFile::source_path)
+                .chain(def.external_files.iter().map(ExternalFile::source_path))
+                .chain(def.config_merges.iter().map(ConfigMerge::source_path));
+            for src in sources {
+                assert!(
+                    dir.join(src).is_file(),
+                    "{} names a payload that is not there: {src}",
+                    manifest.display()
+                );
+            }
+            for link in &def.symlinks {
+                assert!(
+                    dir.join(&link.target).exists(),
+                    "{} links {} at a missing target: {}",
+                    manifest.display(),
+                    link.link,
+                    link.target
+                );
+            }
+            checked += 1;
+        }
+        assert!(
+            checked >= 5,
+            "expected every shipped extension, saw {checked}"
+        );
+    }
+
     #[test]
     fn parses_full_manifest() {
         let toml = r#"
