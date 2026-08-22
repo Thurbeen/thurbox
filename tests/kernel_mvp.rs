@@ -1639,9 +1639,10 @@ fn a_session_being_deleted_leaves_the_list_at_once() {
     // the session back rather than the row.
     let host = host();
     let sessions = index_of(&host, "sessions");
-    let doomed = sample().sessions[0].id.clone();
+    let snapshot = sample();
+    let doomed = snapshot.sessions[0].id.clone();
 
-    publish(&host, &sample());
+    publish(&host, &snapshot);
     let before = paint(&host, sessions, 46, 14).join("\n");
     assert!(before.contains("fix-osc52"), "{before}");
 
@@ -1653,7 +1654,7 @@ fn a_session_being_deleted_leaves_the_list_at_once() {
         phase: Phase::Running,
         error: None,
     }];
-    publish_with(&host, &sample(), &Default::default(), &inflight);
+    publish_with(&host, &snapshot, &Default::default(), &inflight);
 
     let screen = paint(&host, sessions, 46, 14).join("\n");
     assert!(

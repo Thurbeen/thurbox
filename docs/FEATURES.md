@@ -1674,7 +1674,7 @@ branch name) is saved in the database and reconstructed on restore.
   unless `--force`. Either way the row **leaves the list on the
   keystroke** rather than sitting there tagged while the teardown runs:
   the session list drops any session whose `delete` is in flight
-  (`deleting()` in `ui/plugins/10_sessions.lua`), so the cursor lands on
+  (`live_sessions()` in `ui/plugins/10_sessions.lua`), so the cursor lands on
   the next session and a repo group whose last session went takes its
   header with it. A delete that *failed* keeps its row — the failure is
   the only thing that says the session is still there.

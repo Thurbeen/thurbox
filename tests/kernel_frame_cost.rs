@@ -482,7 +482,7 @@ fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
         sessions: vec![row("aaa", "doomed"), row("bbb", "bystander")],
         ..Snapshot::default()
     };
-    let paint = |host: &LuaHost| {
+    let paint = || {
         format!(
             "{:?}",
             host.render(
@@ -502,19 +502,16 @@ fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
 
     let mut epoch = Epoch::default();
     publish_at(&host, epoch, &snapshot, &themes);
-    assert!(
-        paint(&host).contains("doomed"),
-        "the row should start present"
-    );
+    assert!(paint().contains("doomed"), "the row should start present");
 
     // Let it settle first. The list publishes the selection as it renders, so
     // its first pass moves the state version — which is part of the cache key —
     // and the second pass is the one whose tree can be reused. A pane that never
     // settled could not go stale either, which would make the rest of this test
     // prove nothing.
-    let _ = paint(&host);
+    let _ = paint();
     let settled = host.skipped_renders();
-    let _ = paint(&host);
+    let _ = paint();
     assert_eq!(
         host.skipped_renders() - settled,
         1,
@@ -534,7 +531,7 @@ fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
     // the row it drew before the delete existed is what stays on screen.
     publish_at_with(&host, epoch, &snapshot, &themes, &inflight);
     assert!(
-        paint(&host).contains("doomed"),
+        paint().contains("doomed"),
         "the in-flight list reached a pure pane on its own — this test is \
          asserting the caching that makes the epoch bump necessary, so if it \
          fails the bump may no longer be needed"
@@ -543,7 +540,7 @@ fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
     // Moved, as the loop moves it the moment the command is accepted.
     epoch.data += 1;
     publish_at_with(&host, epoch, &snapshot, &themes, &inflight);
-    let screen = paint(&host);
+    let screen = paint();
     assert!(
         !screen.contains("doomed"),
         "the deleted row outlived the epoch that carried its delete:\n{screen}"
