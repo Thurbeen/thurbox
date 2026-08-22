@@ -8,7 +8,7 @@
 //! Unlike user extensions (which are fetched from a source on demand, ADR-20),
 //! this one ships **embedded** in the binary and is **auto-activated by default**
 //! so the default agent has its hook pre-configured with zero setup. That half
-//! is generic and lives in [`super::builtin`]; what is here is the [`HOOKS`]
+//! is generic and lives in [`super::builtin`]; what is here is the `HOOKS`
 //! spec plus the hook rewriting no other built-in needs.
 //!
 //! Opt out with `thurbox-cli extension deactivate hooks`, which records an
