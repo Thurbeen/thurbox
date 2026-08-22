@@ -946,9 +946,9 @@ impl Default for CommandBus {
 
 /// Run one command. Called on the command's own thread, never the UI thread.
 ///
-/// Only the outcome travels back. A creation mints an id the caller could not
-/// know, but nothing in the loop consumes it: a session that finished spawning
-/// is a row in the list, not a reason to move the user's selection there.
+/// Only the outcome travels back. A creation and a fork each mint a session id,
+/// and neither reports it: a session that finished spawning is a row in the
+/// list, not a reason to move the user's selection onto it.
 fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<(), String> {
     // Handled by the loop before dispatch, because they mutate in-process state
     // the worker cannot reach. Reaching here means a caller bypassed that.
@@ -968,7 +968,7 @@ fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<()
         extras,
     } = command
     {
-        return create(name, repo, branch, base, agent, host, extras, id, progress).map(|_| ());
+        return create(name, repo, branch, base, agent, host, extras, id, progress);
     }
 
     // Repository memory names a path, not a session, so it too runs before the
@@ -1030,7 +1030,7 @@ fn execute(command: &Command, id: u64, progress: &Sender<Progress>) -> Result<()
     // A fork mints a session too; like a creation, the new row simply appears
     // in the list rather than pulling the selection onto itself.
     if let Command::Fork { name, .. } = command {
-        return fork(&db, id, name).map(|_| ());
+        return fork(&db, id, name);
     }
 
     match command {
@@ -1104,7 +1104,7 @@ fn create(
     extras: &[ExtraMember],
     id: u64,
     progress: &Sender<Progress>,
-) -> Result<SessionId, String> {
+) -> Result<(), String> {
     let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
     let db = Database::open(&path).map_err(|e| format!("open database: {e}"))?;
 
@@ -1168,7 +1168,7 @@ fn create(
         });
     };
     crate::session_ops::spawn::spawn_session_headless_with_progress(&db, request, Some(&report))
-        .map(|spawned| spawned.session_id)
+        .map(|_| ())
 }
 
 /// Remember, forget or import a repository path.
@@ -1308,7 +1308,7 @@ fn bookmark_add(
 }
 
 /// Fork a session: a new one on the same repository, recording its parent.
-fn fork(db: &Database, id: SessionId, name: &str) -> Result<SessionId, String> {
+fn fork(db: &Database, id: SessionId, name: &str) -> Result<(), String> {
     let source = db
         .get_session_by_id(id)
         .map_err(|e| format!("get session: {e}"))?
@@ -1355,7 +1355,7 @@ fn fork(db: &Database, id: SessionId, name: &str) -> Result<SessionId, String> {
         // Shared, not created — so the fork shows its branch and can be synced.
         inherit_worktrees: source.worktrees.clone(),
     };
-    crate::session_ops::spawn::spawn_session_headless(db, request).map(|spawned| spawned.session_id)
+    crate::session_ops::spawn::spawn_session_headless(db, request).map(|_| ())
 }
 
 /// Bring a session's worktree up to date with the branch it came from.

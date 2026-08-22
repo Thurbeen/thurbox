@@ -1377,14 +1377,10 @@ impl App {
         // delete feel immediate instead of arriving up to 400ms later.
         if self.commands.poll() {
             self.report_finished_commands();
-            // A creation deliberately steers nothing. It finishes on a worker,
-            // so the moment it lands is not a moment the user chose: moving the
-            // selection — and with it what the agent pane shows and where the
-            // keyboard goes — pulled them out of whatever they were reading,
-            // several seconds after they asked. The new session appears in the
-            // list and waits to be picked. `focus_session` still exists for the
-            // two requests that ARE deliberate: a clicked notification and
-            // `thurbox-cli session focus`.
+            // A finished creation is deliberately not acted on here: see
+            // `focus_on_session` for why a session that just spawned does not
+            // pull the view onto itself.
+
             // Wait for the last one: two adds in quick succession would
             // otherwise re-read between them and publish a list missing the
             // second.
@@ -4180,11 +4176,16 @@ impl App {
 
     /// Select a session and put the input focus on the pane that shows it.
     ///
-    /// Shared by the two things that mean "look at this one": an outside focus
-    /// request (a clicked notification, `thurbox-cli session focus`) and a
-    /// session this instance just created. The selection travels through the
-    /// store rather than being set here, because the list is a plugin and it is
-    /// the only thing that knows the rendered order.
+    /// Only for a request made *now*: a clicked notification, or
+    /// `thurbox-cli session focus`. A session this instance just created is
+    /// deliberately not one — creation finishes on a worker seconds after the
+    /// wizard closed, so steering the view then lands at a moment the user did
+    /// not choose, and taking the selection back after every one of them made
+    /// creating several sessions in a row a fight with the cursor.
+    ///
+    /// The selection travels through the store rather than being set here,
+    /// because the list is a plugin and it is the only thing that knows the
+    /// rendered order.
     fn focus_on_session(&mut self, id: &str) {
         self.host.set_shared_string("focus_session", id);
         if let Some(index) = self.host.index_of("agent") {
