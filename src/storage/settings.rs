@@ -14,8 +14,15 @@ const THEME_KEY: &str = "active_theme";
 /// accessors below rather than the other way round.
 const V2_ACK_KEY: &str = "v2_interface_acknowledged";
 const ACTIVE_EXTENSIONS_KEY: &str = "active_extensions";
-const BUILTIN_HOOKS_OPTOUT_KEY: &str = "builtin_hooks_optout";
 const PERF_SNAPSHOT_KEY: &str = "perf_snapshot";
+
+/// Metadata key recording an opt-out of the built-in extension `name`. The
+/// format is load-bearing rather than cosmetic: `hooks` must keep producing
+/// `builtin_hooks_optout`, the key written before there was more than one
+/// built-in, or every existing opt-out silently reverses on upgrade.
+fn builtin_optout_key(name: &str) -> String {
+    format!("builtin_{name}_optout")
+}
 
 impl Database {
     /// Get the configured editor command (e.g. `code`, `nvim --remote-tab`).
@@ -210,34 +217,33 @@ impl Database {
         Ok(())
     }
 
-    /// Whether the user has opted out of the auto-activated built-in `hooks`
-    /// extension. Set when they `extension deactivate hooks`, so startup self-heal
+    /// Whether the user has opted out of the auto-activated built-in extension
+    /// `name`. Set when they `extension deactivate <name>`, so startup self-heal
     /// won't resurrect it.
-    pub fn builtin_hooks_opted_out(&self) -> rusqlite::Result<bool> {
+    pub fn builtin_extension_opted_out(&self, name: &str) -> rusqlite::Result<bool> {
         let raw: Option<String> = self
             .conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = ?1",
-                params![BUILTIN_HOOKS_OPTOUT_KEY],
+                params![builtin_optout_key(name)],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
         Ok(raw.as_deref() == Some("1"))
     }
 
-    /// Record (or clear) the opt-out of the built-in `hooks` extension.
-    pub fn set_builtin_hooks_optout(&self, optout: bool) -> rusqlite::Result<()> {
+    /// Record (or clear) the opt-out of the built-in extension `name`.
+    pub fn set_builtin_extension_optout(&self, name: &str, optout: bool) -> rusqlite::Result<()> {
+        let key = builtin_optout_key(name);
         if optout {
             self.conn.execute(
                 "INSERT INTO metadata (key, value) VALUES (?1, '1') \
                  ON CONFLICT(key) DO UPDATE SET value = '1'",
-                params![BUILTIN_HOOKS_OPTOUT_KEY],
+                params![key],
             )?;
         } else {
-            self.conn.execute(
-                "DELETE FROM metadata WHERE key = ?1",
-                params![BUILTIN_HOOKS_OPTOUT_KEY],
-            )?;
+            self.conn
+                .execute("DELETE FROM metadata WHERE key = ?1", params![key])?;
         }
         Ok(())
     }

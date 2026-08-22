@@ -428,8 +428,8 @@ fn tick(db: &Database) -> Result<Value, String> {
     for m in &healed {
         tracing::info!("{m}");
     }
-    // Keep the auto-activated built-in `hooks` extension wired up headlessly too.
-    for m in &crate::session_ops::ensure_builtin_hooks_extension(db) {
+    // Keep the auto-activated built-in extensions wired up headlessly too.
+    for m in &crate::session_ops::ensure_builtin_extensions(db) {
         tracing::info!("{m}");
     }
     // Best-effort retention sweep of the inter-session mailbox (read messages
@@ -474,7 +474,7 @@ fn tick(db: &Database) -> Result<Value, String> {
     // an unreachable host costs up to ConnectTimeout per attempt, which must
     // never delay a scheduled firing. Skipped when the built-in hooks
     // extension is opted out (nothing sets the pane option then).
-    if !db.builtin_hooks_opted_out().unwrap_or(false) {
+    if crate::session_ops::hooks_enabled(db) {
         let polled = crate::session_ops::remote_hooks::poll_remote_hook_states(db);
         if polled > 0 {
             tracing::info!("remote status poll: {polled} hook state(s) updated");

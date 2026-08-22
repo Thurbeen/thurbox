@@ -107,10 +107,6 @@ pub const OFFICIAL_EXTENSIONS: &[OfficialExtension] = &[
         name: "renovate",
         description: "Keeps local repos on up-to-date dependencies via Renovate's local platform",
     },
-    OfficialExtension {
-        name: "ui-skill",
-        description: "Teach any coding agent how to edit thurbox's own interface",
-    },
 ];
 
 /// Whether an install `target` is a **bare name** (not a URL or path) — i.e. it

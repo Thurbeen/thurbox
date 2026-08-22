@@ -11,13 +11,19 @@ skill**, `thurbox-ui`, into each coding CLI's personal skill directory. The
 agent loads it only when a request is actually about changing the TUI, and it
 loads in **every** session — no extra repo, no per-session setup.
 
-## Install
+## It's on by default
+
+Like `hooks`, **ui-skill ships built into thurbox and is auto-activated** on
+first run — the skill is there before you know to ask for it, which is the point
+(nobody goes looking for the extension that tells them the interface is
+editable). Turn it off at any time:
 
 ```bash
-thurbox-cli extension install ui-skill
+thurbox-cli extension deactivate ui-skill   # removes every copy; won't come back
+thurbox-cli extension activate ui-skill     # and back on
 ```
 
-From a checkout: `thurbox-cli extension install ./extensions/ui-skill`.
+`deactivate` records an opt-out flag, so startup self-heal does not resurrect it.
 
 Every destination is guarded, so a CLI you do not have installed is skipped
 rather than having a config tree created for it:
@@ -60,10 +66,12 @@ build and a `THURBOX_UI_DIR` override alike.
 
 ## Editing it yourself
 
-`SKILL.md` in the install source is the single payload for every destination —
-the copy under the extension home is not read, and there is deliberately none
-laid down there for that reason. To change what the skill says, edit
-`extensions/ui-skill/SKILL.md` in a checkout and reinstall from that path.
+`SKILL.md` in `extensions/ui-skill/` is the single payload for every
+destination, embedded in the binary by `session_ops::builtin_ui_skill`. The copy
+under the extension home is not read — there is deliberately none laid down
+there for that reason. To change what the skill says, edit that file and rebuild;
+from a checkout, `thurbox-cli extension install ./extensions/ui-skill` installs
+the edit without one.
 
 Each delivered copy carries a `Managed by thurbox …` line. thurbox refreshes a
 file that still has it and never touches one that does not, so **delete that
@@ -75,10 +83,10 @@ Note the corollary: a copy that still carries the line is refreshed *even if you
 edited it*, since the line is the only thing distinguishing thurbox's file from
 yours.
 
-## Uninstall
+## Turning it off
 
 ```bash
-thurbox-cli extension uninstall ui-skill
+thurbox-cli extension deactivate ui-skill
 ```
 
 Every copy thurbox still owns (marker intact) is removed; a copy you took

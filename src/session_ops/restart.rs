@@ -115,7 +115,7 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
         )
     })?;
 
-    let hooks_enabled = !db.builtin_hooks_opted_out().unwrap_or(false);
+    let hooks_enabled = super::hooks_enabled(db);
     let plan = build_restart_plan(&session, host.as_ref(), hooks_enabled)?;
 
     match host.as_ref() {

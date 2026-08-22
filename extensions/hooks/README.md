@@ -17,9 +17,9 @@ whole list scans in one pass.
 
 ## It's on by default
 
-Unlike other extensions, **hooks ships built into thurbox and is auto-activated**
-on first run — the default agent's hook is pre-configured with zero setup. Opt
-out at any time:
+Unlike most extensions, **hooks ships built into thurbox and is auto-activated**
+on first run — the default agent's hook is pre-configured with zero setup.
+(`ui-skill` is the other one built in this way.) Opt out at any time:
 
 ```bash
 thurbox-cli extension deactivate hooks   # remove the wiring; won't come back

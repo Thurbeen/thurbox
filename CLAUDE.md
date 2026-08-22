@@ -1184,23 +1184,26 @@ close it), and `task run` sends or spawns. Triggering advances `Todo → InProgr
   adoption). Version strategy is per-repo (`strategy` column: `patch`/`minor`/
   `major`/`all`, layered as a `RENOVATE_CONFIG` overlay) plus a global
   `renovate-config.json`. Spec: `RENOVATE.md`.
-- **`extensions/ui-skill/`** — the odd one out: it ships no session, no
-  automation and no agent. It installs a single **agent skill**, `thurbox-ui`,
-  into each coding CLI's *personal* skill directory
+- **`extensions/ui-skill/`** *(built-in, on by default)* — the odd one out: it
+  ships no session, no automation and no agent. It installs a single **agent
+  skill**, `thurbox-ui`, into each coding CLI's *personal* skill directory
   (`~/.claude/skills/`, `~/.codex/skills/`, `~/.config/opencode/skills/`,
   `~/.copilot/skills/`, `~/.agents/skills/` — each guarded by `requires_dir`, so
   a CLI the user does not have is skipped), so an agent in **any** session knows
   how to change thurbox's own interface. It replaces the workaround of attaching
   the interface directory to every session as an extra repo: a skill loads only
   when the request is about the TUI, where an extra repo is in front of the agent
-  always. The payload is one `SKILL.md` — the short form of `ui/AGENTS.md` +
-  `ui/README.md` — and it hard-codes no paths, opening with `thurbox-cli plugin
-  dir` so one file is correct for a release build, a dev build and a
-  `THURBOX_UI_DIR` override alike. Delivery is the ordinary `[[external_files]]`
-  machinery, marker-guarded: `install`/`update`/`uninstall` act on thurbox's own
-  copies and leave one the user has taken ownership of alone (drop the `Managed
-  by` line and it is theirs), while `reinstall` and `install --force` overwrite
-  as they do everywhere else.
+  always. Like `hooks` it is **embedded + auto-activated** (see below) — for the
+  same reason: someone who does not already know the interface is editable will
+  not go looking for the extension that says so. Opt out with `thurbox-cli
+  extension deactivate ui-skill`. The payload is one `SKILL.md` — the short form
+  of `ui/AGENTS.md` + `ui/README.md` — and it hard-codes no paths, opening with
+  `thurbox-cli plugin dir` so one file is correct for a release build, a dev
+  build and a `THURBOX_UI_DIR` override alike. Delivery is the ordinary
+  `[[external_files]]` machinery, marker-guarded: `install`/`update`/`uninstall`
+  act on thurbox's own copies and leave one the user has taken ownership of alone
+  (drop the `Managed by` line and it is theirs), while `reinstall` and `install
+  --force` overwrite as they do everywhere else.
 > **Removed.** Four per-provider task-integration extensions
 > (`github-issues`, `gitlab-issues`, `linear`, `jira`) lived here and were deleted:
 > four near-identical trees, each carrying a provider's API shape, for a job that is
@@ -1228,20 +1231,28 @@ agents.toml, and `[[config_merges]]` deep-merges shipped JSON into an agent's
 *shared* config file (`agent::json_merge`; uninstall prunes by the
 `thurbox-cli session signal` marker, so removal survives payload schema changes).
 
-**Built-in `hooks` extension** (`session_ops::builtin_hooks`,
-`extensions/hooks/`) — unlike user extensions it ships **embedded** in the binary
-and is **auto-activated by default** (`ensure_builtin_hooks_extension` at TUI
-startup + headless tick), so the default agent's status hook works with zero
-setup. It materializes its embedded assets locally and installs through the
-ordinary machinery above. **Which delivery mechanism each built-in gets (and the
-exact states each can report) is documented per agent in `docs/AGENTS.md` →
-"Status hook mechanisms"** — that is the reference to update when adding an agent.
+**Built-in extensions** (`session_ops::builtin`) — two of them, `hooks`
+(`extensions/hooks/`) and `ui-skill` (`extensions/ui-skill/`), which unlike user
+extensions ship **embedded** in the binary and are **auto-activated by default**
+(`ensure_builtin_extensions` at TUI startup + headless tick). Each is a
+`Builtin` — embedded assets, a home under *this build's* config dir, and how it
+describes what it just did — and the shared `Builtin::ensure` materializes the
+assets locally and installs them through the ordinary machinery above, so a
+built-in is not a second installer with its own bugs. They exist for the same
+reason: what they wire up has to be there before the user knows to ask for it.
+`hooks` gives the default agent's status hook zero-setup, and `ui-skill` gives
+whichever coding CLI the user runs the knowledge of how to edit the interface.
+**Which hook delivery mechanism each built-in *agent* gets (and the exact states
+each can report) is documented per agent in `docs/AGENTS.md` → "Status hook
+mechanisms"** — that is the reference to update when adding an agent.
 Remote sessions are provisioned by
 `session_ops::remote_hooks::provision_agent_hooks_on_host`; a psmux/Windows host
 is gated off (`session::psmux_hook_rewrite_supported`) and shows `Hooks:
-degraded`. Opt out with `thurbox-cli extension deactivate hooks` (records a
-`builtin_hooks_optout` metadata flag so self-heal won't resurrect it);
-`activate`/`install hooks` clears it.
+degraded`. Opt out of either with `thurbox-cli extension deactivate <name>` (records a
+`builtin_<name>_optout` metadata flag so self-heal won't resurrect it — the key
+format is chosen so `hooks` keeps producing the `builtin_hooks_optout` row it
+wrote before there was more than one built-in); `activate`/`install <name>`
+clears it.
 
 `thurbox-cli extension` (alias `ext`) — `install <name|url|dir>` / `uninstall` /
 `reinstall` / `list` / `available` (alias `search`) / `update [--all] [--force]` /

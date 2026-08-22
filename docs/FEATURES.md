@@ -1247,15 +1247,19 @@ Two more ship in `extensions/`, both built the same agent-agnostic way
   tests the bumps, commits to a fresh `renovate/updates-<ts>` branch, and
   opens a review PR. Per-repo `strategy` (patch/minor/major/all) layers onto a
   global `renovate-config.json`. `thurbox-cli extension install renovate`.
-- **`ui-skill`** — the only one that ships no session, no automation and no
-  agent. It installs a single **agent skill**, `thurbox-ui`, into each coding
-  CLI's personal skill directory (`~/.claude/skills/`, `~/.codex/skills/`,
-  `~/.config/opencode/skills/`, `~/.copilot/skills/`, `~/.agents/skills/`, each
-  guarded so a CLI you do not have is skipped), so an agent in **any** session
-  knows how to change thurbox's own interface — where it lives, how to check an
-  edit, and what the sandbox withholds. It replaces attaching the interface
-  directory to every session as an extra repo: a skill loads only when the
-  request is about the TUI. `thurbox-cli extension install ui-skill`.
+- **`ui-skill`** *(built-in, on by default)* — the only one that ships no
+  session, no automation and no agent. It installs a single **agent skill**,
+  `thurbox-ui`, into each coding CLI's personal skill directory
+  (`~/.claude/skills/`, `~/.codex/skills/`, `~/.config/opencode/skills/`,
+  `~/.copilot/skills/`, `~/.agents/skills/`, each guarded so a CLI you do not
+  have is skipped), so an agent in **any** session knows how to change thurbox's
+  own interface — where it lives, how to check an edit, and what the sandbox
+  withholds. It replaces attaching the interface directory to every session as
+  an extra repo: a skill loads only when the request is about the TUI. Like
+  `hooks` it is embedded in the binary and auto-activated, because someone who
+  does not already know the interface is editable will not go looking for the
+  extension that says so. `thurbox-cli extension deactivate ui-skill` turns it
+  off.
 - **Tracker import** — no longer an extension. Four per-provider trees
   (`github-issues`, `gitlab-issues`, `linear`, `jira`) were removed: they were
   near-identical, each carrying one provider's API shape, for a job that is a

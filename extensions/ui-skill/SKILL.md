@@ -196,8 +196,9 @@ option usable.
 
 ## Updating this skill
 
-This file was installed by `thurbox-cli extension install ui-skill`, which is
-also how it is refreshed. Deleting the "Managed by" line near the top makes the
-copy yours: `install`, `update` and `uninstall` then leave it alone. (`reinstall`
-and `install --force` overwrite regardless — that is what they are for.) Remove
-every copy thurbox still owns with `thurbox-cli extension uninstall ui-skill`.
+thurbox installs this file itself — the `ui-skill` extension is built into the
+binary and on by default — and refreshes it on every start. Deleting the
+"Managed by" line near the top makes the copy yours: thurbox then leaves it
+alone. (`extension reinstall` and `extension install --force` overwrite
+regardless — that is what they are for.) Remove every copy thurbox still owns,
+for good, with `thurbox-cli extension deactivate ui-skill`.

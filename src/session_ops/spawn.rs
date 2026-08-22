@@ -152,7 +152,7 @@ pub fn spawn_session_headless_with_progress(
     // the flag so the agent at least launches — and provision the agent's
     // config-dir hook files on the host so it reports status remotely.
     // Degradation is best-effort-logged (headless has no info panel).
-    let hooks_enabled = !db.builtin_hooks_opted_out().unwrap_or(false);
+    let hooks_enabled = super::hooks_enabled(db);
     let (adapted, hook_degraded) = adapt_def_for_launch(agent_def, host.as_ref(), hooks_enabled);
     agent_def = adapted;
     if let Some(reason) = hook_degraded {

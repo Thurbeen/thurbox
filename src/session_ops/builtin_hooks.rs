@@ -7,19 +7,15 @@
 //!
 //! Unlike user extensions (which are fetched from a source on demand, ADR-20),
 //! this one ships **embedded** in the binary and is **auto-activated by default**
-//! so the default agent has its hook pre-configured with zero setup. It is
-//! delivered through the ordinary extension machinery: the embedded assets are
-//! materialized into a stable local dir, then [`install_extension`] installs them
-//! from there — so all the install/heal/uninstall logic is shared.
+//! so the default agent has its hook pre-configured with zero setup. That half
+//! is generic and lives in [`super::builtin`]; what is here is the [`HOOKS`]
+//! spec plus the hook rewriting no other built-in needs.
 //!
 //! Opt out with `thurbox-cli extension deactivate hooks`, which records an
 //! opt-out flag so startup self-heal won't resurrect it.
 
-use std::path::PathBuf;
-
-use crate::storage::Database;
-
-use super::install_extension;
+use super::builtin::Builtin;
+use super::InstallReport;
 
 /// The extension name (matches `extensions/hooks/extension.toml`).
 pub const HOOKS_EXTENSION_NAME: &str = "hooks";
@@ -134,25 +130,23 @@ pub(crate) fn remote_signal_target(host: &crate::session::HostDef) -> RemoteSign
     }
 }
 
-/// The hooks extension's home, under this build's resolved config dir
-/// (`~/.config/thurbox/hooks` for a release build, `~/.config/thurbox-dev/hooks`
-/// for a dev build) — so dev and release installs stay isolated and the injected
-/// `--settings` path always points inside the same tree the binary uses.
-fn hooks_home() -> Option<String> {
-    crate::paths::config_file()
-        .and_then(|p| p.parent().map(|d| d.join("hooks")))
-        .map(|p| p.to_string_lossy().into_owned())
+/// Whether agent status hooks are wired — i.e. the user has not opted out of
+/// the built-in extension that installs them. The launch paths consult this
+/// before injecting an agent's hook args, so an opted-out profile spawns an
+/// agent with no `--settings` rather than one pointing at a file thurbox no
+/// longer maintains.
+pub fn hooks_enabled(db: &crate::storage::Database) -> bool {
+    !db.builtin_extension_opted_out(HOOKS_EXTENSION_NAME)
+        .unwrap_or(false)
 }
 
-/// Materialize the embedded hooks-extension assets into a stable local dir under
-/// the data directory and return it, so [`install_extension`] can treat it as a
-/// local source. Rewritten on every call so the assets track the binary.
-fn materialize_source() -> Result<PathBuf, String> {
-    let base = crate::paths::builtin_extensions_directory()
-        .ok_or("cannot resolve builtin-extensions dir")?;
-    let dir = base.join(HOOKS_EXTENSION_NAME);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let writes = [
+/// The built-in hooks extension: every embedded asset, and the home under this
+/// build's config dir (`~/.config/thurbox/hooks`, or `~/.config/thurbox-dev/hooks`
+/// for a dev build) that the injected `--settings` path has to point inside.
+pub(crate) static HOOKS: Builtin = Builtin {
+    name: HOOKS_EXTENSION_NAME,
+    blurb: "agent status hooks",
+    assets: &[
         ("extension.toml", MANIFEST),
         ("claude.json", CLAUDE_SETTINGS),
         ("opencode-status.js", OPENCODE_PLUGIN),
@@ -162,68 +156,30 @@ fn materialize_source() -> Result<PathBuf, String> {
         ("copilot-hooks.json", COPILOT_HOOKS),
         ("pi-status.ts", PI_STATUS),
         ("omp-status.ts", OMP_STATUS),
-    ];
-    for (name, contents) in writes {
-        let path = dir.join(name);
-        // Skip the write when unchanged — this runs on every startup + 60s tick.
-        if std::fs::read_to_string(&path).is_ok_and(|c| c == contents) {
-            continue;
-        }
-        std::fs::write(&path, contents).map_err(|e| format!("write {}: {e}", path.display()))?;
-    }
-    Ok(dir)
-}
+    ],
+    home_dir: "hooks",
+    notices: hooks_notices,
+};
 
-/// Ensure the built-in hooks extension is installed + active, unless the user
-/// opted out. Idempotent — safe to call at every TUI startup / automation tick;
-/// it re-applies the agent patches, payload + external files, and re-stamps the
-/// manifest so an upgrade refreshes the wiring. Returns human-readable status
-/// lines (empty when there's nothing to report).
-pub fn ensure_builtin_hooks_extension(db: &Database) -> Vec<String> {
-    if db.builtin_hooks_opted_out().unwrap_or(false) {
-        return Vec::new();
+/// What an ensure of the hooks extension is worth saying: which agents got their
+/// launch args patched, and how many wrote a file into their own config dir.
+fn hooks_notices(report: &InstallReport) -> Vec<String> {
+    let mut msgs = Vec::new();
+    if !report.agents_patched.is_empty() {
+        msgs.push(format!(
+            "hooks: wired agent hooks for {}",
+            report.agents_patched.join(", ")
+        ));
     }
-    let dir = match materialize_source() {
-        Ok(d) => d,
-        Err(e) => return vec![format!("hooks extension: {e}")],
-    };
-    // Home lives under *this build's* config dir (`thurbox` vs `thurbox-dev`), so
-    // a dev build patches its dev `agents.toml` with a `--settings` path inside
-    // the dev tree — never the release config. Manifest `home` is ignored.
-    let Some(home) = hooks_home() else {
-        return vec!["hooks extension: cannot resolve config dir".into()];
-    };
-
-    // Migrate a stale install whose home points elsewhere (e.g. an earlier build
-    // that used the release path): tear down its patches/files before reinstalling
-    // under the correct home, so claude doesn't end up with two `--settings`.
-    if let Some(existing) = crate::agent::extension_config::load_manifest(HOOKS_EXTENSION_NAME) {
-        if existing.home.as_deref() != Some(home.as_str()) {
-            let _ = super::uninstall_extension(db, HOOKS_EXTENSION_NAME, false);
-        }
+    if !report.external_files_written.is_empty() {
+        // One per agent whose own config dir we drop a file into (opencode's
+        // plugin, vibe's hooks.toml) — only those present.
+        msgs.push(format!(
+            "hooks: installed {} agent hook file(s)",
+            report.external_files_written.len()
+        ));
     }
-
-    match install_extension(db, &dir.to_string_lossy(), Some(&home), false) {
-        Ok(report) => {
-            let mut msgs = Vec::new();
-            if !report.agents_patched.is_empty() {
-                msgs.push(format!(
-                    "hooks: wired agent hooks for {}",
-                    report.agents_patched.join(", ")
-                ));
-            }
-            if !report.external_files_written.is_empty() {
-                // One per agent whose own config dir we drop a file into
-                // (opencode's plugin, vibe's hooks.toml) — only those present.
-                msgs.push(format!(
-                    "hooks: installed {} agent hook file(s)",
-                    report.external_files_written.len()
-                ));
-            }
-            msgs
-        }
-        Err(e) => vec![format!("hooks extension: {e}")],
-    }
+    msgs
 }
 
 #[cfg(test)]
@@ -535,7 +491,7 @@ mod tests {
         // `thurbox-dev`, not the release tree) — never a hardcoded path.
         let tmp = tempfile::tempdir().unwrap();
         let _guard = crate::paths::TestPathGuard::new(tmp.path());
-        let home = hooks_home().expect("home resolves");
+        let home = HOOKS.home().expect("home resolves");
         let expected = crate::paths::config_file()
             .unwrap()
             .parent()
@@ -546,9 +502,10 @@ mod tests {
 
     #[test]
     fn opt_out_skips_install() {
-        let db = Database::open_in_memory().unwrap();
-        db.set_builtin_hooks_optout(true).unwrap();
+        let db = crate::storage::Database::open_in_memory().unwrap();
+        db.set_builtin_extension_optout(HOOKS_EXTENSION_NAME, true)
+            .unwrap();
         // With opt-out set, ensure is a no-op (no install attempted).
-        assert!(ensure_builtin_hooks_extension(&db).is_empty());
+        assert!(HOOKS.ensure(&db).is_empty());
     }
 }

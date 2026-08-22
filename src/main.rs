@@ -206,7 +206,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let phase = Instant::now();
     if let Some(db) = snapshots_db() {
         startup_notices.extend(thurbox::session_ops::heal_active_extensions(&db));
-        startup_notices.extend(thurbox::session_ops::ensure_builtin_hooks_extension(&db));
+        startup_notices.extend(thurbox::session_ops::ensure_builtin_extensions(&db));
         for notice in &startup_notices {
             tracing::info!("{notice}");
         }

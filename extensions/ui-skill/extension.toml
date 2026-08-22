@@ -1,12 +1,16 @@
-# ui-skill extension manifest.
+# The built-in "ui-skill" extension.
 #
 # Installs one agent skill — `thurbox-ui` — into every coding CLI's *personal*
 # skill directory, so an agent in any thurbox session knows how to change
 # thurbox's own interface without the user attaching the interface directory to
 # the session as an extra repo first.
 #
-#   thurbox-cli extension install ui-skill      # or: install ./extensions/ui-skill
-#   thurbox-cli extension uninstall ui-skill    # removes every copy it still owns
+# Like the built-in `hooks` extension it ships embedded in the binary and is
+# auto-activated on first run, for the same reason: someone who does not already
+# know the interface is editable will not go looking for the extension that says
+# so. Opt out with:
+#
+#     thurbox-cli extension deactivate ui-skill
 #
 # It ships no session, no automation and no agent: the whole extension is one
 # Markdown file delivered to a handful of well-known paths. SKILL.md carries the
@@ -24,7 +28,11 @@ description = "Teach any coding agent how to edit thurbox's own interface (the `
 config_version = 1
 version = "1.0.0"                # this extension's own version; bump on changes
 min_thurbox_version = "0.113.0"  # needs the `extension install`/self-heal machinery
-# No `home`: defaults to `<config>/extensions/ui-skill` (override with --home).
+# No `home`, deliberately: the auto-activation path pins this build's
+# `<config>/extensions/ui-skill`, which is exactly what the default resolves to.
+# The two agreeing is what stops `Builtin::ensure`'s stale-home migration tearing
+# the install down and rebuilding it whenever the user alternates between the
+# built-in path and a manual `extension install ./extensions/ui-skill`.
 
 # --- payload laid down under home ---------------------------------------------
 #

@@ -5,7 +5,9 @@
 //! operations are synchronous against the SQLite database and the `tmux -L
 //! thurbox` server.
 
+pub mod builtin;
 pub mod builtin_hooks;
+pub mod builtin_ui_skill;
 pub mod delete;
 pub mod extensions;
 pub mod remote_hooks;
@@ -13,7 +15,8 @@ pub mod restart;
 pub mod restore;
 pub mod spawn;
 
-pub use builtin_hooks::{ensure_builtin_hooks_extension, HOOKS_EXTENSION_NAME};
+pub use builtin::{builtin_extension, ensure_builtin_extensions, Builtin};
+pub use builtin_hooks::hooks_enabled;
 pub use delete::{delete_session_headless, reap_soft_deleted, ForceDeleteReport};
 pub use extensions::{
     activate_extension, deactivate_extension, ensure_extension, extension_health,

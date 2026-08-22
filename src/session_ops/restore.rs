@@ -126,7 +126,7 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
         .ok_or_else(|| format!("restored session not found: {id}"))?;
     // Local by design: `restore_session_headless` refuses a remote session
     // above, since its worktrees cannot be recreated from here.
-    let hooks_enabled = !db.builtin_hooks_opted_out().unwrap_or(false);
+    let hooks_enabled = super::hooks_enabled(db);
     let plan = super::restart::build_restart_plan(&session, None, hooks_enabled)?;
     crate::agent::tmux::spawn_window(
         &plan.window_name,
