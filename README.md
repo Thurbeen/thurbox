@@ -104,10 +104,10 @@ it are data files you edit too. No fork, no recompile, no restart.
 
 > [!NOTE]
 > **Windows uses psmux, not tmux.** Every Windows route needs
-> [psmux](https://github.com/psmux/psmux) — a native ConPTY multiplexer speaking
-> tmux's control-mode protocol — installed separately; WSL distros run tmux
-> inside the distro as remote hosts. psmux is newer than tmux and a bit less
-> stable, so please report anything you hit.
+> [psmux](https://github.com/psmux/psmux), a drop-in tmux clone on ConPTY that
+> speaks the same control-mode protocol, installed separately. (A WSL distro is
+> a remote host and runs tmux inside the distro.) psmux is the newer of the two
+> and a bit less stable, so please report anything you hit.
 
 ### Recommended: v1, the stable line
 

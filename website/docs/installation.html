@@ -98,10 +98,10 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             <p>
               <strong>Windows uses psmux, not tmux.</strong>
               Every Windows route needs
-              <a href="https://github.com/psmux/psmux">psmux</a>
-              &mdash; a native ConPTY multiplexer speaking tmux's control-mode
-              protocol &mdash; installed separately; WSL distros run tmux inside
-              the distro as remote hosts. psmux is newer than tmux and a bit less
+              <a href="https://github.com/psmux/psmux">psmux</a>, a drop-in tmux
+              clone on ConPTY that speaks the same control-mode protocol,
+              installed separately. (A WSL distro is a remote host and runs tmux
+              inside the distro.) psmux is the newer of the two and a bit less
               stable, so please report anything you hit.
             </p>
           </div>
@@ -112,9 +112,7 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             carries the newest release. It installs to
             <code>%LOCALAPPDATA%\Programs\thurbox</code>
             (added to your user
-            <code>PATH</code>) and uses
-            <a href="https://github.com/psmux/psmux">psmux</a>
-            as the multiplexer.
+            <code>PATH</code>).
           </p>
           <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
           <p>
