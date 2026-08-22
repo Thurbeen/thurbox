@@ -103,11 +103,11 @@ it are data files you edit too. No fork, no recompile, no restart.
 > v1 — on those channels the shell/PowerShell installers are the way to v1.
 
 > [!NOTE]
-> **Windows support is experimental**, on either line. The core works (psmux as
-> the multiplexer, a native ConPTY backend, WSL distros as remote hosts) but sees
-> less testing than Linux/macOS — expect rough edges and please report issues.
-> Every Windows route needs [psmux](https://github.com/psmux/psmux) as the
-> multiplexer, installed separately.
+> **Windows uses psmux, not tmux.** Every Windows route needs
+> [psmux](https://github.com/psmux/psmux) — a native ConPTY multiplexer speaking
+> tmux's control-mode protocol — installed separately; WSL distros run tmux
+> inside the distro as remote hosts. psmux is newer than tmux and a bit less
+> stable, so please report anything you hit.
 
 ### Recommended: v1, the stable line
 

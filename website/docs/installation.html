@@ -94,13 +94,15 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
           </p>
 
           <h3>Windows (PowerShell)</h3>
-          <div class="info-box warning">
+          <div class="info-box">
             <p>
-              <strong>Experimental.</strong>
-              Windows support is experimental for now &mdash; the core works
-              (psmux as the multiplexer, a native ConPTY backend, WSL distros as
-              remote hosts), but it sees less testing than Linux/macOS. Expect
-              rough edges and please report issues.
+              <strong>Windows uses psmux, not tmux.</strong>
+              Every Windows route needs
+              <a href="https://github.com/psmux/psmux">psmux</a>
+              &mdash; a native ConPTY multiplexer speaking tmux's control-mode
+              protocol &mdash; installed separately; WSL distros run tmux inside
+              the distro as remote hosts. psmux is newer than tmux and a bit less
+              stable, so please report anything you hit.
             </p>
           </div>
           <p>
