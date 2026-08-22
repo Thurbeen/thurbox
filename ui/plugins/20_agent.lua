@@ -116,55 +116,6 @@ end
 -- `widgets.len`/`pad` are utf8-aware; `#` is not, and every glyph below is
 -- multi-byte.
 
---- Keep the FIRST `max` characters, clipping the rest with no marker.
----
---- What a left-aligned border title does when it overruns its area: ratatui
---- truncates the far side and adds nothing.
-local function keep_left(text, max)
-  if max <= 0 then
-    return ""
-  end
-  if widgets.len(text) <= max then
-    return text
-  end
-  local cut = utf8 and utf8.offset(text, max + 1) or (max + 1)
-  return string.sub(text, 1, (cut or (#text + 1)) - 1)
-end
-
---- Keep the LAST `max` characters.
----
---- What a right-aligned border title does when it overruns: ratatui's
---- `Line::render_with_alignment` skips from the left, so the title shrinks
---- toward the right edge. v1's recorded frame shows exactly this — a 42-char
---- title in a 40-wide pane renders as `╭-osc52 (claude) …`.
-local function keep_right(text, max)
-  if max <= 0 then
-    return ""
-  end
-  local count = widgets.len(text)
-  if count <= max then
-    return text
-  end
-  local skip = count - max
-  local at = utf8 and utf8.offset(text, skip + 1) or (skip + 1)
-  return string.sub(text, at or (#text + 1))
-end
-
---- v1's `ui::truncate_ellipsis`: keep `max - 1` characters plus `…`, and return
---- NOTHING at `max <= 1` because a lone ellipsis carries no information.
----
---- Deliberately not `widgets.truncate`, which returns `"…"` at width 1.
-local function truncate_hard(text, max)
-  if widgets.len(text) <= max then
-    return text
-  end
-  if max <= 1 then
-    return ""
-  end
-  local cut = utf8 and utf8.offset(text, max) or max
-  return string.sub(text, 1, (cut or (#text + 1)) - 1) .. "…"
-end
-
 --- v1's `ui::fit_right_title`: clamp a right-aligned title to what the tab strip
 --- on the left of the same border leaves it — the border minus its two corners,
 --- minus the reserved block, minus a one-cell gap.
@@ -174,7 +125,7 @@ local function fit_right_title(title, border_width, reserved_left)
     return title
   end
   local available = math.max(0, (border_width or 0) - 2 - reserved_left - 1)
-  return truncate_hard(title, available)
+  return widgets.truncate_hard(title, available)
 end
 
 -- --- the title -------------------------------------------------------------
@@ -527,8 +478,13 @@ local function border_strip(width, border_style, active)
     -- would light.
     local lit = hover.role(toggle)
     local band = lit and theme.role("selection_bg") or nil
-    put(1, keep_left(label, COLLAPSE_CHEVRON_CELLS), { fg = theme.accent, bg = band }, toggle)
-    local hint = keep_right(label, widgets.len(label) - COLLAPSE_CHEVRON_CELLS)
+    put(
+      1,
+      widgets.keep_left(label, COLLAPSE_CHEVRON_CELLS),
+      { fg = theme.accent, bg = band },
+      toggle
+    )
+    local hint = widgets.keep_right(label, widgets.len(label) - COLLAPSE_CHEVRON_CELLS)
     if hint ~= "" then
       put(cursor, hint, { fg = theme.muted, bg = band }, toggle)
     end
@@ -624,7 +580,7 @@ local function chrome(opts)
     for _, run in ipairs(left) do
       left_w = left_w + widgets.len(run.text)
     end
-    title = keep_right(title, math.max(0, inner_w - left_w))
+    title = widgets.keep_right(title, math.max(0, inner_w - left_w))
     top = { { text = set.tl, style = border } }
     for _, run in ipairs(left) do
       top[#top + 1] = run
@@ -636,7 +592,7 @@ local function chrome(opts)
     top[#top + 1] = { text = title, style = opts.title_style }
     top[#top + 1] = { text = set.tr, style = border }
   else
-    title = keep_left(title, inner_w)
+    title = widgets.keep_left(title, inner_w)
     top = {
       { text = set.tl, style = border },
       { text = title, style = opts.title_style },

@@ -97,8 +97,13 @@ const MODULE_RULES: &[ModuleRules] = &[
     // session engine to build the snapshot plugins render from (`storage` +
     // `sync` for the rows, `session` for the types, `paths` for the DB and
     // plugin directories). Never `ui` or `app` — it is their replacement, not
-    // their peer — and never `git`/`agent` directly: side effects reach it as
-    // commands, not as calls from a render path.
+    // their peer.
+    //
+    // `git` IS allowed, and the rule is about *where*: the worker-backed stores
+    // (`diff`, `repos`, `packages`, `command`) shell out to it off-thread, which
+    // is rule 5 rather than an exception to it. What must not happen is a `git`
+    // call from a render path — that is enforced by the loop's shape (a plugin
+    // returns a tree; it cannot call Rust), not by this allowlist.
     ModuleRules {
         name: "kernel",
         allowed: &[
@@ -157,7 +162,9 @@ const MODULE_RULES: &[ModuleRules] = &[
 /// everything by design); `bin`, `lib`, and `main` are crate roots, not
 /// architecture modules.
 // `main` is the coordinator, as `app` was before v1 was retired.
-const EXEMPT: &[&str] = &["bin", "lib", "main"];
+/// `coordinator` is `main`'s own body, split across files: it wires every
+/// layer together by definition, which is exactly why `main` is exempt.
+const EXEMPT: &[&str] = &["bin", "coordinator", "lib", "main"];
 
 /// A single architecture violation: a forbidden crate-module reference.
 struct Violation {

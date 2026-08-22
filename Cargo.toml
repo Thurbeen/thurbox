@@ -27,8 +27,6 @@ vt100 = "0.16"
 # Display-width math for clickable-link column positions (wide CJK/emoji cells)
 unicode-width = "0.2"
 
-# Markdown parsing (task description rendering)
-pulldown-cmark = { version = "0.13", default-features = false }
 
 # Base64 payload framing for the Windows-host remote file copy (already in the
 # dependency tree transitively; pinned to the same resolved version)
@@ -71,8 +69,6 @@ anyhow = "1.0"
 # image/png/moxcms decoding stack we never use; thurbox only copies/pastes text)
 arboard = { version = "3", default-features = false }
 
-# Temporary directories (used by tests and session_ops)
-tempfile = "3"
 
 # JSON (session metadata, keybindings, agent config)
 serde_json = "1"
@@ -142,6 +138,11 @@ debug = true
 strip = false
 
 [dev-dependencies]
+# Temporary directories. Test-only: every use is inside a `#[cfg(test)]` block or
+# a doctest example, and doctests link dev-dependencies — so this does not need
+# to be built into the shipped binaries.
+tempfile = "3"
+
 # Property/fuzz testing — proves thurbox's terminal pipeline is byte- and
 # render-transparent (control_mode transport + terminal_view rendering). Runs in
 # the normal `cargo nextest --all`.

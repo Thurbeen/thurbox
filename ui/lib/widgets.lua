@@ -92,6 +92,63 @@ function widgets.truncate(text, width)
   return string.sub(text, 1, offset(text, width - 1)) .. "…"
 end
 
+--- Truncate to `max` characters, marking the cut with an ellipsis — but return
+--- NOTHING at `max <= 1` rather than a bare `…`.
+---
+--- v1's `ui::truncate_ellipsis`, and the counterpart to `widgets.truncate`
+--- rather than a variant of it: the difference is what a one-column budget
+--- means. For a NAME, `…` still says "there is a name here, it did not fit", so
+--- `truncate` keeps it. For a status or a badge composed beside other segments,
+--- a lone ellipsis carries nothing and costs the column something else could
+--- have used, so this drops it.
+---
+--- Both bundled panes had grown their own copy of this, each with a comment
+--- explaining why it was not `widgets.truncate`. That is the signal that the
+--- library was missing a variant, not that the callers were wrong — so it lives
+--- here now and the forks are gone.
+function widgets.truncate_hard(text, max)
+  if widgets.len(text) <= max then
+    return text
+  end
+  if max <= 1 then
+    return ""
+  end
+  return string.sub(text, 1, offset(text, max - 1)) .. "…"
+end
+
+--- Keep the FIRST `max` characters, adding nothing.
+---
+--- What a left-aligned border title does when it overruns its area: ratatui
+--- truncates the far side and marks the cut in no way at all. Use this when you
+--- are MATCHING that behaviour; use `truncate`/`truncate_hard` when you are
+--- telling the reader something was cut.
+function widgets.keep_left(text, max)
+  if max <= 0 then
+    return ""
+  end
+  if widgets.len(text) <= max then
+    return text
+  end
+  return string.sub(text, 1, offset(text, max))
+end
+
+--- Keep the LAST `max` characters.
+---
+--- What a right-aligned border title does when it overruns: ratatui's
+--- `Line::render_with_alignment` skips from the left, so the title shrinks
+--- toward the right edge. v1's recorded frame shows exactly this — a 42-char
+--- title in a 40-wide pane renders as `╭-osc52 (claude) …`.
+function widgets.keep_right(text, max)
+  if max <= 0 then
+    return ""
+  end
+  local count = widgets.len(text)
+  if count <= max then
+    return text
+  end
+  return string.sub(text, offset(text, count - max) + 1)
+end
+
 --- Truncate in the MIDDLE, keeping both ends.
 ---
 --- For a path, the head says where you are and the leaf says which one it is, and

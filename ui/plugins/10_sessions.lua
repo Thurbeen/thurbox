@@ -77,31 +77,6 @@ local function patch_spans(spans, style, keep_fg)
 end
 
 --- First `count` characters, cut on a character boundary.
-local function utf8_sub(text, count)
-  if count <= 0 then
-    return ""
-  end
-  local last = utf8.offset(text, count + 1)
-  if not last then
-    return text
-  end
-  return string.sub(text, 1, last - 1)
-end
-
---- v1's `truncate_ellipsis`: a lone `…` carries nothing, so a budget of 1 or
---- less yields the empty string rather than an ellipsis (widgets.truncate keeps
---- the `…`, which is right for a name and wrong here).
-local function truncate_ellipsis(text, max)
-  local count = widgets.len(text)
-  if count <= max then
-    return text
-  end
-  if max <= 1 then
-    return ""
-  end
-  return utf8_sub(text, max - 1) .. "…"
-end
-
 -- ── Border composition ─────────────────────────────────────────────────────
 --
 -- A border row is built as a cell buffer so segments can be *layered* the way
@@ -518,7 +493,7 @@ local function push_status(spans, text, style, inner_width)
   local avail = math.max(0, inner_width - used)
   if avail >= MIN_WIDTH then
     spans[#spans + 1] = { text = SEPARATOR }
-    spans[#spans + 1] = { text = truncate_ellipsis(text, avail), style = style }
+    spans[#spans + 1] = { text = widgets.truncate_hard(text, avail), style = style }
   end
 end
 
