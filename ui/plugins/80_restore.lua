@@ -136,6 +136,13 @@ return {
   slot = "float",
   order = 80,
   floats = true,
+  -- This render reads `thurbox.deleted`, `state` and the theme and writes
+  -- nothing, so the kernel may reuse the tree — and floats render every frame
+  -- even while closed, so without this the closed state costs a Lua call per
+  -- frame forever. `state.open`/`state.cursor` writes bump the state version,
+  -- which is part of the cache key, and `thurbox.deleted` rides the snapshot
+  -- version, so opening and refreshing stay on the very next frame.
+  pure = true,
   -- Never a tab stop: it is up only while it is open, and it takes every key
   -- while it is.
   focusable = false,
