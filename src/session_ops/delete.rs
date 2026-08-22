@@ -122,8 +122,9 @@ pub fn teardown_runtime_resources(
 /// Deleting softly is meant to be undoable, so the row is kept and the worktrees
 /// stay on disk — but the agent process is not part of what an undo restores, and
 /// leaving it running means a deleted session keeps working, keeps writing, and
-/// keeps its tmux window forever. v1 kills it once the undo window closes
-/// (`App::finalize_pending_delete`); this is that, callable without a TUI.
+/// keeps its tmux window forever. v1 killed it once the undo window closed;
+/// this is that, callable without a TUI. The TUI side is now
+/// `kernel::reaper::Reaper`, which watches the undo windows close.
 ///
 /// Worktrees are deliberately untouched: they are what makes the undo lossless.
 ///

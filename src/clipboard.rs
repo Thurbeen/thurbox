@@ -200,8 +200,8 @@ pub fn paste(native: Option<&mut arboard::Clipboard>) -> Option<String> {
 }
 
 /// The message shown when [`paste`] finds no local clipboard. Names the
-/// terminal's own paste chord, which delivers the text as a bracketed paste
-/// that `App::handle_paste` already routes correctly.
+/// terminal's own paste chord, which delivers the text as a bracketed paste the
+/// loop's paste handler already routes correctly.
 pub const PASTE_UNAVAILABLE_HINT: &str =
     "No local clipboard — use your terminal's paste (Ctrl+Shift+V)";
 

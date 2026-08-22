@@ -1710,9 +1710,10 @@ impl SessionBackend for TmuxBackend {
 /// Wrap `text` in the bracketed-paste escape sequences (`ESC[200~ … ESC[201~`)
 /// so a multi-line prompt is delivered as a single paste — the embedded
 /// newlines insert as text instead of submitting the prompt on the first one.
-/// Mirrors the TUI's `App::send_prompt_to_session`; the trailing `Enter` is
-/// still sent separately by the caller. tmux delivers these bytes literally via
-/// `send-keys -l`.
+/// Used by [`send_prompt_now`], which is how the TUI reaches this too — the
+/// kernel's prompt commands call it rather than framing the paste themselves.
+/// The trailing `Enter` is still sent separately by the caller. tmux delivers
+/// these bytes literally via `send-keys -l`.
 fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~")
 }

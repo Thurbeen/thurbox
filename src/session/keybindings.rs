@@ -323,9 +323,11 @@ impl Action {
     /// the PTY while the terminal is focused, so the inner agent CLI behaves
     /// normally; the thurbox command stays reachable from the session list (and
     /// via its `F`-key alternate, where one exists). The deferral is gated on
-    /// the *bound chord* still being a bare `Ctrl+<letter>` (applied in
-    /// `App::handle_key`), so rebinding an action to a non-conflicting key keeps
-    /// it working in the terminal.
+    /// the *bound chord* still being a bare `Ctrl+<letter>`, so rebinding an
+    /// action to a non-conflicting key keeps it working in the terminal. In v2
+    /// the flag rides on the registry binding (`kernel::registry::Binding::
+    /// passthrough`) and the gate is applied where a declared chord is
+    /// dispatched, in the loop's `dispatch_declared`.
     ///
     /// Navigation / app-control chords (`Ctrl+H/J/K/L` focus + session nav,
     /// `Ctrl+Q` quit, `Ctrl+N` new, …) are deliberately **not** deferred: they

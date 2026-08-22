@@ -551,8 +551,8 @@ model is ever passed — each agent uses its own default config
 (put `["--model", "opus"]` in `args` if you want to pin one).
 A second token, `{home}`, expands (at spawn, on the spawn worker —
 `session_ops::expand_home_in_def`, called from
-`spawn::adapt_def_for_launch` for a launch and `App::launch_provider_for`
-for a restart) to the resolved home dir — the **remote** home for an
+`spawn::adapt_def_for_launch`, which both a fresh launch and
+`session_ops::restart` go through) to the resolved home dir — the **remote** home for an
 SSH/WSL host — so an agent that wants a session *file path* rather than a
 bare id (the built-in `omp`, below) launches against a concrete,
 quote-safe absolute path (a literal `~` would never expand — args are
@@ -593,8 +593,9 @@ keeping the same workspace dir).
   the TOML; `builtin_registry()` is the fallback.
 - **Launching**: `agent::GenericProvider` wraps an `AgentDef` and
   implements the `AgentProvider` trait (`command()` +
-  `build_args(&SessionConfig)`). `App::provider_for(&config)`
-  picks the provider for the session's agent.
+  `build_args(&SessionConfig)`). It is constructed from the session's
+  `AgentDef` at each launch site — `session_ops` for a spawn or restart,
+  `kernel::terminal` when a pane adopts one.
 
 A session stores only its **agent name**; there are no
 per-session model/permission/prompt/tool knobs.
@@ -733,8 +734,9 @@ Each host registers a backend named
 `ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`, registered lazily in
 `main.rs` from `host_config::load_all_with_warnings`: discovery/down hosts must
 not block startup, so `check_available`/`ensure_ready` are deferred to first use
-— `App::select_backend` only looks the backend up, and the blocking
-`ensure_backend_ready` runs on a worker at spawn time, ADR-P12).
+— looking a backend up is a map read, and the blocking `ensure_ready` runs on the
+attach worker in `kernel::terminal` (and on the spawn worker for a fresh
+session), never on the loop, ADR-P12).
 
 - **Data**: `session::HostDef` (with `kind: HostKind {Ssh, Wsl}`) /
   `HostRegistry` (pure data, in `session/` so both `agent` and `git` can use
@@ -751,10 +753,12 @@ not block startup, so `check_available`/`ensure_ready` are deferred to first use
   cached per backend name — a WSL distro has no `destination`).
 - **Persistence/restore**: `backend_type` round-trips in SQLite; restore
   discovers windows **per backend** so off-local sessions re-adopt against their
-  own host. Remote backends are readied + discovered **in the background** (one
-  thread per host, drained by `App::poll_remote_restore` each tick) so an
-  unreachable or slow host never blocks the first frame — only local sessions
-  restore synchronously at startup (ADR-P7, `docs/PERFORMANCE.md`).
+  own host. In v2 there is no separate restore pass: a session is adopted when a
+  pane first asks to paint it, and readying its backend, discovering its window
+  and attaching all happen on `kernel::terminal`'s attach worker — the sharpest
+  teeth in the loop, since a down host runs out its ssh timeout. So an
+  unreachable or slow host never blocks a frame, and nothing is readied that
+  nothing is looking at (ADR-P7/ADR-P12, `docs/PERFORMANCE.md`).
 - **Headless**: `thurbox-cli session create --host <name>` spawns on the host
   (an SSH name or an auto-discovered WSL distro name).
 - **Agent config on the host**: agent args referencing thurbox-managed config
@@ -919,13 +923,15 @@ The **TUI** `Ctrl+D` soft-deletes too (with a `Ctrl+Z` undo window). The
 `[features] soft_delete` flag (default `true`) governs only this TUI path: set it
 `false` and `Ctrl+D` becomes a hard delete — the same
 `delete_session_headless(.., force=true)` teardown — since there is no `Ctrl+Z`
-for it. That hard delete is **conditional**: a confirmation modal
-(`Modal::ConfirmDelete`, `ui::confirm_delete_modal`) appears **only when the
-session has work at risk** — uncommitted/untracked files, unmerged commits, or a
-state that can't be verified (remote host / git error → confirm to be safe;
-`App::assess_delete_risk` + `modals::DeleteRisk::from_stats` over
-`git::worktree_stats`) — itemizing what would be lost; a known-clean session is
-deleted with no prompt. `Ctrl+U` lists the deleted rows (`ui/plugins/80_restore.lua`,
+for it. That hard delete is **conditional**: a confirmation appears **only when
+the session has work at risk** — uncommitted/untracked files, unpushed commits, a
+multi-worktree session whose other checkouts the snapshot does not stat, or a
+state that can't be read at all (remote host / git error → confirm to be safe) —
+itemizing what would be lost; a known-clean session is deleted with no prompt.
+The assessment is the pane's (`at_risk` in `ui/plugins/10_sessions.lua`, reading
+the snapshot's `git` stats — v1 computed it in Rust over `git::worktree_stats`),
+and the question travels through the shared `store.confirm` to the confirmation
+float (`ui/plugins/60_confirm.lua`) rather than a bespoke modal. `Ctrl+U` lists the deleted rows (`ui/plugins/80_restore.lua`,
 a float) and `Enter` restores the one under the cursor; a **force-deleted** row
 asks first — through the shared `store.confirm` question, not a bespoke modal —
 since recovery is committed-state-only, and only then issues `restore` with
@@ -943,11 +949,14 @@ informational**: deleting a parent never cascades (orphans render as top-level),
 and the parent is only validated at creation. In the TUI, **`Ctrl+F` fork**
 records the source session as the fork's parent; the session list nests children
 under their parent **within the same repo group** (muted `└` tree prefix; a child
-whose parent renders in another group keeps its own position with a `↳` mark), and
-the info panel (F2) shows a `Parent:` row. The nesting lives in
-`ui::project_list::compute_session_order` (`SessionOrder::depths`), so
-`Ctrl+J`/`Ctrl+K` navigation follows the tree automatically. Storage: nullable
-`sessions.parent_session_id` (schema v30; v29 is reserved by an in-flight branch).
+whose parent renders in another group keeps its own position with a `↳` mark).
+The nesting lives in `ui/plugins/10_sessions.lua` (`build_model`, which walks the
+snapshot's rows into depths — a port of v1's `compute_session_order`), so
+`Ctrl+J`/`Ctrl+K` navigation follows the tree automatically. A `Parent:` row is
+the out-of-tree
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) plugin's,
+not the bundled interface's. Storage: nullable `sessions.parent_session_id`
+(schema v30; v29 is reserved by an in-flight branch).
 
 ### Manual session ordering
 
@@ -957,17 +966,18 @@ session one row down/up. Manual order **wins** — status changes only recolor t
 dot, never move a row. A move swaps two adjacent *blocks* (a row plus its nested
 children, so a parent drags its subtree): root rows swap within their repo group,
 the **whole group** swaps past a group edge, and nested children move among their
-siblings only (`ui::project_list::move_in_order`, pure;
-`App::move_active_session` applies it). Every move densely renumbers all sessions
-`0..n` and persists, so the order survives restarts and syncs across instances via
+siblings only. It is computed in the pane (`10_sessions.lua`'s `move`,
+`root_ranges` and `child_ranges` — ports of v1's `move_in_order`) over the items
+it actually rendered, and the result is handed back whole as one
+`Command::Order { list }`: the kernel densely renumbers all sessions `0..n` and
+persists, so the order survives restarts and syncs across instances via
 `data_version` polling. Storage: nullable `sessions.display_order` (schema v31);
 `None` = never moved, renders after ordered sessions in creation order (new
 sessions append to their group). **`Shift+S`** (rebindable
 `SessionListSortAlphabetically`) sorts by name **within each repo group** in one
 shot, preserving group order (still by lowest `display_order`) and parent/child
-nesting, reusing the same dense-renumber-and-persist path (pure helper:
-`ui::project_list::sort_alphabetically_within_groups`;
-`App::sort_sessions_alphabetically`).
+nesting, and issues the same `Order` command (v1's
+`sort_alphabetically_within_groups`).
 
 ### Inter-session messages (mailbox queue)
 
@@ -1005,66 +1015,40 @@ running session), **Spawn** (start a fresh session and prompt it), or **Exec**
 (run a shell command headlessly — `sh -c`, or `cmd /C` on Windows — with no
 agent/session; its exit status + tail-truncated output land in the run history).
 `Exec` is the deterministic-scheduled-job action (the task-integration sync
-extensions use it). The shared runner is `session_ops::run_exec_command`, which
-blocks until the child exits: the headless `automation tick` calls it directly,
-while the TUI (`App::start_exec`) hands it to a **detached worker thread** so a
-slow command can't park the render loop inside `waitpid` — the run is recorded
-when `App::drain_exec_results` picks up the result on a later tick, and an
-automation whose command is still in flight records a `skipped` run instead of
-launching a second copy. The
-command is stored in the `action_command` column (schema **v36**, on both
-`tasks` and `automations`). Author one headlessly with `thurbox-cli automation
-create --command "<shell>"` (mutually exclusive with `--session`/`--repo`), in
-the TUI editor (the action selector now cycles Send → Spawn → Exec), or from an
-extension manifest (`[[automations]]` with a `command` field instead of
-`session_ref`/`prompt`). `Task.action` shares the enum but tasks never carry an
-`Exec` (it's automation-only).
+extensions use it). The runner is `session_ops::run_exec_command`, which blocks
+until the child exits and is called from exactly one place —
+`cli::automations`'s `tick`. Firing is **CLI-only in v2**: the interface neither
+runs schedules nor holds a worker for them, so there is no in-flight/`skipped`
+bookkeeping in the binary that draws the screen. The command is stored in the
+`action_command` column (schema **v36**, on both `tasks` and `automations`).
+Author one headlessly with `thurbox-cli automation create --command "<shell>"`
+(mutually exclusive with `--session`/`--repo`), or from an extension manifest
+(`[[automations]]` with a `command` field instead of `session_ref`/`prompt`).
+`Task.action` shares the enum but tasks never carry an `Exec`
+(it's automation-only).
 
 Automations fire even when the TUI is closed: a tmux heartbeat
 keeper window (`automation-heartbeat`, armed on TUI startup and on
 `automation create`) loops `automation tick` every 60 s and keeps
 the tmux server alive. `packaging/` ships opt-in systemd/launchd
 units for reboot-proof firing. Concurrent firers are de-duplicated
-by `Database::claim_due_automation` (atomic CAS), so the TUI, the
-keeper, and an OS timer never double-fire.
+by `Database::claim_due_automation` (atomic CAS), so the keeper,
+an OS timer and a hand-run `tick` never double-fire.
 
-In the TUI, automations also get a dedicated **Automations pane** beneath the
-session list (left column), always present (showing `none` when empty) unless
-`[features] automations = false`, which hides the pane (the session list takes the
-whole column, `j`/`k` wrap within it), blocks `Ctrl+P`, stops the TUI firing
-schedules, and skips arming the heartbeat (the CLI stays fully functional). It is
-treated as **part of the session pane**: one continuous, **circular** vertical
-list with the session list — `j` past the last session drops into the pane, `k` at
-the top automation hands focus back, and the ends wrap (`j` past the last
-automation loops to the top of the session list, `k` above the first session to
-the last automation). It is **not** a separate stop in the `Ctrl+H`/`Ctrl+L` cycle
-(which treats it like the session list). Once focused, `j`/`k` select,
-`Space`/`r`/`d` toggle/run/delete, `n` creates one.
+**No automations pane.** The interface has none, and `[features] automations`
+no longer hides one: its only *effect* in the TUI is gating **arming the tmux
+heartbeat keeper** at startup (`src/main.rs`; it also rides the live-reload merge
+as a restart-only flag and is published to Lua in `thurbox.features`). The rows
+are published as `thurbox.automations` and the kernel accepts an `automation`
+command (enable/disable/run/delete — `run_now` only marks it due, so the tick
+stays the one execution path), so a pane is a plugin somebody can write: both
+halves are done and nothing in `ui/` uses them yet.
 
-The pane mirrors the session list, with the **central pane** as its
-terminal-equivalent: while the pane is focused the central pane shows a **single
-editor** for the selected automation (a live preview — no separate read-only info
-screen). `Enter`/`Ctrl+L` (or `e`) focuses that editor, exactly as `Enter` on a
-session focuses its terminal; `Ctrl+H`/`Esc` returns to the list, `Enter` saves,
-`Esc` discards, `Ctrl+E` toggles enabled. The scoped automation's run history
-(`db::list_automation_runs`, cached in `App::cached_automation_runs`) renders
-beneath the editor and is itself focusable
-([`InputFocus::AutomationRunHistory`], one more `Ctrl+L`): `j`/`k` select a run
-(`App::automation_run_index`), `r` triggers a fresh run, `Enter` opens the session
-that run touched (`App::open_run_related_session` parses the session id out of the
-run's `detail`). `Ctrl+L`/`Ctrl+H` cycle **within the current context's ring**
-(`App::focus_ring`) — the automation ring `Automations → editor → run history`
-wraps back to `Automations` (never to a session; landing on the list discards
-edits like `Esc`), the session ring is `SessionList → Terminal` (+ file viewer);
-crossing contexts is via `j`/`k`, not the cycle. Because the in-pane
-editor/history would otherwise lose chords like `Ctrl+E` to global keybindings,
-`handle_key` captures input for those two focuses **before** the global lookup,
-passing only the focus-cycle/quit chords. Implemented via the persistent
-`App::automation_editor` state (synced by `App::sync_automation_editor`) plus
-`ui::automation_editor_modal::render_automation_editor_into` +
-`ui::automation_detail::render_run_history`. The `Ctrl+P` list path opens the same
-editor as a centered overlay (`Modal::AutomationEditor`); both share
-`AutomationEditorModal::handle_key` + `App::save_automation`.
+> A pane is owed, and it is Tier 2 in `openspec/changes/v2-parity-gaps/` beside
+> the tasks one. v1's shape — a pane under the session list, sharing one circular
+> `j`/`k` list with it, with the centre pane as its editor and the run history
+> below — is in that ledger and on the `v1.x` branch; it is deliberately not
+> described here as if it existed.
 
 ## Tasks (todo list)
 
@@ -1310,37 +1294,42 @@ or done. `SessionStatus` (`src/session/mod.rs`) has six states — five driven b
 | `Done` | blue | `●` (filled) | a turn just finished; shown until you switch away |
 | `Idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
 | `Error` | red | `✗` | reserved for a crashed agent — **not derived yet** (no exit-code signal; exited → `Idle`) |
-| `Unreachable` | muted grey | `⊘` | remote host down/offline; a **placeholder** row (no live pane) awaiting reconnect |
+| `Unreachable` | muted grey | `⊘` | remote host down/offline; the ordinary row, derived from a live attach failure, awaiting reconnect |
 
-**Unreachable / placeholder sessions.** A persisted **remote** session whose host
-is unreachable at restore (SSH down / auth failing / offline) is inserted as a
-`Session::placeholder` (`src/agent/backend.rs`) so it **always appears** in the
-list instead of silently vanishing, tagged `Unreachable`. A placeholder holds no
-live backend pane — its reader/writer loops are never spawned, keystrokes are
-dropped with a hint, and `resize`/`kill`/`detach`/`save_state` skip it (so it
-never issues a blocking ssh call on the UI thread nor clobbers the persisted
-row). The remote-restore loop (`App::poll_remote_restore` /
-`maybe_retry_remote_restore`) readies each remote backend off-thread, retries a
-down host every `REMOTE_RETRY_INTERVAL` (20 s) — or immediately on restart
-(`Ctrl+R`) — and, once the host recovers, replaces the placeholder **in place**
-with the adopted session (same `SessionId`, so the order signature is unchanged).
+**Unreachable sessions.** A persisted **remote** session whose host cannot be
+reached **always appears in the list**, tagged `Unreachable`, rather than
+silently vanishing. v2 gets there by derivation rather than by a synthetic row:
+`kernel::terminal` records the attach failure for that session, and
+`snapshot::with_reachability` folds "a remote backend plus a live attach error"
+into the published status. So the row is the ordinary row — no second `Session`
+kind, no dead input channel to guard, and nothing on the loop that can block on
+ssh. (v1 inserted a `Session::placeholder`; the constructor is still in
+`src/agent/backend.rs` and has no caller.)
 
-The same treatment covers **mid-session host loss**:
-`App::detect_lost_remote_sessions` (per tick) spots a *live* remote session whose
-control-mode connection just died, converts it in place to an `Unreachable`
-placeholder and queues a reconnect (`enqueue_remote_reconnect`). The reliable
-signal is `has_exited()`: with `remain-on-exit=on` a clean agent exit keeps its
-pane alive (no reader EOF), so a remote reader hitting EOF means the host/SSH
-connection dropped. This composes with the fail-fast SSH hardening
-(`crate::shell::SSH_HARDENING_OPTS` = `BatchMode=yes` + `ConnectTimeout` +
-`ServerAlive*`), which stops a broken host from prompting for a password on the
-TUI's terminal or hanging the render loop.
+The attach worker owns the retry: the same failed attempt is left alone for
+`ATTACH_RETRY_INTERVAL` (20 s) and then made again, so a host that was offline at
+startup recovers on its own instead of staying dead for the life of the process.
+Recovery replaces nothing — the next attach simply succeeds and the derived
+status goes back to what the hooks say.
 
-The live session list **animates** the `Working` spinner (`ui::SPINNER_FRAMES`,
-`App::spinner_frame` advanced from `tick_count`, ~8 fps, repaints forced only
-while something is working). The filled `●` (Done) vs hollow `○` (Idle) pair
-reads done-vs-seen at a glance. `ui::status_glyph(status, spinner)` picks the
-frame; the static `icon()` is used in non-animated contexts (info panel).
+The same treatment covers **mid-session host loss**: `drop_lost_panes` (per tick)
+spots a *live* remote session whose pane is gone, lets it go, and clears the
+readied-backend cache — the connection that session died with is the one every
+other session on that host shares. The reliable signal is `has_exited()`: with
+`remain-on-exit=on` a clean agent exit keeps its pane alive (no reader EOF), so a
+remote reader hitting EOF means the host/SSH connection dropped. This composes
+with the fail-fast SSH hardening (`crate::shell::SSH_HARDENING_OPTS` =
+`BatchMode=yes` + `ConnectTimeout` + `ServerAlive*`), which stops a broken host
+from prompting for a password on the TUI's terminal or hanging the render loop.
+
+The live session list **animates** the `Working` spinner. The frames are
+`theme.spinner` in `ui/lib/theme.lua` and the pane picks one from the elapsed
+time it is handed (`status_glyph` in `10_sessions.lua`); the clock behind that is
+the kernel's shared **animation tick** (`kernel::host::ANIMATION_HZ` = 8), which
+the loop advances **only while something is actually animating** — a free-running
+one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●`
+(Done) vs hollow `○` (Idle) pair reads done-vs-seen at a glance;
+`SessionStatus::icon()` is the static glyph, for contexts with no clock.
 
 - **The callback.** Agents report transitions with
   `thurbox-cli session signal --state <working|blocked|done|idle>`
@@ -1395,13 +1384,13 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
   override is purely per-tick derivation.
 - **Per-session only.** Status renders on the session's own row (and in the
   ` Sessions ` panel border title, one dot per session). Repo-group headers
-  (`ui::project_list::group_header_line`) carry **no** status — a rolled-up group
-  dot would restate what every member row shows. Status only recolors — it
-  **never** reorders rows (the order cache stays status-independent).
+  (`group_header_line` in `10_sessions.lua`) carry **no** status — a rolled-up
+  group dot would restate what every member row shows. Status only recolors — it
+  **never** reorders rows (the order is status-independent).
 - **Colours** are tunable theme fields: `status_working` / `status_blocked`
   / `status_done` / `status_idle` / `status_error`
-  (`session::theme_config`, all 15 presets + custom-theme overrides), mapped
-  by `ui::status_color`.
+  (`session::theme_config`, all 36 presets + custom-theme overrides), published
+  to Lua as theme roles and read by the pane.
 - **Wiring the hooks** is the job of the built-in **hooks extension**
   (auto-activated; see the Extensions section) — core thurbox only knows
   the generic `session signal` command.
@@ -1599,12 +1588,26 @@ already follow.
   CLI share one definition), plus the logic the kernel needs and cannot import
   `agent` for (`links`, `selection`, `review`, `editor`, `hyperlink`,
   `theme_config`).
+- **`git/`** — every `git` invocation, split by concern: `command` (the one
+  place a `git` process is built, and where the inherited `GIT_*` scrub lives),
+  `plugin` (clone/checkout of a plugin working copy), `remote` (running a command
+  over ssh/`wsl.exe`, the PowerShell encoding, and decoding what came back —
+  ADR-13's psmux divergences), `discovery` (listings, path classification,
+  child-repo scans, each a POSIX/PowerShell script pair over one line protocol),
+  `diff` (diffs, branches, commits, worktree stats) and `worktree` (create, sync,
+  remove — and the stale-lock/stash/transient-error retries). `git::*` is still
+  one flat surface; no caller names a submodule.
+- **`coordinator/`** — `main`'s own body. `App` and its state stay in
+  `main.rs`; its behaviour is here, grouped by what it is for: the loop and its
+  workers (`mod`), then `commands`, `publish`, `draw`, `input`, `mouse`, `focus`
+  and `interface`. Still one model and one loop — splitting `App` itself is what
+  ADR-22 rejected, and the invariants that matter hold *across* these groups.
 - **`ui/`** (Lua, not Rust) — `layout.lua` is the arrangement; `lib/` holds
   widgets, theme roles, fuzzy match, text input, trees; `plugins/` holds the panes.
 - **`cli/`** — `thurbox-cli` subcommands, including `plugin dir|new|check|list|install|sync|update|remove`
   for writing an interface with no TTY.
 
-### Event Loop (src/main.rs)
+### Event Loop (`src/main.rs` + `src/coordinator/`)
 
 ```text
 tokio::main → load config + settings → heal extensions → arm the heartbeat

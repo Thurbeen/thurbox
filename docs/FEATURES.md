@@ -835,7 +835,7 @@ each part. `CLAUDE.md` keeps a summary and points here.
   their header until expanded.
 - **Colours.** Dedicated theme keys `diff_added`/`diff_removed` (line fg) and
   `diff_added_bg`/`diff_removed_bg` (a subtle full-row tint) — added to
-  `ThemePalette` (all 15 presets derive them; bg blended toward `app_bg` via
+  `ThemePalette` (every preset derives them; bg blended toward `app_bg` via
   `blend_rgb`) and overridable per custom theme. Classification badges reuse the
   status/accent/danger palette colours, so the whole view is theme-aware.
 - **Review targets** (`t` / the Target footer button). The diff can show the
@@ -1275,82 +1275,58 @@ Two more ship in `extensions/`, both built the same agent-agnostic way
 
 ## Global Search
 
-`Ctrl+/` (the near-universal "search" chord) opens a **non-modal bottom
-strip** that searches every scope at once — a single place to find and jump
-to anything. The opener is fully rebindable from the F1 editor
-(`Action::GlobalSearch`).
+> **Rebuilt as a plugin.** The strip is `ui/plugins/65_search.lua` and no longer
+> floats: it is a full-width slot the arrangement carves above the chrome bands,
+> because it highlights matches *inside* the panes it is searching and a modal
+> would cover the thing it is pointing at. Sessions is the only scope with a pane
+> today; the tasks, automations and files scopes went with their panes and are
+> listed in `openspec/changes/v2-parity-gaps/`. The rationale below is kept
+> because it is what a scope being added back needs.
+
+`Ctrl+/` (the near-universal "search" chord) opens a **non-modal strip** that
+searches every scope with a pane. The opener is rebindable like every other
+chord, through the registry the F1 help renders.
 
 ### Scopes
 
-- **Sessions** — name, agent, and branch (fuzzy), plus the live terminal
-  **buffer content** so you can find *which session* mentioned a string
-  ("deploy failed", an error, a file path) and switch straight to it.
-- **Tasks** — title (fuzzy).
-- **Automations** — name (fuzzy).
-- **Files** — file/dir names under the active session's roots (bounded
-  walk, same node/depth limits as the in-viewer search).
+- **Sessions** — name, agent, branch and repo (fuzzy), plus the live terminal
+  **screen text** so you can find *which session* mentioned a string ("deploy
+  failed", an error, a file path) and switch straight to it.
+
+A result carries the pane it belongs to, so a returning surface is a scope added
+and nothing else changed.
+
+Matching is subsequence via `ui/lib/fuzzy.lua`, shared with the session list so
+the two cannot disagree. Screen text is matched as a **substring** rather than a
+subsequence — fuzzy over a whole screen matches nearly everything — and is
+skipped for a session whose metadata already matched.
+
+Terminal text is a **want**, not a standing cost: the pane leaves its query in
+`store` under `want_content` and the kernel serves `thurbox.content` only while it
+is asking (`kernel::terminal::WANT_CONTENT`, capped at `CONTENT_LINE_CAP` = 500
+lines, the bound v1 used). No interface pays for every agent's screen on every
+frame.
 
 ### Live preview & cancel
 
-Moving through results (`↑`/`↓`) **previews** the selection in place: the
-matching panel's cursor follows the highlighted result — the active session
-switches, or the selected task / automation row moves — so you see where
-`Enter` would land without leaving the search box. (Files aren't previewed
-live; they only open the file viewer on `Enter`, since rebuilding the tree
-per keystroke is heavy.)
-
-The state the search touches is **snapshotted on open**, so `Esc` cancels
-back to exactly where you were — selections, focus, and which optional
-panels were visible all restore. `Enter` commits the jump and focuses the
-result's pane: a session result switches the active session and focuses its
-terminal; a task focuses the tasks panel with that row selected; an
-automation focuses the automations pane; a file opens the file viewer and
-reveals the path.
+Moving through results (`↑`/`↓`) **previews** the selection in place: the owning
+pane's cursor follows the highlighted result, so you see where `Enter` would land
+without leaving the search box. `Esc` puts back what you were looking at; `Enter`
+commits the jump and focuses the result's pane.
 
 ### Live in-place highlighting
 
-As you type, matches highlight **where they live**: the session list, tasks
-panel, and automations pane highlight the matched characters (accent, bold,
-underlined) on matching rows and **dim** the rows that don't match — the
-same treatment the session list's own `/` filter already uses. This is
-driven by a shared highlight helper (`src/ui/highlight.rs`) and
-`App::global_search_query()`, which the view feeds into each panel renderer
-while the strip is open.
+As you type, matches highlight **where they live**: the session list highlights
+the matched characters on matching rows and **dims** the rows that don't match —
+the same treatment the list's own filter uses. Nothing is reprinted in the strip,
+which is the point of a strip rather than a float.
 
-The strip itself shows: a query line, a one-line per-scope match summary
-(`3 sessions · 1 task · 2 files [2/6]`), the **grouped result list**
-(scrollable, with the selected row marked `▸` and highlighted; content
-matches show a dim snippet), and a row of key hints. `↑`/`↓` move the
-selection through the list and `Enter` jumps to it.
+### One deliberate divergence from v1
 
-### Why a bottom strip (not a modal)
-
-thurbox keeps heavy interactions out of centered modals where it can. The
-search is a full-width strip docked above the footer — the content area
-shrinks to make room (the same way the info/tasks/file columns share
-width), so the rest of the UI stays visible, live, and **highlighted**
-behind it.
-
-### Responsiveness
-
-Cheap metadata matches (names/titles, fuzzy) recompute on every keystroke.
-The expensive part — scanning each running session's vt100 buffer — is
-**debounced** (~150 ms of query-idle, measured with `Instant` since the
-tick cadence varies with event load) and capped (≤ 8 results per group,
-last ≤ 500 lines per session) so typing never stalls.
-
-### Keys & bindings
-
-Type to filter; `Up`/`Down` (or `Ctrl+P`/`Ctrl+N`) move the selection so
-plain letters still edit the query; `Enter` jumps; `Esc` closes and
-restores the previous focus. The default chord is `Ctrl+/`
-(`Action::GlobalSearch`), bound to every encoding terminals deliver it as
-(`Ctrl+/` under the kitty protocol; `Ctrl+7`/`Ctrl+_` on legacy terminals)
-and fully rebindable from the F1 editor like any other action.
-
-Global search is the **only** list search now: the old per-pane `/`
-filters (session list, tasks panel) were removed in its favour. The file
-viewer's `/` is an unrelated in-file text search and is unchanged.
+v1 also took `Ctrl+P`/`Ctrl+N` inside the strip, because its search focus captured
+input ahead of the keybinding table. Here every chord goes through one registry
+where a plugin-scoped claim does not outrank a global one, so declaring them would
+take `Ctrl+N` from new-session everywhere. Recorded in `tests/v2_keymap.rs`.
 
 ---
 
@@ -1876,10 +1852,13 @@ historical output.
 
 ![Theme switcher](media/thurbox-theme.gif)
 
-All UI colors are centralized in `src/ui/theme.rs` via a semantic
-palette. Widget files reference named colors (accent, text, status,
-border) rather than hard-coded `Color::*` values, so the whole UI
-can be re-skinned by swapping the active palette.
+All UI colors are centralized via a semantic palette:
+`session::theme_config` holds the presets and the user's overrides,
+`kernel::theme::Themes` resolves one and publishes **roles** to Lua
+(`ui/lib/theme.lua`). A plugin asks for `theme.accent` or `theme.muted`
+rather than a colour, which is what lets one plugin look right under all
+thirty-six palettes and the whole interface be re-skinned by swapping the
+active one.
 
 Thurbox ships thirty-six built-in presets — twenty-eight dark
 (Default, Catppuccin Mocha, Tokyo Night, Gruvbox Dark, Doom, Nord,

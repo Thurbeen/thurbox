@@ -139,8 +139,8 @@ pub(crate) fn resume_trigger_for(
     // stats the local FS — so `{home}` resolves to the local home even for a
     // caller that hasn't expanded it. A remote session's file can't be stat'd
     // here, so it starts fresh (documented remote-omp fallback); its launch args
-    // are still expanded per host in `spawn::adapt_def_for_launch` /
-    // `App::launch_provider_for`.
+    // are still expanded per host in `spawn::adapt_def_for_launch`, which both
+    // a fresh spawn and `restart` go through.
     if let Some(path) = session_file_template(def) {
         let expanded = match crate::paths::home_dir() {
             Some(home) => path.replace(HOME_PLACEHOLDER, &home.to_string_lossy()),

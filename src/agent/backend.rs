@@ -625,8 +625,12 @@ pub struct Session {
     /// is currently unreachable, so it has no live backend pane / reader / writer
     /// (its `input_tx` is a dead channel and its `parser` holds a static "host
     /// unreachable" notice). Rendered with `SessionStatus::Unreachable` and
-    /// replaced in place by the real adopted session once the host recovers. See
-    /// `App::start_remote_restore` / the remote retry loop.
+    /// replaced in place by the real adopted session once the host recovers.
+    ///
+    /// **Unused in v2.** Its only caller was v1's remote-restore loop, which went
+    /// with `src/app`; the kernel derives `Unreachable` from "a remote session
+    /// with no live pane" instead (`kernel::snapshot::with_reachability`), so
+    /// nothing constructs a placeholder and this is only ever `false`.
     placeholder: bool,
 }
 

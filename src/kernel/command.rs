@@ -1568,8 +1568,9 @@ fn automation(
             .map_err(|e| format!("set enabled: {e}"))?;
     }
     if run_now {
-        // Marks it due; the scheduler — TUI, heartbeat or cron — runs it, so
-        // there is one execution path rather than a second one here.
+        // Marks it due; the next `automation tick` — the heartbeat keeper's,
+        // a cron's, or a hand-run one — executes it, so there is one execution
+        // path rather than a second one here. The TUI runs no scheduler.
         db.trigger_automation_now(id)
             .map_err(|e| format!("trigger: {e}"))?;
     }

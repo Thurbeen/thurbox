@@ -18,20 +18,33 @@ if something truly unexpected happens.
 Domain dependency flow is one-directional:
 
 ```text
-session  (no project-local imports)
-agent    → session
-ui       → session, app (read-only model/view state)
-app      → session, agent, ui
+session      (no crate-internal references — the dependency sink)
+agent        → session, paths, shell
+git          → session, paths, shell
+storage      → session, sync, paths
+sync         → session, storage, workspace
+session_ops  → session, storage, git, sync, paths, workspace
+kernel       → session, storage, sync, paths, session_ops, git,
+               notifications, clipboard
+cli          → session, storage, session_ops, sync, paths, notifications
+main         → the coordinator: the loop, the workers, the chrome
 ```
 
-`agent` and `ui` never import each other. This keeps the side-effect
-layer (PTY management) completely decoupled from the rendering layer.
-`ui → app` is the TEA `view(model)` coupling: the view renders state
-types owned by `app` but never triggers side effects (and never
-touches `agent` or `git`). The full per-module allowlist — including
-utility modules — lives in `tests/architecture_rules.rs`; a new
-`src/` module fails the test until its dependencies are declared
-there.
+`agent` is the side-effect layer (PTY/tmux) and never touches `git`,
+`storage` or `kernel`; `session` holds plain data and references
+nothing, which is what lets every other module depend on it.
+
+Some crossings are permitted **by fully-qualified path only**, never by
+`use`: `session_ops`, `cli` and `kernel` reach `agent` that way (and
+`kernel` also reaches `usage`, `cli` also `kernel`). The restriction is
+the point — every crossing into the side-effect layer stays visible at
+its call site instead of disappearing into an import list.
+
+The full per-module allowlist lives in `tests/architecture_rules.rs`,
+which is an **allowlist**: a new `src/` module fails the test until its
+dependencies are declared there. Exempt are only `main` and its own body
+split out as `src/coordinator/` — the coordinator wires every layer
+together by definition — plus the trivial `bin`/`lib` entry points.
 
 ### 3. Zero-warning policy
 
@@ -55,17 +68,46 @@ Every commit message is validated against the Conventional Commits spec
 by `cocogitto`. Non-conforming commits are rejected
 by the `commit-msg` hook.
 
-### 7. TEA as the single architectural pattern
+### 7. The interface is a plugin kernel, and its five rules hold
 
-The Elm Architecture (`Event -> Message -> update -> view -> Frame`)
-is the only sanctioned control-flow pattern.
+The interface is Lua on a Rust kernel (ADR-23). v1's TEA loop — a single
+`App` model with `update()`/`view()` — was the sanctioned pattern until
+`src/app` and `src/ui` were deleted; what replaced it is five rules, each
+with a mechanism rather than a review habit:
+
+1. **Four node kinds, forever** — `text`, `box`, `input`, `surface`.
+   Everything else composes in `ui/lib/widgets.lua`.
+   *Enforced by* `tests/kernel_mvp.rs`, which asserts the count.
+2. **Layout resolves before render** — rects are computed first, then
+   each plugin is called with its own. Plugins declare size statically,
+   which is what breaks the circularity.
+3. **Snapshot-read, command-write** — reads come from an in-memory
+   snapshot and return instantly; writes are commands accepted now and
+   surfaced later. Lua never blocks the loop on SQLite, git or an
+   unreachable host.
+   *Enforced by* mlua's `send` feature being deliberately left off, which
+   makes "plugins never touch the render thread" a compile error.
+4. **Capabilities by absence** — an ungranted capability is *not in the
+   environment*; `io`, `os`, `debug`, `package` and the loaders are
+   withheld.
+   *Enforced by* `thurbox.yml` (selene's stdlib for `ui/`, which declares
+   no `base:`), `lua-language-server`'s `runtime.builtin`, and
+   `tests/kernel_mvp.rs`, which enumerates the plugin environment
+   global-by-global so a new one has to be added deliberately.
+5. **Anything touching the world runs on a worker** — terminal attach,
+   commands, diffs, metrics, git stats, repository reads, update checks,
+   and programs a plugin asked for.
+
 No ad-hoc event handlers, no component-local state, no callback chains.
 
 ### 8. Backend-first session model
 
-Coding-agent sessions run via a `SessionBackend` trait, backed by
-local tmux (`tmux -L thurbox`). tmux provides truly persistent
-sessions that survive crashes/restarts.
+Coding-agent sessions run via a `SessionBackend` trait. The default is
+a local multiplexer (`tmux -L thurbox`; `psmux` on native Windows), and
+the same `TmuxBackend` runs over a transport — local, SSH, or WSL — so a
+session can live on another host without a second backend (ADR-13). The
+multiplexer provides truly persistent sessions that survive
+crashes/restarts.
 We never mock, emulate, or screen-scrape a fake terminal.
 The backend is the source of truth for session lifecycle.
 
@@ -130,7 +172,7 @@ binaries have correct versions while keeping the source tree clean.
 | Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` |
 | Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` |
 | Conventional commits | `cocogitto` (`cog verify`) | `cog.toml` |
-| TEA pattern | `tests/architecture_rules.rs` + code review | — |
+| Plugin-kernel rules | `tests/kernel_mvp.rs` + `thurbox.yml` (selene) + `.luarc.json` (luals) | `thurbox.yml` |
 | Backend-first model | Code review | — |
 | Logging off stdout | Code review | — |
 | TDD (Red/Green/Refactor) | `cargo-nextest` + code review | `.config/nextest.toml` |

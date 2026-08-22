@@ -387,8 +387,9 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
 }
 
 /// Advance a freshly-triggered task `Todo → InProgress` (no-op for other
-/// states), mirroring the TUI's `App::advance_task_to_in_progress` so the
-/// headless `task run` path keeps status in sync too.
+/// states), mirroring what the kernel's task-run command does
+/// (`kernel::command`, `set_task_status`) so the headless `task run` path keeps
+/// status in sync too.
 fn mark_in_progress(db: &Database, task: &Task) -> Result<(), String> {
     if task.status == TaskStatus::Todo {
         db.set_task_status(task.id, TaskStatus::InProgress)

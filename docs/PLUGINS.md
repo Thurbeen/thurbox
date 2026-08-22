@@ -1163,5 +1163,5 @@ indistinguishable.
 
 The Neovim package managers this borrows from make it the headline feature. Here it
 would optimise nothing: a disabled plugin is never read, an unplaced pane never
-renders, and the bundled set is nine files. A load scheduler would add machinery and
+renders, and the bundled set is 19 files. A load scheduler would add machinery and
 a new class of "why is my pane missing".

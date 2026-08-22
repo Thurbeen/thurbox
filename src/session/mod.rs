@@ -160,7 +160,8 @@ pub enum SessionStatus {
 impl SessionStatus {
     /// A status glyph chosen for **shape** distinctiveness, not just colour, so
     /// the state survives in greyscale / for colour-blind users: a spinner
-    /// (working — the live session list animates it, see `ui::SPINNER_FRAMES`)
+    /// (working — the live session list animates it from `theme.spinner` in
+    /// `ui/lib/theme.lua`)
     /// vs. diamond (blocked) vs. filled circle (done, unseen) vs. hollow circle
     /// (idle, seen) vs. cross (error). The filled/hollow pair makes
     /// done-vs-idle read at a glance.

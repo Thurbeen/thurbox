@@ -50,7 +50,7 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
    layout    rects before render         lib/theme     roles
    convert   table <-> node              lib/widgets   list, gauge, panel…
    paint     node -> ratatui             lib/tree      decoration helper
-   host      VM, reload, isolation       plugins/*     3 panes + 2 floats
+   host      VM, reload, isolation       plugins/*     3 panes + 3 floats
    registry  keys + settings
    modals    help, settings, theme, files
    snapshot  the read side

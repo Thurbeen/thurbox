@@ -273,6 +273,15 @@ scheduler.
 
 ## ADR-9: Flat session list (no project grouping)
 
+> **Amended.** The decision below is about the *data model* and still
+> holds: there is no project entity, and storage migration v16 dropped
+> its tables. What the list *renders* has since gained two groupings that
+> own no rows — sessions are grouped under a repo header, and a forked
+> session nests under its parent within that group. Both are computed
+> from a session's own `cwd`/`parent_session_id` rather than from a
+> record above it, so no navigation level and no creation step came back.
+> The list itself is now `ui/plugins/10_sessions.lua`, not Rust (ADR-23).
+
 **Choice**: The sidebar is a single flat list of sessions. There
 is no "project" layer above sessions: each session picks its own
 agent and repo selection at creation time.
@@ -988,10 +997,14 @@ flow` (with an inline fallback for older thurbox).
 
 ## ADR-22: `App` decomposition — coordinator + per-domain sub-modules
 
-> **Superseded by ADR-23.** `src/app/` was deleted with v1. The pressure it
-> answered was real and recurs: the kernel's `main.rs` is the coordinator now, and
-> the same rule applies — cohesive clusters move out, the coordinator stays
-> `EXEMPT` in `tests/architecture_rules.rs`, and governance is directory-level.
+> **Superseded by ADR-23 — and then re-applied.** `src/app/` was deleted with
+> v1, but the pressure this ADR answered recurred exactly as predicted: the
+> kernel's `main.rs` grew a ~3.4k-line `impl App`, and the same medicine was
+> taken — `App` and its state stay in `main.rs`, its methods live in
+> `src/coordinator/` split by purpose (loop/workers, commands, publish, draw,
+> input, mouse, focus, interface), the coordinator is `EXEMPT` in
+> `tests/architecture_rules.rs`, and there is still exactly one model and one
+> loop. The rejected alternatives below still stand.
 
 **Choice**: Keep the single `App` model (ADR-1, TEA) but split its
 ~11.7k-line `app/mod.rs` into per-domain sub-files under `src/app/`,
