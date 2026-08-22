@@ -341,7 +341,11 @@ local function modal(title, rows_height, children, flow)
     title_runs[#title_runs + 1] = { text = crumbs .. " ", style = { fg = theme.muted } }
   end
   return {
-    float = { width = MODAL_COLS, rows = rows_height },
+    -- `cols`, not `width`: the kernel reads `width` as a share of the screen
+    -- and `cols` as cells, and every row here is truncated against ROW_COLS —
+    -- a percentage float clips rows on a narrow terminal and leaves dead space
+    -- on a wide one.
+    float = { cols = MODAL_COLS, rows = rows_height },
     type = "box",
     frame = {
       title = title_runs,

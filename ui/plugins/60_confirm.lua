@@ -40,6 +40,12 @@ return {
   slot = "float",
   order = 60,
   floats = true,
+  -- This render reads `store.confirm` and the theme and writes nothing, so the
+  -- kernel may reuse the tree — and floats render every frame even while
+  -- closed, so without this the closed state costs a Lua call per frame
+  -- forever. `store.confirm` writes bump the state version, which is part of
+  -- the cache key, so opening and answering stay on the very next frame.
+  pure = true,
   -- Never a tab stop: it is up only while it has a question, and it takes every
   -- key while it is.
   focusable = false,
@@ -112,8 +118,10 @@ return {
       rows = rows + (child.len or 1)
     end
     return {
-      -- Danger-bordered, as v1 frames a destructive confirmation.
-      float = { width = 60, rows = rows },
+      -- Danger-bordered, as v1 frames a destructive confirmation. `cols`, not
+      -- `width`: the kernel reads `width` as a share of the screen and `cols`
+      -- as cells.
+      float = { cols = 60, rows = rows },
       type = "box",
       frame = {
         title = " Confirm ",
