@@ -1017,13 +1017,15 @@ fn a_malformed_command_is_reported_against_the_plugin() {
 
 #[test]
 fn work_in_flight_is_drawn_instead_of_the_status() {
-    // Without this a delete looks like nothing happened until the next
-    // snapshot. v1 needed a whole PendingSpawn type for the same reason.
+    // Without this a restart looks like nothing happened until the next
+    // snapshot. v1 needed a whole PendingSpawn type for the same reason. A
+    // delete is the one command with no row left to annotate — see
+    // `a_session_being_deleted_leaves_the_list_at_once`.
     let host = host();
     let target = sample().sessions[0].id.clone();
     let inflight = vec![InFlight {
         id: 1,
-        kind: "delete",
+        kind: "restart",
         session: target,
         subject: None,
         phase: Phase::Running,
@@ -1033,7 +1035,7 @@ fn work_in_flight_is_drawn_instead_of_the_status() {
     publish_with(&host, &sample(), &Default::default(), &inflight);
     let screen = paint(&host, index_of(&host, "sessions"), 46, 12).join("\n");
     assert!(screen.contains('◌'), "pending marker missing:\n{screen}");
-    assert!(screen.contains("delete"), "{screen}");
+    assert!(screen.contains("restart"), "{screen}");
 }
 
 #[test]
@@ -1053,6 +1055,10 @@ fn a_failed_command_is_drawn_as_failed() {
     let screen = paint(&host, index_of(&host, "sessions"), 46, 12).join("\n");
     assert!(screen.contains('✗'), "{screen}");
     assert!(screen.contains("failed"), "{screen}");
+    // And the row is still there to carry it. A delete that has been accepted
+    // takes its session out of the list at once; one that FAILED did not, and
+    // the row is the only thing that says so.
+    assert!(screen.contains("fix-osc52"), "{screen}");
 }
 
 #[test]
@@ -1623,6 +1629,43 @@ fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
         pending > header,
         "placeholder should follow its repo header:\n{screen}"
     );
+}
+
+#[test]
+fn a_session_being_deleted_leaves_the_list_at_once() {
+    // The row is the delete's subject, so annotating it kept showing the very
+    // session you had just removed for as long as the worker took. It goes on
+    // the keystroke instead: the command is already accepted, and Ctrl+Z brings
+    // the session back rather than the row.
+    let host = host();
+    let sessions = index_of(&host, "sessions");
+    let doomed = sample().sessions[0].id.clone();
+
+    publish(&host, &sample());
+    let before = paint(&host, sessions, 46, 14).join("\n");
+    assert!(before.contains("fix-osc52"), "{before}");
+
+    let inflight = vec![InFlight {
+        id: 1,
+        kind: "delete",
+        session: doomed,
+        subject: None,
+        phase: Phase::Running,
+        error: None,
+    }];
+    publish_with(&host, &sample(), &Default::default(), &inflight);
+
+    let screen = paint(&host, sessions, 46, 14).join("\n");
+    assert!(
+        !screen.contains("fix-osc52"),
+        "the deleted row should be gone, not tagged:\n{screen}"
+    );
+    assert!(
+        !screen.contains("delete"),
+        "and nothing should be left saying so:\n{screen}"
+    );
+    // The sessions it did not touch are untouched.
+    assert!(screen.contains("add-wsl-tests"), "{screen}");
 }
 
 #[test]

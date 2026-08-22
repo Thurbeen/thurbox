@@ -194,8 +194,9 @@ local NO_REPO = "(no repo)"
 --- In-flight commands, keyed by the session they concern.
 ---
 --- A command is accepted instantly and lands in a later snapshot, so without
---- this a delete would look like nothing happened for a moment. v1 needed a
---- whole `PendingSpawn` type for the same reason.
+--- this a restart would look like nothing happened for a moment. v1 needed a
+--- whole `PendingSpawn` type for the same reason. A delete is the exception:
+--- see `deleting()`, which removes the row instead of annotating it.
 local function pending()
   local by_session = {}
   for _, item in ipairs(thurbox and thurbox.commands or {}) do
@@ -204,6 +205,29 @@ local function pending()
     end
   end
   return by_session
+end
+
+--- Sessions whose delete has been accepted, as a set of ids.
+---
+--- Every other in-flight command leaves a row to annotate; a delete is the one
+--- whose subject is the row itself. Waiting for it to land left the session
+--- sitting there tagged `delete` for as long as the worker took — so the list
+--- kept showing what you had just removed. Dropping it on the keystroke is what
+--- makes the delete read as done, and there is nothing to be lost by it: the
+--- effect is already accepted, and Ctrl+Z restores the session rather than the
+--- row.
+---
+--- A FAILED delete is deliberately kept. The session is still there, and the
+--- failed row is the only thing that says the deletion did not happen.
+local function deleting()
+  local gone = {}
+  for _, item in ipairs(thurbox and thurbox.commands or {}) do
+    local id = item.session
+    if item.kind == "delete" and item.phase ~= "failed" and id and id ~= "" then
+      gone[id] = true
+    end
+  end
+  return gone
 end
 
 --- Creations in flight, keyed by the repo they will land in.
@@ -330,6 +354,20 @@ end
 
 local function build_model(rows)
   local items = {}
+  -- Before anything is grouped or ordered: a session being deleted is gone from
+  -- the list, not annotated in it. Filtering here rather than at the drawing end
+  -- keeps every consumer of the model agreeing — the cursor lands on the next
+  -- row, the border dots lose one, and a group whose last session went takes its
+  -- header with it.
+  local gone = deleting()
+  local live = {}
+  for _, session in ipairs(rows) do
+    if not gone[session.id] then
+      live[#live + 1] = session
+    end
+  end
+  rows = live
+
   local groups, by_key = ordered_groups(rows)
   local creating = pending_creations()
 
