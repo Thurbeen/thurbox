@@ -177,12 +177,20 @@ return {
     local cols = math.min(MODAL_COLS, math.max(4, ctx.width or MODAL_COLS))
     local list = deleted()
     local cursor = cursor_in(list)
+    -- Spans only for the visible window — the same `widgets.window` call the
+    -- list itself makes, so the two agree; off-window entries are placeholders
+    -- whose spans the list never reads. The deleted list can be long after an
+    -- unpurged week, and it shows ten rows.
+    local height = math.max(1, math.min(#list, LIST_MAX))
+    local first, last = widgets.window(#list, height, cursor)
     local rows = {}
     for index, entry in ipairs(list) do
-      rows[index] = { spans = row_spans(entry, cols), id = entry.id }
+      if index >= first and index <= last then
+        rows[index] = { spans = row_spans(entry, cols), id = entry.id }
+      else
+        rows[index] = { spans = {}, id = entry.id }
+      end
     end
-
-    local height = math.max(1, math.min(#rows, LIST_MAX))
     local body = widgets.list({
       rows = rows,
       selected = cursor,

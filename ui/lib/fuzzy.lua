@@ -29,12 +29,22 @@ local function chars(text)
   return out
 end
 
---- Where `query` matches `haystack`, or nil when it does not.
+--- A query compiled once, for matching against many haystacks.
+---
+--- `fuzzy.match` accepts either a string or one of these; the panes that match
+--- one query against every visible row compile it once per render instead of
+--- re-splitting the query into characters per field per row.
+function fuzzy.compile(query)
+  return chars(query)
+end
+
+--- Where `query` (a string, or a needle from [`fuzzy.compile`]) matches
+--- `haystack`, or nil when it does not.
 ---
 --- An empty query matches everything with no positions — "no filter" rather than
 --- "no results", which is what makes an empty search strip show the whole list.
 function fuzzy.match(query, haystack)
-  local needle = chars(query)
+  local needle = type(query) == "table" and query or chars(query)
   if #needle == 0 then
     return {}
   end
@@ -55,15 +65,17 @@ function fuzzy.match(query, haystack)
   return nil
 end
 
---- Does `query` match any of several fields? Returns the field name and its
---- positions, so a caller can say *where* it matched.
+--- Does `query` (string or compiled needle) match any of several fields?
+--- Returns the field name and its positions, so a caller can say *where* it
+--- matched.
 ---
 --- Ordered by the caller: the first field that matches wins, which is why the
 --- name is passed first — a row highlights its name when the name matched, and
 --- explains itself when something else did.
 function fuzzy.first(query, fields)
+  local needle = type(query) == "table" and query or chars(query)
   for _, field in ipairs(fields) do
-    local positions = fuzzy.match(query, field.text)
+    local positions = fuzzy.match(needle, field.text)
     if positions then
       return field.name, positions, field.text
     end

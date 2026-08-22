@@ -141,16 +141,42 @@ local function line_containing(text, needle)
   return nil
 end
 
+--- Per-session memo of the screen scan above.
+---
+--- The kernel already gates its side of the content pipeline on output
+--- generation; this is the Lua half. `line_containing` walks the whole grid
+--- text and lowercases every line, and it ran per session per frame while
+--- typing. Keyed on the content string and the query — string equality is a
+--- length check and a memcmp, far cheaper than the scan it prevents.
+local scan_cache = {}
+
+local function screen_hit(id, text, needle)
+  if not text or text == "" then
+    return nil
+  end
+  local cached = scan_cache[id]
+  if cached and cached.text == text and cached.query == needle then
+    return cached.hit or nil
+  end
+  local hit = line_containing(text, needle)
+  -- `false` remembers "scanned, no hit"; nil would re-scan every frame.
+  scan_cache[id] = { text = text, query = needle, hit = hit or false }
+  return hit
+end
+
 --- Every result for the current query, grouped by scope.
 ---
 --- An empty query yields every session, which is what makes the strip useful the
 --- moment it opens rather than only once you have typed something.
 local function results()
   local text = query()
+  local needle = fuzzy.compile(text)
   local content = screens()
   local rows = {}
+  local live = {}
   for _, session in ipairs(thurbox.sessions or {}) do
-    local field, positions, matched = fuzzy.first(text, fields_of(session))
+    live[session.id] = true
+    local field, positions, matched = fuzzy.first(needle, fields_of(session))
     if field then
       rows[#rows + 1] = {
         scope = "sessions",
@@ -166,7 +192,7 @@ local function results()
       -- Nothing in the metadata matched, so the screen is the last place to
       -- look. Only for sessions that did NOT already match, as v1 does: a
       -- session listed twice is one result pretending to be two.
-      local hit = line_containing(content[session.id], text)
+      local hit = screen_hit(session.id, content[session.id], text)
       if hit then
         rows[#rows + 1] = {
           scope = "sessions",
@@ -176,6 +202,12 @@ local function results()
           snippet = hit,
         }
       end
+    end
+  end
+  -- Scans for sessions that no longer exist would otherwise live forever.
+  for id in pairs(scan_cache) do
+    if not live[id] then
+      scan_cache[id] = nil
     end
   end
   return rows
@@ -342,21 +374,42 @@ end
 --- the cursor: selection is in RESULT space, because a header is not a thing you
 --- can pick — the theme picker had to be fixed for exactly this. So the mapping
 --- is returned rather than recomputed by the caller.
-local function result_rows(rows, cursor, width)
-  local lines, selected_line = {}, 1
+local function result_rows(rows, cursor, width, height)
+  -- Line numbers are assigned arithmetically first, then spans are built only
+  -- for the visible window: every result used to be fully rendered — fuzzy
+  -- spans, truncation and all — for a strip that shows a handful. The window
+  -- is the same `widgets.window` call the list itself makes over the same
+  -- (count, height, selected), so the two agree on which lines are on screen;
+  -- an off-window entry is a placeholder whose spans the list never reads.
+  local entries, selected_line = {}, 1
   local scope = nil
   for index, row in ipairs(rows) do
     if row.scope ~= scope then
       scope = row.scope
-      lines[#lines + 1] = {
-        spans = { { text = scope, style = { fg = theme.muted } } },
-        -- Not addressable: a click on a header must not resolve to a result.
-        id = "header:" .. scope,
-      }
+      entries[#entries + 1] = { header = scope }
     end
-    lines[#lines + 1] = result_line(row, index == cursor, width)
+    entries[#entries + 1] = { row = row, index = index }
     if index == cursor then
-      selected_line = #lines
+      selected_line = #entries
+    end
+  end
+
+  local first, last = widgets.window(#entries, height, selected_line)
+  local lines = {}
+  for at, entry in ipairs(entries) do
+    if at < first or at > last then
+      lines[at] = {
+        spans = {},
+        id = entry.header and ("header:" .. entry.header) or entry.row.id,
+      }
+    elseif entry.header then
+      lines[at] = {
+        spans = { { text = entry.header, style = { fg = theme.muted } } },
+        -- Not addressable: a click on a header must not resolve to a result.
+        id = "header:" .. entry.header,
+      }
+    else
+      lines[at] = result_line(entry.row, entry.index == cursor, width)
     end
   end
   return lines, selected_line
@@ -444,11 +497,13 @@ return {
       consumed = consumed + (child.len or 0)
     end
 
-    local lines, selected_line = result_rows(rows, search.cursor, math.max(0, width - 4))
+    local list_height = math.max(0, height - consumed)
+    local lines, selected_line =
+      result_rows(rows, search.cursor, math.max(0, width - 4), list_height)
     local list = widgets.list({
       rows = lines,
       selected = selected_line,
-      height = math.max(0, height - consumed),
+      height = list_height,
       empty = "  nothing matches",
     })
     list.fill = 1

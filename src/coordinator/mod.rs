@@ -221,7 +221,11 @@ impl App {
             .sessions
             .iter()
             .any(|row| row.status == "working")
-            || self.commands.has_inflight();
+            || self.commands.has_inflight()
+            // The creation flow spins over the repo store's reads too, and it
+            // is a pure pane: without the clock its "listing…"/"fetching…"
+            // spinner freezes for the life of a slow remote read.
+            || self.repos.in_flight();
         if !animating {
             return;
         }

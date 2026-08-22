@@ -285,10 +285,6 @@ local COLLAPSE_TOGGLE_MIN_WIDTH = 5
 local COLLAPSE_HINT_MIN_WIDTH = 40
 
 --- v1 renders a chord compactly: `^Q`, `⇧J`, `F7`. Mirrors `KeyChord::compact`.
----
---- Duplicated from `90_footer` rather than shared: a plugin is meant to be
---- replaceable on its own, and a `lib` entry read by two panes would make
---- swapping either one a two-file edit.
 local function compact_chord(chord)
   local modifiers, key = "", chord
   while true do
@@ -314,17 +310,39 @@ end
 --- v1 `compact_shortcut`: prefer a bare F-key over a chord, because a focused
 --- terminal passes bare `Ctrl+<letter>` through to the agent — so the F-key is
 --- the hint that works from where the user is standing.
+---
+--- Memoized on the published registry's identity: `thurbox.registry` is a
+--- gated group, so the same table object means the same bindings — and this
+--- runs from the border strip on every render, scanning every plugin's
+--- bindings each time.
+local shortcut_cache = { src = nil, by_action = {} }
+
 local function shortcut_for(action)
+  local registry = thurbox and thurbox.registry
+  local keys = (registry and registry.keys) or {}
+  if not rawequal(registry, shortcut_cache.src) then
+    shortcut_cache.src = registry
+    shortcut_cache.by_action = {}
+  end
+  local cached = shortcut_cache.by_action[action]
+  if cached ~= nil then
+    return cached or nil
+  end
   local first
-  for _, binding in ipairs((thurbox and thurbox.registry and thurbox.registry.keys) or {}) do
+  local found
+  for _, binding in ipairs(keys) do
     if binding.action == action and binding.key then
       if string.match(binding.key, "^f%d+$") then
-        return compact_chord(binding.key)
+        found = compact_chord(binding.key)
+        break
       end
       first = first or binding.key
     end
   end
-  return first and compact_chord(first) or nil
+  found = found or (first and compact_chord(first))
+  -- `false` marks "looked, nothing bound", so a miss is remembered too.
+  shortcut_cache.by_action[action] = found or false
+  return found
 end
 
 --- v1 `button_style`: the active view is the accent-filled "primary" chip, the

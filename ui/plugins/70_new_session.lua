@@ -191,11 +191,39 @@ end
 ---
 --- A search expands every group, as v1's does — a match hidden inside a
 --- collapsed folder would be unfindable.
+---
+--- Memoized: a single keystroke can ask for the rows several times (the
+--- renderer, `current_row` in three action branches, the click resolver), and
+--- each walk fuzzy-matches every bookmark. The published rows are a gated
+--- group, so their table identity keys the memo; the collapsed set is tiny and
+--- digested by value because `state` hands back a fresh table on every read.
+local rows_cache = {}
+
+local function collapsed_digest(collapsed)
+  local parts = {}
+  for path in pairs(collapsed or {}) do
+    parts[#parts + 1] = path
+  end
+  table.sort(parts)
+  return table.concat(parts, "\1")
+end
+
 local function rows_for(flow)
+  local published = bookmarks().rows or {}
   local query = flow.search and (flow.search.value or "") or ""
+  local folded = collapsed_digest(flow.collapsed)
+  if
+    rows_cache.entries
+    and rawequal(published, rows_cache.published)
+    and query == rows_cache.query
+    and folded == rows_cache.folded
+  then
+    return rows_cache.entries
+  end
+
   local searching = query ~= ""
   local out = {}
-  for _, row in ipairs(bookmarks().rows or {}) do
+  for _, row in ipairs(published) do
     local hidden = row.parent ~= nil and not searching and flow.collapsed[row.parent] == true
     -- Spelled as a branch rather than `searching and fuzzy(...) or {}`: a MISS is
     -- nil, and `nil or {}` is an empty table — which reads as "matched nothing"
@@ -221,6 +249,7 @@ local function rows_for(flow)
       out[#out + 1] = { row = row, matched = matched }
     end
   end
+  rows_cache = { published = published, query = query, folded = folded, entries = out }
   return out
 end
 
@@ -457,7 +486,7 @@ local function render_host(flow)
     { type = "box", len = height, children = selector_rows(labels, flow.host_index, height) },
     message_row(flow),
     footer({ { "j/k", "navigate" } }, "Select"),
-  })
+  }, flow)
 end
 
 local REPO_LIST_MAX = 10
@@ -731,7 +760,7 @@ local function render_repo(flow)
   for _, child in ipairs(children) do
     height = height + (child.len or 1)
   end
-  return modal("Select Repos", height, children)
+  return modal("Select Repos", height, children, flow)
 end
 
 local function render_branch(flow)
@@ -749,7 +778,7 @@ local function render_branch(flow)
       },
       message_row(flow),
       footer({ { "esc", "cancel" } }, "Select"),
-    })
+    }, flow)
   end
   local height = math.min(#names, REPO_LIST_MAX)
   return modal("Base Branch", height + 4, {
@@ -760,7 +789,7 @@ local function render_branch(flow)
     },
     message_row(flow),
     footer({ { "j/k", "navigate" } }, "Select"),
-  })
+  }, flow)
 end
 
 local function render_field(title, label, field, flow, placeholder)
@@ -980,6 +1009,17 @@ return {
   -- Never in the focus ring, so `tab` cannot land on a closed flow — v1's
   -- pickers are modals for the same reason.
   focusable = false,
+  -- Pure DESPITE the render's store/state writes, which is worth spelling out:
+  -- a skipped render skips its writes, and that is safe here because every one
+  -- of them is a function of inputs already in the cache key. The `ask` wants
+  -- derive from the flow (state version), so a skipped render would only have
+  -- re-written identical values — the kernel re-reads the persisted store keys
+  -- each publish either way. The fork handover and `select_newest` consumption
+  -- are transitions whose triggering writes (store.fork, the bookmark command
+  -- landing) bump the state version or the epoch first, so the frame that must
+  -- run always misses the cache. Floats render every frame even while closed;
+  -- this is what makes the closed flow actually cost nothing.
+  pure = true,
 
   keys = {
     -- v1's `Ctrl+N`, and like v1 NOT a passthrough chord: a focused agent does

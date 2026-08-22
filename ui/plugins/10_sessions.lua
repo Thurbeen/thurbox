@@ -114,17 +114,28 @@ end
 
 --- Coalesce the buffer back into spans. Styles are compared by identity, which
 --- is exact here because every segment is painted with one shared style table.
+---
+--- Each run's characters accumulate in a buffer and concatenate once at flush:
+--- a border row is mostly one long run of `─`, and appending to a string per
+--- cell was O(width²) byte copying — ~200 intermediate strings per border at
+--- 200 columns, twice per render.
 local function cells_to_spans(cells)
-  local spans, current, current_style = {}, nil, nil
-  for _, cell in ipairs(cells) do
-    if current and cell.style == current_style then
-      current.text = current.text .. cell.ch
-    else
-      current = { text = cell.ch, style = cell.style }
-      current_style = cell.style
-      spans[#spans + 1] = current
+  local spans, buffer, current_style = {}, nil, nil
+  local function flush()
+    if buffer then
+      spans[#spans + 1] = { text = table.concat(buffer), style = current_style }
     end
   end
+  for _, cell in ipairs(cells) do
+    if buffer and cell.style == current_style then
+      buffer[#buffer + 1] = cell.ch
+    else
+      flush()
+      buffer = { cell.ch }
+      current_style = cell.style
+    end
+  end
+  flush()
   return spans
 end
 
@@ -334,11 +345,48 @@ local function grouped()
   return plugin_settings.enabled("sessions", "group_by_repo", true)
 end
 
+--- Digest of the published in-flight commands, for the model memo below.
+---
+--- `thurbox.sessions` is a gated group, so its table identity is a sound memo
+--- key — but `thurbox.commands` is rebuilt every publish, so it is digested by
+--- value instead. Commands in flight are few, so the digest is far cheaper
+--- than the rebuild it prevents.
+local function commands_digest()
+  local parts = {}
+  for _, item in ipairs(thurbox and thurbox.commands or {}) do
+    parts[#parts + 1] = (item.kind or "")
+      .. "\1"
+      .. (item.session or "")
+      .. "\1"
+      .. (item.subject or "")
+      .. "\1"
+      .. (item.phase or "")
+  end
+  return table.concat(parts, "\2")
+end
+
+local model_cache = {}
+
 local function build_model(rows)
+  -- Memoized: this walks and sorts every row and runs again per render AND per
+  -- click/action, so the same inputs must not pay twice. Consumers treat the
+  -- returned items as read-only, which is what makes sharing the table safe.
+  local digest = commands_digest()
+  local headers = grouped()
+  if
+    model_cache.items ~= nil
+    and rawequal(rows, model_cache.rows)
+    and digest == model_cache.digest
+    and headers == model_cache.headers
+  then
+    return model_cache.items
+  end
+
   local items = {}
   -- Dropped before anything is grouped or ordered, so every consumer of the
   -- model agrees: the cursor lands on the next row, the border dots lose one,
   -- and a group whose last session went takes its header with it.
+  local all_rows = rows
   rows = live_sessions(rows)
 
   local groups, by_key = ordered_groups(rows)
@@ -368,7 +416,17 @@ local function build_model(rows)
     end
 
     -- Children nest under their parent, within the same repo group, keeping the
-    -- manual order among siblings and among roots.
+    -- manual order among siblings and among roots. Indexed by parent up front:
+    -- scanning the member list per emitted member made the walk O(members²).
+    local children = {}
+    for _, index in ipairs(group.members) do
+      local parent = rows[index].parent
+      if parent then
+        children[parent] = children[parent] or {}
+        table.insert(children[parent], index)
+      end
+    end
+
     local nested, seen = {}, {}
     local function emit(index, depth)
       local session = rows[index]
@@ -377,10 +435,8 @@ local function build_model(rows)
       end
       seen[session.id] = true
       nested[#nested + 1] = { index = index, depth = depth }
-      for _, other in ipairs(group.members) do
-        if rows[other].parent == session.id then
-          emit(other, depth + 1)
-        end
+      for _, other in ipairs(children[session.id] or {}) do
+        emit(other, depth + 1)
       end
     end
     for _, index in ipairs(group.members) do
@@ -402,7 +458,7 @@ local function build_model(rows)
           and parent ~= nil
           and parent ~= session.id
           and visible[parent] == true,
-        header = (first and grouped()) and group.label or nil,
+        header = (first and headers) and group.label or nil,
         target = session.id,
       }
       first = false
@@ -418,13 +474,17 @@ local function build_model(rows)
         -- numerically, and `nil` there is not a shallow row -- it is an error that
         -- takes the pane down on Shift+J/K/S while a session is being created.
         depth = 0,
-        header = (first and grouped()) and group.label or nil,
+        header = (first and headers) and group.label or nil,
         target = false,
       }
       first = false
     end
   end
 
+  model_cache.rows = all_rows
+  model_cache.digest = digest
+  model_cache.headers = headers
+  model_cache.items = items
   return items
 end
 
@@ -515,11 +575,14 @@ end
 --- Where the query hits a session's name, or nil when the row does not match at
 --- all. `false` means it matched on something else — the row stays lit but its
 --- name carries no marks.
-local function name_hits(session, text)
-  if not text then
+---
+--- `search` is the render-level `{ text, needle }` pair: the needle is compiled
+--- once per render rather than re-split per field per row.
+local function name_hits(session, search)
+  if not search then
     return nil
   end
-  local positions = fuzzy.match(text, session.name or "")
+  local positions = fuzzy.match(search.needle, session.name or "")
   if positions then
     return positions
   end
@@ -531,14 +594,14 @@ local function name_hits(session, text)
   -- same frame, and only for sessions without a branch, which is why the one
   -- worktree session in a review capture looked like the only correct row.
   for _, field in ipairs({ session.agent or "", session.branch or "", session.repo or "" }) do
-    if field ~= "" and fuzzy.match(text, field) then
+    if field ~= "" and fuzzy.match(search.needle, field) then
       return false
     end
   end
   return nil
 end
 
-local function session_line(item, inner_width, elapsed, is_selected, work)
+local function session_line(item, inner_width, elapsed, is_selected, work, search)
   local session = item.session
   local glyph, glyph_color = status_glyph(session.status, elapsed)
   local status_style = { fg = glyph_color }
@@ -587,8 +650,7 @@ local function session_line(item, inner_width, elapsed, is_selected, work)
   end
 
   -- Never truncated: the name is the row's anchor, and overflow clips.
-  local query = search_query()
-  local hits = name_hits(session, query)
+  local hits = name_hits(session, search)
   local name_style = is_selected and { fg = theme.role("selection_fg"), bold = true }
     or { fg = theme.text }
   -- Which spans the search highlight owns, by position in `spans`. The overlays
@@ -614,7 +676,7 @@ local function session_line(item, inner_width, elapsed, is_selected, work)
   -- A row nothing matched is dimmed rather than hidden: v1 keeps every row on
   -- screen and lets the contrast do the filtering, so the list never jumps
   -- around under a cursor you are still moving.
-  if query and hits == nil then
+  if search and hits == nil then
     patch_spans(spans, { fg = theme.muted, bold = false, underline = false })
   end
 
@@ -1201,6 +1263,11 @@ return {
     local list = sessions()
     local items = build_model(list)
     local busy = pending()
+    -- The live query, read once per render and compiled once: `session_line`
+    -- runs per visible row, and each used to re-read the store and re-split
+    -- the query per field.
+    local query = search_query()
+    local search = query and { text = query, needle = fuzzy.compile(query) } or nil
 
     -- Keep the cursor on the session it was on, not on a row number.
     --
@@ -1254,13 +1321,17 @@ return {
       end
     end
 
+    -- One edge node shared by every row this render: the `│` cells are
+    -- identical within a frame, and building two four-deep tables per row was
+    -- pure churn (the agent pane's `edge` upvalue is the same pattern).
+    local edge = { type = "text", len = 1, text = { { { text = "│", style = frame_style } } } }
     local function row(spans, id, class)
       return {
         type = "box",
         axis = "horizontal",
         len = 1,
         children = {
-          { type = "text", len = 1, text = { { { text = "│", style = frame_style } } } },
+          edge,
           {
             type = "text",
             fill = 1,
@@ -1272,7 +1343,7 @@ return {
             -- border cells.
             role = id and "row" or nil,
           },
-          { type = "text", len = 1, text = { { { text = "│", style = frame_style } } } },
+          edge,
         },
       }
     end
@@ -1331,7 +1402,8 @@ return {
                 inner_width,
                 ctx.elapsed,
                 index == cursor,
-                busy[item.session.id]
+                busy[item.session.id],
+                search
               ),
               id = item.session.id,
               class = "session-row",

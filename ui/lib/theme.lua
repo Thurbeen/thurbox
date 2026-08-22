@@ -12,8 +12,22 @@
 
 local theme = {}
 
+-- Resolved on access so a theme change is picked up on the next frame, and
+-- memoized on the published table's identity: `thurbox.theme` is a gated
+-- group, so seeing the same table object again means the same roles. Without
+-- the memo every `theme.muted`-style access walks thurbox → theme → roles —
+-- dozens of crossings per rendered row.
+local cached_theme, cached_roles
 local function roles()
-  return (thurbox and thurbox.theme and thurbox.theme.roles) or {}
+  local src = thurbox and thurbox.theme
+  if src == nil then
+    return {}
+  end
+  if not rawequal(src, cached_theme) then
+    cached_theme = src
+    cached_roles = src.roles or {}
+  end
+  return cached_roles
 end
 
 --- A role's colour, or nil when the active theme does not define it.
@@ -52,30 +66,33 @@ setmetatable(theme, {
   end,
 })
 
+-- Hoisted: `theme.status` runs once per rendered row (and again per border
+-- dot), and building these two tables per call was three allocations each time.
+local STATUS_GLYPHS = {
+  working = "◐",
+  blocked = "◆",
+  done = "●",
+  idle = "○",
+  error = "✗",
+  unreachable = "⊘",
+}
+local STATUS_ROLES = {
+  working = "status_working",
+  blocked = "status_blocked",
+  done = "status_done",
+  idle = "status_idle",
+  error = "status_error",
+  unreachable = "status_unreachable",
+}
+
 --- Glyph and colour for a session status.
 ---
 --- Colour comes from the theme's own status roles, so a theme that recolours
 --- "blocked" recolours it here without this file changing.
 function theme.status(name)
-  local glyphs = {
-    working = "◐",
-    blocked = "◆",
-    done = "●",
-    idle = "○",
-    error = "✗",
-    unreachable = "⊘",
-  }
-  local role = {
-    working = "status_working",
-    blocked = "status_blocked",
-    done = "status_done",
-    idle = "status_idle",
-    error = "status_error",
-    unreachable = "status_unreachable",
-  }
   return {
-    glyph = glyphs[name] or glyphs.idle,
-    color = roles()[role[name] or "status_idle"],
+    glyph = STATUS_GLYPHS[name] or STATUS_GLYPHS.idle,
+    color = roles()[STATUS_ROLES[name] or "status_idle"],
   }
 end
 

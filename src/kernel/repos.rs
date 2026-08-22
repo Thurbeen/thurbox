@@ -268,6 +268,25 @@ impl RepoStore {
         self.hosts.resolve(key)
     }
 
+    /// Whether any read is still on its way — a bookmark refresh, a pending
+    /// listing, or a pending branch fetch.
+    ///
+    /// The animation clock asks: the creation flow draws a spinner over each of
+    /// these, and a clock that moved only for in-flight *commands* would freeze
+    /// them mid-spin — the flow is a pure pane, so its tree is reused until the
+    /// epoch moves.
+    pub fn in_flight(&self) -> bool {
+        !self.bookmarks_inflight.is_empty()
+            || self
+                .listings
+                .values()
+                .any(|held| matches!(held.listing, Listing::Pending))
+            || self
+                .branches
+                .values()
+                .any(|held| matches!(held.branches, Branches::Pending))
+    }
+
     /// The rows for `host`, once they have been asked for.
     pub fn bookmarks(&self, host: &str) -> Option<&[BookmarkRow]> {
         self.bookmarks.get(host).map(|held| held.rows.as_slice())
