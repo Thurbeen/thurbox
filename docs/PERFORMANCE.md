@@ -974,10 +974,11 @@ Quantising the published *value* rather than delaying the signal is what keeps
 replaced was also covering git stats landing in the same branch, so
 `attach_git_stats` now reports whether it changed a row. Idle 3.57% -> 3.33%.
 
-**Still open**: the Lua boundary genuinely paid, the node paint, and `publish`'s
-remaining volatile groups (hover, commands, inventory, diffs, links, content,
-metrics, runs). Note throughout that repaints are output-driven, so a cheaper
-frame partly becomes *more* frames rather than less CPU.
+**Still open** *(closed by ADR-P18)*: the Lua boundary genuinely paid, the node
+paint, and `publish`'s remaining volatile groups (hover, commands, inventory,
+diffs, links, content, metrics, runs). Note throughout that repaints are
+output-driven, so a cheaper frame partly becomes *more* frames rather than less
+CPU.
 
 ---
 
@@ -1101,6 +1102,71 @@ the same ones ADR-P13 already treats as per-frame costs.
   the cost this avoids, spread thinner.
 - *Not publishing before input at all* — a handler would read the previous frame's
   world, and a key pressed on what a frame showed has to act on what that frame showed.
+
+---
+
+## ADR-P18: Close the volatile groups, and every cache carries its age (2026-08-23)
+
+**Context**: ADR-P16 gated the big published groups and ADR-P17 split the frame
+floors, leaving a named list of "remaining volatile groups" rebuilt on every
+publish — the worst being `diffs`, which republished up to `MAX_DIFF_BYTES` of
+body line by line, every frame, forever once computed. Beside them stood a set
+of per-frame costs the earlier ADRs had not reached: a pure-pane cache *hit*
+still deep-cloned its tree twice, the frame buffer was cloned whole per paint,
+the OSC 8 repaint re-walked a vt100 grid per frame per linked session, the
+arrangement re-ran through Lua per frame, and one cache — `DiffStore` — still
+violated ADR-P13's rule outright, holding its first answer for the life of the
+process. Off the frame path, a claiming `DELETE` ran on the UI thread every
+loop iteration (a write-lock acquisition per 10 ms, with a 5 s busy-timeout
+stall as its worst case), and every ssh invocation paid a full handshake.
+
+**Choice**: one pass, four families, no new mechanism — the existing signals
+were enough:
+
+- **Every published group is gated.** `diffs`, `links`, `content`, `commands`
+  and `metrics` key on the data epoch (which moves on every worker result and
+  command transition, and deliberately never on agent output — so a streaming
+  turn reuses them all) paired with the snapshot version; the creation flow's
+  three parameterised reads pair the epoch with an FNV digest of the question,
+  which also gives their tables the stable identity the flow's own memoization
+  keys on; the interface inventory keys on a digest of its rows; `hover` reuses
+  one shared empty table while nothing is hovered; the roots map follows the
+  snapshot version. The arrangement result is cached on
+  (size, reloads, epoch, state version, status rows) — everything `layout.lua`
+  can consult.
+- **The tree path stopped cloning.** `Rendered.node` is an `Rc<Node>`: a pure
+  cache hit is a refcount bump, the settle diff short-circuits on pointer
+  identity before walking a node, the last-tree stores skip when the held tree
+  is already equal, and decoration clones only when a decorator claims the
+  slot. Painting borrows (`to_line` yields `Line<'a>`), the frame buffer is
+  read in place instead of cloned to end a borrow, the band settle stores a
+  hash instead of the cells, and the per-plugin index lists (focusable,
+  floating, slot members, slot modes) are built once per reload instead of
+  scanned with an allocation per query per frame.
+- **Every cache now carries its age.** `DiffStore` holds `(at, diff,
+  refreshing)` mirroring `repos`: a settled answer expires after `DIFF_TTL`
+  (failures retry sooner) with the old answer still published while the
+  recompute runs. The screen-row extraction the link scan, click resolve and
+  OSC 8 repaint all want is computed once per output stamp and shared.
+- **The world got cheaper to ask.** ssh multiplexes by default
+  (`ControlMaster=auto` behind the existing first-occurrence-wins contract);
+  worktree stats read one `status --porcelain=v2 --branch` instead of 5–8
+  processes; untracked diffs render counts and patch from one invocation;
+  `hosts.toml` loads once per process; pane pids resolve through one
+  `list-panes` per backend per second instead of one serialized round trip per
+  session; the focus-request `DELETE` rides the snapshot's `data_version`
+  gate; `upsert_session` is one transaction instead of N+5 autocommits; the
+  bookmarks worker reopens the database without replaying the schema pass.
+
+**Consequences**: under a streaming agent the publish is now group reuse plus
+the one pane whose surface moved — the terminal grid conversion ADR-P17 names
+is the remaining line item. The rules this doc states are finally uniform:
+every group is change-gated, and there is no cache without an age (the one
+deliberate exemption, `REPO_NAME_CACHE`, keys on a repository's origin URL,
+which does not move within a process's lifetime). The failure mode to guard in
+review is unchanged from ADR-P16: a store that mutates without moving its
+signal — which is why kernel-side `store` writes now bump the state version
+exactly as the Lua path does, the bug the focus request used to hit.
 
 ---
 

@@ -2,7 +2,7 @@
 //!
 //! Pure classification over a configured command string: no spawning, no
 //! settings lookup, no interface. It sits beside `open_editor`'s launcher
-//! (`main.rs`), its only caller, because the verdict matters there: a GUI
+//! (`chrome.rs`), its only caller, because the verdict matters there: a GUI
 //! launcher handed a TTY misbehaves, and a terminal editor spawned detached
 //! vanishes.
 

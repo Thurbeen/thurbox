@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::agent::SessionBackend;
+use crate::session::HostRegistry;
 
 /// A registry of session backends keyed by name.
 ///
@@ -28,6 +29,29 @@ impl BackendRegistry {
             backends,
             default_name: name,
         }
+    }
+
+    /// The registry as a running interface needs it: the local multiplexer as
+    /// the default plus one backend per configured or discovered host — the
+    /// same construction the v1 binary did by hand.
+    ///
+    /// Backends are registered, never readied: registration is a map insert,
+    /// where readying is a blocking connect (an ssh round trip for a remote
+    /// host), so a down host must not be probed until a session on it is
+    /// actually attached. The `HostRegistry` comes back alongside because a
+    /// pane needs more than a connection — a remote session's launch directory
+    /// resolves against its `HostDef` — and both halves must come from the same
+    /// read of `hosts.toml`. The warnings are that read's, for callers that
+    /// surface them.
+    pub fn from_configured_hosts() -> (Self, HostRegistry, Vec<String>) {
+        let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::LocalTmuxBackend::new());
+        let mut backends = Self::new(local);
+        let (hosts, warnings) = crate::agent::host_config::cached_registry();
+        let hosts = hosts.clone();
+        for host in &hosts.hosts {
+            backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(host)));
+        }
+        (backends, hosts, warnings.clone())
     }
 
     /// Register an additional backend. Its `name()` is used as the key.

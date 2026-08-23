@@ -592,13 +592,8 @@ fn fire_spawn(
         worktree_branch: worktree_branch.clone(),
         base_branch: base_branch.clone(),
         agent: agent.clone(),
-        agent_session_id: None,
-        host: None,
-        parent_session_id: None,
-        task_id: None,
         extra_repos: extra_repos.to_vec(),
-        fork_session_id: None,
-        inherit_worktrees: Vec::new(),
+        ..Default::default()
     };
     match action::spawn_and_deliver(db, &name, req, &auto.prompt) {
         Ok(session_id) => (

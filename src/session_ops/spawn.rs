@@ -14,7 +14,12 @@ const DEFAULT_BASE_BRANCH: &str = "main";
 const LOCAL_TMUX_BACKEND_TYPE: &str = "local-tmux";
 
 /// Request to create a new headless session.
-#[derive(Debug, Clone)]
+///
+/// `Default` so call sites state only what they mean: six of the twelve fields
+/// are optional refinements most spawns never set, and before this every one
+/// of seven call sites across four modules restated all of them — a new field
+/// churned them all.
+#[derive(Debug, Clone, Default)]
 pub struct SpawnRequest {
     /// Session name (used for the tmux window `tb-<name>`).
     pub name: String,
@@ -982,16 +987,7 @@ mod tests {
         SpawnRequest {
             name: name.into(),
             repo_path: PathBuf::from("/tmp"),
-            worktree_branch: None,
-            base_branch: None,
-            agent: None,
-            agent_session_id: None,
-            host: None,
-            parent_session_id: None,
-            task_id: None,
-            extra_repos: Vec::new(),
-            fork_session_id: None,
-            inherit_worktrees: Vec::new(),
+            ..Default::default()
         }
     }
 

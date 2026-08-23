@@ -113,16 +113,8 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
                     crate::session_ops::SpawnRequest {
                         name: sess.name.clone(),
                         repo_path: sess.repo_path.clone(),
-                        worktree_branch: None,
-                        base_branch: None,
                         agent: Some(sess.agent.clone()),
-                        agent_session_id: None,
-                        host: None,
-                        parent_session_id: None,
-                        task_id: None,
-                        extra_repos: Vec::new(),
-                        fork_session_id: None,
-                        inherit_worktrees: Vec::new(),
+                        ..Default::default()
                     },
                 )?;
                 report.sessions_created.push(sess.name.clone());

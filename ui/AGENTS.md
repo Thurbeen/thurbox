@@ -87,6 +87,30 @@ pills = { { action = "mine.open", label = "Mine", priority = 10 } },
 `plugin check` warns about a pane in that state and `plugin install` says it when you
 install one — neither fails, because you may have meant it.
 
+## Make the pane cost what changed, not what exists
+
+`render` runs on the UI thread up to thirty times a second. Three habits keep a
+pane from being the thing that makes the whole interface feel slow:
+
+- **Declare `pure = true` unless the render writes.** The kernel then reuses
+  your last tree until something you read changes, and skips your Lua on every
+  other frame. It is only wrong if `render` writes `store`/`state` or calls
+  `command` — move those into `on_key`/`on_action`/`on_click`. Floats
+  especially: a float renders every frame *even while closed*.
+- **Memoize on table identity.** The published groups (`thurbox.sessions`,
+  `thurbox.theme`, `thurbox.registry`, `thurbox.bookmarks`, …) keep the *same
+  table* until their data moves, so `rawequal(thurbox.sessions, cache.src)` is
+  a sound one-comparison test that a derived model is still valid.
+  `10_sessions`'s model and the flow's row cache are the pattern to copy.
+- **Window first, build second.** Compute the visible rows (`widgets.window`)
+  before building spans; hoist `store` reads, `theme.role` lookups and
+  `fuzzy.compile(query)` out of per-row loops; accumulate wide strings through
+  a table (`table.concat`), never `s = s .. piece` across a row.
+
+`F12` opens the perf HUD. `renders` climbing while you touch nothing means a
+pane is not settling — usually an impure render, or a per-frame `store` write
+of a fresh table (writing the same *value* is free; a new table never is).
+
 ## What you cannot do from a pane
 
 - **No `os`, `io`, `debug`, `package`, `print`, `dofile`, `load`.** They are not

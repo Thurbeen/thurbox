@@ -209,10 +209,7 @@ fn create(
         worktree_branch: branch.clone(),
         base_branch: base.clone(),
         agent: agent.clone(),
-        agent_session_id: None,
         host: host.clone(),
-        parent_session_id: None,
-        task_id: None,
         // Each extra either takes its own worktree on the shared branch — off
         // its own base, which here is the session's — or is attached as it is.
         // Two or more members is what makes the agent launch in a symlink
@@ -225,8 +222,7 @@ fn create(
                 base_branch: None,
             })
             .collect(),
-        fork_session_id: None,
-        inherit_worktrees: Vec::new(),
+        ..Default::default()
     };
     // Report each stage, so a slow creation says *which* part is slow: a
     // stalled fetch and a stalled ssh connect look identical otherwise.
@@ -408,22 +404,19 @@ fn fork(db: &Database, id: SessionId, name: &str) -> Result<(), String> {
     let request = crate::session_ops::spawn::SpawnRequest {
         name,
         repo_path,
-        // No new worktree: a fork works beside its parent, on the same branch.
-        worktree_branch: None,
-        base_branch: None,
+        // No new worktree (the defaults): a fork works beside its parent, on
+        // the same branch.
         agent: Some(source.agent.clone()),
-        agent_session_id: None,
         // A fork of a remote session belongs on that session's host, or it would
         // silently become a local session pointed at a path that is not here.
         host: host_name_for(&source.backend_type),
         parent_session_id: Some(source.id),
-        task_id: None,
-        extra_repos: Vec::new(),
         // What actually makes it a fork: the agent resumes the parent's
         // conversation into a new one (`fork_args`).
         fork_session_id: source.agent_session_id.clone(),
         // Shared, not created — so the fork shows its branch and can be synced.
         inherit_worktrees: source.worktrees.clone(),
+        ..Default::default()
     };
     crate::session_ops::spawn::spawn_session_headless(db, request).map(|_| ())
 }
@@ -591,16 +584,8 @@ fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(
             let request = crate::session_ops::spawn::SpawnRequest {
                 name: format!("task-{task_id}"),
                 repo_path: repo,
-                worktree_branch: None,
-                base_branch: None,
-                agent: None,
-                agent_session_id: None,
-                host: None,
-                parent_session_id: None,
                 task_id: Some(task_id),
-                extra_repos: Vec::new(),
-                fork_session_id: None,
-                inherit_worktrees: Vec::new(),
+                ..Default::default()
             };
             let spawned = crate::session_ops::spawn::spawn_session_headless(db, request)?;
             // The agent needs a moment to be ready for input; sending into a

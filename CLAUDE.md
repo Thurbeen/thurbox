@@ -176,18 +176,27 @@ asked for by leaving a key in `store`), `kernel::runs`, `kernel::updates`.
 Cached answers carry an **age**, not just a value. The mistake this repeatedly
 invited was storing "we have an answer" where "the answer is current" was needed:
 git stats froze at their first reading, a `run` refresh started a process per frame,
-a failed branch fetch stuck for the process lifetime, and a backend surveyed once
-was treated as surveyed since. Each is now a TTL, an in-flight marker, or a
-generation counter — if you add a cache here, give it one.
+a failed branch fetch stuck for the process lifetime, a backend surveyed once
+was treated as surveyed since, and a session's diff held its first computation
+for the life of the process. Each is now a TTL, an in-flight marker, or a
+generation counter — if you add a cache here, give it one (ADR-P13/P18; the one
+exemption, the repo-name cache, keys on an origin URL that cannot move within a
+process).
 
 `republish` — the one call that rebuilds every `thurbox.*` table — runs once per
 painted frame and **once per input batch**, not once per event: a held-down key
-otherwise paid for it per repeat. Within it each group is **gated on a
+otherwise paid for it per repeat. Within it **every** group is **gated on a
 change-signal** (`SnapshotStore::version`, `Themes`/`Registry::version`,
-`Terminals::meta_version`/`failed_version`, and the loop's `data_epoch`), so a
-group whose inputs did not move is not rebuilt; and a pane that declares
-`pure = true` has the tree it last returned reused instead of being run at all.
-Both are ADR-P16, and both rest on one rule: a signal is bumped **inside** the
+`Terminals::meta_version`/`failed_version`, and the loop's `data_epoch` — which
+moves on every worker result and command transition and deliberately never on
+agent output, so a streaming turn reuses `diffs`, `links`, `content`,
+`commands` and `metrics` whole; the parameterised reads pair the epoch with a
+digest of the question, which is also what gives their tables the stable
+identity the panes' own `rawequal` memos key on). A group whose inputs did not
+move is not rebuilt; and a pane that declares
+`pure = true` has the tree it last returned reused — a cache hit is a refcount
+bump on an `Rc` tree, and the settle diff short-circuits on pointer identity.
+This is ADR-P16 closed out by ADR-P18, and it all rests on one rule: a signal is bumped **inside** the
 mutation and only when the value actually changed — writing an unchanged value
 counts as no change, which is the difference between the gate saving 27% and
 saving nothing. The **animation clock** obeys it too: it lives in the epoch and
@@ -197,9 +206,11 @@ itself slows its input poll to `IDLE_TICK` once nothing has happened for
 `QUIESCENT_AFTER` — free, because `event::poll` returns the instant an event
 arrives, so only things that never wake the thread are delayed.
 
-The three reads in `republish` that touch a screen or the
+The reads in `republish` that touch a screen or the
 disk carry the age above (ADR-P14): link extraction is keyed on that session's
-`output_stamp` **and limited to surfaces actually on screen** (a link nothing
+`output_stamp` **and limited to surfaces actually on screen** — and the row
+extraction itself is computed once per output stamp and shared by the link
+scan, the click-time URL resolve and the OSC 8 repaint (a link nothing
 painted can be neither clicked nor handed to the outer terminal, and the scan
 walks a whole vt100 grid — doing it for every live pane cost ~1.2ms a frame with
 three of them), the search content scan on `output_generation`, and the interface
@@ -1319,7 +1330,11 @@ other session on that host shares. The reliable signal is `has_exited()`: with
 `remain-on-exit=on` a clean agent exit keeps its pane alive (no reader EOF), so a
 remote reader hitting EOF means the host/SSH connection dropped. This composes
 with the fail-fast SSH hardening (`crate::shell::SSH_HARDENING_OPTS` =
-`BatchMode=yes` + `ConnectTimeout` + `ServerAlive*`), which stops a broken host
+`BatchMode=yes` + `ConnectTimeout` + `ServerAlive*`; plus
+`SSH_MULTIPLEX_OPTS` — `ControlMaster=auto` with a socket under `~/.ssh` —
+whenever that directory exists, so repeated probes and git calls reuse one
+connection; both sets are appended after the user's `ssh_opts`, whose first
+occurrence wins), which stops a broken host
 from prompting for a password on the TUI's terminal or hanging the render loop.
 
 The live session list **animates** the `Working` spinner. The frames are
@@ -1601,10 +1616,17 @@ already follow.
 - **`coordinator/`** — `main`'s own body. `App` and its state stay in
   `main.rs`; its behaviour is here, grouped by what it is for: the loop and its
   workers (`mod`), then `commands`, `publish`, `draw`, `input`, `mouse`, `focus`
-  and `interface`. Still one model and one loop — splitting `App` itself is what
-  ADR-22 rejected, and the invariants that matter hold *across* these groups.
+  and `interface` — plus `boot` (the startup sequence `main` delegates to),
+  `chrome` (the terminal/error-panel/perf-HUD helpers) and `editor` (the
+  `Ctrl+O` command resolution). Still one model and one loop — splitting `App`
+  itself is what ADR-22 rejected, and the invariants that matter hold *across*
+  these groups.
 - **`ui/`** (Lua, not Rust) — `layout.lua` is the arrangement; `lib/` holds
-  widgets, theme roles, fuzzy match, text input, trees; `plugins/` holds the panes.
+  widgets, theme roles, fuzzy match, text input, trees — plus the extracted
+  pane halves: `chrome` (borders/cells), `modal` (frame + footer), `scroll`,
+  `order` and `session_model` (the session list's model, with its memo),
+  `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
+  panes.
 - **`cli/`** — `thurbox-cli` subcommands, including `plugin dir|new|check|list|install|sync|update|remove`
   for writing an interface with no TTY.
 

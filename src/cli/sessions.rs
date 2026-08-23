@@ -180,13 +180,10 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 worktree_branch,
                 base_branch,
                 agent,
-                agent_session_id: None,
                 host,
                 parent_session_id,
-                task_id: None,
                 extra_repos,
-                fork_session_id: None,
-                inherit_worktrees: Vec::new(),
+                ..Default::default()
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
             let human = format!(

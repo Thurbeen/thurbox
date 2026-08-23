@@ -4,7 +4,9 @@
 //! is the one type here. Its methods are split across this directory by *what
 //! they are for*, because a hundred of them in one `impl` block was not a
 //! surface anybody reviews: the loop and its workers here, then `commands`, `publish`,
-//! `draw`, `input`, `mouse`, `focus` and `interface`.
+//! `draw`, `input`, `mouse`, `focus` and `interface` — plus `boot` (the startup
+//! sequence `main` delegates to) and `chrome` (the free helpers for the
+//! terminal, the error panel and the perf HUD).
 //!
 //! The split is by file only. There is still exactly one model and one loop —
 //! splitting `App` itself into several would be the mistake ADR-22 already
@@ -12,6 +14,8 @@
 //! matter (a frame settles, focus never rests on a hidden pane, a command's
 //! result reaches the pane that asked) hold *across* these groups.
 
+pub(crate) mod boot;
+pub(crate) mod chrome;
 mod commands;
 mod draw;
 pub(crate) mod editor;
@@ -22,6 +26,10 @@ mod mouse;
 mod publish;
 
 use super::*;
+
+// The chrome helpers keep their bare names at every call site in this
+// directory, which is where all of them live.
+pub(crate) use chrome::*;
 
 impl App {
     pub(crate) fn run(&mut self, mut terminal: DefaultTerminal) -> Result<(), Box<dyn Error>> {

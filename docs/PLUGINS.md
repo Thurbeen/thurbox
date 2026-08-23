@@ -174,6 +174,38 @@ Every letter your pane declares is a letter somebody will type into a search box
 The flow's `j` moves the list in one focus and types a `j` in another for exactly
 this reason.
 
+## Making a pane fast
+
+The trap above says when `pure` is wrong; this is the positive half — the
+levers, in the order they pay:
+
+1. **`pure = true`** wherever the render only reads. The kernel reuses the last
+   tree until something it read changes and skips your Lua entirely — the
+   single largest saving available, and doubly so for floats, which render
+   every frame even while closed.
+2. **Memoize derived models on published-table identity.** Every gated group
+   (`thurbox.sessions`, `thurbox.theme`, `thurbox.registry`, `thurbox.diffs`,
+   `thurbox.bookmarks`, …) keeps the *same table object* until its data moves,
+   so `rawequal(published, cache.src)` is a sound one-comparison staleness
+   test. Build once into an upvalue, rebuild on identity change. Never key a
+   cache on anything time-based.
+3. **Window before you build.** Compute the visible slice
+   (`widgets.window`, or `lib/scroll` for variable-height rows) and build
+   spans only for it; a thousand-row list costs its ten visible rows.
+4. **Hoist per-row work.** A `store` read crosses the VM boundary; a
+   `theme.role` lookup walks tables; `fuzzy.compile(query)` splits the query
+   once so per-row matching does not. Read once per render, pass down.
+5. **Concatenate through a table.** `s = s .. piece` across a wide row is
+   O(width²); accumulate and `table.concat`, or emit `string.rep` runs.
+6. **Animate off the shared clock only** — `widgets.spinner(ctx.elapsed)`
+   follows the kernel's animation tick, which advances only while something is
+   animating. A hand-rolled timer re-renders forever and defeats `pure`.
+
+`F12` (the perf HUD) is the check: `renders` climbing on an untouched screen
+means a pane is not settling. The bundled panes are worked examples — the
+session list's memoized model (`lib/session_model.lua`), the flow's row cache,
+and the search strip's per-session content memo.
+
 ## The directory tells you this too
 
 `AGENTS.md` and `README.md` are delivered into the interface directory itself, so a

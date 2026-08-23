@@ -258,19 +258,11 @@ pub struct Terminals {
 
 impl Terminals {
     /// Build the backend registry the same way the v1 binary does: the local
-    /// multiplexer plus every configured or discovered host.
+    /// multiplexer plus every configured or discovered host. How that set is
+    /// assembled — and why nothing is readied here — is the registry's own
+    /// knowledge (`BackendRegistry::from_configured_hosts`), not the kernel's.
     pub fn new() -> Self {
-        let local: Arc<dyn crate::agent::SessionBackend> =
-            Arc::new(crate::agent::tmux::LocalTmuxBackend::new());
-        let mut backends = crate::agent::BackendRegistry::new(local);
-
-        // Hosts must not block startup: registration is cheap, and readiness is
-        // only probed when a session on that host is actually attached.
-        let (hosts, _warnings) = crate::agent::host_config::cached_registry();
-        let hosts = hosts.clone();
-        for host in &hosts.hosts {
-            backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(host)));
-        }
+        let (backends, hosts, _warnings) = crate::agent::BackendRegistry::from_configured_hosts();
 
         Self {
             backends,

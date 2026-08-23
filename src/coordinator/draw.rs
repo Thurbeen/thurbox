@@ -589,19 +589,17 @@ impl App {
         if palette.app_bg == ratatui::style::Color::Reset {
             return;
         }
-        let area = frame.area();
-        let buf = frame.buffer_mut();
-        for y in area.y..area.y + area.height {
-            for x in area.x..area.x + area.width {
-                let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) else {
-                    continue;
-                };
-                if cell.bg == ratatui::style::Color::Reset {
-                    cell.bg = palette.app_bg;
-                }
-                if cell.fg == ratatui::style::Color::Reset {
-                    cell.fg = palette.text_primary;
-                }
+        // The buffer's storage is its area exactly, row-major, so walking it
+        // directly visits the same cells the coordinate loop did — minus a
+        // bounds-checked `cell_mut` per cell, on a pass that touches every
+        // cell of every painted frame (the same cut `normalize_ambiguous_width`
+        // took).
+        for cell in frame.buffer_mut().content.iter_mut() {
+            if cell.bg == ratatui::style::Color::Reset {
+                cell.bg = palette.app_bg;
+            }
+            if cell.fg == ratatui::style::Color::Reset {
+                cell.fg = palette.text_primary;
             }
         }
     }

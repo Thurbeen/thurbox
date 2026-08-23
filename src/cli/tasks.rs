@@ -362,13 +362,9 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 worktree_branch: worktree_branch.clone(),
                 base_branch: base_branch.clone(),
                 agent: agent.clone(),
-                agent_session_id: None,
-                host: None,
-                parent_session_id: None,
                 task_id: Some(task.id),
                 extra_repos: extra_repos.clone(),
-                fork_session_id: None,
-                inherit_worktrees: Vec::new(),
+                ..Default::default()
             };
             action::spawn_and_deliver(db, &name, req, &prompt).map_err(|e| match e {
                 SpawnDeliverError::Spawn(msg) | SpawnDeliverError::Deliver { message: msg, .. } => {
