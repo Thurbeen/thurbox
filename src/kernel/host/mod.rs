@@ -362,9 +362,16 @@ impl Default for Float {
 }
 
 /// What a plugin produced this frame.
+///
+/// The tree is behind an `Rc` so a pure-pane cache *hit* costs a refcount bump
+/// rather than a deep clone of the whole node tree — and so the settle diff
+/// can short-circuit on pointer identity: the same `Rc` handed out twice IS
+/// the same tree, with no per-node comparison needed (ADR-P16's cache saved
+/// the Lua call and the conversion but still paid two tree-sized clones per
+/// pane per frame).
 #[derive(Debug, Clone)]
 pub struct Rendered {
-    pub node: Node,
+    pub node: std::rc::Rc<Node>,
     /// Set when the plugin asked to float above the arrangement.
     pub float: Option<Float>,
 }
@@ -590,6 +597,9 @@ pub struct LuaHost {
     current_path: Rc<RefCell<String>>,
     /// Session working directories, the roots a file read is confined to.
     roots: Roots,
+    /// The snapshot version [`Roots`] was last rebuilt from, so publish skips
+    /// re-cloning every session's cwd on frames where the snapshot stood still.
+    roots_snapshot: std::cell::Cell<Option<u64>>,
     /// Commands issued by plugins, drained once per frame by the loop.
     ///
     /// Queued rather than executed inline: `command()` must return instantly,
@@ -640,6 +650,7 @@ impl LuaHost {
             disabled: Rc::new(RefCell::new(Vec::new())),
             run_answers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             roots: Roots::default(),
+            roots_snapshot: std::cell::Cell::new(None),
             plugins: Vec::new(),
             layout: Arrangement::Missing,
             error: None,
@@ -1281,7 +1292,12 @@ impl LuaHost {
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         let float = read_float(&value).map_err(fail)?;
         let node = convert::to_node(&value, &plugin.path).map_err(fail)?;
-        let rendered = Rendered { node, float };
+        // Behind the `Rc` from birth, so caching it and every later hand-out
+        // is a refcount bump — see [`Rendered`].
+        let rendered = Rendered {
+            node: std::rc::Rc::new(node),
+            float,
+        };
         if plugin.pure {
             if let Some(key) = key {
                 self.trees

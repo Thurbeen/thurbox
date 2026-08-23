@@ -43,9 +43,14 @@ impl App {
             if let Some(start) = draw_start {
                 self.timings.frame.record(start.elapsed());
             }
-            // Cloned so the borrow of `terminal` ends here: the two
-            // corrections below both need it back.
-            let buffer = painted.buffer.clone();
+            // While `painted` still borrows the terminal — it only needs
+            // `&self` and the cells, and this order is what lets the frame
+            // buffer be read in place instead of cloned whole (10,000 cells a
+            // frame) just to end the borrow. The backend has flushed by the
+            // time `draw` returns, so the escapes cannot interleave with
+            // ratatui's own output; the cursor corrections below come after,
+            // which also leaves the caret where the modal put it.
+            self.paint_outer_hyperlinks(painted.buffer);
             // A modal captures input, so it owns the caret — or nothing
             // does. The panes underneath still draw, and one with a text
             // field claims the cursor as it goes; a frame that ends with a
@@ -62,9 +67,6 @@ impl App {
                     None => terminal.hide_cursor()?,
                 }
             }
-            // After the backend flushed, so the escapes cannot interleave
-            // with ratatui's own output.
-            self.paint_outer_hyperlinks(&buffer);
             self.last_paint = Instant::now();
             self.input_dirty = false;
             self.frames += 1;
@@ -414,15 +416,20 @@ impl App {
             // cap for as long as the creation wizard was up. A float that really
             // does animate still repaints: the 250 ms floor paints it, its tree
             // differs, and that marks the change.
-            let unchanged = self
-                .last_floats
-                .get(&index)
-                .is_some_and(|(last, node)| *last == rect && node == &rendered.node);
+            let unchanged = self.last_floats.get(&index).is_some_and(|(last, node)| {
+                // Pointer identity first: a pure-cache hit hands back the same
+                // `Rc`, which settles the question without walking the tree.
+                *last == rect
+                    && (std::rc::Rc::ptr_eq(node, &rendered.node) || **node == *rendered.node)
+            });
             if !unchanged {
                 self.changed_this_frame = true;
+                // Stored only on change: on the unchanged branch the held tree
+                // is already equal, and re-storing was a second tree-sized
+                // clone per float per frame (now a refcount bump either way).
+                self.last_floats
+                    .insert(index, (rect, std::rc::Rc::clone(&rendered.node)));
             }
-            self.last_floats
-                .insert(index, (rect, rendered.node.clone()));
             self.drawn_floats.insert(index);
         }
     }
@@ -467,7 +474,13 @@ impl App {
             self.focused_surface = rendered.node.first_live_surface().map(str::to_string);
         }
 
-        let node = self.decorate_tree(index, rendered.node, ctx);
+        // Decoration is the rare case, so the undecorated tree rides the
+        // render's own `Rc` — a decorator pays one deep clone, everyone else
+        // pays a refcount bump.
+        let node = match self.decorate_tree(index, &rendered.node, ctx) {
+            Some(decorated) => std::rc::Rc::new(decorated),
+            None => std::rc::Rc::clone(&rendered.node),
+        };
         if self.last_trees.len() <= index {
             self.last_trees.resize(index + 1, None);
         }
@@ -475,11 +488,20 @@ impl App {
         // it: skipping the stamp on a frame whose tree changed would make the
         // *next* frame see output that had already been painted.
         let surface_moved = self.surface_moved(&node);
-        let unchanged = self.last_trees[index].as_ref() == Some(&node) && !surface_moved;
+        // Pointer identity first: a pure-cache hit hands back the same `Rc`,
+        // which settles the question without a per-node walk.
+        let tree_unchanged = self.last_trees[index]
+            .as_ref()
+            .is_some_and(|last| std::rc::Rc::ptr_eq(last, &node) || **last == *node);
+        let unchanged = tree_unchanged && !surface_moved;
         if !unchanged {
             self.changed_this_frame = true;
         }
-        self.last_trees[index] = Some(node.clone());
+        if !tree_unchanged {
+            // On the unchanged branch the held tree is already equal, and
+            // re-storing it was a second tree-sized clone per pane per frame.
+            self.last_trees[index] = Some(std::rc::Rc::clone(&node));
+        }
         let mut hits = Vec::new();
         paint::render_recording(frame, rect, &node, &self.terminals, &mut hits);
         // The pane's own rect is only a target when focus can rest on it. A
@@ -492,22 +514,28 @@ impl App {
     /// Let every decorator of this plugin's slot restyle its tree.
     ///
     /// A decorator that fails costs its decoration, not the pane — so the
-    /// original is what gets drawn.
+    /// original is what gets drawn. `None` means no decorator claims the slot,
+    /// which is nearly every pane on nearly every frame: the caller keeps the
+    /// shared tree instead of paying a clone for a restyle that never runs.
     pub(crate) fn decorate_tree(
         &mut self,
         index: usize,
-        node: thurbox::kernel::node::Node,
+        node: &thurbox::kernel::node::Node,
         ctx: RenderContext,
-    ) -> thurbox::kernel::node::Node {
+    ) -> Option<thurbox::kernel::node::Node> {
         let slot = self.host.plugins[index].slot.clone();
-        let mut node = node;
-        for decorator in self.host.decorators_of(&slot) {
+        let decorators = self.host.decorators_of(&slot);
+        if decorators.is_empty() {
+            return None;
+        }
+        let mut node = node.clone();
+        for decorator in decorators {
             match self.host.decorate(decorator, &node, ctx) {
                 Ok(decorated) => node = decorated,
                 Err(e) => self.errors.push(e),
             }
         }
-        node
+        Some(node)
     }
 
     /// Render one plugin, painting an error panel in ITS OWN rect on failure.

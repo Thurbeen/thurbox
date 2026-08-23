@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use mlua::{Lua, Table, Value};
 
 use super::{LuaHost, Published};
+use crate::kernel::command::InFlight;
+use crate::kernel::diff::DiffStore;
+use crate::kernel::metrics::Metrics;
 use crate::kernel::registry::{Registry, Value as SettingValue};
 use crate::kernel::snapshot::Snapshot;
 use crate::kernel::theme::Themes;
@@ -11,6 +14,24 @@ use crate::kernel::theme::Themes;
 /// `publish` otherwise repeats per field.
 fn set(table: &Table, key: &str, value: impl mlua::IntoLua) -> Result<(), String> {
     table.raw_set(key, value).map_err(|e| e.to_string())
+}
+
+/// FNV-1a over a sequence of byte strings, for group keys whose input has no
+/// version counter of its own (the interface inventory, a parameterised want).
+///
+/// The group cache compares keys exactly, so a collision here would hand back a
+/// stale table — but these keys pair the hash with a real version (or hash
+/// inputs a handful of short strings), which keeps the exposure to the same
+/// order as the `always_fresh` counter wrapping.
+fn fnv64<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for byte in part.iter().chain(&[0xff]) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
 }
 
 impl LuaHost {
@@ -49,8 +70,10 @@ impl LuaHost {
             || build_sessions(&self.lua, snapshot, attach_errors, meta),
         )?;
         // A file read is rooted at a session's directory, so the roots follow
-        // the snapshot rather than being asked for separately.
-        {
+        // the snapshot rather than being asked for separately — and only when
+        // it moved: rebuilding cloned every id and cwd per publish.
+        if self.roots_snapshot.get() != Some(epoch.snapshot) {
+            self.roots_snapshot.set(Some(epoch.snapshot));
             let mut roots = self.roots.borrow_mut();
             roots.clear();
             for row in &snapshot.sessions {
@@ -91,7 +114,7 @@ impl LuaHost {
         })?;
         set(&table, "hosts", hosts)?;
 
-        self.publish_repo_reads(&table, repo_store, wants)?;
+        self.publish_repo_reads(&table, repo_store, wants, epoch)?;
         self.publish_settings(&table, settings)?;
 
         // Built from the snapshot alone, so it changes when the database does
@@ -121,16 +144,28 @@ impl LuaHost {
         // claiming whatever version it was written against.
         set(&table, "version", env!("THURBOX_VERSION"))?;
         // What the pointer is over, as `id` and `role`, so a plugin can match
-        // whichever it used to mark the affordance.
-        let hover = self.lua.create_table().map_err(|e| e.to_string())?;
-        if let Some(identity) = hovered {
-            if let Some(id) = &identity.id {
-                set(&hover, "id", id.clone())?;
+        // whichever it used to mark the affordance. The common case is nothing
+        // hovered, which is one shared empty table (a constant key never
+        // moves); only while the pointer sits on an affordance is a fresh
+        // table built per publish.
+        let hover = match hovered {
+            None => self.group("hover", [0, 0, 0, 0], || {
+                self.lua
+                    .create_table()
+                    .map(Value::Table)
+                    .map_err(|e| e.to_string())
+            })?,
+            Some(identity) => {
+                let hover = self.lua.create_table().map_err(|e| e.to_string())?;
+                if let Some(id) = &identity.id {
+                    set(&hover, "id", id.clone())?;
+                }
+                if let Some(role) = &identity.role {
+                    set(&hover, "role", role.clone())?;
+                }
+                Value::Table(hover)
             }
-            if let Some(role) = &identity.role {
-                set(&hover, "role", role.clone())?;
-            }
-        }
+        };
         set(&table, "hover", hover)?;
 
         // Which pane holds focus, by name. `ctx.focused` answers "am I?", but
@@ -142,28 +177,14 @@ impl LuaHost {
 
         // Work accepted but not yet visible in the rows above. Published so a
         // plugin can draw it rather than leaving an unexplained gap — what v1
-        // needed `PendingSpawn` for.
-        let commands = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, entry) in inflight.iter().enumerate() {
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            set(&item, "id", entry.id)?;
-            set(&item, "kind", entry.kind)?;
-            set(&item, "session", entry.session.clone())?;
-            set(&item, "phase", entry.phase.as_str())?;
-            set(
-                &item,
-                "subject",
-                opt_lua_string(&self.lua, entry.subject.as_deref())?,
-            )?;
-            set(
-                &item,
-                "error",
-                opt_lua_string(&self.lua, entry.error.as_deref())?,
-            )?;
-            commands
-                .raw_set(index + 1, item)
-                .map_err(|e| e.to_string())?;
-        }
+        // needed `PendingSpawn` for. Gated on the data epoch: accepting a
+        // command, every phase move and its completion all bump it (that is
+        // the ADR-P16 follow-up), and agent output deliberately does not — so
+        // a streaming turn reuses this table instead of rebuilding it per
+        // frame.
+        let commands = self.group("commands", [epoch.data, 0, 0, 0], || {
+            build_commands(&self.lua, inflight)
+        })?;
         set(&table, "commands", commands)?;
 
         // The active palette, as role -> colour. Plugins name roles and never
@@ -190,132 +211,47 @@ impl LuaHost {
         // The selected session's changes, when any have been asked for. The
         // *absence* of an entry is "not requested"; `pending` is "asked, not
         // finished" — a slow diff must not read as a clean worktree.
-        let diff_table = self.lua.create_table().map_err(|e| e.to_string())?;
-        for row in &snapshot.sessions {
-            let Some(diff) = diffs.get(&row.id) else {
-                continue;
-            };
-            let item = self.lua.create_table().map_err(|e| e.to_string())?;
-            match diff {
-                crate::kernel::diff::Diff::Pending => {
-                    set(&item, "state", "pending")?;
-                }
-                crate::kernel::diff::Diff::Failed(error) => {
-                    set(&item, "state", "failed")?;
-                    set(&item, "error", error.clone())?;
-                }
-                crate::kernel::diff::Diff::Ready {
-                    files,
-                    body,
-                    truncated,
-                    raw_bytes,
-                    untracked_omitted,
-                } => {
-                    set(&item, "state", "ready")?;
-                    set(&item, "truncated", *truncated)?;
-                    set(&item, "raw_bytes", *raw_bytes as i64)?;
-                    // A short file list is a different failure from a cut body,
-                    // so it is its own field rather than folded into `truncated`.
-                    set(&item, "untracked_omitted", *untracked_omitted as i64)?;
-                    let list = self.lua.create_table().map_err(|e| e.to_string())?;
-                    for (index, file) in files.iter().enumerate() {
-                        let entry = self.lua.create_table().map_err(|e| e.to_string())?;
-                        set(&entry, "path", file.path.clone())?;
-                        set(&entry, "added", file.added)?;
-                        set(&entry, "removed", file.removed)?;
-                        // Both already known to the parser; a pane re-reading the
-                        // body to recover them is the cost of dropping them here.
-                        set(&entry, "status", file.status)?;
-                        set(
-                            &entry,
-                            "old_path",
-                            opt_lua_string(&self.lua, file.old_path.as_deref())?,
-                        )?;
-                        list.raw_set(index + 1, entry).map_err(|e| e.to_string())?;
-                    }
-                    set(&item, "files", list)?;
-                    let lines = self.lua.create_table().map_err(|e| e.to_string())?;
-                    for (index, line) in body.iter().enumerate() {
-                        lines
-                            .raw_set(index + 1, line.clone())
-                            .map_err(|e| e.to_string())?;
-                    }
-                    set(&item, "body", lines)?;
-                }
-            }
-            diff_table
-                .raw_set(row.id.clone(), item)
-                .map_err(|e| e.to_string())?;
-        }
-        set(&table, "diffs", diff_table)?;
+        //
+        // Gated because this was the heaviest ungated block by a distance: a
+        // Ready diff can carry up to MAX_DIFF_BYTES of body, published line by
+        // line — a Rust String clone plus a Lua string per line, every frame,
+        // forever once computed. The store only changes through its worker
+        // landing an answer or an invalidate command, both of which move the
+        // data epoch; the snapshot version covers the session set.
+        let diffs_value = self.group("diffs", [epoch.snapshot, epoch.data, 0, 0], || {
+            build_diffs(&self.lua, snapshot, diffs)
+        })?;
+        set(&table, "diffs", diffs_value)?;
 
-        let links_table = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (session, found) in links.iter() {
-            let list = self.lua.create_table().map_err(|e| e.to_string())?;
-            for (index, (url, row, col)) in found.iter().enumerate() {
-                let item = self.lua.create_table().map_err(|e| e.to_string())?;
-                set(&item, "url", url.clone())?;
-                set(&item, "row", *row)?;
-                set(&item, "col", *col)?;
-                list.raw_set(index + 1, item).map_err(|e| e.to_string())?;
-            }
-            links_table
-                .raw_set(session.clone(), list)
-                .map_err(|e| e.to_string())?;
-        }
-        set(&table, "links", links_table)?;
+        // The links map is maintained compare-before-store (refresh_links), and
+        // an actual change moves the data epoch — so the rebuilt table is owed
+        // only then, not on every frame a linked agent prints.
+        let links_value = self.group("links", [epoch.snapshot, epoch.data, 0, 0], || {
+            build_links(&self.lua, links)
+        })?;
+        set(&table, "links", links_value)?;
 
         // What each terminal is showing, for a content search. Empty unless
-        // something asked, so an interface that never searches never pays for it.
-        let content_table = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (session, text) in content.iter() {
-            content_table
-                .raw_set(session.clone(), text.clone())
-                .map_err(|e| e.to_string())?;
-        }
-        set(&table, "content", content_table)?;
+        // something asked, so an interface that never searches never pays for
+        // it — and gated on the data epoch, which refresh_search_content bumps
+        // exactly when the scanned text actually changed: each entry is a full
+        // copy of a screen, up to CONTENT_LINE_CAP lines per session.
+        let content_value = self.group("content", [epoch.snapshot, epoch.data, 0, 0], || {
+            build_content(&self.lua, content)
+        })?;
+        set(&table, "content", content_value)?;
 
         // Machine, per-agent and account metrics. Each is absent rather than
         // zero when it has not been sampled, so a panel can distinguish "no
         // reading yet" from "nothing spent" — v1's info panel draws the same
-        // distinction by omitting the row.
-        let metrics_table = self.lua.create_table().map_err(|e| e.to_string())?;
-        {
-            let system = metrics.system();
-            let machine = self.lua.create_table().map_err(|e| e.to_string())?;
-            set(&machine, "cpu_percent", system.cpu_percent)?;
-            set(&machine, "memory_used", system.memory_used)?;
-            set(&machine, "memory_total", system.memory_total)?;
-            set(&metrics_table, "system", machine)?;
-
-            let per_session = self.lua.create_table().map_err(|e| e.to_string())?;
-            for row in &snapshot.sessions {
-                let entry = self.lua.create_table().map_err(|e| e.to_string())?;
-                let mut any = false;
-                if let Some(resources) = metrics.resources(&row.id) {
-                    set(&entry, "cpu_percent", resources.cpu_percent)?;
-                    set(&entry, "memory_bytes", resources.memory_bytes)?;
-                    any = true;
-                }
-                if let Some(agent) = metrics.agent(&row.id) {
-                    set(&entry, "agent", agent_metrics_table(&self.lua, agent)?)?;
-                    any = true;
-                }
-                if let Some(usage) = metrics.usage(&row.agent, row.remote_host.as_deref()) {
-                    if !usage.is_empty() {
-                        set(&entry, "usage", usage_table(&self.lua, usage)?)?;
-                        any = true;
-                    }
-                }
-                if any {
-                    per_session
-                        .raw_set(row.id.clone(), entry)
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-            set(&metrics_table, "sessions", per_session)?;
-        }
-        set(&table, "metrics", metrics_table)?;
+        // distinction by omitting the row. A sample can only land through
+        // Metrics::poll, which moves the data epoch, so the tables are owed
+        // only then — they were rebuilt per frame for readings that move once
+        // a second at most.
+        let metrics_value = self.group("metrics", [epoch.snapshot, epoch.data, 0, 0], || {
+            build_metrics(&self.lua, snapshot, metrics)
+        })?;
+        set(&table, "metrics", metrics_value)?;
 
         // What the arrangement needs to know about the chrome bands, and nothing
         // more: whether the message band wants a row. The message itself is not
@@ -327,34 +263,25 @@ impl LuaHost {
         // The interface's own files. One row per file rather than per loaded
         // plugin, because the ones worth acting on are exactly those that did
         // NOT load — a removed pane, or one whose error is why the screen still
-        // shows the last good version.
-        let inventory_table = self.lua.create_table().map_err(|e| e.to_string())?;
-        for (index, row) in inventory.iter().enumerate() {
-            let entry = self.lua.create_table().map_err(|e| e.to_string())?;
-            set(&entry, "path", to_lua_string(&self.lua, &row.path)?)?;
-            set(&entry, "name", to_lua_string(&self.lua, &row.name)?)?;
-            set(&entry, "kind", to_lua_string(&self.lua, row.kind.as_str())?)?;
-            set(&entry, "slot", to_lua_string(&self.lua, &row.slot)?)?;
-            set(
-                &entry,
-                "source",
-                to_lua_string(&self.lua, row.source.as_str())?,
-            )?;
-            set(
-                &entry,
-                "state",
-                to_lua_string(&self.lua, row.state.as_str())?,
-            )?;
-            set(
-                &entry,
-                "error",
-                opt_lua_string(&self.lua, row.error.as_deref())?,
-            )?;
-            inventory_table
-                .raw_set(index + 1, entry)
-                .map_err(|e| e.to_string())?;
-        }
-        set(&table, "plugins", inventory_table)?;
+        // shows the last good version. There is no version counter behind the
+        // rows (they are re-derived each republish), so the key is a digest of
+        // what they say — cheap against a per-frame Lua conversion of seven
+        // strings per file.
+        let inventory_key = fnv64(inventory.iter().flat_map(|row| {
+            [
+                row.path.as_bytes(),
+                row.name.as_bytes(),
+                row.kind.as_str().as_bytes(),
+                row.slot.as_bytes(),
+                row.source.as_str().as_bytes(),
+                row.state.as_str().as_bytes(),
+                row.error.as_deref().unwrap_or("").as_bytes(),
+            ]
+        }));
+        let inventory_value = self.group("plugins", [inventory_key, 0, 0, 0], || {
+            build_inventory(&self.lua, inventory)
+        })?;
+        set(&table, "plugins", inventory_value)?;
         set(&table, "ui_dir", to_lua_string(&self.lua, ui_dir)?)?;
 
         // The machine this is running on, so a plugin delivering more than one
@@ -445,9 +372,60 @@ impl LuaHost {
         table: &Table,
         store: &crate::kernel::repos::RepoStore,
         wants: &crate::kernel::repos::Wants,
+        epoch: &super::Epoch,
     ) -> Result<(), String> {
-        use crate::kernel::repos::{Branches, Listing};
+        // Each read is gated on the data epoch (an answer landing moves it)
+        // paired with a digest of the question: the flow re-states its wants
+        // through `store`, which moves no version, so the question itself has
+        // to be part of the key. While the flow is open the bookmark rows —
+        // potentially hundreds, six fields each — were otherwise rebuilt and
+        // recrossed into Lua on every frame; this is also what gives the rows
+        // a stable table identity for the flow's own memoization.
+        let bookmarks_key = fnv64([
+            &b"bookmarks"[..],
+            wants.bookmarks.as_deref().unwrap_or("\x01none").as_bytes(),
+        ]);
+        let bookmarks_value = self.group("bookmarks", [epoch.data, bookmarks_key, 0, 0], || {
+            self.build_bookmarks(store, wants).map(Value::Table)
+        })?;
+        set(table, "bookmarks", bookmarks_value)?;
 
+        let browse_key = fnv64([
+            &b"browse"[..],
+            wants
+                .browse
+                .as_ref()
+                .map(|(host, dir)| format!("{host}\0{dir}"))
+                .unwrap_or_else(|| "\x01none".to_string())
+                .as_bytes(),
+        ]);
+        let browse_value = self.group("browse", [epoch.data, browse_key, 0, 0], || {
+            self.build_browse(store, wants).map(Value::Table)
+        })?;
+        set(table, "browse", browse_value)?;
+
+        let branches_key = fnv64([
+            &b"branches"[..],
+            wants
+                .branches
+                .as_ref()
+                .map(|(host, repo)| format!("{host}\0{repo}"))
+                .unwrap_or_else(|| "\x01none".to_string())
+                .as_bytes(),
+        ]);
+        let branches_value = self.group("branches", [epoch.data, branches_key, 0, 0], || {
+            self.build_branches(store, wants).map(Value::Table)
+        })?;
+        set(table, "branches", branches_value)?;
+
+        Ok(())
+    }
+
+    fn build_bookmarks(
+        &self,
+        store: &crate::kernel::repos::RepoStore,
+        wants: &crate::kernel::repos::Wants,
+    ) -> Result<Table, String> {
         let bookmarks = self.lua.create_table().map_err(|e| e.to_string())?;
         if let Some(host) = &wants.bookmarks {
             bookmarks
@@ -488,9 +466,15 @@ impl LuaHost {
             }
             bookmarks.set("rows", rows).map_err(|e| e.to_string())?;
         }
-        table
-            .set("bookmarks", bookmarks)
-            .map_err(|e| e.to_string())?;
+        Ok(bookmarks)
+    }
+
+    fn build_browse(
+        &self,
+        store: &crate::kernel::repos::RepoStore,
+        wants: &crate::kernel::repos::Wants,
+    ) -> Result<Table, String> {
+        use crate::kernel::repos::Listing;
 
         let browse = self.lua.create_table().map_err(|e| e.to_string())?;
         if let Some((host, dir)) = &wants.browse {
@@ -524,7 +508,15 @@ impl LuaHost {
             }
             browse.set("entries", entries).map_err(|e| e.to_string())?;
         }
-        table.set("browse", browse).map_err(|e| e.to_string())?;
+        Ok(browse)
+    }
+
+    fn build_branches(
+        &self,
+        store: &crate::kernel::repos::RepoStore,
+        wants: &crate::kernel::repos::Wants,
+    ) -> Result<Table, String> {
+        use crate::kernel::repos::Branches;
 
         let branches = self.lua.create_table().map_err(|e| e.to_string())?;
         if let Some((host, repo)) = &wants.branches {
@@ -556,9 +548,7 @@ impl LuaHost {
             }
             branches.set("list", list).map_err(|e| e.to_string())?;
         }
-        table.set("branches", branches).map_err(|e| e.to_string())?;
-
-        Ok(())
+        Ok(branches)
     }
 }
 
@@ -859,6 +849,178 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
     }
     set(&reg, "sections", sections)?;
     Ok(Value::Table(reg))
+}
+
+fn build_commands(lua: &Lua, inflight: &[InFlight]) -> Result<Value, String> {
+    let commands = lua.create_table().map_err(|e| e.to_string())?;
+    for (index, entry) in inflight.iter().enumerate() {
+        let item = lua.create_table().map_err(|e| e.to_string())?;
+        set(&item, "id", entry.id)?;
+        set(&item, "kind", entry.kind)?;
+        set(&item, "session", entry.session.clone())?;
+        set(&item, "phase", entry.phase.as_str())?;
+        set(
+            &item,
+            "subject",
+            opt_lua_string(lua, entry.subject.as_deref())?,
+        )?;
+        set(&item, "error", opt_lua_string(lua, entry.error.as_deref())?)?;
+        commands
+            .raw_set(index + 1, item)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(Value::Table(commands))
+}
+
+fn build_diffs(lua: &Lua, snapshot: &Snapshot, diffs: &DiffStore) -> Result<Value, String> {
+    let diff_table = lua.create_table().map_err(|e| e.to_string())?;
+    for row in &snapshot.sessions {
+        let Some(diff) = diffs.get(&row.id) else {
+            continue;
+        };
+        let item = lua.create_table().map_err(|e| e.to_string())?;
+        match diff {
+            crate::kernel::diff::Diff::Pending => {
+                set(&item, "state", "pending")?;
+            }
+            crate::kernel::diff::Diff::Failed(error) => {
+                set(&item, "state", "failed")?;
+                set(&item, "error", error.clone())?;
+            }
+            crate::kernel::diff::Diff::Ready {
+                files,
+                body,
+                truncated,
+                raw_bytes,
+                untracked_omitted,
+            } => {
+                set(&item, "state", "ready")?;
+                set(&item, "truncated", *truncated)?;
+                set(&item, "raw_bytes", *raw_bytes as i64)?;
+                // A short file list is a different failure from a cut body,
+                // so it is its own field rather than folded into `truncated`.
+                set(&item, "untracked_omitted", *untracked_omitted as i64)?;
+                let list = lua.create_table().map_err(|e| e.to_string())?;
+                for (index, file) in files.iter().enumerate() {
+                    let entry = lua.create_table().map_err(|e| e.to_string())?;
+                    set(&entry, "path", file.path.clone())?;
+                    set(&entry, "added", file.added)?;
+                    set(&entry, "removed", file.removed)?;
+                    // Both already known to the parser; a pane re-reading the
+                    // body to recover them is the cost of dropping them here.
+                    set(&entry, "status", file.status)?;
+                    set(
+                        &entry,
+                        "old_path",
+                        opt_lua_string(lua, file.old_path.as_deref())?,
+                    )?;
+                    list.raw_set(index + 1, entry).map_err(|e| e.to_string())?;
+                }
+                set(&item, "files", list)?;
+                let lines = lua.create_table().map_err(|e| e.to_string())?;
+                for (index, line) in body.iter().enumerate() {
+                    lines
+                        .raw_set(index + 1, line.clone())
+                        .map_err(|e| e.to_string())?;
+                }
+                set(&item, "body", lines)?;
+            }
+        }
+        diff_table
+            .raw_set(row.id.clone(), item)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(Value::Table(diff_table))
+}
+
+fn build_links(
+    lua: &Lua,
+    links: &HashMap<String, Vec<(String, usize, usize)>>,
+) -> Result<Value, String> {
+    let links_table = lua.create_table().map_err(|e| e.to_string())?;
+    for (session, found) in links.iter() {
+        let list = lua.create_table().map_err(|e| e.to_string())?;
+        for (index, (url, row, col)) in found.iter().enumerate() {
+            let item = lua.create_table().map_err(|e| e.to_string())?;
+            set(&item, "url", url.clone())?;
+            set(&item, "row", *row)?;
+            set(&item, "col", *col)?;
+            list.raw_set(index + 1, item).map_err(|e| e.to_string())?;
+        }
+        links_table
+            .raw_set(session.clone(), list)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(Value::Table(links_table))
+}
+
+fn build_content(lua: &Lua, content: &HashMap<String, String>) -> Result<Value, String> {
+    let content_table = lua.create_table().map_err(|e| e.to_string())?;
+    for (session, text) in content.iter() {
+        content_table
+            .raw_set(session.clone(), text.clone())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(Value::Table(content_table))
+}
+
+fn build_metrics(lua: &Lua, snapshot: &Snapshot, metrics: &Metrics) -> Result<Value, String> {
+    let metrics_table = lua.create_table().map_err(|e| e.to_string())?;
+    let system = metrics.system();
+    let machine = lua.create_table().map_err(|e| e.to_string())?;
+    set(&machine, "cpu_percent", system.cpu_percent)?;
+    set(&machine, "memory_used", system.memory_used)?;
+    set(&machine, "memory_total", system.memory_total)?;
+    set(&metrics_table, "system", machine)?;
+
+    let per_session = lua.create_table().map_err(|e| e.to_string())?;
+    for row in &snapshot.sessions {
+        let entry = lua.create_table().map_err(|e| e.to_string())?;
+        let mut any = false;
+        if let Some(resources) = metrics.resources(&row.id) {
+            set(&entry, "cpu_percent", resources.cpu_percent)?;
+            set(&entry, "memory_bytes", resources.memory_bytes)?;
+            any = true;
+        }
+        if let Some(agent) = metrics.agent(&row.id) {
+            set(&entry, "agent", agent_metrics_table(lua, agent)?)?;
+            any = true;
+        }
+        if let Some(usage) = metrics.usage(&row.agent, row.remote_host.as_deref()) {
+            if !usage.is_empty() {
+                set(&entry, "usage", usage_table(lua, usage)?)?;
+                any = true;
+            }
+        }
+        if any {
+            per_session
+                .raw_set(row.id.clone(), entry)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    set(&metrics_table, "sessions", per_session)?;
+    Ok(Value::Table(metrics_table))
+}
+
+fn build_inventory(
+    lua: &Lua,
+    inventory: &[crate::kernel::inventory::Row],
+) -> Result<Value, String> {
+    let inventory_table = lua.create_table().map_err(|e| e.to_string())?;
+    for (index, row) in inventory.iter().enumerate() {
+        let entry = lua.create_table().map_err(|e| e.to_string())?;
+        set(&entry, "path", to_lua_string(lua, &row.path)?)?;
+        set(&entry, "name", to_lua_string(lua, &row.name)?)?;
+        set(&entry, "kind", to_lua_string(lua, row.kind.as_str())?)?;
+        set(&entry, "slot", to_lua_string(lua, &row.slot)?)?;
+        set(&entry, "source", to_lua_string(lua, row.source.as_str())?)?;
+        set(&entry, "state", to_lua_string(lua, row.state.as_str())?)?;
+        set(&entry, "error", opt_lua_string(lua, row.error.as_deref())?)?;
+        inventory_table
+            .raw_set(index + 1, entry)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(Value::Table(inventory_table))
 }
 
 fn build_platform(lua: &Lua) -> Result<Value, String> {

@@ -1035,7 +1035,7 @@ struct App {
     /// The last painted trees, per plugin index. A frame is skipped when every
     /// plugin returns what it returned last time and nothing else moved — the
     /// plugin-model equivalent of v1's `needs_redraw`.
-    last_trees: Vec<Option<thurbox::kernel::node::Node>>,
+    last_trees: Vec<Option<std::rc::Rc<thurbox::kernel::node::Node>>>,
     /// The last float each plugin painted, and where.
     ///
     /// What each chrome band painted last frame, and where. Bands have no tree
@@ -1044,7 +1044,7 @@ struct App {
     /// Kept apart from `last_trees` because a float is rendered in its own pass at
     /// its own rect, so the two would overwrite each other for a plugin that did
     /// both. Its purpose is the same: settle the loop when nothing moved.
-    last_floats: std::collections::HashMap<usize, (Rect, thurbox::kernel::node::Node)>,
+    last_floats: std::collections::HashMap<usize, (Rect, std::rc::Rc<thurbox::kernel::node::Node>)>,
     /// Floats that actually painted on the last frame.
     ///
     /// Distinct from `last_floats`, which is a settle cache and deliberately

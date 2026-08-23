@@ -130,6 +130,8 @@ fn tree(host: &LuaHost, width: u16, height: u16) -> Node {
     host.render(index_of(host, TERMINAL), ctx(width, height))
         .expect("render the terminal pane")
         .node
+        .as_ref()
+        .clone()
 }
 
 fn buffer(node: &Node, width: u16, height: u16) -> Buffer {
