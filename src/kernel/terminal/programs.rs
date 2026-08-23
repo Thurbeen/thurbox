@@ -252,9 +252,9 @@ impl Terminals {
     }
 
     /// The key a surface id names, by matching against the keys that generate
-    /// them — see [`is_program_surface`] for why this is a lookup and not a parse.
+    /// them — see `is_program_surface` for why this is a lookup and not a parse.
     ///
-    /// Linear over a map holding at most [`MAX_PROGRAMS_PER_PLUGIN`] per plugin,
+    /// Linear over a map holding at most `MAX_PROGRAMS_PER_PLUGIN` per plugin,
     /// on a path that runs once per program surface per frame.
     pub fn program_key(&self, surface: &str) -> Option<&ProgramKey> {
         if !is_program_surface(surface) {
