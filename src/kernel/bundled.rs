@@ -51,6 +51,22 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ("lib/panels.lua", include_str!("../../ui/lib/panels.lua")),
     ("lib/hover.lua", include_str!("../../ui/lib/hover.lua")),
     ("lib/fuzzy.lua", include_str!("../../ui/lib/fuzzy.lua")),
+    ("lib/chrome.lua", include_str!("../../ui/lib/chrome.lua")),
+    ("lib/modal.lua", include_str!("../../ui/lib/modal.lua")),
+    ("lib/order.lua", include_str!("../../ui/lib/order.lua")),
+    ("lib/scroll.lua", include_str!("../../ui/lib/scroll.lua")),
+    (
+        "lib/pathpicker.lua",
+        include_str!("../../ui/lib/pathpicker.lua"),
+    ),
+    (
+        "lib/repo_picker.lua",
+        include_str!("../../ui/lib/repo_picker.lua"),
+    ),
+    (
+        "lib/session_model.lua",
+        include_str!("../../ui/lib/session_model.lua"),
+    ),
     (
         "lib/settings.lua",
         include_str!("../../ui/lib/settings.lua"),

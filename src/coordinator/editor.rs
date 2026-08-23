@@ -1,12 +1,12 @@
 //! Which editor wants a terminal, and which wants to be left alone.
 //!
 //! Pure classification over a configured command string: no spawning, no
-//! settings lookup, no interface. It sits here rather than beside either
-//! interface's launcher because both v1's `Ctrl+O` and the v2 kernel's have to
-//! reach the same verdict — a GUI launcher handed a TTY misbehaves, and a
-//! terminal editor spawned detached vanishes, whichever binary made the mistake.
+//! settings lookup, no interface. It sits beside `open_editor`'s launcher
+//! (`main.rs`), its only caller, because the verdict matters there: a GUI
+//! launcher handed a TTY misbehaves, and a terminal editor spawned detached
+//! vanishes.
 
-use super::settings::EditorMode;
+use thurbox::session::settings::EditorMode;
 
 /// Split a configured editor command into `(program, extra_args)`. Whitespace-
 /// split; the program is the first token. Errors on an empty/whitespace-only

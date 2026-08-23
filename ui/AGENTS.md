@@ -44,8 +44,10 @@ Put generated files in `$XDG_CACHE_HOME/<plugin>/` (or `~/.cache/<plugin>/`).
 
 **There is no `npm`, `cargo`, `pip` or `go get` in this directory, and nothing to
 run one on.** No `package.json`, no lockfile of that kind, no `node_modules`. The
-only dependencies a pane has are the modules in `lib/`, which are already here and
-are reached with `require("lib.theme")`. If you find yourself about to run a
+only dependencies a pane has are the modules in `lib/` — widgets, theme, fuzzy,
+textinput, chrome, modal, scroll, order, settings, panels, hover, tree, and the
+session-list/repo-picker models — which are already here and are reached with
+`require("lib.theme")`. If you find yourself about to run a
 package manager, you have misread the request.
 
 `plugins.toml` records what this interface is composed of and `plugins.lock` what

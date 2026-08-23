@@ -522,15 +522,14 @@ return {
     end
     local search = load()
     local rows = results()
-    for index, row in ipairs(rows) do
-      if row.id == hit.id then
-        search.cursor = index
-        save(search)
-        preview(row)
-        return true
-      end
+    local index = widgets.index_of(rows, hit.id)
+    if not index then
+      return false
     end
-    return false
+    search.cursor = index
+    save(search)
+    preview(rows[index])
+    return true
   end,
 
   on_action = function(action)

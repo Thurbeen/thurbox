@@ -134,9 +134,9 @@ impl DiffStore {
     ///
     /// Idempotent by design: this is called from the loop with whatever session
     /// is selected, so it happens every frame and must cost nothing while the
-    /// held answer is fresh. Once it is older than [`DIFF_TTL`] (or
-    /// [`DIFF_RETRY`] for a failure) the recompute is dispatched — with the old
-    /// answer still published, per [`Held::refreshing`].
+    /// held answer is fresh. Once it is older than `DIFF_TTL` (or
+    /// `DIFF_RETRY` for a failure) the recompute is dispatched — with the old
+    /// answer still published, per `Held::refreshing`.
     pub fn request(
         &mut self,
         session: &str,
@@ -214,7 +214,7 @@ impl DiffStore {
 
     /// Forget a session's diff, so the next request recomputes it — the
     /// immediate route, for a caller that *knows* the worktree changed rather
-    /// than waiting out [`DIFF_TTL`].
+    /// than waiting out `DIFF_TTL`.
     pub fn invalidate(&mut self, session: &str) {
         self.diffs.remove(session);
     }

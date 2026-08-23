@@ -1572,8 +1572,10 @@ already follow.
   reload, isolation, capability grants), `registry` (keys + settings plugins
   declare), `modals/` (help, settings, theme picker — chrome about thurbox itself,
   which plugins contribute *data* to rather than replace), `bands` (the top/bottom
-  bars), `snapshot` (the read side), `command` (the write side), `terminal` (live
-  PTY surfaces), `consent` (the one-time v1→v2 gate), plus the worker-backed
+  bars), `snapshot` (the read side), `command` (the write side), `terminal/` (live
+  PTY surfaces: the attach machinery, plugin program panes, link detection +
+  OSC 8 painting), `selection` (mouse text selection over a pane),
+  `consent` (the one-time v1→v2 gate), plus the worker-backed
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
   `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
   install/converge/withdraw operations — sharing `bundled`'s decision matrix).
@@ -1586,8 +1588,7 @@ already follow.
   `SessionConfig`, `AgentDef`/`AgentRegistry`, `HostDef`/`HostRegistry`,
   `PluginSpec`/`PluginLock`/`PackageManifest` (`plugin_spec`, so the kernel and the
   CLI share one definition), plus the logic the kernel needs and cannot import
-  `agent` for (`links`, `selection`, `review`, `editor`, `hyperlink`,
-  `theme_config`).
+  `agent` for (`hyperlink`, `review`, `theme_config`).
 - **`git/`** — every `git` invocation, split by concern: `command` (the one
   place a `git` process is built, and where the inherited `GIT_*` scrub lives),
   `plugin` (clone/checkout of a plugin working copy), `remote` (running a command

@@ -83,6 +83,12 @@ impl PluginEntry {
 ///
 /// Shared with the package manifest, whose declared files land under the same
 /// directory and are subject to the same rule.
+///
+/// Deliberately *not* `paths::ensure_safe_relative` (the canonical traversal
+/// guard the extension installer uses): `session` is the pure-data leaf and may
+/// reference no crate module (tests/architecture_rules.rs), and this rule set
+/// is different anyway — Lua-only, and string-level on both separators so a
+/// spec written on Windows still refuses `..\` on Linux.
 pub fn validate_destination(file: &str) -> Result<(), String> {
     if file.trim().is_empty() {
         return Err("file is empty".to_string());

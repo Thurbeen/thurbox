@@ -152,6 +152,48 @@ it is **stops reloading at all**. Generated files belong in
   `ctrl+<letter>` chords for the program in it. A pane that only focuses itself
   is a one-way door.
 
+## Performance: make the pane cost what changed, not what exists
+
+`render` runs on the UI thread up to thirty times a second, so the kernel gives
+every pane three levers — and a custom pane that skips them is the one thing
+that can make the whole interface feel slow.
+
+- **Declare `pure = true` unless the render writes.** A pure render reads
+  `thurbox.*`, `ctx`, `store` and `state` and returns a tree; the kernel then
+  reuses that tree until something it read actually changes, and skips your Lua
+  entirely on every other frame. This is the single biggest lever. It is only
+  wrong if `render` *writes* `store`/`state` or calls `command` — move those
+  writes into `on_key`/`on_action`/`on_click` and purity comes back. Floats
+  especially: a float renders every frame **even while closed**, so an impure
+  closed modal costs a Lua call per frame forever.
+- **Memoize on table identity, not by re-deriving.** The published groups
+  (`thurbox.sessions`, `thurbox.theme`, `thurbox.registry`, `thurbox.diffs`,
+  `thurbox.bookmarks`, …) keep the *same table* until their data moves, so
+  `rawequal(thurbox.sessions, cache.src)` is a sound, one-comparison way to
+  know your derived model is still valid. Build the model once, keep it in an
+  upvalue, rebuild only when the identity changes. Never compare by
+  serialising, and never cache across frames on anything *time*-based.
+- **Window first, build second.** Compute which rows are visible
+  (`widgets.window`) before building spans for them. Building every row of a
+  long list and letting the list widget crop it does all the work for rows
+  nobody sees.
+- **Hoist per-row work out of the loop.** A `store.*` read crosses into Rust;
+  a `theme.role(...)` lookup walks tables; `fuzzy.compile(query)` splits the
+  query once so per-row matching doesn't re-split it. Read once per render,
+  pass values down.
+- **Strings: concatenate through a table.** `s = s .. piece` in a loop over a
+  wide row is O(width²); accumulate into a table and `table.concat`, or emit
+  `string.rep` runs.
+- **Animation is not free-running.** `ctx.elapsed` plus the shared spinner
+  helper in `lib/` follows the kernel's animation clock, which only ticks
+  while something is actually animating — a pane that derives its own timer
+  from elapsed on every frame re-renders forever and defeats its own `pure`.
+
+`F12` opens the perf HUD: `renders` climbing while you touch nothing means a
+pane is not settling — usually an impure render or a per-frame `store` write of
+an unchanged value (writing the same value is free; writing a fresh table each
+frame is not).
+
 ## "Install a plugin" means `thurbox-cli plugin install`
 
 A plugin here is a thurbox interface pane, not a package from a language

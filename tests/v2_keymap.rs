@@ -19,7 +19,12 @@ use thurbox::kernel::layout::resolve;
 use thurbox::kernel::registry::{is_ctrl_letter_chord, normalise_chord, Registry, Scope, RESERVED};
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
-use thurbox::session::keybindings::Action;
+/// v1's keymap tables, compiled into this test crate only — see the module's
+/// own doc for why the oracle lives here rather than in `src/`.
+#[path = "support/v1_keymap.rs"]
+mod v1_keymap;
+
+use v1_keymap::Action;
 
 fn host() -> LuaHost {
     let host = LuaHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"));

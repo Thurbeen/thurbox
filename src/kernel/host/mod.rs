@@ -901,7 +901,7 @@ impl LuaHost {
     /// Indices of the plugins occupying one slot, in render order.
     ///
     /// A decorator is not an occupant: it draws INTO another plugin's tree, so
-    /// it is indexed under [`PluginIndex::decorators`] instead — otherwise it
+    /// it is indexed under `PluginIndex::decorators` instead — otherwise it
     /// would take the default slot and compete for the centre with the pane it
     /// exists to decorate.
     pub fn in_slot(&self, slot: &str) -> &[usize] {

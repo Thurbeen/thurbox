@@ -36,11 +36,11 @@ use thurbox::kernel::notify::Notifier;
 use thurbox::kernel::paint;
 use thurbox::kernel::perf::Counters;
 use thurbox::kernel::registry::{canonical_chord, is_ctrl_letter_chord, Registry};
+use thurbox::kernel::selection::{PaneBounds, Selection, TermPos};
 use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::kernel::terminal::Terminals;
 use thurbox::kernel::theme::Themes;
 use thurbox::kernel::watch::Watcher;
-use thurbox::session::selection::{PaneBounds, Selection, TermPos};
 
 /// How long a frame waits for input before looping. Plugins animate off
 /// `ctx.elapsed`, so this is also the animation rate.
@@ -564,10 +564,9 @@ fn open_editor(
         .ok_or("that session has no directory to open")?;
     let configured = editor_command()
         .ok_or("no editor configured — set one with `thurbox-cli editor set <command>`")?;
-    let (program, mut args) = thurbox::session::editor::parse_editor_command(&configured)
+    let (program, mut args) = coordinator::editor::parse_editor_command(&configured)
         .map_err(|e| format!("the configured editor command is unusable: {e}"))?;
-    let terminal_editor =
-        thurbox::session::editor::is_terminal_editor(&program, &args, editor_mode());
+    let terminal_editor = coordinator::editor::is_terminal_editor(&program, &args, editor_mode());
     args.extend(dirs.iter().map(|dir| dir.display().to_string()));
 
     let opened = if dirs.len() == 1 {

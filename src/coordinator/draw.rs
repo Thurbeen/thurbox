@@ -228,7 +228,7 @@ impl App {
             // per span and matched no theme; naming the roles means the
             // selection looks the same everywhere and follows every palette.
             let style = self.themes.selection_style();
-            thurbox::session::selection::highlight_buffer(frame.buffer_mut(), &selection, style);
+            thurbox::kernel::selection::highlight_buffer(frame.buffer_mut(), &selection, style);
             // Deliberately NOT a change, for the reason the system modals below
             // are not: the highlight is already in this frame's buffer, and it is
             // re-applied on every later paint. Moving it takes a mouse event, which
@@ -245,10 +245,7 @@ impl App {
                         .selected_text(&session, &selection, (rect.x, rect.y))
                 });
             let text = from_grid.unwrap_or_else(|| {
-                thurbox::session::selection::extract_text_from_buffer(
-                    frame.buffer_mut(),
-                    &selection,
-                )
+                thurbox::kernel::selection::extract_text_from_buffer(frame.buffer_mut(), &selection)
             });
             self.selected_text = (!text.trim().is_empty()).then_some(text);
         } else {

@@ -1,15 +1,11 @@
 pub mod agent_def;
 pub mod automation;
-pub mod editor;
 pub mod extension_def;
 pub mod host_def;
 pub mod hyperlink;
-pub mod keybindings;
-pub mod links;
 pub mod message;
 pub mod plugin_spec;
 pub mod review;
-pub mod selection;
 pub mod settings;
 pub mod task;
 pub mod theme_config;
@@ -28,7 +24,6 @@ pub use host_def::{
     SSH_BACKEND_PREFIX, WSL_BACKEND_PREFIX,
 };
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
-pub use keybindings::{compact_shortcut, Action, KeyBindings, KeyChord, KeyContext};
 pub use message::SessionMessage;
 pub use plugin_spec::{
     LockEntry, PackageFile, PackageManifest, PluginEntry, PluginLock, PluginSpec,

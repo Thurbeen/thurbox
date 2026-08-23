@@ -118,15 +118,12 @@ fn validate_ui_json() -> (Value, bool) {
 
 fn validate_keybindings() -> (Value, bool) {
     let path = crate::paths::keybindings_file();
+    // Parse-only: nothing reads this file's *semantics* any more (the registry
+    // owns chords, and its one-time migration reads the JSON itself), so the
+    // check is "is it well-formed", not "does it name v1 actions" — the v1
+    // action tables left the binary with the rest of the dead keymap.
     match crate::storage::keybindings::load_keybindings_json() {
-        Ok(Some(jsonbody)) => {
-            let problems = match crate::session::KeyBindings::from_json_with_warnings(&jsonbody) {
-                Ok((_, warnings)) => warnings,
-                Err(e) => vec![e],
-            };
-            let ok = problems.is_empty();
-            (file_report(path, problems, true), ok)
-        }
+        Ok(Some(_)) => (file_report(path, Vec::new(), true), true),
         Ok(None) => (file_report(path, Vec::new(), false), true),
         Err(e) => (file_report(path, vec![e], true), false),
     }

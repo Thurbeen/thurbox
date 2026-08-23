@@ -32,6 +32,7 @@ pub mod reaper;
 pub mod registry;
 pub mod repos;
 pub mod runs;
+pub mod selection;
 pub mod snapshot;
 pub mod terminal;
 pub mod theme;

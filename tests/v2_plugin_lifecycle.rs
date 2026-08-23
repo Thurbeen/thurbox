@@ -109,7 +109,10 @@ fn the_inventory_view_draws_what_the_kernel_computed() {
         "every file is listed: {screen}"
     );
     assert!(
-        screen.contains("theme.lua"),
+        // `lib/chrome.lua` rather than `theme.lua`: the listing windows to the
+        // rect and the lib set has grown past it, so the anchor is the module
+        // that sorts first and stays on the visible page.
+        screen.contains("lib/chrome.lua"),
         "modules too, since they are restorable: {screen}"
     );
     assert!(

@@ -1922,18 +1922,14 @@ fn only_the_focused_field_owns_the_caret() {
 // --- terminal affordances --------------------------------------------------
 
 #[test]
-fn link_detection_is_shared_with_v1_not_duplicated() {
-    // It moved to `session::links` so both halves use one definition of what
-    // counts as a URL. Duplicating it into the kernel would have meant two.
+fn link_detection_has_one_definition() {
+    // One definition of what counts as a URL, in `kernel::terminal::links`
+    // (its only consumer since v1 was retired). Duplicating the scan per
+    // reader would have meant two.
     let rows = vec!["see https://example.com/x for more".to_string()];
-    let found = thurbox::session::links::detect_urls(&rows);
+    let found = thurbox::kernel::terminal::links::detect_urls(&rows);
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].url, "https://example.com/x");
-
-    // And v1's path still resolves to the same function.
-    let via_ui = thurbox::session::links::detect_urls(&rows);
-    assert_eq!(via_ui.len(), 1);
-    assert_eq!(via_ui[0].url, found[0].url);
 }
 
 #[test]
@@ -2107,10 +2103,10 @@ fn a_stage_name_reaches_the_pending_row() {
 // --- selection, copy, paste ------------------------------------------------
 
 #[test]
-fn selection_logic_is_shared_with_v1_not_duplicated() {
-    // Moved to `session::selection` so both halves use one implementation, the
-    // same reasoning as link detection.
-    use thurbox::session::selection::{PaneBounds, Selection, TermPos};
+fn selection_logic_has_one_implementation() {
+    // One implementation, in `kernel::selection` — every consumer is
+    // kernel/main side since v1 was retired. Same reasoning as link detection.
+    use thurbox::kernel::selection::{PaneBounds, Selection, TermPos};
 
     let pane = PaneBounds::from_rect(Rect {
         x: 2,
@@ -2123,17 +2119,13 @@ fn selection_logic_is_shared_with_v1_not_duplicated() {
 
     assert!(selection.contains(2, 5));
     assert!(!selection.contains(1, 5), "above the anchor row");
-
-    // v1's path resolves to the same type.
-    let via_ui: Selection = selection.clone();
-    assert_eq!(via_ui.anchor, selection.anchor);
 }
 
 #[test]
 fn a_selection_is_clamped_to_its_pane() {
     // A drag that leaves the terminal must not select the session list beside
     // it.
-    use thurbox::session::selection::PaneBounds;
+    use thurbox::kernel::selection::PaneBounds;
     let pane = PaneBounds::from_rect(Rect {
         x: 10,
         y: 5,
@@ -2254,7 +2246,7 @@ fn a_press_on_a_pane_border_arms_no_selection() {
     // drift painted a band clear across the interface. v1 confines it to the
     // pane's content area and clears the selection when the press is outside
     // one.
-    use thurbox::session::selection::PaneBounds;
+    use thurbox::kernel::selection::PaneBounds;
     let pane = Rect {
         x: 10,
         y: 4,

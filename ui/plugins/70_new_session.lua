@@ -27,6 +27,10 @@
 -- *kernel* — a path that does not exist, a folder with no repositories — comes
 -- back as a failed command and the band reports it, as it does for every command.
 
+local fuzzy = require("lib.fuzzy")
+local modal = require("lib.modal")
+local pathpicker = require("lib.pathpicker")
+local repo_picker = require("lib.repo_picker")
 local textinput = require("lib.textinput")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
@@ -60,8 +64,7 @@ end
 --- The spinner frame for this paint. One definition, so three waits cannot
 --- animate at different rates.
 local function spinner(flow)
-  local frame = math.floor((flow.elapsed or 0) * 8) % #theme.spinner + 1
-  return theme.spinner[frame]
+  return widgets.spinner(flow.elapsed)
 end
 
 local function bookmark_pending()
@@ -112,24 +115,6 @@ local function fresh()
   }
 end
 
---- Split a typed path into the directory to list and the prefix to filter by.
----
---- v1's `split_browse_dir`, and used for both jobs it has there: the directory is
---- what gets listed, the prefix is what the ghost completion extends. With no `/`
---- at all the home directory is listed and the whole input is the prefix.
-local function split_typed(typed)
-  if typed == "~" then
-    -- A bare `~` means "browse home", not "filter home by the literal ~" — v1
-    -- makes the same exception.
-    return "~", ""
-  end
-  local dir = typed:match("^(.*)/[^/]*$")
-  if dir == "" then
-    dir = "/"
-  end
-  return dir or "~", typed:match("([^/]*)$") or ""
-end
-
 --- Ask the kernel for what this step needs, and stop asking for the rest.
 ---
 --- Written every frame because the want is what keeps the read served; clearing
@@ -148,7 +133,7 @@ local function ask(flow)
   -- how completion works for a remote target here and does not in v1.
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
   if typed ~= "" then
-    local dir = split_typed(typed)
+    local dir = pathpicker.split_typed(typed)
     store.want_browse = (flow.host or "") .. "\0" .. dir
   else
     store.want_browse = nil
@@ -163,163 +148,34 @@ local function ask(flow)
 end
 
 -- ── The repo step's row model ──────────────────────────────────────────────
-
---- v1's fuzzy match, reduced to what the picker uses: a subsequence match,
---- case-insensitive, returning the matched character positions so they can be
---- accented the way v1 accents them.
-local function fuzzy(query, text)
-  if query == "" then
-    return {}
-  end
-  local positions = {}
-  local at = 1
-  local lower = text:lower()
-  for _, code in utf8.codes(query:lower()) do
-    local char = utf8.char(code)
-    local found = string.find(lower, char, at, true)
-    if not found then
-      return nil
-    end
-    positions[#positions + 1] = found
-    at = found + #char
-  end
-  return positions
-end
-
---- The rows to draw, in order: every published row, minus the children of a
---- collapsed parent, minus anything the search excludes.
----
---- A search expands every group, as v1's does — a match hidden inside a
---- collapsed folder would be unfindable.
----
---- Memoized: a single keystroke can ask for the rows several times (the
---- renderer, `current_row` in three action branches, the click resolver), and
---- each walk fuzzy-matches every bookmark. The published rows are a gated
---- group, so their table identity keys the memo; the collapsed set is tiny and
---- digested by value because `state` hands back a fresh table on every read.
-local rows_cache = {}
-
-local function collapsed_digest(collapsed)
-  local parts = {}
-  for path in pairs(collapsed or {}) do
-    parts[#parts + 1] = path
-  end
-  table.sort(parts)
-  return table.concat(parts, "\1")
-end
+--
+-- The model itself is `lib.repo_picker` (matching on `lib.fuzzy`, like every
+-- other picker) and the path-typing derivations are `lib.pathpicker`. The
+-- wrappers below only gather what each needs from the flow and the published
+-- reads, so every consumer in this file asks the same question the same way —
+-- three derivations of "which entries" would eventually disagree about which
+-- one `enter` picks.
 
 local function rows_for(flow)
-  local published = bookmarks().rows or {}
   local query = flow.search and (flow.search.value or "") or ""
-  local folded = collapsed_digest(flow.collapsed)
-  if
-    rows_cache.entries
-    and rawequal(published, rows_cache.published)
-    and query == rows_cache.query
-    and folded == rows_cache.folded
-  then
-    return rows_cache.entries
-  end
-
-  local searching = query ~= ""
-  local out = {}
-  for _, row in ipairs(published) do
-    local hidden = row.parent ~= nil and not searching and flow.collapsed[row.parent] == true
-    -- Spelled as a branch rather than `searching and fuzzy(...) or {}`: a MISS is
-    -- nil, and `nil or {}` is an empty table — which reads as "matched nothing"
-    -- and would include every row the search excludes.
-    local matched
-    if searching then
-      matched = fuzzy(query, row.path)
-      -- A labelled row is findable by its label too, and the label is what the
-      -- reader sees: typing `interface` must reach the interface directory even
-      -- though that word appears nowhere in its path. Highlighting stays over the
-      -- path, so a label-only hit shows as an unhighlighted match rather than
-      -- accenting characters at positions that mean nothing there.
-      if not matched and row.label and fuzzy(query, row.label) then
-        matched = {}
-      end
-    else
-      matched = {}
-    end
-    -- A header is always shown: it is the handle its children are folded under.
-    if row.is_parent then
-      out[#out + 1] = { row = row, matched = {} }
-    elseif not hidden and matched then
-      out[#out + 1] = { row = row, matched = matched }
-    end
-  end
-  rows_cache = { published = published, query = query, folded = folded, entries = out }
-  return out
+  return repo_picker.rows(bookmarks().rows or {}, query, flow.collapsed)
 end
 
 --- The row the cursor is on, or nil when the list is empty.
 local function current_row(flow)
-  local entries = rows_for(flow)
-  return entries[widgets.clamp(flow.cursor, #entries)]
+  return repo_picker.current(rows_for(flow), flow.cursor)
 end
 
---- Split the chosen repositories the way v1's `partition_selected_repos` does:
---- the ones taking a worktree, then the ones attached as they are.
 local function chosen(flow)
-  local worktrees, plain = {}, {}
-  for _, row in ipairs(bookmarks().rows or {}) do
-    if not row.is_parent and flow.selected[row.path] then
-      if flow.worktree[row.path] then
-        worktrees[#worktrees + 1] = row.path
-      else
-        plain[#plain + 1] = row.path
-      end
-    end
-  end
-  return worktrees, plain
+  return repo_picker.chosen(bookmarks().rows or {}, flow.selected, flow.worktree)
 end
 
---- The dropdown's entries: the listed directory filtered by what has been typed
---- after the last `/`.
----
---- v1's `PathBrowser::recompute_filter`, including its rule for hidden entries —
---- a `.`-prefixed name is offered only when the prefix itself starts with a dot,
---- so browsing a home directory is not two hundred dotfiles.
----
---- Shared by the renderer, the key handler and the completion below: three
---- derivations of "which entries" would eventually disagree about which one
---- `enter` picks.
 local function browse_entries(flow)
-  local _, prefix = split_typed(flow.input and flow.input.value or "")
-  local shown = {}
-  for _, entry in ipairs(browse().entries or {}) do
-    local hidden = entry.name:sub(1, 1) == "." and prefix:sub(1, 1) ~= "."
-    if not hidden and entry.name:sub(1, #prefix) == prefix then
-      shown[#shown + 1] = entry
-    end
-  end
-  return shown
+  return pathpicker.entries(flow.input and flow.input.value or "", browse().entries or {})
 end
 
---- The ghost completion: the one listed entry that extends what has been typed.
----
---- Derived from the listing already fetched for the dropdown, so it costs a table
---- walk rather than v1's synchronous readdir per keystroke — and unlike v1's it
---- works for a remote target, where v1 suppresses completion entirely because it
---- would be completing against the wrong filesystem.
----
---- Shared by the renderer and the key handler on purpose: `tab` completes exactly
---- what is on screen, which two separate derivations would eventually disagree
---- about.
 local function suggestion_for(flow)
-  local typed = flow.input and flow.input.value or ""
-  local _, prefix = split_typed(typed)
-  if typed == "" or prefix == "" then
-    return ""
-  end
-  local shown = browse_entries(flow)
-  -- Two candidates is no suggestion: completing to one of them would be a guess,
-  -- and v1 makes the same call.
-  if #shown ~= 1 then
-    return ""
-  end
-  return shown[1].name:sub(#prefix + 1) .. "/"
+  return pathpicker.suggestion(flow.input and flow.input.value or "", browse().entries or {})
 end
 
 -- ── Rendering: the pieces every step shares ────────────────────────────────
@@ -360,72 +216,17 @@ local function trail(flow)
   return table.concat(parts, " › ")
 end
 
-local function modal(title, rows_height, children, flow)
-  local title_runs = { { text = " " .. title .. " " } }
-  local crumbs = trail(flow)
-  if crumbs ~= "" then
-    -- Muted, and in the title, so the step says where you are without spending a
-    -- row on it. Titles carry runs, so this keeps its own colour while the rest of
-    -- the title inherits the border's.
-    title_runs[#title_runs + 1] = { text = crumbs .. " ", style = { fg = theme.muted } }
-  end
-  return {
-    -- `cols`, not `width`: the kernel reads `width` as a share of the screen
-    -- and `cols` as cells, and every row here is truncated against ROW_COLS —
-    -- a percentage float clips rows on a narrow terminal and leaves dead space
-    -- on a wide one.
-    float = { cols = MODAL_COLS, rows = rows_height },
-    type = "box",
-    frame = {
-      title = title_runs,
-      borders = "all",
-      border_style = { fg = theme.role("modal_border") },
-      style = { bg = theme.role("modal_bg") },
-    },
+--- The shared modal shell, with this flow's two constants folded in: every step
+--- is `MODAL_COLS` wide (`cols`, in cells — every row here is truncated against
+--- `ROW_COLS`), and every step's title carries the breadcrumb trail, muted, so
+--- the step says where you are without spending a row on it.
+local function frame(title, rows_height, children, flow)
+  return modal.frame(title, {
+    cols = MODAL_COLS,
+    rows = rows_height,
     children = children,
-  }
-end
-
---- v1's `key_hint_line` plus its `[ Done ]` / `[ Cancel ]` pills.
----
---- The pills carry `key:` roles, so a click replays the very keystroke they name
---- — a button and its key cannot come to mean different things.
-local function footer(hints, primary)
-  local spans = {}
-  for _, pair in ipairs(hints) do
-    spans[#spans + 1] = { text = pair[1], style = { fg = theme.hint } }
-    spans[#spans + 1] = { text = " " .. pair[2] .. "  ", style = { fg = theme.muted } }
-  end
-  -- Both pills carry a LEADING space and are measured from the string itself.
-  --
-  -- `" [ Cancel ]"` is eleven columns and the slot was hard-coded to ten, so the
-  -- closing bracket was clipped off at every step of the flow. And the leading
-  -- space belongs to the pill rather than to the hints: the hints take `fill = 1`,
-  -- so once they are long enough to use their whole share their own trailing
-  -- padding is what gets truncated — which is how `d forget[ Done ]` ran together
-  -- with no gap at all.
-  local done = " [ " .. primary .. " ]"
-  local cancel = " [ Cancel ]"
-  return {
-    type = "box",
-    axis = "horizontal",
-    len = 1,
-    children = {
-      { type = "text", fill = 1, text = { spans } },
-      {
-        type = "text",
-        len = widgets.len(done),
-        text = { { { text = done, style = { fg = theme.accent, bold = true } } } },
-        role = "key:enter",
-      },
-      {
-        type = "text",
-        len = widgets.len(cancel),
-        text = { { { text = cancel, style = { fg = theme.muted } } } },
-        role = "key:esc",
-      },
-    },
-  }
+    crumbs = trail(flow),
+  })
 end
 
 --- A refusal this flow made itself, on its own row. Empty when there is none, so
@@ -443,11 +244,8 @@ end
 --- v1's selector: `▸ ` on the current row, accent+bold, plain otherwise.
 local function selector_rows(labels, index, height)
   local children = {}
-  local first = math.max(1, math.min(index - math.floor(height / 2), #labels - height + 1))
-  if #labels <= height then
-    first = 1
-  end
-  for position = first, math.min(#labels, first + height - 1) do
+  local first, last = widgets.window(#labels, height, index)
+  for position = first, last do
     local selected = position == index
     children[#children + 1] = {
       type = "text",
@@ -482,10 +280,10 @@ end
 local function render_host(flow)
   local labels = host_labels()
   local height = #labels
-  return modal("Run On", height + 4, {
+  return frame("Run On", height + 4, {
     { type = "box", len = height, children = selector_rows(labels, flow.host_index, height) },
     message_row(flow),
-    footer({ { "j/k", "navigate" } }, "Select"),
+    modal.footer({ { "j/k", "navigate" } }, "Select"),
   }, flow)
 end
 
@@ -514,25 +312,13 @@ local function repo_row(entry, selected, flow, is_cursor)
     spans[#spans + 1] = { text = row.label .. "  ", style = style }
   end
   -- Matched characters accented, as v1 accents them; the rest keeps the row's
-  -- own style so the cursor row still reads as the cursor row.
+  -- own style so the cursor row still reads as the cursor row. `fuzzy.spans`
+  -- owns the character-boundary slicing, so a multi-byte hit cannot render as
+  -- rubbish here any more than in the search strip.
   if #entry.matched > 0 then
-    local last = 0
-    for _, at in ipairs(entry.matched) do
-      if at > last + 1 then
-        spans[#spans + 1] = { text = string.sub(row.path, last + 1, at - 1), style = style }
-      end
-      -- To the next character boundary, not the next byte: slicing a
-      -- multi-byte character in half would render as rubbish (v1 fixed the
-      -- same bug in its own highlighter).
-      local finish = (utf8.offset(row.path, 2, at) or (#row.path + 1)) - 1
-      spans[#spans + 1] = {
-        text = string.sub(row.path, at, finish),
-        style = { fg = theme.accent_bright, bold = true },
-      }
-      last = finish
-    end
-    if last < #row.path then
-      spans[#spans + 1] = { text = string.sub(row.path, last + 1), style = style }
+    local hit = { fg = theme.accent_bright, bold = true }
+    for _, span in ipairs(fuzzy.spans(row.path, entry.matched, style, hit)) do
+      spans[#spans + 1] = span
     end
   else
     -- Middle-truncated: the leaf is what identifies a repository, and it is the
@@ -591,8 +377,8 @@ local function render_repo(flow)
     }
   else
     local cursor = widgets.clamp(flow.cursor, #entries)
-    local first = cursor >= visible and (cursor - visible + 1) or 1
-    for position = first, math.min(#entries, first + visible - 1) do
+    local first, last = widgets.window(#entries, visible, cursor)
+    for position = first, last do
       local entry = entries[position]
       local path = entry.row.path
       list[#list + 1] = {
@@ -690,8 +476,8 @@ local function render_repo(flow)
     else
       local index = widgets.clamp(flow.browse_index, #entries_shown)
       local height = math.min(#entries_shown, BROWSE_MAX)
-      local first = index >= height and (index - height + 1) or 1
-      for position = first, math.min(#entries_shown, first + height - 1) do
+      local first, last = widgets.window(#entries_shown, height, index)
+      for position = first, last do
         local entry = entries_shown[position]
         local selected = position == index
         local spans = {
@@ -750,7 +536,7 @@ local function render_repo(flow)
       { "s-tab", "list" },
     }
   end
-  children[#children + 1] = footer(hints, "Done")
+  children[#children + 1] = modal.footer(hints, "Done")
 
   -- The height is the sum of what was actually built, plus the two border rows.
   -- Deriving it from the children rather than recomputing the layout means the
@@ -760,7 +546,7 @@ local function render_repo(flow)
   for _, child in ipairs(children) do
     height = height + (child.len or 1)
   end
-  return modal("Select Repos", height, children, flow)
+  return frame("Select Repos", height, children, flow)
 end
 
 local function render_branch(flow)
@@ -768,7 +554,7 @@ local function render_branch(flow)
   local names = list.list or {}
   if list.loading or #names == 0 then
     local text = list.error or (spinner(flow) .. " fetching and listing branches…")
-    return modal("Base Branch", 5, {
+    return frame("Base Branch", 5, {
       {
         type = "text",
         len = 1,
@@ -777,30 +563,30 @@ local function render_branch(flow)
         },
       },
       message_row(flow),
-      footer({ { "esc", "cancel" } }, "Select"),
+      modal.footer({ { "esc", "cancel" } }, "Select"),
     }, flow)
   end
   local height = math.min(#names, REPO_LIST_MAX)
-  return modal("Base Branch", height + 4, {
+  return frame("Base Branch", height + 4, {
     {
       type = "box",
       len = height,
       children = selector_rows(names, widgets.clamp(flow.branch_index, #names), height),
     },
     message_row(flow),
-    footer({ { "j/k", "navigate" } }, "Select"),
+    modal.footer({ { "j/k", "navigate" } }, "Select"),
   }, flow)
 end
 
 local function render_field(title, label, field, flow, placeholder)
-  return modal(title, 7, {
+  return frame(title, 7, {
     textinput.node(field, {
       label = label,
       focused = true,
       placeholder = placeholder,
     }),
     message_row(flow),
-    footer({ { "enter", "confirm" }, { "esc", "cancel" } }, "OK"),
+    modal.footer({ { "enter", "confirm" }, { "esc", "cancel" } }, "OK"),
   }, flow)
 end
 
@@ -813,14 +599,14 @@ local function render_agent(flow)
       or (agent.name .. "  (" .. agent.command .. ")")
   end
   local height = math.max(1, math.min(#labels, REPO_LIST_MAX))
-  return modal("Coding Agent", height + 4, {
+  return frame("Coding Agent", height + 4, {
     {
       type = "box",
       len = height,
       children = selector_rows(labels, widgets.clamp(flow.agent_index, #labels), height),
     },
     message_row(flow),
-    footer({ { "j/k", "navigate" } }, "Select"),
+    modal.footer({ { "j/k", "navigate" } }, "Select"),
   })
 end
 
@@ -1504,15 +1290,16 @@ return {
       return false
     end
     if flow.step == "repo" then
-      for index, entry in ipairs(rows_for(flow)) do
-        if entry.row.path == hit.id then
-          flow.cursor = index
-          flow.focus = "list"
-          save(flow)
-          return true
-        end
+      local index = widgets.index_of(rows_for(flow), hit.id, function(entry)
+        return entry.row.path
+      end)
+      if not index then
+        return false
       end
-      return false
+      flow.cursor = index
+      flow.focus = "list"
+      save(flow)
+      return true
     end
     local index = tonumber(hit.id)
     if not index then

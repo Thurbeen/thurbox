@@ -20,28 +20,23 @@
 -- `text` nodes costs nothing — the border rows are the rows the frame would have
 -- occupied — and stays inside the four-kind vocabulary.
 
+local chrome = require("lib.chrome")
 local fuzzy = require("lib.fuzzy")
 local hover = require("lib.hover")
+local order = require("lib.order")
 local panels = require("lib.panels")
 local plugin_settings = require("lib.settings")
+local scroll = require("lib.scroll")
+local session_model = require("lib.session_model")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
 -- ── Text helpers the contract needs and widgets.lua does not have ───────────
 
---- Character count across a span list (widgets.len handles one string).
-local function spans_len(spans)
-  local total = 0
-  for _, span in ipairs(spans) do
-    total = total + widgets.len(span.text or "")
-  end
-  return total
-end
-
 --- Append a raw-space span so a styled run covers the full width — how v1 makes
 --- the selection background reach the right edge.
 local function pad_spans(spans, width)
-  local short = width - spans_len(spans)
+  local short = width - chrome.spans_len(spans)
   if short > 0 then
     spans[#spans + 1] = { text = string.rep(" ", short) }
   end
@@ -76,417 +71,14 @@ local function patch_spans(spans, style, keep_fg)
   return spans
 end
 
---- First `count` characters, cut on a character boundary.
--- ── Border composition ─────────────────────────────────────────────────────
+-- ── The model, the border chrome and the ordering algebra live in lib/ ──────
 --
--- A border row is built as a cell buffer so segments can be *layered* the way
--- v1 layers them: the dot strip is a right-aligned title, and the scroll count
--- is painted over the same cells afterwards.
-
-local function new_cells(width, char, style)
-  local cells = {}
-  for index = 1, width do
-    cells[index] = { ch = char, style = style }
-  end
-  return cells
-end
-
---- Paint `text` into the buffer starting at `at` (1-based). Out-of-range cells
---- are dropped, which is how an over-long title clips at either edge.
-local function place_text(cells, at, text, style)
-  local index = at
-  for _, code in utf8.codes(text or "") do
-    if index >= 1 and index <= #cells then
-      cells[index] = { ch = utf8.char(code), style = style }
-    end
-    index = index + 1
-  end
-  return index
-end
-
-local function place_spans(cells, at, spans)
-  local index = at
-  for _, span in ipairs(spans) do
-    index = place_text(cells, index, span.text, span.style)
-  end
-  return index
-end
-
---- Coalesce the buffer back into spans. Styles are compared by identity, which
---- is exact here because every segment is painted with one shared style table.
----
---- Each run's characters accumulate in a buffer and concatenate once at flush:
---- a border row is mostly one long run of `─`, and appending to a string per
---- cell was O(width²) byte copying — ~200 intermediate strings per border at
---- 200 columns, twice per render.
-local function cells_to_spans(cells)
-  local spans, buffer, current_style = {}, nil, nil
-  local function flush()
-    if buffer then
-      spans[#spans + 1] = { text = table.concat(buffer), style = current_style }
-    end
-  end
-  for _, cell in ipairs(cells) do
-    if buffer and cell.style == current_style then
-      buffer[#buffer + 1] = cell.ch
-    else
-      flush()
-      buffer = { cell.ch }
-      current_style = cell.style
-    end
-  end
-  flush()
-  return spans
-end
-
--- ── Focus styling ──────────────────────────────────────────────────────────
---
--- v1's three levels (`ui::FocusLevel`), and which this pane uses.
---
--- The kernel publishes a single `focused` boolean, and it is the PANE that knows
--- what its unfocused state means — the same split v1 makes, deciding per pane in
--- `view.rs` rather than in the widget. For the session list the answer is
--- `Active`: it always shows the current session, so it stays contextually
--- relevant with focus elsewhere and keeps the plain accent border. v1's
--- `list_focus` falls through to exactly that.
---
--- `Inactive` (the gray border) is therefore unreached here today. It is kept
--- because it is not dead: v1 uses it for this pane while the automations context
--- owns the centre, so the pane that returns brings the level back with it.
-
-local function border_style(level)
-  if level == "focused" then
-    return { fg = theme.accent_bright }
-  elseif level == "active" then
-    return { fg = theme.accent }
-  end
-  return { fg = theme.border }
-end
-
-local function title_style(level)
-  if level == "focused" then
-    -- v1's `Theme::focused_title()`: a badge, not coloured text.
-    return { fg = theme.role("inverted_fg"), bg = theme.accent, bold = true }
-  elseif level == "active" then
-    return { fg = theme.accent }
-  end
-  return { fg = theme.border }
-end
-
--- ── The model: what to draw, before any width is known ──────────────────────
-
-local NO_REPO = "(no repo)"
-
---- In-flight commands, keyed by the session they concern.
----
---- A command is accepted instantly and lands in a later snapshot, so without
---- this a restart would look like nothing happened for a moment. v1 needed a
---- whole `PendingSpawn` type for the same reason. A delete is the exception:
---- see `live_sessions()`, which drops the row instead of annotating it.
-local function pending()
-  local by_session = {}
-  for _, item in ipairs(thurbox and thurbox.commands or {}) do
-    if item.session and item.session ~= "" then
-      by_session[item.session] = item
-    end
-  end
-  return by_session
-end
-
---- The sessions the list draws: every published row but the ones being deleted.
----
---- Every other in-flight command leaves a row to annotate; a delete is the one
---- whose subject is the row itself. Waiting for it to land left the session
---- sitting there tagged `delete` for as long as the worker took — so the list
---- kept showing what you had just removed. Dropping it on the keystroke is what
---- makes the delete read as done, and there is nothing to be lost by it: the
---- effect is already accepted, and Ctrl+Z restores the session rather than the
---- row.
----
---- A FAILED delete is deliberately kept. The session is still there, and the
---- failed row is the only thing that says the deletion did not happen.
-local function live_sessions(rows)
-  local gone = {}
-  for _, item in ipairs(thurbox and thurbox.commands or {}) do
-    -- Guarded like `pending()`: a nil key is a runtime error in Lua.
-    if item.kind == "delete" and item.phase ~= "failed" and item.session then
-      gone[item.session] = true
-    end
-  end
-
-  local live = {}
-  for _, session in ipairs(rows) do
-    if not gone[session.id] then
-      live[#live + 1] = session
-    end
-  end
-  return live
-end
-
---- Creations in flight, keyed by the repo they will land in.
----
---- A create names no session yet, so it cannot be matched to a row. The command
---- carries its subject — the repo — which is exactly enough to draw the
---- placeholder where the session will actually appear rather than in a limbo of
---- its own. v1 needed a bespoke slot in its ordering code for this.
-local function pending_creations()
-  local by_repo = {}
-  for _, item in ipairs(thurbox and thurbox.commands or {}) do
-    if item.kind == "create" and item.subject then
-      by_repo[item.subject] = by_repo[item.subject] or {}
-      table.insert(by_repo[item.subject], item)
-    end
-  end
-  return by_repo
-end
-
---- The repos a session spans, de-duplicated, in its own member order — primary
---- repo first. Empty when it spans none.
-local function repo_set(session)
-  local seen, names = {}, {}
-  for _, name in ipairs(session.repos or {}) do
-    if name ~= "" and not seen[name] then
-      seen[name] = true
-      names[#names + 1] = name
-    end
-  end
-  -- A row published before the member list existed still has to group.
-  if #names == 0 and session.repo then
-    names[1] = session.repo
-  end
-  return names
-end
-
---- The grouping **key**: the repo *set*, sorted, so two sessions spanning the
---- same repos cluster regardless of the order they were selected in. Mirrors
---- v1's `repo_set_key` — including its `\0` separator, which cannot occur in a
---- repo name, so distinct sets never collide. Never displayed.
-local function group_key(names)
-  if #names == 0 then
-    return NO_REPO
-  end
-  local sorted = {}
-  for index, name in ipairs(names) do
-    sorted[index] = name
-  end
-  table.sort(sorted)
-  return table.concat(sorted, "\0")
-end
-
---- The header **label**: the same repos joined with ` + ` in natural order, so a
---- multi-repo session's group names every repo it spans rather than just its
---- primary. v1's `repo_set_display`.
-local function group_label(names)
-  if #names == 0 then
-    return NO_REPO
-  end
-  return table.concat(names, " + ")
-end
-
---- Group by repo set and order exactly as v1's `compute_session_order` does:
---- members by (manual order, original index), groups by (lowest member order,
---- label). "Never moved" sorts *after* everything ordered, in creation order —
---- not alphabetically.
-local function ordered_groups(rows)
-  local groups, by_key = {}, {}
-  for index, session in ipairs(rows) do
-    local names = repo_set(session)
-    local key = group_key(names)
-    local group = by_key[key]
-    if not group then
-      group = { label = group_label(names), members = {} }
-      by_key[key] = group
-      groups[#groups + 1] = group
-    end
-    table.insert(group.members, index)
-  end
-
-  local function manual(index)
-    return rows[index].display_order or math.huge
-  end
-
-  for _, group in ipairs(groups) do
-    table.sort(group.members, function(a, b)
-      local left, right = manual(a), manual(b)
-      if left ~= right then
-        return left < right
-      end
-      return a < b
-    end)
-    local lowest = math.huge
-    for _, index in ipairs(group.members) do
-      lowest = math.min(lowest, manual(index))
-    end
-    group.order = lowest
-  end
-
-  table.sort(groups, function(a, b)
-    if a.order ~= b.order then
-      return a.order < b.order
-    end
-    return a.label < b.label
-  end)
-  return groups, by_key
-end
-
---- The rows to draw, in order, before any of them is turned into text.
----
---- An item is one selectable unit — a session row plus, for a group's first
---- row, the group header glued on top. That gluing is v1's: the header is line
---- zero of the first session's list item, so clicking a header selects that
---- session and the scroll window can never separate the two.
---- Whether the list draws repo headers.
----
---- v1 always groups; a user with one repo sees a header that says nothing, so
---- this is a knob rather than a rule. The GROUPING still happens either way --
---- only the header line is suppressed -- so ordering and the move-past-a-group
---- behaviour are unchanged.
-local function grouped()
-  return plugin_settings.enabled("sessions", "group_by_repo", true)
-end
-
---- Digest of the published in-flight commands, for the model memo below.
----
---- `thurbox.sessions` is a gated group, so its table identity is a sound memo
---- key — but `thurbox.commands` is rebuilt every publish, so it is digested by
---- value instead. Commands in flight are few, so the digest is far cheaper
---- than the rebuild it prevents.
-local function commands_digest()
-  local parts = {}
-  for _, item in ipairs(thurbox and thurbox.commands or {}) do
-    parts[#parts + 1] = (item.kind or "")
-      .. "\1"
-      .. (item.session or "")
-      .. "\1"
-      .. (item.subject or "")
-      .. "\1"
-      .. (item.phase or "")
-  end
-  return table.concat(parts, "\2")
-end
-
-local model_cache = {}
-
-local function build_model(rows)
-  -- Memoized: this walks and sorts every row and runs again per render AND per
-  -- click/action, so the same inputs must not pay twice. Consumers treat the
-  -- returned items as read-only, which is what makes sharing the table safe.
-  local digest = commands_digest()
-  local headers = grouped()
-  if
-    model_cache.items ~= nil
-    and rawequal(rows, model_cache.rows)
-    and digest == model_cache.digest
-    and headers == model_cache.headers
-  then
-    return model_cache.items
-  end
-
-  local items = {}
-  -- Dropped before anything is grouped or ordered, so every consumer of the
-  -- model agrees: the cursor lands on the next row, the border dots lose one,
-  -- and a group whose last session went takes its header with it.
-  local all_rows = rows
-  rows = live_sessions(rows)
-
-  local groups, by_key = ordered_groups(rows)
-  local creating = pending_creations()
-
-  -- A repo that has no sessions yet still needs its header, or a creation into
-  -- a fresh repo would have nowhere to draw.
-  for repo in pairs(creating) do
-    if not by_key[repo] then
-      local group = { label = repo, members = {}, order = math.huge }
-      by_key[repo] = group
-      groups[#groups + 1] = group
-    end
-  end
-
-  -- Every rendered session, for the cross-group child mark: v1 only marks a
-  -- child whose parent is actually on screen somewhere.
-  local visible = {}
-  for _, session in ipairs(rows) do
-    visible[session.id] = true
-  end
-
-  for _, group in ipairs(groups) do
-    local in_group = {}
-    for _, index in ipairs(group.members) do
-      in_group[rows[index].id] = true
-    end
-
-    -- Children nest under their parent, within the same repo group, keeping the
-    -- manual order among siblings and among roots. Indexed by parent up front:
-    -- scanning the member list per emitted member made the walk O(members²).
-    local children = {}
-    for _, index in ipairs(group.members) do
-      local parent = rows[index].parent
-      if parent then
-        children[parent] = children[parent] or {}
-        table.insert(children[parent], index)
-      end
-    end
-
-    local nested, seen = {}, {}
-    local function emit(index, depth)
-      local session = rows[index]
-      if seen[session.id] then
-        return
-      end
-      seen[session.id] = true
-      nested[#nested + 1] = { index = index, depth = depth }
-      for _, other in ipairs(children[session.id] or {}) do
-        emit(other, depth + 1)
-      end
-    end
-    for _, index in ipairs(group.members) do
-      local session = rows[index]
-      if not session.parent or not in_group[session.parent] then
-        emit(index, 0)
-      end
-    end
-
-    local first = true
-    for _, entry in ipairs(nested) do
-      local session = rows[entry.index]
-      local parent = session.parent
-      items[#items + 1] = {
-        kind = "session",
-        session = session,
-        depth = entry.depth,
-        cross_group = entry.depth == 0
-          and parent ~= nil
-          and parent ~= session.id
-          and visible[parent] == true,
-        header = (first and headers) and group.label or nil,
-        target = session.id,
-      }
-      first = false
-    end
-
-    -- Placeholders at the end of the group, where the real row will appear.
-    for _, item in ipairs(creating[group.label] or {}) do
-      items[#items + 1] = {
-        kind = "pending",
-        command = item,
-        -- A placeholder sits at group level, like the row it will become. Stated
-        -- rather than left nil because every ordering helper compares `depth`
-        -- numerically, and `nil` there is not a shallow row -- it is an error that
-        -- takes the pane down on Shift+J/K/S while a session is being created.
-        depth = 0,
-        header = (first and headers) and group.label or nil,
-        target = false,
-      }
-      first = false
-    end
-  end
-
-  model_cache.rows = all_rows
-  model_cache.digest = digest
-  model_cache.headers = headers
-  model_cache.items = items
-  return items
-end
+-- `lib.session_model` builds the item list (one selectable unit per row, with
+-- the group header glued to its group's first session), `lib.chrome` holds the
+-- cell primitives and focus styles the hand-drawn border is composed from, and
+-- `lib.order` is the move/sort algebra over the rendered items. All three are
+-- pure over what this pane hands them; everything about how a row LOOKS stays
+-- here.
 
 -- ── Turning a model item into lines ────────────────────────────────────────
 
@@ -504,8 +96,7 @@ end
 local function status_glyph(status, elapsed)
   local spec = theme.status(status)
   if status == "working" then
-    local frame = math.floor((elapsed or 0) * 8) % #theme.spinner + 1
-    return theme.spinner[frame], spec.color
+    return widgets.spinner(elapsed), spec.color
   end
   return spec.glyph, spec.color
 end
@@ -549,7 +140,7 @@ local function push_status(spans, text, style, inner_width)
   if not text or text == "" then
     return
   end
-  local used = spans_len(spans) + widgets.len(SEPARATOR)
+  local used = chrome.spans_len(spans) + widgets.len(SEPARATOR)
   local avail = math.max(0, inner_width - used)
   if avail >= MIN_WIDTH then
     spans[#spans + 1] = { text = SEPARATOR }
@@ -722,8 +313,7 @@ local function pending_line(command, inner_width, elapsed)
     glyph, glyph_style = "✗", { fg = theme.role("status_error") }
   else
     -- A spinner only while something is actually running.
-    local frame = math.floor((elapsed or 0) * 8) % #theme.spinner + 1
-    glyph, glyph_style = theme.spinner[frame], { fg = theme.warn }
+    glyph, glyph_style = widgets.spinner(elapsed), { fg = theme.warn }
   end
 
   local label = command.subject or "new session"
@@ -744,60 +334,6 @@ local function pending_line(command, inner_width, elapsed)
     spans[#spans + 1] = { text = "  " .. phase, style = { fg = theme.muted } }
   end
   return spans
-end
-
--- ── Scrolling: ratatui's ListState semantics over variable item heights ─────
-
---- The minimal scroll that keeps `selected` fully visible, given each item's
---- height. Returns the first item (1-based) and the count of items after it
---- that fit — v1's `visible_count_from_heights`.
-local function scroll_window(heights, offset, selected, max_height)
-  local count = #heights
-  if count == 0 or max_height <= 0 then
-    return 1, 0
-  end
-
-  -- 0-based inside, to stay recognisably ratatui's arithmetic.
-  local first = math.max(0, math.min(offset, count - 1))
-  local last = first
-  local used = 0
-  for index = first, count - 1 do
-    if used + heights[index + 1] > max_height then
-      break
-    end
-    used = used + heights[index + 1]
-    last = last + 1
-  end
-
-  local target = math.max(0, math.min(selected - 1, count - 1))
-  while target >= last do
-    used = used + heights[last + 1]
-    last = last + 1
-    while used > max_height do
-      used = used - heights[first + 1]
-      first = first + 1
-    end
-  end
-  while target < first do
-    first = first - 1
-    used = used + heights[first + 1]
-    while used > max_height do
-      last = last - 1
-      used = used - heights[last + 1]
-    end
-  end
-
-  -- v1 recounts what fits from the settled offset, so the "below" count never
-  -- claims a partially drawn item is visible.
-  local visible, consumed = 0, 0
-  for index = first, count - 1 do
-    if consumed + heights[index + 1] > max_height then
-      break
-    end
-    consumed = consumed + heights[index + 1]
-    visible = visible + 1
-  end
-  return first + 1, visible
 end
 
 --- Move the cursor by `step`, skipping items that select nothing.
@@ -825,11 +361,7 @@ end
 --- `[features] soft_delete` off means the TUI deletes for real — v1's own
 --- behaviour, and why the confirmation below exists: there is no Ctrl+Z for it.
 local function soft_delete()
-  local settings = thurbox and thurbox.settings
-  if not settings or not settings.features then
-    return true
-  end
-  return settings.features.soft_delete ~= false
+  return plugin_settings.feature("soft_delete", true) ~= false
 end
 
 --- What deleting this session would destroy, itemised — or nil when it would
@@ -922,186 +454,6 @@ local function new_session_chord()
     end
   end
   return nil
-end
-
--- ── Manual ordering ─────────────────────────────────────────────────────────
---
--- A move is computed HERE, over the rendered items, and sent as an explicit
--- order. The kernel cannot compute it: only this pane knows the repo grouping
--- and the parent/child nesting, and therefore what a move actually swaps — a
--- root row drags its whole subtree, a root row at its group's edge moves the
--- WHOLE GROUP past the neighbouring one, and a nested child moves among its
--- siblings only. Ported from v1's `move_in_order`.
-
---- End of the block rooted at `at`: the first later row at a depth `<=` its own,
---- i.e. one past its whole rendered subtree.
-local function block_end(items, at)
-  local last = #items
-  local finish = at + 1
-  while finish <= last and items[finish].depth > items[at].depth do
-    finish = finish + 1
-  end
-  return finish
-end
-
---- Start of the group containing `at`: the nearest row at or above it that
---- carries a header.
----
---- Only the first row of a group carries one, and with `group_by_repo` off
---- nothing does -- so the answer there is row 1: the whole list is one group. It
---- used to be nil, which made `root_ranges` give up and every root move a silent
---- no-op for anyone who had turned grouping off.
-local function group_start(items, at)
-  for index = at, 1, -1 do
-    if items[index].header then
-      return index
-    end
-  end
-  return #items > 0 and 1 or nil
-end
-
---- Start of the group after the one starting at `at`, or one past the end.
-local function group_end(items, at)
-  for index = at + 1, #items do
-    if items[index].header then
-      return index
-    end
-  end
-  return #items + 1
-end
-
---- The two adjacent ranges a root move swaps: the neighbouring root block in
---- the same group, or — at a group edge — this whole group with its neighbour.
-local function root_ranges(items, at, down)
-  local last = #items
-  local finish = block_end(items, at)
-  local gs = group_start(items, at)
-  if not gs then
-    return nil
-  end
-  local ge = group_end(items, gs)
-
-  if down then
-    if finish < ge then
-      return at, finish, finish, block_end(items, finish)
-    elseif ge <= last then
-      return gs, ge, ge, group_end(items, ge)
-    end
-    return nil
-  end
-  if at > gs then
-    for index = at - 1, gs, -1 do
-      if items[index].depth == 0 then
-        return index, at, at, finish
-      end
-    end
-    return nil
-  end
-  if gs > 1 then
-    local previous = group_start(items, gs - 1)
-    if previous then
-      return previous, gs, gs, ge
-    end
-  end
-  return nil
-end
-
---- The two adjacent ranges a nested move swaps: the adjacent same-depth sibling
---- only, so a child never leaves its parent.
-local function child_ranges(items, at, down)
-  local last = #items
-  local depth = items[at].depth
-  local finish = block_end(items, at)
-
-  if down then
-    -- A shallower row where the next sibling would start means the parent's
-    -- subtree ended.
-    if finish <= last and items[finish].depth == depth then
-      return at, finish, finish, block_end(items, finish)
-    end
-    return nil
-  end
-  -- Scan back over the previous sibling's subtree; a same-depth row is that
-  -- sibling, a shallower one is our parent.
-  local index = at - 1
-  while index >= 1 and items[index].depth > depth do
-    index = index - 1
-  end
-  if index >= 1 and items[index].depth == depth then
-    return index, at, at, finish
-  end
-  return nil
-end
-
---- The rendered item list with the block at `at` moved one place, or nil when
---- it is already at the edge that move would take it past.
-local function move_block(items, at, down)
-  local a_start, a_end, b_start, b_end
-  if items[at].depth == 0 then
-    a_start, a_end, b_start, b_end = root_ranges(items, at, down)
-  else
-    a_start, a_end, b_start, b_end = child_ranges(items, at, down)
-  end
-  if not a_start then
-    return nil
-  end
-  local moved = {}
-  for index = 1, a_start - 1 do
-    moved[#moved + 1] = items[index]
-  end
-  for index = b_start, b_end - 1 do
-    moved[#moved + 1] = items[index]
-  end
-  for index = a_start, a_end - 1 do
-    moved[#moved + 1] = items[index]
-  end
-  for index = b_end, #items do
-    moved[#moved + 1] = items[index]
-  end
-  return moved
-end
-
---- Sort by name **within each repo group**, preserving group order and the
---- parent/child nesting: roots sort among themselves, each parent's children
---- among theirs. v1's `sort_alphabetically_within_groups`.
-local function sorted_within_groups(items)
-  local out = {}
-  local at = 1
-  while at <= #items do
-    local group_last = group_end(items, at) - 1
-    -- Collect this group's root blocks, each as its own subtree.
-    local blocks = {}
-    local index = at
-    while index <= group_last do
-      local finish = block_end(items, index)
-      local block = {}
-      for inner = index, finish - 1 do
-        block[#block + 1] = items[inner]
-      end
-      blocks[#blocks + 1] = block
-      index = finish
-    end
-    -- Case-insensitive, like v1, and stable on a tie so equal names keep their
-    -- existing relative order.
-    for position, block in ipairs(blocks) do
-      block.position = position
-    end
-    table.sort(blocks, function(a, b)
-      local left = (a[1].session.name or ""):lower()
-      local right = (b[1].session.name or ""):lower()
-      if left == right then
-        return a.position < b.position
-      end
-      return left < right
-    end)
-    for _, block in ipairs(blocks) do
-      for _, item in ipairs(block) do
-        out[#out + 1] = item
-      end
-    end
-    at = group_last + 1
-  end
-  return out
 end
 
 --- Persist a rendered order. Header ownership is a *rendering* property of the
@@ -1253,7 +605,7 @@ return {
     local width = math.max(0, ctx.width or 0)
     local height = math.max(0, ctx.height or 0)
     local level = ctx.focused and "focused" or "active"
-    local frame_style = border_style(level)
+    local frame_style = chrome.border_style(level)
     if width < 2 or height < 2 then
       return { type = "text", text = "" }
     end
@@ -1261,8 +613,8 @@ return {
     local inner_height = height - 2
 
     local list = sessions()
-    local items = build_model(list)
-    local busy = pending()
+    local items = session_model.build(list)
+    local busy = session_model.pending()
     -- The live query, read once per render and compiled once: `session_line`
     -- runs per visible row, and each used to re-read the store and re-split
     -- the query per field.
@@ -1376,7 +728,8 @@ return {
         heights[index] = item.header and 2 or 1
       end
 
-      local first, visible = scroll_window(heights, state.offset or 0, cursor, inner_height)
+      local first, visible =
+        scroll.window_variable(heights, state.offset or 0, cursor, inner_height)
       state.offset = first - 1
       above = first - 1
       below = #items - (first - 1 + visible)
@@ -1418,18 +771,18 @@ return {
     -- Top border: the title badge at the left, the dot strip right-aligned, and
     -- the "items above" count painted over it — the same layering v1 gets from
     -- a right-aligned title plus a paragraph drawn on the border cells.
-    local top = new_cells(width, "─", frame_style)
+    local top = chrome.new_cells(width, "─", frame_style)
     top[1] = { ch = "╭", style = frame_style }
     top[width] = { ch = "╮", style = frame_style }
-    place_spans(top, 2, { { text = " Sessions ", style = title_style(level) } })
+    chrome.place_spans(top, 2, { { text = " Sessions ", style = chrome.title_style(level) } })
     if #dots > 0 then
-      place_spans(top, width - spans_len(dots), dots)
+      chrome.place_spans(top, width - chrome.spans_len(dots), dots)
     end
     if above > 0 then
       local text = "▲ " .. above .. " "
-      place_text(top, width - widgets.len(text), text, { fg = theme.muted })
+      chrome.place_text(top, width - widgets.len(text), text, { fg = theme.muted })
     end
-    children[#children + 1] = { type = "text", len = 1, text = { cells_to_spans(top) } }
+    children[#children + 1] = { type = "text", len = 1, text = { chrome.cells_to_spans(top) } }
 
     for index = 1, inner_height do
       local line = lines[index]
@@ -1437,14 +790,14 @@ return {
         row(line and line.spans or {}, line and line.id, line and line.class)
     end
 
-    local bottom = new_cells(width, "─", frame_style)
+    local bottom = chrome.new_cells(width, "─", frame_style)
     bottom[1] = { ch = "╰", style = frame_style }
     bottom[width] = { ch = "╯", style = frame_style }
     if below > 0 then
       local text = "▼ " .. below .. " "
-      place_text(bottom, width - widgets.len(text), text, { fg = theme.muted })
+      chrome.place_text(bottom, width - widgets.len(text), text, { fg = theme.muted })
     end
-    children[#children + 1] = { type = "text", len = 1, text = { cells_to_spans(bottom) } }
+    children[#children + 1] = { type = "text", len = 1, text = { chrome.cells_to_spans(bottom) } }
 
     return { type = "box", children = children }
   end,
@@ -1463,17 +816,16 @@ return {
     if not hit.id then
       return false
     end
-    local items = build_model(sessions())
-    for index, item in ipairs(items) do
-      if item.target == hit.id then
-        state.follow = nil
-        state.cursor = index
-        store.selected = hit.id
-        state.published = hit.id
-        return true
-      end
+    local items = session_model.build(sessions())
+    local index = widgets.index_of(items, hit.id, "target")
+    if not index then
+      return false
     end
-    return false
+    state.follow = nil
+    state.cursor = index
+    store.selected = hit.id
+    state.published = hit.id
+    return true
   end,
 
   on_action = function(action)
@@ -1495,7 +847,7 @@ return {
     end
 
     local list = sessions()
-    local items = build_model(list)
+    local items = session_model.build(list)
     if #items == 0 then
       return false
     end
@@ -1576,20 +928,20 @@ return {
     -- the cursor on the session rather than the row index, since the order it
     -- was pressed at lands a frame or two later.
     elseif action == "sessions.move_down" and id then
-      local moved = move_block(items, at, true)
+      local moved = order.move_block(items, at, true)
       if moved then
         state.follow = id
         persist_order(moved)
       end
     elseif action == "sessions.move_up" and id then
-      local moved = move_block(items, at, false)
+      local moved = order.move_block(items, at, false)
       if moved then
         state.follow = id
         persist_order(moved)
       end
     elseif action == "sessions.sort" then
       state.follow = id
-      persist_order(sorted_within_groups(items))
+      persist_order(order.sorted_within_groups(items))
     else
       return false
     end

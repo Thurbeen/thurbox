@@ -14,6 +14,7 @@
 
 mod commands;
 mod draw;
+pub(crate) mod editor;
 mod focus;
 mod input;
 mod interface;

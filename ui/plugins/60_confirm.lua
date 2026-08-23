@@ -18,6 +18,7 @@
 -- v1 has two bespoke modals for this (`ConfirmDelete`, `ConfirmRestore`), each
 -- with the risk assessment welded in.
 
+local modal = require("lib.modal")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
@@ -79,58 +80,25 @@ return {
     end
 
     children[#children + 1] = { type = "text", len = 1, text = "" }
-    children[#children + 1] = {
-      type = "box",
-      axis = "horizontal",
-      len = 1,
-      children = {
-        {
-          type = "text",
-          fill = 1,
-          text = {
-            {
-              { text = " y", style = { fg = theme.hint } },
-              { text = " confirm  ", style = { fg = theme.muted } },
-              { text = "esc", style = { fg = theme.hint } },
-              { text = " cancel", style = { fg = theme.muted } },
-            },
-          },
-        },
-        -- The pills replay the keys they name, so a click and a keystroke cannot
-        -- come to mean different things.
-        {
-          type = "text",
-          len = 11,
-          text = { { { text = "[ Confirm ]", style = { fg = theme.bad, bold = true } } } },
-          role = "key:y",
-        },
-        {
-          type = "text",
-          len = 10,
-          text = { { { text = " [ Cancel ]", style = { fg = theme.muted } } } },
-          role = "key:esc",
-        },
-      },
-    }
+    -- The Confirm pill wears the danger colour and replays `y`, not enter: a
+    -- destructive yes should look like one and mean exactly the key it names.
+    children[#children + 1] = modal.footer(
+      { { " y", "confirm" }, { "esc", "cancel" } },
+      "Confirm",
+      { key = "y", style = { fg = theme.bad, bold = true } }
+    )
 
     local rows = 2
     for _, child in ipairs(children) do
       rows = rows + (child.len or 1)
     end
-    return {
-      -- Danger-bordered, as v1 frames a destructive confirmation. `cols`, not
-      -- `width`: the kernel reads `width` as a share of the screen and `cols`
-      -- as cells.
-      float = { cols = 60, rows = rows },
-      type = "box",
-      frame = {
-        title = " Confirm ",
-        borders = "all",
-        border_style = { fg = theme.bad },
-        style = { bg = theme.role("modal_bg") },
-      },
+    -- Danger-bordered, as v1 frames a destructive confirmation.
+    return modal.frame("Confirm", {
+      cols = 60,
+      rows = rows,
+      border = { fg = theme.bad },
       children = children,
-    }
+    })
   end,
 
   on_key = function(key)

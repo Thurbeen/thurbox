@@ -330,15 +330,47 @@ function widgets.hints(pairs_list)
   return { type = "text", len = 1, text = { spans } }
 end
 
+--- The spinner glyph for this frame.
+---
+--- The 8 is the kernel's `ANIMATION_HZ` (`kernel::host`), and the two must
+--- stay in lockstep: the shared animation clock invalidates `pure` panes at
+--- that rate and only while something is animating, so a spinner advancing
+--- faster than the clock would skip frames and one advancing slower would be
+--- re-rendered for no visible change.
+function widgets.spinner(elapsed)
+  local frame = math.floor((elapsed or 0) * 8) % #theme.spinner + 1
+  return theme.spinner[frame]
+end
+
 --- The animated glyph for a session status.
 function widgets.status_glyph(status, elapsed)
   local spec = theme.status(status)
   local glyph = spec.glyph
   if status == "working" then
-    local frame = math.floor((elapsed or 0) * 8) % #theme.spinner + 1
-    glyph = theme.spinner[frame]
+    glyph = widgets.spinner(elapsed)
   end
   return { text = glyph, style = { fg = spec.color } }
+end
+
+--- Index of the row whose identity is `id`, or nil when no row carries it.
+---
+--- The find-the-clicked-row loop, shared: a click hands back the id the row
+--- was drawn with, and every pane answers it by scanning the same rows it
+--- rendered. `key` names the field carrying identity (default `"id"`), or is
+--- a function for rows whose identity is nested.
+function widgets.index_of(rows, id, key)
+  for index, row in ipairs(rows) do
+    local value
+    if type(key) == "function" then
+      value = key(row)
+    else
+      value = row[key or "id"]
+    end
+    if value == id then
+      return index
+    end
+  end
+  return nil
 end
 
 --- Epoch milliseconds the frame is being drawn for.

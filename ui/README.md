@@ -11,7 +11,9 @@ works and one that fails at runtime with nothing on screen to say why.
 
 ```text
 layout.lua      the arrangement: which slots exist, and where
-lib/            shared helpers — widgets, theme roles, fuzzy match, text input
+lib/            shared helpers — widgets, theme roles, fuzzy match, text input,
+                border chrome, modal shells, scrolling, and the session-list
+                and repo-picker models
 plugins/        the panes themselves, loaded in filename order
 ```
 

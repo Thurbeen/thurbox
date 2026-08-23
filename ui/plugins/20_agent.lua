@@ -26,8 +26,10 @@
 -- one child, which forecloses all three. Composing the border out of `text`
 -- nodes keeps every one of them and still uses only the four primitives.
 
+local chrome = require("lib.chrome")
 local panels = require("lib.panels")
 local hover = require("lib.hover")
+local plugin_settings = require("lib.settings")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
@@ -48,11 +50,7 @@ local NAME = "agent"
 --- v1 gates the pane, its chord and its tab on `[features] shell_pane`; this pane
 --- owns all three in v2, so it is the thing that has to ask.
 local function shell_enabled()
-  local settings = thurbox and thurbox.settings
-  if not settings or not settings.features then
-    return true
-  end
-  return settings.features.shell_pane ~= false
+  return plugin_settings.feature("shell_pane", true) ~= false
 end
 
 local AGENT_TAB, SHELL_TAB = "agent", "shell"
@@ -185,27 +183,8 @@ end
 -- v1 has THREE levels (`ui::FocusLevel`); this pane's caller only ever produces
 -- two, so `inactive` is carried for completeness rather than reached. Focus is
 -- communicated by COLOUR, never by a marker glyph or a heavier border — which
--- is why nothing below prefixes the title.
-
-local function border_style_for(level)
-  if level == "focused" then
-    return { fg = theme.accent_bright }
-  elseif level == "inactive" then
-    return { fg = theme.border }
-  end
-  return { fg = theme.accent }
-end
-
---- v1's `ui::title_style`. Focused is a BADGE — inverted foreground on an
---- accent field, bold — not merely a brighter text colour.
-local function title_style_for(level)
-  if level == "focused" then
-    return { fg = theme.role("inverted_fg"), bg = theme.accent, bold = true }
-  elseif level == "inactive" then
-    return { fg = theme.border }
-  end
-  return { fg = theme.accent }
-end
+-- is why nothing below prefixes the title. The mapping itself is
+-- `chrome.border_style` / `chrome.title_style`, shared with the session list.
 
 -- --- the scrollbar ---------------------------------------------------------
 
@@ -284,7 +263,9 @@ local COLLAPSE_TOGGLE_MIN_WIDTH = 5
 --- border space for the tabs.
 local COLLAPSE_HINT_MIN_WIDTH = 40
 
---- v1 renders a chord compactly: `^Q`, `⇧J`, `F7`. Mirrors `KeyChord::compact`.
+--- v1 renders a chord compactly: `^Q`, `⇧J`, `F7`. Mirrors `KeyChord::compact`
+--- — which also drives the kernel's action band (`kernel::bands`), so the hint
+--- on this border and the pill in the band spell the same chord the same way.
 local function compact_chord(chord)
   local modifiers, key = "", chord
   while true do
@@ -415,7 +396,8 @@ local function tab_label(spec)
 end
 
 --- v1 `central_tabs_block_width`: each chip is ` label `, chips joined by one
---- cell — mirrors the footer's packing so the trim agrees with what paints.
+--- cell — the same packing the kernel's action band uses for its pills, so the
+--- trim agrees with what paints.
 local function tabs_block_width(specs)
   if #specs == 0 then
     return 0
@@ -536,127 +518,10 @@ local function border_strip(width, border_style, active)
 end
 
 -- --- hand-drawn chrome -----------------------------------------------------
-
-local ROUNDED = { tl = "╭", tr = "╮", bl = "╰", br = "╯", h = "─", v = "│" }
-local SQUARE = { tl = "┌", tr = "┐", bl = "└", br = "┘", h = "─", v = "│" }
-
---- The top border as a NODE, not a run list.
----
---- Identity is per node, so a chip painted as one span among many can never be
---- a click target however it is styled. When any run carries a `role`, the row
---- becomes a horizontal box of one text node per run, each with an exact `len`
---- so the geometry is bit-identical to the single-node form.
-local function top_row_node(runs)
-  local clickable = false
-  for _, run in ipairs(runs) do
-    if run.role then
-      clickable = true
-      break
-    end
-  end
-  if not clickable then
-    return { type = "text", len = 1, text = { runs } }
-  end
-
-  local children = {}
-  for _, run in ipairs(runs) do
-    local width = widgets.len(run.text)
-    if width > 0 then
-      children[#children + 1] = {
-        type = "text",
-        len = width,
-        role = run.role,
-        text = { { { text = run.text, style = run.style } } },
-      }
-    end
-  end
-  return { type = "box", axis = "horizontal", len = 1, children = children }
-end
-
---- A bordered pane whose title can be right-aligned and styled, and whose right
---- border column can be replaced row-by-row (that is where the scrollbar goes).
----
---- opts: width, height, title, title_style, title_align, border_style, square,
----       left (runs painted over the top border's left half),
----       right_column (runs, one per inner row), body (node)
-local function chrome(opts)
-  local width, height = opts.width or 0, opts.height or 0
-  if width < 2 or height < 2 then
-    return opts.body
-  end
-
-  local set = opts.square and SQUARE or ROUNDED
-  local border = opts.border_style
-  local inner_w, inner_h = width - 2, height - 2
-
-  local title = opts.title or ""
-  local top
-  if opts.title_align == "right" then
-    -- The strip is painted first and the title fills what it leaves, so the two
-    -- share one row without either being drawn over the other.
-    local left, left_w = opts.left or {}, 0
-    for _, run in ipairs(left) do
-      left_w = left_w + widgets.len(run.text)
-    end
-    title = widgets.keep_right(title, math.max(0, inner_w - left_w))
-    top = { { text = set.tl, style = border } }
-    for _, run in ipairs(left) do
-      top[#top + 1] = run
-    end
-    top[#top + 1] = {
-      text = string.rep(set.h, math.max(0, inner_w - left_w - widgets.len(title))),
-      style = border,
-    }
-    top[#top + 1] = { text = title, style = opts.title_style }
-    top[#top + 1] = { text = set.tr, style = border }
-  else
-    title = widgets.keep_left(title, inner_w)
-    top = {
-      { text = set.tl, style = border },
-      { text = title, style = opts.title_style },
-      { text = string.rep(set.h, inner_w - widgets.len(title)), style = border },
-      { text = set.tr, style = border },
-    }
-  end
-
-  local edge = { text = set.v, style = border }
-  local function column(rows)
-    local lines = {}
-    for row = 1, inner_h do
-      lines[row] = { (rows and rows[row]) or edge }
-    end
-    return { type = "text", len = 1, text = lines }
-  end
-
-  return {
-    type = "box",
-    axis = "vertical",
-    children = {
-      top_row_node(top),
-      {
-        type = "box",
-        axis = "horizontal",
-        fill = 1,
-        children = {
-          column(nil),
-          opts.body,
-          column(opts.right_column),
-        },
-      },
-      {
-        type = "text",
-        len = 1,
-        text = {
-          {
-            { text = set.bl, style = border },
-            { text = string.rep(set.h, inner_w), style = border },
-            { text = set.br, style = border },
-          },
-        },
-      },
-    },
-  }
-end
+--
+-- The framed-pane builder itself is `chrome.frame` (`lib/chrome.lua`), shared
+-- with the session list's border helpers. What stays here is what this pane
+-- puts ON that frame: the strip above, the scrollbar, and the titles.
 
 -- --- the empty pane --------------------------------------------------------
 
@@ -679,25 +544,25 @@ local function hint_box_lines()
     for _, run in ipairs(runs) do
       width = width + widgets.len(run.text)
     end
-    local line = { { text = SQUARE.v, style = border } }
+    local line = { { text = chrome.SQUARE.v, style = border } }
     for _, run in ipairs(runs) do
       line[#line + 1] = run
     end
     line[#line + 1] = { text = string.rep(" ", math.max(0, inner - width)) }
-    line[#line + 1] = { text = SQUARE.v, style = border }
+    line[#line + 1] = { text = chrome.SQUARE.v, style = border }
     return line
   end
 
-  local rule = string.rep(SQUARE.h, inner)
+  local rule = string.rep(chrome.SQUARE.h, inner)
   return {
-    { { text = SQUARE.tl .. rule .. SQUARE.tr, style = border } },
+    { { text = chrome.SQUARE.tl .. rule .. chrome.SQUARE.tr, style = border } },
     row({ { text = "No active sessions", style = { fg = theme.secondary } } }),
     row({}),
     row({
       { text = "  F1    ", style = { fg = theme.hint } },
       { text = "  Help", style = { fg = theme.muted } },
     }),
-    { { text = SQUARE.bl .. rule .. SQUARE.br, style = border } },
+    { { text = chrome.SQUARE.bl .. rule .. chrome.SQUARE.br, style = border } },
   }
 end
 
@@ -796,13 +661,13 @@ return {
   render = function(ctx)
     local width, height = ctx.width or 0, ctx.height or 0
     local level = ctx.focused and "focused" or "active"
-    local border = border_style_for(level)
+    local border = chrome.border_style(level)
     local session = selected()
 
     -- No session: v1 switches to a different frame entirely — SQUARE borders,
     -- a muted left-aligned " No Session " title, and the hint box.
     if not session then
-      return chrome({
+      return chrome.frame({
         width = width,
         height = height,
         square = true,
@@ -835,12 +700,12 @@ return {
     -- deliberate v2 addition — styled `danger`, the role for a thing that is
     -- broken, rather than the working-yellow it used to borrow.
     if session.attach_error then
-      return chrome({
+      return chrome.frame({
         width = width,
         height = height,
         title = title,
         title_align = "right",
-        title_style = title_style_for(level),
+        title_style = chrome.title_style(level),
         border_style = border,
         left = strip,
         body = centered({
@@ -866,12 +731,12 @@ return {
       )
     end
 
-    return chrome({
+    return chrome.frame({
       width = width,
       height = height,
       title = title,
       title_align = "right",
-      title_style = title_style_for(level),
+      title_style = chrome.title_style(level),
       border_style = border,
       left = strip,
       right_column = rows,

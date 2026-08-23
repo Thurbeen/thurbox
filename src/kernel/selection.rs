@@ -1,9 +1,9 @@
 //! Mouse text selection over a terminal pane.
 //!
 //! Pure: screen positions in, highlighted cells and extracted text out. It
-//! lives in `session` rather than beside a renderer because **both** halves of
-//! the crate need it — v1's mouse layer and the v2 kernel, which cannot import
-//! `ui`. Same reasoning as [`super::links`].
+//! lived in `session` while v1's mouse layer and the kernel both needed it;
+//! v1 is gone, and every consumer — [`super::terminal`], the coordinator's
+//! draw and mouse paths — is kernel/main side, so it lives here now.
 
 use ratatui::layout::{Position, Rect};
 

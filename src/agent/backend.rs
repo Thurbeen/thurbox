@@ -404,83 +404,143 @@ fn send_to_input_channel(tx: &mpsc::Sender<Vec<u8>>, data: Vec<u8>, what: &str) 
     })
 }
 
-/// Wired-up I/O state: parser, channels, and exit tracking.
-struct WiredState {
-    parser: Arc<Mutex<SessionParser>>,
-    input_tx: mpsc::Sender<Vec<u8>>,
-    exited: Arc<AtomicBool>,
-    last_output_at: Arc<AtomicU64>,
+/// The shared cells [`TermSignals`] writes from the reader thread; a
+/// [`Session`] keeps its own handles to read them back (`agent_title`,
+/// `needs_attention`, …). Shell and program panes drop theirs — the parser's
+/// `TermSignals` owns its own clones, so nothing dangles.
+struct SignalCells {
     last_title: Arc<Mutex<Option<String>>>,
     attention_at: Arc<AtomicU64>,
     notification: Arc<Mutex<Option<String>>>,
     meta_gen: Arc<AtomicU64>,
 }
 
-/// A companion shell pane running alongside an agent session.
-pub struct ShellPane {
-    pub parser: Arc<Mutex<SessionParser>>,
-    input_tx: mpsc::Sender<Vec<u8>>,
-    /// The tmux pane this shell is. Readable so it can be *persisted*: the
-    /// window outlives the interface, and re-adopting it on the next start is
-    /// what stops a restart forgetting the shell and orphaning its window.
-    pub(crate) backend_id: String,
-    /// Kept alive so the reader loop's Arc clone has a peer.
-    #[allow(dead_code)]
-    exited: Arc<AtomicBool>,
-    last_output_at: Arc<AtomicU64>,
-    /// Captured OSC title for the shell pane (unused; kept for symmetry).
-    #[allow(dead_code)]
-    last_title: Arc<Mutex<Option<String>>>,
+impl SignalCells {
+    fn new() -> Self {
+        Self {
+            last_title: Arc::new(Mutex::new(None)),
+            attention_at: Arc::new(AtomicU64::new(0)),
+            notification: Arc::new(Mutex::new(None)),
+            meta_gen: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// The [`TermSignals`] callback bundle writing into these cells.
+    fn term_signals(&self) -> TermSignals {
+        TermSignals {
+            title: Arc::clone(&self.last_title),
+            attention_at: Arc::clone(&self.attention_at),
+            notification: Arc::clone(&self.notification),
+            meta_gen: Arc::clone(&self.meta_gen),
+            ..Default::default()
+        }
+    }
 }
 
-impl ShellPane {
+/// The wired I/O every pane kind shares: the vt100 parser the reader loop
+/// feeds, the writer channel, the exit flag, the output stamp, and the backend
+/// pane they belong to. [`ShellPane`], [`ProgramPane`] and [`Session`] each
+/// *embed* one (composition — a trait would only re-declare these fields) and
+/// `Deref` to it, so existing call sites (`session.parser`,
+/// `shell.backend_id`, `pane.send_input(..)`) keep working unchanged while
+/// the accessors exist once.
+pub struct WiredPane {
+    pub parser: Arc<Mutex<SessionParser>>,
+    input_tx: mpsc::Sender<Vec<u8>>,
+    /// The backend pane this is. For a shell pane it is read so it can be
+    /// *persisted*: the window outlives the interface, and re-adopting it on
+    /// the next start is what stops a restart forgetting the shell and
+    /// orphaning its window. A program pane's is deliberately not persisted —
+    /// its window *name* is the identity that survives a restart
+    /// (`tmux::program_window_name`), because a deterministic name cannot go
+    /// stale where a stored id can.
+    pub(crate) backend_id: String,
+    exited: Arc<AtomicBool>,
+    last_output_at: Arc<AtomicU64>,
+    /// Which pane kind this is, for input-channel error messages.
+    label: &'static str,
+}
+
+impl WiredPane {
     pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
-        send_to_input_channel(&self.input_tx, data, "Shell")
+        send_to_input_channel(&self.input_tx, data, self.label)
     }
 
     /// When this pane last produced output, as epoch milliseconds.
     ///
-    /// The lock-free redraw signal, read the same way the agent pane's is: a
-    /// renderer compares it against the stamp it last painted at, so a quiet
-    /// shell costs one atomic load instead of a repaint.
+    /// The lock-free redraw signal: a renderer compares it against the stamp
+    /// it last painted at, so a quiet pane costs one atomic load instead of a
+    /// repaint. Monotonic non-decreasing — the reader thread only ever stores
+    /// `now` — which is what lets the render loop's cheap output-change
+    /// detector ([`crate::kernel::terminal::Terminals::output_generation`])
+    /// spot new output without locking the vt100 parser.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
     }
 
-    /// Build a ShellPane from wired-up I/O state.
-    fn from_wired(state: WiredState, backend_id: String) -> Self {
-        Self {
-            parser: state.parser,
-            input_tx: state.input_tx,
-            backend_id,
-            exited: state.exited,
-            last_output_at: state.last_output_at,
-            last_title: state.last_title,
+    /// Whether the pane's process/stream has ended.
+    ///
+    /// Read from the reader loop's flag rather than by asking the backend, so
+    /// the answer costs an atomic load on a render path. What it enables is
+    /// reporting "this exited" instead of painting the frozen grid it left
+    /// behind.
+    pub fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::SeqCst)
+    }
+
+    /// The backend-specific pane identifier.
+    pub fn backend_id(&self) -> &str {
+        &self.backend_id
+    }
+
+    /// Resize the backend pane and the local vt100 grid together.
+    ///
+    /// Floored for the reason `vt_floor` documents: a cramped layout really
+    /// does compute a one-cell rect, and a grid that small is where vt100
+    /// underflows on the next byte written into it.
+    pub fn resize(&self, backend: &dyn SessionBackend, rows: u16, cols: u16) -> Result<()> {
+        let (rows, cols) = vt_floor(rows, cols);
+        backend.resize(&self.backend_id, rows, cols)?;
+        if let Ok(mut parser) = self.parser.lock() {
+            parser.screen_mut().set_size(rows, cols);
         }
+        Ok(())
+    }
+}
+
+/// A companion shell pane running alongside an agent session.
+pub struct ShellPane {
+    wired: WiredPane,
+}
+
+impl std::ops::Deref for ShellPane {
+    type Target = WiredPane;
+    fn deref(&self) -> &WiredPane {
+        &self.wired
     }
 }
 
 /// A program a plugin asked for, running in a pane of its own.
 ///
-/// Deliberately mirrors [`ShellPane`] — the same wired I/O, reached through the
-/// same `Session::wire_up`, so the subtle part (a `vt100` parser fed by a reader
+/// The same wired I/O as [`ShellPane`], reached through the same
+/// `Session::wire_up`, so the subtle part (a `vt100` parser fed by a reader
 /// task, a writer channel, an exit flag and an output stamp) exists once. What it
 /// is *not* is a shell, and not a session: it belongs to a plugin, holds a program
 /// that plugin named, and carries its own backend handle so it can be resized and
 /// killed without a `Session` to route through.
 pub struct ProgramPane {
-    pub parser: Arc<Mutex<SessionParser>>,
-    input_tx: mpsc::Sender<Vec<u8>>,
-    /// The pane this is. Not persisted anywhere — the window *name* is the
-    /// identity that survives a restart (`tmux::program_window_name`), because a
-    /// deterministic name cannot go stale where a stored id can.
-    backend_id: String,
-    exited: Arc<AtomicBool>,
-    last_output_at: Arc<AtomicU64>,
+    wired: WiredPane,
     /// Kept so the pane can resize and kill itself.
     backend: Arc<dyn SessionBackend>,
     /// What is running, for reporting.
     pub program: String,
+}
+
+impl std::ops::Deref for ProgramPane {
+    type Target = WiredPane;
+    fn deref(&self) -> &WiredPane {
+        &self.wired
+    }
 }
 
 impl ProgramPane {
@@ -497,7 +557,7 @@ impl ProgramPane {
         cols: u16,
     ) -> Result<Self> {
         let spawned = backend.spawn(window_name, program, args, cwd, env, rows, cols)?;
-        let (state, backend_id) = Session::wire_up(
+        let (wired, _signals) = Session::wire_up(
             rows,
             cols,
             SessionIo {
@@ -506,9 +566,14 @@ impl ProgramPane {
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
             },
+            "Program",
         );
         debug!(program, window_name, "spawned a plugin's program pane");
-        Ok(Self::from_wired(state, backend_id, backend, program))
+        Ok(Self {
+            wired,
+            backend,
+            program: program.to_string(),
+        })
     }
 
     /// Reconnect to a pane that is already running — the restart path, where the
@@ -521,7 +586,7 @@ impl ProgramPane {
         cols: u16,
     ) -> Result<Self> {
         let adopted = backend.adopt(backend_id, rows, cols, None)?;
-        let (state, bid) = Session::wire_up(
+        let (wired, _signals) = Session::wire_up(
             rows,
             cols,
             SessionIo {
@@ -530,69 +595,32 @@ impl ProgramPane {
                 backend_id: backend_id.to_string(),
                 mode: WireMode::Adopt,
             },
+            "Program",
         );
         debug!(program, backend_id, "adopted a plugin's program pane");
-        Ok(Self::from_wired(state, bid, backend, program))
-    }
-
-    fn from_wired(
-        state: WiredState,
-        backend_id: String,
-        backend: Arc<dyn SessionBackend>,
-        program: &str,
-    ) -> Self {
-        Self {
-            parser: state.parser,
-            input_tx: state.input_tx,
-            backend_id,
-            exited: state.exited,
-            last_output_at: state.last_output_at,
+        Ok(Self {
+            wired,
             backend,
             program: program.to_string(),
-        }
-    }
-
-    pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
-        send_to_input_channel(&self.input_tx, data, "Program")
-    }
-
-    /// When this pane last produced output, as epoch milliseconds — the redraw
-    /// signal, read the same way the agent and shell panes' are.
-    pub fn last_output_at(&self) -> u64 {
-        self.last_output_at.load(Ordering::Relaxed)
-    }
-
-    /// Whether the program has ended.
-    ///
-    /// Read from the reader loop's flag rather than by asking the backend, so the
-    /// answer costs an atomic load on a render path. What it enables is reporting
-    /// "this exited" instead of painting the frozen grid it left behind.
-    pub fn has_exited(&self) -> bool {
-        self.exited.load(Ordering::Relaxed)
-    }
-
-    pub fn backend_id(&self) -> &str {
-        &self.backend_id
+        })
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {
-        // Floored for the reason [`vt_floor`] documents: a cramped layout can
-        // compute a one-cell area, and a grid that small is where vt100
-        // underflows on the next byte the program prints.
-        let (rows, cols) = vt_floor(rows, cols);
-        if let Err(e) = self.backend.resize(&self.backend_id, rows, cols) {
-            tracing::debug!("could not resize program pane {}: {e:#}", self.backend_id);
-            return;
-        }
-        if let Ok(mut parser) = self.parser.lock() {
-            parser.screen_mut().set_size(rows, cols);
+        if let Err(e) = self.wired.resize(self.backend.as_ref(), rows, cols) {
+            tracing::debug!(
+                "could not resize program pane {}: {e:#}",
+                self.wired.backend_id
+            );
         }
     }
 
     /// End the program and take its window with it.
     pub fn kill(&self) {
-        if let Err(e) = self.backend.kill(&self.backend_id) {
-            tracing::warn!("could not kill program pane {}: {e:#}", self.backend_id);
+        if let Err(e) = self.backend.kill(&self.wired.backend_id) {
+            tracing::warn!(
+                "could not kill program pane {}: {e:#}",
+                self.wired.backend_id
+            );
         }
     }
 }
@@ -610,22 +638,12 @@ fn remote_host_from_backend(backend: &Arc<dyn SessionBackend>) -> Option<String>
 /// A running session connected to a backend.
 pub struct Session {
     pub info: SessionInfo,
-    pub parser: Arc<Mutex<SessionParser>>,
-    input_tx: mpsc::Sender<Vec<u8>>,
-    backend_id: String,
+    wired: WiredPane,
     backend: Arc<dyn SessionBackend>,
     provider: Arc<dyn AgentProvider>,
-    exited: Arc<AtomicBool>,
-    last_output_at: Arc<AtomicU64>,
-    /// Latest OSC window title the agent emitted (live activity text).
-    last_title: Arc<Mutex<Option<String>>>,
-    /// `now_millis()` of the latest attention signal (bell / OSC 9 / OSC 777).
-    attention_at: Arc<AtomicU64>,
-    /// Message text from the latest OSC 9/777 notification, if any.
-    notification: Arc<Mutex<Option<String>>>,
-    /// Shared with [`TermSignals::meta_gen`]: bumped by the reader thread on
-    /// every title/notification write.
-    meta_gen: Arc<AtomicU64>,
+    /// The reader thread's title / attention / notification cells, shared with
+    /// the parser's [`TermSignals`] (which bumps `meta_gen` on every write).
+    signals: SignalCells,
     /// The generation last consumed by [`Self::sync_agent_meta`]. Starts at
     /// `u64::MAX` so the first tick always syncs.
     last_synced_meta_gen: u64,
@@ -647,6 +665,13 @@ pub struct Session {
     /// with no live pane" instead (`kernel::snapshot::with_reachability`), so
     /// nothing constructs a placeholder and this is only ever `false`.
     placeholder: bool,
+}
+
+impl std::ops::Deref for Session {
+    type Target = WiredPane;
+    fn deref(&self) -> &WiredPane {
+        &self.wired
+    }
 }
 
 impl Session {
@@ -750,11 +775,14 @@ impl Session {
     }
 
     /// Create parser, spawn reader/writer loops for the given I/O handles.
-    fn wire_up(rows: u16, cols: u16, io: SessionIo) -> (WiredState, String) {
-        let last_title = Arc::new(Mutex::new(None));
-        let attention_at = Arc::new(AtomicU64::new(0));
-        let notification = Arc::new(Mutex::new(None));
-        let meta_gen = Arc::new(AtomicU64::new(0));
+    /// `label` names the pane kind in input-channel error messages.
+    fn wire_up(
+        rows: u16,
+        cols: u16,
+        io: SessionIo,
+        label: &'static str,
+    ) -> (WiredPane, SignalCells) {
+        let signals = SignalCells::new();
         // The floor applies at construction too: a session first painted into a
         // one-column pane would otherwise panic on its first line of output,
         // before any resize could correct it.
@@ -763,13 +791,7 @@ impl Session {
             rows,
             cols,
             crate::session::settings::global().scrollback_lines,
-            TermSignals {
-                title: Arc::clone(&last_title),
-                attention_at: Arc::clone(&attention_at),
-                notification: Arc::clone(&notification),
-                meta_gen: Arc::clone(&meta_gen),
-                ..Default::default()
-            },
+            signals.term_signals(),
         )));
 
         let exited = Arc::new(AtomicBool::new(false));
@@ -785,17 +807,15 @@ impl Session {
             Self::reader_loop(io.output, parser_clone, exited_clone, last_output_clone);
         });
 
-        let state = WiredState {
+        let wired = WiredPane {
             parser,
             input_tx,
+            backend_id: io.backend_id,
             exited,
             last_output_at,
-            last_title,
-            attention_at,
-            notification,
-            meta_gen,
+            label,
         };
-        (state, io.backend_id)
+        (wired, signals)
     }
 
     /// Wire up parser, reader loop, and writer loop for a new session.
@@ -808,20 +828,13 @@ impl Session {
         provider: &Arc<dyn AgentProvider>,
         env: HashMap<String, String>,
     ) -> Self {
-        let (state, backend_id) = Self::wire_up(rows, cols, io);
+        let (wired, signals) = Self::wire_up(rows, cols, io, "Session");
         Self {
             info,
-            parser: state.parser,
-            input_tx: state.input_tx,
-            backend_id,
+            wired,
             backend: Arc::clone(backend),
             provider: Arc::clone(provider),
-            exited: state.exited,
-            last_output_at: state.last_output_at,
-            last_title: state.last_title,
-            attention_at: state.attention_at,
-            notification: state.notification,
-            meta_gen: state.meta_gen,
+            signals,
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
@@ -849,22 +862,13 @@ impl Session {
         info.status = crate::session::SessionStatus::Unreachable;
         info.backend_id = None;
 
-        let last_title = Arc::new(Mutex::new(None));
-        let attention_at = Arc::new(AtomicU64::new(0));
-        let notification = Arc::new(Mutex::new(None));
-        let meta_gen = Arc::new(AtomicU64::new(0));
+        let signals = SignalCells::new();
         let (rows, cols) = vt_floor(rows, cols);
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
             crate::session::settings::global().scrollback_lines,
-            TermSignals {
-                title: Arc::clone(&last_title),
-                attention_at: Arc::clone(&attention_at),
-                notification: Arc::clone(&notification),
-                meta_gen: Arc::clone(&meta_gen),
-                ..Default::default()
-            },
+            signals.term_signals(),
         )));
         let host = info.remote_host.clone().unwrap_or_else(|| "?".into());
         let notice = format!(
@@ -882,17 +886,17 @@ impl Session {
 
         Self {
             info,
-            parser,
-            input_tx,
-            backend_id: String::new(),
+            wired: WiredPane {
+                parser,
+                input_tx,
+                backend_id: String::new(),
+                exited: Arc::new(AtomicBool::new(false)),
+                last_output_at: Arc::new(AtomicU64::new(0)),
+                label: "Session",
+            },
             backend: Arc::clone(backend),
             provider: Arc::clone(provider),
-            exited: Arc::new(AtomicBool::new(false)),
-            last_output_at: Arc::new(AtomicU64::new(0)),
-            last_title,
-            attention_at,
-            notification,
-            meta_gen,
+            signals,
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
@@ -976,53 +980,37 @@ impl Session {
         debug!("Session writer task exiting");
     }
 
-    pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
-        send_to_input_channel(&self.input_tx, data, "Session")
-    }
-
+    /// Resize the session's pane and grid, and its companion shell's with it.
+    /// (`send_input` / `has_exited` / `last_output_at` / `backend_id` come from
+    /// the embedded [`WiredPane`].)
     pub fn resize(&self, rows: u16, cols: u16) {
-        // A cramped layout (tiny terminal + open panels/strips) can compute a
-        // one-cell content area, which vt100 cannot be fed without underflowing
-        // — see [`vt_floor`]. Floored at this boundary for every path below,
-        // including the pane the backend is told about, so the grid and the pane
-        // agree on a size they can both hold.
-        let (rows, cols) = vt_floor(rows, cols);
         // A placeholder has no live pane; only resize its local notice buffer.
         // Talking to the (possibly-down) backend here would issue a blocking
-        // ssh resize on the UI thread — the freeze we're avoiding.
+        // ssh resize on the UI thread — the freeze we're avoiding. Floored for
+        // the reason `WiredPane::resize` (the live path) documents.
         if self.placeholder {
-            if let Ok(mut parser) = self.parser.lock() {
+            let (rows, cols) = vt_floor(rows, cols);
+            if let Ok(mut parser) = self.wired.parser.lock() {
                 parser.screen_mut().set_size(rows, cols);
             }
             return;
         }
-        if let Err(e) = self.backend.resize(&self.backend_id, rows, cols) {
+        if let Err(e) = self.wired.resize(self.backend.as_ref(), rows, cols) {
             tracing::warn!("Failed to resize session: {e}");
             return;
         }
-        if let Ok(mut parser) = self.parser.lock() {
-            parser.screen_mut().set_size(rows, cols);
-        }
         if let Some(shell) = &self.shell_pane {
-            if let Err(e) = self.backend.resize(&shell.backend_id, rows, cols) {
+            if let Err(e) = shell.wired.resize(self.backend.as_ref(), rows, cols) {
                 tracing::warn!("Failed to resize shell pane: {e}");
-                return;
-            }
-            if let Ok(mut parser) = shell.parser.lock() {
-                parser.screen_mut().set_size(rows, cols);
             }
         }
-    }
-
-    pub fn has_exited(&self) -> bool {
-        self.exited.load(Ordering::SeqCst)
     }
 
     /// Force the session into the "process exited" state, for tests that need to
     /// exercise the exited → `Idle` status branch.
     #[cfg(test)]
     pub fn mark_exited_for_test(&self) {
-        self.exited.store(true, Ordering::SeqCst);
+        self.wired.exited.store(true, Ordering::SeqCst);
     }
 
     /// Backdate the session's last-output timestamp by `ms`, for tests that need
@@ -1031,26 +1019,18 @@ impl Session {
     #[cfg(test)]
     pub fn backdate_output_for_test(&self, ms: u64) {
         let now = now_millis();
-        self.last_output_at
+        self.wired
+            .last_output_at
             .store(now.saturating_sub(ms), Ordering::Relaxed);
     }
 
     pub fn millis_since_last_output(&self) -> u64 {
-        now_millis().saturating_sub(self.last_output_at.load(Ordering::Relaxed))
-    }
-
-    /// Raw monotonic timestamp (epoch millis) of the session's last output.
-    /// Monotonic non-decreasing — the reader thread only ever stores `now`.
-    /// Used by the render loop's cheap output-change detector
-    /// ([`crate::kernel::terminal::Terminals::output_generation`]) so it can spot new output
-    /// without locking the vt100 parser.
-    pub fn last_output_at(&self) -> u64 {
-        self.last_output_at.load(Ordering::Relaxed)
+        now_millis().saturating_sub(self.wired.last_output_at.load(Ordering::Relaxed))
     }
 
     /// Latest OSC window title the agent emitted, if any (live activity text).
     pub fn agent_title(&self) -> Option<String> {
-        self.last_title.lock().ok().and_then(|t| t.clone())
+        self.signals.last_title.lock().ok().and_then(|t| t.clone())
     }
 
     /// Read the agent's title + notification **only when they changed** since
@@ -1062,7 +1042,7 @@ impl Session {
     /// before its write completes only delays the sync by one ~10 ms tick —
     /// the counter is bumped *after* the value write, never before.
     pub fn sync_agent_meta(&mut self) -> Option<(Option<String>, Option<String>)> {
-        let gen = self.meta_gen.load(Ordering::Acquire);
+        let gen = self.signals.meta_gen.load(Ordering::Acquire);
         if gen == self.last_synced_meta_gen {
             return None;
         }
@@ -1073,23 +1053,22 @@ impl Session {
     /// Whether the agent has signalled for attention (bell / OSC 9 / OSC 777)
     /// since it was last acknowledged. Cleared via [`Self::acknowledge_attention`].
     pub fn needs_attention(&self) -> bool {
-        self.attention_at.load(Ordering::Relaxed) > self.attention_ack_at
+        self.signals.attention_at.load(Ordering::Relaxed) > self.attention_ack_at
     }
 
     /// Message text from the latest attention notification, if any.
     pub fn notification(&self) -> Option<String> {
-        self.notification.lock().ok().and_then(|n| n.clone())
+        self.signals
+            .notification
+            .lock()
+            .ok()
+            .and_then(|n| n.clone())
     }
 
     /// Acknowledge any pending attention signal (called while the session is
     /// the active/selected one — the user is already looking at it).
     pub fn acknowledge_attention(&mut self) {
         self.attention_ack_at = now_millis();
-    }
-
-    /// Return the backend-specific session identifier.
-    pub fn backend_id(&self) -> &str {
-        &self.backend_id
     }
 
     /// Return the backend name.
@@ -1099,14 +1078,14 @@ impl Session {
 
     /// Return the PID of the process running in this session's backend pane.
     pub fn pane_pid(&self) -> Result<Option<u32>> {
-        self.backend.pane_pid(&self.backend_id)
+        self.backend.pane_pid(&self.wired.backend_id)
     }
 
     /// Clone the backend handle + id so a background task can query the pane
     /// PID (a control-mode round-trip, slow for remote SSH backends) off the UI
     /// thread. The backend is `Send + Sync`, so the clone is cheap to move.
     pub fn backend_handle(&self) -> (Arc<dyn SessionBackend>, String) {
-        (Arc::clone(&self.backend), self.backend_id.clone())
+        (Arc::clone(&self.backend), self.wired.backend_id.clone())
     }
 
     /// Replace the provider [`Self::restart`] rebuilds its launch args from.
@@ -1124,7 +1103,7 @@ impl Session {
     /// Uses the agent's resume args (when defined) so it picks up the
     /// existing conversation instead of starting fresh.
     pub fn restart(&mut self, config: &SessionConfig, rows: u16, cols: u16) -> Result<()> {
-        self.backend.kill(&self.backend_id)?;
+        self.backend.kill(&self.wired.backend_id)?;
 
         let args = self.provider.build_args(config);
         let window_name = crate::agent::tmux::agent_window_name(&self.info.name);
@@ -1141,7 +1120,7 @@ impl Session {
             cols,
         )?;
 
-        let (state, backend_id) = Self::wire_up(
+        let (wired, _signals) = Self::wire_up(
             rows,
             cols,
             SessionIo {
@@ -1150,20 +1129,17 @@ impl Session {
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
             },
+            "Session",
         );
 
-        self.backend_id = backend_id;
-        self.parser = state.parser;
-        self.input_tx = state.input_tx;
-        self.exited = state.exited;
-        self.last_output_at = state.last_output_at;
+        self.wired = wired;
         self.env = config.env.clone();
-        self.info.backend_id = Some(self.backend_id.clone());
+        self.info.backend_id = Some(self.wired.backend_id.clone());
         if !config.agent.is_empty() {
             self.info.agent = config.agent.clone();
         }
 
-        debug!(session_id = %self.info.id, backend_id = %self.backend_id, "Restarted session");
+        debug!(session_id = %self.info.id, backend_id = %self.wired.backend_id, "Restarted session");
         Ok(())
     }
 
@@ -1174,7 +1150,7 @@ impl Session {
             return;
         }
         self.kill_shell_pane();
-        if let Err(e) = self.backend.kill(&self.backend_id) {
+        if let Err(e) = self.backend.kill(&self.wired.backend_id) {
             tracing::warn!("Failed to kill session: {e}");
         }
     }
@@ -1187,14 +1163,14 @@ impl Session {
             return;
         }
         if let Some(shell) = &self.shell_pane {
-            if let Err(e) = self.backend.detach(&shell.backend_id) {
+            if let Err(e) = self.backend.detach(&shell.wired.backend_id) {
                 tracing::warn!("Failed to detach shell pane: {e}");
             }
         }
-        if let Err(e) = self.backend.detach(&self.backend_id) {
+        if let Err(e) = self.backend.detach(&self.wired.backend_id) {
             tracing::warn!("Failed to detach session: {e}");
         }
-        drop(self.input_tx);
+        drop(self.wired);
         debug!("Session detached");
     }
 
@@ -1226,7 +1202,7 @@ impl Session {
             .backend
             .spawn(&window_name, &shell_cmd, &[], cwd, &env, rows, cols)?;
 
-        let (state, backend_id) = Self::wire_up(
+        let (wired, _signals) = Self::wire_up(
             rows,
             cols,
             SessionIo {
@@ -1235,10 +1211,11 @@ impl Session {
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
             },
+            "Shell",
         );
 
-        self.info.shell_backend_id = Some(backend_id.clone());
-        self.shell_pane = Some(ShellPane::from_wired(state, backend_id));
+        self.info.shell_backend_id = Some(wired.backend_id.clone());
+        self.shell_pane = Some(ShellPane { wired });
 
         debug!(session_id = %self.info.id, "Spawned shell pane");
         Ok(())
@@ -1248,7 +1225,7 @@ impl Session {
     pub fn adopt_shell_pane(&mut self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
         let adopted = self.backend.adopt(backend_id, rows, cols, None)?;
 
-        let (state, bid) = Self::wire_up(
+        let (wired, _signals) = Self::wire_up(
             rows,
             cols,
             SessionIo {
@@ -1257,10 +1234,11 @@ impl Session {
                 backend_id: backend_id.to_string(),
                 mode: WireMode::Adopt,
             },
+            "Shell",
         );
 
-        self.info.shell_backend_id = Some(bid.clone());
-        self.shell_pane = Some(ShellPane::from_wired(state, bid));
+        self.info.shell_backend_id = Some(wired.backend_id.clone());
+        self.shell_pane = Some(ShellPane { wired });
 
         debug!(session_id = %self.info.id, backend_id = %backend_id, "Adopted shell pane");
         Ok(())
@@ -1269,7 +1247,7 @@ impl Session {
     /// Kill the shell pane if it exists.
     fn kill_shell_pane(&self) {
         if let Some(shell) = &self.shell_pane {
-            if let Err(e) = self.backend.kill(&shell.backend_id) {
+            if let Err(e) = self.backend.kill(&shell.wired.backend_id) {
                 tracing::warn!("Failed to kill shell pane: {e}");
             }
         }
@@ -1298,34 +1276,26 @@ impl Session {
         // Wire TermSignals to the session's accessor cells exactly like
         // `wire_up`, so bytes injected via `feed_output_for_test` drive
         // `agent_title`/`needs_attention` the same way live PTY output does.
-        let last_title = Arc::new(Mutex::new(None));
-        let attention_at = Arc::new(AtomicU64::new(0));
-        let notification = Arc::new(Mutex::new(None));
-        let meta_gen = Arc::new(AtomicU64::new(0));
+        let signals = SignalCells::new();
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            signals.term_signals(),
+        )));
         let session = Self {
             info: SessionInfo::new(name.to_string()),
-            parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-                24,
-                80,
-                0,
-                TermSignals {
-                    title: Arc::clone(&last_title),
-                    attention_at: Arc::clone(&attention_at),
-                    notification: Arc::clone(&notification),
-                    meta_gen: Arc::clone(&meta_gen),
-                    ..Default::default()
-                },
-            ))),
-            input_tx,
-            backend_id: String::new(),
+            wired: WiredPane {
+                parser,
+                input_tx,
+                backend_id: String::new(),
+                exited: Arc::new(AtomicBool::new(false)),
+                last_output_at: Arc::new(AtomicU64::new(now_millis())),
+                label: "Session",
+            },
             backend: Arc::clone(backend),
             provider: Arc::clone(provider),
-            exited: Arc::new(AtomicBool::new(false)),
-            last_output_at: Arc::new(AtomicU64::new(now_millis())),
-            last_title,
-            attention_at,
-            notification,
-            meta_gen,
+            signals,
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
@@ -1344,10 +1314,11 @@ impl Session {
     pub fn feed_output_for_test(&self, bytes: &[u8]) {
         // Strictly-increasing bump: two feeds within the same millisecond must
         // still read as *new* output to `App::detect_output_redraw`'s signature.
-        let prev = self.last_output_at.load(Ordering::Relaxed);
-        self.last_output_at
+        let prev = self.wired.last_output_at.load(Ordering::Relaxed);
+        self.wired
+            .last_output_at
             .store(now_millis().max(prev + 1), Ordering::Relaxed);
-        if let Ok(mut p) = self.parser.lock() {
+        if let Ok(mut p) = self.wired.parser.lock() {
             p.process(bytes);
         }
     }

@@ -11,6 +11,7 @@
 -- through `store.confirm` — the same confirmation the session list uses for a
 -- delete, which is why there is no bespoke `ConfirmRestore` here.
 
+local modal = require("lib.modal")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
@@ -78,35 +79,16 @@ local function row_spans(entry, cols)
   return spans
 end
 
---- v1's `key_hint_line` plus its `[ Restore ]` / `[ Close ]` pills. The pills
---- carry `key:` roles, so a click replays the keystroke they name.
+--- v1's `key_hint_line` plus its `[ Restore ]` / `[ Close ]` pills — the
+--- shared `modal.footer`, with the Restore pill offered only while there is a
+--- row for Enter to act on.
 local function footer(list)
   local hints = {}
   if #list > 0 then
-    hints[#hints + 1] = { text = "j/k", style = { fg = theme.hint } }
-    hints[#hints + 1] = { text = " navigate  ", style = { fg = theme.muted } }
+    hints[#hints + 1] = { "j/k", "navigate" }
   end
-  hints[#hints + 1] = { text = "esc", style = { fg = theme.hint } }
-  hints[#hints + 1] = { text = " close", style = { fg = theme.muted } }
-
-  local children = { { type = "text", fill = 1, text = { hints } } }
-  if #list > 0 then
-    local restore = " [ Restore ]"
-    children[#children + 1] = {
-      type = "text",
-      len = widgets.len(restore),
-      text = { { { text = restore, style = { fg = theme.accent, bold = true } } } },
-      role = "key:enter",
-    }
-  end
-  local cancel = " [ Close ]"
-  children[#children + 1] = {
-    type = "text",
-    len = widgets.len(cancel),
-    text = { { { text = cancel, style = { fg = theme.muted } } } },
-    role = "key:esc",
-  }
-  return { type = "box", axis = "horizontal", len = 1, children = children }
+  hints[#hints + 1] = { "esc", "close" }
+  return modal.footer(hints, #list > 0 and "Restore" or nil, { cancel = "Close" })
 end
 
 --- Ask before a best-effort restore, through the confirmation every other
@@ -199,17 +181,11 @@ return {
     })
     body.len = height
 
-    return {
-      float = { cols = cols, rows = height + 3 },
-      type = "box",
-      frame = {
-        title = " Restore Deleted Sessions ",
-        borders = "all",
-        border_style = { fg = theme.role("modal_border") },
-        style = { bg = theme.role("modal_bg") },
-      },
+    return modal.frame("Restore Deleted Sessions", {
+      cols = cols,
+      rows = height + 3,
       children = { body, footer(list) },
-    }
+    })
   end,
 
   on_action = function(action)
@@ -279,11 +255,9 @@ return {
       return false
     end
     if hit.id then
-      for index, entry in ipairs(deleted()) do
-        if entry.id == hit.id then
-          state.cursor = index
-          break
-        end
+      local index = widgets.index_of(deleted(), hit.id)
+      if index then
+        state.cursor = index
       end
     end
     -- Claimed either way, so a miss inside the float does not fall through to
