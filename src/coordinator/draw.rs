@@ -117,10 +117,10 @@ impl App {
                 self.layout_error = Some(e);
                 // A broken arrangement must not take the plugins with it, so
                 // fall back to giving everything to the centre.
-                thurbox::kernel::layout::Region {
+                std::rc::Rc::new(thurbox::kernel::layout::Region {
                     slot: Some("center".to_string()),
                     ..Default::default()
-                }
+                })
             }
         };
         let placed = resolve(&region, area);
@@ -316,7 +316,10 @@ impl App {
                 self.render_band(frame, slot.rect, band);
                 continue;
             }
-            let members = self.host.in_slot(&slot.slot);
+            // Copied out: both draw paths take `&mut self`, which a borrow of
+            // the host's index list would forbid — and a slot holds a handful
+            // of occupants.
+            let members = self.host.in_slot(&slot.slot).to_vec();
             if members.is_empty() {
                 continue;
             }
@@ -381,7 +384,10 @@ impl App {
     pub(crate) fn draw_floats(&mut self, frame: &mut Frame, area: Rect) {
         self.grabbed = None;
         self.drawn_floats.clear();
-        for index in self.host.floating() {
+        // Copied out: the loop body mutates `self`, which a borrow of the
+        // host's index list would forbid — and a float list is a handful of
+        // entries.
+        for index in self.host.floating().to_vec() {
             let probe = RenderContext {
                 width: area.width,
                 height: area.height,
@@ -523,11 +529,13 @@ impl App {
         node: &thurbox::kernel::node::Node,
         ctx: RenderContext,
     ) -> Option<thurbox::kernel::node::Node> {
-        let slot = self.host.plugins[index].slot.clone();
-        let decorators = self.host.decorators_of(&slot);
+        let slot = &self.host.plugins[index].slot;
+        let decorators = self.host.decorators_of(slot);
         if decorators.is_empty() {
             return None;
         }
+        // Copied out: `decorate` and the error sink both need `self` again.
+        let decorators = decorators.to_vec();
         let mut node = node.clone();
         for decorator in decorators {
             match self.host.decorate(decorator, &node, ctx) {

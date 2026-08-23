@@ -445,6 +445,65 @@ fn entry_role(action: &str) -> String {
     format!("action:{action}")
 }
 
+/// An action-band entry resolved, formatted and measured, ready to paint.
+struct PreparedEntry {
+    /// ` Help · F1 ` — padded as painted, so its width is the hitbox width.
+    label: String,
+    width: u16,
+    /// [`entry_role`]'s answer, precomputed: hover compares it per frame.
+    role: String,
+}
+
+/// The last action band prepared, keyed on everything its entries depend on.
+///
+/// Resolving the entries is O(pills × bindings) with a chord `String` per
+/// comparison, then a sort, then a `format!` per label — and it ran on every
+/// painted frame for a row that only changes when the plugin set (re)declares
+/// or the band is resized. So: the registry's change counter plus the width.
+/// Hover and theme reach only the paint styles below, so neither is a key; the
+/// registry pointer is one because the counters of two *different* registries
+/// are not comparable. Thread-local rather than a field because `render` is
+/// handed a shared [`BandState`] assembled fresh each frame — there is nothing
+/// longer-lived here to hang state on.
+struct ActionCache {
+    registry: *const Registry,
+    registry_version: u64,
+    width: u16,
+    entries: Vec<PreparedEntry>,
+}
+
+thread_local! {
+    static ACTION_CACHE: std::cell::RefCell<Option<ActionCache>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`entries`] → [`fit`] around a reserved Quit, then format and measure once.
+fn prepare_action(registry: &Registry, width: u16) -> Vec<PreparedEntry> {
+    let all = entries(registry.pills(), registry);
+    // The left cluster is bounded by what the entries leave, so it can never run
+    // underneath them.
+    let budget = usize::from(width).saturating_sub(2);
+    // Quit's cells come off the top rather than being left to `fit`: v1 sheds
+    // Theme → Settings → Help around it and keeps Quit at every width, because
+    // the button that gets you out must not be the one that disappears. The
+    // declared entries then fit into what is left instead of competing with it.
+    let quit = quit_entry();
+    let reserved = entries_width(std::slice::from_ref(&quit)) + ENTRY_GAP;
+    let mut fitted = fit(all, budget.saturating_sub(reserved));
+    fitted.push(quit);
+    fitted
+        .into_iter()
+        .map(|entry| {
+            let label = format!(" {} ", entry.display());
+            PreparedEntry {
+                width: label.chars().count() as u16,
+                role: entry_role(&entry.action),
+                label,
+            }
+        })
+        .collect()
+}
+
 /// v1 `ui::status_bar::render_header`: brand, tagline, version, then the
 /// optional update notice; the session and theme right-aligned over the top.
 fn render_identity(frame: &mut Frame, area: Rect, state: &BandState<'_>) {
@@ -514,19 +573,42 @@ fn render_message(frame: &mut Frame, area: Rect, state: &BandState<'_>) {
 /// right-aligned and shed lowest-priority-first when the width runs out — around
 /// a Quit entry that never sheds.
 fn render_action(frame: &mut Frame, area: Rect, state: &BandState<'_>) -> Vec<Hit> {
-    let all = entries(state.registry.pills(), state.registry);
-    // The left cluster is bounded by what the entries leave, so it can never run
-    // underneath them.
-    let budget = usize::from(area.width).saturating_sub(2);
-    // Quit's cells come off the top rather than being left to `fit`: v1 sheds
-    // Theme → Settings → Help around it and keeps Quit at every width, because
-    // the button that gets you out must not be the one that disappears. The
-    // declared entries then fit into what is left instead of competing with it.
-    let quit = quit_entry();
-    let reserved = entries_width(std::slice::from_ref(&quit)) + ENTRY_GAP;
-    let mut fitted = fit(all, budget.saturating_sub(reserved));
-    fitted.push(quit);
-    let block = entries_width(&fitted);
+    ACTION_CACHE.with_borrow_mut(|cache| {
+        let current = (
+            state.registry as *const Registry,
+            state.registry.version(),
+            area.width,
+        );
+        if cache
+            .as_ref()
+            .map(|c| (c.registry, c.registry_version, c.width))
+            != Some(current)
+        {
+            *cache = Some(ActionCache {
+                registry: current.0,
+                registry_version: current.1,
+                width: current.2,
+                entries: prepare_action(state.registry, area.width),
+            });
+        }
+        let prepared = &cache.as_ref().expect("just filled").entries;
+        paint_action(frame, area, state, prepared)
+    })
+}
+
+/// Paint prepared entries: the left cluster in what they leave, then each chip
+/// with its hitbox.
+fn paint_action(
+    frame: &mut Frame,
+    area: Rect,
+    state: &BandState<'_>,
+    prepared: &[PreparedEntry],
+) -> Vec<Hit> {
+    let block = prepared
+        .iter()
+        .map(|entry| usize::from(entry.width))
+        .sum::<usize>()
+        + prepared.len().saturating_sub(1) * ENTRY_GAP;
     let left_width = usize::from(area.width).saturating_sub(block);
 
     let left = fit_to_budget(left_spans(state), left_width);
@@ -540,12 +622,11 @@ fn render_action(frame: &mut Frame, area: Rect, state: &BandState<'_>) -> Vec<Hi
     let start = area.x + area.width.saturating_sub(block as u16);
     let mut cursor = start;
     let mut hits = Vec::new();
-    for (index, entry) in fitted.iter().enumerate() {
+    for (index, entry) in prepared.iter().enumerate() {
         if index > 0 {
             cursor = cursor.saturating_add(ENTRY_GAP as u16);
         }
-        let label = format!(" {} ", entry.display());
-        let width = label.chars().count() as u16;
+        let width = entry.width;
         let rect = Rect {
             x: cursor,
             y: area.y,
@@ -555,7 +636,7 @@ fn render_action(frame: &mut Frame, area: Rect, state: &BandState<'_>) -> Vec<Hi
         let identity = super::node::Identity {
             id: None,
             classes: Vec::new(),
-            role: Some(entry_role(&entry.action)),
+            role: Some(entry.role.clone()),
         };
         // v1's button hover: brighten the fill to the accent and force the
         // foreground, so a chip stays legible whatever its resting pair was. A
@@ -563,7 +644,7 @@ fn render_action(frame: &mut Frame, area: Rect, state: &BandState<'_>) -> Vec<Hi
         let hovered = state
             .hovered
             .and_then(|identity| identity.role.as_deref())
-            .is_some_and(|role| role == entry_role(&entry.action));
+            .is_some_and(|role| role == entry.role);
         let style = if hovered {
             state
                 .style("inverted_fg")
@@ -582,7 +663,10 @@ fn render_action(frame: &mut Frame, area: Rect, state: &BandState<'_>) -> Vec<Hi
                     .unwrap_or(ratatui::style::Color::Reset))
                 .add_modifier(Modifier::BOLD)
         };
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), rect);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(entry.label.as_str(), style))),
+            rect,
+        );
         hits.push(Hit { rect, identity });
         cursor = cursor.saturating_add(width);
     }

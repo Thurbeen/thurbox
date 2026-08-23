@@ -109,15 +109,24 @@ pub(super) fn run_git_capture_on(
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Build the launcher [`Command`] for an off-local host: `ssh <opts> <dest>`
-/// for an SSH host, or `wsl.exe -d <distro>` for a WSL distro. Both join and
-/// shell-interpret the trailing tokens identically, so callers append the same
-/// POSIX-quoted command afterward.
+/// Build the launcher [`Command`] for an off-local host — the git-side name
+/// for [`crate::shell::HostLauncher`], which owns the construction.
 pub(super) fn host_launcher(h: &HostDef) -> Command {
+    launcher_for(h).command()
+}
+
+/// The one place a [`HostDef`] becomes a [`crate::shell::HostLauncher`]
+/// (`session` is a pure-data leaf, so the conversion cannot live on the type).
+pub(super) fn launcher_for(h: &HostDef) -> crate::shell::HostLauncher<'_> {
     if h.is_wsl() {
-        wsl_command(&h.distro_name())
+        crate::shell::HostLauncher::Wsl {
+            distro: h.distro_name(),
+        }
     } else {
-        ssh_command(&h.destination, &h.ssh_opts)
+        crate::shell::HostLauncher::Ssh {
+            destination: &h.destination,
+            ssh_opts: &h.ssh_opts,
+        }
     }
 }
 

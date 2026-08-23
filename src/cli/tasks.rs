@@ -431,6 +431,8 @@ fn parse_status(s: Option<&str>) -> Result<TaskStatus, String> {
 /// Resolve the optional action from the send/spawn flags. Neither flag → a plain
 /// local todo (`None`), unlike automations where an action is required.
 #[allow(clippy::too_many_arguments)]
+/// Tasks carry no `--command`: an Exec action is automation-only, so the flag
+/// is pinned to `None` before the shared resolution runs.
 fn resolve_action(
     session: Option<String>,
     repo: Option<String>,
@@ -440,30 +442,18 @@ fn resolve_action(
     extra_repos: Vec<crate::session::ExtraRepo>,
     db: &Database,
 ) -> Result<Option<AutomationAction>, String> {
-    match (session, repo) {
-        (Some(_), Some(_)) => {
-            Err("specify either --session (send) or --repo (spawn), not both".into())
-        }
-        (None, None) => {
-            if !extra_repos.is_empty() {
-                return Err("--add-repo/--add-dir require --repo (a spawn action)".into());
-            }
-            Ok(None)
-        }
-        (Some(_), None) if !extra_repos.is_empty() => {
-            Err("--add-repo/--add-dir apply to --repo (spawn), not --session (send)".into())
-        }
-        (Some(s), None) => Ok(Some(AutomationAction::Send {
-            session_id: action::resolve_send_target(db, &s)?,
-        })),
-        (None, Some(r)) => Ok(Some(AutomationAction::Spawn {
-            repo_path: r.into(),
-            worktree_branch: worktree,
-            base_branch: base,
+    action::resolve_action(
+        action::ActionFlags {
+            session,
+            repo,
+            worktree,
+            base,
             agent,
             extra_repos,
-        })),
-    }
+            command: None,
+        },
+        db,
+    )
 }
 
 fn task_to_json(t: &Task) -> Value {

@@ -621,11 +621,74 @@ pub struct LuaHost {
     /// is entered, so a plugin sees its own answers and no one else's.
     run_answers: Rc<RefCell<RunAnswers>>,
     pub plugins: Vec<Plugin>,
+    /// Index lists derived from `plugins`, rebuilt on reload.
+    ///
+    /// Each answers a per-frame question — which panes are focusable, who
+    /// occupies or decorates a slot, a slot's mode — that used to be a scan
+    /// with a fresh `Vec` per call (several calls per frame, and `slot_mode` a
+    /// Lua table read per member per call) over a set that only changes when
+    /// the interface reloads.
+    index: PluginIndex,
     layout: Arrangement,
+    /// The last resolved arrangement, with everything it was resolved from.
+    ///
+    /// `layout.lua` runs through the VM and its result is converted node by
+    /// node, every frame, from inputs that move rarely: the screen size, the
+    /// occupied slots (fixed per reload), `store` (the panel toggles — covered
+    /// by the state version), and the published tables it may consult (covered
+    /// by the epoch, plus the chrome band's row count, which is published as a
+    /// bare scalar and so carries no version of its own).
+    layout_cache: RefCell<Option<(LayoutKey, std::rc::Rc<Region>)>>,
+    /// The `status_rows` last published, the one arrangement input with no
+    /// version — see [`Self::arrangement`]'s cache key.
+    last_status_rows: std::cell::Cell<u16>,
     /// Set when the *last* reload attempt failed; `plugins` are still the ones
     /// from the last good build.
     pub error: Option<String>,
     pub reloads: u32,
+}
+
+/// What [`LuaHost::arrangement`]'s cache is keyed by. Compared exactly, like a
+/// [`GroupKey`]: a stale arrangement is wrong rects, not a slow frame.
+type LayoutKey = (u16, u16, u32, Option<Epoch>, u64, u16);
+
+/// See [`LuaHost::index`].
+#[derive(Default)]
+struct PluginIndex {
+    focusable: Vec<usize>,
+    floating: Vec<usize>,
+    /// Slot -> occupying plugin indices, in render order (decorators excluded).
+    slots: HashMap<String, Vec<usize>>,
+    /// Slot -> indices of the plugins decorating it, in render order.
+    decorators: HashMap<String, Vec<usize>>,
+    /// Slot -> declared mode. Absent = stack, so the common case needs no entry.
+    modes: HashMap<String, SlotMode>,
+}
+
+impl PluginIndex {
+    fn build(plugins: &[Plugin]) -> Self {
+        let mut index = Self::default();
+        for (i, plugin) in plugins.iter().enumerate() {
+            if plugin.focusable {
+                index.focusable.push(i);
+            }
+            if plugin.floats {
+                index.floating.push(i);
+            }
+            match &plugin.decorates {
+                Some(slot) => index.decorators.entry(slot.clone()).or_default().push(i),
+                None => index.slots.entry(plugin.slot.clone()).or_default().push(i),
+            }
+            // `slot_mode` is a static declaration, read once here instead of
+            // through the Lua table on every placement query.
+            if let Ok(Value::String(mode)) = plugin.def.get::<Value>("slot_mode") {
+                if mode.to_string_lossy() == "switch" {
+                    index.modes.insert(plugin.slot.clone(), SlotMode::Switch);
+                }
+            }
+        }
+        index
+    }
 }
 
 impl LuaHost {
@@ -652,7 +715,10 @@ impl LuaHost {
             roots: Roots::default(),
             roots_snapshot: std::cell::Cell::new(None),
             plugins: Vec::new(),
+            index: PluginIndex::default(),
             layout: Arrangement::Missing,
+            layout_cache: RefCell::new(None),
+            last_status_rows: std::cell::Cell::new(0),
             error: None,
             reloads: 0,
         };
@@ -682,8 +748,10 @@ impl LuaHost {
                 // longer exists.
                 self.forget_groups();
                 self.lua = lua;
+                self.index = PluginIndex::build(&plugins);
                 self.plugins = plugins;
                 self.layout = layout;
+                self.layout_cache.replace(None);
                 self.error = None;
                 self.reloads += 1;
             }
@@ -831,17 +899,13 @@ impl LuaHost {
     }
 
     /// Indices of the plugins occupying one slot, in render order.
-    pub fn in_slot(&self, slot: &str) -> Vec<usize> {
-        self.plugins
-            .iter()
-            .enumerate()
-            // A decorator is not an occupant: it draws INTO another plugin's
-            // tree. Without this it would take the default slot and compete for
-            // the centre with the pane it exists to decorate.
-            .filter(|(_, plugin)| plugin.decorates.is_none())
-            .filter(|(_, plugin)| plugin.slot == slot)
-            .map(|(index, _)| index)
-            .collect()
+    ///
+    /// A decorator is not an occupant: it draws INTO another plugin's tree, so
+    /// it is indexed under [`PluginIndex::decorators`] instead — otherwise it
+    /// would take the default slot and compete for the centre with the pane it
+    /// exists to decorate.
+    pub fn in_slot(&self, slot: &str) -> &[usize] {
+        self.index.slots.get(slot).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// Indices of plugins decorating `slot`, in render order.
@@ -849,13 +913,12 @@ impl LuaHost {
     /// Render order is the deterministic order the spec requires: it follows
     /// each plugin's declared `order`, so two decorators on one slot apply the
     /// same way every run.
-    pub fn decorators_of(&self, slot: &str) -> Vec<usize> {
-        self.plugins
-            .iter()
-            .enumerate()
-            .filter(|(_, plugin)| plugin.decorates.as_deref() == Some(slot))
-            .map(|(index, _)| index)
-            .collect()
+    pub fn decorators_of(&self, slot: &str) -> &[usize] {
+        self.index
+            .decorators
+            .get(slot)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Ask a decorator to transform a tree.
@@ -983,23 +1046,13 @@ impl LuaHost {
     }
 
     /// Indices of plugins that may float, in render order.
-    pub fn floating(&self) -> Vec<usize> {
-        self.plugins
-            .iter()
-            .enumerate()
-            .filter(|(_, plugin)| plugin.floats)
-            .map(|(index, _)| index)
-            .collect()
+    pub fn floating(&self) -> &[usize] {
+        &self.index.floating
     }
 
     /// Indices of every focusable plugin, in render order.
-    pub fn focusable(&self) -> Vec<usize> {
-        self.plugins
-            .iter()
-            .enumerate()
-            .filter(|(_, plugin)| plugin.focusable)
-            .map(|(index, _)| index)
-            .collect()
+    pub fn focusable(&self) -> &[usize] {
+        &self.index.focusable
     }
 
     /// Take the commands plugins issued since the last drain.
@@ -1398,7 +1451,33 @@ impl LuaHost {
     /// it every frame both wasted a syscall on the render path and — because
     /// inotify reports reads — made the host look like it was editing its own
     /// plugins, which kept the reload debounce rolling forward forever.
-    pub fn arrangement(&self, width: u16, height: u16) -> Result<Region, String> {
+    pub fn arrangement(&self, width: u16, height: u16) -> Result<std::rc::Rc<Region>, String> {
+        // The dynamic arrangement is a Lua call plus a node-by-node conversion,
+        // and the static one a whole-Region clone — per frame, from inputs
+        // that move rarely. Everything the Lua function can consult is in the
+        // key: `store` through the state version, the published tables through
+        // the epoch, `chrome.status_rows` (a bare scalar with no version)
+        // recorded at publish, and the occupied slots through the reload
+        // counter.
+        let key: LayoutKey = (
+            width,
+            height,
+            self.reloads,
+            *self.epoch.borrow(),
+            self.state_version.get(),
+            self.last_status_rows.get(),
+        );
+        if let Some((built_at, region)) = self.layout_cache.borrow().as_ref() {
+            if *built_at == key {
+                return Ok(region.clone());
+            }
+        }
+        let region = std::rc::Rc::new(self.resolve_arrangement(width, height)?);
+        self.layout_cache.replace(Some((key, region.clone())));
+        Ok(region)
+    }
+
+    fn resolve_arrangement(&self, width: u16, height: u16) -> Result<Region, String> {
         match &self.layout {
             // No layout.lua: everything to the centre, with a one-line footer.
             // A missing file is a fresh checkout, not an error.
@@ -1564,16 +1643,16 @@ impl LuaHost {
     }
 
     /// Slot mode, declared by any plugin in the slot. Stack unless one says
-    /// otherwise, so the common case needs no declaration.
+    /// otherwise, so the common case needs no declaration. Read off the index
+    /// built at load — the declaration is static, and answering it through the
+    /// Lua table cost a metamethod-capable read per slot member per placement
+    /// query, several queries per frame.
     pub fn slot_mode(&self, slot: &str) -> SlotMode {
-        for index in self.in_slot(slot) {
-            if let Ok(Value::String(mode)) = self.plugins[index].def.get::<Value>("slot_mode") {
-                if mode.to_string_lossy() == "switch" {
-                    return SlotMode::Switch;
-                }
-            }
-        }
-        SlotMode::Stack
+        self.index
+            .modes
+            .get(slot)
+            .copied()
+            .unwrap_or(SlotMode::Stack)
     }
 }
 

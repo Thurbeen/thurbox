@@ -18,6 +18,74 @@ use crate::storage::Database;
 /// the agent CLI time to start.
 pub(crate) const BOOT_DELAY_SECS: u64 = 3;
 
+/// The send/spawn/exec flags both action-bearing commands accept, gathered so
+/// their resolution lives once. `task` passes no `--command` (Exec is
+/// automation-only) and accepts an action-less record; `automation` requires
+/// one — both differences sit at the call sites, not here.
+pub(crate) struct ActionFlags {
+    pub session: Option<String>,
+    pub repo: Option<String>,
+    pub worktree: Option<String>,
+    pub base: Option<String>,
+    pub agent: Option<String>,
+    pub extra_repos: Vec<crate::session::ExtraRepo>,
+    pub command: Option<String>,
+}
+
+/// Resolve an action from the flags: at most one of `--session` (send),
+/// `--repo` (spawn) or `--command` (exec); `--add-repo`/`--add-dir` only make
+/// sense for a spawn. `Ok(None)` when no action flag was given.
+pub(crate) fn resolve_action(
+    flags: ActionFlags,
+    db: &Database,
+) -> Result<Option<AutomationAction>, String> {
+    let ActionFlags {
+        session,
+        repo,
+        worktree,
+        base,
+        agent,
+        extra_repos,
+        command,
+    } = flags;
+    if let Some(cmd) = command {
+        if session.is_some() || repo.is_some() {
+            return Err("specify only one of --session, --repo, or --command".into());
+        }
+        if !extra_repos.is_empty() {
+            return Err("--add-repo/--add-dir require --repo (a spawn action)".into());
+        }
+        if cmd.trim().is_empty() {
+            return Err("--command must not be empty".into());
+        }
+        return Ok(Some(AutomationAction::Exec { command: cmd }));
+    }
+    match (session, repo) {
+        (Some(_), Some(_)) => {
+            Err("specify either --session (send) or --repo (spawn), not both".into())
+        }
+        (None, None) => {
+            if !extra_repos.is_empty() {
+                return Err("--add-repo/--add-dir require --repo (a spawn action)".into());
+            }
+            Ok(None)
+        }
+        (Some(_), None) if !extra_repos.is_empty() => {
+            Err("--add-repo/--add-dir apply to --repo (spawn), not --session (send)".into())
+        }
+        (Some(s), None) => Ok(Some(AutomationAction::Send {
+            session_id: resolve_send_target(db, &s)?,
+        })),
+        (None, Some(r)) => Ok(Some(AutomationAction::Spawn {
+            repo_path: r.into(),
+            worktree_branch: worktree,
+            base_branch: base,
+            agent,
+            extra_repos,
+        })),
+    }
+}
+
 /// Human label for an action — `-` when there is none (a plain local todo).
 pub(crate) fn action_label(action: Option<&AutomationAction>) -> String {
     match action {

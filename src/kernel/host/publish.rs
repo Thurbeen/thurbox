@@ -259,6 +259,9 @@ impl LuaHost {
         let chrome = self.lua.create_table().map_err(|e| e.to_string())?;
         set(&chrome, "status_rows", *status_rows)?;
         set(&table, "chrome", chrome)?;
+        // The one arrangement input published as a bare scalar; recorded so
+        // the arrangement cache can key on it (see `LayoutKey`).
+        self.last_status_rows.set(*status_rows);
 
         // The interface's own files. One row per file rather than per loaded
         // plugin, because the ones worth acting on are exactly those that did

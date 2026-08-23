@@ -121,6 +121,85 @@ pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
     cmd
 }
 
+/// PowerShell single-quote escaping for one argument.
+///
+/// Inside single quotes PowerShell interprets nothing except a doubled quote,
+/// so this is the whole rule — unlike [`posix_quote`] there is no safe-token
+/// fast path, because the callers embed the result in larger PowerShell
+/// expressions where a bare token could be re-parsed. One implementation for
+/// what had grown three (`agent::tmux`, `git::remote`, and a near-copy in
+/// `notifications`).
+pub fn powershell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// A launcher for a command on an off-local host: `ssh <opts> <dest>` or
+/// `wsl.exe -d <distro>`.
+///
+/// One implementation of a construction that had grown four copies —
+/// `git::command::host_launcher`, `git::remote::host_shell_c`,
+/// `usage::remote_read_command` (which admitted the mirroring in a comment)
+/// and the transport's prefix branch — each one more place for the two
+/// quoting rules below to drift apart. `session::HostDef` cannot carry the
+/// conversion itself (`session` is a pure-data leaf), so callers build this
+/// from its fields.
+pub enum HostLauncher<'a> {
+    Ssh {
+        destination: &'a str,
+        ssh_opts: &'a [String],
+    },
+    Wsl {
+        distro: String,
+    },
+}
+
+impl HostLauncher<'_> {
+    /// The bare launcher, ready for the caller to append the remote command.
+    /// Both transports join and shell-interpret whitespace-free trailing
+    /// tokens identically, so callers append the same POSIX-quoted words.
+    pub fn command(&self) -> Command {
+        match self {
+            Self::Ssh {
+                destination,
+                ssh_opts,
+            } => ssh_command(destination, ssh_opts),
+            Self::Wsl { distro } => wsl_command(distro),
+        }
+    }
+
+    /// Run a multi-statement POSIX script via `sh -c` on the host.
+    ///
+    /// The two branches encode the transports' one real difference:
+    ///
+    /// - **`wsl.exe`** needs `--exec` (`-e`), which skips its command-line
+    ///   processing entirely: argv reaches the in-distro process verbatim, so
+    ///   the script travels as one **unquoted** arg and `sh -c` parses the
+    ///   `posix_quote`d paths inside it exactly like the ssh path. Without
+    ///   `-e`, `wsl.exe` mangles the script — it substitutes `$…` even inside
+    ///   a preserved argument, and pre-quoting makes the in-distro shell treat
+    ///   the quoted blob as one command word ("not found").
+    /// - **`ssh`** space-joins its trailing args into one string the remote
+    ///   login shell re-splits, so the script must be POSIX-quoted to survive
+    ///   as a single `sh -c` argument.
+    ///
+    /// POSIX hosts only — a native-Windows host has no `sh`; see
+    /// `git::remote::host_powershell_c`.
+    pub fn shell_c(&self, script: &str) -> Command {
+        let mut cmd = self.command();
+        match self {
+            Self::Wsl { .. } => {
+                cmd.arg("-e").arg("sh").arg("-c").arg(script);
+            }
+            Self::Ssh { .. } => {
+                cmd.arg(posix_quote("sh"))
+                    .arg(posix_quote("-c"))
+                    .arg(posix_quote(script));
+            }
+        }
+        cmd
+    }
+}
+
 /// Build a `wsl.exe -d <distro>` [`Command`], ready for the caller to append
 /// the in-distro command and its arguments.
 ///

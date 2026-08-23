@@ -621,7 +621,8 @@ fn load(db: &Database, id: i64) -> Result<Automation, String> {
         .ok_or_else(|| format!("Automation not found: {id}"))
 }
 
-/// Resolve the action from the send/spawn flags (exactly one of session/repo).
+/// Resolve the action from the shared flags; an automation, unlike a task,
+/// must carry one.
 #[allow(clippy::too_many_arguments)]
 fn resolve_action(
     session: Option<String>,
@@ -633,32 +634,19 @@ fn resolve_action(
     command: Option<String>,
     db: &Database,
 ) -> Result<AutomationAction, String> {
-    // Exec is mutually exclusive with the session/spawn forms.
-    if let Some(cmd) = command {
-        if session.is_some() || repo.is_some() {
-            return Err("specify only one of --session, --repo, or --command".into());
-        }
-        if cmd.trim().is_empty() {
-            return Err("--command must not be empty".into());
-        }
-        return Ok(AutomationAction::Exec { command: cmd });
-    }
-    match (session, repo) {
-        (Some(_), Some(_)) => {
-            Err("specify either --session (send) or --repo (spawn), not both".into())
-        }
-        (None, None) => Err("specify --session (send), --repo (spawn), or --command (exec)".into()),
-        (Some(s), None) => Ok(AutomationAction::Send {
-            session_id: action::resolve_send_target(db, &s)?,
-        }),
-        (None, Some(r)) => Ok(AutomationAction::Spawn {
-            repo_path: r.into(),
-            worktree_branch: worktree,
-            base_branch: base,
+    action::resolve_action(
+        action::ActionFlags {
+            session,
+            repo,
+            worktree,
+            base,
             agent,
             extra_repos,
-        }),
-    }
+            command,
+        },
+        db,
+    )?
+    .ok_or_else(|| "specify --session (send), --repo (spawn), or --command (exec)".into())
 }
 
 fn automation_to_json(a: &Automation) -> Value {

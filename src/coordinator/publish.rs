@@ -24,8 +24,11 @@ impl App {
             .collect();
         self.refresh_links(&sessions);
         self.refresh_search_content(&sessions);
-        // Generation-gated, so an idle session costs one atomic load.
-        let meta = self.terminals.meta().clone();
+        // Generation-gated, so an idle session costs one atomic load. The
+        // mutating half runs here; the map itself is borrowed below, after the
+        // last `&mut self` call — cloning it to end this borrow cost two
+        // `String`s per live session per publish.
+        self.terminals.sync_meta();
         let attach_errors = self.terminals.failures();
         let inflight = self.commands.inflight();
         let focus = self
@@ -62,6 +65,7 @@ impl App {
         );
         let inventory = std::mem::take(&mut self.inventory);
         let ui_dir = self.ui_dir.display().to_string();
+        let meta = self.terminals.meta_map();
         if let Err(e) = self.host.publish(&thurbox::kernel::host::Published {
             epoch: thurbox::kernel::host::Epoch {
                 snapshot: self.snapshots.version(),
@@ -80,7 +84,7 @@ impl App {
             diffs: &self.diffs,
             links: &self.links,
             content: &self.content,
-            meta: &meta,
+            meta,
             metrics: &self.metrics,
             status_rows: self.status_rows(),
             can_open: browser_available(),

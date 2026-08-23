@@ -435,15 +435,19 @@ fn dispatch_windows_toast(n: &Notification) -> Result<(), Box<dyn std::error::Er
 }
 
 /// Single-quote a string for safe interpolation into a PowerShell literal.
-/// PowerShell escapes a literal single quote by doubling it (`''`). We also
-/// strip control characters that could break the one-liner; the body has
-/// already been length-bounded upstream.
+/// The quoting rule is the shared [`crate::shell::powershell_quote`] (a
+/// doubled quote is the only escape); this wrapper additionally strips
+/// control characters that could break the one-liner — the body has already
+/// been length-bounded upstream — and hands back the *contents*, unwrapped,
+/// because the caller embeds them mid-literal.
 pub(crate) fn powershell_escape(s: &str) -> String {
-    s.chars()
+    let cleaned: String = s
+        .chars()
         .filter(|c| !c.is_control() || *c == '\n')
         .map(|c| if c == '\n' { ' ' } else { c })
-        .collect::<String>()
-        .replace('\'', "''")
+        .collect();
+    let quoted = crate::shell::powershell_quote(&cleaned);
+    quoted[1..quoted.len() - 1].to_string()
 }
 
 /// Build the PowerShell script that raises a WinRT toast. Title/body are

@@ -586,11 +586,16 @@ pub enum StyleField {
     Flag(bool),
 }
 
-/// Flatten runs into a ratatui `Line`.
-pub fn to_line(runs: &[Run]) -> Line<'static> {
+/// Flatten runs into a ratatui `Line` borrowing the runs' text.
+///
+/// Borrowed, not cloned: this runs for every span of every pane on every
+/// painted frame, and the tree it reads outlives the paint — an owned
+/// `Line<'static>` was a `String` per span per frame for screens that had not
+/// changed at all.
+pub fn to_line(runs: &[Run]) -> Line<'_> {
     Line::from(
         runs.iter()
-            .map(|run| Span::styled(run.text.clone(), run.style))
+            .map(|run| Span::styled(run.text.as_str(), run.style))
             .collect::<Vec<_>>(),
     )
 }

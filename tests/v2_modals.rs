@@ -125,7 +125,7 @@ fn screen(
                 };
                 let members = match host.slot_mode(&slot.slot) {
                     SlotMode::Switch => vec![index],
-                    SlotMode::Stack => members.clone(),
+                    SlotMode::Stack => members.to_vec(),
                 };
                 for index in members {
                     let ctx = RenderContext {

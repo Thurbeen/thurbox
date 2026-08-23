@@ -323,46 +323,59 @@ fn resolve_dirs(
     req: &SpawnRequest,
     host: Option<&HostDef>,
 ) -> Result<(PathBuf, Vec<SharedWorktree>, Vec<PathBuf>), String> {
-    let mut worktrees: Vec<SharedWorktree> = Vec::new();
     let mut additional_dirs: Vec<PathBuf> = Vec::new();
 
-    // Primary repo: worktree when a branch is set, otherwise the repo root.
-    let primary_cwd = match req.worktree_branch.as_deref() {
-        None => req.repo_path.clone(),
-        Some(branch) => {
-            let base = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
-            let path = create_worktree(host, &req.repo_path, branch, base)?;
-            worktrees.push(SharedWorktree {
-                repo_path: req.repo_path.clone(),
-                worktree_path: path.clone(),
-                branch: branch.to_string(),
-            });
-            path
-        }
-    };
-
-    // Extra repos: each its own isolated worktree on the shared branch, or a
-    // plain additional directory.
+    // Plan every worktree creation before running any, so a local multi-repo
+    // spawn can fan them out. Plan order is input order — primary first, then
+    // the extras — and each position holds its `(repo, base)` or the error the
+    // old serial loop surfaced when it *reached* that position, so the first
+    // failure in input order is still the one reported.
+    let shared_branch = req.worktree_branch.as_deref();
+    let primary_base = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
+    let mut plans: Vec<WorktreePlan<'_>> = Vec::new();
+    if shared_branch.is_some() {
+        plans.push(Ok((req.repo_path.as_path(), primary_base)));
+    }
     for extra in &req.extra_repos {
         if extra.worktree {
-            let branch = req.worktree_branch.as_deref().ok_or_else(|| {
-                "a worktree extra-repo requires --worktree-branch (the shared branch)".to_string()
-            })?;
-            let base = extra
-                .base_branch
-                .as_deref()
-                .or(req.base_branch.as_deref())
-                .unwrap_or(DEFAULT_BASE_BRANCH);
-            let path = create_worktree(host, &extra.repo_path, branch, base)?;
-            worktrees.push(SharedWorktree {
-                repo_path: extra.repo_path.clone(),
-                worktree_path: path.clone(),
-                branch: branch.to_string(),
+            plans.push(match shared_branch {
+                Some(_) => Ok((
+                    extra.repo_path.as_path(),
+                    extra.base_branch.as_deref().unwrap_or(primary_base),
+                )),
+                None => Err(
+                    "a worktree extra-repo requires --worktree-branch (the shared branch)"
+                        .to_string(),
+                ),
             });
         } else {
             additional_dirs.push(extra.repo_path.clone());
         }
     }
+
+    let branch = shared_branch.unwrap_or_default();
+    let created = create_worktrees(host, branch, &plans)?;
+    let mut worktrees: Vec<SharedWorktree> = plans
+        .iter()
+        .zip(created)
+        .map(|(plan, worktree_path)| {
+            let (repo, _) = plan
+                .as_ref()
+                .expect("create_worktrees succeeds only when every plan was ok");
+            SharedWorktree {
+                repo_path: repo.to_path_buf(),
+                worktree_path,
+                branch: branch.to_string(),
+            }
+        })
+        .collect();
+
+    // Primary repo: its worktree when a branch is set (plan 0, so worktree 0),
+    // otherwise the repo root.
+    let primary_cwd = match shared_branch {
+        Some(_) => worktrees[0].worktree_path.clone(),
+        None => req.repo_path.clone(),
+    };
 
     // Shared, not created: a fork's worktree already exists and belongs to its
     // parent. Appended last so the primary stays first.
@@ -376,6 +389,61 @@ fn resolve_dirs(
     }
 
     Ok((primary_cwd, worktrees, additional_dirs))
+}
+
+/// One planned worktree creation — `(repo, base)`, or the per-position error
+/// [`resolve_dirs`] found while planning.
+type WorktreePlan<'a> = Result<(&'a std::path::Path, &'a str), String>;
+
+/// Run one plan: surface its planning error, or create its worktree.
+fn create_planned_worktree(
+    host: Option<&HostDef>,
+    branch: &str,
+    plan: &WorktreePlan<'_>,
+) -> Result<PathBuf, String> {
+    let (repo, base) = plan.as_ref().map_err(Clone::clone)?;
+    create_worktree(host, repo, branch, base)
+}
+
+/// Create every planned worktree, returning their paths in plan order — or the
+/// first failure **in plan order**.
+///
+/// Local plans fan out across scoped threads: each is an independent
+/// repository whose worktree directory is derived from its own repo path
+/// (`git::create_worktree_on` shares nothing between repos), and each costs
+/// ~100 ms of git that a multi-repo spawn used to pay strictly serially. The
+/// fan-out is bounded by the repo count. Remote plans stay serial — a fan-out
+/// would open one ssh connection per repo at once, and connection multiplexing
+/// (ControlMaster) already makes the serial round trips cheap; serial also
+/// keeps the old stop-at-first-failure behavior there. Parallel plans all run
+/// to completion, but the error reported is still the first in plan order.
+fn create_worktrees(
+    host: Option<&HostDef>,
+    branch: &str,
+    plans: &[WorktreePlan<'_>],
+) -> Result<Vec<PathBuf>, String> {
+    if host.is_some() || plans.len() < 2 {
+        // `collect` on `Result` short-circuits, so a serial failure stops the
+        // remaining creations exactly as the old loop did.
+        return plans
+            .iter()
+            .map(|plan| create_planned_worktree(host, branch, plan))
+            .collect();
+    }
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = plans
+            .iter()
+            .map(|plan| scope.spawn(move || create_planned_worktree(None, branch, plan)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
 }
 
 /// Create a worktree, wrapping the error with the branch/base for context.
@@ -1323,6 +1391,101 @@ mod tests {
         }];
         let err = resolve_dirs(&r, None).unwrap_err();
         assert!(err.contains("worktree-branch"), "got: {err}");
+    }
+
+    /// Run `git` in `repo` with the location variables scrubbed.
+    ///
+    /// The pre-commit hook exports `GIT_DIR` and friends, so an unscrubbed call
+    /// from the suite lands in the real repository (see CLAUDE.md → Testing).
+    fn git_in(repo: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_CONFIG_PARAMETERS")
+            .env_remove("GIT_CONFIG_COUNT")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A repository with one commit on `main`, ready to cut worktrees from.
+    fn repo_with_main(home: &std::path::Path, name: &str) -> PathBuf {
+        let repo = home.join(name);
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        git_in(&repo, &["init", "-q", "-b", "main"]);
+        git_in(&repo, &["config", "user.email", "t@example.com"]);
+        git_in(&repo, &["config", "user.name", "T"]);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        repo
+    }
+
+    #[test]
+    fn resolve_dirs_creates_multi_repo_worktrees_in_input_order() {
+        // Three repos exercises the local fan-out (≥2 plans), and the result
+        // must come back in input order — primary first, then the extras as
+        // given — however the threads finished.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let primary = repo_with_main(temp.path(), "primary");
+        let extra_a = repo_with_main(temp.path(), "extra-a");
+        let extra_b = repo_with_main(temp.path(), "extra-b");
+
+        let mut r = req("s");
+        r.repo_path = primary.clone();
+        r.worktree_branch = Some("feat/x".into());
+        r.base_branch = Some("main".into());
+        r.extra_repos = vec![
+            ExtraRepo {
+                repo_path: extra_a.clone(),
+                worktree: true,
+                base_branch: None,
+            },
+            ExtraRepo {
+                repo_path: extra_b.clone(),
+                worktree: true,
+                base_branch: Some("main".into()),
+            },
+        ];
+
+        let (cwd, worktrees, additional) = resolve_dirs(&r, None).unwrap();
+        let repos: Vec<&PathBuf> = worktrees.iter().map(|w| &w.repo_path).collect();
+        assert_eq!(repos, [&primary, &extra_a, &extra_b]);
+        assert_eq!(cwd, worktrees[0].worktree_path, "the primary's worktree");
+        assert!(
+            worktrees.iter().all(|w| w.worktree_path.is_dir()),
+            "every worktree was actually checked out: {worktrees:?}"
+        );
+        assert!(worktrees.iter().all(|w| w.branch == "feat/x"));
+        assert!(additional.is_empty());
+    }
+
+    #[test]
+    fn resolve_dirs_reports_the_first_failure_in_input_order() {
+        // Neither path is a repository, and both creations run (fanned out,
+        // locally) — the reported error must still be the primary's, exactly
+        // as the serial loop reported it.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let mut r = req("s");
+        r.repo_path = temp.path().join("missing-primary");
+        r.worktree_branch = Some("feat/x".into());
+        r.extra_repos = vec![ExtraRepo {
+            repo_path: temp.path().join("missing-extra"),
+            worktree: true,
+            base_branch: None,
+        }];
+        let err = resolve_dirs(&r, None).unwrap_err();
+        assert!(err.contains("missing-primary"), "got: {err}");
+        assert!(!err.contains("missing-extra"), "got: {err}");
     }
 
     #[test]

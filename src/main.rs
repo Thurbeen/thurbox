@@ -1040,7 +1040,7 @@ struct App {
     ///
     /// What each chrome band painted last frame, and where. Bands have no tree
     /// to diff, so their cells are compared instead — see `render_band`.
-    last_bands: std::collections::HashMap<Band, (Rect, Vec<ratatui::buffer::Cell>)>,
+    last_bands: std::collections::HashMap<Band, (Rect, u64)>,
     /// Kept apart from `last_trees` because a float is rendered in its own pass at
     /// its own rect, so the two would overwrite each other for a plugin that did
     /// both. Its purpose is the same: settle the loop when nothing moved.
@@ -1191,26 +1191,35 @@ fn hud_area(area: Rect) -> Rect {
     }
 }
 
-/// The cells of one rect of the frame, for comparing against the last one.
+/// A digest of one rect of the frame, for comparing against the last one.
 ///
-/// Clipped to the buffer's own area: a rect the arrangement produced is trusted
-/// to be inside the frame, but reading out of bounds would panic rather than
-/// merely mis-compare, and this runs on every painted frame.
-fn read_cells(frame: &mut Frame, rect: Rect) -> Vec<ratatui::buffer::Cell> {
+/// A hash of the cells rather than a clone of them: the settle diff only asks
+/// "same as last frame?", and storing the cells cost a `Cell` clone per band
+/// cell per painted frame. Hashing keeps the property that made cells the
+/// right input — exact, and immune to a new `BandState` field being forgotten
+/// — at zero retained allocation. Clipped to the buffer's own area: a rect the
+/// arrangement produced is trusted to be inside the frame, but reading out of
+/// bounds would panic rather than merely mis-compare.
+fn read_cells(frame: &mut Frame, rect: Rect) -> u64 {
+    use std::hash::{Hash, Hasher};
     // `Frame` exposes only `buffer_mut`, hence the mutable borrow for a read.
     // Taken once rather than per cell: this runs for every band on every
     // painted frame.
     let buffer = frame.buffer_mut();
     let rect = rect.intersection(buffer.area);
-    let mut cells = Vec::with_capacity(usize::from(rect.width) * usize::from(rect.height));
+    let mut hasher = std::hash::DefaultHasher::new();
     for y in rect.top()..rect.bottom() {
         for x in rect.left()..rect.right() {
             if let Some(cell) = buffer.cell(ratatui::layout::Position::new(x, y)) {
-                cells.push(cell.clone());
+                cell.symbol().hash(&mut hasher);
+                cell.fg.hash(&mut hasher);
+                cell.bg.hash(&mut hasher);
+                cell.modifier.hash(&mut hasher);
+                cell.underline_color.hash(&mut hasher);
             }
         }
     }
-    cells
+    hasher.finish()
 }
 
 /// Compact µs for the HUD's narrow columns; `cli::perf` formats the same way.

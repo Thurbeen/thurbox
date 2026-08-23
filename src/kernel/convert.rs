@@ -478,8 +478,9 @@ fn read_frame(fields: &Fields, path: Crumb<'_>) -> Result<Option<Frame>, String>
                 }
             };
             // A plain string stays a plain string; a table of runs is styled, the
-            // same shape a `text` node accepts.
-            let title = match spec.get::<Value>("title") {
+            // same shape a `text` node accepts. Raw, like every other read of a
+            // frame spec — the table is data a plugin wrote, never a view.
+            let title = match spec.raw_get::<Value>("title") {
                 Ok(Value::Nil) => None,
                 Ok(value) => Some(read_runs(
                     &value,
@@ -558,10 +559,15 @@ fn read_style_raw(raw: Value, key: &str, path: Crumb<'_>) -> Result<Style, Strin
     match raw {
         Value::Nil => Ok(Style::default()),
         // `style = "cyan"` — the shorthand every plugin uses for a foreground.
-        Value::String(name) => Ok(match parse_color(&name.to_string_lossy()) {
-            Some(color) => Style::default().fg(color),
-            None => Style::default(),
-        }),
+        // Borrowed straight out of the VM: `to_string_lossy` was an owned
+        // `String` per styled span per frame, and a non-UTF-8 name fails
+        // `parse_color` either way.
+        Value::String(name) => Ok(
+            match name.to_str().ok().and_then(|name| parse_color(&name)) {
+                Some(color) => Style::default().fg(color),
+                None => Style::default(),
+            },
+        ),
         // Applied field by field rather than collected into a map first.
         //
         // This is the hottest path in the whole renderer: it runs once per SPAN
@@ -576,8 +582,14 @@ fn read_style_raw(raw: Value, key: &str, path: Crumb<'_>) -> Result<Style, Strin
                 let field = field.as_bytes();
                 match value {
                     Value::String(s) => {
-                        apply_color(&mut style, &field, &s.to_string_lossy());
+                        // Borrowed, not `to_string_lossy`: that was a heap
+                        // `String` per colour value right here, and a non-UTF-8
+                        // one parses to no colour either way.
+                        if let Ok(s) = s.to_str() {
+                            apply_color(&mut style, &field, &s);
+                        }
                     }
+                    // Rare enough (a numeric `fg = 3`) that its `String` stays.
                     Value::Integer(n) => {
                         apply_color(&mut style, &field, &n.to_string());
                     }

@@ -140,12 +140,14 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     // Leaf side-effect module: OS desktop notifications. Knows about
-    // `session` (for `SessionId`) and `paths` (for the DB path the click
-    // callback writes to); never reaches into agent / ui / app / storage
-    // beyond a single SQL statement on its own short-lived connection.
+    // `session` (for `SessionId`), `paths` (for the DB path the click
+    // callback writes to) and `shell` (the shared quoting rules — it grew a
+    // third copy of the PowerShell one before this was allowed); never
+    // reaches into agent / ui / app / storage beyond a single SQL statement
+    // on its own short-lived connection.
     ModuleRules {
         name: "notifications",
-        allowed: &["session", "paths"],
+        allowed: &["session", "paths", "shell"],
         allowed_path_only: &[],
     },
     // Leaf side-effect module: clipboard writes (native + OSC 52). Knows

@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, BorderType, Borders as RatBorders, Clear, Paragrap
 use ratatui::Frame;
 
 use super::node::{
-    divide, to_line, Align, Axis, Borders, Frame as NodeFrame, Identity, Node, Run, SurfaceSource,
+    divide, to_line, Align, Axis, Borders, Frame as NodeFrame, Identity, Node, SurfaceSource,
 };
 
 /// A painted node that carried identity, and the rect it went into.
@@ -385,25 +385,23 @@ const VARIATION_SELECTOR_16_LEN: usize = VARIATION_SELECTOR_16.len_utf8();
 /// and a different number there) are why a reflow repaints in full — see
 /// [`force_full_repaint`] and `App::last_placed`.
 pub fn normalize_ambiguous_width(buf: &mut Buffer) {
-    let area = buf.area;
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            let Some(cell) = buf.cell_mut(Position::new(x, y)) else {
-                continue;
-            };
-            let symbol = cell.symbol();
-            if symbol.len() < VARIATION_SELECTOR_16_LEN || !symbol.contains(VARIATION_SELECTOR_16) {
-                continue;
-            }
-            let stripped: String = cell
-                .symbol()
-                .chars()
-                .filter(|c| *c != VARIATION_SELECTOR_16)
-                .collect();
-            // A cell holding nothing but the selector would print nothing at
-            // all, which is the leftover this exists to prevent.
-            cell.set_symbol(if stripped.is_empty() { " " } else { &stripped });
+    // The buffer's storage is its area exactly, row-major, so walking it
+    // directly visits the same cells the coordinate loop did — minus a
+    // bounds-checked `cell_mut` per cell, on a pass that touches ~10k of them
+    // every painted frame.
+    for cell in buf.content.iter_mut() {
+        let symbol = cell.symbol();
+        if symbol.len() < VARIATION_SELECTOR_16_LEN || !symbol.contains(VARIATION_SELECTOR_16) {
+            continue;
         }
+        let stripped: String = cell
+            .symbol()
+            .chars()
+            .filter(|c| *c != VARIATION_SELECTOR_16)
+            .collect();
+        // A cell holding nothing but the selector would print nothing at
+        // all, which is the leftover this exists to prevent.
+        cell.set_symbol(if stripped.is_empty() { " " } else { &stripped });
     }
 }
 
@@ -438,7 +436,7 @@ pub fn force_full_repaint(buf: &mut Buffer) {
     }
 }
 
-fn build_block(spec: &NodeFrame) -> Block<'static> {
+fn build_block(spec: &NodeFrame) -> Block<'_> {
     let mut block = Block::default().style(spec.style);
     block = match spec.borders {
         Borders::All => block
@@ -456,18 +454,21 @@ fn build_block(spec: &NodeFrame) -> Block<'static> {
         // chrome, so the default is shared and it is always a theme role. A run
         // that does set a colour keeps it, which is how the agent pane paints its
         // status word without the rest of the title changing.
-        let runs: Vec<Run> = title
+        //
+        // Spans borrow the runs' text (the reason `to_line` borrows), so the
+        // patched style is the only thing built per frame.
+        let spans: Vec<_> = title
             .iter()
-            .map(|run| Run {
-                text: run.text.clone(),
-                style: if run.style.fg.is_some() {
+            .map(|run| {
+                let style = if run.style.fg.is_some() {
                     run.style
                 } else {
                     spec.border_style.patch(run.style)
-                },
+                };
+                ratatui::text::Span::styled(run.text.as_str(), style)
             })
             .collect();
-        block = block.title(to_line(&runs));
+        block = block.title(Line::from(spans));
     }
     block
 }

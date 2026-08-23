@@ -151,8 +151,23 @@ impl Live {
 }
 
 /// Owns every live terminal, keyed by session id.
+/// One surface's extracted rows and the output stamp they were read at.
+type CachedRows = (u64, std::rc::Rc<Vec<String>>);
+
 pub struct Terminals {
     backends: crate::agent::BackendRegistry,
+    /// Extracted screen rows per surface, keyed on the output stamp they were
+    /// read at.
+    ///
+    /// One walk of a vt100 grid builds a `String` per row from a per-cell
+    /// `contents()` call — ~10,000 allocations for a 200×50 grid — and three
+    /// readers want the same rows on the same frame: the link scan, the
+    /// click-time URL resolve, and the OSC 8 repaint (which runs per painted
+    /// frame for every session that ever printed a link). Sharing one
+    /// extraction per output stamp turns that into a map hit for all but the
+    /// first asker. `RefCell` because every reader takes `&self` on the UI
+    /// thread.
+    rows_cache: std::cell::RefCell<HashMap<String, CachedRows>>,
     /// Kept beside the backends because a pane needs more than a connection: a
     /// remote session's launch directory is resolved against its `HostDef`.
     hosts: crate::session::HostRegistry,
@@ -394,6 +409,7 @@ impl Terminals {
             discovered_rx: std::sync::mpsc::channel(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
+            rows_cache: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -411,6 +427,10 @@ impl Terminals {
         self.collect_discovered();
         self.collect_attached(rows, cols);
         self.drop_lost_panes(snapshot);
+        // A surface that lost its parser takes its cached rows with it.
+        self.rows_cache
+            .borrow_mut()
+            .retain(|surface, _| self.surface_parser(surface).is_some());
 
         // Only pay for discovery while something needs it, and never for a remote
         // row: a remote spawn drives control mode and records the real pane id, so
@@ -1297,6 +1317,29 @@ impl Terminals {
         }
     }
 
+    /// The extracted rows of a surface's screen, shared per output stamp.
+    ///
+    /// See [`Self::rows_cache`]. The stamp is read while the caller already
+    /// holds the parser lock, so a cached answer and the grid it was read from
+    /// cannot disagree.
+    fn cached_rows(
+        &self,
+        surface: &str,
+        parser: &crate::agent::SessionParser,
+    ) -> std::rc::Rc<Vec<String>> {
+        let stamp = self.output_stamp(surface).unwrap_or(0);
+        if let Some((at, rows)) = self.rows_cache.borrow().get(surface) {
+            if *at == stamp {
+                return rows.clone();
+            }
+        }
+        let rows = std::rc::Rc::new(crate::session::links::extract_screen_rows(parser.screen()));
+        self.rows_cache
+            .borrow_mut()
+            .insert(surface.to_string(), (stamp, rows.clone()));
+        rows
+    }
+
     /// Links visible in a session's terminal.
     ///
     /// Read kernel-side because a terminal is a *surface*: its text is in no
@@ -1316,7 +1359,7 @@ impl Terminals {
         let Ok(parser) = parser.lock() else {
             return Vec::new();
         };
-        let rows = crate::session::links::extract_screen_rows(parser.screen());
+        let rows = self.cached_rows(session, &parser);
         let table = parser.callbacks().hyperlinks();
 
         let mut found: Vec<(String, usize, usize)> = table
@@ -1346,7 +1389,7 @@ impl Terminals {
     pub fn url_at(&self, session: &str, row: usize, col: usize) -> Option<String> {
         let (_, parser) = self.surface_parser(session)?;
         let parser = parser.lock().ok()?;
-        let rows = crate::session::links::extract_screen_rows(parser.screen());
+        let rows = self.cached_rows(session, &parser);
         rows.get(row)
             .and_then(|text| parser.callbacks().hyperlinks().resolve(text, col))
             .map(str::to_string)
@@ -1382,7 +1425,7 @@ impl Terminals {
             return Vec::new();
         }
 
-        let rows = crate::session::links::extract_screen_rows(parser.screen());
+        let rows = self.cached_rows(session, &parser);
         let mut paints = Vec::new();
         for run in parser.callbacks().hyperlinks().visible_runs(&rows) {
             if run.row >= usize::from(inner.height) || run.col >= usize::from(inner.width) {
@@ -1579,6 +1622,16 @@ impl Terminals {
     /// costs one atomic load rather than two mutex locks and two `String`
     /// clones — the ADR-P10 reason v1 does the same.
     pub fn meta(&mut self) -> &HashMap<String, AgentMeta> {
+        self.sync_meta();
+        self.meta_map()
+    }
+
+    /// The mutating half of [`Self::meta`], split out so a caller can end the
+    /// `&mut` borrow and then hold the map by reference — the publish path
+    /// used to clone the whole map (two `String`s per live session per frame)
+    /// purely to release the borrow, which is the exact per-frame clone the
+    /// ADR-P10 gating exists to avoid.
+    pub fn sync_meta(&mut self) {
         let mut moved = false;
         for (id, live) in &mut self.live {
             if let Some((activity, notification)) = live.session.sync_agent_meta() {
@@ -1601,6 +1654,10 @@ impl Terminals {
         if moved || self.meta.len() != before {
             self.mark_meta_changed();
         }
+    }
+
+    /// The map [`Self::sync_meta`] maintains, borrowed.
+    pub fn meta_map(&self) -> &HashMap<String, AgentMeta> {
         &self.meta
     }
 

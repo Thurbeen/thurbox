@@ -65,9 +65,51 @@ struct Computed {
     diff: Diff,
 }
 
+/// How long a settled diff is trusted before a request recomputes it, and how
+/// soon a failure is retried.
+///
+/// The TTL matches the git-stat one (`snapshot`'s `GIT_STAT_TTL`, the same 5 s):
+/// both shell out to git about the same worktree, and this was the last cache
+/// without an age — once `Ready`, an entry stood for the life of the process
+/// unless something explicitly invalidated it, so a pane watching an agent that
+/// was still writing code showed the diff it first saw. A *failure* retries
+/// sooner (mirroring `repos`' `BRANCHES_RETRY`): held for the full TTL, one
+/// unreachable moment kept an error on screen well after the host came back.
+const DIFF_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const DIFF_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A diff and when it arrived — the age every cache here carries.
+struct Held {
+    at: std::time::Instant,
+    diff: Diff,
+    /// A recompute is in flight while `diff` stays published. Replacing a
+    /// stale `Ready` with `Pending` would blank the pane every TTL, so the old
+    /// answer stands until the fresh one lands in [`DiffStore::poll`] — the
+    /// same old-value-while-refreshing shape the git stats use.
+    refreshing: bool,
+}
+
+impl Held {
+    /// Whether this answer should be computed again.
+    ///
+    /// Never while one is on its way — a `Pending` first answer or a settled
+    /// one already `refreshing` — however old it has grown: asking again would
+    /// spawn a second worker for the same session.
+    fn stale(&self) -> bool {
+        if self.refreshing {
+            return false;
+        }
+        match self.diff {
+            Diff::Pending => false,
+            Diff::Failed(_) => self.at.elapsed() >= DIFF_RETRY,
+            Diff::Ready { .. } => self.at.elapsed() >= DIFF_TTL,
+        }
+    }
+}
+
 /// Computes and caches diffs, one per session.
 pub struct DiffStore {
-    diffs: HashMap<String, Diff>,
+    diffs: HashMap<String, Held>,
     tx: Sender<Computed>,
     rx: Receiver<Computed>,
 }
@@ -84,14 +126,17 @@ impl DiffStore {
 
     /// What is known about `session`, if anything has been asked for.
     pub fn get(&self, session: &str) -> Option<&Diff> {
-        self.diffs.get(session)
+        self.diffs.get(session).map(|held| &held.diff)
     }
 
-    /// Ask for a session's diff, unless it is already known or in flight.
+    /// Ask for a session's diff, unless a fresh answer is held or one is in
+    /// flight.
     ///
     /// Idempotent by design: this is called from the loop with whatever session
-    /// is selected, so it happens every frame and must cost nothing after the
-    /// first.
+    /// is selected, so it happens every frame and must cost nothing while the
+    /// held answer is fresh. Once it is older than [`DIFF_TTL`] (or
+    /// [`DIFF_RETRY`] for a failure) the recompute is dispatched — with the old
+    /// answer still published, per [`Held::refreshing`].
     pub fn request(
         &mut self,
         session: &str,
@@ -99,10 +144,22 @@ impl DiffStore {
         base: Option<String>,
         backend: &str,
     ) {
-        if self.diffs.contains_key(session) {
-            return;
+        match self.diffs.get_mut(session) {
+            Some(held) if !held.stale() => return,
+            // A settled answer past its age: keep publishing it, mark the
+            // recompute in flight, and dispatch below.
+            Some(held) => held.refreshing = true,
+            None => {
+                self.diffs.insert(
+                    session.to_string(),
+                    Held {
+                        at: std::time::Instant::now(),
+                        diff: Diff::Pending,
+                        refreshing: false,
+                    },
+                );
+            }
         }
-        self.diffs.insert(session.to_string(), Diff::Pending);
 
         // The worktree is a path on the session's OWN machine. Running the local
         // `git` against a remote path either fails or, on an unlucky collision,
@@ -129,7 +186,14 @@ impl DiffStore {
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(done) = self.rx.try_recv() {
-            self.diffs.insert(done.session, done.diff);
+            self.diffs.insert(
+                done.session,
+                Held {
+                    at: std::time::Instant::now(),
+                    diff: done.diff,
+                    refreshing: false,
+                },
+            );
             changed = true;
         }
         changed
@@ -138,10 +202,19 @@ impl DiffStore {
     /// Seed a diff directly, so a test can render a known one without git.
     #[doc(hidden)]
     pub fn set_for_test(&mut self, session: &str, diff: Diff) {
-        self.diffs.insert(session.to_string(), diff);
+        self.diffs.insert(
+            session.to_string(),
+            Held {
+                at: std::time::Instant::now(),
+                diff,
+                refreshing: false,
+            },
+        );
     }
 
-    /// Forget a session's diff, so the next request recomputes it.
+    /// Forget a session's diff, so the next request recomputes it — the
+    /// immediate route, for a caller that *knows* the worktree changed rather
+    /// than waiting out [`DIFF_TTL`].
     pub fn invalidate(&mut self, session: &str) {
         self.diffs.remove(session);
     }
@@ -285,13 +358,8 @@ mod tests {
         assert!(store.get("nobody").is_none());
     }
 
-    /// The property `Command::Diff` exists to provide, and which nothing provided
-    /// before it: a diff can be asked for a second time.
-    ///
-    /// `request` returns early while it holds an answer, so without invalidation a
-    /// diff was computed once per session per process. A pane watching an agent
-    /// that is still writing code would show the diff it first saw, forever —
-    /// stale and confident, which is worse than absent.
+    /// The *immediate* refresh route: `Command::Diff` need not wait out the
+    /// TTL when the caller knows the worktree changed.
     #[test]
     fn invalidating_lets_the_next_request_recompute() {
         let mut store = DiffStore::new();
@@ -355,6 +423,93 @@ mod tests {
         let first = store.get("s1").cloned();
         store.request("s1", PathBuf::from("/tmp"), None, "local-tmux");
         assert_eq!(store.get("s1").cloned(), first);
+    }
+
+    /// An empty `Ready`, for tests that need a settled answer without git.
+    fn empty_ready() -> Diff {
+        Diff::Ready {
+            files: Vec::new(),
+            body: Vec::new(),
+            truncated: false,
+            raw_bytes: 0,
+            untracked_omitted: 0,
+        }
+    }
+
+    /// A held answer, back-dated so the age rule can be exercised without
+    /// waiting out the interval.
+    fn held(diff: Diff, age: std::time::Duration) -> Held {
+        Held {
+            at: std::time::Instant::now() - age,
+            diff,
+            refreshing: false,
+        }
+    }
+
+    #[test]
+    fn a_settled_diff_is_computed_again_once_it_is_old() {
+        // Without this an agent still writing code showed the diff first seen,
+        // forever, unless something explicitly invalidated it.
+        assert!(!held(empty_ready(), std::time::Duration::ZERO).stale());
+        assert!(held(empty_ready(), DIFF_TTL).stale());
+        // A failure retries sooner — and, above all, retries at all.
+        assert!(!held(Diff::Failed("gone".into()), std::time::Duration::ZERO).stale());
+        assert!(held(Diff::Failed("gone".into()), DIFF_RETRY).stale());
+    }
+
+    #[test]
+    fn an_in_flight_diff_is_never_asked_for_twice() {
+        // However slow git is: a second request would spawn a second worker
+        // for an answer already on its way — first computation and refresh
+        // alike.
+        assert!(!held(Diff::Pending, DIFF_TTL * 10).stale());
+        let mut refreshing = held(empty_ready(), DIFF_TTL * 10);
+        refreshing.refreshing = true;
+        assert!(!refreshing.stale());
+    }
+
+    #[test]
+    fn an_old_diff_is_recomputed_and_stays_published_meanwhile() {
+        let mut store = DiffStore::new();
+        store.set_for_test("s1", empty_ready());
+        store.request(
+            "s1",
+            PathBuf::from("/definitely/not/a/repo"),
+            None,
+            "local-tmux",
+        );
+        assert_eq!(
+            store.get("s1"),
+            Some(&empty_ready()),
+            "a fresh answer is reused, not recomputed"
+        );
+
+        store.diffs.get_mut("s1").unwrap().at = std::time::Instant::now() - DIFF_TTL;
+        store.request(
+            "s1",
+            PathBuf::from("/definitely/not/a/repo"),
+            None,
+            "local-tmux",
+        );
+        // The old answer stays published while the recompute is in flight —
+        // replacing it with `Pending` would blank the pane every TTL.
+        assert_eq!(store.get("s1"), Some(&empty_ready()));
+        assert!(store.diffs.get("s1").unwrap().refreshing);
+
+        // And the recompute really was dispatched: its (failing) answer lands.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            store.poll();
+            if let Some(Diff::Failed(_)) = store.get("s1") {
+                assert!(
+                    !store.diffs.get("s1").unwrap().refreshing,
+                    "the landed answer clears the in-flight mark"
+                );
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("the recompute never ran: {:?}", store.get("s1"));
     }
 
     #[test]

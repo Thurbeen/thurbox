@@ -247,29 +247,37 @@ pub(crate) fn provision_agent_hooks_on_host(
 
 /// The uncached provisioning pass: probe → rewrite → merge/write →
 /// compare-before-copy.
+///
+/// The guard-dir probe and the existing-file read are **one** ssh round trip
+/// ([`crate::git::probe_remote_dir_and_file`]): made separately they were two
+/// serial connections per `(host, agent)` before the copy even started, on the
+/// spawn path.
 fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> ProvisionOutcome {
     use ProvisionOutcome::{Degraded, NotInstalled, Provisioned};
 
-    match crate::git::remote_dir_exists(host, asset.requires_dir) {
+    let probed = crate::git::probe_remote_dir_and_file(host, asset.requires_dir, asset.remote_path);
+    let existing = match probed {
         // Agent not installed on the host — nothing to wire, not a degradation
         // (the pane would have no hooks locally either).
-        Ok(false) => return NotInstalled,
-        Ok(true) => {}
+        Ok(crate::git::DirFileProbe::NoDir) => return NotInstalled,
+        Ok(crate::git::DirFileProbe::NoFile) => None,
+        Ok(crate::git::DirFileProbe::File(content)) => Some(content),
+        Ok(crate::git::DirFileProbe::NotFile) => {
+            return Degraded(format!(
+                "{} on host exists but is not a regular file",
+                asset.remote_path
+            ))
+        }
         Err(e) => {
             return Degraded(format!(
                 "cannot probe {} on host: {e:#}",
                 asset.requires_dir
             ))
         }
-    }
+    };
 
     // POSIX remotes only (psmux is deferred above), so the tmux form is fixed.
     let rewritten = builtin_hooks::rewrite_hook_signals_for_remote(asset.payload);
-
-    let existing = match crate::git::read_remote_file(host, asset.remote_path) {
-        Ok(existing) => existing,
-        Err(e) => return Degraded(format!("cannot read {} on host: {e:#}", asset.remote_path)),
-    };
 
     let to_write = match asset.kind {
         RemoteAssetKind::MergeJson => {

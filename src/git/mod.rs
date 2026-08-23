@@ -18,7 +18,7 @@ use tracing::warn;
 
 use crate::paths;
 use crate::session::HostDef;
-use crate::shell::{posix_quote, ssh_command, wsl_command};
+use crate::shell::posix_quote;
 
 mod command;
 mod diff;

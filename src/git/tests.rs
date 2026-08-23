@@ -1072,6 +1072,68 @@ fn parse_path_class_reads_the_single_word() {
 }
 
 #[test]
+fn dir_file_probe_script_quotes_and_carries_the_protocol() {
+    // Both paths are embedded in a `sh -c` script — a single quote or `$`
+    // must arrive literally, never as shell syntax.
+    let script = dir_file_probe_script("/srv/it's $HOME", "/srv/it's $HOME/hooks.json");
+    assert!(
+        script.contains(r#"'/srv/it'\''s $HOME'"#),
+        "dir must be posix-quoted in: {script}"
+    );
+    assert!(
+        script.contains(r#"'/srv/it'\''s $HOME/hooks.json'"#),
+        "file must be posix-quoted in: {script}"
+    );
+    for sentinel in ["'@nodir'", "'@file'", "'@notfile'", "'@nofile'"] {
+        assert!(
+            script.contains(sentinel),
+            "{sentinel} missing from {script}"
+        );
+    }
+    // A missing guard dir answers alone — the file must not be consulted.
+    assert!(script.contains("echo '@nodir'; exit 0"), "{script}");
+}
+
+#[test]
+fn parse_dir_file_probe_reads_each_sentinel() {
+    assert_eq!(
+        parse_dir_file_probe("@nodir\n").unwrap(),
+        DirFileProbe::NoDir
+    );
+    assert_eq!(
+        parse_dir_file_probe("@nofile\n").unwrap(),
+        DirFileProbe::NoFile
+    );
+    assert_eq!(
+        parse_dir_file_probe("@notfile\n").unwrap(),
+        DirFileProbe::NotFile
+    );
+    assert!(parse_dir_file_probe("garbage\n").is_err());
+    assert!(parse_dir_file_probe("").is_err());
+}
+
+#[test]
+fn parse_dir_file_probe_returns_content_verbatim() {
+    // Content is everything after the `@file` line, byte-exact — including a
+    // line that *looks* like a sentinel (file content is remote-controlled
+    // text and may legitimately start with `@nodir`) and a body with no
+    // trailing newline.
+    assert_eq!(
+        parse_dir_file_probe("@file\n{\n  \"a\": 1\n}\n").unwrap(),
+        DirFileProbe::File("{\n  \"a\": 1\n}\n".into())
+    );
+    assert_eq!(
+        parse_dir_file_probe("@file\n@nodir\nno newline at end").unwrap(),
+        DirFileProbe::File("@nodir\nno newline at end".into())
+    );
+    // An empty file is `@file` with nothing after its newline.
+    assert_eq!(
+        parse_dir_file_probe("@file\n").unwrap(),
+        DirFileProbe::File(String::new())
+    );
+}
+
+#[test]
 fn list_dir_entries_local_flags_git_repos_and_follows_symlinks() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

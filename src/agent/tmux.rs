@@ -1900,11 +1900,12 @@ fn deferred_prompt_script(target: &str, text: &str) -> String {
     )
 }
 
-/// Wrap `s` in a PowerShell single-quoted literal, doubling embedded quotes.
-/// Not `#[cfg(windows)]`: `psmux_window_powershell` quotes for a psmux *host*
-/// from any local OS.
+/// Wrap `s` in a PowerShell single-quoted literal — the shared
+/// [`crate::shell::powershell_quote`], under this file's historical name. Not
+/// `#[cfg(windows)]`: `psmux_window_powershell` quotes for a psmux *host* from
+/// any local OS.
 fn ps_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+    crate::shell::powershell_quote(s)
 }
 
 /// Ensure the automation heartbeat keeper window is running.

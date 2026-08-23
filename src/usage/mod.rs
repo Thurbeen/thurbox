@@ -34,7 +34,7 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 use crate::session::{AgentUsage, HostDef, UsageWindow};
-use crate::shell::{posix_quote, ssh_command, wsl_command};
+use crate::shell::HostLauncher;
 
 /// Agents we know how to fetch usage for. Others are skipped entirely (no
 /// process spawned, no panel section shown).
@@ -84,20 +84,29 @@ fn remote_read_command(
     posix_script: &str,
     windows_args: &[&str],
 ) -> std::process::Command {
-    if host.is_wsl() {
-        let mut c = wsl_command(&host.distro_name());
-        c.arg("-e").arg("sh").arg("-c").arg(posix_script);
-        c
-    } else if host.is_windows() {
-        let mut c = ssh_command(&host.destination, &host.ssh_opts);
+    let launcher = launcher_for(host);
+    if host.is_windows() {
+        let mut c = launcher.command();
         c.args(windows_args);
         c
     } else {
-        let mut c = ssh_command(&host.destination, &host.ssh_opts);
-        c.arg(posix_quote("sh"))
-            .arg(posix_quote("-c"))
-            .arg(posix_quote(posix_script));
-        c
+        launcher.shell_c(posix_script)
+    }
+}
+
+/// `usage` may not import `git`, so it carries its own copy of the one-line
+/// [`HostDef`] → [`HostLauncher`] conversion (`session` is a pure-data leaf,
+/// so the conversion cannot live on the type). The quoting itself is shared.
+fn launcher_for(host: &HostDef) -> HostLauncher<'_> {
+    if host.is_wsl() {
+        HostLauncher::Wsl {
+            distro: host.distro_name(),
+        }
+    } else {
+        HostLauncher::Ssh {
+            destination: &host.destination,
+            ssh_opts: &host.ssh_opts,
+        }
     }
 }
 
@@ -315,15 +324,10 @@ fn codex_server_command(host: Option<&HostDef>) -> std::process::Command {
             c.args(CODEX_SERVER_ARGS);
             c
         }
-        Some(h) if h.is_wsl() => {
-            let mut c = wsl_command(&h.distro_name());
-            c.arg("codex").args(CODEX_SERVER_ARGS);
-            c
-        }
         // Plain tokens work for a POSIX *and* a Windows (psmux) SSH host: the
         // remote shell resolves `codex`/`codex.exe` from PATH either way.
         Some(h) => {
-            let mut c = ssh_command(&h.destination, &h.ssh_opts);
+            let mut c = launcher_for(h).command();
             c.arg("codex").args(CODEX_SERVER_ARGS);
             c
         }
@@ -516,6 +520,7 @@ fn parse_antigravity_quota(v: &serde_json::Value) -> AgentUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::posix_quote;
 
     fn ssh_host(name: &str) -> HostDef {
         HostDef {
