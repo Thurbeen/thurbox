@@ -41,21 +41,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         original_hook(info);
     }));
 
-    // Extensions, before the interface takes the terminal.
-    //
-    // Two things, both idempotent and both best-effort: re-create any
-    // session/automation an active extension declares but that has since been
-    // deleted, and auto-activate the built-in `hooks` extension. The second is
-    // load-bearing rather than a nicety — it is what patches `agents.toml` so an
-    // agent reports working/blocked/done at all, so without it a fresh profile
-    // shows every session as permanently idle. Run here for the same reason v1
-    // runs it here: tmux spawn output would otherwise land on the alternate
-    // screen. Opt out with `thurbox-cli extension deactivate hooks`.
-    // The user's settings, published process-wide BEFORE anything reads one.
-    // `Database::open` below reads a restart-only value — it prunes the audit log
-    // to `audit_retention_days` — and v1 loads them at the same point for the same
-    // reason. Without this call `settings::global()` hands out `Settings::default`
-    // and the whole file is ignored, however carefully it was written.
     // File-based logging: stdout belongs to the TUI, so every `tracing` call in
     // this process — the panic hook, a worker's warning, the perf lines below —
     // has nowhere else to go. Without a subscriber they are not merely
@@ -83,10 +68,25 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let process_start = Instant::now();
     let mut startup = thurbox::kernel::perf::Startup::default();
 
+    // The user's settings, published process-wide BEFORE anything reads one.
+    // `Database::open` below reads a restart-only value — it prunes the audit log
+    // to `audit_retention_days` — and v1 loads them at the same point for the same
+    // reason. Without this call `settings::global()` hands out `Settings::default`
+    // and the whole file is ignored, however carefully it was written.
     let phase = Instant::now();
     let (config, config_warnings) = thurbox::kernel::config::Config::load();
     startup.config_init_ms = phase.elapsed().as_millis() as u64;
 
+    // Extensions, before the interface takes the terminal.
+    //
+    // Two things, both idempotent and both best-effort: re-create any
+    // session/automation an active extension declares but that has since been
+    // deleted, and auto-activate the built-in `hooks` extension. The second is
+    // load-bearing rather than a nicety — it is what patches `agents.toml` so an
+    // agent reports working/blocked/done at all, so without it a fresh profile
+    // shows every session as permanently idle. Run here for the same reason v1
+    // runs it here: tmux spawn output would otherwise land on the alternate
+    // screen. Opt out with `thurbox-cli extension deactivate hooks`.
     let mut startup_notices: Vec<String> = config_warnings;
     let phase = Instant::now();
     if let Some(db) = snapshots_db() {

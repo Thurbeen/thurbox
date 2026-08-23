@@ -36,10 +36,7 @@ pub mod links;
 mod programs;
 
 pub use links::{drawn_link_paints, paint_hyperlinks, HyperlinkPaint};
-pub use programs::{
-    is_program_surface, validate_program_name, ProgramKey, MAX_PROGRAMS_PER_PLUGIN,
-    PROGRAM_SURFACE_PREFIX,
-};
+pub use programs::{validate_program_name, ProgramKey};
 
 use programs::ProgramSlot;
 

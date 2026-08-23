@@ -2334,7 +2334,7 @@ a cell (`App::url_at_click`):
   re-emit the escape); a run long enough to wrap contributes one entry
   per row. The table is bounded at 512 runs per session.
 - **Plain-text URLs** (`https://`, `http://`, `file://`) are scanned
-  out of the rendered rows at click time (`ui::links`). Trailing
+  out of the rendered rows at click time (`kernel::terminal::links`). Trailing
   punctuation (`.`, `,`, `;`, `:`, `)`, `]`) is stripped.
   Display-width column offsets keep positioning correct on rows with
   wide (CJK/emoji) glyphs.

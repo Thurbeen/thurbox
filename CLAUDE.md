@@ -961,8 +961,10 @@ and the parent is only validated at creation. In the TUI, **`Ctrl+F` fork**
 records the source session as the fork's parent; the session list nests children
 under their parent **within the same repo group** (muted `└` tree prefix; a child
 whose parent renders in another group keeps its own position with a `↳` mark).
-The nesting lives in `ui/plugins/10_sessions.lua` (`build_model`, which walks the
-snapshot's rows into depths — a port of v1's `compute_session_order`), so
+The nesting lives in `ui/lib/session_model.lua` (`session_model.build`, which
+walks the snapshot's rows into depths — a port of v1's `compute_session_order` —
+memoized on the published table's identity for the pane in
+`ui/plugins/10_sessions.lua`), so
 `Ctrl+J`/`Ctrl+K` navigation follows the tree automatically. A `Parent:` row is
 the out-of-tree
 [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) plugin's,
@@ -977,9 +979,9 @@ session one row down/up. Manual order **wins** — status changes only recolor t
 dot, never move a row. A move swaps two adjacent *blocks* (a row plus its nested
 children, so a parent drags its subtree): root rows swap within their repo group,
 the **whole group** swaps past a group edge, and nested children move among their
-siblings only. It is computed in the pane (`10_sessions.lua`'s `move`,
-`root_ranges` and `child_ranges` — ports of v1's `move_in_order`) over the items
-it actually rendered, and the result is handed back whole as one
+siblings only. It is computed over the items the pane actually rendered
+(`ui/lib/order.lua`'s `move_block`, `root_ranges` and `child_ranges` — ports of
+v1's `move_in_order`), and the result is handed back whole as one
 `Command::Order { list }`: the kernel densely renumbers all sessions `0..n` and
 persists, so the order survives restarts and syncs across instances via
 `data_version` polling. Storage: nullable `sessions.display_order` (schema v31);

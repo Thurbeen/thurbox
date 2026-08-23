@@ -43,8 +43,6 @@ use thurbox::kernel::terminal::Terminals;
 use thurbox::kernel::theme::Themes;
 use thurbox::kernel::watch::Watcher;
 
-/// How long a frame waits for input before looping. Plugins animate off
-/// `ctx.elapsed`, so this is also the animation rate.
 /// How long the loop blocks waiting for input.
 ///
 /// v1 uses 10ms (`src/main.rs`). At 50ms a keystroke could sit unnoticed for a

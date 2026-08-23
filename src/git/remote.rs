@@ -407,21 +407,9 @@ pub(super) fn run_host_script(host: &HostDef, script: &str, action: &str) -> Res
     remote_output_or_stderr(output, action).map(|_| ())
 }
 
-/// Build a `<launcher> sh -c <script>` [`Command`] for a host, correct for each
-/// transport's argument handling.
-///
-/// The two launchers disagree on how trailing args reach the in-host shell:
-/// - **`wsl.exe`** gets `--exec` (`-e`), which bypasses `wsl.exe`'s own
-///   command-line processing entirely: argv reaches the in-distro process
-///   verbatim, so the multi-statement `script` travels as one **unquoted** arg
-///   and `sh -c` parses the `posix_quote`d paths inside it exactly like the
-///   ssh path. Without `-e`, `wsl.exe` mangles the script — it substitutes
-///   `$…` even inside a preserved argument (single quotes don't protect it),
-///   and pre-quoting the script makes the in-distro shell treat the quoted
-///   blob as one command word ("not found").
-/// - **`ssh`** space-joins its trailing args into one string the remote login
-///   shell re-splits, so the `script` must be POSIX-quoted to survive as a
-///   single `sh -c` argument (mirroring [`git_command`]).
+/// Build a `<launcher> sh -c <script>` [`Command`] for a host — the git-side
+/// name for [`crate::shell::HostLauncher::shell_c`], which owns the
+/// per-transport quoting rules (and documents why they differ).
 pub(crate) fn host_shell_c(host: &HostDef, script: &str) -> Command {
     super::command::launcher_for(host).shell_c(script)
 }

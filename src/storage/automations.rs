@@ -2,7 +2,7 @@
 //!
 //! Schedules are stored as `(schedule_kind, schedule_spec)`; actions as
 //! `(action_kind, …)` with the action-specific columns. The `next_run_at`
-//! column is the dispatcher's scan key — see `app::process_automations`.
+//! column is the dispatcher's scan key — see [`Database::claim_due_automation`].
 
 use rusqlite::{params, OptionalExtension};
 

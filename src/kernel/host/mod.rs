@@ -21,7 +21,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Instant;
 
 use mlua::{Function, Lua, StdLib, Table, Value};
 use ratatui::layout::Rect;
@@ -1654,9 +1653,4 @@ impl LuaHost {
             .copied()
             .unwrap_or(SlotMode::Stack)
     }
-}
-
-/// Wall-clock start, shared by the loop and any plugin animating off `elapsed`.
-pub fn started() -> Instant {
-    Instant::now()
 }

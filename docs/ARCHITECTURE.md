@@ -983,7 +983,7 @@ version-snapshot store: rollback = pin a tagged install URL or downgrade the
 binary + `update`.
 
 **Self-heal**: `session_ops::heal_active_extensions` re-ensures every active
-extension, called at **TUI startup** (`main.rs`, before session restore so healed
+extension, called at **TUI startup** (`coordinator/boot.rs`, before session restore so healed
 sessions are adopted normally) and at the top of the headless **`automation
 tick`** (`cli/automations.rs`, so healing works with the TUI closed via the
 heartbeat keeper). Consequence: while an extension is active, deleting its
@@ -1002,7 +1002,8 @@ flow` (with an inline fallback for older thurbox).
 > kernel's `main.rs` grew a ~3.4k-line `impl App`, and the same medicine was
 > taken — `App` and its state stay in `main.rs`, its methods live in
 > `src/coordinator/` split by purpose (loop/workers, commands, publish, draw,
-> input, mouse, focus, interface), the coordinator is `EXEMPT` in
+> input, mouse, focus, interface — plus boot, chrome and editor, `main`'s
+> startup and terminal-side helpers), the coordinator is `EXEMPT` in
 > `tests/architecture_rules.rs`, and there is still exactly one model and one
 > loop. The rejected alternatives below still stand.
 

@@ -110,12 +110,12 @@ fn scroll_witness(screen: &vt100::Screen, row: u16, col: u16) -> String {
 
 /// Glyphs printed in `row` between cell columns `from`..`to`. Wide-glyph
 /// continuation cells are skipped, so a captured label compares equal to the
-/// row strings `ui::links::extract_screen_rows` builds when a click or a repaint
-/// resolves it.
+/// row strings `kernel::terminal::links::extract_screen_rows` builds when a
+/// click or a repaint resolves it.
 ///
-/// The two readers are deliberately separate: `agent` may not depend on `ui` nor
-/// `ui` on `agent` (see the module rules in `tests/architecture_rules.rs`), and
-/// the type they share these strings through — `session::hyperlink` — is
+/// The two readers are deliberately separate: `agent` may not depend on
+/// `kernel` (see the module rules in `tests/architecture_rules.rs`), and the
+/// type they share these strings through — `session::hyperlink` — is
 /// vt100-free pure data. Keep them in step rather than merging them.
 fn row_glyphs(screen: &vt100::Screen, row: u16, from: u16, to: u16) -> String {
     let mut out = String::new();
