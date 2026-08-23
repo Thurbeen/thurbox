@@ -87,7 +87,8 @@ impl Database {
     pub fn get_worktrees(&self, session_id: SessionId) -> rusqlite::Result<Vec<SharedWorktree>> {
         let sid = session_id.to_string();
 
-        let mut stmt = self.conn.prepare(
+        // Cached: read on the refresh schedule, like the session queries.
+        let mut stmt = self.conn.prepare_cached(
             "SELECT repo_path, worktree_path, branch FROM worktrees \
              WHERE session_id = ?1 AND deleted_at IS NULL \
              ORDER BY created_at",

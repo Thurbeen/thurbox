@@ -52,7 +52,14 @@ impl Database {
     /// only on insert; a conflict revives a soft-deleted row (`deleted_at =
     /// NULL`). The pre-write existence check decides only the audit label and
     /// can't make the write race — the UPSERT handles both cases regardless.
+    ///
+    /// The whole write — row, audits, worktree replacement — is one transaction:
+    /// each statement in autocommit was its own WAL commit, so a single upsert
+    /// cost N+5 `data_version` bumps and re-triggered every peer process's
+    /// refresh that many times. (`unchecked_transaction` because `Database`
+    /// methods take `&self`; the connection is not shared across threads.)
     pub fn upsert_session(&self, session: &SharedSession) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
 
@@ -124,7 +131,7 @@ impl Database {
             self.upsert_worktrees(session.id, &session.worktrees)?;
         }
 
-        Ok(())
+        tx.commit()
     }
 
     /// Soft-delete a session.
@@ -208,7 +215,10 @@ impl Database {
              ORDER BY s.display_order IS NULL, s.display_order, s.created_at, w.created_at"
         );
 
-        let mut stmt = self.conn.prepare(&sql)?;
+        // `prepare_cached` keys on the SQL text, and every `condition` is a
+        // constant fragment — so each variant compiles once and this per-refresh
+        // read (ADR-P6) skips the re-parse thereafter.
+        let mut stmt = self.conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params, row_to_shared_session)?;
 
         // Collect rows, merging multiple worktree rows into the same session
@@ -325,7 +335,9 @@ impl Database {
              ORDER BY s.deleted_at DESC, w.created_at"
         );
 
-        let mut stmt = self.conn.prepare(&sql)?;
+        // Cached for the same reason as `query_sessions`: read per refresh,
+        // constant SQL per condition.
+        let mut stmt = self.conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params, |row| {
             let id_str: String = row.get(0)?;
             let cwd: Option<String> = row.get(4)?;
@@ -436,6 +448,21 @@ impl Database {
             .map(Option::flatten)
     }
 
+    /// Record — or clear — the pane id of a session's companion shell. A
+    /// targeted UPDATE like [`set_hook_state`](Self::set_hook_state): rewriting
+    /// the whole row via [`upsert_session`](Self::upsert_session) to change one
+    /// column also churned the worktree rows and cost a commit per statement.
+    /// Returns whether a row matched, so the caller can report an unknown
+    /// session.
+    pub fn set_session_shell(&self, id: SessionId, pane: Option<&str>) -> rusqlite::Result<bool> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE sessions SET shell_backend_id = ?1 \
+             WHERE id = ?2 AND deleted_at IS NULL",
+        )?;
+        let updated = stmt.execute(params![pane, id.to_string()])?;
+        Ok(updated > 0)
+    }
+
     /// Mark a session as "seen" at `at_least` (epoch ms), so a `done` session
     /// the user has looked at renders `Idle` instead of `Done`. The TUI calls
     /// this once, on the transition (when `seen_at < hook_state_at`), never
@@ -493,6 +520,25 @@ impl Database {
             }
         }
         Ok(map)
+    }
+
+    /// One session's hook-status columns, or `None` for a missing or deleted
+    /// row. The point lookup behind `SnapshotStore::acknowledge`, which asks
+    /// about exactly one session and has no use for the full
+    /// [`load_hook_states`](Self::load_hook_states) scan.
+    pub fn load_hook_state(&self, id: SessionId) -> rusqlite::Result<Option<HookRow>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT hook_state, hook_state_at, seen_at \
+             FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+        )?;
+        stmt.query_row(params![id.to_string()], |row| {
+            Ok(HookRow {
+                state: row.get(0)?,
+                state_at: row.get(1)?,
+                seen_at: row.get(2)?,
+            })
+        })
+        .optional()
     }
 
     /// Load every active session's base branch in one indexed scan, keyed by id.
@@ -1138,6 +1184,49 @@ mod tests {
         assert_eq!(row.state, None);
         assert_eq!(row.state_at, None);
         assert_eq!(row.seen_at, None);
+    }
+
+    #[test]
+    fn load_hook_state_reads_one_row() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("S1");
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.set_hook_state(sid, "working").unwrap();
+
+        let hook = db.load_hook_state(sid).unwrap().expect("row present");
+        assert_eq!(hook.state.as_deref(), Some("working"));
+        assert!(hook.state_at.is_some());
+
+        // A missing session is None, not an empty row.
+        assert!(db.load_hook_state(SessionId::default()).unwrap().is_none());
+        db.soft_delete_session(sid).unwrap();
+        assert!(db.load_hook_state(sid).unwrap().is_none());
+    }
+
+    #[test]
+    fn set_session_shell_roundtrips_without_touching_worktrees() {
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("S1");
+        session.worktrees = vec![SharedWorktree {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.git/wt/feat"),
+            branch: "feat".to_string(),
+        }];
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        assert!(db.set_session_shell(sid, Some("%7")).unwrap());
+        let row = db.get_session_by_id(sid).unwrap().unwrap();
+        assert_eq!(row.shell_backend_id.as_deref(), Some("%7"));
+        assert_eq!(row.worktrees.len(), 1, "worktree rows untouched");
+
+        assert!(db.set_session_shell(sid, None).unwrap());
+        let row = db.get_session_by_id(sid).unwrap().unwrap();
+        assert_eq!(row.shell_backend_id, None);
+
+        // An unknown session reports no match rather than succeeding silently.
+        assert!(!db.set_session_shell(SessionId::default(), None).unwrap());
     }
 
     #[test]

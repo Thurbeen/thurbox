@@ -345,17 +345,28 @@ pub fn capture(mut command: std::process::Command, timeout: Duration) -> Run {
     let out = Captured::draining(child.stdout.take());
     let err = Captured::draining(child.stderr.take());
 
-    let deadline = Instant::now() + timeout;
-    let (status, timed_out) = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break (status.code(), false),
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break (None, true);
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(e) => return Run::Failed(format!("waiting for it failed: {e}")),
+    // The exit is waited for on its own thread — a blocking `wait` there and a
+    // `recv_timeout` here, instead of a 10ms `try_wait` poll that woke this
+    // thread a hundred times a second for the life of the program. The waiter
+    // owns the `Child` (both `wait` and `kill` need `&mut`), so the timeout
+    // path kills by pid instead; the waiter's `wait` then reaps the corpse, and
+    // the bounded second `recv` below is so a kill that failed cannot hold this
+    // worker past its own timeout.
+    let pid = child.id();
+    let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = exit_tx.send(child.wait());
+    });
+    let (status, timed_out) = match exit_rx.recv_timeout(timeout) {
+        Ok(Ok(status)) => (status.code(), false),
+        Ok(Err(e)) => return Run::Failed(format!("waiting for it failed: {e}")),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            kill_by_pid(pid);
+            let _ = exit_rx.recv_timeout(Duration::from_secs(2));
+            (None, true)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Run::Failed("waiting for it failed: the waiter thread died".to_string())
         }
     };
 
@@ -376,6 +387,31 @@ pub fn capture(mut command: std::process::Command, timeout: Duration) -> Run {
         truncated: out_cut || err_cut,
         timed_out,
     })
+}
+
+/// Kill a timed-out program by pid.
+///
+/// By pid because `Child::kill` needs the `&mut Child` the waiter thread holds
+/// in its blocking `wait` — std offers no separate kill handle. Shelling out to
+/// the platform's kill tool is fine on a path this cold (a program that ran out
+/// its whole timeout), and the same force-kill the old `Child::kill` sent.
+fn kill_by_pid(pid: u32) {
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = std::process::Command::new("kill");
+        command.args(["-9", &pid.to_string()]);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = std::process::Command::new("taskkill");
+        command.args(["/F", "/PID", &pid.to_string()]);
+        command
+    };
+    let _ = command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// One pipe being read into a buffer the caller can take at any time.

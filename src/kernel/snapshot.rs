@@ -435,8 +435,8 @@ impl SnapshotStore {
     /// Rebuild if the refresh interval has elapsed *and* anything committed.
     /// Called from the event loop, never from a plugin.
     ///
-    /// The interval alone would re-read five tables (plus one query per
-    /// automation) every 400ms forever, on a database nobody wrote to.
+    /// The interval alone would re-read five tables (plus the automation run
+    /// history) every 400ms forever, on a database nobody wrote to.
     /// `PRAGMA data_version` reads an in-memory counter and moves whenever
     /// another connection commits — which covers every writer that matters, since
     /// the command bus holds its own — so an idle thurbox stops querying
@@ -542,10 +542,9 @@ impl SnapshotStore {
             return;
         };
         let Some(id) = parse_id(session) else { return };
-        let Ok(hooks) = database.load_hook_states() else {
+        let Ok(Some(hook)) = database.load_hook_state(id) else {
             return;
         };
-        let Some(hook) = hooks.get(&id) else { return };
         if hook.state.as_deref() != Some("done") {
             return;
         }
@@ -705,19 +704,25 @@ impl SnapshotStore {
         let Some(id) = parse_id(session) else {
             return Err(format!("not a session id: {session}"));
         };
-        let Some(mut row) = database
-            .get_session_by_id(id)
-            .map_err(|e| format!("read session: {e}"))?
-        else {
-            return Err(format!("session not found: {session}"));
-        };
-        if row.shell_backend_id == pane {
+        // Nothing to write when the value stands: the in-place correction below
+        // keeps the snapshot row current, so it can answer without a read.
+        if self
+            .current
+            .sessions
+            .iter()
+            .any(|row| row.id == session && row.shell_backend_id == pane)
+        {
             return Ok(());
         }
-        row.shell_backend_id = pane.clone();
-        database
-            .upsert_session(&row)
+        // A targeted single-column UPDATE: the full `upsert_session` rewrite it
+        // replaced also re-wrote the worktree rows, costing a commit per
+        // statement to change one column.
+        let matched = database
+            .set_session_shell(id, pane.as_deref())
             .map_err(|e| format!("record shell pane: {e}"))?;
+        if !matched {
+            return Err(format!("session not found: {session}"));
+        }
         if let Some(current) = self
             .current
             .sessions
@@ -889,14 +894,14 @@ impl SnapshotStore {
             })
             .unwrap_or_default();
 
+        // Run history for the whole list in one query, not one per automation.
+        let mut run_history = database.list_recent_automation_runs(10).unwrap_or_default();
         let automations = database
             .list_automations()
             .map(|list| {
                 list.into_iter()
                     .map(|auto| {
-                        let history = database
-                            .list_automation_runs(auto.id, 10)
-                            .unwrap_or_default();
+                        let history = run_history.remove(&auto.id).unwrap_or_default();
                         let runs: Vec<RunRow> = history
                             .iter()
                             .map(|run| RunRow {
@@ -968,7 +973,7 @@ fn read_agent_default() -> String {
 /// Configured and discovered hosts. Empty means local only, and the flow skips
 /// asking.
 fn read_hosts() -> Vec<HostRow> {
-    let (registry, _warnings) = crate::agent::host_config::load_all_with_warnings();
+    let (registry, _warnings) = crate::agent::host_config::cached_registry();
     registry
         .hosts
         .iter()

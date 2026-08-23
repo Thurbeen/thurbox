@@ -189,25 +189,31 @@ pub fn working_diff_on(host: Option<&HostDef>, worktree: &Path) -> Option<Workin
     let untracked = untracked_files_on(host, worktree)?;
     let mut shown = 0;
     for path in untracked.iter().take(UNTRACKED_FILE_CAP) {
-        let Some(patch) = untracked_diff_on(host, worktree, path, &["--no-color"]) else {
+        // Counts and patch from one invocation — `--numstat --patch` prints the
+        // stat records first, split back apart below — where asking for each
+        // shape separately cost two processes per untracked file.
+        let Some(combined) = untracked_diff_on(
+            host,
+            worktree,
+            path,
+            &["--no-color", "--numstat", "-z", "--patch"],
+        ) else {
             continue;
         };
-        // Empty output means the file went away between the listing and here —
+        let (counts, patch) = split_untracked_diff(&combined);
+        // An empty patch means the file went away between the listing and here —
         // an agent deleting its own scratch file, which costs nothing to skip.
         if patch.is_empty() {
             continue;
         }
-        let Some(counts) = untracked_diff_on(host, worktree, path, &["--numstat", "-z"]) else {
-            continue;
-        };
         if !body.is_empty() && !body.ends_with('\n') {
             body.push('\n');
         }
-        body.push_str(&patch);
-        numstat_z.push_str(&counts);
+        body.push_str(patch);
+        numstat_z.push_str(counts);
         // `A\0<path>\0` is byte-identical to what `--name-status -z` prints for
-        // one of these — an untracked file is always an addition — so it is built
-        // rather than asked for, halving the processes per file.
+        // one of these — an untracked file is always an addition — so it is
+        // built rather than asked for, not run as a third process.
         name_status_z.push_str("A\0");
         name_status_z.push_str(path);
         name_status_z.push('\0');
@@ -241,7 +247,8 @@ pub(super) fn untracked_files_on(host: Option<&HostDef>, worktree: &Path) -> Opt
 }
 
 /// One untracked file's diff against nothing, with `extra` selecting the shape
-/// (the patch, or `--numstat -z`).
+/// ([`working_diff_on`] asks for `--numstat` and `--patch` together and splits
+/// the result with [`split_untracked_diff`]).
 ///
 /// `--no-index` exits **1** whenever the two paths differ, which for a file
 /// against `/dev/null` is always — so unlike every other git call here a
@@ -271,6 +278,23 @@ pub(super) fn untracked_diff_on(
             None
         }
     }
+}
+
+/// Split a combined `--numstat -z --patch` output into its numstat records and
+/// its patch. The stat records come first (NUL-terminated under `-z`), the
+/// patch begins at the first `diff --git` header — recognised only at the start
+/// or right after a terminator, so a path containing the literal text cannot
+/// split early.
+pub(super) fn split_untracked_diff(combined: &str) -> (&str, &str) {
+    let mut from = 0;
+    while let Some(rel) = combined[from..].find("diff --git ") {
+        let at = from + rel;
+        if at == 0 || matches!(combined.as_bytes()[at - 1], b'\0' | b'\n') {
+            return (&combined[..at], &combined[at..]);
+        }
+        from = at + 1;
+    }
+    (combined, "")
 }
 
 /// Sum `git diff --numstat` output into `(files_changed, insertions, deletions)`.
@@ -316,26 +340,74 @@ pub fn ahead_behind(cwd: &Path) -> (usize, usize) {
     (ahead, behind)
 }
 
+/// What one `git status --porcelain=v2 --branch` run carries for
+/// [`worktree_stats`]: dirtiness, the untracked count, and — when the branch
+/// has a usable upstream — the ahead/behind counts, sparing the
+/// `resolve_base_ref` probe chain entirely.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct StatusV2 {
+    /// Any changed, unmerged or untracked entry — the same "any output" rule
+    /// the v1 porcelain gave, minus v2's `#` headers.
+    pub dirty: bool,
+    /// `?` entries: files a worktree removal would lose but that `diff HEAD`
+    /// never reports.
+    pub untracked: usize,
+    /// `(ahead, behind)` from the `# branch.ab` header. Absent when no upstream
+    /// is configured (or the upstream ref is gone), in which case the caller
+    /// falls back to [`ahead_behind`]'s base-ref resolution.
+    pub ahead_behind: Option<(usize, usize)>,
+}
+
+/// Parse `git status --porcelain=v2 --branch` output. Pure, so the header and
+/// record handling is testable without a repository.
+pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
+    let mut status = StatusV2::default();
+    for line in out.lines() {
+        if let Some(ab) = line.strip_prefix("# branch.ab ") {
+            // "+<ahead> -<behind>".
+            let mut parts = ab.split_whitespace();
+            let ahead = parts
+                .next()
+                .and_then(|s| s.strip_prefix('+'))
+                .and_then(|s| s.parse().ok());
+            let behind = parts
+                .next()
+                .and_then(|s| s.strip_prefix('-'))
+                .and_then(|s| s.parse().ok());
+            if let (Some(ahead), Some(behind)) = (ahead, behind) {
+                status.ahead_behind = Some((ahead, behind));
+            }
+        } else if line.starts_with('?') {
+            status.untracked += 1;
+            status.dirty = true;
+        } else if line.starts_with('1') || line.starts_with('2') || line.starts_with('u') {
+            status.dirty = true;
+        }
+    }
+    status
+}
+
 /// Compute combined git stats (uncommitted diff + dirty + ahead/behind) for a
 /// worktree. Returns `None` when the path is not a usable git worktree.
 pub fn worktree_stats(cwd: &Path) -> Option<crate::session::GitStats> {
-    // Bail early if this path isn't inside a git work tree.
-    run_git_capture(&["rev-parse", "--is-inside-work-tree"], cwd)?;
+    // One status call carries dirty, the untracked count AND — via the
+    // `# branch.ab` header — ahead/behind, and doubles as the "is this a work
+    // tree" probe: outside one it fails, exactly as a `rev-parse` would.
+    let status = run_git_capture(&["status", "--porcelain=v2", "--branch"], cwd)?;
+    let status = parse_status_v2(&status);
     let numstat = run_git_capture(&["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
     let (files_changed, insertions, deletions) = parse_numstat(&numstat);
-    // One `status --porcelain` drives both dirty (any output) and the untracked
-    // count (`??` entries) — files a worktree removal would lose but that `diff
-    // HEAD` never reports.
-    let status = run_git_capture(&["status", "--porcelain"], cwd).unwrap_or_default();
-    let dirty = !status.trim().is_empty();
-    let untracked = status.lines().filter(|l| l.starts_with("??")).count();
-    let (ahead, behind) = ahead_behind(cwd);
+    // `branch.ab` counts against the configured upstream — the same ref the
+    // probe chain would pick first. Only a branch without one (no upstream, or
+    // its ref gone) pays for [`ahead_behind`]'s resolution (`origin/HEAD` →
+    // `origin/main` → `origin/master`), preserving the old answer there.
+    let (ahead, behind) = status.ahead_behind.unwrap_or_else(|| ahead_behind(cwd));
     Some(crate::session::GitStats {
         files_changed,
         insertions,
         deletions,
-        untracked,
-        dirty,
+        untracked: status.untracked,
+        dirty: status.dirty,
         ahead,
         behind,
     })

@@ -312,6 +312,21 @@ pub trait SessionBackend: Send + Sync {
     /// Return the PID of the process running in a backend pane.
     fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>>;
 
+    /// Every live pane's `pane_id → pid` in **one** backend round trip.
+    ///
+    /// The batched form of [`Self::pane_pid`], for callers that sample many
+    /// panes at once (the metrics worker, once per second per session):
+    /// each single-pane lookup is a control-mode round trip serialized on the
+    /// same connection mutex keystrokes share, so per-session lookups scale
+    /// the contention with the session count. A pane absent from an `Ok` map
+    /// simply has no pid (it is gone or dead).
+    ///
+    /// Default: unsupported — an `Err` tells the caller to fall back to
+    /// per-pane [`Self::pane_pid`], which every backend must provide.
+    fn pane_pids(&self) -> Result<HashMap<String, u32>> {
+        anyhow::bail!("batched pane pid lookup not supported by this backend")
+    }
+
     /// Drain queued `(backend_id, hook-state)` events reported by a remote
     /// agent's hooks (a tmux pane user option pushed over the control-mode
     /// subscription — see [`crate::session::REMOTE_HOOK_STATE_OPTION`]).

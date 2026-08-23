@@ -1,12 +1,14 @@
-/// Integration tests for multi-instance session synchronization via SQLite.
+/// Integration tests for multi-instance session sharing via SQLite.
 ///
 /// These tests simulate two instances running concurrently against the same
-/// database file and verify that session changes are properly shared.
+/// database file and verify that session changes are properly shared. (v1's
+/// snapshot/delta sync engine is gone; instances now re-read rows when
+/// `PRAGMA data_version` moves.)
 use std::path::PathBuf;
 
 use thurbox::session::SessionId;
 use thurbox::storage::Database;
-use thurbox::sync::{self, SharedSession, SharedState, SharedWorktree};
+use thurbox::sync::{SharedSession, SharedWorktree};
 
 /// Helper to create a test session.
 fn make_session(id: SessionId, name: &str) -> SharedSession {
@@ -26,76 +28,6 @@ fn make_session(id: SessionId, name: &str) -> SharedSession {
         tombstone: false,
         tombstone_at: None,
     }
-}
-
-// ============================================================================
-// Pure delta computation tests (no DB or file I/O)
-// ============================================================================
-
-#[test]
-fn delta_detects_new_session_from_other_instance() {
-    let session_a_id = SessionId::default();
-    let session_b_id = SessionId::default();
-
-    // Instance A's view: has session A
-    let mut state_a = SharedState::new();
-    state_a
-        .sessions
-        .push(make_session(session_a_id, "Session A"));
-
-    // Shared state: has sessions A and B
-    let mut state_shared = SharedState::new();
-    state_shared
-        .sessions
-        .push(make_session(session_a_id, "Session A"));
-    state_shared
-        .sessions
-        .push(make_session(session_b_id, "Session B"));
-
-    let delta = sync::StateDelta::compute(&state_a, &state_shared);
-
-    assert_eq!(
-        delta.added_sessions.len(),
-        1,
-        "Delta should show session B as added"
-    );
-    assert_eq!(delta.added_sessions[0].id, session_b_id);
-    assert_eq!(delta.removed_sessions.len(), 0);
-    assert_eq!(delta.updated_sessions.len(), 0);
-}
-
-#[test]
-fn delta_detects_deleted_session() {
-    let session_a_id = SessionId::default();
-    let session_b_id = SessionId::default();
-
-    // Instance A's view: has both sessions
-    let mut state_a = SharedState::new();
-    state_a
-        .sessions
-        .push(make_session(session_a_id, "Session A"));
-    state_a
-        .sessions
-        .push(make_session(session_b_id, "Session B"));
-
-    // Shared state: only A (B was deleted/tombstoned)
-    let mut state_shared = SharedState::new();
-    state_shared
-        .sessions
-        .push(make_session(session_a_id, "Session A"));
-    let mut session_b_tombstone = make_session(session_b_id, "Session B");
-    session_b_tombstone.tombstone = true;
-    state_shared.sessions.push(session_b_tombstone);
-
-    let delta = sync::StateDelta::compute(&state_a, &state_shared);
-
-    assert_eq!(delta.added_sessions.len(), 0);
-    assert_eq!(
-        delta.removed_sessions.len(),
-        1,
-        "Delta should show session B as removed"
-    );
-    assert_eq!(delta.removed_sessions[0], session_b_id);
 }
 
 // ============================================================================
@@ -171,68 +103,6 @@ fn db_soft_delete_propagates_across_instances() {
 
     // Instance B should no longer see it in active sessions
     assert_eq!(db_b.list_active_sessions().unwrap().len(), 0);
-}
-
-#[test]
-fn db_change_detection_across_instances() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let mut db_a = Database::open(path).unwrap();
-    let db_b = Database::open(path).unwrap();
-
-    // Initialize change tracking
-    let _ = db_a.has_external_changes().unwrap();
-
-    let session = make_session(SessionId::default(), "External Session");
-    db_b.upsert_session(&session).unwrap();
-
-    // Instance A should detect external change
-    assert!(db_a.has_external_changes().unwrap());
-
-    // No further changes — should return false
-    assert!(!db_a.has_external_changes().unwrap());
-}
-
-#[test]
-fn db_compute_delta_detects_added_session() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let db = Database::open(path).unwrap();
-
-    // Local snapshot is empty
-    let local = SharedState::new();
-
-    // Add session to DB
-    let session = make_session(SessionId::default(), "New Session");
-    db.upsert_session(&session).unwrap();
-
-    let delta = db.compute_delta(&local).unwrap();
-    assert_eq!(delta.added_sessions.len(), 1);
-    assert_eq!(delta.added_sessions[0].name, "New Session");
-}
-
-#[test]
-fn db_compute_delta_detects_removed_session() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let db = Database::open(path).unwrap();
-
-    let session = make_session(SessionId::default(), "Session to Remove");
-    let sid = session.id;
-    db.upsert_session(&session).unwrap();
-
-    // Local snapshot has the session
-    let local = db.load_shared_state().unwrap();
-
-    // Soft-delete it
-    db.soft_delete_session(sid).unwrap();
-
-    let delta = db.compute_delta(&local).unwrap();
-    assert_eq!(delta.removed_sessions.len(), 1);
-    assert_eq!(delta.removed_sessions[0], sid);
 }
 
 #[test]
@@ -312,11 +182,6 @@ fn db_multi_worktree_persisted_and_loaded_via_sessions() {
     assert_eq!(sessions[0].worktrees.len(), 2);
     assert_eq!(sessions[0].worktrees[0].repo_path, PathBuf::from("/repo1"));
     assert_eq!(sessions[0].worktrees[1].repo_path, PathBuf::from("/repo2"));
-
-    // Verify via load_shared_state (exercises the sync path)
-    let state = db.load_shared_state().unwrap();
-    assert_eq!(state.sessions.len(), 1);
-    assert_eq!(state.sessions[0].worktrees.len(), 2);
 }
 
 #[test]
@@ -427,66 +292,4 @@ fn db_multiple_sessions_created_and_deleted() {
     assert!(remaining_ids.contains(&sid1));
     assert!(!remaining_ids.contains(&sid2));
     assert!(remaining_ids.contains(&sid3));
-}
-
-// ============================================================================
-// poll_for_changes integration tests
-// ============================================================================
-
-#[test]
-fn poll_for_changes_returns_none_when_no_external_changes() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let mut db = Database::open(path).unwrap();
-    let mut sync_state = sync::SyncState::with_interval(std::time::Duration::from_millis(0));
-
-    // Initialize change tracking
-    let _ = db.has_external_changes().unwrap();
-
-    // No external changes — db_changed should be false
-    std::thread::sleep(std::time::Duration::from_millis(1));
-    let result = sync::poll_for_changes(&mut sync_state, &mut db).unwrap();
-    assert!(result.is_some());
-    assert!(!result.unwrap().db_changed);
-}
-
-#[test]
-fn poll_for_changes_detects_external_session_add() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let mut db_poller = Database::open(path).unwrap();
-    let db_writer = Database::open(path).unwrap();
-
-    let mut sync_state = sync::SyncState::with_interval(std::time::Duration::from_millis(0));
-
-    // Initialize change tracking
-    let _ = db_poller.has_external_changes().unwrap();
-
-    // External writer adds a session
-    let session = make_session(SessionId::default(), "External Session");
-    db_writer.upsert_session(&session).unwrap();
-
-    // Poll should detect the change
-    std::thread::sleep(std::time::Duration::from_millis(1));
-    let result = sync::poll_for_changes(&mut sync_state, &mut db_poller).unwrap();
-    assert!(result.is_some());
-    let result = result.unwrap();
-    assert!(result.db_changed);
-    assert_eq!(result.delta.added_sessions.len(), 1);
-    assert_eq!(result.delta.added_sessions[0].name, "External Session");
-}
-
-#[test]
-fn poll_for_changes_respects_interval() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let mut db = Database::open(path).unwrap();
-    // Long interval — should not poll yet
-    let mut sync_state = sync::SyncState::with_interval(std::time::Duration::from_secs(60));
-
-    let result = sync::poll_for_changes(&mut sync_state, &mut db).unwrap();
-    assert!(result.is_none());
 }

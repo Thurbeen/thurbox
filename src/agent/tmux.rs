@@ -1649,6 +1649,11 @@ impl SessionBackend for TmuxBackend {
         Ok(result.trim().parse().ok())
     }
 
+    fn pane_pids(&self) -> Result<HashMap<String, u32>> {
+        let result = self.ctrl_command("list-panes -a -F '#{pane_id} #{pane_pid}'")?;
+        Ok(control_mode::parse_pane_pids(&result))
+    }
+
     fn shutdown(&self) {
         // Taking the connection out runs `ControlMode::drop` on the calling
         // thread, which is what lets quit fan the (blocking) teardown out

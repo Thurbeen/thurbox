@@ -368,7 +368,8 @@ impl Terminals {
 
         // Hosts must not block startup: registration is cheap, and readiness is
         // only probed when a session on that host is actually attached.
-        let (hosts, _warnings) = crate::agent::host_config::load_all_with_warnings();
+        let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+        let hosts = hosts.clone();
         for host in &hosts.hosts {
             backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(host)));
         }

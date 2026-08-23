@@ -216,6 +216,26 @@ pub fn load_all() -> HostRegistry {
     reg
 }
 
+/// [`load_all_with_warnings`], resolved once and held for the process lifetime.
+///
+/// Loading is not just a file read: WSL discovery walks `$PATH` for `wsl.exe`
+/// and, on Windows, runs `wsl.exe -l -q` — and the callers on the TUI's hot
+/// paths (the snapshot rebuild, `session_ops::resolve_host` per diff request,
+/// the metrics/usage sampler, the command drain) were each paying that per
+/// call. The same reasoning as `git::remote::remote_home_cache`: `hosts.toml`
+/// is read once at startup — the backend registry is built from it then — so
+/// repointing a host already requires a restart, and this cache can never be
+/// staler than the registry it feeds.
+///
+/// Cold callers stay on the uncached loaders **deliberately**: `thurbox-cli
+/// config validate`/`show` must report the file as it is now, and the
+/// short-lived headless paths (`session_ops::spawn`/`delete`/`remote_hooks`,
+/// one load per invocation) gain nothing from a process-lifetime pin.
+pub fn cached_registry() -> &'static (HostRegistry, Vec<String>) {
+    static CACHE: std::sync::OnceLock<(HostRegistry, Vec<String>)> = std::sync::OnceLock::new();
+    CACHE.get_or_init(load_all_with_warnings)
+}
+
 /// Append auto-discovered WSL distros to `reg`, skipping any whose name already
 /// matches a configured host (so a hand-written `hosts.toml` entry for a distro
 /// — e.g. with a custom `worktrees_dir` — wins over the bare discovered one).

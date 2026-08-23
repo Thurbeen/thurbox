@@ -239,11 +239,12 @@ pub struct RepoStore {
 }
 
 impl RepoStore {
-    /// Read `hosts.toml` once. Warnings are the loop's business at startup, not
-    /// this store's — it only needs to resolve a key to a host.
+    /// Read `hosts.toml` once (the process-lifetime cache). Warnings are the
+    /// loop's business at startup, not this store's — it only needs to resolve
+    /// a key to a host.
     pub fn new() -> Self {
-        let (registry, _warnings) = crate::agent::host_config::load_all_with_warnings();
-        Self::with_hosts(registry)
+        let (registry, _warnings) = crate::agent::host_config::cached_registry();
+        Self::with_hosts(registry.clone())
     }
 
     pub fn with_hosts(hosts: HostRegistry) -> Self {
@@ -503,7 +504,11 @@ fn read_bookmarks(host: &str, remote: Option<&HostDef>) -> Vec<BookmarkRow> {
     let Some(path) = crate::paths::database_file() else {
         return Vec::new();
     };
-    let Ok(db) = Database::open(&path) else {
+    // `open_existing`: the TUI ran the schema pass at startup, and this worker
+    // reopens every BOOKMARKS_TTL while the flow is open — replaying ~35
+    // CREATE statements plus two writes per reopen was a standing cost of
+    // having the creation flow on screen.
+    let Ok(db) = Database::open_existing(&path) else {
         return Vec::new();
     };
     let bookmarks = match db.list_repo_bookmarks(host) {
@@ -709,8 +714,12 @@ fn list_branches(host: Option<&HostDef>, repo: &Path) -> Branches {
 /// v1's `ordered_branch_list`: ask git which branch is the default, locally and
 /// on the remote, and let [`promote`] do the ordering.
 fn ordered(host: Option<&HostDef>, repo: &Path, branches: Vec<String>) -> Vec<String> {
-    let local_default = crate::git::default_branch_on(host, repo, &branches);
-    let remote_default = crate::git::default_branch_from_remote_on(host, repo)
+    // One `symbolic-ref` probe answers both questions: the local default checks
+    // the same remote name for a local twin, and the remote default is its
+    // `origin/`-prefixed form.
+    let remote_name = crate::git::default_branch_from_remote_on(host, repo);
+    let local_default = crate::git::default_branch_with_remote(remote_name.as_deref(), &branches);
+    let remote_default = remote_name
         .map(|name| format!("origin/{name}"))
         .or_else(|| {
             ["origin/main", "origin/master"]

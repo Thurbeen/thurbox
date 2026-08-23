@@ -238,7 +238,7 @@ impl Metrics {
         }
         self.last_usage = Some(Instant::now());
 
-        let (hosts, _warnings) = crate::agent::host_config::load_all_with_warnings();
+        let (hosts, _warnings) = crate::agent::host_config::cached_registry();
         let mut planned: std::collections::HashSet<UsageKey> = std::collections::HashSet::new();
         for subject in subjects {
             if !crate::usage::is_supported(&subject.agent) {
@@ -306,6 +306,10 @@ fn statusline_file(agent_session_id: &str) -> Option<PathBuf> {
     crate::paths::metrics_directory().map(|dir| dir.join(format!("{agent_session_id}.json")))
 }
 
+/// One backend and its sampled panes, as `(session, pane_id)` pairs — the unit
+/// the batched pid lookup in [`collect`] groups subjects into.
+type BackendPanes = (Arc<dyn crate::agent::SessionBackend>, Vec<(String, String)>);
+
 /// Take one sample. Runs on a worker thread.
 fn collect(mut collector: Box<sysinfo::System>, subjects: Vec<SampleInput>) -> Sample {
     collector.refresh_cpu_all();
@@ -316,20 +320,62 @@ fn collect(mut collector: Box<sysinfo::System>, subjects: Vec<SampleInput>) -> S
         memory_total: collector.total_memory(),
     };
 
+    // Pane pids first, batched per backend: each single-pane lookup is a
+    // control-mode round trip serialized on the connection mutex keystrokes
+    // share, so asking per session per second scaled the contention with the
+    // session count. One `pane_pids` call per backend answers for all of its
+    // sessions; a backend without the batched command falls back to the
+    // per-pane lookup.
+    let mut pids: Vec<(String, u32)> = Vec::new();
+    let mut by_backend: HashMap<usize, BackendPanes> = HashMap::new();
+    for (session, _, pane) in &subjects {
+        if let Some((backend, pane_id)) = pane {
+            // Keyed by the Arc's address: backends carry no id of their own
+            // here, and two subjects on one host share the same Arc.
+            let key = Arc::as_ptr(backend) as *const () as usize;
+            by_backend
+                .entry(key)
+                .or_insert_with(|| (Arc::clone(backend), Vec::new()))
+                .1
+                .push((session.clone(), pane_id.clone()));
+        }
+    }
+    for (backend, sessions) in by_backend.into_values() {
+        match backend.pane_pids() {
+            Ok(map) => {
+                for (session, pane_id) in sessions {
+                    if let Some(pid) = map.get(&pane_id) {
+                        pids.push((session, *pid));
+                    }
+                }
+            }
+            Err(_) => {
+                for (session, pane_id) in sessions {
+                    if let Some(pid) = backend.pane_pid(&pane_id).ok().flatten() {
+                        pids.push((session, pid));
+                    }
+                }
+            }
+        }
+    }
+
+    // One process refresh over every pid rather than one walk per session.
+    let all_pids: Vec<sysinfo::Pid> = pids
+        .iter()
+        .map(|(_, pid)| sysinfo::Pid::from_u32(*pid))
+        .collect();
     let mut resources = HashMap::new();
-    let mut agents = HashMap::new();
-    for (session, statusline, pane) in subjects {
-        if let Some(pid) = pane.and_then(|(backend, id)| backend.pane_pid(&id).ok().flatten()) {
-            let pid = sysinfo::Pid::from_u32(pid);
-            let kind = sysinfo::ProcessRefreshKind::nothing()
-                .with_memory()
-                .with_cpu();
-            collector.refresh_processes_specifics(
-                sysinfo::ProcessesToUpdate::Some(&[pid]),
-                false,
-                kind,
-            );
-            if let Some(process) = collector.process(pid) {
+    if !all_pids.is_empty() {
+        let kind = sysinfo::ProcessRefreshKind::nothing()
+            .with_memory()
+            .with_cpu();
+        collector.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&all_pids),
+            false,
+            kind,
+        );
+        for (session, pid) in &pids {
+            if let Some(process) = collector.process(sysinfo::Pid::from_u32(*pid)) {
                 resources.insert(
                     session.clone(),
                     SessionResources {
@@ -339,6 +385,10 @@ fn collect(mut collector: Box<sysinfo::System>, subjects: Vec<SampleInput>) -> S
                 );
             }
         }
+    }
+
+    let mut agents = HashMap::new();
+    for (session, statusline, _) in subjects {
         // Best-effort: an agent that writes no statusline file simply has no
         // metrics, which the panel renders as absence.
         if let Some(path) = statusline {

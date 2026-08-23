@@ -598,6 +598,23 @@ pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Parse `list-panes -a -F "#{pane_id} #{pane_pid}"` output into a
+/// `pane_id → pid` map — the same line shape [`parse_pane_hook_states`] reads,
+/// with a pid where the option value was. Malformed lines and non-numeric pids
+/// are skipped: wire data never panics. Backs the batched
+/// `SessionBackend::pane_pids` the metrics sampler uses.
+pub fn parse_pane_pids(body: &str) -> std::collections::HashMap<String, u32> {
+    body.lines()
+        .filter_map(|line| {
+            let (pane_id, pid) = line.trim().split_once(' ')?;
+            if !is_valid_pane_id(pane_id) {
+                return None;
+            }
+            Some((pane_id.to_string(), pid.trim().parse().ok()?))
+        })
+        .collect()
+}
+
 /// Diff one psmux hook-poll result against the previous poll, returning the
 /// `(pane_id, value)` pairs to report — the poller-side equivalent of tmux's
 /// `%subscription-changed` edge semantics.
@@ -704,6 +721,16 @@ mod tests {
                 ("%8".to_string(), "two words".to_string())
             ]
         );
+    }
+
+    // --- parse_pane_pids tests ---
+
+    #[test]
+    fn pane_pids_parse_skips_malformed_lines() {
+        let map = parse_pane_pids("%1 4321\n%2 not-a-pid\nnot-a-pane 7\n\n %3 8 \n%4");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("%1"), Some(&4321));
+        assert_eq!(map.get("%3"), Some(&8));
     }
 
     // --- is_valid_pane_id tests ---

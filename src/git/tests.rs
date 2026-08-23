@@ -145,6 +145,82 @@ fn parse_numstat_empty_is_zero() {
 }
 
 #[test]
+fn split_untracked_diff_separates_numstat_from_patch() {
+    let combined = "2\t0\tnotes.md\0diff --git a/notes.md b/notes.md\n\
+                    new file mode 100644\n--- /dev/null\n+++ b/notes.md\n\
+                    @@ -0,0 +1,2 @@\n+one\n+two\n";
+    let (counts, patch) = split_untracked_diff(combined);
+    assert_eq!(counts, "2\t0\tnotes.md\0");
+    assert!(patch.starts_with("diff --git a/notes.md"));
+    assert!(patch.ends_with("+two\n"));
+}
+
+#[test]
+fn split_untracked_diff_ignores_the_marker_inside_a_path() {
+    // A path containing the literal header text must not split the output
+    // early: only a `diff --git` at the start or after a terminator counts.
+    let combined = "1\t0\tdiff --git trap.txt\0diff --git a/x b/x\n+hi\n";
+    let (counts, patch) = split_untracked_diff(combined);
+    assert_eq!(counts, "1\t0\tdiff --git trap.txt\0");
+    assert_eq!(patch, "diff --git a/x b/x\n+hi\n");
+}
+
+#[test]
+fn split_untracked_diff_empty_and_patchless_inputs() {
+    // A vanished file produces no output at all.
+    assert_eq!(split_untracked_diff(""), ("", ""));
+    // Stat records with no patch stay whole on the numstat side.
+    assert_eq!(split_untracked_diff("1\t0\ta.txt\0"), ("1\t0\ta.txt\0", ""));
+    // A bare patch (no --numstat) is all patch.
+    let (counts, patch) = split_untracked_diff("diff --git a/x b/x\n+hi\n");
+    assert_eq!(counts, "");
+    assert!(patch.starts_with("diff --git"));
+}
+
+#[test]
+fn parse_status_v2_reads_ab_header_and_counts_entries() {
+    let out = "# branch.oid 1234abcd\n\
+               # branch.head feat/x\n\
+               # branch.upstream origin/feat/x\n\
+               # branch.ab +3 -1\n\
+               1 .M N... 100644 100644 100644 aaaa bbbb src/lib.rs\n\
+               2 R. N... 100644 100644 100644 aaaa bbbb R100 new.rs\told.rs\n\
+               u UU N... 100644 100644 100644 100644 aaaa bbbb cccc conflicted.rs\n\
+               ? scratch.txt\n\
+               ? notes.md\n";
+    let status = parse_status_v2(out);
+    assert!(status.dirty);
+    assert_eq!(status.untracked, 2);
+    assert_eq!(status.ahead_behind, Some((3, 1)));
+}
+
+#[test]
+fn parse_status_v2_clean_repo_with_upstream_in_sync() {
+    let out = "# branch.oid 1234abcd\n\
+               # branch.head main\n\
+               # branch.upstream origin/main\n\
+               # branch.ab +0 -0\n";
+    let status = parse_status_v2(out);
+    // Headers alone are not dirt.
+    assert!(!status.dirty);
+    assert_eq!(status.untracked, 0);
+    assert_eq!(status.ahead_behind, Some((0, 0)));
+}
+
+#[test]
+fn parse_status_v2_without_upstream_reports_no_ab() {
+    // No upstream configured (or its ref gone): git omits `# branch.ab`, and
+    // the caller must fall back to the resolve_base_ref probe chain.
+    let out = "# branch.oid 1234abcd\n\
+               # branch.head detached\n\
+               ? scratch.txt\n";
+    let status = parse_status_v2(out);
+    assert!(status.dirty);
+    assert_eq!(status.untracked, 1);
+    assert_eq!(status.ahead_behind, None);
+}
+
+#[test]
 fn scan_child_repos_finds_git_subdirs_sorted_skipping_others() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

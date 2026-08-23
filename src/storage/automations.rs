@@ -73,9 +73,10 @@ impl Database {
 
     /// List all automations, newest first.
     pub fn list_automations(&self) -> rusqlite::Result<Vec<Automation>> {
+        // Cached: the snapshot re-reads this on every refresh (ADR-P6).
         let mut stmt = self
             .conn
-            .prepare(&format!("SELECT {COLS} FROM automations ORDER BY id DESC"))?;
+            .prepare_cached(&format!("SELECT {COLS} FROM automations ORDER BY id DESC"))?;
         let rows = stmt.query_map([], map_automation)?;
         rows.collect()
     }
@@ -272,26 +273,59 @@ impl Database {
         automation_id: i64,
         limit: u32,
     ) -> rusqlite::Result<Vec<AutomationRun>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id, automation_id, started_at, status, detail, related_session_id \
              FROM automation_runs \
              WHERE automation_id = ?1 ORDER BY started_at DESC, id DESC LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![automation_id, limit], |row| {
-            Ok(AutomationRun {
-                id: row.get(0)?,
-                automation_id: row.get(1)?,
-                started_at: row.get::<_, i64>(2)? as u64,
-                status: AutomationRunStatus::from_db(&row.get::<_, String>(3)?),
-                detail: row.get(4)?,
-                // Tolerate malformed ids — treat them as "no related session".
-                related_session_id: row
-                    .get::<_, Option<String>>(5)?
-                    .and_then(|s| s.parse().ok()),
-            })
-        })?;
+        let rows = stmt.query_map(params![automation_id, limit], map_automation_run)?;
         rows.collect()
     }
+
+    /// The most recent runs of **every** automation in one query, keyed by
+    /// automation id, newest first, at most `limit` each.
+    ///
+    /// The snapshot rebuild reads run history for the whole automation list;
+    /// doing it via [`list_automation_runs`](Self::list_automation_runs) was a
+    /// query per automation on every refresh. Ordered by `(automation_id,
+    /// started_at DESC)` — `idx_automation_runs_automation` covers the grouping
+    /// — and partitioned here, skipping rows past each automation's `limit`.
+    pub fn list_recent_automation_runs(
+        &self,
+        limit: u32,
+    ) -> rusqlite::Result<std::collections::HashMap<i64, Vec<AutomationRun>>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, automation_id, started_at, status, detail, related_session_id \
+             FROM automation_runs \
+             ORDER BY automation_id, started_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], map_automation_run)?;
+
+        let mut by_automation: std::collections::HashMap<i64, Vec<AutomationRun>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let run = row?;
+            let runs = by_automation.entry(run.automation_id).or_default();
+            if runs.len() < limit as usize {
+                runs.push(run);
+            }
+        }
+        Ok(by_automation)
+    }
+}
+
+fn map_automation_run(row: &rusqlite::Row) -> rusqlite::Result<AutomationRun> {
+    Ok(AutomationRun {
+        id: row.get(0)?,
+        automation_id: row.get(1)?,
+        started_at: row.get::<_, i64>(2)? as u64,
+        status: AutomationRunStatus::from_db(&row.get::<_, String>(3)?),
+        detail: row.get(4)?,
+        // Tolerate malformed ids — treat them as "no related session".
+        related_session_id: row
+            .get::<_, Option<String>>(5)?
+            .and_then(|s| s.parse().ok()),
+    })
 }
 
 /// Column list for automation SELECTs (keep in sync with [`map_automation`]).
@@ -590,6 +624,35 @@ mod tests {
         let runs = db.list_automation_runs(id, 10).unwrap();
         assert_eq!(runs[0].related_session_id, None);
         assert_eq!(runs[1].related_session_id, Some(sid));
+    }
+
+    #[test]
+    fn recent_runs_batch_partitions_per_automation_and_honors_limit() {
+        let db = Database::open_in_memory().unwrap();
+        let a = db
+            .create_automation(&send_automation("a", Some(100)))
+            .unwrap();
+        let b = db
+            .create_automation(&send_automation("b", Some(100)))
+            .unwrap();
+        for n in 0..3 {
+            db.record_automation_run(a, AutomationRunStatus::Success, &format!("a{n}"), None)
+                .unwrap();
+        }
+        db.record_automation_run(b, AutomationRunStatus::Skipped, "b0", None)
+            .unwrap();
+
+        let batched = db.list_recent_automation_runs(2).unwrap();
+        // Each automation's slice matches its per-automation read, so the
+        // snapshot can swap one for the other without the rows changing.
+        assert_eq!(batched[&a], db.list_automation_runs(a, 2).unwrap());
+        assert_eq!(batched[&b], db.list_automation_runs(b, 2).unwrap());
+        assert_eq!(batched[&a].len(), 2, "limit applies per automation");
+        // An automation with no runs simply has no key.
+        let c = db
+            .create_automation(&send_automation("c", Some(100)))
+            .unwrap();
+        assert!(!db.list_recent_automation_runs(2).unwrap().contains_key(&c));
     }
 
     #[test]

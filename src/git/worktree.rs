@@ -153,9 +153,23 @@ pub fn default_branch_on(
     repo_path: &Path,
     local_branches: &[String],
 ) -> Option<String> {
-    if let Some(name) = default_branch_from_remote_on(host, repo_path) {
-        if local_branches.iter().any(|b| b == &name) {
-            return Some(name);
+    default_branch_with_remote(
+        default_branch_from_remote_on(host, repo_path).as_deref(),
+        local_branches,
+    )
+}
+
+/// The pure half of [`default_branch_on`]: pick the local default given an
+/// already-probed remote answer. Split out so a caller that needs the remote
+/// default *itself* as well (`kernel::repos`' branch ordering) runs the
+/// `symbolic-ref` probe once instead of once per question.
+pub fn default_branch_with_remote(
+    remote_default: Option<&str>,
+    local_branches: &[String],
+) -> Option<String> {
+    if let Some(name) = remote_default {
+        if local_branches.iter().any(|b| b == name) {
+            return Some(name.to_string());
         }
     }
 

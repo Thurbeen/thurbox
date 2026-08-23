@@ -1196,7 +1196,7 @@ fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
     let remote = match host.is_empty() {
         true => None,
         false => {
-            let (registry, _warnings) = crate::agent::host_config::load_all_with_warnings();
+            let (registry, _warnings) = crate::agent::host_config::cached_registry();
             Some(
                 registry
                     .resolve(host)

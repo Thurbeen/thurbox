@@ -124,7 +124,8 @@ impl Database {
 
     /// List all active tasks, newest first.
     pub fn list_tasks(&self) -> rusqlite::Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare(&format!(
+        // Cached: the snapshot re-reads this on every refresh (ADR-P6).
+        let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {COLS} FROM tasks WHERE deleted_at IS NULL ORDER BY id DESC"
         ))?;
         let rows = stmt.query_map([], map_task)?;

@@ -30,11 +30,14 @@ type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
 /// writes are short single-row upserts, so 5 s outlasts any WAL checkpoint.
 pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Create all tables and indexes if they don't exist.
-pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
-    // Must come first: the WAL pragma below itself needs the write lock.
+/// Per-connection pragmas, without the schema pass.
+///
+/// Split out for [`crate::storage::Database::open_existing`]: everything here
+/// affects only the connection it runs on (WAL is a database property once
+/// set, so a second connection need not re-issue it — and re-issuing is what
+/// took the write lock on every worker open).
+pub fn apply_connection_pragmas(conn: &Connection) -> rusqlite::Result<()> {
     conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL;")?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     // Performance pragmas (safe under WAL):
     // - `synchronous = NORMAL` is the WAL-recommended setting: a crash can't
@@ -51,7 +54,15 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
          PRAGMA cache_size = -8000;
          PRAGMA mmap_size = 67108864;
          PRAGMA temp_store = MEMORY;",
-    )?;
+    )
+}
+
+/// Create all tables and indexes if they don't exist.
+pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
+    // Must come first: the WAL pragma below itself needs the write lock.
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+    apply_connection_pragmas(conn)?;
 
     conn.execute_batch(
         "

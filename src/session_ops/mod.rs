@@ -256,7 +256,9 @@ pub fn resolve_host(backend_type: &str) -> Option<Option<crate::session::HostDef
     if !crate::session::is_remote_backend(backend_type) {
         return Some(None);
     }
-    let (registry, _warnings) = crate::agent::host_config::load_all_with_warnings();
+    // The cached registry: this runs on the UI thread per diff request, and a
+    // fresh load walks $PATH for WSL discovery every time.
+    let (registry, _warnings) = crate::agent::host_config::cached_registry();
     registry.get_by_backend(backend_type).cloned().map(Some)
 }
 

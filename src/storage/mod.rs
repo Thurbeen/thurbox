@@ -130,8 +130,6 @@ pub struct Database {
     conn: Connection,
     /// Unique ID for this thurbox instance (used in audit trail).
     instance_id: String,
-    /// Last known data_version for external change detection.
-    last_data_version: i64,
 }
 
 impl Database {
@@ -143,12 +141,9 @@ impl Database {
         let conn = Connection::open(path)?;
         schema::initialize(&conn)?;
 
-        let last_data_version = conn.query_row("PRAGMA data_version", [], |row| row.get(0))?;
-
         let db = Self {
             conn,
             instance_id: Uuid::new_v4().to_string(),
-            last_data_version,
         };
         // Best-effort retention; opening the DB must not fail over old breadcrumbs.
         if let Err(e) = db.prune_audit_log() {
@@ -158,6 +153,25 @@ impl Database {
             tracing::warn!("Failed to prune session messages: {e}");
         }
         Ok(db)
+    }
+
+    /// Open a database whose schema is already in place, skipping the schema
+    /// pass and the retention sweeps.
+    ///
+    /// For short-lived worker reads inside a process that already ran
+    /// [`Self::open`] at startup: `initialize` replays ~35 `CREATE … IF NOT
+    /// EXISTS` statements, sets `journal_mode = WAL` (which takes the write
+    /// lock) and runs two `INSERT OR IGNORE` writes — a real cost when the
+    /// creation flow's bookmark worker reopened every few seconds. Only the
+    /// per-connection pragmas that affect *this* connection's behaviour are
+    /// applied.
+    pub fn open_existing(path: &Path) -> rusqlite::Result<Self> {
+        let conn = Connection::open(path)?;
+        schema::apply_connection_pragmas(&conn)?;
+        Ok(Self {
+            conn,
+            instance_id: Uuid::new_v4().to_string(),
+        })
     }
 
     /// Get a reference to the underlying connection (for metadata queries).
@@ -173,7 +187,6 @@ impl Database {
         Ok(Self {
             conn,
             instance_id: Uuid::new_v4().to_string(),
-            last_data_version: 0,
         })
     }
 }
