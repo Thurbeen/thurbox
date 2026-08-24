@@ -421,7 +421,7 @@ type GroupKey = [u64; 4];
 
 /// How often the shared animation clock may advance, in Hz.
 ///
-/// Set to the rate `widgets.status_glyph` advances the working spinner at
+/// Set to the rate `theme.spinner_frame` advances the working spinner at
 /// (`math.floor(elapsed * 8)`), so a cached tree is dropped exactly when the
 /// spinner would move to its next frame and never merely because time passed.
 /// Changing one without the other either freezes the animation or re-renders

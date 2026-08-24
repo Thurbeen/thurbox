@@ -99,6 +99,27 @@ end
 -- The braille spinner the working state animates through.
 theme.spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
+--- The spinner glyph for this frame.
+---
+--- Here rather than in `lib/widgets.lua` so that it ships in the same file as
+--- the table it indexes. A pane and a `lib/` module are delivered separately and
+--- an edit to either is preserved, so a directory can carry an updated pane
+--- beside a module predating a helper it calls; the call then throws from
+--- `render`, and a pane that throws records no click targets, so its rows stop
+--- answering the mouse. Nothing makes a pane immune to a stale module — but the
+--- glyphs and the arithmetic over them can at least not skew against each
+--- other.
+---
+--- The 8 is the kernel's `ANIMATION_HZ` (`kernel::host`), and the two must stay
+--- in lockstep: the shared animation clock invalidates `pure` panes at that rate
+--- and only while something is animating, so a spinner advancing faster than the
+--- clock would skip frames and one advancing slower would be re-rendered for no
+--- visible change.
+function theme.spinner_frame(elapsed)
+  local frame = math.floor((elapsed or 0) * 8) % #theme.spinner + 1
+  return theme.spinner[frame]
+end
+
 function theme.dim(text)
   return { text = text, style = { fg = theme.muted } }
 end

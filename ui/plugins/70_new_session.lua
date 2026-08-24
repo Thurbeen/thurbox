@@ -57,16 +57,15 @@ local function agents()
   return (thurbox and thurbox.agents) or {}
 end
 
+--- The spinner frame for this paint, from the flow's own clock.
+local function spinner(flow)
+  return theme.spinner_frame(flow.elapsed)
+end
+
 --- Is a repository-memory write still running?
 ---
 --- v1 renders `Add Repo Path ⠋ checking…` while it validates a typed path on a
 --- host. The same state is readable here: the command is in flight.
---- The spinner frame for this paint. One definition, so three waits cannot
---- animate at different rates.
-local function spinner(flow)
-  return widgets.spinner(flow.elapsed)
-end
-
 local function bookmark_pending()
   for _, item in ipairs((thurbox and thurbox.commands) or {}) do
     if item.kind == "bookmark" and item.phase ~= "failed" then

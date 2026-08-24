@@ -96,7 +96,7 @@ end
 local function status_glyph(status, elapsed)
   local spec = theme.status(status)
   if status == "working" then
-    return widgets.spinner(elapsed), spec.color
+    return theme.spinner_frame(elapsed), spec.color
   end
   return spec.glyph, spec.color
 end
@@ -313,7 +313,7 @@ local function pending_line(command, inner_width, elapsed)
     glyph, glyph_style = "✗", { fg = theme.role("status_error") }
   else
     -- A spinner only while something is actually running.
-    glyph, glyph_style = widgets.spinner(elapsed), { fg = theme.warn }
+    glyph, glyph_style = theme.spinner_frame(elapsed), { fg = theme.warn }
   end
 
   local label = command.subject or "new session"
@@ -479,8 +479,8 @@ return {
   -- may reuse the tree it returned while neither has changed. The working
   -- spinner still animates: the kernel drops the cached tree when the shared
   -- animation clock moves, and that clock ticks at the same rate
-  -- `widgets.status_glyph` advances the spinner at — but only while something
-  -- is actually animating, so an idle list settles instead of re-rendering.
+  -- `theme.spinner_frame` advances the spinner at — but only while something is
+  -- actually animating, so an idle list settles instead of re-rendering.
   pure = true,
 
   -- Declared as DATA, not just handled. That is what lets the kernel list these

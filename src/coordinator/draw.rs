@@ -458,6 +458,15 @@ impl App {
                 paint::render_error(frame, rect, &e.plugin, &e.message);
                 Counters::bump(&self.perf.failures);
                 self.errors.push(e);
+                // The pane's own rect, though it drew no rows to record. A
+                // press matching no target at all falls through to
+                // `begin_selection`, so without this a throwing plugin costs
+                // not just its pane but the pointer over it — clicks there
+                // silently paint a text selection across the error panel
+                // instead of focusing it. Isolation is the rule everywhere
+                // else here; this is its mouse half.
+                let fallback = self.host.plugins[index].focusable.then_some(rect);
+                self.push_targets(index, fallback, Vec::new());
                 return;
             }
         };

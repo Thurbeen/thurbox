@@ -197,7 +197,7 @@ levers, in the order they pay:
    once so per-row matching does not. Read once per render, pass down.
 5. **Concatenate through a table.** `s = s .. piece` across a wide row is
    O(width²); accumulate and `table.concat`, or emit `string.rep` runs.
-6. **Animate off the shared clock only** — `widgets.spinner(ctx.elapsed)`
+6. **Animate off the shared clock only** — `theme.spinner_frame(ctx.elapsed)`
    follows the kernel's animation tick, which advances only while something is
    animating. A hand-rolled timer re-renders forever and defeats `pure`.
 
