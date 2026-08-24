@@ -13,6 +13,10 @@ const THEME_KEY: &str = "active_theme";
 /// `storage` owns the `metadata` table; the kernel reads it through the
 /// accessors below rather than the other way round.
 const V2_ACK_KEY: &str = "v2_interface_acknowledged";
+/// Set when the gate's decline branch is what turned `auto_update` off, so a
+/// later accept can tell its own doing from a preference the user set. Owned
+/// here for the same reason as [`V2_ACK_KEY`]: `storage` owns `metadata`.
+const AUTO_UPDATE_OFF_BY_GATE_KEY: &str = "auto_update_disabled_by_consent_gate";
 const ACTIVE_EXTENSIONS_KEY: &str = "active_extensions";
 const PERF_SNAPSHOT_KEY: &str = "perf_snapshot";
 
@@ -126,6 +130,40 @@ impl Database {
             params![V2_ACK_KEY, "1"],
         )?;
         Ok(())
+    }
+
+    /// Record that the consent gate is what turned `auto_update` off.
+    ///
+    /// The gate disables auto-update when someone declines v2, so a downgrade to
+    /// the 1.x line is not undone on the next launch. Without this marker the
+    /// accept branch cannot undo that: a `false` in `settings.toml` looks the
+    /// same whether the gate wrote it or the user did, and re-enabling
+    /// unconditionally would silently overturn a deliberate preference.
+    pub fn note_auto_update_disabled_by_gate(&self) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![AUTO_UPDATE_OFF_BY_GATE_KEY, "1"],
+        )?;
+        Ok(())
+    }
+
+    /// Read **and clear** that marker: did the gate turn `auto_update` off?
+    ///
+    /// One shot, in one statement, mirroring
+    /// [`Self::take_pending_focus_session_id`] — the flag exists only to be
+    /// acted on once, and leaving it behind would re-enable auto-update again
+    /// on some later launch the user had since opted out of.
+    pub fn take_auto_update_disabled_by_gate(&self) -> rusqlite::Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "DELETE FROM metadata WHERE key = ?1 RETURNING value",
+                params![AUTO_UPDATE_OFF_BY_GATE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some())
     }
 
     /// Whether this profile has ever had a session.
@@ -343,6 +381,27 @@ mod tests {
         assert!(
             db.v2_acknowledged().expect("read"),
             "the answer has to persist, or the gate asks on every launch"
+        );
+    }
+
+    #[test]
+    fn the_gates_auto_update_marker_is_one_shot() {
+        let db = Database::open_in_memory().expect("in-memory");
+        assert!(
+            !db.take_auto_update_disabled_by_gate().expect("read"),
+            "a profile the gate never touched must not have its auto_update \
+             re-enabled: that `false` would be the user's own setting"
+        );
+
+        db.note_auto_update_disabled_by_gate().expect("write");
+        assert!(
+            db.take_auto_update_disabled_by_gate().expect("read"),
+            "the decline branch's doing has to be readable by a later accept"
+        );
+        assert!(
+            !db.take_auto_update_disabled_by_gate().expect("read"),
+            "taking it clears it -- left behind, it would re-enable auto-update \
+             on some later launch the user had since opted out of"
         );
     }
 

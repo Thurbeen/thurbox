@@ -13,6 +13,17 @@
 //! Declining cannot load v1 — it is not in this binary any more. What it does is
 //! turn `auto_update` **off** and print how to reinstall the 1.x line, because a
 //! downgrade that leaves auto-update on would be undone on the next launch.
+//!
+//! That off-switch is the gate's to undo, and only its own: accepting v2 puts
+//! `auto_update` back if — and only if — declining is what took it, which a
+//! marker in `metadata` records. Without the marker the accept branch cannot
+//! act at all, since a `false` in `settings.toml` reads the same whether the
+//! gate wrote it or the user did.
+//!
+//! Which makes this forward-looking only, and deliberately so: a profile that
+//! declined and then accepted *before* the marker existed carries an
+//! indistinguishable `false`, and is left alone rather than guessed at. Turning
+//! it back on there is a one-line edit the user makes.
 
 use std::io::Write;
 
@@ -319,9 +330,18 @@ pub fn consent_gate(db: &Database) -> std::io::Result<Decision> {
             if let Err(e) = db.acknowledge_v2() {
                 tracing::warn!("could not record the v2 acknowledgement: {e}");
             }
+            restore_auto_update_if_gate_disabled(db);
         }
         Decision::Declined => {
-            let disabled = disable_auto_update();
+            let disabled = set_auto_update(false);
+            // Only a change *this* branch made is the gate's to undo later. An
+            // `Ok(false)` means auto-update was already off -- somebody else's
+            // decision, which an accept must leave exactly where it found it.
+            if let Ok(true) = &disabled {
+                if let Err(e) = db.note_auto_update_disabled_by_gate() {
+                    tracing::warn!("could not record that the gate disabled auto-update: {e}");
+                }
+            }
             let mut out = std::io::stdout();
             if let Err(e) = &disabled {
                 // Say so rather than claim it: an instruction to downgrade is
@@ -340,17 +360,68 @@ pub fn consent_gate(db: &Database) -> std::io::Result<Decision> {
     Ok(decision)
 }
 
-/// Turn `auto_update` off, so a downgrade is not undone on the next launch.
+/// Write `auto_update = on`, reporting whether the file actually changed.
+///
+/// `Ok(false)` means it already held that value and nothing was written. Both
+/// callers depend on that distinction — only a change the gate *made* may the
+/// gate later undo, and only a change it *needs* is worth logging.
 ///
 /// Written through `settings_config::save_settings`, which edits the file with
 /// `toml_edit` and therefore keeps the seed's documentation comments.
-fn disable_auto_update() -> Result<(), String> {
+fn set_auto_update(on: bool) -> Result<bool, String> {
     let (mut settings, _) = crate::agent::settings_config::load_or_seed_with_warnings();
-    if !settings.features.auto_update {
-        return Ok(());
+    if settings.features.auto_update == on {
+        return Ok(false);
     }
-    settings.features.auto_update = false;
-    crate::agent::settings_config::save_settings(&settings).map_err(|e| e.to_string())
+    settings.features.auto_update = on;
+    crate::agent::settings_config::save_settings(&settings).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Put `auto_update` back, but only if declining is what took it.
+///
+/// The gate's two branches were asymmetric: declining turned auto-update off to
+/// protect a downgrade, and accepting never turned it back on. Someone who
+/// declined once and later accepted stayed pinned to whatever version they had,
+/// with no sign of why — `thurbox-cli update` just reported itself disabled.
+///
+/// The marker is what makes this safe to do silently. Re-enabling on every
+/// accept would overturn an `auto_update = false` the user set themselves,
+/// which is a setting thurbox has no business overriding; re-enabling only when
+/// the gate wrote that `false` restores the state the user actually left.
+///
+/// Best-effort and quiet: this runs a breath before the interface takes the
+/// terminal, so there is nowhere to print. A failure leaves auto-update off —
+/// recoverable by hand, and the marker is put back so the next launch retries.
+fn restore_auto_update_if_gate_disabled(db: &Database) {
+    let ours = match db.take_auto_update_disabled_by_gate() {
+        Ok(ours) => ours,
+        Err(e) => {
+            tracing::warn!("could not read the gate's auto-update marker: {e}");
+            return;
+        }
+    };
+    if !ours {
+        return;
+    }
+
+    match set_auto_update(true) {
+        Ok(true) => tracing::info!(
+            "auto_update turned back on: the consent gate is what disabled it, \
+             and this profile has now accepted v2"
+        ),
+        // Already on -- put back by hand, or by an earlier run of this. Either
+        // way the marker is spent, which is the point of taking it.
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!("could not turn auto_update back on: {e}");
+            // Hand the marker back rather than swallow it: the reason to
+            // re-enable has not gone away just because this write failed.
+            if let Err(e) = db.note_auto_update_disabled_by_gate() {
+                tracing::warn!("could not restore the gate's auto-update marker: {e}");
+            }
+        }
+    }
 }
 
 /// Show the notice and read one key.

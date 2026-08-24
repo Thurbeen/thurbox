@@ -63,6 +63,15 @@ once, before the interface takes the terminal, and declining turns `auto_update`
 off and prints how to reinstall 1.x. That gate is the only reason replacing an
 interface under an unchanged binary name is defensible.
 
+That off-switch is reversible, and only by the gate that threw it. Declining
+records a marker in `metadata` alongside the `settings.toml` write, and a later
+**accept** puts `auto_update` back only when that marker is present — so someone
+who declined once and returned to v2 is not left pinned forever, while an
+`auto_update = false` the *user* set is never overridden. The marker is the whole
+mechanism: without it the two cases are indistinguishable on disk, and the accept
+branch has to choose between overturning a preference and stranding a profile.
+It is taken in one `DELETE … RETURNING`, so it acts once.
+
 ### Auto-update does not cross a major, and that has to be shipped to v1
 
 `agent::version_check::crosses_major` stops `perform_update` installing a release
