@@ -688,3 +688,41 @@ fn task_run_parses() {
         }
     ));
 }
+
+/// `--version` must report the build-time-injected version, not clap's default.
+///
+/// Two assertions because neither alone bites everywhere. The behavioural one
+/// is the contract but is **vacuous in a dev build**: clap's implicit `version`
+/// reads `CARGO_PKG_VERSION`, which equals `THURBOX_VERSION` exactly when no
+/// release version was injected — which is every local and CI test run. So the
+/// source check is the one that actually catches a regression here, in the
+/// style of `kernel::updates`' single-installer guard.
+#[test]
+fn version_flag_reports_the_injected_version_not_the_dev_marker() {
+    let rendered = Cli::try_parse_from(["thurbox-cli", "--version"])
+        .unwrap_err()
+        .to_string();
+    let expected = crate::agent::version_check::current_version();
+    assert_eq!(
+        rendered.trim(),
+        format!("thurbox-cli {expected}"),
+        "--version must print the version the `version` subcommand reports"
+    );
+
+    // The bare `version,` attribute is the bug: it silently reads
+    // CARGO_PKG_VERSION, which this project pins to the `0.0.0-dev` marker and
+    // never bumps, so every release shipped a `--version` claiming a dev build.
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
+    )
+    .expect("read src/cli/mod.rs");
+    let command_attr = {
+        let start = src.find("#[command(").expect("the Cli command attribute");
+        &src[start..src[start..].find(")]").expect("attribute end") + start]
+    };
+    assert!(
+        command_attr.contains("version = crate::agent::version_check::current_version()"),
+        "the Cli #[command(..)] must name the injected version explicitly; \
+         a bare `version` falls back to CARGO_PKG_VERSION. Got: {command_attr:?}"
+    );
+}

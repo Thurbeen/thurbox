@@ -35,8 +35,18 @@ pub mod version;
 use output::{CommandOutput, Format};
 
 /// Thurbox CLI — manage sessions, scheduled commands, and more.
+///
+/// `version` is spelled out rather than left bare: clap's implicit form reads
+/// `CARGO_PKG_VERSION`, which is the static `0.0.0-dev` marker this project
+/// never bumps, so `--version` reported a dev build on every release while the
+/// `version` subcommand was right. Both now call the one
+/// `version_check::current_version`.
 #[derive(Parser, Debug)]
-#[command(name = "thurbox-cli", version, about)]
+#[command(
+    name = "thurbox-cli",
+    version = crate::agent::version_check::current_version(),
+    about
+)]
 pub struct Cli {
     /// Output JSON instead of the human-readable default.
     #[arg(long, global = true)]
