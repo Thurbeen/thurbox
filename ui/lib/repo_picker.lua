@@ -79,6 +79,40 @@ function repo_picker.rows(published, query, collapsed)
   return out
 end
 
+--- The most recently used remembered repository — where a path just added lands.
+---
+--- Memory is published most-recent-first, so this is "the first row" — but only
+--- among the rows that ARE memory. A row the kernel **offers** on its own
+--- account (the interface directory) leads the list by construction rather than
+--- by recency, so it is stepped over: selecting it is what select-or-add did
+--- before, which checked the interface directory for every repository added
+--- instead of the one just typed.
+function repo_picker.newest(published)
+  for _, row in ipairs(published or {}) do
+    if not row.offered then
+      -- The first row of memory settles it either way. A folder header there
+      -- means the newest memory is a folder rather than a repository, and
+      -- reaching further down the list would claim one nobody asked for.
+      if row.is_parent then
+        return nil
+      end
+      return row
+    end
+  end
+  return nil
+end
+
+--- Where a path sits among the rendered rows, or nil when it is not drawn — a
+--- search excludes it, or it is folded into a collapsed folder.
+function repo_picker.index_of(entries, path)
+  for index, entry in ipairs(entries) do
+    if entry.row.path == path then
+      return index
+    end
+  end
+  return nil
+end
+
 --- The entry the cursor is on, or nil when the list is empty.
 function repo_picker.current(entries, cursor)
   if #entries == 0 then

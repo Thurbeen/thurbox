@@ -53,6 +53,9 @@ fn snapshot() -> Snapshot {
     }
 }
 
+/// Where an installed interface lives, as `offered` reports it.
+const INTERFACE_DIR: &str = "/home/me/.config/thurbox/ui";
+
 fn bookmark(path: &str, is_git: Option<bool>) -> BookmarkRow {
     BookmarkRow {
         name: path.rsplit('/').next().unwrap_or(path).to_string(),
@@ -61,6 +64,17 @@ fn bookmark(path: &str, is_git: Option<bool>) -> BookmarkRow {
         is_parent: false,
         is_git,
         label: None,
+        offered: false,
+    }
+}
+
+/// The interface directory, which the kernel offers at the top of the local list
+/// under a name of its own rather than reading it from memory.
+fn offered() -> BookmarkRow {
+    BookmarkRow {
+        label: Some("Thurbox interface — edit your panes".into()),
+        offered: true,
+        ..bookmark(INTERFACE_DIR, Some(false))
     }
 }
 
@@ -89,6 +103,7 @@ fn folder_rows() -> Vec<BookmarkRow> {
             is_parent: true,
             is_git: None,
             label: None,
+            offered: false,
         },
         BookmarkRow {
             path: "/src/thurbox".into(),
@@ -97,6 +112,7 @@ fn folder_rows() -> Vec<BookmarkRow> {
             is_parent: false,
             is_git: Some(true),
             label: None,
+            offered: false,
         },
     ]
 }
@@ -717,6 +733,31 @@ fn a_typed_path_is_committed_as_a_bookmark_rather_than_trusted() {
             edit: BookmarkEdit::Add,
         }],
         "the tilde is left for the target machine to expand"
+    );
+}
+
+#[test]
+fn a_path_just_added_is_the_row_that_gets_selected() {
+    // The flow finds the row it just added by recency — memory is published
+    // most-recent-first — and the kernel offers the interface directory ahead of
+    // memory. Taking row 1 therefore selected the INTERFACE for every repository
+    // added, leaving the typed one unchecked.
+    let host = host();
+    let mut world = world_with(vec![offered()]);
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/src/new");
+    press(&host, &world, "enter");
+
+    // The write lands: the added path is now the newest thing in memory, still
+    // behind the offered row.
+    world.repos = store_with(vec![offered(), bookmark("/src/new", Some(true))]);
+    let screen = drawn(&host, &world);
+    let selected: Vec<&str> = screen.lines().filter(|line| line.contains("[x]")).collect();
+    assert_eq!(selected.len(), 1, "one row is chosen:\n{screen}");
+    assert!(
+        selected[0].contains("new"),
+        "the path just typed is the one chosen:\n{screen}"
     );
 }
 

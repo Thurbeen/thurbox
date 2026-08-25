@@ -58,6 +58,15 @@ pub struct BookmarkRow {
     /// the interface directory is a long, install-specific path whose leaf
     /// (`ui`) says nothing about what picking it would do.
     pub label: Option<String>,
+    /// Whether the flow offered this row itself rather than reading it from
+    /// memory.
+    ///
+    /// An offered row is not a bookmark: it leads the list by construction, so
+    /// its position says nothing about when it was last used. The flow needs
+    /// the distinction because it finds a *just-added* path by recency — the
+    /// first row of memory — and an offered row ahead of memory is picked up as
+    /// that path instead.
+    pub offered: bool,
 }
 
 /// One entry of the browse dropdown.
@@ -558,6 +567,9 @@ fn offer_interface_dir(rows: &mut Vec<BookmarkRow>) {
     // is usually `ui`, which tells a reader nothing, and the rest of the path is
     // install-specific boilerplate that the row was truncating anyway.
     offered.label = Some("Thurbox interface — edit your panes".to_string());
+    // Flagged so a reader of the list can tell placement from recency: this row
+    // is first because this function puts it here, not because it was just used.
+    offered.offered = true;
     rows.insert(0, offered);
 }
 
@@ -692,6 +704,7 @@ fn row(path: &Path, parent: Option<String>, is_parent: bool, is_git: Option<bool
         is_parent,
         is_git,
         label: None,
+        offered: false,
     }
 }
 
@@ -1107,6 +1120,9 @@ mod tests {
             label.contains("interface"),
             "the name says what it is: {label}"
         );
+        // The flag is what keeps it out of the flow's recency lookup: being
+        // first here is placement, not a bookmark that was just used.
+        assert!(rows[0].offered, "an offered row says so");
         std::env::remove_var("THURBOX_UI_DIR");
     }
 

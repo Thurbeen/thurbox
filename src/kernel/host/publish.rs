@@ -455,6 +455,11 @@ impl LuaHost {
                     .map_err(|e| e.to_string())?;
                 item.set("is_parent", row.is_parent)
                     .map_err(|e| e.to_string())?;
+                // True only for a row the flow offers on its own account. It
+                // leads the list by construction, so a plugin reading the list
+                // as most-recent-first has to be able to step over it.
+                item.set("offered", row.offered)
+                    .map_err(|e| e.to_string())?;
                 // `nil` means never established, which is a third state beside
                 // true and false: it stays worktree-capable.
                 item.set(

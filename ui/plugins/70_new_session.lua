@@ -889,14 +889,18 @@ return {
     -- A path just added is selected, which is v1's select-or-add. The row cannot
     -- be found by name — the expansion of a `~` on a remote host happened on the
     -- worker — so it is found by RECENCY: memory is published most-recent-first
-    -- and an add touches recency, so the row asked for is the first one
-    -- (design.md D2). Consumed only once the write has landed and the list has
-    -- been re-read, or it would select whatever was previously on top.
+    -- and an add touches recency, so the row asked for is the newest one
+    -- (design.md D2). Newest is not the same as first: the kernel offers the
+    -- interface directory ahead of memory, and taking row 1 selected THAT for
+    -- every repository added. Consumed only once the write has landed and the
+    -- list has been re-read, or it would select whatever was previously on top.
     if flow.select_newest and not bookmark_pending() and not bookmarks().loading then
-      local first = (bookmarks().rows or {})[1]
-      if first and not first.is_parent then
-        flow.selected[first.path] = true
-        flow.cursor = 1
+      local newest = repo_picker.newest(bookmarks().rows or {})
+      if newest then
+        flow.selected[newest.path] = true
+        -- The cursor follows the selection rather than resetting to the top, for
+        -- the same reason: the top row is no longer the row just added.
+        flow.cursor = repo_picker.index_of(rows_for(flow), newest.path) or 1
       end
       flow.select_newest = nil
       save(flow)
