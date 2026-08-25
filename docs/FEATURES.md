@@ -180,6 +180,17 @@ siblings only. `Shift+S` (rebindable `SessionListSortAlphabetically`)
 sorts every group's sessions alphabetically by name in one shot,
 preserving group order and parent/child nesting.
 
+**With grouping off there are no group edges.** The session list's
+`group_by_repo` setting (settings → Sessions) is not a label switch: off
+means the list is genuinely one flat group ordered by `display_order`
+alone, so `Shift+J`/`Shift+K` move a row one place anywhere in the list
+and `Shift+S` sorts the whole thing. Suppressing only the header line
+and keeping the clustering was the first shape and it was wrong — a move
+that carried a session past a repo boundary was accepted, persisted, and
+then undone by the next build re-clustering it under its own repo, with
+the headers that would have explained it turned off. Parent/child
+nesting is unaffected either way: it is not a repo property.
+
 Both paths densely renumber every session's `display_order` `0..n` and
 persist it, so the order survives restarts and syncs across instances
 via the existing `data_version` polling. The pure helpers

@@ -8,14 +8,19 @@
 -- never separate the two.
 --
 -- Deliberately free of theme and widgets: nothing here is text yet. The one
--- dependency is `lib.settings`, because whether headers are drawn is a knob
--- the model has to answer for every consumer at once.
+-- dependency is `lib.settings`, because whether the list groups by repo is a
+-- knob the model has to answer for every consumer at once.
 
 local plugin_settings = require("lib.settings")
 
 local session_model = {}
 
 local NO_REPO = "(no repo)"
+
+--- The single group's key when grouping is off. `\0` cannot occur in a repo
+--- name — the same property `group_key` relies on — so it can never collide
+--- with a real repo set.
+local FLAT_KEY = "\0flat"
 
 --- In-flight commands, keyed by the session they concern.
 ---
@@ -63,21 +68,25 @@ local function live_sessions(rows)
   return live
 end
 
---- Creations in flight, keyed by the repo they will land in.
+--- Creations in flight, keyed by the repo they will land in, and the same
+--- commands as one list in publication order.
 ---
 --- A create names no session yet, so it cannot be matched to a row. The command
 --- carries its subject — the repo — which is exactly enough to draw the
 --- placeholder where the session will actually appear rather than in a limbo of
---- its own. v1 needed a bespoke slot in its ordering code for this.
+--- its own. v1 needed a bespoke slot in its ordering code for this. The flat
+--- list is what an ungrouped list uses: there are no repo groups to place a
+--- placeholder in, and `pairs` over the map would order them arbitrarily.
 local function pending_creations()
-  local by_repo = {}
+  local by_repo, all = {}, {}
   for _, item in ipairs(thurbox and thurbox.commands or {}) do
     if item.kind == "create" and item.subject then
       by_repo[item.subject] = by_repo[item.subject] or {}
       table.insert(by_repo[item.subject], item)
+      all[#all + 1] = item
     end
   end
-  return by_repo
+  return by_repo, all
 end
 
 --- The repos a session spans, de-duplicated, in its own member order — primary
@@ -127,14 +136,23 @@ end
 --- members by (manual order, original index), groups by (lowest member order,
 --- label). "Never moved" sorts *after* everything ordered, in creation order —
 --- not alphabetically.
-local function ordered_groups(rows)
+---
+--- With `grouping` off there is exactly one group holding every row, so the
+--- manual order is the whole order. See `grouped()` for why off has to mean
+--- that rather than the same clustering with its headers hidden.
+local function ordered_groups(rows, grouping)
   local groups, by_key = {}, {}
   for index, session in ipairs(rows) do
-    local names = repo_set(session)
-    local key = group_key(names)
+    local key, label
+    if grouping then
+      local names = repo_set(session)
+      key, label = group_key(names), group_label(names)
+    else
+      key, label = FLAT_KEY, NO_REPO
+    end
     local group = by_key[key]
     if not group then
-      group = { label = group_label(names), members = {} }
+      group = { label = label, members = {} }
       by_key[key] = group
       groups[#groups + 1] = group
     end
@@ -169,12 +187,16 @@ local function ordered_groups(rows)
   return groups, by_key
 end
 
---- Whether the list draws repo headers.
+--- Whether the list groups by repo.
 ---
 --- v1 always groups; a user with one repo sees a header that says nothing, so
---- this is a knob rather than a rule. The GROUPING still happens either way --
---- only the header line is suppressed -- so ordering and the move-past-a-group
---- behaviour are unchanged.
+--- this is a knob rather than a rule. Off means genuinely UNGROUPED, not the
+--- same clustering with its headers hidden: one flat list ordered by the manual
+--- order alone. Hiding only the header line is what this was first, and it made
+--- a move ACROSS repos persist and then be undone by the next build
+--- re-clustering the row under its own repo -- with the headers that would have
+--- explained it turned off. Parent/child nesting is unaffected either way; it
+--- is not a repo property.
 local function grouped()
   return plugin_settings.enabled("sessions", "group_by_repo", true)
 end
@@ -207,12 +229,12 @@ function session_model.build(rows)
   -- click/action, so the same inputs must not pay twice. Consumers treat the
   -- returned items as read-only, which is what makes sharing the table safe.
   local digest = commands_digest()
-  local headers = grouped()
+  local grouping = grouped()
   if
     model_cache.items ~= nil
     and rawequal(rows, model_cache.rows)
     and digest == model_cache.digest
-    and headers == model_cache.headers
+    and grouping == model_cache.grouping
   then
     return model_cache.items
   end
@@ -224,17 +246,23 @@ function session_model.build(rows)
   local all_rows = rows
   rows = live_sessions(rows)
 
-  local groups, by_key = ordered_groups(rows)
-  local creating = pending_creations()
+  local groups, by_key = ordered_groups(rows, grouping)
+  local creating, all_creating = pending_creations()
 
-  -- A repo that has no sessions yet still needs its header, or a creation into
-  -- a fresh repo would have nowhere to draw.
-  for repo in pairs(creating) do
-    if not by_key[repo] then
-      local group = { label = repo, members = {}, order = math.huge }
-      by_key[repo] = group
-      groups[#groups + 1] = group
+  if grouping then
+    -- A repo that has no sessions yet still needs its header, or a creation into
+    -- a fresh repo would have nowhere to draw.
+    for repo in pairs(creating) do
+      if not by_key[repo] then
+        local group = { label = repo, members = {}, order = math.huge }
+        by_key[repo] = group
+        groups[#groups + 1] = group
+      end
     end
+  elseif #groups == 0 and #all_creating > 0 then
+    -- Ungrouped and nothing to draw yet: the one flat group still has to exist
+    -- for the placeholder to sit at the end of.
+    groups[1] = { label = NO_REPO, members = {}, order = math.huge }
   end
 
   -- Every rendered session, for the cross-group child mark: v1 only marks a
@@ -245,6 +273,15 @@ function session_model.build(rows)
   end
 
   for _, group in ipairs(groups) do
+    -- Grouped, a placeholder belongs to the repo it names; ungrouped there is
+    -- one list, so every creation in flight lands at the end of it. Not an
+    -- `and/or` chain: a grouped repo with no creation of its own is a nil
+    -- middle term, and the chain would fall through to the whole flat list.
+    local placeholders = all_creating
+    if grouping then
+      placeholders = creating[group.label] or {}
+    end
+
     local in_group = {}
     for _, index in ipairs(group.members) do
       in_group[rows[index].id] = true
@@ -293,14 +330,14 @@ function session_model.build(rows)
           and parent ~= nil
           and parent ~= session.id
           and visible[parent] == true,
-        header = (first and headers) and group.label or nil,
+        header = (first and grouping) and group.label or nil,
         target = session.id,
       }
       first = false
     end
 
     -- Placeholders at the end of the group, where the real row will appear.
-    for _, item in ipairs(creating[group.label] or {}) do
+    for _, item in ipairs(placeholders) do
       items[#items + 1] = {
         kind = "pending",
         command = item,
@@ -309,7 +346,7 @@ function session_model.build(rows)
         -- numerically, and `nil` there is not a shallow row -- it is an error that
         -- takes the pane down on Shift+J/K/S while a session is being created.
         depth = 0,
-        header = (first and headers) and group.label or nil,
+        header = (first and grouping) and group.label or nil,
         target = false,
       }
       first = false
@@ -318,7 +355,7 @@ function session_model.build(rows)
 
   model_cache.rows = all_rows
   model_cache.digest = digest
-  model_cache.headers = headers
+  model_cache.grouping = grouping
   model_cache.items = items
   return items
 end

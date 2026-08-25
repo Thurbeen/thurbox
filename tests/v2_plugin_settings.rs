@@ -46,10 +46,40 @@ fn row(name: &str, repo: &str) -> SessionRow {
     }
 }
 
+/// `row`, moved by hand to `position` in the manual order.
+fn ordered(mut row: SessionRow, position: i64) -> SessionRow {
+    row.display_order = Some(position);
+    row
+}
+
+/// Where each of `names` lands in the rendered list, top to bottom.
+fn rendered_order<'a>(drawn: &str, names: &[&'a str]) -> Vec<&'a str> {
+    let mut found: Vec<(usize, &str)> = names
+        .iter()
+        .map(|name| {
+            let at = drawn
+                .find(name)
+                .unwrap_or_else(|| panic!("{name} is not on screen:\n{drawn}"));
+            (at, *name)
+        })
+        .collect();
+    found.sort_by_key(|(at, _)| *at);
+    found.into_iter().map(|(_, name)| name).collect()
+}
+
 /// Render the session list with `registry` in force.
 fn session_list(host: &LuaHost, registry: &Registry) -> String {
+    session_list_of(
+        host,
+        registry,
+        vec![row("one", "thurbox"), row("two", "website")],
+    )
+}
+
+/// The same, over a session set the caller chose.
+fn session_list_of(host: &LuaHost, registry: &Registry, sessions: Vec<SessionRow>) -> String {
     let snapshot = Snapshot {
-        sessions: vec![row("one", "thurbox"), row("two", "website")],
+        sessions,
         ..Snapshot::default()
     };
     let themes = Themes::load(None);
@@ -181,5 +211,40 @@ fn a_setting_reverts_to_its_default_when_cleared() {
     assert!(
         restored.contains("thurbox"),
         "clearing the override should restore the declared default:\n{restored}"
+    );
+}
+
+#[test]
+fn grouping_off_means_ungrouped_and_not_merely_unlabelled() {
+    // The knob suppressed the header LINE and kept the repo clustering, so a
+    // manual order that interleaved two repos was silently re-clustered on the
+    // next build: `Shift+J` past a repo boundary was accepted, persisted, and
+    // undone a frame later, with the headers that would have explained it
+    // turned off. Off has to mean one flat list ordered by the manual order.
+    let host = host();
+    let mut registry = registry_for(&host);
+    let sessions = || {
+        vec![
+            ordered(row("alpha", "thurbox"), 0),
+            ordered(row("bravo", "website"), 1),
+            ordered(row("charlie", "thurbox"), 2),
+        ]
+    };
+
+    let grouped = session_list_of(&host, &registry, sessions());
+    assert_eq!(
+        rendered_order(&grouped, &["alpha", "bravo", "charlie"]),
+        vec!["alpha", "charlie", "bravo"],
+        "grouped, a repo's sessions still cluster:\n{grouped}"
+    );
+
+    registry
+        .set_setting("sessions", "group_by_repo", Some(Value::Bool(false)))
+        .expect("set");
+    let flat = session_list_of(&host, &registry, sessions());
+    assert_eq!(
+        rendered_order(&flat, &["alpha", "bravo", "charlie"]),
+        vec!["alpha", "bravo", "charlie"],
+        "ungrouped, the manual order is the whole order:\n{flat}"
     );
 }

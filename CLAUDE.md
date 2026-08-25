@@ -992,6 +992,15 @@ shot, preserving group order (still by lowest `display_order`) and parent/child
 nesting, and issues the same `Order` command (v1's
 `sort_alphabetically_within_groups`).
 
+All of that is the **grouped** shape. With the pane's `group_by_repo` setting
+off there are no group edges to swap past: `ui/lib/session_model.lua` builds one
+flat group ordered by `display_order` alone, so `Shift+J`/`Shift+K` move a row
+one place anywhere in the list and `Shift+S` sorts the whole of it. Off has to
+mean ungrouped rather than merely unlabelled — suppressing the header line while
+keeping the clustering made every cross-repo move persist and then be undone by
+the next build's re-clustering, with the headers that would have explained it
+turned off. Parent/child nesting is unaffected: it is not a repo property.
+
 ### Inter-session messages (mailbox queue)
 
 A general, agent-neutral **message queue** lets one session hand another a
