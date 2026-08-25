@@ -125,10 +125,14 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
             // path: a session whose tmux server died is restarted by asking for
             // exactly this, and refusing because there was nothing to kill would
             // make the one case that needs it the one case that fails.
-            if let Err(e) = crate::agent::tmux::kill_window(&plan.window_name) {
+            // Killed by the persisted pane id when one is usable: the window
+            // *name* is not unique, and killing by name with a duplicate around
+            // tears down an arbitrary one of them.
+            if let Err(e) = crate::agent::tmux::kill_window(&plan.window_name, &session.backend_id)
+            {
                 tracing::debug!("no window to kill for '{}': {e:#}", plan.window_name);
             }
-            crate::agent::tmux::spawn_window(
+            let pane = crate::agent::tmux::spawn_window(
                 &plan.window_name,
                 &plan.command,
                 &plan.args,
@@ -137,16 +141,15 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
             )
             .map_err(|e| format!("Failed to re-spawn tmux window: {e}"))?;
 
-            // Forget the pane that was just killed. The local one-shot spawn
-            // does not report the new pane's id — a local spawn never has, which
-            // is why the interface resolves one by window name — so the row must
-            // not keep pointing at the dead one. Left as the old id, the
-            // interface stays attached to a pane that no longer exists and the
-            // restarted session shows a frozen last frame that takes no keys.
+            // The new pane is a different one, and the id is how every later
+            // read finds it — leaving the old one persisted would point the
+            // interface at a pane that no longer exists. (Empty on psmux, where
+            // the spawn can't report an id; the interface then resolves by
+            // window name as before.)
             let mut session = session.clone();
-            session.backend_id = String::new();
+            session.backend_id = pane;
             db.upsert_session(&session)
-                .map_err(|e| format!("Failed to clear the old pane: {e}"))?;
+                .map_err(|e| format!("Failed to record the new pane: {e}"))?;
         }
         Some(host) => {
             // By pane id, not window name: the host's tmux server is shared with

@@ -55,6 +55,19 @@ fn repo() -> tempfile::TempDir {
     dir
 }
 
+/// Point the spawn at a private socket in a private directory, so it can never
+/// see — or race — the shared dev server (`thurbox-dev`). Without this the
+/// pipeline lands on the real socket: the "throwaway socket" was aspirational,
+/// `cleanup` killed a server nothing used, and the spawned windows leaked into
+/// (and interfered with) whatever else ran there. nextest runs one process per
+/// test, so env mutation is safe. Returns the tempdir so it outlives the test.
+fn isolate_tmux() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", dir.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    dir
+}
+
 fn cleanup() {
     let _ = Command::new("tmux")
         .args(["-L", SOCKET, "kill-server"])
@@ -70,6 +83,7 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
 
     // Isolate config and data, so this uses neither the real agents.toml nor
     // the real database. nextest runs each test in its own process, so a
@@ -130,6 +144,18 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
     assert_eq!(row.name, "e2e-probe");
     assert_eq!(row.agent, "shell");
 
+    // The local spawn learned its pane id up front (`new-window -P`), so the
+    // row never depends on its window name — which is not unique.
+    #[cfg(not(windows))]
+    {
+        assert!(
+            spawned.backend_id.starts_with('%'),
+            "expected a pane id, got {:?}",
+            spawned.backend_id
+        );
+        assert_eq!(row.backend_id, spawned.backend_id);
+    }
+
     // The worktree exists on disk, on the branch that was asked for.
     let worktree = row
         .worktrees
@@ -157,4 +183,69 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
     assert_eq!(published.branch.as_deref(), Some("feat/e2e"));
 
     cleanup();
+}
+
+/// Two sessions sharing a name — the state accepting the creation flow's
+/// proposed default twice produces. Each spawn must learn its *own* pane id,
+/// or the second one can never attach (their windows share the `tb-` name,
+/// which the interface refuses to guess between).
+#[test]
+#[cfg(not(windows))]
+fn two_sessions_sharing_a_name_get_distinct_pane_ids() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    thurbox::paths::set_test_dir(home.path());
+    let config = thurbox::paths::config_file()
+        .expect("config path")
+        .parent()
+        .expect("config dir")
+        .to_path_buf();
+    std::fs::create_dir_all(&config).expect("mkdir");
+    std::fs::write(
+        config.join("agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("write agents.toml");
+
+    // No worktree: the duplicate-default repro is the plain-directory path (a
+    // repeated branch would fail loudly long before the window spawns).
+    let request = || thurbox::session_ops::spawn::SpawnRequest {
+        name: "twin".into(),
+        repo_path: repo.path().to_path_buf(),
+        agent: Some("shell".into()),
+        ..Default::default()
+    };
+
+    let first = match thurbox::session_ops::spawn::spawn_session_headless(&db, request()) {
+        Ok(spawned) => spawned,
+        Err(e) => {
+            cleanup();
+            if e.contains("tmux") {
+                eprintln!("skipping: tmux would not spawn a window: {e}");
+                return;
+            }
+            panic!("first creation failed: {e}");
+        }
+    };
+    let second = thurbox::session_ops::spawn::spawn_session_headless(&db, request())
+        .expect("second creation");
+    cleanup();
+
+    assert!(first.backend_id.starts_with('%'), "{:?}", first.backend_id);
+    assert!(
+        second.backend_id.starts_with('%'),
+        "{:?}",
+        second.backend_id
+    );
+    assert_ne!(
+        first.backend_id, second.backend_id,
+        "each session must be addressable by its own pane"
+    );
 }

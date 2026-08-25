@@ -224,7 +224,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             if text.trim().is_empty() {
                 return Err("text must not be empty".into());
             }
-            crate::agent::tmux::send_prompt_now(&session.name, &text)
+            crate::agent::tmux::send_prompt_now(&session.name, &session.backend_id, &text)
                 .map_err(|e| format!("send_prompt_now: {e}"))?;
             Ok(CommandOutput::new(
                 json!({
@@ -237,8 +237,9 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         }
         Action::Capture { uuid, lines } => {
             let session = resolve(db, &uuid)?;
-            let output = crate::agent::tmux::capture_pane_text(&session.name, lines)
-                .map_err(|e| format!("capture_pane_text: {e}"))?;
+            let output =
+                crate::agent::tmux::capture_pane_text(&session.name, &session.backend_id, lines)
+                    .map_err(|e| format!("capture_pane_text: {e}"))?;
             let human = output.clone();
             Ok(CommandOutput::new(
                 json!({

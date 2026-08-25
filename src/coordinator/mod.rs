@@ -414,6 +414,14 @@ impl App {
         {
             self.dirty = true;
         }
+        // A pane the terminals had to resolve by window name gets its id
+        // persisted onto the row: names are not unique (two sessions can share
+        // one), so a legacy row stops depending on its name after one adoption.
+        for (session, pane) in self.terminals.drain_adopted_panes() {
+            if let Err(e) = self.snapshots.remember_pane(&session, &pane) {
+                tracing::warn!("could not record adopted pane for {session}: {e}");
+            }
+        }
         // A session whose agent is gone gets it back, which is what v1 does
         // at restore and what makes a session survive a reboot.
         self.respawn_missing_agents();

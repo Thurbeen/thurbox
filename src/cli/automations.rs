@@ -531,8 +531,10 @@ fn fire_send(
     auto: &Automation,
     session_id: SessionId,
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
-    let name = match db.get_session_name(session_id) {
-        Ok(Some(name)) => name,
+    // The full row, not just the name: the persisted pane id is what
+    // disambiguates when another session shares the name.
+    let target = match db.get_session_by_id(session_id) {
+        Ok(Some(session)) => session,
         Ok(None) => {
             return (
                 AutomationRunStatus::Skipped,
@@ -543,19 +545,19 @@ fn fire_send(
         Err(e) => {
             return (
                 AutomationRunStatus::Error,
-                format!("get_session_name: {e}"),
+                format!("get_session_by_id: {e}"),
                 None,
             )
         }
     };
-    if !crate::agent::tmux::window_exists(&name) {
+    if !crate::agent::tmux::window_exists(&target.name, &target.backend_id) {
         return (
             AutomationRunStatus::Skipped,
             "target session not running".into(),
             None,
         );
     }
-    match crate::agent::tmux::send_prompt_now(&name, &auto.prompt) {
+    match crate::agent::tmux::send_prompt_now(&target.name, &target.backend_id, &auto.prompt) {
         Ok(()) => (
             AutomationRunStatus::Success,
             format!("sent to {session_id}"),
@@ -579,9 +581,11 @@ fn fire_spawn(
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
     // Reuse an existing session window (later fires / restored sessions).
-    if crate::agent::tmux::window_exists(&name) {
+    // Name-only targeting: the reused window's session row (and so its pane
+    // id) has no cheap lookup here, and `auto-<id>` names don't collide.
+    if crate::agent::tmux::window_exists(&name, "") {
         // The reused window's session id has no cheap lookup here.
-        return match crate::agent::tmux::send_prompt_now(&name, &auto.prompt) {
+        return match crate::agent::tmux::send_prompt_now(&name, "", &auto.prompt) {
             Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
             Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
         };

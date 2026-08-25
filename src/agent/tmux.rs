@@ -158,6 +158,34 @@ fn window_target(session_name: &str) -> String {
     format!("{TMUX_SESSION}:={}", agent_window_name(session_name))
 }
 
+/// Whether `pane_id` (`%N`) is alive and sits in a window named `window`.
+///
+/// The verification is what makes a *persisted* pane id safe to target: tmux
+/// reuses pane numbers after a server restart, so a stored id can point at a
+/// different window entirely (a shell, the heartbeat keeper). Checking the
+/// window name catches that; a dead or reassigned id falls back to the name.
+fn pane_matches_window(pane_id: &str, window: &str) -> bool {
+    let out =
+        local_mux_command(&["display-message", "-p", "-t", pane_id, "#{window_name}"]).output();
+    matches!(out, Ok(o) if o.status.success()
+        && String::from_utf8_lossy(&o.stdout).trim() == window)
+}
+
+/// Resolve the tmux target for a session's agent pane: the persisted pane id
+/// when it still points at this session's own `tb-` window, else the window
+/// name (the legacy path, for rows persisted with no pane id).
+///
+/// The pane id is the precise half — two sessions can share a name, and their
+/// windows then share the `tb-<name>` target, which tmux resolves to an
+/// arbitrary one of them. Every one-shot helper that acts on a session's pane
+/// goes through here so the id wins whenever it is usable.
+fn agent_target(session_name: &str, pane_id: &str) -> String {
+    if !pane_id.is_empty() && pane_matches_window(pane_id, &agent_window_name(session_name)) {
+        return pane_id.to_string();
+    }
+    window_target(session_name)
+}
+
 /// Minimum tmux version required.
 const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 
@@ -1249,9 +1277,9 @@ fn pane_is_dead(target: &str) -> bool {
 
 /// Send text immediately to a session pane (no scheduling), followed by Enter.
 ///
-/// Targets the tmux window named `tb-<session_name>` in the thurbox tmux
-/// session and uses a "paste text → brief delay → press Enter" sequence so the
-/// target app has time to process the pasted input.
+/// Targets the session's pane via `agent_target` (pane id first, window name
+/// as the legacy fallback) and uses a "paste text → brief delay → press Enter"
+/// sequence so the target app has time to process the pasted input.
 ///
 /// Refuses a pane whose process has exited. Sessions run with
 /// `remain-on-exit=on` (`SESSION_OPTS`), so a dead agent leaves its window in
@@ -1259,8 +1287,8 @@ fn pane_is_dead(target: &str) -> bool {
 /// caller reads that success as "the agent got it" — which is how the mailbox
 /// wake came to report `woke: true` at a pane nothing was listening to — so the
 /// liveness check belongs here, once, rather than in each of them.
-pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
-    let target = window_target(session_name);
+pub fn send_prompt_now(session_name: &str, pane_id: &str, text: &str) -> Result<()> {
+    let target = agent_target(session_name, pane_id);
     if pane_is_dead(&target) {
         bail!("session '{session_name}' has exited; its pane accepts no input");
     }
@@ -1309,13 +1337,15 @@ fn list_window_names() -> Vec<String> {
         .collect()
 }
 
-/// Whether the agent window `tb-<session_name>` currently exists in the thurbox
-/// tmux server. Used by the headless dispatcher to skip `send` automations
-/// whose target session is no longer running rather than failing into a dead
-/// pane.
-pub fn window_exists(session_name: &str) -> bool {
+/// Whether the session's agent pane currently exists in the thurbox tmux
+/// server — its persisted pane id when one is usable, the `tb-<session_name>`
+/// window otherwise. Used by the headless dispatcher to skip `send`
+/// automations whose target session is no longer running rather than failing
+/// into a dead pane.
+pub fn window_exists(session_name: &str, pane_id: &str) -> bool {
     let want = agent_window_name(session_name);
-    list_window_names().contains(&want)
+    (!pane_id.is_empty() && pane_matches_window(pane_id, &want))
+        || list_window_names().contains(&want)
 }
 
 /// Schedule a one-shot prompt delivery into a session's window after
@@ -1324,8 +1354,13 @@ pub fn window_exists(session_name: &str) -> bool {
 /// Used by the headless automation dispatcher to deliver a Spawn automation's
 /// prompt once the freshly launched agent CLI has had time to boot — offline
 /// there is no TUI deferred-input queue to lean on. Local-tmux scoped.
-pub fn send_prompt_after_delay(session_name: &str, text: &str, delay_secs: u64) -> Result<()> {
-    let target = window_target(session_name);
+pub fn send_prompt_after_delay(
+    session_name: &str,
+    pane_id: &str,
+    text: &str,
+    delay_secs: u64,
+) -> Result<()> {
+    let target = agent_target(session_name, pane_id);
     let script = deferred_prompt_script(&target, text);
     let status = local_mux_command(&["run-shell", "-b", "-d", &delay_secs.to_string(), &script])
         .status()
@@ -1465,8 +1500,8 @@ pub fn resolve_cli_binary() -> std::path::PathBuf {
 ///
 /// Returns the visible terminal text. `lines` controls how many lines of
 /// scrollback to include before the visible region (capped to a sane max).
-pub fn capture_pane_text(session_name: &str, lines: u32) -> Result<String> {
-    let target = window_target(session_name);
+pub fn capture_pane_text(session_name: &str, pane_id: &str, lines: u32) -> Result<String> {
+    let target = agent_target(session_name, pane_id);
     let lines = lines.min(MAX_CAPTURE_LINES);
     let start = format!("-{lines}");
 
@@ -1518,15 +1553,22 @@ const SESSION_OPTS: &[(&str, &str)] = &[
 /// Spawn a new tmux window running `command` with `args` in `cwd`.
 ///
 /// Thin helper for headless callers (CLI, MCP) that don't need PTY I/O
-/// streams. Returns on success once the window exists; the command runs
-/// inside it. Window name is `tb-<session_name>`.
+/// streams. Returns the new pane's id (`%N`) on success; the command runs
+/// inside it. Window name is `tb-<session_name>` — which is *not* unique (two
+/// sessions can share a name), so the returned id is what callers persist as
+/// `backend_id` and target thereafter.
+///
+/// On Windows the local mux is psmux, whose `new-window -P -F` support is
+/// unverified against the documented divergences (ADR-13) — there the id is
+/// not asked for and an empty string is returned, preserving the
+/// resolve-by-name behavior until the e2e probes cover it.
 pub fn spawn_window(
     session_name: &str,
     command: &str,
     args: &[String],
     cwd: Option<&Path>,
     env: &HashMap<String, String>,
-) -> Result<()> {
+) -> Result<String> {
     // Ensure the session exists and is configured, without opening a
     // control-mode connection (headless one-shot path).
     TmuxBackend::local().ensure_session_configured()?;
@@ -1540,6 +1582,9 @@ pub fn spawn_window(
         "-n",
         &window_name,
     ]);
+    if !cfg!(windows) {
+        tmux.args(["-P", "-F", "#{pane_id}"]);
+    }
     if let Some(dir) = cwd {
         tmux.args(["-c", &dir.to_string_lossy()]);
     }
@@ -1572,16 +1617,18 @@ pub fn spawn_window(
             stderr.trim()
         );
     }
-    Ok(())
+    if cfg!(windows) {
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Headless spawn of an agent window on a remote host over SSH.
 ///
-/// Returns the remote tmux pane id (`%N`). Unlike the local [`spawn_window`]
-/// (which leaves `backend_id` empty for the TUI to resolve by name), this drives
-/// the SSH backend's control mode to learn the real pane id up front. The
-/// control-mode connection is dropped when this returns; the remote tmux keeps
-/// the window alive for the TUI to adopt later.
+/// Returns the remote tmux pane id (`%N`), like the local [`spawn_window`] —
+/// but by driving the SSH backend's control mode rather than `new-window -P`.
+/// The control-mode connection is dropped when this returns; the remote tmux
+/// keeps the window alive for the TUI to adopt later.
 pub fn spawn_window_remote(
     host: &crate::session::HostDef,
     session_name: &str,
@@ -1632,9 +1679,11 @@ pub fn kill_pane_remote(host: &crate::session::HostDef, backend_id: &str) -> Res
     backend.kill(backend_id)
 }
 
-/// Kill the tmux window `tb-<session_name>` if it exists.
-pub fn kill_window(session_name: &str) -> Result<()> {
-    let target = window_target(session_name);
+/// Kill the session's tmux window if it exists — by its persisted pane id when
+/// one is usable (precise even when another session shares the name), by the
+/// `tb-<session_name>` window name otherwise.
+pub fn kill_window(session_name: &str, pane_id: &str) -> Result<()> {
+    let target = agent_target(session_name, pane_id);
     let output = local_mux_command(&["kill-window", "-t", &target])
         .output()
         .context("Failed to run tmux kill-window")?;
@@ -1662,8 +1711,8 @@ pub fn kill_window(session_name: &str) -> Result<()> {
 /// pane process **before** removing its cwd on Windows, where a directory that
 /// is a live process's cwd cannot be removed (`os error 32`); Unix permits it,
 /// so callers only need the returned pid on Windows.
-pub fn window_pane_pid(session_name: &str) -> Result<Option<u32>> {
-    let target = window_target(session_name);
+pub fn window_pane_pid(session_name: &str, pane_id: &str) -> Result<Option<u32>> {
+    let target = agent_target(session_name, pane_id);
     let output = local_mux_command(&["display-message", "-p", "-t", &target, "#{pane_pid}"])
         .output()
         .context("Failed to run tmux display-message for pane pid")?;

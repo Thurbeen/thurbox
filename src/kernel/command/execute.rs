@@ -125,7 +125,7 @@ pub(super) fn execute(
                 .get_session_by_id(id)
                 .map_err(|e| format!("get session: {e}"))?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            crate::agent::tmux::send_prompt_now(&session.name, text)
+            crate::agent::tmux::send_prompt_now(&session.name, &session.backend_id, text)
                 .map_err(|e| format!("send: {e}"))
         }
         Command::Reorder { delta, .. } => reorder(&db, id, *delta),
@@ -573,7 +573,7 @@ fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(
                 .get_session_by_id(id)
                 .map_err(|e| format!("get session: {e}"))?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            crate::agent::tmux::send_prompt_now(&target.name, &prompt)
+            crate::agent::tmux::send_prompt_now(&target.name, &target.backend_id, &prompt)
                 .map_err(|e| format!("send: {e}"))?;
         }
         None => {
@@ -590,8 +590,13 @@ fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(
             let spawned = crate::session_ops::spawn::spawn_session_headless(db, request)?;
             // The agent needs a moment to be ready for input; sending into a
             // shell that has not drawn its prompt loses the text.
-            crate::agent::tmux::send_prompt_after_delay(&spawned.name, &prompt, 3)
-                .map_err(|e| format!("send: {e}"))?;
+            crate::agent::tmux::send_prompt_after_delay(
+                &spawned.name,
+                &spawned.backend_id,
+                &prompt,
+                3,
+            )
+            .map_err(|e| format!("send: {e}"))?;
         }
     }
 

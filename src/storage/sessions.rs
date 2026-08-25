@@ -34,6 +34,10 @@ pub struct DeletedSessionInfo {
     /// Persisted backend (`local-tmux` or `ssh:<host>`). Preserved on restore so
     /// a remote session re-spawns against its own host, not the local default.
     pub backend_type: String,
+    /// The pane id (`%N`) the session held when it was deleted — what the reap
+    /// kills, so a live session sharing the name is never the one torn down.
+    /// Empty for rows persisted before local spawns recorded an id.
+    pub backend_id: String,
     pub deleted_at: u64,
     /// Whether this row was hard-deleted (tmux window + worktrees torn down). A
     /// force-deleted session is shown in the restore list but cannot be restored
@@ -327,7 +331,7 @@ impl Database {
         let sql = format!(
             "SELECT s.id, s.name, s.agent, s.agent_session_id, \
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
-             s.force_deleted, \
+             s.force_deleted, s.backend_id, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
@@ -345,9 +349,10 @@ impl Database {
             let deleted_at: i64 = row.get(6)?;
             let backend_type: String = row.get(7)?;
             let force_deleted: i64 = row.get(8)?;
-            let wt_repo: Option<String> = row.get(9)?;
-            let wt_path: Option<String> = row.get(10)?;
-            let wt_branch: Option<String> = row.get(11)?;
+            let backend_id: String = row.get(9)?;
+            let wt_repo: Option<String> = row.get(10)?;
+            let wt_path: Option<String> = row.get(11)?;
+            let wt_branch: Option<String> = row.get(12)?;
 
             let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch);
 
@@ -360,6 +365,7 @@ impl Database {
                     cwd: cwd.map(PathBuf::from),
                     parent_session_id: parent_str.and_then(|s| s.parse().ok()),
                     backend_type,
+                    backend_id,
                     deleted_at: deleted_at as u64,
                     force_deleted: force_deleted != 0,
                     worktrees: Vec::new(),
@@ -446,6 +452,21 @@ impl Database {
             )
             .optional()
             .map(Option::flatten)
+    }
+
+    /// Record the pane id (`%N`) of a session's agent window. A targeted UPDATE
+    /// like [`set_session_shell`](Self::set_session_shell) — one column, no
+    /// worktree churn. Used to refresh a stale or missing id (a legacy row the
+    /// interface just resolved by window name, a restore's fresh spawn);
+    /// ordinary spawns persist theirs through
+    /// [`upsert_session`](Self::upsert_session). Returns whether a row matched.
+    pub fn set_backend_id(&self, id: SessionId, pane: &str) -> rusqlite::Result<bool> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE sessions SET backend_id = ?1 \
+             WHERE id = ?2 AND deleted_at IS NULL",
+        )?;
+        let updated = stmt.execute(params![pane, id.to_string()])?;
+        Ok(updated > 0)
     }
 
     /// Record — or clear — the pane id of a session's companion shell. A

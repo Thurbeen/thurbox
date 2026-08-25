@@ -144,9 +144,9 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         return Ok(false);
     }
 
-    // A remote session's window lives on its host and its pane id is not carried
-    // on a deleted row, so there is nothing here that could kill it correctly.
-    // Left running and reported rather than half-killed.
+    // A remote session's window lives on its host, and a best-effort reap is
+    // not the place to be resolving hosts and dialing ssh. Left running and
+    // reported rather than half-killed.
     if crate::session::is_remote_backend(&row.backend_type) {
         tracing::warn!(
             "'{}' was soft-deleted on {}; its remote window is left running",
@@ -156,7 +156,7 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         return Ok(false);
     }
 
-    if let Err(e) = crate::agent::tmux::kill_window(&row.name) {
+    if let Err(e) = crate::agent::tmux::kill_window(&row.name, &row.backend_id) {
         // The window may already be gone — the agent exited, or a previous reap
         // got there first. Not worth failing a cleanup over.
         tracing::debug!("kill_window({}) during reap: {e}", row.name);
@@ -182,11 +182,11 @@ fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDel
     // process's cwd, and a session's agent runs with cwd = its worktree /
     // extension home; Unix has no such restriction, so this is Windows-only.
     #[cfg(windows)]
-    let pane_pid = crate::agent::tmux::window_pane_pid(&session.name)
+    let pane_pid = crate::agent::tmux::window_pane_pid(&session.name, &session.backend_id)
         .ok()
         .flatten();
 
-    match crate::agent::tmux::kill_window(&session.name) {
+    match crate::agent::tmux::kill_window(&session.name, &session.backend_id) {
         Ok(()) => report.killed_window = true,
         Err(e) => tracing::warn!("kill_window({}) failed: {e}", session.name),
     }

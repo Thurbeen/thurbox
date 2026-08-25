@@ -1,10 +1,11 @@
 //! Attaching to a session whose pane id the database does not carry.
 //!
-//! This is the gap that made the creation flow useless: a **local** spawn leaves
-//! `backend_id` empty on purpose — "for the TUI to resolve by name", which is
-//! what v1 does when it adopts windows at restore — so a session created by v2
-//! had a running agent, a real tmux window, and an interface insisting it had
-//! "no pane yet".
+//! This is the gap that made the creation flow useless: a **local** spawn used
+//! to leave `backend_id` empty — "for the TUI to resolve by name" — so a
+//! session created by v2 had a running agent, a real tmux window, and an
+//! interface insisting it had "no pane yet". Local spawns record their pane id
+//! now, but the name path remains the legacy ramp for rows persisted before
+//! that (and for psmux, which cannot report one), so it stays under test.
 //!
 //! Driven against a real tmux server on a private socket, because the thing under
 //! test is precisely the round trip: a window exists, its name is derivable from
@@ -115,12 +116,18 @@ async fn a_session_with_no_pane_id_is_found_by_its_window_name() {
         .failure("11111111-1111-1111-1111-111111111111")
         .unwrap_or_default()
         .to_string();
+    // A name-resolved adoption is queued for the loop to persist, so this row
+    // stops depending on its (non-unique) name after this first attach.
+    let adopted = terminals.drain_adopted_panes();
     tmux(&["kill-server"]);
 
     assert!(
         attached,
         "a session whose window exists must be attached, not reported as paneless: {failure}"
     );
+    assert_eq!(adopted.len(), 1, "the resolved pane must be migrated");
+    assert_eq!(adopted[0].0, "11111111-1111-1111-1111-111111111111");
+    assert!(adopted[0].1.starts_with('%'), "{:?}", adopted[0].1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -192,6 +199,73 @@ fn a_remote_row_is_not_resolved_by_name() {
         terminals.failure("11111111-1111-1111-1111-111111111111"),
         Some("session has no pane yet")
     );
+}
+
+/// Two sessions sharing a name, each carrying its own pane id — what accepting
+/// the creation flow's proposed default twice now produces. Both must attach:
+/// the id is precise where the shared `tb-` window name is ambiguous.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_sessions_sharing_a_name_both_attach_by_their_pane_ids() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", home.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    let pane_of =
+        |out: std::process::Output| String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let first_pane = pane_of(tmux(&[
+        "new-window",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-demo",
+        "sh -c 'while :; do sleep 1; done'",
+    ]));
+    let second_pane = pane_of(tmux(&[
+        "new-window",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-demo",
+        "sh -c 'while :; do sleep 1; done'",
+    ]));
+    assert!(first_pane.starts_with('%') && second_pane.starts_with('%'));
+
+    let mut first = row("demo");
+    first.backend_id = Some(first_pane);
+    let mut second = row("demo");
+    second.id = "22222222-2222-2222-2222-222222222222".into();
+    second.backend_id = Some(second_pane);
+    let rows = snapshot(vec![first, second]);
+
+    let mut terminals = Terminals::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut both = false;
+    while std::time::Instant::now() < deadline && !both {
+        terminals.sync(&rows, 24, 80);
+        both = terminals.is_attached("11111111-1111-1111-1111-111111111111")
+            && terminals.is_attached("22222222-2222-2222-2222-222222222222");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Neither pane was resolved by name, so there is nothing to migrate.
+    let adopted = terminals.drain_adopted_panes();
+    tmux(&["kill-server"]);
+
+    assert!(
+        both,
+        "both sessions carry their own pane id and must attach"
+    );
+    assert!(adopted.is_empty(), "nothing was name-resolved: {adopted:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

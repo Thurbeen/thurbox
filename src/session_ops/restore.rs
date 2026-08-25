@@ -128,14 +128,19 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     // above, since its worktrees cannot be recreated from here.
     let hooks_enabled = super::hooks_enabled(db);
     let plan = super::restart::build_restart_plan(&session, None, hooks_enabled)?;
-    crate::agent::tmux::spawn_window(
+    let pane = crate::agent::tmux::spawn_window(
         &plan.window_name,
         &plan.command,
         &plan.args,
         plan.cwd.as_deref(),
         &plan.env,
     )
-    .map_err(|e| format!("re-spawn: {e}"))
+    .map_err(|e| format!("re-spawn: {e}"))?;
+    // The row still carries the pane the delete killed; the fresh one is what
+    // every later read must target (empty on psmux — the name fallback stands).
+    db.set_backend_id(session.id, &pane)
+        .map_err(|e| format!("record the new pane: {e}"))?;
+    Ok(())
 }
 
 #[cfg(test)]

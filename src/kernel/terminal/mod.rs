@@ -66,6 +66,10 @@ struct Attached {
     /// rather than assumed: the readying happens on the worker, and until it
     /// has, no second attach on that backend may start.
     readied: bool,
+    /// Whether the pane was resolved by window name rather than taken from the
+    /// row's own `backend_id` — a successful adoption is then worth persisting,
+    /// so the legacy row stops depending on its (non-unique) name.
+    via_name: bool,
     session_handle: Result<crate::agent::Session, String>,
 }
 
@@ -191,11 +195,12 @@ pub struct Terminals {
     failed: HashMap<String, Failure>,
     /// Panes found by window name, per backend: `tb-<name>` → pane id.
     ///
-    /// A **locally** created session has no pane id of its own — `spawn` leaves
-    /// it "for the TUI to resolve by name" (`session_ops::spawn`), which is what
-    /// v1 does when it adopts windows at restore. Without this the session is
-    /// real, its agent is running, and the interface says "session has no pane
-    /// yet" forever.
+    /// The legacy resolution path: rows persisted before local spawns recorded
+    /// their pane id (and psmux spawns, which cannot report one) carry no id of
+    /// their own, and are matched to a pane through this listing. Without it
+    /// such a session is real, its agent is running, and the interface says
+    /// "session has no pane yet" forever. It also validates a *carried* id —
+    /// see [`Self::pane_is_stale`].
     discovered: HashMap<String, WindowPanes>,
     /// When discovery last ran. It is a tmux round trip per backend, so it is
     /// throttled and only runs while some row actually needs resolving.
@@ -234,6 +239,9 @@ pub struct Terminals {
     /// the result is collected here.
     attaching: HashMap<String, String>,
     attached: (Sender<Attached>, Receiver<Attached>),
+    /// Panes adopted by window-name resolution, waiting for the loop to persist
+    /// their id onto the row ([`Self::drain_adopted_panes`]).
+    adopted: Vec<(String, String)>,
     /// Backends whose window list is being read on a worker.
     discovering: std::collections::HashSet<String>,
     discovered_rx: (Sender<Discovered>, Receiver<Discovered>),
@@ -277,6 +285,7 @@ impl Terminals {
             failed_version: 0,
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
+            adopted: Vec::new(),
             discovering: std::collections::HashSet::new(),
             discovered_rx: std::sync::mpsc::channel(),
             runtime: tokio::runtime::Handle::try_current().ok(),
@@ -291,10 +300,10 @@ impl Terminals {
     /// (session, pane) — so a pane that cannot be adopted does not retry 20×/s,
     /// and a session whose pane only *becomes* known later is still picked up.
     ///
-    /// A row with no pane id of its own is resolved by **window name**, which is
-    /// what makes a locally created session usable: `spawn` deliberately leaves
-    /// the id empty for the interface to resolve, exactly as v1 does when it
-    /// adopts windows at restore.
+    /// A row with no pane id of its own is resolved by **window name** — the
+    /// legacy path for rows persisted before local spawns recorded their pane id
+    /// (and for psmux, which cannot report one). A successful name-resolved
+    /// adoption is queued for the loop to persist, so it happens once per row.
     pub fn sync(&mut self, snapshot: &Snapshot, rows: u16, cols: u16) {
         self.collect_discovered();
         self.collect_attached(rows, cols);
@@ -353,9 +362,9 @@ impl Terminals {
             // it, and falling through to `None` here is also what lets
             // [`Self::missing_agents`] relaunch a session whose window is gone for
             // good.
-            let candidate = match row.backend_id.clone() {
-                Some(id) if !self.pane_is_stale(row, &id) => Some(id),
-                _ => self.pane_by_name(&row.backend, &row.name),
+            let (candidate, via_name) = match row.backend_id.clone() {
+                Some(id) if !self.pane_is_stale(row, &id) => (Some(id), false),
+                _ => (self.pane_by_name(&row.backend, &row.name), true),
             };
             // The same attempt would fail the same way; a different one is worth
             // making.
@@ -374,7 +383,7 @@ impl Terminals {
             if !self.backend_is_ready(&row.backend) && self.opening(&row.backend) {
                 continue;
             }
-            self.start_attach(row, backend_id, rows, cols);
+            self.start_attach(row, backend_id, via_name, rows, cols);
         }
 
         // Anything no longer in the snapshot has been deleted; dropping the
@@ -467,6 +476,7 @@ impl Terminals {
         &mut self,
         row: &super::snapshot::SessionRow,
         backend_id: String,
+        via_name: bool,
         rows: u16,
         cols: u16,
     ) {
@@ -536,6 +546,7 @@ impl Terminals {
                 pane,
                 backend: backend_name,
                 readied,
+                via_name,
                 session_handle: result,
             });
         });
@@ -550,6 +561,13 @@ impl Terminals {
             }
             match done.session_handle {
                 Ok(session) => {
+                    // A pane that had to be resolved by window name is worth
+                    // persisting: names are not unique, so the row must not
+                    // depend on one past this first adoption. The loop drains
+                    // these and writes the id back (`drain_adopted_panes`).
+                    if done.via_name {
+                        self.adopted.push((done.session.clone(), done.pane));
+                    }
                     self.live.insert(
                         done.session.clone(),
                         Live {
@@ -580,6 +598,14 @@ impl Terminals {
                 self.discovered.insert(done.backend, panes);
             }
         }
+    }
+
+    /// Take the panes adopted by window-name resolution since the last call,
+    /// as `(session id, pane id)` pairs for the loop to persist. Legacy rows
+    /// (spawned before local spawns recorded their pane id) migrate this way:
+    /// one successful adoption, and the row stops depending on its name.
+    pub fn drain_adopted_panes(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.adopted)
     }
 
     /// Let go of a session's terminal, so the next sync attaches afresh.

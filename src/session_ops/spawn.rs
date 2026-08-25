@@ -75,6 +75,10 @@ pub struct SpawnResult {
     pub name: String,
     pub agent: String,
     pub agent_session_id: String,
+    /// The spawned pane's id (`%N`), empty only where the platform can't
+    /// report one (psmux). Callers that act on the fresh session (prompt
+    /// delivery, teardown) target this rather than the non-unique window name.
+    pub backend_id: String,
     pub cwd: PathBuf,
     pub worktrees: Vec<SharedWorktree>,
     pub parent_session_id: Option<SessionId>,
@@ -205,8 +209,11 @@ pub fn spawn_session_headless_with_progress(
     let (command, args) = super::build_agent_invocation(&agent_def, &config);
 
     report(SpawnPhase::Launching);
-    // Remote spawns drive the SSH backend's control mode to learn the real pane
-    // id; local spawns leave `backend_id` empty for the TUI to resolve by name.
+    // Both paths learn the real pane id up front — the remote one over the SSH
+    // backend's control mode, the local one from `new-window -P`. The id is
+    // what the row is targeted by thereafter: a window *name* is not unique
+    // (two sessions can share one), and resolving by name is only the legacy
+    // fallback for rows persisted before the id was recorded.
     let backend_id = match host.as_ref() {
         Some(h) => crate::agent::tmux::spawn_window_remote(
             h,
@@ -217,17 +224,14 @@ pub fn spawn_session_headless_with_progress(
             &config.env,
         )
         .map_err(|e| format!("Failed to spawn remote tmux window: {e:#}"))?,
-        None => {
-            crate::agent::tmux::spawn_window(
-                &req.name,
-                &command,
-                &args,
-                Some(&launch_cwd),
-                &config.env,
-            )
-            .map_err(|e| format!("Failed to spawn tmux window: {e}"))?;
-            String::new()
-        }
+        None => crate::agent::tmux::spawn_window(
+            &req.name,
+            &command,
+            &args,
+            Some(&launch_cwd),
+            &config.env,
+        )
+        .map_err(|e| format!("Failed to spawn tmux window: {e}"))?,
     };
 
     report(SpawnPhase::Persisting);
@@ -261,7 +265,7 @@ pub fn spawn_session_headless_with_progress(
         );
         let cleanup = match host.as_ref() {
             Some(h) => crate::agent::tmux::kill_pane_remote(h, &backend_id),
-            None => crate::agent::tmux::kill_window(&req.name),
+            None => crate::agent::tmux::kill_window(&req.name, &backend_id),
         };
         if let Err(kill_err) = cleanup {
             tracing::error!(
@@ -292,6 +296,7 @@ pub fn spawn_session_headless_with_progress(
         name: req.name,
         agent: agent_name,
         agent_session_id,
+        backend_id,
         cwd: primary_cwd,
         worktrees,
         parent_session_id: req.parent_session_id,

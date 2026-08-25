@@ -734,6 +734,46 @@ impl SnapshotStore {
         Ok(())
     }
 
+    /// Record the pane id a session's agent window was adopted at.
+    ///
+    /// The migration path for rows persisted before local spawns recorded their
+    /// pane id: the interface resolved this one by window name, and a name is
+    /// not unique — persisting the id is what stops the row depending on it.
+    /// Same shape as [`Self::remember_shell`]: a targeted single-column UPDATE
+    /// plus an in-place correction of the snapshot row, since our own write
+    /// does not move `data_version`.
+    pub fn remember_pane(&mut self, session: &str, pane: &str) -> Result<(), String> {
+        let Some(database) = &self.database else {
+            return Err("no database".to_string());
+        };
+        let Some(id) = parse_id(session) else {
+            return Err(format!("not a session id: {session}"));
+        };
+        if self
+            .current
+            .sessions
+            .iter()
+            .any(|row| row.id == session && row.backend_id.as_deref() == Some(pane))
+        {
+            return Ok(());
+        }
+        let matched = database
+            .set_backend_id(id, pane)
+            .map_err(|e| format!("record agent pane: {e}"))?;
+        if !matched {
+            return Err(format!("session not found: {session}"));
+        }
+        if let Some(current) = self
+            .current
+            .sessions
+            .iter_mut()
+            .find(|row| row.id == session)
+        {
+            current.backend_id = Some(pane.to_string());
+        }
+        Ok(())
+    }
+
     /// Take a pending "focus this session" request, if another process left one.
     ///
     /// The database probe lives in [`Self::refresh`], not here: the claiming
