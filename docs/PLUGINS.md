@@ -1,10 +1,16 @@
 # Writing a thurbox plugin
 
-> **The API is public but unstable.** It will change without a deprecation
-> period until it settles. Plugins are **trusted code**: they run in-process
-> with whatever capabilities the kernel grants, exactly like the shell
-> extensions under `extensions/`. Install one the way you would install a shell
-> script from a stranger — which is to say, read it first.
+> **The API is settled in its essentials, not frozen.** The four node kinds and
+> the snapshot-read/command-write split are load-bearing and asserted by tests.
+> What still moves is the published `thurbox.*` shape: a field can be added,
+> renamed or dropped in a minor release. `plugins.lock` records the commit each
+> installed pane resolved to, so pin what you install and re-run
+> `thurbox-cli plugin check` after an upgrade.
+>
+> **Plugins are trusted code.** They run in-process with whatever capabilities
+> the kernel grants, exactly like the shell extensions under `extensions/`.
+> Install one the way you would install a shell script from a stranger — which
+> is to say, read it first.
 
 A plugin is one `.lua` file. Drop it in your plugin directory and it loads on the
 next save; there is no build step and no restart.

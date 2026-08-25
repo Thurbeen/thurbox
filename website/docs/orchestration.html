@@ -15,6 +15,69 @@ breadcrumb: 'Orchestration'
   repo &mdash; and points at a template you can start from.
 </p>
 
+<h2 id="just-ask">
+  Start by just asking
+  <a href="#just-ask" class="heading-anchor">#</a>
+</h2>
+<p>
+  Before any of the structure below: you do not have to write the orchestration yourself.
+  <code>thurbox-cli</code>
+  is installed beside
+  <code>thurbox</code>
+  , so it is already on every session agent&rsquo;s
+  <code>PATH</code>
+  &mdash; from inside any session you can ask for a fleet in English.
+</p>
+<ul class="prompts">
+  <li>
+    Using
+    <code>thurbox-cli</code>
+    , start refactor sessions for this repo &mdash; one per crate, each on its own worktree branch
+    off
+    <code>main</code>
+    , and send each one a prompt to refactor its crate. Then show me
+    <code>thurbox-cli session list</code>
+    .
+  </li>
+  <li>
+    Spawn a reviewer session on this repo with no worktree, and send it standing instructions to
+    review every file I change.
+  </li>
+  <li>
+    Create a nightly automation that sends &ldquo;triage new issues&rdquo; to the
+    <code>triage</code>
+    session on weekdays at 09:00.
+  </li>
+</ul>
+<p>
+  The agent discovers the surface with
+  <code>thurbox-cli --help</code>
+  ; the commands it reaches for are
+  <code>session create</code>
+  (with
+  <code>--worktree-branch</code>
+  ,
+  <code>--agent</code>
+  ,
+  <code>--host</code>
+  ,
+  <code>--add-repo</code>
+  ),
+  <code>session send</code>
+  ,
+  <code>session list</code>
+  and
+  <code>automation create</code>
+  . Everything it does shows up in your running TUI within a tick, because the TUI and the CLI
+  share one SQLite database. The
+  <a href="recipes.html">recipes</a>
+  page has the same thing written as bash, if you would rather commit a script.
+</p>
+<p>
+  That covers a handful of sessions on one goal. The rest of this page is about what changes when
+  you are doing it across many repos, repeatedly.
+</p>
+
 <h2 id="problem">
   The problem
   <a href="#problem" class="heading-anchor">#</a>

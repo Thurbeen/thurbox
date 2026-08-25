@@ -12,4 +12,10 @@ code_blocks = false
 
 [MD033]
 # Allow the HTML used for the README feature-wall layout
-allowed_elements = ["table", "tr", "td", "img", "picture", "source", "a", "br", "div"]
+allowed_elements = [
+  "table", "tr", "td", "img", "picture", "source", "a", "br", "div",
+  # The README collapses its secondary install routes behind a disclosure;
+  # <summary> takes <b> rather than ** because markdown emphasis inside raw
+  # HTML renders inconsistently.
+  "details", "summary", "b",
+]

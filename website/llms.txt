@@ -10,20 +10,24 @@
 > (plus remote hosts over SSH). A headless companion binary, `thurbox-cli`,
 > drives the same sessions for scripting and automation.
 >
-> Release lines: 1.x is the latest stable line (newest release v1.8.7) and gets
-> bug and security fixes; 2.x is published but unstable — its plugin kernel, the
-> snapshot panes read, and the panes it ships can change between releases. Every
-> installer takes the newest release (2.x) unless a version is pinned, so 1.x is
-> the recommended install: run `export VERSION=v1.8.7` and then
+> Installing: run
 > `curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh`
-> on Linux/macOS, or `$env:THURBOX_VERSION = 'v1.8.7'` and then
+> on Linux/macOS, or
 > `irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex`
-> on Windows. The version assignment must be its own line; as a pipeline prefix
-> it binds to curl, not to the sh reading from the pipe. Auto-update never
-> crosses a major version, so a 1.x install is told 2.x exists and is never moved
-> onto it; `thurbox-cli update --force` is the deliberate way across. The
-> package-manager channels (winget, Chocolatey, Homebrew, AUR) publish only the
-> newest release and cannot pin 1.x.
+> on Windows, then run `thurbox`. That is the whole setup — config, themes and
+> the interface itself are seeded on first launch. No pin or flag is needed:
+> every installer takes the newest release, which is the 2.x line.
+>
+> Release lines: 2.x is the current line and where new features land. 1.x is
+> still maintained on the `v1.x` branch for bug and security fixes; run it only
+> if you need a pane 2.x does not have (the file viewer). Pin it with
+> `export VERSION=v1.8.7` before the installer on Linux/macOS, or
+> `$env:THURBOX_VERSION = 'v1.8.7'` on Windows. The version assignment must be
+> its own line; as a pipeline prefix it binds to curl, not to the sh reading
+> from the pipe. Auto-update never crosses a major version, so a 1.x install is
+> told 2.x exists and is never moved onto it; `thurbox-cli update --force` is
+> the deliberate way across. The package-manager channels (winget, Chocolatey,
+> Homebrew, AUR) publish only the newest release and cannot pin 1.x.
 >
 > Since 2.0 its defining feature is that the interface is fully customizable:
 > no UI is compiled into the binary. thurbox boots a Rust kernel that reads a
@@ -32,8 +36,15 @@
 > rewrite, or install from someone else, with no recompile and no restart. The
 > arrangement (`ui/layout.lua`), agents (`agents.toml`), hosts (`hosts.toml`),
 > themes, keybindings and settings are all data files. Because the interface is
-> plain text in a directory, the usual way to change it is to point a coding
-> session at that directory and ask for the change in English.
+> plain text in a directory, the usual way to change it is to ask a coding
+> session for the change in English — thurbox ships a built-in `ui-skill`
+> extension that teaches whichever CLI is running how the interface is put
+> together, so "add my project logs within a dedicated pane on the right in the
+> thurbox UI" works from any session. The same holds for orchestration:
+> `thurbox-cli` is installed beside `thurbox`, so it is already on every session
+> agent's PATH, and "using thurbox-cli, start refactor sessions for this repo,
+> one per crate, each on its own worktree branch" spins up a fleet without a
+> script.
 
 ## Docs
 
@@ -42,10 +53,11 @@
 - [Features](https://thurbox.thurbeen.eu/docs/features.html): the customizable interface and a full v1-to-v2 surface map, plus sessions, agent definitions, git worktrees, remote SSH and WSL hosts, automations, tasks, global search, headless CLI.
 - [Built-in agents](https://thurbox.thurbeen.eu/docs/agents.html): every built-in coding agent (claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp) with its recommended agents.toml config, resume/fork behavior, and status support.
 - [Comparison](https://thurbox.thurbeen.eu/docs/comparison.html): how Thurbox compares to Conductor, Claude Squad, Cursor, and other parallel coding-agent tools.
-- [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, winget, Chocolatey, or from source; prerequisites; how to pin the latest stable 1.x instead of the unstable 2.x default.
+- [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, winget, Chocolatey, or from source; prerequisites; running it; how to pin a specific version.
+- [Orchestration](https://thurbox.thurbeen.eu/docs/orchestration.html): asking an agent to spin up a fleet with thurbox-cli, and the control-plane pattern for running agents across many repos.
 - [Configuration](https://thurbox.thurbeen.eu/docs/configuration.html): every config file and knob — agents.toml, hosts.toml, settings.toml, themes, keybindings.
 - [Deprecated surfaces](https://thurbox.thurbeen.eu/docs/deprecated.html): the six panes 1.x had that the current interface does not — code review and the info panel, now the installable thurbox-code-review and thurbox-info-panel plugins; the file viewer, with no replacement; and the tasks/automations/restore panes that moved to thurbox-cli.
-- [Using v1](https://thurbox.thurbeen.eu/docs/v1.html): thurbox 1.x is the latest stable line and is still maintained — what it has that the unstable 2.x interface does not, how to stay on it or go back, and what it will receive.
+- [Using v1](https://thurbox.thurbeen.eu/docs/v1.html): thurbox 1.x is still maintained — what it has that the current interface does not, how to stay on it or go back, and what it will receive.
 - [The Interface](https://thurbox.thurbeen.eu/docs/v2-interface.html): every pane is an editable Lua plugin — how to move, disable, replace or write one, how to have a coding agent do it for you, what the kernel refuses a plugin, and the two v1 panes (thurbox-code-review, thurbox-info-panel) you install as plugins.
 - [Architecture](https://thurbox.thurbeen.eu/docs/architecture.html): the Lua-on-Rust plugin kernel and its five rules, module isolation, the tmux session backend, and design decisions (including the Elm Architecture the interface used before 2.0).
 

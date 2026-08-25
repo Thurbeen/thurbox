@@ -4,139 +4,23 @@
   <img src="./website/assets/logo.svg" alt="thurbox" width="340">
 </div>
 
-Run any coding-agent CLI in persistent terminal sessions.
-Thurbox is a multi-session TUI orchestrator that launches
-Claude Code, Codex, Antigravity, opencode, aider — or any agent
-you describe — inside persistent tmux panes that survive
-crashes, restarts, and reboots. Sessions, agents, and git
-worktrees are first-class citizens.
+Run any coding-agent CLI — Claude Code, Codex, Antigravity, opencode, aider, or
+one you describe yourself — side by side in persistent tmux sessions, each on
+its own git worktree. Sessions survive crashes, restarts and reboots.
 
-**v2's headline feature: the whole interface is yours to shape.** There is no
-built-in UI compiled into the binary any more. thurbox boots a kernel, reads a
-directory of Lua files, and draws whatever it finds — so every pane, including
-the session list, is a file you can move, turn off, delete, rewrite, or install
-from someone else. The agents, hosts, themes, keybindings and settings behind
-it are data files you edit too. No fork, no recompile, no restart.
-
-**[Customization →](#customization)**
+And every pane you see is a **Lua file in a directory you own** — the session
+list included. Move it, turn it off, rewrite it, or install one somebody else
+wrote. No fork, no recompile, no restart. **[Customization →](#customization)**
 
 [![CI](https://github.com/Thurbeen/thurbox/workflows/CI/badge.svg)](https://github.com/Thurbeen/thurbox/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Website](https://img.shields.io/badge/Website-thurbox.thurbeen.eu-blue)](https://thurbox.thurbeen.eu/)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Thurbeen_thurbox&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Thurbeen_thurbox)
 
-> [!IMPORTANT]
-> **v2 is unstable. The latest stable release is v1 —
-> [v1.8.7](https://github.com/Thurbeen/thurbox/releases/tag/v1.8.7).**
-> v2 is published and usable, but it is still moving: the plugin kernel, the
-> `thurbox.*` snapshot shape and the bundled panes are all subject to change
-> between releases, and a change there can break panes you wrote or installed.
-> Use it if you want the customizable interface and can absorb that; stay on v1
-> if you want the version that does not move under you.
->
-> **v2 is also not a drop-in v1.** The interface is now Lua plugins on
-> a Rust kernel — which is what makes it fully customizable, and is also why some
-> v1 surfaces did not come with it. They were compiled-in panes; they are panes
-> anyone can write now, and two of them have already been rewritten that way:
->
-> | Gone from the binary | v1 chord | Where it lives now |
-> |---|---|---|
-> | Code review | `Ctrl+X` / `F7` | the [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) plugin |
-> | File viewer | `Ctrl+E` / `F3` | nothing yet |
-> | Info panel | `Ctrl+B` / `F2` | the [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) plugin |
-> | Tasks panel | `Ctrl+W` / `F5` | `thurbox-cli task` |
-> | Automations pane | `Ctrl+P` | `thurbox-cli automation` |
->
-> Installing a plugin is a clone:
->
-> ```bash
-> thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
-> thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel
-> ```
->
-> The review pane takes the centre slot beside the agent and reclaims `Ctrl+X` /
-> `F7` on its own; the info panel wants one line in your `layout.lua` to give the
-> column a place (its README has it).
->
-> Each freed chord is otherwise deliberately left **unbound** rather than reused,
-> so no muscle memory quietly does something else. Everything outside the
-> interface — sessions, agents, worktrees, remote hosts, automations, your
-> database — is unchanged.
->
-> The table above lists only what *left*. For the full map — what is bundled,
-> what installs, what is owed, and what v2 gained — see
-> [What v1 had, and where it is in v2](#what-v1-had-and-where-it-is-in-v2).
->
-> **Upgrading to v2 is never automatic.** Auto-update does not cross a major
-> version: a 1.x install is told 2.x exists and keeps updating along 1.x. You
-> cross on purpose, with `thurbox-cli update --force` or a fresh install. And the
-> first v2 launch of a profile with v1 history asks once, before anything changes
-> — answering `q` there prints the reinstall command for 1.x.
->
-> **To go back to v1** — the stable line:
->
-> ```bash
-> # export, not a prefix: `VERSION=… curl | sh` binds it to curl, not to the sh
-> export VERSION=v1.8.7
-> curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-> ```
->
-> ```powershell
-> $env:THURBOX_VERSION = 'v1.8.7'
-> irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
-> ```
->
-> v1 is maintained on the
-> [`v1.x`](https://github.com/Thurbeen/thurbox/tree/v1.x) branch; 1.x patches are
-> on the [releases page](https://github.com/Thurbeen/thurbox/releases).
-
 ![Thurbox Demo](./docs/media/thurbox-demo.gif)
 
 ## Installation
 
-> [!IMPORTANT]
-> **Install v1 unless you specifically want v2's customizable interface.** v1.8.7
-> is the latest stable release; v2 is the newest one, and it is unstable. Every
-> installer takes the *newest* release unless you pin a version, so the
-> recommended commands below pin it. The package-manager channels (winget,
-> Chocolatey, Homebrew, AUR) publish only the newest release and **cannot** pin
-> v1 — on those channels the shell/PowerShell installers are the way to v1.
-
-> [!NOTE]
-> **Windows uses psmux, not tmux.** Every Windows route needs
-> [psmux](https://github.com/psmux/psmux), a drop-in tmux clone on ConPTY that
-> speaks the same control-mode protocol, installed separately. (A WSL distro is
-> a remote host and runs tmux inside the distro.) psmux is the newer of the two
-> and a bit less stable, so please report anything you hit.
-
-### Recommended: v1, the stable line
-
-**Linux / macOS:**
-
-```bash
-export VERSION=v1.8.7
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-```
-
-**Windows (PowerShell):**
-
-```powershell
-$env:THURBOX_VERSION = 'v1.8.7'
-irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
-```
-
-> [!WARNING]
-> **`export` / `$env:` on its own line is not a style choice.** In
-> `VERSION=v1.8.7 curl … | sh` the assignment binds to `curl`, and the `sh`
-> reading from the pipe never sees it — you get the newest release, silently.
-> Set the variable first, on its own line.
-
-That install stays on v1: thurbox's auto-update **never crosses a major
-version**, so a 1.x binary will not wake up running 2.x. It still *reports* that
-2.x exists; `thurbox-cli update --force` is the deliberate way across.
-
-### The newest release (v2, unstable)
-
 **Linux / macOS:**
 
 ```bash
@@ -149,99 +33,173 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
 ```
 
-Installs the latest release — currently the unstable v2 — with checksum
-verification and platform auto-detection, to `~/.local/bin` on Linux/macOS and
-`%LOCALAPPDATA%\Programs\thurbox` (added to your user `PATH`) on Windows.
+That installs both binaries — `thurbox` (the TUI) and `thurbox-cli` (the
+headless one) — with checksum verification and platform auto-detection, to
+`~/.local/bin` on Linux/macOS and `%LOCALAPPDATA%\Programs\thurbox` (added to
+your user `PATH`) on Windows.
 
-**Other options:**
+You also need **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) on
+native Windows), **git**, and at least one coding-agent CLI — see
+[Prerequisites](#prerequisites).
 
-```bash
-# Custom directory
-export INSTALL_DIR=/usr/local/bin
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+<details>
+<summary><b>Other ways to install</b> — Homebrew · AUR · winget · Chocolatey · from source</summary>
 
-# Pin any version — PowerShell uses $env:THURBOX_VERSION / $env:THURBOX_INSTALL_DIR
-export VERSION=v1.0.0
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-```
-
-**winget (Windows):**
-
-```powershell
-winget install Thurbeen.thurbox
-```
-
-Installs the prebuilt x86_64 Windows binaries (`thurbox.exe` +
-`thurbox-cli.exe`) from the GitHub Release as portable commands on your `PATH`.
-Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
-separately). Live on
-[`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs).
-
-**Chocolatey (Windows):**
-
-```powershell
-choco install thurbox
-```
-
-Installs the prebuilt x86_64 Windows binaries (`thurbox.exe` +
-`thurbox-cli.exe`) from the GitHub Release and shims them onto your `PATH`.
-Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
-separately — there is no Chocolatey package for it).
-
-> [!TIP]
-> **On Windows, `irm … install.ps1 | iex` is the recommended route** — and the
-> only Windows route that can install v1. Both winget-pkgs and the Chocolatey
-> community repo are *manually moderated* and rate-limited, so thurbox publishes
-> to each **at most once every 30 days** (intermediate releases are coalesced
-> into the next submission). Those channels carry only the newest release,
-> lagging behind it; the PowerShell installer and
-> [GitHub Releases](https://github.com/Thurbeen/thurbox/releases) have every
-> version immediately.
-
-**Homebrew (macOS / Linux):**
+**Homebrew (macOS Apple Silicon / Linux x86_64):**
 
 ```bash
 brew install thurbeen/thurbox/thurbox
 ```
 
-Installs the prebuilt release binaries (`thurbox` + `thurbox-cli`)
-from the [tap](https://github.com/Thurbeen/homebrew-thurbox), with
-`tmux` and `git` pulled in as dependencies. Supports macOS arm64
-(Apple Silicon) and Linux x86_64.
+Prebuilt binaries from the [tap](https://github.com/Thurbeen/homebrew-thurbox),
+with `tmux` and `git` pulled in as dependencies.
 
 **Arch Linux (AUR):**
-
-Thurbox is on the AUR as
-[`thurbox`](https://aur.archlinux.org/packages/thurbox) (builds
-from source) and
-[`thurbox-bin`](https://aur.archlinux.org/packages/thurbox-bin)
-(prebuilt release binary). Install with your AUR helper:
 
 ```bash
 paru -S thurbox-bin   # prebuilt binary (fastest)
 paru -S thurbox       # build from source
 ```
 
-`tmux` is pulled in as a dependency. (Swap `paru` for `yay` or
-your preferred helper.)
+(Swap `paru` for `yay` or your preferred helper.)
+
+**winget / Chocolatey (Windows x86_64):**
+
+```powershell
+winget install Thurbeen.thurbox
+choco install thurbox
+```
+
+Both install the prebuilt `thurbox.exe` + `thurbox-cli.exe` onto your `PATH` and
+need [psmux](https://github.com/psmux/psmux) installed separately. Both channels
+are manually moderated, so thurbox publishes to each at most once every 30 days
+— they trail the newest release. The PowerShell installer and
+[GitHub Releases](https://github.com/Thurbeen/thurbox/releases) have every
+version immediately.
 
 **From source:**
 
 ```bash
-sudo pacman -S --needed git tmux rust   # Arch deps; use your distro's equivalent
 git clone https://github.com/Thurbeen/thurbox.git
 cd thurbox
-git checkout v1.x                       # omit for the unstable v2 on main
-cargo build --release
-# binary at target/release/thurbox
+cargo build --release   # binaries at target/release/
 ```
 
-See [Prerequisites](#prerequisites) for required tooling.
+**Pin a version or change the install directory:**
+
+```bash
+# `export` on its own line: in `VERSION=… curl … | sh` the assignment binds to
+# curl, and the sh reading from the pipe never sees it.
+export VERSION=v2.5.4
+export INSTALL_DIR=/usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+```
+
+PowerShell uses `$env:THURBOX_VERSION` / `$env:THURBOX_INSTALL_DIR` the same way.
+
+</details>
 
 **Contributing / hacking on thurbox?** The dev environment is a reproducible Nix
 flake (`nix develop` / `direnv allow`) with `just` tasks and an isolated runtime
 sandbox (`scripts/dev/sandbox.sh`) — see
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+
+## Prerequisites
+
+- **tmux >= 3.2** (Linux / macOS), or **[psmux](https://github.com/psmux/psmux)**
+  on native Windows — a drop-in tmux clone thurbox drives identically
+- **A coding-agent CLI** — e.g.
+  [claude](https://github.com/anthropics/claude-code), codex,
+  antigravity, opencode, or aider (whichever agents you plan to run)
+- **git** (required for worktree features)
+- **Rust 1.75+** (only to build from source)
+
+## Getting Started
+
+Run it:
+
+```bash
+thurbox
+```
+
+That is the whole setup. On first launch thurbox seeds its config — the agents
+it knows, the themes, and the interface itself — into `~/.config/thurbox/`, then
+draws a session list on the left and an agent terminal on the right.
+
+1. **Create your first session** — press `Ctrl+N` to open the repo picker.
+   Toggle repos with `Space`; press `w` on a repo to mark it as worktree mode
+   (you'll be prompted for a base branch and new branch name). Confirm with
+   `Enter`, name the session, then pick an **agent**. The agent picker is
+   skipped when only one agent is defined.
+2. **Work with the agent** — the right pane is a live agent session. All keys
+   are forwarded to it; `Ctrl+C` copies if you have a selection, otherwise sends
+   SIGINT.
+3. **Navigate** — `Ctrl+J` / `Ctrl+K` move between sessions, `Ctrl+L` /
+   `Ctrl+H` cycle focus between panes, `Ctrl+/` searches sessions *and the text
+   on their screens*. `Ctrl+O` opens the session's worktree in your editor.
+4. **Quit without killing** — `Ctrl+Q` detaches. Tmux keeps every agent
+   running; relaunch `thurbox` and they are all still there. (Prefer raw tmux?
+   `tmux -L thurbox attach`.)
+5. **Make it yours** — `Ctrl+,` then `]` lists every pane and lets you turn one
+   off; `Ctrl+Y` changes the palette; `F1` rebinds any chord. `F10` reloads the
+   interface from disk.
+
+`F1` is the authoritative key list — it renders the live registry, so it cannot
+drift. The full table is in [Keybindings](#keybindings).
+
+## Just ask for it
+
+Thurbox runs coding agents, and the two things you would otherwise script by
+hand — *fleets of sessions* and *the interface itself* — are both reachable in
+plain English from inside a session. `thurbox-cli` is installed beside
+`thurbox`, so it is already on the agent's `PATH`, and the interface is a
+directory of text files it can read.
+
+### Orchestrate sessions
+
+`thurbox-cli` creates, prompts, forks and tears down sessions headlessly, so an
+agent can spin up a fleet for you. From any session, ask:
+
+> - *Using `thurbox-cli`, start refactor sessions for this repo — one per
+>   crate, each on its own worktree branch off `main`, and send each one a
+>   prompt to refactor its crate. Then show me `thurbox-cli session list`.*
+> - *Spawn a reviewer session on this repo with no worktree, and send it
+>   standing instructions to review every file I change.*
+> - *Create a nightly automation that sends "triage new issues" to the `triage`
+>   session on weekdays at 09:00.*
+
+The agent discovers the surface itself with `thurbox-cli --help`; the commands
+it will reach for are `session create` (with `--worktree-branch`, `--agent`,
+`--host`, `--add-repo`), `session send`, `session list` and `automation create`
+— all documented under [Headless CLI](#headless-cli-thurbox-cli). Everything it
+does shows up in your running TUI within a tick, because both binaries share one
+SQLite database.
+
+Prefer a script? [Recipe: provision a monorepo headless](#recipe-provision-a-monorepo-headless)
+does the same thing in bash.
+
+### Reshape the interface
+
+Every pane is a Lua file, so changing the UI is also just a request. From any
+session, ask:
+
+> - *Add my project logs within a dedicated pane on the right in the thurbox
+>   UI.*
+> - *Add a pane on the left with CPU and RAM usage. There is a `top` example
+>   plugin — install it and give it a slot in the layout.*
+> - *Move the search strip to the bottom and make the session column 30% wide.*
+> - *The session list is too noisy — drop the repo group headers and show the
+>   branch instead of the agent name.*
+> - *Install the info panel plugin.*
+
+That works from **any** session, in whichever CLI you run, because thurbox ships
+a built-in `ui-skill` extension: a `thurbox-ui` skill that loads only when the
+request is about the interface. It tells the agent that `thurbox-cli plugin dir`
+finds the directory, that `thurbox-cli plugin check` verifies its own work, and
+warns it off the mistakes that are invisible until runtime. Press `F10` and the
+change is on your screen.
+
+[More on what that looks like →](#ask-the-agent-to-do-it)
 
 ## Why Thurbox
 
@@ -267,6 +225,9 @@ adds:
 - **Git worktree isolation** — each session can spawn on a fresh
   worktree; `Ctrl+S` syncs them with their base branch and asks the
   agent to resolve rebase conflicts automatically.
+- **Scriptable, or just askable** — `thurbox-cli` drives the same
+  sessions headlessly, so an agent *inside* a session can spin up a
+  fleet on your behalf. [More →](#just-ask-for-it)
 
 ## Comparison
 
@@ -651,32 +612,26 @@ to the next session you create. Whole workflows are a layer above all of this �
 
 ### Ask the agent to do it
 
-You do not have to learn Lua to change the interface. thurbox runs coding
-agents, and the interface is a directory of plain text files those agents can
-read — so the shortest path to a change is usually to point a session at that
-directory and ask in English:
+You do not have to learn Lua to change the interface — [Just ask for
+it](#just-ask-for-it) above has the prompts, and they work from any session
+because the built-in `ui-skill` extension teaches whichever CLI you run how the
+interface is put together.
+
+Want the agent looking at the files directly instead? Point a session at the
+directory:
 
 ```bash
 thurbox-cli plugin dir          # prints the directory
 thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui
 ```
 
-Then prompts like these do the whole job:
+The directory ships an **`AGENTS.md`** that any coding CLI loads as context
+without being asked. It is what stops "install a plugin" being read as an npm
+request, tells the agent that `thurbox-cli plugin check` is how it verifies its
+own work, and warns it off the mistakes that are invisible until runtime. Press
+`F10` and the change is on your screen.
 
-> - *Install the info panel plugin.*
-> - *Add a new pane on the left with CPU and RAM usage. There is a `top` example
->   plugin — install it and give it a slot in the layout.*
-> - *Move the search strip to the bottom, and make the session column 30% wide.*
-> - *The session list is too noisy — drop the repo group headers and show the
->   branch instead of the agent name.*
-
-That works because the directory ships an **`AGENTS.md`** that any coding CLI
-loads as context without being asked. It is what stops "install a plugin" being
-read as an npm request, tells the agent that `thurbox-cli plugin check` is how
-it verifies its own work, and warns it off the mistakes that are invisible until
-runtime. Press `F10` and the change is on your screen.
-
-#### What that second prompt actually does
+#### What a prompt like "add a CPU/RAM pane on the left" actually does
 
 Worth seeing once, because **every** interface change has this shape — a pane,
 and a slot for it:
@@ -819,16 +774,6 @@ a different name — possible on equal terms.
   dot) and `ui-skill` (whichever agent you run learns how to edit thurbox's own
   interface, from any session).
 
-## Prerequisites
-
-- **tmux >= 3.2** (Linux / macOS), or **[psmux](https://github.com/psmux/psmux)**
-  on native Windows — a drop-in tmux clone thurbox drives identically
-- **A coding-agent CLI** — e.g.
-  [claude](https://github.com/anthropics/claude-code), codex,
-  antigravity, opencode, or aider (whichever agents you plan to run)
-- **git** (required for worktree features)
-- **Rust 1.75+** (only to build from source)
-
 ## Uninstall
 
 Remove the binary, depending on how you installed it:
@@ -853,36 +798,6 @@ session history, theme, and `agents.toml`):
 ```bash
 rm -rf ~/.local/share/thurbox ~/.config/thurbox
 ```
-
-## Getting Started
-
-1. **Launch** — run `thurbox`. You'll see a sidebar on the left
-   listing your sessions and a terminal panel on the right — that is
-   the *default* arrangement, materialised into
-   `~/.config/thurbox/ui/` on first run, and every part of it is
-   yours to change.
-2. **Create your first session** — press `Ctrl+N` to open the repo
-   picker. Toggle repos with `Space`; press `w` on a repo to mark
-   it as worktree mode (you'll be prompted for a base branch and
-   new branch name). Confirm with `Enter`, name the session, then
-   pick an **agent**. The agent picker is skipped when only one
-   agent is defined.
-3. **Work with the agent** — the right pane is a live agent
-   session. All keys are forwarded to the PTY; `Ctrl+C` copies if
-   you have a selection, otherwise sends SIGINT.
-4. **Navigate** — `Ctrl+J` / `Ctrl+K` move between sessions in the
-   sidebar; `Ctrl+L` / `Ctrl+H` cycle focus between panes.
-   `Ctrl+O` opens the session's worktree in your editor.
-5. **Quit without killing** — `Ctrl+Q` detaches all sessions.
-   Tmux keeps them running; relaunch `thurbox` and they resume.
-6. **Make it yours** — `Ctrl+,` then `]` lists every pane and lets
-   you turn one off; `Ctrl+Y` changes the palette; `F1` rebinds any
-   chord. When you want to go further, the panes are Lua files in
-   the directory `thurbox-cli plugin dir` prints, and `F10` reloads
-   them.
-
-See the full [keybindings](#keybindings) below, and
-[Customization](#customization) for the rest.
 
 ## Agents
 
@@ -1369,11 +1284,15 @@ architectural decisions with rationale, see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); for the kernel itself, see
 [docs/V2-KERNEL.md](docs/V2-KERNEL.md).
 
-**Moving from v1?** v2 is the unstable line: some panes are owed rather than
-ported, some moved to `thurbox-cli`, and the kernel's plugin contract can still
-change between releases. The note at the top of this file has the list, what
-asks you before anything changes, and how to stay on the stable v1 — which is
-maintained on the `v1.x` branch.
+**Moving from v1?** The interface is Lua plugins now, so a few v1 panes are
+installable rather than compiled in and two moved to `thurbox-cli` —
+[What v1 had, and where it is in v2](#what-v1-had-and-where-it-is-in-v2) is the
+full map. Everything outside the interface — sessions, agents, worktrees, remote
+hosts, automations, your database — is unchanged. Auto-update never crosses a
+major version, so a 1.x install is told 2.x exists and stays where it is;
+`thurbox-cli update --force` is the deliberate way across, and the first v2
+launch of a profile with v1 history asks once before anything changes. v1 is
+maintained on the [`v1.x`](https://github.com/Thurbeen/thurbox/tree/v1.x) branch.
 
 ## Documentation
 

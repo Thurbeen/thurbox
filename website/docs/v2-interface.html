@@ -7,28 +7,12 @@ breadcrumb: 'Interface'
 ---
 <h1>The Interface</h1>
 <p>
-  Alongside
-  <code>thurbox</code>
-  there is
-  <code>thurbox</code>: the same session engine behind a Lua-driven renderer, where every pane
-  &mdash; the session list included &mdash; is a plugin under
+  There is no built-in UI compiled into
+  <code>thurbox</code>. The binary boots a kernel, reads a directory of Lua files, and draws
+  whatever it finds &mdash; so every pane, the session list included, is a plugin under
   <code>ui/</code>. You can edit one, replace one with a file of your own, turn one off, or delete
   it.
 </p>
-
-<div class="info-box warning">
-  <p>
-    <strong>2.x is the unstable line.</strong>
-    Everything on this page is published and usable, but it is still settling: the kernel, the
-    <code>thurbox.*</code>
-    snapshot a pane reads, and the panes thurbox ships can all change between releases, and a change
-    there can break panes you wrote or installed. The latest
-    <strong>stable</strong>
-    release is
-    <a href="https://github.com/Thurbeen/thurbox/releases/tag/v1.8.7">v1.8.7</a>, on the
-    <a href="v1.html">1.x line</a>.
-  </p>
-</div>
 
 <div class="info-box">
   <p>
@@ -57,17 +41,14 @@ breadcrumb: 'Interface'
   <a href="#ask-the-agent" class="heading-anchor">#</a>
 </h2>
 <p>
-  You do not have to learn Lua to change the interface. thurbox runs coding agents, and the
-  interface is a directory of plain text files those agents can read &mdash; so the shortest path to
-  a change is usually to point a session at that directory and ask in English.
+  You do not have to learn Lua to change the interface. From
+  <strong>any</strong>
+  session, in whichever coding CLI you run, ask in English:
 </p>
-<pre data-wrap><code class="language-bash">thurbox-cli plugin dir          # prints the directory
-thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui</code></pre>
-<p>Then prompts like these do the whole job:</p>
 <ul class="prompts">
-  <li>Install the info panel plugin.</li>
+  <li>Add my project logs within a dedicated pane on the right in the thurbox UI.</li>
   <li>
-    Add a new pane on the left with CPU and RAM usage. There is a
+    Add a pane on the left with CPU and RAM usage. There is a
     <code>top</code>
     example plugin &mdash; install it and give it a slot in the layout.
   </li>
@@ -76,12 +57,17 @@ thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui</code></pr
     The session list is too noisy &mdash; drop the repo group headers and show the branch instead of
     the agent name.
   </li>
+  <li>Install the info panel plugin.</li>
 </ul>
 <p>
-  That works because the directory ships an
-  <code>AGENTS.md</code>
-  that any coding CLI loads as context without being asked. It is what stops &ldquo;install a
-  plugin&rdquo; being read as an npm request, tells the agent that
+  That works because thurbox ships a built-in
+  <a href="extensions.html">ui-skill extension</a>
+  : a
+  <code>thurbox-ui</code>
+  skill installed into each coding CLI's own skill directory, which loads only when the request is
+  about the interface. It tells the agent that
+  <code>thurbox-cli plugin dir</code>
+  finds the directory and
   <code>thurbox-cli plugin check</code>
   is how it verifies its own work, and warns it off the mistakes that are invisible until runtime
   &mdash; building under a recursively watched directory, or writing inside a cloned plugin's own
@@ -89,9 +75,17 @@ thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui</code></pr
   <kbd>F10</kbd>
   and the change is on your screen.
 </p>
+<p>
+  Want the agent looking at the files directly instead? Point a session at the directory &mdash; it
+  ships an
+  <code>AGENTS.md</code>
+  that any coding CLI loads as context without being asked:
+</p>
+<pre data-wrap><code class="language-bash">thurbox-cli plugin dir          # prints the directory
+thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui</code></pre>
 
 <h3 id="ask-the-agent-worked">
-  What the second prompt actually does
+  What a prompt like &ldquo;add a CPU/RAM pane on the left&rdquo; actually does
   <a href="#ask-the-agent-worked" class="heading-anchor">#</a>
 </h3>
 <p>
@@ -427,9 +421,8 @@ thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel</c
   <a href="#v1" class="heading-anchor">#</a>
 </h2>
 <p>
-  It is the stable line, maintained on the <code>v1.x</code> branch and still getting patch
-  releases. The first-launch prompt prints the exact command; the short version is to pin a 1.x
-  version:
+  1.x is maintained on the <code>v1.x</code> branch and still gets patch releases. The
+  first-launch prompt prints the exact command; the short version is to pin a 1.x version:
 </p>
 <pre><code class="language-bash">export VERSION=v1.8.7
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>

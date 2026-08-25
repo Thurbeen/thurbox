@@ -12,51 +12,24 @@ breadcrumb: 'Installation'
             <a href="#from-binary" class="heading-anchor">#</a>
           </h2>
 
-          <div class="info-box warning">
-            <p>
-              <strong>The newest release is 2.x, and 2.x is unstable.</strong>
-              Every route on this page installs it by default. The latest stable release is
-              <a href="https://github.com/Thurbeen/thurbox/releases/tag/v1.8.7">v1.8.7</a>
-              on the 1.x line, and it is the
-              <strong>recommended</strong>
-              one unless you specifically want 2.x&rsquo;s customizable Lua interface. Only the
-              shell and PowerShell installers can pin it; the package-manager channels below
-              always carry the newest release. See
-              <a href="v1.html">using v1</a>.
-            </p>
-          </div>
-
-          <h3 id="recommended-v1">Recommended: install v1, the stable line</h3>
-          <p>Linux and macOS:</p>
-          <pre data-wrap><code class="language-bash">export VERSION=v1.8.7
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
-          <p>Windows (PowerShell 5.1+):</p>
-          <pre data-wrap><code class="language-powershell">$env:THURBOX_VERSION = 'v1.8.7'
-irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
           <p>
-            The pin holds after install: thurbox&rsquo;s auto-update
-            <strong>never crosses a major version</strong>, so a 1.x install is told that 2.x
-            exists and is never moved onto it.
-            <code>thurbox-cli update --force</code>
-            is the deliberate way across. (That guard is in the binary, and releases up to v1.8.7
-            predate it &mdash; if you are already running 1.8.x, set
-            <code>auto_update = false</code>
-            until a 1.x patch carrying it ships.)
-          </p>
-
-          <h3 id="newest-release">The newest release (2.x, unstable)</h3>
-          <p>
-            The install script downloads the latest release, detects your platform, and verifies
-            checksums automatically.
+            One command on Linux and macOS. The install script downloads the latest release,
+            detects your platform, verifies checksums, and installs both binaries &mdash;
+            <code>thurbox</code>
+            (the TUI) and
+            <code>thurbox-cli</code>
+            (the headless one) &mdash; to
+            <code>~/.local/bin</code>
+            .
           </p>
 
           <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
-          <p>
-            This installs to
-            <code>~/.local/bin</code>
-            by default. The script handles:
-          </p>
+          <p>Then run it:</p>
+
+          <pre><code class="language-bash">thurbox</code></pre>
+
+          <p>The script handles:</p>
           <ul>
             <li>Platform detection (Linux/macOS, x86_64/aarch64)</li>
             <li>Automatic version fetching with API rate limit fallback</li>
@@ -71,7 +44,8 @@ irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 
 
           <div class="info-box">
             <p>
-              <strong><code>export</code> is not optional here.</strong>
+              <strong><code>export</code> is not optional</strong>
+              for the environment variables below.
               In <code>VAR=x curl … | sh</code> the assignment binds to
               <code>curl</code>, and the <code>sh</code> reading from the pipe never sees it &mdash;
               so the setting is silently ignored. Export it on its own line first.
@@ -83,14 +57,14 @@ irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
           <h3 id="specific-version">Specific version</h3>
-          <pre data-wrap><code class="language-bash">export VERSION=v1.8.7
+          <pre data-wrap><code class="language-bash">export VERSION=v2.5.4
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
           <p>
-            Pinning is how you take the stable line rather than the unstable newest release, and how
-            you
-            <a href="v1.html">stay on 1.x</a>
-            &mdash; the newest patch is on the
-            <a href="https://github.com/Thurbeen/thurbox/releases">releases page</a>.
+            Without a pin you get the newest release. Every version is on the
+            <a href="https://github.com/Thurbeen/thurbox/releases">releases page</a>
+            , including the 1.x line &mdash; see
+            <a href="v1.html">using v1</a>
+            if you need it.
           </p>
 
           <h3>Windows (PowerShell)</h3>
@@ -117,8 +91,8 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
           <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
           <p>
             Set
-            <code>$env:THURBOX_VERSION = 'v1.8.7'</code>
-            before that line for the latest stable release instead of the newest one.
+            <code>$env:THURBOX_VERSION = 'v2.5.4'</code>
+            before that line to pin a specific version instead of taking the newest.
           </p>
 
           <h3>Available platforms</h3>
@@ -358,7 +332,7 @@ cargo build --release</code></pre>
               &mdash; press
               <code>Ctrl+N</code>
               to open the repo picker. Pick repos (optionally a worktree), name the session, then
-              choose an agent and a model.
+              choose an agent.
             </li>
             <li>
               <strong>Work with the agent</strong>
@@ -382,6 +356,20 @@ cargo build --release</code></pre>
               &mdash;
               <code>Ctrl+Q</code>
               detaches all sessions (tmux keeps them running). They resume on next launch.
+            </li>
+            <li>
+              <strong>Make it yours</strong>
+              &mdash;
+              <code>Ctrl+,</code>
+              then
+              <code>]</code>
+              lists every pane and lets you turn one off,
+              <code>Ctrl+Y</code>
+              changes the palette,
+              <code>F1</code>
+              rebinds any chord. Or just ask an agent &mdash; see
+              <a href="orchestration.html#just-ask">just ask for it</a>
+              .
             </li>
           </ol>
 

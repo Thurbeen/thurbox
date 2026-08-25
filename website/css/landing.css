@@ -1368,3 +1368,24 @@ main {
 .ui-lab__demo pre {
   max-width: 68ch;
 }
+
+/* ---- "Just ask for it" cards ----
+   Two parallel categories in a .grid-2 of .card, each holding a prose lede,
+   a .prompts list and a footer link. .card sets `p { margin-bottom: 0 }` so
+   the cards read as one block by default; these rules put the spacing back
+   between the three parts and pin the footer link to the bottom, so two cards
+   of unequal prompt count still line their links up. */
+.ask-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.ask-card > p:not(.ask-card__more),
+.ask-card .prompts {
+  margin-bottom: var(--space-md);
+}
+
+.ask-card__more {
+  margin-top: auto;
+  font-size: 0.9rem;
+}

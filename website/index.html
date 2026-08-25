@@ -27,12 +27,11 @@ footer: true
               &mdash; the session list included. Turn one off, reorder them, or write your own.
             </p>
             <p class="hero-stability">
-              <span class="badge badge-yellow">v2 &middot; unstable</span>
-              The latest release is v2, and it is still moving &mdash; the plugin kernel, the
-              snapshot panes read, and the panes it ships can change between releases. The latest
-              <strong>stable</strong>
-              release is v1.8.7 &mdash;
-              <a href="docs/v1.html">how to stay on v1</a>.
+              <span class="badge badge-green">One command</span>
+              Install it, then run
+              <code>thurbox</code>
+              &mdash; that is the whole setup. Sessions, agents, themes and the interface itself are
+              seeded on first launch.
             </p>
             <div class="hero-ctas">
               <a href="#installation" class="btn btn-primary">Get Started</a>
@@ -122,24 +121,19 @@ footer: true
 
           <div class="install-panel" role="tabpanel" id="panel-script" aria-labelledby="tab-script">
             <p>
-              Linux &amp; macOS. Auto-detects your platform, verifies checksums, and installs to
-              <code>~/.local/bin</code>
-              . This is the
+              Linux &amp; macOS, and the
               <strong>recommended</strong>
-              command: it pins v1, the latest stable release.
-              <code>export</code>
-              goes on its own line, or the
-              <code>sh</code>
-              reading from the pipe never sees it.
-            </p>
-            <pre data-wrap><code class="language-bash">export VERSION=v1.8.7
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
-            <p>
-              Drop the pin to take the newest release instead &mdash; currently
-              <a href="docs/v1.html">v2, which is unstable</a>
-              :
+              route. Auto-detects your platform, verifies checksums, and installs both
+              <code>thurbox</code>
+              and
+              <code>thurbox-cli</code>
+              to
+              <code>~/.local/bin</code>
+              .
             </p>
             <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+            <p>Then run it:</p>
+            <pre><code class="language-bash">thurbox</code></pre>
           </div>
 
           <div
@@ -152,21 +146,18 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             <p>
               Native Windows (PowerShell 5.1+), and the
               <strong>recommended route</strong>
-              on Windows &mdash; unlike winget and Chocolatey it can pin a
-              version. Verifies checksums and installs to
+              on Windows &mdash; unlike winget and Chocolatey it always carries the newest release.
+              Verifies checksums and installs to
               <code>%LOCALAPPDATA%\Programs\thurbox</code>
               (added to your user
               <code>PATH</code>
-              ). The pin below takes v1, the latest stable release.
-            </p>
-            <pre data-wrap><code class="language-powershell">$env:THURBOX_VERSION = 'v1.8.7'
-irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
-            <p>
-              Drop the pin to take the newest release instead &mdash; currently
-              <a href="docs/v1.html">v2, which is unstable</a>
-              :
+              ). Needs
+              <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
+              as the multiplexer (installed separately).
             </p>
             <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
+            <p>Then run it:</p>
+            <pre><code class="language-powershell">thurbox</code></pre>
           </div>
 
           <div class="install-panel" role="tabpanel" id="panel-winget" aria-labelledby="tab-winget" hidden>
@@ -1004,6 +995,87 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
       </div>
     </section>
 
+    <!-- Just ask for it -->
+    <!-- The two things you would otherwise script by hand — fleets of sessions,
+         and the interface itself — are both reachable in plain English from
+         inside a session, because thurbox-cli is installed beside thurbox and
+         the interface is a directory of text files. Two parallel categories, so
+         a 2-up card grid rather than the numbered .step list used above. -->
+    <section class="section ask-section" id="just-ask">
+      <div class="container">
+        <p class="section-eyebrow">You are already in a coding agent</p>
+        <h2>Just ask for it</h2>
+        <p class="section-lede">
+          <code>thurbox-cli</code>
+          is installed beside
+          <code>thurbox</code>
+          and the interface is a directory of text files &mdash; so the two things you would
+          otherwise script by hand are a sentence from inside any session.
+        </p>
+
+        <div class="grid grid-2">
+          <div class="card ask-card">
+            <div class="card-icon" aria-hidden="true">&#x2263;</div>
+            <h3>Orchestrate sessions</h3>
+            <p>
+              The headless CLI creates, prompts, forks and tears down sessions, so an agent can
+              spin up a whole fleet for you. Everything it does appears in your running TUI within
+              a tick &mdash; both binaries share one SQLite database.
+            </p>
+            <ul class="prompts">
+              <li>
+                Using
+                <code>thurbox-cli</code>
+                , start refactor sessions for this repo &mdash; one per crate, each on its own
+                worktree branch off
+                <code>main</code>
+                , and send each one a prompt to refactor its crate.
+              </li>
+              <li>
+                Spawn a reviewer session on this repo with no worktree, and send it standing
+                instructions to review every file I change.
+              </li>
+              <li>
+                Create a nightly automation that sends &ldquo;triage new issues&rdquo; to the
+                <code>triage</code>
+                session on weekdays at 09:00.
+              </li>
+            </ul>
+            <p class="ask-card__more">
+              <a href="docs/orchestration.html">Orchestration patterns &rarr;</a>
+            </p>
+          </div>
+
+          <div class="card ask-card">
+            <div class="card-icon" aria-hidden="true">&#x25EB;</div>
+            <h3>Reshape the interface</h3>
+            <p>
+              Every pane is a Lua file, so changing the UI is also just a request. It works from
+              <strong>any</strong>
+              session, in whichever CLI you run, because thurbox ships a
+              <code>thurbox-ui</code>
+              skill that loads when the request is about the interface. Press
+              <kbd>F10</kbd>
+              and the change is on your screen.
+            </p>
+            <ul class="prompts">
+              <li>Add my project logs within a dedicated pane on the right in the thurbox UI.</li>
+              <li>
+                Add a pane on the left with CPU and RAM usage. There is a
+                <code>top</code>
+                example plugin &mdash; install it and give it a slot in the layout.
+              </li>
+              <li>Move the search strip to the bottom and make the session column 30% wide.</li>
+              <li>Install the info panel plugin.</li>
+            </ul>
+            <p class="ask-card__more">
+              <a href="docs/v2-interface.html#ask-the-agent">What that actually does &rarr;</a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Feature walkthrough -->
     <section class="walkthrough section" id="walkthrough">
       <div class="container">
@@ -1151,9 +1223,9 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
               <p><code>export INSTALL_DIR=/usr/local/bin</code></p>
             </div>
             <div class="install-alt-item">
-              <h4>Latest stable (v1) &mdash; recommended</h4>
-              <p><code>export VERSION=v1.8.7</code></p>
-              <p><code>$env:THURBOX_VERSION = 'v1.8.7'</code></p>
+              <h4>Pin a version</h4>
+              <p><code>export VERSION=v2.5.4</code></p>
+              <p><code>$env:THURBOX_VERSION = 'v2.5.4'</code></p>
             </div>
             <div class="install-alt-item">
               <h4>Full Guide</h4>
