@@ -242,8 +242,8 @@ pub trait SessionBackend: Send + Sync {
         cols: u16,
     ) -> Result<SpawnedSession>;
 
-    /// Reconnect to an existing session. `seed` is pre-captured scrollback
-    /// history to prepend to the live stream (see [`Self::capture_history`]);
+    /// Reconnect to an existing session. `seed` is the pre-captured pane state
+    /// to prepend to the live stream (see [`Self::capture_history`]);
     /// `None` makes the backend capture it itself — the two paths produce the
     /// same bytes, `Some` just lets restore overlap the captures (ADR-P9).
     fn adopt(
@@ -254,12 +254,14 @@ pub trait SessionBackend: Send + Sync {
         seed: Option<Vec<u8>>,
     ) -> Result<AdoptedSession>;
 
-    /// Capture a session's scrollback history as terminal bytes suitable for
-    /// seeding a fresh parser, to pass into [`Self::adopt`]. An independent
-    /// subprocess per pane, safe to run concurrently across sessions — unlike
-    /// `adopt`'s control-mode connect, which is serialized. Default: no
-    /// history (backends without a capture facility adopt with an empty
-    /// scrollback, exactly as if the capture had failed).
+    /// Capture the pane state the live stream cannot replay — its scrollback
+    /// history, and any terminal state the backend can read back, such as the
+    /// window title an agent uses as its activity line — as terminal bytes
+    /// suitable for seeding a fresh parser, to pass into [`Self::adopt`]. An
+    /// independent subprocess per pane, safe to run concurrently across
+    /// sessions — unlike `adopt`'s control-mode connect, which is serialized.
+    /// Default: nothing (backends without a capture facility adopt with an
+    /// empty scrollback, exactly as if the capture had failed).
     fn capture_history(&self, _backend_id: &str) -> Result<Vec<u8>> {
         Ok(Vec::new())
     }
@@ -730,8 +732,8 @@ impl Session {
         ))
     }
 
-    /// Reconnect to an existing backend session. `seed` is optional
-    /// pre-captured scrollback (see [`SessionBackend::capture_history`]);
+    /// Reconnect to an existing backend session. `seed` is the optional
+    /// pre-captured pane state (see [`SessionBackend::capture_history`]);
     /// `None` = the backend captures it during the adopt.
     #[allow(clippy::too_many_arguments)]
     pub fn adopt(
@@ -1583,6 +1585,15 @@ mod tests {
         // OSC 0 (set icon name + title) updates it too.
         parser.process(b"\x1b]0;done\x07");
         assert_eq!(title.lock().unwrap().as_deref(), Some("done"));
+
+        // ST-terminated, which is what the adopt-time replay of a pane title
+        // emits (`title_seed_bytes`) — the restored activity line depends on
+        // this arriving through the same callback a live title does.
+        parser.process(b"\x1b]2;restored from the pane title\x1b\\");
+        assert_eq!(
+            title.lock().unwrap().as_deref(),
+            Some("restored from the pane title")
+        );
 
         // An empty title clears the cell rather than storing "".
         parser.process(b"\x1b]2;\x07");

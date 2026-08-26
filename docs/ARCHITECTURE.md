@@ -421,6 +421,23 @@ to repaint its visible screen through the normal `%output` stream
 of the seeded history. Seeding is best-effort: a failed capture
 logs a warning and adoption proceeds with an empty seed.
 
+The seed also carries the pane's **window title**, replayed ahead
+of the history as an OSC 2 (`title_seed_bytes`). Agents use the
+title as their activity line — Claude Code writes the task it is
+on, and the session list renders it beside the name — and thurbox
+reads it off the PTY, so an adopt that joins the stream mid-flight
+showed nothing there until the agent next repainted it. tmux kept
+the value (`#{pane_title}` *is* the last OSC the pane emitted), so
+adopt reads it back and replays it through the same callback a
+live title takes; nothing downstream learns a second way of being
+told. A pane that never had one reads back as `#{host_short}` —
+tmux's default, not an agent's line — and is suppressed. The query
+is its own best-effort round trip rather than a chain onto the
+capture: a mux that answers it differently (psmux is unverified
+here) must lose the activity line, never the scrollback. The
+attention notification (OSC 9/777) is deliberately **not**
+restored — it is an event, not state.
+
 **Rejected**:
 
 - *`pipe-pane` + FIFO (previous)* — intermittent data loss from

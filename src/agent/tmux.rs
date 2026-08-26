@@ -239,6 +239,13 @@ const SEND_KEYS_ENTER_DELAY: std::time::Duration = std::time::Duration::from_mil
 /// Hard cap on the number of scrollback lines `capture_pane_text` will return.
 const MAX_CAPTURE_LINES: u32 = 10_000;
 
+/// Longest agent activity line replayed from a pane title at adopt time.
+///
+/// A title is one line in the session list, and the value comes back from a
+/// host: bounding it here means a pane whose title is a megabyte cannot make
+/// the seed one.
+const MAX_TITLE_SEED_BYTES: usize = 512;
+
 /// A tmux backend — sessions persist in `tmux -L <socket>` on either the local
 /// machine or a remote host reached over SSH.
 ///
@@ -803,15 +810,16 @@ impl TmuxBackend {
         })
     }
 
-    /// Capture a pane's scrollback history + visible screen as terminal bytes
-    /// suitable for seeding a fresh vt100 parser.
+    /// Capture a pane's window title, scrollback history and visible screen as
+    /// terminal bytes suitable for seeding a fresh vt100 parser.
     ///
     /// The control-mode `%output` stream only carries bytes emitted after the
     /// pane is connected, so an adopted session would otherwise start with an
     /// empty scrollback — the forced repaint restores the visible screen but
     /// not the history above it. `-e` keeps colors, `-J` rejoins wrapped lines
     /// so they re-wrap at the adopting panel's width, `-S -<n>` extends the
-    /// capture into history (tmux clamps to what exists).
+    /// capture into history (tmux clamps to what exists). The title rides
+    /// along because the capture cannot carry it — see [`Self::pane_title_seed`].
     fn capture_history_seed(&self, pane_id: &str) -> Result<Vec<u8>> {
         let lines = crate::session::settings::global()
             .scrollback_lines
@@ -827,7 +835,50 @@ impl TmuxBackend {
             "-t",
             pane_id,
         ])?;
-        Ok(history_seed_bytes(output.stdout))
+        // Ahead of the history, not after it: the capture ends wherever the
+        // pane's last line ended, and appending to a run that stopped mid
+        // escape sequence would feed the parser a spliced one.
+        let mut seed = self.pane_title_seed(pane_id);
+        seed.extend(history_seed_bytes(output.stdout));
+        Ok(seed)
+    }
+
+    /// The pane's window title replayed as an OSC 2, or empty when the pane
+    /// has none worth restoring.
+    ///
+    /// Agents use the window title as their activity line — Claude Code writes
+    /// the task it is on — and thurbox reads it off the PTY, so a restart that
+    /// joins the stream mid-flight shows nothing until the agent next repaints
+    /// it. tmux kept the value: `#{pane_title}` *is* the last OSC the pane
+    /// emitted. Replaying it puts it back through the same callback a live
+    /// title takes (`TermSignals`'s title callback), so nothing downstream
+    /// learns a second way of being told.
+    ///
+    /// Best-effort by construction: a pane title is a nicety and the history
+    /// beside it is not, so a mux that answers this differently (psmux is
+    /// unverified here) loses the line rather than the scrollback.
+    fn pane_title_seed(&self, pane_id: &str) -> Vec<u8> {
+        // One query for both halves: a pane that never had a title set reads
+        // back as the host's own short name, which is tmux's default rather
+        // than anything an agent said.
+        let out = match self.run_tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{host_short}|#{pane_title}",
+        ]) {
+            Ok(out) => out,
+            Err(e) => {
+                debug!(pane = %pane_id, "could not read pane title: {e:#}");
+                return Vec::new();
+            }
+        };
+        let line = String::from_utf8_lossy(&out.stdout);
+        let Some((host, title)) = line.lines().next().and_then(|l| l.split_once('|')) else {
+            return Vec::new();
+        };
+        title_seed_bytes(host, title)
     }
 
     /// Resize a pane, forcing a SIGWINCH even if dimensions haven't changed.
@@ -1516,6 +1567,33 @@ pub fn capture_pane_text(session_name: &str, pane_id: &str, lines: u32) -> Resul
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The OSC 2 that restores `title` as a pane's window title, or empty when
+/// there is nothing to restore.
+///
+/// Suppressed for a title equal to `host_short`, which is what tmux seeds a
+/// pane with and therefore means "no agent ever set one" — replaying it would
+/// put a hostname in the session list where the activity line goes. Control
+/// characters are dropped because the value is remote-controlled text and the
+/// sequence is terminated by one.
+fn title_seed_bytes(host_short: &str, title: &str) -> Vec<u8> {
+    let title = title.trim();
+    if title.is_empty() || title == host_short.trim() {
+        return Vec::new();
+    }
+    let mut text = String::new();
+    for c in title.chars().filter(|c| !c.is_control()) {
+        if text.len() + c.len_utf8() > MAX_TITLE_SEED_BYTES {
+            break;
+        }
+        text.push(c);
+    }
+    let text = text.trim_end();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    format!("\x1b]2;{text}\x1b\\").into_bytes()
 }
 
 /// Convert raw `capture-pane -p` output into vt100 parser input: drop the
@@ -2224,6 +2302,41 @@ mod tests {
         // Never infer deadness from anything but the flag itself.
         assert!(!parse_pane_dead("10"));
         assert!(!parse_pane_dead("dead"));
+    }
+
+    // --- title_seed_bytes tests (adopt-time activity-line restore) ---
+
+    #[test]
+    fn title_seed_replays_an_agent_title_as_osc_2() {
+        assert_eq!(
+            title_seed_bytes("devbox", "\u{2733} Terminal name lost on restart"),
+            "\x1b]2;\u{2733} Terminal name lost on restart\x1b\\".as_bytes()
+        );
+    }
+
+    #[test]
+    fn title_seed_suppresses_tmuxs_default_title() {
+        // A pane nothing ever titled reads back as the host's own short name.
+        assert!(title_seed_bytes("devbox", "devbox").is_empty());
+        assert!(title_seed_bytes("devbox", "  devbox  ").is_empty());
+        assert!(title_seed_bytes("devbox", "   ").is_empty());
+    }
+
+    #[test]
+    fn title_seed_drops_control_characters() {
+        // The title is remote-controlled text and the sequence it goes into is
+        // terminated by an escape, so a title carrying one must not close it.
+        let seed = title_seed_bytes("h", "done\x1b\\ + rm -rf\x07\nnext");
+        assert_eq!(seed, "\x1b]2;done\\ + rm -rfnext\x1b\\".as_bytes());
+    }
+
+    #[test]
+    fn title_seed_bounds_a_huge_title() {
+        let seed = title_seed_bytes("h", &"\u{00e9}".repeat(4_000));
+        // The budget is the payload's; the introducer and terminator sit
+        // outside it. Multi-byte chars must not be split to reach it either.
+        assert!(seed.len() <= MAX_TITLE_SEED_BYTES + 6, "{}", seed.len());
+        assert!(std::str::from_utf8(&seed).is_ok());
     }
 
     // --- history_seed_bytes tests (adopt-time scrollback seeding) ---
