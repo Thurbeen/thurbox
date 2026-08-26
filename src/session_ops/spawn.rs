@@ -82,6 +82,9 @@ pub struct SpawnResult {
     pub cwd: PathBuf,
     pub worktrees: Vec<SharedWorktree>,
     pub parent_session_id: Option<SessionId>,
+    /// `session.post_create` hooks that failed. The session exists and is
+    /// running regardless; these are for the caller's report.
+    pub hook_failures: Vec<String>,
 }
 
 /// Spawn a new session inside `tmux -L thurbox`, persisting its state to the
@@ -96,6 +99,8 @@ pub struct SpawnResult {
 pub enum SpawnPhase {
     /// Resolving the agent definition and the host.
     Resolving,
+    /// Running the user's `session.pre_create` hooks, which may refuse.
+    Hooks,
     /// Creating or attaching worktrees — the `git fetch` and checkout.
     Worktrees,
     /// Readying the backend: for a remote host, the ssh connect.
@@ -110,6 +115,7 @@ impl SpawnPhase {
     pub fn as_str(self) -> &'static str {
         match self {
             SpawnPhase::Resolving => "resolving",
+            SpawnPhase::Hooks => "hooks",
             SpawnPhase::Worktrees => "worktrees",
             SpawnPhase::Backend => "backend",
             SpawnPhase::Launching => "launching",
@@ -152,6 +158,54 @@ pub fn spawn_session_headless_with_progress(
     // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
     let (backend_type, host) = resolve_host(req.host.as_deref())?;
 
+    // Both ids are minted before anything happens, so the pre-create hook can
+    // name the session it is being asked about — and correlate with the
+    // post-create one — and so `THURBOX_SESSION` is in the process env before
+    // the agent launches.
+    let session_id = SessionId::default();
+    let agent_session_id = req
+        .agent_session_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // The user's say, before the first side effect: nothing below this line has
+    // touched a repository, a host or the database. A refusal is the reported
+    // error, and the pipeline reports which phase it is in so a slow hook is
+    // named rather than mistaken for a slow fetch.
+    report(SpawnPhase::Hooks);
+    let base_branch = req.worktree_branch.as_ref().map(|_| {
+        req.base_branch
+            .as_deref()
+            .unwrap_or(DEFAULT_BASE_BRANCH)
+            .to_string()
+    });
+    let mut hook_ctx = crate::session::HookContext {
+        session_id: Some(session_id),
+        name: req.name.clone(),
+        agent: agent_name.clone(),
+        agent_session_id: Some(agent_session_id.clone()),
+        repo: Some(req.repo_path.clone()),
+        branch: req.worktree_branch.clone(),
+        base_branch,
+        host: host.as_ref().map(|h| h.name.clone()),
+        parent_session_id: req.parent_session_id,
+        task_id: req.task_id,
+        fork_session_id: req.fork_session_id.clone(),
+        worktrees: req
+            .inherit_worktrees
+            .iter()
+            .map(super::lifecycle_hooks::worktree)
+            .collect(),
+        additional_dirs: req
+            .extra_repos
+            .iter()
+            .filter(|extra| !extra.worktree)
+            .map(|extra| extra.repo_path.clone())
+            .collect(),
+        ..crate::session::HookContext::default()
+    };
+    super::fire_pre(crate::session::HookEvent::PreCreate, &hook_ctx)?;
+
     // The def's `args` may reference thurbox-managed config files by their
     // *local* absolute path (e.g. claude's hooks `--settings <config>/hooks/
     // claude.json`), which the agent errors on when the path doesn't exist on
@@ -170,11 +224,6 @@ pub fn spawn_session_headless_with_progress(
     report(SpawnPhase::Worktrees);
     let (primary_cwd, worktrees, additional_dirs) = resolve_dirs(&req, host.as_ref())?;
 
-    let agent_session_id = req
-        .agent_session_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
     // For a multi-repo session, launch the agent in a per-session symlink
     // workspace gathering every member dir (so each repo is a visible subdir,
     // agent-neutral). `info.cwd` keeps the *primary* repo. Single-repo sessions
@@ -187,10 +236,6 @@ pub fn spawn_session_headless_with_progress(
         &additional_dirs,
         host.as_ref(),
     );
-
-    // Mint the thurbox SessionId up front so it can be injected into the
-    // process env (`THURBOX_SESSION`) before the agent launches.
-    let session_id = SessionId::default();
 
     let mut config = SessionConfig {
         session_id: Some(session_id),
@@ -291,6 +336,17 @@ pub fn spawn_session_headless_with_progress(
     // SessionStart → idle on boot, then working/blocked/done through the turn.
     // Seeding `working` here made an idle, just-booted agent look stuck working.
 
+    // The session exists, is running and is persisted: the post-create hooks
+    // are told everything, and nothing they do can undo it.
+    hook_ctx.cwd = Some(launch_cwd);
+    hook_ctx.backend_id = Some(backend_id.clone()).filter(|id| !id.is_empty());
+    hook_ctx.worktrees = worktrees
+        .iter()
+        .map(super::lifecycle_hooks::worktree)
+        .collect();
+    hook_ctx.additional_dirs = additional_dirs;
+    let hook_failures = super::fire_post(crate::session::HookEvent::PostCreate, &hook_ctx);
+
     Ok(SpawnResult {
         session_id,
         name: req.name,
@@ -300,6 +356,7 @@ pub fn spawn_session_headless_with_progress(
         cwd: primary_cwd,
         worktrees,
         parent_session_id: req.parent_session_id,
+        hook_failures,
     })
 }
 

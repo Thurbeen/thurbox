@@ -148,6 +148,10 @@ fn validate() -> (Value, Vec<String>) {
         crate::agent::themes_config::themes_config_path(),
         "themes.toml",
     );
+    let (hooks, hooks_ok) = validate_toml::<crate::session::HooksFile>(
+        crate::agent::hooks_config::hooks_config_path(),
+        "hooks.toml",
+    );
     let (ui_json, ui_ok) = validate_ui_json();
     // Parsed only to report where it is and whether it is well-formed; its
     // verdict is not in the failure list, because nothing reads it.
@@ -158,6 +162,7 @@ fn validate() -> (Value, Vec<String>) {
         ("hosts.toml", hosts_ok),
         ("settings.toml", settings_ok),
         ("themes.toml", themes_ok),
+        ("hooks.toml", hooks_ok),
         ("ui.json", ui_ok),
         // Deliberately NOT in the failure list: nothing reads it, so a malformed
         // one cannot break anything and calling it invalid would send an upgrader
@@ -175,6 +180,7 @@ fn validate() -> (Value, Vec<String>) {
         "hosts_toml": hosts,
         "settings_toml": settings,
         "themes_toml": themes,
+        "hooks_toml": hooks,
         "ui_json": ui_json,
         "keybindings_json_legacy": keybindings,
     });
@@ -188,6 +194,7 @@ fn render_validate(report: &Value, failed: &[String]) -> String {
         ("hosts.toml", "hosts_toml"),
         ("settings.toml", "settings_toml"),
         ("themes.toml", "themes_toml"),
+        ("hooks.toml", "hooks_toml"),
         ("ui.json", "ui_json"),
         ("keybindings.json (v1, ignored)", "keybindings_json_legacy"),
     ];
@@ -267,6 +274,30 @@ fn render_show(report: &Value) -> String {
         output::kv(&[("active", output::dash(report["theme"].as_str()))])
     ));
 
+    // The lifecycle hooks in force, one line each: event, then the command.
+    let hooks: Vec<(&str, String)> = report["hooks"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .map(|h| {
+                    let command = h["command"].as_str().unwrap_or_default();
+                    let timeout = h["timeout_secs"]
+                        .as_u64()
+                        .map(|t| format!("  (timeout {t}s)"))
+                        .unwrap_or_default();
+                    (
+                        h["event"].as_str().unwrap_or_default(),
+                        format!("{command}{timeout}"),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    sections.push(match hooks.is_empty() {
+        true => "Lifecycle hooks\n  (none)".to_string(),
+        false => format!("Lifecycle hooks\n{}", output::kv(&hooks)),
+    });
+
     sections.join("\n\n")
 }
 
@@ -278,6 +309,7 @@ fn show(db: &Database) -> Result<Value, String> {
     let hosts = crate::agent::host_config::load_all();
     let settings = crate::session::settings::global();
     let (custom_themes, _) = crate::agent::themes_config::load_or_seed_with_warnings();
+    let (hooks, _) = crate::agent::hooks_config::load_or_seed_with_warnings();
 
     // Editor resolution mirrors the TUI's Ctrl+O chain: DB → $VISUAL → $EDITOR.
     let (editor, editor_source) = resolve_editor(db);
@@ -293,6 +325,8 @@ fn show(db: &Database) -> Result<Value, String> {
             "settings_toml": crate::agent::settings_config::settings_config_path()
                 .map(|p| p.display().to_string()),
             "themes_toml": crate::agent::themes_config::themes_config_path()
+                .map(|p| p.display().to_string()),
+            "hooks_toml": crate::agent::hooks_config::hooks_config_path()
                 .map(|p| p.display().to_string()),
             // The interface is config like the rest of it, and it was the one
             // thing this command could not tell you the location of — which is
@@ -317,6 +351,7 @@ fn show(db: &Database) -> Result<Value, String> {
         "editor": { "command": editor, "source": editor_source, "mode": editor_mode.as_db_value() },
         "theme": db.get_active_theme().ok().flatten(),
         "custom_themes": custom_themes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        "hooks": hooks.hooks,
     }))
 }
 
@@ -447,6 +482,53 @@ mod tests {
             failed.iter().any(|f| f == "settings.toml"),
             "got: {failed:?}"
         );
+    }
+
+    #[test]
+    fn validate_fails_on_a_misspelt_hook_field_naming_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = TestPathGuard::new(tmp.path());
+        let path = crate::agent::hooks_config::hooks_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[[hooks]]\nevent = \"session.post_create\"\ncommand = \"true\"\ntimeout_sec = 5\n",
+        )
+        .unwrap();
+
+        let (report, failed) = validate();
+        assert!(failed.iter().any(|f| f == "hooks.toml"), "got: {failed:?}");
+        assert!(
+            report["hooks_toml"]["problems"]
+                .as_array()
+                .is_some_and(|p| !p.is_empty()),
+            "{report}"
+        );
+        assert!(render_validate(&report, &failed).contains("✗ hooks.toml"));
+    }
+
+    #[test]
+    fn show_lists_the_lifecycle_hooks_in_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = TestPathGuard::new(tmp.path());
+        let db = Database::open_in_memory().unwrap();
+        let path = crate::agent::hooks_config::hooks_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[[hooks]]\nevent = \"session.pre_create\"\ncommand = \"check\"\n\
+             [[hooks]]\nevent = \"session.post_delete\"\ncommand = \"clean\"\ntimeout_secs = 5\n",
+        )
+        .unwrap();
+
+        let v = show(&db).unwrap();
+        assert_eq!(v["hooks"][0]["event"], json!("session.pre_create"));
+        assert_eq!(v["hooks"][0]["command"], json!("check"));
+        assert_eq!(v["hooks"][1]["timeout_secs"], json!(5));
+        assert!(v["paths"]["hooks_toml"].is_string());
+        let text = render_show(&v);
+        assert!(text.contains("session.post_delete"), "{text}");
+        assert!(text.contains("clean  (timeout 5s)"), "{text}");
     }
 
     #[test]

@@ -30,6 +30,8 @@ pub struct RestoreReport {
     pub worktrees_recovered: usize,
     /// Set when the row and its worktrees returned but the agent did not.
     pub respawn_error: Option<String>,
+    /// `session.post_restore` hooks that failed. The restore stands regardless.
+    pub hook_failures: Vec<String>,
 }
 
 /// Restore a deleted session: the row, then its worktrees, then its agent.
@@ -70,6 +72,31 @@ pub fn restore_session_headless(
         ));
     }
 
+    // The user's say, with both refusals above already made and the row still
+    // deleted: a refusal here changes nothing.
+    let primary = deleted.worktrees.first();
+    let mut hook_ctx = crate::session::HookContext {
+        session_id: Some(deleted.id),
+        name: deleted.name.clone(),
+        agent: deleted.agent.clone(),
+        agent_session_id: deleted.agent_session_id.clone(),
+        repo: primary
+            .map(|w| w.repo_path.clone())
+            .or_else(|| deleted.cwd.clone()),
+        cwd: deleted.cwd.clone(),
+        branch: primary.map(|w| w.branch.clone()),
+        host: super::lifecycle_hooks::host_name(&deleted.backend_type),
+        parent_session_id: deleted.parent_session_id,
+        force_deleted: Some(deleted.force_deleted),
+        worktrees: deleted
+            .worktrees
+            .iter()
+            .map(super::lifecycle_hooks::worktree)
+            .collect(),
+        ..crate::session::HookContext::default()
+    };
+    super::fire_pre(crate::session::HookEvent::PreRestore, &hook_ctx)?;
+
     db.restore_session(deleted.id)
         .map_err(|e| format!("restore session: {e}"))?;
 
@@ -78,12 +105,18 @@ pub fn restore_session_headless(
 
     let respawn_error = respawn(db, deleted.id).err();
 
+    // A restore whose agent did not come up is still a restore — the report
+    // says so, and the hooks fire either way.
+    hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, deleted.id);
+    let hook_failures = super::fire_post(crate::session::HookEvent::PostRestore, &hook_ctx);
+
     Ok(RestoreReport {
         name: deleted.name,
         best_effort: deleted.force_deleted,
         worktrees_wanted: wanted,
         worktrees_recovered: recovered.len(),
         respawn_error,
+        hook_failures,
     })
 }
 

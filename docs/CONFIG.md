@@ -24,6 +24,7 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts + local WSL distros |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
+| `~/.config/thurbox/hooks.toml` | TOML | you | on each session operation | **session lifecycle hooks** — your commands, run before/after a session is created, deleted, restarted or restored |
 | `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per plugin installed from a repository (its own working copy, `.git` included) |
 | `~/.config/thurbox/ui/plugins.toml` | TOML | you (or `thurbox-cli plugin`) | on each `plugin` command | **what the interface is composed of**: a source, a destination file and an optional pin, per installed pane |
 | `~/.config/thurbox/ui/plugins.lock` | TOML | `thurbox-cli plugin` | on each `plugin` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
@@ -71,6 +72,7 @@ the right knob:
 | Tune scrollback, panel breakpoints, audit retention | `settings.toml` | [settings.toml](#settingstoml) |
 | Change when/how OS notifications fire | `settings.toml` `[notifications]` | [`[notifications]`](#notifications--os-notification-settings) |
 | Add or recolour a TUI theme | `themes.toml` | [themes.toml](#themestoml) |
+| Run my own command when a session is created/deleted/restarted/restored, or refuse one | `hooks.toml` | [hooks.toml](#hookstoml) |
 | Rebind a key | `keybindings.json` (or the F1 editor) | [keybindings.json](#keybindingsjson) |
 | Set the `Ctrl+O` editor, pick a theme | (runtime — SQLite) | [SQLite-backed settings](#sqlite-backed-settings) |
 
@@ -206,6 +208,97 @@ paths (a WSL distro's worktrees live in its own Linux filesystem, not on
 `/mnt/c`); the distro needs `tmux` >= 3.2 and `git`. Host changes
 require a restart (the registry is read once and each host's `$HOME` is
 cached for the process lifetime).
+
+## hooks.toml
+
+Declares **session lifecycle hooks**: your own shell commands, run by
+thurbox before and after it creates, deletes, restarts or restores a
+session. Seeded fully commented-out (a fresh install runs nothing); read
+**each time an event fires**, so an edit is in force at the next
+operation with no restart. Malformed file → no hooks run, warning in the
+log, and `config validate` fails.
+
+> Not the `hooks/` **directory** beside it. That is the home of the
+> built-in `hooks` *extension*, which installs status-hook files **into**
+> the agent CLIs so they can tell thurbox what they are doing
+> (see [Session status](#session-status)). `hooks.toml` is the other
+> direction: thurbox telling *your* scripts what *it* is doing.
+
+```toml
+[[hooks]]
+event = "session.pre_create"
+command = 'case "$THURBOX_BRANCH" in main|master) echo "refusing: protected branch" >&2; exit 1;; esac'
+
+[[hooks]]
+event = "session.post_create"
+command = '[ -n "$THURBOX_CWD" ] && cp -n .env.local "$THURBOX_CWD/.env"; true'
+timeout_secs = 120
+```
+
+| Field | Required | Default | Purpose |
+|-------|----------|---------|---------|
+| `event` | yes | — | one of the eight events below |
+| `command` | yes | — | run through `sh -c` (`cmd /C` on Windows) |
+| `timeout_secs` | no | `30` | the hook is killed after this long |
+
+**Events** — a `pre_*` fires before the operation has any side effect, a
+`post_*` after it has fully succeeded (never after a failure):
+
+| Operation | Events | Fired by |
+|-----------|--------|----------|
+| create (incl. fork) | `session.pre_create` / `session.post_create` | the creation flow, `Ctrl+F`, `thurbox-cli session create`, a `spawn` automation, an extension's sessions |
+| delete (soft or force) | `session.pre_delete` / `session.post_delete` | `Ctrl+D`, `thurbox-cli session delete [--force]`, extension uninstall |
+| restart | `session.pre_restart` / `session.post_restart` | `Ctrl+R`, `thurbox-cli session restart` |
+| restore (incl. undo) | `session.pre_restore` / `session.post_restore` | `Ctrl+Z`/`Ctrl+U`, `thurbox-cli session restore` |
+
+Hooks fire **once per operation whichever interface asked**, because
+every interface ends in the same pipeline (`session_ops`). Hooks for one
+event run one at a time, in file order.
+
+**A `pre_*` hook can refuse.** Exit non-zero (or exceed the timeout) and
+the operation is aborted before it has done anything — no worktree, no
+process, no row changed — with the hook's command, exit status and the
+tail of its stderr as the reported reason (the in-flight error in the
+TUI, the error and exit status of `thurbox-cli`). Later hooks for that
+event do not run. **A `post_*` hook is informational**: every one runs,
+a failure is logged to `thurbox.log` and carried in the CLI's JSON
+(`hook_failures`), and never fails the operation.
+
+**What a hook receives.** Environment variables — **unset** (never
+empty) when the fact is not known at that moment:
+
+| Variable | Meaning |
+|----------|---------|
+| `THURBOX_HOOK_EVENT` | the event name, e.g. `session.post_create` |
+| `THURBOX_SESSION` | the thurbox session id (at `pre_create`: the id it will have if creation succeeds) |
+| `THURBOX_SESSION_ID` | the agent's own conversation id |
+| `THURBOX_SESSION_NAME` | the session name |
+| `THURBOX_AGENT` | the agent name |
+| `THURBOX_REPO` | the primary repository path |
+| `THURBOX_CWD` | the directory the agent runs in (the worktree, or the symlink workspace of a multi-repo session); unset at `pre_create` |
+| `THURBOX_BRANCH` / `THURBOX_BASE_BRANCH` | the worktree branch and what it was created from (base: create events only) |
+| `THURBOX_HOST` | the remote host name; unset for a local session |
+| `THURBOX_PARENT_SESSION` | the parent session id (a fork, or `--parent`) |
+| `THURBOX_TASK` | the originating task id, for a task-spawned session |
+| `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` | so a `thurbox-cli` run inside the hook hits the database of the thurbox that fired it |
+
+The same facts — plus `worktrees` (`repo_path`, `worktree_path`,
+`branch`), `additional_dirs`, `force` (delete) and `force_deleted`
+(restore) — arrive as **one JSON object on stdin** (`jq -r .cwd`).
+
+**Where and how it runs.** In the primary repository when that is a
+directory on this machine, otherwise in thurbox's own working directory
+— the repository is the one path that exists at every event (at
+`pre_create` the worktree is not made; at `post_delete` it is gone).
+With **no terminal**: stdin is the JSON, stdout/stderr are captured and
+only their tail (500 chars) is reported, so a hook can neither draw on
+nor read from the TUI's screen. A hook for a **remote** (SSH/WSL)
+session still runs **locally**; `THURBOX_HOST` names the host and the
+paths are the host's — `ssh "$THURBOX_HOST" …` from the hook is your
+call.
+
+`thurbox-cli config validate` strict-parses the file; `config show`
+lists the hooks in force.
 
 ## settings.toml
 
@@ -730,6 +823,19 @@ these to prove its own identity without scraping panes or names:
 | `THURBOX_TASK` | the originating task id; task-spawned sessions only (headless `task run`) |
 | `THURBOX_METRICS_DIR` | metrics output dir |
 | `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` | the resolved config/data dirs, so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a stale tmux-server env. Also honored if you set them yourself to relocate thurbox's state. |
+
+Set **by** thurbox into every [lifecycle hook](#hookstoml) it runs
+(`session_ops::lifecycle_hooks`), beside `THURBOX_SESSION`,
+`THURBOX_SESSION_ID`, `THURBOX_TASK` and the two dir overrides above:
+
+| Variable | Set into hook process |
+|----------|-----------------------|
+| `THURBOX_HOOK_EVENT` | the event, e.g. `session.pre_delete` |
+| `THURBOX_SESSION_NAME`, `THURBOX_AGENT` | the session's name and agent |
+| `THURBOX_REPO`, `THURBOX_CWD` | the primary repository, and the directory the agent runs in |
+| `THURBOX_BRANCH`, `THURBOX_BASE_BRANCH` | the worktree branch and its base |
+| `THURBOX_HOST` | the remote host name (local: unset) |
+| `THURBOX_PARENT_SESSION` | the parent session id |
 
 Set **at build time** (not runtime):
 

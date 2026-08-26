@@ -2069,6 +2069,7 @@ fn the_spawn_pipeline_reports_the_stage_it_reached() {
         assert!(
             [
                 "resolving",
+                "hooks",
                 "worktrees",
                 "backend",
                 "launching",

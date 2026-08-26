@@ -3,6 +3,7 @@ pub mod backend;
 pub mod control_mode;
 pub mod extension_config;
 pub mod generic;
+pub mod hooks_config;
 pub mod host_config;
 pub mod input;
 pub mod json_merge;

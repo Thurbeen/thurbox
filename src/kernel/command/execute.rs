@@ -118,7 +118,10 @@ pub(super) fn execute(
                 }
             })
         }
-        Command::Restart { .. } => crate::session_ops::restart_session_headless(&db, id),
+        // A failed post-restart hook is already in the log; the restart stands.
+        Command::Restart { .. } => {
+            crate::session_ops::restart_session_headless(&db, id).map(|_| ())
+        }
         Command::Reap { .. } => crate::session_ops::reap_soft_deleted(&db, id).map(|_| ()),
         Command::Send { text, .. } => {
             let session = db

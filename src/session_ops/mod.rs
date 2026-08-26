@@ -10,6 +10,7 @@ pub mod builtin_hooks;
 pub mod builtin_ui_skill;
 pub mod delete;
 pub mod extensions;
+pub mod lifecycle_hooks;
 pub mod remote_hooks;
 pub mod restart;
 pub mod restore;
@@ -24,7 +25,8 @@ pub use extensions::{
     update_all_extensions, update_extension, DeactivateReport, EnsureReport, ExtensionHealth,
     InstallReport, ReinstallReport, UninstallReport, UpdateReport,
 };
-pub use restart::restart_session_headless;
+pub use lifecycle_hooks::{fire_post, fire_pre};
+pub use restart::{restart_session_headless, RestartReport};
 pub use restore::{restore_session_headless, RestoreReport};
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 
@@ -39,13 +41,7 @@ use crate::session::{AutomationRunStatus, SessionConfig};
 /// the headless `automation tick`. stdout+stderr are tail-truncated so a chatty
 /// command can't bloat the history.
 pub fn run_exec_command(command: &str) -> (AutomationRunStatus, String) {
-    use std::process::Command;
-    let result = if cfg!(windows) {
-        Command::new("cmd").args(["/C", command]).output()
-    } else {
-        Command::new("sh").args(["-c", command]).output()
-    };
-    let out = match result {
+    let out = match platform_shell(command).output() {
         Ok(out) => out,
         Err(e) => return (AutomationRunStatus::Error, format!("spawn failed: {e}")),
     };
@@ -72,10 +68,25 @@ pub fn run_exec_command(command: &str) -> (AutomationRunStatus, String) {
     (AutomationRunStatus::Error, msg)
 }
 
+/// `command` as the platform shell runs it: `sh -c` or, on Windows, `cmd /C`.
+/// Shared by `Exec` automations and lifecycle hooks so the two spell a
+/// command line the same way.
+pub(crate) fn platform_shell(command: &str) -> std::process::Command {
+    if cfg!(windows) {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", command]);
+        cmd
+    } else {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", command]);
+        cmd
+    }
+}
+
 /// The trailing 500 chars of one captured stream, trimmed. Single pass via a
 /// capped ring so a huge stream isn't walked twice (count + skip) or
 /// materialized in full.
-fn exec_tail(stream: &[u8]) -> String {
+pub(crate) fn exec_tail(stream: &[u8]) -> String {
     const TAIL_CHARS: usize = 500;
     let text = String::from_utf8_lossy(stream);
     let mut ring: std::collections::VecDeque<char> =
@@ -87,6 +98,32 @@ fn exec_tail(stream: &[u8]) -> String {
         ring.push_back(c);
     }
     ring.into_iter().collect()
+}
+
+/// The config/data-dir overrides this process resolved, as the two env vars
+/// `thurbox-cli` honours (`THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`). Derived
+/// from the resolved file paths' parents, so a dev build, a sandbox and a
+/// `THURBOX_*_DIR` override all hand the same answer on. One definition, shared
+/// by the agent's environment and a lifecycle hook — "a `thurbox-cli` inside
+/// hits the right DB" is one property, not two.
+pub(crate) fn thurbox_dir_overrides() -> Vec<(String, String)> {
+    let mut vars = Vec::with_capacity(2);
+    if let Some(dir) = crate::paths::config_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        vars.push((
+            crate::paths::CONFIG_DIR_OVERRIDE_ENV.into(),
+            dir.to_string_lossy().into(),
+        ));
+    }
+    if let Some(dir) =
+        crate::paths::database_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        vars.push((
+            crate::paths::DATA_DIR_OVERRIDE_ENV.into(),
+            dir.to_string_lossy().into(),
+        ));
+    }
+    vars
 }
 
 /// Decide whether to pass the agent's resume group vs starting fresh when
@@ -323,21 +360,7 @@ pub(crate) fn inject_thurbox_env(
     // dirs this thurbox resolved, so a status `signal` always lands in the DB
     // the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a
     // stale tmux-server env. Derived from the resolved file paths' parents.
-    if let Some(dir) = crate::paths::config_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    {
-        config.env.insert(
-            crate::paths::CONFIG_DIR_OVERRIDE_ENV.into(),
-            dir.to_string_lossy().into(),
-        );
-    }
-    if let Some(dir) =
-        crate::paths::database_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    {
-        config.env.insert(
-            crate::paths::DATA_DIR_OVERRIDE_ENV.into(),
-            dir.to_string_lossy().into(),
-        );
-    }
+    config.env.extend(thurbox_dir_overrides());
 }
 
 #[cfg(test)]

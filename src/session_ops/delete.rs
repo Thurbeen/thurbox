@@ -19,6 +19,8 @@ pub struct ForceDeleteReport {
     /// unreachable host is expected (that's often *why* someone force-deletes),
     /// so this is recorded rather than aborting the delete.
     pub remote_teardown_error: Option<String>,
+    /// `session.post_delete` hooks that failed. The delete stands regardless.
+    pub hook_failures: Vec<String>,
 }
 
 /// Soft-delete a session and (when `force`) also tear down its runtime
@@ -39,6 +41,12 @@ pub fn delete_session_headless(
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
 
+    // The user's say, before anything is torn down or marked: a refusal here
+    // leaves the row exactly as it was.
+    let mut hook_ctx = super::lifecycle_hooks::context_for(&session);
+    hook_ctx.force = Some(force);
+    super::fire_pre(crate::session::HookEvent::PreDelete, &hook_ctx)?;
+
     let mut report = ForceDeleteReport::default();
 
     if force {
@@ -57,6 +65,8 @@ pub fn delete_session_headless(
         db.mark_session_force_deleted(session_id)
             .map_err(|e| format!("mark_session_force_deleted: {e}"))?;
     }
+
+    report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
 
     Ok(report)
 }

@@ -88,6 +88,13 @@ pub(crate) fn build_restart_plan(
     })
 }
 
+/// What a restart has to say beyond having happened.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestartReport {
+    /// `session.post_restart` hooks that failed. The restart stands regardless.
+    pub hook_failures: Vec<String>,
+}
+
 /// Restart an existing session in-place — kills its tmux window and
 /// re-spawns the agent CLI.
 ///
@@ -97,7 +104,10 @@ pub(crate) fn build_restart_plan(
 /// resumes the latest session in the (unchanged) launch directory. Other agents
 /// degrade to "start fresh" (the live tmux process is what carries state across
 /// restarts).
-pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<(), String> {
+pub fn restart_session_headless(
+    db: &Database,
+    session_id: SessionId,
+) -> Result<RestartReport, String> {
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
@@ -117,6 +127,11 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
 
     let hooks_enabled = super::hooks_enabled(db);
     let plan = build_restart_plan(&session, host.as_ref(), hooks_enabled)?;
+
+    // The user's say, with the plan built and nothing yet killed: a refusal
+    // leaves the running window running.
+    let mut hook_ctx = super::lifecycle_hooks::context_for(&session);
+    super::fire_pre(crate::session::HookEvent::PreRestart, &hook_ctx)?;
 
     match host.as_ref() {
         None => {
@@ -186,7 +201,12 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
     // (a resumed agent may not re-fire its boot hook). Best-effort.
     let _ = db.clear_hook_state(session_id);
 
-    Ok(())
+    // The new pane is what the row now points at, so that is what the
+    // post-restart hooks are told.
+    hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session_id);
+    let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);
+
+    Ok(RestartReport { hook_failures })
 }
 
 #[cfg(test)]

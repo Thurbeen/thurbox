@@ -1,6 +1,7 @@
 pub mod agent_def;
 pub mod automation;
 pub mod extension_def;
+pub mod hook_def;
 pub mod host_def;
 pub mod hyperlink;
 pub mod message;
@@ -18,6 +19,9 @@ pub use automation::{
 pub use extension_def::{
     AgentPatch, ConfigMerge, ExtensionAutomation, ExtensionDef, ExtensionFile, ExtensionSession,
     ExtensionSymlink, ExternalFile,
+};
+pub use hook_def::{
+    HookContext, HookEvent, HookWorktree, HooksFile, LifecycleHook, DEFAULT_HOOK_TIMEOUT_SECS,
 };
 pub use host_def::{
     is_remote_backend, is_ssh_backend, is_wsl_backend, HostDef, HostKind, HostRegistry,

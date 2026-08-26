@@ -300,6 +300,7 @@ local PHASE_LABEL = {
   queued = "creating…",
   running = "creating…",
   resolving = "setting up…",
+  hooks = "running hooks…",
   worktrees = "creating…",
   backend = "setting up…",
   launching = "spawning…",

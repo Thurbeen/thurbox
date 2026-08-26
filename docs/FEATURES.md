@@ -620,6 +620,40 @@ reusing the session's stored agent. Agents that define no
 - The session's `SessionInfo` (ID, name, agent, repos)
   stays intact — only the backend pane and I/O are replaced.
 
+### Session lifecycle hooks (`hooks.toml`)
+
+The user's own commands, run around the four session operations: before
+and after a session is created, deleted, restarted or restored. Declared
+as data (`~/.config/thurbox/hooks.toml`, one `[[hooks]]` entry per
+event + command), seeded commented-out, read each time an event fires.
+
+The mechanism is where they fire, not what they are. Every interface —
+the TUI's flow and chords, `thurbox-cli`, a `spawn` automation, an
+extension's self-healed sessions — ends in the same four functions in
+`session_ops` (`spawn`, `delete`, `restart`, `restore`), so a hook placed
+inside those fires **once per operation for every caller**, and nothing
+in the kernel or the Lua interface knows hooks exist. They run on the
+thread that runs the operation — a worker in the TUI — never the render
+loop.
+
+**Pre hooks veto, post hooks inform** — git's `pre-commit` model. A
+`pre_*` that exits non-zero (or hangs past its timeout, default 30 s) aborts
+the operation before its first side effect, with its stderr tail as the
+reported reason; a `post_*` fires only after full success, every one
+runs, and a failure is logged and reported (`hook_failures` in the CLI
+JSON) but cannot undo what happened.
+
+A hook receives the session's facts as `THURBOX_*` environment variables
+and as one JSON object on stdin, inherits the config/data-dir overrides
+so a `thurbox-cli` it runs hits the right database, runs in the primary
+repository (the one path that exists at every event) with no terminal,
+and — for a remote session — runs *locally*, told the host by
+`THURBOX_HOST`. Full reference: `docs/CONFIG.md` → hooks.toml.
+
+Deliberately not the same thing as the built-in `hooks` *extension*
+(`<config>/hooks/`), which is the reverse direction: files thurbox
+installs into the agent CLIs so they can report status.
+
 ### Why UUID v4?
 
 Sessions need unique identifiers for the lifetime of the process.

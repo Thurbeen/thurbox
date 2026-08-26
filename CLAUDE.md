@@ -968,6 +968,55 @@ since recovery is committed-state-only, and only then issues `restore` with
 `best_effort`. The flag never changes
 `thurbox-cli session delete`, which stays soft unless `--force`.
 
+### Session lifecycle hooks (`hooks.toml`)
+
+The user's own commands, run **by thurbox** before and after it creates,
+deletes, restarts or restores a session — eight events, `session.{pre,post}_
+{create,delete,restart,restore}`, declared as `[[hooks]] { event, command,
+timeout_secs }` in `~/.config/thurbox/hooks.toml` (seeded commented-out; read
+at fire time, no cache, no restart). **Not** the `hooks` extension: that
+installs status hooks *into* the agent CLIs (`<config>/hooks/`,
+`session_ops::builtin_hooks`) — the code says `lifecycle_hooks`/`HookEvent`
+for this one so the two never blur.
+
+They fire once per operation for every caller because every caller already
+ends in the same four pipelines: `session_ops::spawn_session_headless`
+(the TUI's create *and* fork, the CLI, `spawn` automations, extension
+self-heal), `delete_session_headless` (`Ctrl+D` soft and hard, the CLI,
+extension uninstall), `restart_session_headless`, `restore_session_headless`
+(the TUI's undo and — since this change — the CLI's `session restore`, which
+used to clear the flag alone). `fire_pre` runs before the pipeline's first
+side effect and a failure (non-zero exit, timeout, cannot start) is its
+`Err`; `fire_post` runs after its last and returns the failures, carried as
+`hook_failures` on `SpawnResult`/`ForceDeleteReport`/`RestartReport`/
+`RestoreReport` and in the CLI JSON. `SpawnPhase::Hooks` is reported while
+the pre-create hooks run, so the placeholder row says so.
+
+- **Data**: `session::hook_def` — `HookEvent` (closed enum, serde-spelled
+  as the dotted names), `LifecycleHook`, `HooksFile`, and `HookContext` with
+  `env()` (the `THURBOX_*` set — unset, never empty, for an unknown fact),
+  `json()` (the stdin document) and `workdir()`.
+- **File**: `agent::hooks_config` mirrors `host_config` — seed, strict
+  parse through `parse_toml_reporting_unknown`, empty-with-warning on
+  failure; `hooks_for(event)` in file order. `config validate`/`show` cover
+  it.
+- **Runner**: `session_ops::lifecycle_hooks::run_hook` — `platform_shell`
+  (shared with `Exec` automations), `ctx.env()` + `thurbox_dir_overrides()`
+  (shared with `inject_thurbox_env`, so a `thurbox-cli` inside hits the same
+  DB), JSON on a piped stdin, both output pipes drained on threads, a
+  `try_wait` poll against the timeout, `kill()` at the deadline. Synchronous
+  by design — it runs on whichever thread runs the operation (a worker in
+  the TUI, rule 5), and `session_ops` has no runtime to lean on.
+- **Cwd rule**: the primary repository when it is a local directory, else
+  thurbox's own — the one path that exists at `pre_create` (no worktree yet)
+  and at `post_delete` (worktree gone). A remote session's hook runs
+  locally with `THURBOX_HOST` set.
+- Proof: `tests/create_e2e.rs` (the pairs fire once each with the facts, a
+  hook's `thurbox-cli` finds the row, a veto leaves nothing behind and
+  surfaces through the command bus, a post failure leaves the session
+  running); unit tests beside each module. User docs: `docs/CONFIG.md` →
+  hooks.toml.
+
 ### Parent sessions (lead/worker)
 
 Sessions carry an optional **`parent_session_id`** so orchestration scripts can
@@ -1725,7 +1774,8 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 - Session state in SQLite:
   `~/.local/share/thurbox/thurbox.db` (XDG_DATA_HOME respected);
   agent definitions in `~/.config/thurbox/agents.toml`;
-  remote SSH hosts in `~/.config/thurbox/hosts.toml`
+  remote SSH hosts in `~/.config/thurbox/hosts.toml`;
+  session lifecycle hooks in `~/.config/thurbox/hooks.toml`
 - Requires tmux >= 3.2
 
 ## Keybindings
@@ -1949,7 +1999,7 @@ and startup reports the directory whenever there is a question about it — an o
 is in force, the fallback was used, or this is a dev build. The user-copy path is
 derived
 from `paths::config_file()` like every other config path — `agents.toml`,
-`hosts.toml`, `settings.toml`, `themes.toml`, `extensions/`, `ui.json` — so a **dev
+`hosts.toml`, `hooks.toml`, `settings.toml`, `themes.toml`, `extensions/`, `ui.json` — so a **dev
 build reads `~/.config/thurbox-dev/ui`** and cannot touch the release copy.
 `THURBOX_CONFIG_DIR` overrides that anchor and thurbox injects it into every
 session it spawns, which is why a `thurbox-cli` run *inside* a session resolves

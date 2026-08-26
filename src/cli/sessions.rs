@@ -186,13 +186,14 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 ..Default::default()
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
-            let human = format!(
+            let mut human = format!(
                 "Created session '{}' ({}) — {}\ncwd: {}",
                 res.name,
                 res.agent,
                 res.session_id,
                 res.cwd.display()
             );
+            push_hook_failures(&mut human, &res.hook_failures);
             Ok(CommandOutput::new(
                 json!({
                     "id": res.session_id.to_string(),
@@ -201,6 +202,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     "agent_session_id": res.agent_session_id,
                     "cwd": res.cwd.display().to_string(),
                     "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
+                    "hook_failures": res.hook_failures,
                 }),
                 human,
             ))
@@ -209,14 +211,17 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         Action::Restore { uuid, best_effort } => restore_deleted(db, &uuid, best_effort),
         Action::Restart { uuid } => {
             let session = resolve(db, &uuid)?;
-            crate::session_ops::restart_session_headless(db, session.id)?;
+            let report = crate::session_ops::restart_session_headless(db, session.id)?;
+            let mut human = format!("Restarted session '{}' ({})", session.name, session.id);
+            push_hook_failures(&mut human, &report.hook_failures);
             Ok(CommandOutput::new(
                 json!({
                     "restarted": true,
                     "session_id": session.id.to_string(),
                     "session_name": session.name,
+                    "hook_failures": report.hook_failures,
                 }),
-                format!("Restarted session '{}' ({})", session.name, session.id),
+                human,
             ))
         }
         Action::Send { uuid, text } => {
@@ -291,6 +296,7 @@ fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutpu
             human.push_str(&format!("\n  {line}"));
         }
     }
+    push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
         json!({
             "deleted": true,
@@ -302,6 +308,7 @@ fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutpu
             "worktree_errors": report.worktree_errors,
             "disabled_automations": report.disabled_automations,
             "remote_teardown_error": report.remote_teardown_error,
+            "hook_failures": report.hook_failures,
         }),
         human,
     ))
@@ -332,43 +339,66 @@ fn force_delete_detail(
     detail
 }
 
-/// Revive a soft-deleted session. A running TUI re-creates its worktrees and
-/// tmux window on the next sync.
+/// Restore a deleted session: the row, its worktrees and its agent — the same
+/// pipeline the interface's undo runs, so the two cannot disagree about what
+/// restoring means (it used to clear the flag alone, handing back a session
+/// with no worktree and no window). A force-deleted row is refused without
+/// `--best-effort`, since only committed work can return.
 fn restore_deleted(db: &Database, uuid: &str, best_effort: bool) -> Result<CommandOutput, String> {
     let id: SessionId = uuid
         .parse()
         .map_err(|_| format!("Invalid session UUID: {uuid}"))?;
+    // The pipeline refuses this too, but its message is interface-neutral; the
+    // command line is where `--best-effort` is the way to say yes.
     let deleted = db
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
         .ok_or_else(|| format!("Deleted session not found: {uuid}"))?;
-    // A force-deleted session lost its uncommitted work; restoring it only
-    // recovers committed branch state, so require an explicit opt-in.
     if deleted.force_deleted && !best_effort {
         return Err(format!(
             "Session '{}' was force-deleted; pass --best-effort to recover committed work (uncommitted/untracked changes are gone)",
             deleted.name
         ));
     }
-    // `Database::restore_session` clears `deleted_at` and `force_deleted`.
-    db.restore_session(deleted.id)
-        .map_err(|e| format!("restore_session: {e}"))?;
-    let human = match deleted.force_deleted {
+    let report = crate::session_ops::restore_session_headless(db, id, best_effort)?;
+    let mut human = match report.best_effort {
         true => format!(
-            "Restored session '{}' ({}) — best-effort: uncommitted work was not recovered",
-            deleted.name, deleted.id
+            "Restored session '{}' ({id}) — best-effort: uncommitted work was not recovered",
+            report.name
         ),
-        false => format!("Restored session '{}' ({})", deleted.name, deleted.id),
+        false => format!("Restored session '{}' ({id})", report.name),
     };
+    if report.worktrees_recovered < report.worktrees_wanted {
+        human.push_str(&format!(
+            "\n  worktrees recovered: {}/{}",
+            report.worktrees_recovered, report.worktrees_wanted
+        ));
+    }
+    if let Some(err) = &report.respawn_error {
+        human.push_str(&format!("\n  agent not relaunched: {err}"));
+    }
+    push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
         json!({
             "restored": true,
-            "id": deleted.id.to_string(),
-            "name": deleted.name,
-            "best_effort": deleted.force_deleted,
+            "id": id.to_string(),
+            "name": report.name,
+            "best_effort": report.best_effort,
+            "worktrees_wanted": report.worktrees_wanted,
+            "worktrees_recovered": report.worktrees_recovered,
+            "respawn_error": report.respawn_error,
+            "hook_failures": report.hook_failures,
         }),
         human,
     ))
+}
+
+/// The human half of a post-hook failure list: one indented line each. The
+/// operation succeeded; these are what the user's own hooks had to say.
+fn push_hook_failures(human: &mut String, failures: &[String]) {
+    for failure in failures {
+        human.push_str(&format!("\n  hook failed: {failure}"));
+    }
 }
 
 /// Resolve the session a `signal` targets: an explicit `--session` UUID, else
