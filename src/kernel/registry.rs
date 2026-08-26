@@ -108,6 +108,30 @@ pub struct Pill {
     pub priority: i64,
 }
 
+/// An action a plugin wants reachable **without** a chord.
+///
+/// The palette's row. Declared as data beside `keys`, with the same `action`
+/// namespace and the same `on_action` handler, so an action need not spend a
+/// chord to exist — and a user may give it one later through the ordinary
+/// rebinding surface, at which point it is a [`Binding`] like any other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandDecl {
+    pub plugin: String,
+    pub action: String,
+    pub description: String,
+}
+
+/// One row of the command palette: an action, who owns it, and its chord if it
+/// has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteRow {
+    pub plugin: String,
+    pub action: String,
+    pub description: String,
+    /// Every chord bound to the action, joined as help joins them.
+    pub chords: Option<String>,
+}
+
 /// A setting's value. Deliberately small — a setting is a knob, not a document.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -166,6 +190,8 @@ pub struct Registry {
     bindings: Vec<Binding>,
     settings: Vec<Setting>,
     pills: Vec<Pill>,
+    /// Chord-less commands, declared for the palette.
+    commands: Vec<CommandDecl>,
     conflicts: Vec<Conflict>,
     /// Persisted overrides: action → chord.
     binding_overrides: BTreeMap<String, String>,
@@ -297,8 +323,55 @@ impl Registry {
         self.detect_conflicts();
     }
 
+    /// Replace the chord-less commands after a reload.
+    ///
+    /// Separate from [`Self::declare_all`] so the many callers that only care
+    /// about keys need not pass an empty list; the overrides are re-applied
+    /// because a command the user gave a chord to becomes a binding here.
+    pub fn declare_commands(&mut self, commands: Vec<CommandDecl>) {
+        self.mark_changed();
+        self.commands = commands;
+        self.apply_overrides();
+        self.conflicts.clear();
+        self.detect_conflicts();
+    }
+
     fn apply_overrides(&mut self) {
+        // A command the user bound a chord to is a binding from then on, so it
+        // resolves, appears in help and can be reset there. Synthesised on every
+        // pass rather than kept, because `declare_all` replaces the list — and
+        // recognisable by its empty default chord, so the previous pass's copies
+        // are dropped before this one's are added.
+        self.bindings
+            .retain(|binding| !binding.default_chord.is_empty());
+        for command in &self.commands {
+            let already_bound = self
+                .bindings
+                .iter()
+                .any(|binding| binding.action == command.action);
+            if already_bound {
+                continue;
+            }
+            if let Some(chord) = self.binding_overrides.get(&command.action) {
+                self.bindings.push(Binding {
+                    plugin: command.plugin.clone(),
+                    action: command.action.clone(),
+                    default_chord: String::new(),
+                    chord: chord.clone(),
+                    overridden: true,
+                    description: command.description.clone(),
+                    scope: Scope::Plugin,
+                    passthrough: false,
+                    group: command.plugin.clone(),
+                });
+            }
+        }
         for binding in &mut self.bindings {
+            // A synthesised binding has no default to fall back to; it exists
+            // only while its override does.
+            if binding.default_chord.is_empty() {
+                continue;
+            }
             // The default is restored when no override remains, so clearing one
             // takes effect on the next keystroke rather than on the next reload
             // — which is what "reset this action" has to mean in the help
@@ -499,6 +572,64 @@ impl Registry {
         &self.settings
     }
 
+    /// Every declared chord-less command, in declaration order.
+    pub fn commands(&self) -> &[CommandDecl] {
+        &self.commands
+    }
+
+    /// Everything the palette lists: one row per action, from the bindings and
+    /// the chord-less commands alike, de-duplicated on `(plugin, action)`.
+    ///
+    /// A binding's row carries its chords, joined the way help joins an action's
+    /// alternates; a command's row carries none unless the user bound one. The
+    /// order is declaration order — the plugins' load order, then the kernel's —
+    /// which is what makes the unfiltered list stable across runs.
+    pub fn palette_rows(&self) -> Vec<PaletteRow> {
+        let mut rows: Vec<PaletteRow> = Vec::new();
+        for binding in &self.bindings {
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|row| row.plugin == binding.plugin && row.action == binding.action)
+            {
+                let chords = row.chords.get_or_insert_with(String::new);
+                if !chords.split(" / ").any(|chord| chord == binding.chord) {
+                    if !chords.is_empty() {
+                        chords.push_str(" / ");
+                    }
+                    chords.push_str(&binding.chord);
+                }
+                continue;
+            }
+            rows.push(PaletteRow {
+                plugin: binding.plugin.clone(),
+                action: binding.action.clone(),
+                description: binding.description.clone(),
+                chords: Some(binding.chord.clone()),
+            });
+        }
+        for command in &self.commands {
+            let bound = rows
+                .iter_mut()
+                .find(|row| row.plugin == command.plugin && row.action == command.action);
+            match bound {
+                // The key's row already exists; a command's description wins
+                // when the key declared none.
+                Some(row) => {
+                    if row.description.is_empty() {
+                        row.description = command.description.clone();
+                    }
+                }
+                None => rows.push(PaletteRow {
+                    plugin: command.plugin.clone(),
+                    action: command.action.clone(),
+                    description: command.description.clone(),
+                    chords: None,
+                }),
+            }
+        }
+        rows
+    }
+
     pub fn conflicts(&self) -> &[Conflict] {
         &self.conflicts
     }
@@ -521,7 +652,11 @@ impl Registry {
                 if RESERVED.contains(&chord.as_str()) {
                     return Err(format!("{chord} is reserved and cannot be rebound"));
                 }
-                if !self.bindings.iter().any(|b| b.action == action) {
+                // A chord-less command is a legal target: binding one is how it
+                // becomes a key, which `apply_overrides` then synthesises.
+                if !self.bindings.iter().any(|b| b.action == action)
+                    && !self.commands.iter().any(|c| c.action == action)
+                {
                     return Err(format!("no action named {action:?}"));
                 }
                 self.binding_overrides.insert(action.to_string(), chord);

@@ -99,7 +99,7 @@ The footer names the rest of what this step does, all on the list:
 | `w` | give the selected repository its own **worktree** |
 | `/` | filter a long list |
 | `d` | forget a remembered repository |
-| `Ctrl+P` | import a **folder of repositories** at once — type a parent path, press `Ctrl+P`, and every git subdirectory is added under one header |
+| `Alt+P` | import a **folder of repositories** at once — type a parent path, press `Alt+P`, and every git subdirectory is added under one header |
 | `Tab` | move between the list and the path field |
 
 ## 3. Give the session its own worktree

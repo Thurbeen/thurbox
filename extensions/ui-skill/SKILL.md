@@ -116,6 +116,13 @@ functions. Injected globals: `thurbox` (the snapshot — `.sessions`, `.settings
 `.granted`, …), `command(name, args)`, `store`, `state`, `require` (for `lib/`
 only), `files`, and `run(key, cmd, opts)` when the user has trusted the file.
 
+A plugin may also **react**: declare `events = { "session.status", … }` with an
+`on_event(name, payload)` handler and the kernel calls it once per change
+(`thurbox-cli plugin events` lists them with their payloads; an unknown name
+refuses to load). `commands = { { action, desc } }` puts an action in the
+`Ctrl+P` palette with no chord, run through the same `on_action` as a key.
+`command("emit", { text = "x", … })` reaches other plugins as `user.x`.
+
 **Deliberately absent**: `os`, `io`, `debug`, `package`, `print`, `dofile`,
 `load`, `loadstring`, and `require` of anything outside `lib/`. They are not
 blocked, they are *missing* — `os.time()` is `attempt to index a nil value`, not

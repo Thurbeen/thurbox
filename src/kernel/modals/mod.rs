@@ -28,6 +28,7 @@
 pub mod chrome;
 pub mod help;
 pub mod interface;
+pub mod palette;
 pub mod settings;
 pub mod theme;
 
@@ -53,6 +54,8 @@ pub enum ModalKind {
     Help,
     Settings,
     Theme,
+    /// The command palette — every action in the registry, one query away.
+    Palette,
 }
 
 impl ModalKind {
@@ -66,13 +69,19 @@ impl ModalKind {
             ModalKind::Help => "help.open",
             ModalKind::Settings => "settings.open",
             ModalKind::Theme => "themes.open",
+            ModalKind::Palette => "palette.open",
         }
     }
 
     pub fn from_action(action: &str) -> Option<Self> {
-        [ModalKind::Help, ModalKind::Settings, ModalKind::Theme]
-            .into_iter()
-            .find(|kind| kind.action() == action)
+        [
+            ModalKind::Help,
+            ModalKind::Settings,
+            ModalKind::Theme,
+            ModalKind::Palette,
+        ]
+        .into_iter()
+        .find(|kind| kind.action() == action)
     }
 }
 
@@ -90,6 +99,12 @@ pub fn bindings() -> Vec<Binding> {
         ("ctrl+,", ModalKind::Settings, "open settings"),
         ("f4", ModalKind::Theme, "open theme picker"),
         ("ctrl+y", ModalKind::Theme, "open theme picker"),
+        // Taken deliberately from the list of chords held for v1's panes
+        // (`tests/v2_keymap.rs`): the automations pane it was held for is one
+        // query away in the palette once it returns. No F-key alternate — every
+        // one is bound or held, and this chord is never deferred to the agent
+        // (readline's previous-history is also the up arrow).
+        ("ctrl+p", ModalKind::Palette, "open the command palette"),
     ]
     .into_iter()
     .map(|(chord, kind, description)| {
@@ -158,6 +173,10 @@ pub struct World<'a> {
     /// path that writes an interface file and asks for the reload. Same shape as
     /// `save_settings`, for the same reason.
     pub interface_edit: &'a mut Option<interface::Edit>,
+    /// Where the palette's choice is left for the loop, which owns the one path
+    /// that runs an action. Same shape as `save_settings`, for the same reason
+    /// — and the modal has closed itself by the time the loop reads it.
+    pub run_action: &'a mut Option<palette::Dispatch>,
     /// Where the theme choice is persisted. `None` when the database could not
     /// be opened — the choice then applies for this run only.
     pub db: Option<&'a Database>,
@@ -167,6 +186,7 @@ enum Open {
     Help(help::HelpModal),
     Settings(settings::SettingsModal),
     Theme(theme::ThemeModal),
+    Palette(palette::PaletteModal),
 }
 
 /// The modal layer: at most one modal, above everything.
@@ -191,7 +211,17 @@ impl Modals {
             Some(Open::Help(_)) => Some(ModalKind::Help),
             Some(Open::Settings(_)) => Some(ModalKind::Settings),
             Some(Open::Theme(_)) => Some(ModalKind::Theme),
+            Some(Open::Palette(_)) => Some(ModalKind::Palette),
             None => None,
+        }
+    }
+
+    /// The palette's query as typed so far, for the loop's tests and for a
+    /// caller that wants to know whether typing is going anywhere.
+    pub fn palette_query(&self) -> Option<&str> {
+        match &self.open {
+            Some(Open::Palette(modal)) => Some(modal.query()),
+            _ => None,
         }
     }
 
@@ -223,6 +253,7 @@ impl Modals {
             ModalKind::Help => Open::Help(help::HelpModal::default()),
             ModalKind::Settings => Open::Settings(settings::SettingsModal::default()),
             ModalKind::Theme => Open::Theme(theme::ThemeModal::default()),
+            ModalKind::Palette => Open::Palette(palette::PaletteModal::default()),
         });
     }
 
@@ -288,6 +319,17 @@ impl Modals {
                     Some(message)
                 }
             },
+            // Closed BEFORE the loop runs the choice, so the action sees the
+            // focus state a key press would have — and cannot re-enter the modal
+            // it was chosen from.
+            Open::Palette(modal) => match modal.on_key(key, world.registry) {
+                palette::Outcome::Stay(message) => message,
+                palette::Outcome::Run(dispatch) => {
+                    self.close();
+                    *world.run_action = Some(dispatch);
+                    None
+                }
+            },
         }
     }
 
@@ -297,6 +339,8 @@ impl Modals {
             Some(Open::Help(modal)) => modal.capturing(),
             Some(Open::Settings(modal)) => modal.editing(),
             Some(Open::Theme(modal)) => modal.filtering(),
+            // Typing is the palette's only mode, so `Esc` always closes it.
+            Some(Open::Palette(_)) => false,
             None => false,
         }
     }
@@ -326,6 +370,10 @@ impl Modals {
                 // previews too — `ClickVerb::Key`'s rule, one level up.
                 modal.on_click(x, y);
                 modal.preview_selected(world.themes);
+                None
+            }
+            Open::Palette(modal) => {
+                modal.on_click(x, y);
                 None
             }
         }
@@ -378,6 +426,7 @@ impl Modals {
             Open::Help(modal) => modal.hits(),
             Open::Settings(modal) => modal.hits(),
             Open::Theme(modal) => modal.hits(),
+            Open::Palette(modal) => modal.hits(),
         })
     }
 
@@ -401,6 +450,7 @@ impl Modals {
                 modal.render(frame, area, registry, on_disk, files, chrome)
             }
             Some(Open::Theme(modal)) => modal.render(frame, area, themes, chrome),
+            Some(Open::Palette(modal)) => modal.render(frame, area, registry, chrome),
             None => return,
         }
         // One place for all three: the row band is painted over cells the modal
@@ -447,6 +497,7 @@ mod tests {
             save_settings: saved,
             inventory: &[],
             interface_edit: Box::leak(Box::new(None)),
+            run_action: Box::leak(Box::new(None)),
             db: None,
         }
     }
@@ -509,7 +560,7 @@ mod tests {
     #[test]
     fn every_modal_chord_v1_binds_is_declared() {
         let declared: Vec<String> = bindings().into_iter().map(|b| b.chord).collect();
-        for chord in ["f1", "ctrl+g", "f4", "ctrl+y", "f6", "ctrl+,"] {
+        for chord in ["f1", "ctrl+g", "f4", "ctrl+y", "f6", "ctrl+,", "ctrl+p"] {
             assert!(
                 declared.iter().any(|declared| declared == chord),
                 "{chord} opens nothing"

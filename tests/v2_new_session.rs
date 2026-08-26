@@ -762,13 +762,13 @@ fn a_path_just_added_is_the_row_that_gets_selected() {
 }
 
 #[test]
-fn ctrl_p_imports_the_typed_path_as_a_folder() {
+fn alt_p_imports_the_typed_path_as_a_folder() {
     let host = host();
     let world = World::default();
     open(&host, &world);
     press(&host, &world, "tab");
     type_text(&host, &world, "/src");
-    press(&host, &world, "ctrl+p");
+    press(&host, &world, "alt+p");
     assert_eq!(
         host.drain_commands(),
         vec![Command::Bookmark {
@@ -1196,7 +1196,7 @@ fn every_key_the_flow_uses_is_declared_rather_than_only_handled() {
         .iter()
         .map(|binding| binding.chord.as_str())
         .collect();
-    for chord in ["ctrl+n", "j", "k", "space", "w", "d", "/", "ctrl+p"] {
+    for chord in ["ctrl+n", "j", "k", "space", "w", "d", "/", "alt+p"] {
         assert!(
             declared.contains(&chord),
             "{chord} is not declared: {declared:?}"

@@ -180,6 +180,16 @@ Every letter your pane declares is a letter somebody will type into a search box
 The flow's `j` moves the list in one focus and types a `j` in another for exactly
 this reason.
 
+**A handler that writes `state` on every event repaints on every event.** Right
+when the event matters and waste when it does not: check the payload first and
+write only what changed. A write that stores the value already there costs
+nothing, but a counter that always moves invalidates every pure pane.
+
+**`session.status` fires for the kernel's own derivations too.** A `working`
+session that goes quiet for ten seconds reads `idle` (the stuck-working
+fallback) and `working` again when it prints; a handler reacting to
+`to == "working"` sees both edges.
+
 ## Making a pane fast
 
 The trap above says when `pure` is wrong; this is the positive half — the
@@ -471,6 +481,74 @@ user who rebinds you onto `f7` gets the action back in the terminal.
 
 `on_key(key)` still exists for panes that need every keystroke — the terminal
 uses it, alongside `input = "session"` to forward what it does not handle.
+
+## Events: be told, rather than look
+
+```lua
+events = { "session.status", "focus.session" },
+
+on_event = function(name, payload)
+  if name == "session.status" and payload.to == "blocked" then
+    store.focus_session = payload.session
+  end
+end,
+```
+
+A pane used to learn that the world changed only by being rendered and diffing
+the snapshot itself. Declare what you listen for and the kernel calls you **once
+per change**, off the render path, with the tables current: a session appeared,
+disappeared, changed status, name or branch; the selection or the focused pane
+moved; a command a plugin issued finished or failed; the interface reloaded. The
+whole list, with each payload, is `thurbox-cli plugin events` and the last
+section of `F1`.
+
+The kernel **derives** these by diffing the snapshot, so a session made by
+`thurbox-cli`, a cron tick or a second thurbox fires the same `session.created`
+as one the creation flow made. The four `session.post_*` names are the exception
+and the reason there are two spellings: they fire only for an operation *this*
+interface performed, with that operation's facts, and share their names with
+`hooks.toml` so shell and Lua learn one vocabulary. Subscribe to
+`session.created` to hear about every session; to `session.post_create` to hear
+about the one you asked for.
+
+A handler gets exactly what a render gets — the published tables, `state`,
+`store`, `command` — and its return value is ignored: it cannot answer, block or
+veto, only write state and enqueue. It runs under the render's instruction
+budget, and one that throws costs its own subscription for that event: the other
+subscribers still run, your pane still draws, and the failure is reported once
+per event in the message band rather than painted into your rect every frame.
+
+**A subscription to a name nothing emits refuses to load** (`plugin check` says
+which), because a handler that never fires is the one failure with no symptom.
+
+**Plugins can talk to each other.** `command("emit", { text = "refresh", scope =
+"x" })` reaches every plugin subscribed to `user.refresh` on the next iteration,
+with the other fields as the payload and `payload.source` set to your name — by
+the kernel, so nobody can forge it. A kernel name cannot be emitted. Emits may
+cascade (a handler emitting to a handler) four generations deep per dispatch;
+the fifth is dropped and reported, so two plugins cannot pin the loop between
+them.
+
+`docs/examples/events.lua` is the worked example: it selects the session that
+just went `blocked`, unless you moved the selection yourself in the last few
+seconds.
+
+## The palette: an action without a chord
+
+```lua
+commands = {
+  { action = "mine.export", desc = "export the list" },
+},
+```
+
+`Ctrl+P` opens the command palette — every plugin's declared keys, every
+`commands` entry, and the kernel's own modals, reload and quit — filtered as you
+type, with the chord beside each row that has one. `Enter` runs the chosen row
+through the same `on_action` a key press takes, **whether or not your pane is
+focused**, so an action must not assume it is (the bundled panes key off `state`
+and `store.selected`, never on focus). A command and a key for one action are
+one row; a user may later bind a chord to a command from `F1`, at which point it
+is a key like any other.
 
 ## Clicks: give the node an identity
 
@@ -902,6 +980,7 @@ below.
 |---|---|
 | [`plugin.lua`](examples/plugin.lua) | what `plugin new` writes: a pane, a key, a setting |
 | [`composite.lua`](examples/composite.lua) | the worked `run` example — git status and log, on the session's own host |
+| [`events.lua`](examples/events.lua) | the worked `on_event` example — selects a session the moment it blocks, with a palette command to switch it off |
 | [`layout.lua`](examples/layout.lua) | an arrangement putting the two panes above in a column beside the agent |
 
 Together they are one demo:

@@ -93,6 +93,19 @@ return {
     { id = "loud", desc = "say it twice", default = false },
   },
 
+  -- Reachable from the Ctrl+P palette without spending a chord.
+  commands = {
+    { action = "example.open", desc = "show the example" },
+  },
+
+  -- Told once per change, off the render path: `thurbox-cli plugin events`.
+  events = { "session.status" },
+  on_event = function(name, payload)
+    if payload.to == "blocked" then
+      state.needs_you = payload.session
+    end
+  end,
+
   render = function(ctx)
     -- ctx carries the RESOLVED rect: ctx.width, ctx.height, ctx.focused.
     local rows = {}
@@ -141,6 +154,12 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 | `run(key, cmd, opts)` | run a program and read its output — **only if trusted**, see below |
 | `files` | bounded reads the kernel performs for you |
 | `thurbox.platform` | `os` and `arch`, so a plugin shipping several builds can pick one |
+
+**Events**: declare `events = { "session.status", … }` and an `on_event(name,
+payload)` and the kernel calls you once per change, with the same environment a
+render has. `command("emit", { text = "x", … })` reaches every plugin subscribed
+to `user.x`. `commands = { { action, desc } }` puts an action in the `Ctrl+P`
+palette with no chord. The list of events is `thurbox-cli plugin events`.
 
 `thurbox.granted` tells you which capabilities *this* file has been granted
 (`granted.run`, `granted.program`). It exists because not every capability can be

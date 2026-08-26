@@ -236,6 +236,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         reaper: thurbox::kernel::reaper::Reaper::default(),
         bookmark_in_flight: false,
         hud: false,
+        events: crate::coordinator::events::Events::new(),
         quit: false,
     };
 
@@ -244,7 +245,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // so a plugin turned off would be loaded for exactly one frame. Told, then
     // rebuilt.
     app.publish_disabled();
-    app.reload_interface();
+    app.reload_interface(crate::coordinator::events::ReloadReason::Boot);
     // Declarations are collected once up front and again on every reload, so
     // a newly added plugin's keys appear in help with nothing else edited.
     app.collect_declarations();

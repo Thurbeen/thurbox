@@ -342,7 +342,7 @@ or owed.
 | CPU / RAM gauges | — | installable | `thurbox-cli plugin install top` |
 | Panes anyone else wrote | — | installable | `ui/plugins.toml` |
 | Tasks | `Ctrl+W` / `F5` | CLI only | `thurbox-cli task` |
-| Automations | `Ctrl+P` | CLI only | `thurbox-cli automation` |
+| Automations | — | CLI only | `thurbox-cli automation` |
 | File viewer | `Ctrl+E` / `F3` | owed | — |
 
 **Bundled** means it ships with thurbox and is yours to edit, move or delete —
@@ -994,6 +994,7 @@ cannot drift from what is running.
 | `F1` / `Ctrl+G` | Keybindings help | kernel |
 | `F6` / `Ctrl+,` | Settings (`]` for the Interface tab) | kernel |
 | `F4` / `Ctrl+Y` | Theme picker | kernel |
+| `Ctrl+P` | Command palette — every action, filtered as you type | kernel |
 | `F10` | Reload the interface from disk | kernel |
 | `F12` | Perf HUD | kernel |
 | `Ctrl+N` | New session | `70_new_session.lua` |
@@ -1015,7 +1016,7 @@ cannot drift from what is running.
 
 Gone with the panes they opened: `Ctrl+X`/`F7` (code review), `Ctrl+E`/`F3`
 (file viewer), `Ctrl+B`/`F2` (info panel), `F5` (tasks) and `Ctrl+P`
-(automations — now the creation flow's folder import). Two of them come back
+(automations — now the command palette, which is the way into any pane). Two of them come back
 with a pane you install:
 [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) claims
 `Ctrl+X`/`F7` again, and

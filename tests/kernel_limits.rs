@@ -26,6 +26,33 @@ fn ctx() -> RenderContext {
 }
 
 #[test]
+fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
+    host::set_instruction_budget(200_000);
+    let dir = plugin_dir(
+        r#"return {
+             name = "spinner", slot = "a",
+             events = { "session.status" },
+             on_event = function() while true do end end,
+             render = function() return { text = "" } end,
+           }"#,
+    );
+    let spinner = LuaHost::new(dir.path());
+    assert!(spinner.error.is_none(), "{:?}", spinner.error);
+    let failures = spinner.dispatch_event(
+        &thurbox::kernel::events::Event::new("session.status").with("session", Some("s1")),
+    );
+    host::set_instruction_budget(0);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(failures[0].plugin, "spinner");
+    assert_eq!(failures[0].phase, host::Phase::Event);
+    assert!(
+        failures[0].message.contains("instruction budget"),
+        "{}",
+        failures[0].message
+    );
+}
+
+#[test]
 fn the_limits_are_settable_and_enforced() {
     // --- memory ------------------------------------------------------------
     // A small ceiling, so exhausting it is a test rather than an ordeal.

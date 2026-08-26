@@ -27,9 +27,10 @@ use ratatui::layout::Rect;
 
 use super::command::{Command, InFlight};
 use super::convert;
+use super::events::{Event, Field};
 use super::layout::{Region, SlotMode};
 use super::node::{Node, Size};
-use super::registry::{Binding, Pill, Registry, Setting};
+use super::registry::{Binding, CommandDecl, Pill, Registry, Setting};
 use super::snapshot::Snapshot;
 use super::theme::Themes;
 
@@ -141,6 +142,9 @@ pub enum Phase {
     Load,
     Render,
     Key,
+    /// An `on_event` handler — off the render path, so its failure is reported
+    /// once per event rather than painted into a pane every frame.
+    Event,
 }
 
 impl Phase {
@@ -149,6 +153,7 @@ impl Phase {
             Phase::Load => "load",
             Phase::Render => "render",
             Phase::Key => "key",
+            Phase::Event => "event",
         }
     }
 }
@@ -240,6 +245,14 @@ pub struct Plugin {
     /// interface's own file list can say which files ask to run programs
     /// without anyone reading their source.
     pub capabilities: Vec<Capability>,
+    /// Events this plugin subscribed to, each validated at load against
+    /// [`super::events::KERNEL_EVENTS`] or the `user.` form.
+    ///
+    /// Data, like `keys`: a handler with no list receives nothing, so what a
+    /// plugin listens for is enumerable without calling it.
+    pub events: Vec<String>,
+    /// Actions this plugin wants reachable without a chord — the palette's rows.
+    pub commands: Vec<CommandDecl>,
     order: f64,
     def: Table,
 }
@@ -895,6 +908,120 @@ impl LuaHost {
     /// Index of a plugin by name.
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.plugins.iter().position(|p| p.name == name)
+    }
+
+    /// The name of the plugin at a path — what an event's `source` carries.
+    pub fn name_of_path(&self, path: &str) -> Option<&str> {
+        self.plugins
+            .iter()
+            .find(|plugin| plugin.path == path)
+            .map(|plugin| plugin.name.as_str())
+    }
+
+    /// Every chord-less command every loaded plugin declared.
+    pub fn commands(&self) -> Vec<CommandDecl> {
+        self.plugins
+            .iter()
+            .flat_map(|plugin| plugin.commands.iter().cloned())
+            .collect()
+    }
+
+    /// Indices of the plugins subscribed to an event, in load order.
+    pub fn subscribers(&self, event: &str) -> Vec<usize> {
+        self.plugins
+            .iter()
+            .enumerate()
+            .filter(|(_, plugin)| plugin.events.iter().any(|name| name == event))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Hand one event to every plugin subscribed to it.
+    ///
+    /// The payload table is built **once** and shared: a handler that mutates it
+    /// changes what a later subscriber reads, which is the same contract a
+    /// published table already has — and building it per subscriber would be a
+    /// table per plugin per event for a value nobody is meant to write.
+    ///
+    /// Every subscriber is called whatever the earlier ones did: a handler that
+    /// throws or overruns its budget costs itself, reported against its plugin
+    /// with the event's name, and the next handler still runs. Return values are
+    /// ignored — a handler cannot answer, only enqueue commands and write state.
+    pub fn dispatch_event(&self, event: &Event) -> Vec<PluginError> {
+        let subscribers = self.subscribers(&event.name);
+        if subscribers.is_empty() {
+            return Vec::new();
+        }
+        let mut failures = Vec::new();
+        let payload = match self.payload_table(event) {
+            Ok(table) => table,
+            Err(message) => {
+                failures.push(PluginError {
+                    plugin: "kernel".to_string(),
+                    phase: Phase::Event,
+                    message: format!("{}: {message}", event.name),
+                });
+                return failures;
+            }
+        };
+        for index in subscribers {
+            if let Err(e) = self.on_event(index, &event.name, &payload) {
+                failures.push(e);
+            }
+        }
+        failures
+    }
+
+    /// Call one plugin's `on_event` with a name and a payload table.
+    fn on_event(&self, index: usize, name: &str, payload: &Table) -> Result<(), PluginError> {
+        let Some(plugin) = self.plugins.get(index) else {
+            return Ok(());
+        };
+        let fail = |message: String| PluginError {
+            plugin: plugin.name.clone(),
+            phase: Phase::Event,
+            message: format!("{name}: {message}"),
+        };
+        let handler: Value = plugin
+            .def
+            .get("on_event")
+            .map_err(|e| fail(e.to_string()))?;
+        let Value::Function(handler) = handler else {
+            return Ok(());
+        };
+
+        self.enter(plugin);
+        let guard = Budget::arm(&self.lua);
+        let outcome: Result<Value, mlua::Error> = handler.call((name.to_string(), payload.clone()));
+        drop(guard);
+        outcome.map(|_| ()).map_err(|e| fail(clean_error(&e)))
+    }
+
+    fn payload_table(&self, event: &Event) -> Result<Table, String> {
+        let table = self.lua.create_table().map_err(|e| e.to_string())?;
+        for (key, value) in &event.payload {
+            let value = match value {
+                Field::Text(text) => {
+                    Value::String(self.lua.create_string(text).map_err(|e| e.to_string())?)
+                }
+                Field::Bool(flag) => Value::Boolean(*flag),
+                // An integral number goes in as an integer, or `count = 2` reads
+                // back as `2.0` — the same care `state` takes with its values.
+                Field::Number(n) if n.fract() == 0.0 && n.abs() < (i64::MAX as f64) => {
+                    Value::Integer(*n as i64)
+                }
+                Field::Number(n) => Value::Number(*n),
+                Field::List(items) => {
+                    let list = self.lua.create_table().map_err(|e| e.to_string())?;
+                    for (i, item) in items.iter().enumerate() {
+                        list.set(i + 1, item.clone()).map_err(|e| e.to_string())?;
+                    }
+                    Value::Table(list)
+                }
+            };
+            table.set(key.as_str(), value).map_err(|e| e.to_string())?;
+        }
+        Ok(table)
     }
 
     /// Indices of the plugins occupying one slot, in render order.

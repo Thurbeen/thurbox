@@ -21,9 +21,12 @@ impl App {
     /// still pointed at the user's copy, so `r`/`d`/`space`/`t` wrote the right
     /// file to no visible effect. Only a restart recovered. It also cost a plugin
     /// author their edit-reload loop, since a `./ui` checkout takes the same path.
-    pub(crate) fn reload_interface(&mut self) {
+    pub(crate) fn reload_interface(&mut self, reason: super::events::ReloadReason) {
         self.host.reload_from(&self.ui_dir);
         Counters::bump(&self.perf.reloads);
+        // The plugins that would have received what was queued no longer exist;
+        // the rebuilt ones hear that they were rebuilt.
+        self.note_reload(reason);
         // Plugin indices are positions in a vector the rebuild just replaced, and
         // `grabbed` is one recorded during the previous paint. A reload between a
         // paint and a keystroke — a watcher firing on a deleted file — would leave
@@ -90,7 +93,7 @@ impl App {
         match self.registry.set_disabled(&key, off) {
             Ok(now_off) => {
                 self.publish_disabled();
-                self.reload_interface();
+                self.reload_interface(super::events::ReloadReason::Settings);
                 self.collect_declarations();
                 self.clamp_focus();
                 self.refresh_sources();
@@ -145,7 +148,7 @@ impl App {
         };
         match outcome {
             Ok(message) => {
-                self.reload_interface();
+                self.reload_interface(super::events::ReloadReason::Settings);
                 self.collect_declarations();
                 self.clamp_focus();
                 self.refresh_sources();
@@ -221,6 +224,7 @@ impl App {
         let on_disk = self.config.on_disk().clone();
         let mut saved = None;
         let mut edit = None;
+        let mut run = None;
         // Same reason as the settings clone: the modal reads it while `self` is
         // borrowed mutably to apply whatever comes back.
         let inventory = std::mem::take(&mut self.inventory);
@@ -232,6 +236,7 @@ impl App {
                 save_settings: &mut saved,
                 inventory: &inventory,
                 interface_edit: &mut edit,
+                run_action: &mut run,
                 db: db.as_ref(),
             };
             act(&mut self.modals, &mut world)
@@ -239,6 +244,10 @@ impl App {
         self.inventory = inventory;
         if let Some(draft) = saved {
             self.apply_settings(draft);
+        }
+        // The palette's choice, run after the modal has closed itself.
+        if let Some(dispatch) = run {
+            self.run_action(&dispatch.plugin, &dispatch.action);
         }
         match edit {
             Some(thurbox::kernel::modals::interface::Edit::File { file, kind }) => {

@@ -55,6 +55,8 @@ end
 
 local AGENT_TAB, SHELL_TAB = "agent", "shell"
 local SELECT_AGENT, SELECT_SHELL = "terminal.agent", "terminal.shell"
+--- Bring the input focus onto this pane, from anywhere.
+local FOCUS = "terminal.focus"
 
 --- The session the list published, resolved against the current snapshot.
 local function selected()
@@ -776,8 +778,22 @@ return {
     return false
   end,
 
+  -- The palette's rows (Ctrl+P). None of these spends a chord: the tabs are
+  -- already click targets on the border, and focusing the pane is what the
+  -- session list's Enter does — but neither was reachable by name until now.
+  commands = {
+    { action = FOCUS, desc = "focus the agent terminal" },
+    { action = SELECT_AGENT, desc = "show the agent tab" },
+    { action = SELECT_SHELL, desc = "show the shell tab" },
+  },
+
   on_action = function(action)
     local id = store.selected
+    if action == FOCUS then
+      -- Where `sessions.open` sends focus too: the pane that shows the session.
+      command("focus", { text = NAME })
+      return true
+    end
     if action == "shell.open" then
       -- v1 `toggle_shell_view`: the chord flips between the two views, where
       -- the chips select outright. Swallowed without a session, because there

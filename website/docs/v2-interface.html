@@ -296,6 +296,10 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
       <td>The same inventory the settings Interface tab shows, with each file's origin</td>
     </tr>
     <tr>
+      <td><code>thurbox-cli plugin events</code></td>
+      <td>Every event a plugin may subscribe to (<code>events = { &hellip; }</code> + <code>on_event</code>), with its payload</td>
+    </tr>
+    <tr>
       <td><code>thurbox-cli plugin install &lt;src&gt;</code></td>
       <td>Fetches a pane and records it in <code>plugins.toml</code></td>
     </tr>
@@ -346,6 +350,26 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   <em>within</em>
   one version still show up, because from outside a local edit and an upstream substitution are the
   same thing.
+</p>
+<p>
+  <strong>A plugin can react as well as draw.</strong>
+  Declare
+  <code>events = { "session.status", &hellip; }</code>
+  and an
+  <code>on_event(name, payload)</code>
+  handler, and the kernel calls it once per change, off the render path &mdash; a session
+  appearing, leaving or changing status, the selection moving, a command finishing, the interface
+  reloading. The events are derived by diffing the snapshot, so a session made by
+  <code>thurbox-cli</code>
+  or a cron tick fires the same one the creation flow does; a subscription to a name nothing
+  emits refuses to load, and
+  <code>thurbox-cli plugin events</code>
+  lists them all. Plugins reach each other with
+  <code>command("emit", &hellip;)</code>. And an action need not spend a chord to exist:
+  <code>commands = { { action, desc } }</code>
+  puts it in the
+  <kbd>Ctrl</kbd>+<kbd>P</kbd>
+  command palette beside every declared key, run through the same handler a key press takes.
 </p>
 <p>
   A broken plugin does not cost you the interface: the error is reported in place, and the bundled

@@ -317,6 +317,7 @@ impl App {
         bindings.extend(thurbox::kernel::modals::bindings());
         pills.extend(thurbox::kernel::modals::pills());
         self.registry.declare_all(bindings, settings, pills);
+        self.registry.declare_commands(self.host.commands());
         // Trust is read against the plugin set that just loaded, so a reload —
         // including the one a trust change triggers — lands both together.
         self.publish_trust();

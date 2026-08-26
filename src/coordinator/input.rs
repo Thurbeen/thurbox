@@ -196,11 +196,7 @@ impl App {
             // F10, not F5: v1 spends F1-F9 and F12 on real UI (F5 is the tasks
             // panel), so the dev reload takes one of the two keys v1 leaves
             // free rather than shadowing a pane the user expects.
-            KeyCode::F(10) => {
-                self.reload_interface();
-                self.collect_declarations();
-                self.clamp_focus();
-            }
+            KeyCode::F(10) => self.reload_by_key(),
             // Tab is NOT a focus key: it belongs to the agent. See RESERVED.
             // v1 binds focus movement to Ctrl+H/Ctrl+L as well, and refuses to
             // let a focused terminal keep either: they are how you get *out* of
@@ -424,6 +420,43 @@ impl App {
         });
         self.modals.toggle(kind);
         self.dirty = true;
+    }
+
+    /// `F10`, and the palette's reload entry: rebuild from disk and re-collect
+    /// what the rebuilt plugins declare.
+    pub(crate) fn reload_by_key(&mut self) {
+        self.reload_interface(super::events::ReloadReason::Key);
+        self.collect_declarations();
+        self.clamp_focus();
+    }
+
+    /// Run an action the palette chose, exactly as its chord would have.
+    ///
+    /// A kernel action goes to the kernel's own handler; a plugin's goes through
+    /// `host.on_action` whether or not that plugin is focused, which is what a
+    /// global chord already does. The modal has closed by the time this runs, so
+    /// the action sees the focus state a key press would have seen.
+    pub(crate) fn run_action(&mut self, plugin: &str, action: &str) {
+        self.dirty = true;
+        if plugin == thurbox::kernel::modals::OWNER {
+            if let Some(kind) = ModalKind::from_action(action) {
+                self.toggle_modal(kind);
+                return;
+            }
+            match action {
+                thurbox::kernel::modals::palette::RELOAD_ACTION => self.reload_by_key(),
+                thurbox::kernel::modals::palette::QUIT_ACTION => self.quit = true,
+                other => self.report(format!("no kernel action named {other:?}"), Level::Error),
+            }
+            return;
+        }
+        let Some(index) = self.host.index_of(plugin) else {
+            self.report(format!("no plugin named {plugin:?}"), Level::Error);
+            return;
+        };
+        if let Err(e) = self.host.on_action(index, action) {
+            self.errors.push(e);
+        }
     }
 
     /// Offer a keystroke to one specific plugin: its declared action first, then

@@ -926,6 +926,7 @@ loads, `check` loads the interface the way `thurbox` does and exits non-zero on
 a failure — **including on a pane that loaded but which no arrangement places**,
 printing the `layout.lua` line to add — `list` is the same inventory the settings
 modal's Interface tab shows, and
+`events` lists every event a plugin may subscribe to with its payload, and
 `install|sync|update|remove|available` manage panes from a declarative spec
 — see `docs/PLUGINS.md`).
 Output is
@@ -1682,7 +1683,10 @@ already follow.
 - **`kernel/`** — the interface. `node` (four primitives), `layout` (rects before
   render), `convert` (Lua table ↔ node), `paint` (node → ratatui), `host` (the VM,
   reload, isolation, capability grants), `registry` (keys + settings plugins
-  declare), `modals/` (help, settings, theme picker — chrome about thurbox itself,
+  declare, plus the chord-less commands the palette lists), `events` (the
+  closed set a plugin may subscribe to, and the deriver that diffs a snapshot
+  into them), `modals/` (help, settings, theme picker, the command palette —
+  chrome about thurbox itself,
   which plugins contribute *data* to rather than replace), `bands` (the top/bottom
   bars), `snapshot` (the read side), `command` (the write side), `terminal/` (live
   PTY surfaces: the attach machinery, plugin program panes, link detection +
@@ -1712,8 +1716,9 @@ already follow.
   one flat surface; no caller names a submodule.
 - **`coordinator/`** — `main`'s own body. `App` and its state stay in
   `main.rs`; its behaviour is here, grouped by what it is for: the loop and its
-  workers (`mod`), then `commands`, `publish`, `draw`, `input`, `mouse`, `focus`
-  and `interface` — plus `boot` (the startup sequence `main` delegates to),
+  workers (`mod`), then `commands`, `publish`, `draw`, `input`, `mouse`, `focus`,
+  `events` (the one dispatch point, and the kernel events derived from the
+  loop's own signals) and `interface` — plus `boot` (the startup sequence `main` delegates to),
   `chrome` (the terminal/error-panel/perf-HUD helpers) and `editor` (the
   `Ctrl+O` command resolution). Still one model and one loop — splitting `App`
   itself is what ADR-22 rejected, and the invariants that matter hold *across*
@@ -1724,7 +1729,7 @@ already follow.
   `order` and `session_model` (the session list's model, with its memo),
   `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
   panes.
-- **`cli/`** — `thurbox-cli` subcommands, including `plugin dir|new|check|list|install|sync|update|remove`
+- **`cli/`** — `thurbox-cli` subcommands, including `plugin dir|new|check|list|events|install|sync|update|remove`
   for writing an interface with no TTY.
 
 ### Event Loop (`src/main.rs` + `src/coordinator/`)
@@ -1735,6 +1740,7 @@ tokio::main → load config + settings → heal extensions → arm the heartbeat
   → resolve ui/ → build the Lua host → open SQLite → init terminal → loop {
     resolve layout → call each plugin with its rect → paint
     → poll workers (terminals, commands, diffs, metrics, repos, runs, updates)
+    → dispatch events to the plugins subscribed to them (kernel::events)
     → drain Lua's command queue → dispatch keys through the registry
 } → restore terminal
 ```
@@ -1795,6 +1801,7 @@ Global chords (kernel-owned):
 | `Ctrl+J` / `Ctrl+K` | Select next / previous session |
 | `Ctrl+,` / `F6` | Settings (`]` for the Interface tab) |
 | `Ctrl+Y` / `F4` | Theme picker |
+| `Ctrl+P` | Command palette — every action, filtered as you type |
 | `F1` / `Ctrl+G` | Keybindings help |
 | `F10` | Reload the interface from disk |
 | `F12` | Perf HUD |
@@ -1974,7 +1981,7 @@ panel, no capabilities — everything from the snapshot). Neither is bundled or
 vendored; both are downstream consumers of the published `thurbox.*` shape.
 
 Two **example** panes live in `ui-plugins/` (`tasks`, `top`) and install by bare
-name; `docs/examples/{plugin,composite,layout}.lua` are copied by hand. They are
+name; `docs/examples/{plugin,composite,events,layout}.lua` are copied by hand. They are
 examples to read and copy from, not a catalogue thurbox maintains for anyone —
 `EXAMPLE_PLUGINS` is the list a bare name and a typo suggestion resolve against.
 `check` fails on a pane that **loaded but which no arrangement places** — the only
@@ -2104,6 +2111,31 @@ capabilities). The implementation itself is held in the VM's **registry**, never
 globals, because a plugin chunk's `_ENV` *is* the globals table — it sat there as
 `__run_impl` once, which handed every untrusted plugin the capability under a second
 name.
+
+**A plugin can react to events** (`kernel::events`, `coordinator::events`).
+Declare `events = { "session.status", … }` and an `on_event(name, payload)`, and
+the loop calls it once per change, off the render path, under the render's
+budget. The kernel's events are **derived by diffing the snapshot** — a row
+appearing, leaving, changing status/name/branch/repos/parent — plus the focus
+ring, the command bus (`command.done`/`failed`, and `session.post_*` for the
+four operations *this* interface performed, named as `hooks.toml` names them) and
+`interface.reloaded`; never raised from `session_ops`, so a session another
+process made fires the same event. The set is closed (`KERNEL_EVENTS`): a
+subscription to an unknown name refuses to load, and the same table renders in
+`F1` and `thurbox-cli plugin events`. `command("emit", { text = name, … })`
+delivers `user.<name>` to other plugins with `source` stamped by the kernel;
+cascades stop at `MAX_DEPTH`. Dispatch never marks the frame dirty itself
+(`frame-cost`); a reload drops the queue and delivers `interface.reloaded` first.
+`docs/examples/events.lua` is the worked example.
+
+**A plugin can declare chord-less commands** — `commands = { { action, desc } }`
+— which the **command palette** (`Ctrl+P`, `kernel::modals::palette`) lists
+beside every declared key and the kernel's own actions, filtered by subsequence
+as you type; `Enter` runs the row through the same `on_action` a key takes,
+focused or not, after the modal has closed. A command a user rebinds from `F1`
+becomes a binding (`Registry::apply_overrides` synthesises it). `Ctrl+P` was
+taken deliberately from the chords held for v1's panes (`tests/v2_keymap.rs`),
+and the creation flow's folder import moved to `Alt+P` for it.
 
 - `docs/V2-KERNEL.md` — the kernel's shape, its five rules, and the traps
 - `docs/PLUGINS.md` — writing a plugin; **Start here** needs no TTY, and **Traps**

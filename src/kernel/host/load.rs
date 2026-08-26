@@ -10,7 +10,9 @@ use super::{
     instruction_budget, memory_limit, plugin_stdlib, Arrangement, Capability, Float, Plugin,
 };
 use crate::kernel::node::Size;
-use crate::kernel::registry::{binding_from, Binding, Pill, Setting, Value as SettingValue};
+use crate::kernel::registry::{
+    binding_from, Binding, CommandDecl, Pill, Setting, Value as SettingValue,
+};
 
 /// Build a VM with the deliberate stdlib set and the memory ceiling.
 pub(super) fn new_vm() -> mlua::Result<Lua> {
@@ -181,6 +183,8 @@ pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plug
     let settings = read_settings(&def, &name)?;
     let pills = read_pills(&def, &name)?;
     let capabilities = read_capabilities(&def, &file)?;
+    let events = read_events(&def, &file)?;
+    let commands = read_commands(&def, &name)?;
 
     // A decorator transforms another pane's tree and draws nothing of its own,
     // so requiring `render` of one would mean writing a stub that returns
@@ -207,8 +211,64 @@ pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plug
         settings,
         pills,
         capabilities,
+        events,
+        commands,
         def,
     })
+}
+
+/// Read `events = { "session.status", … }` off a declaration.
+///
+/// Each name is checked against the kernel's enumeration (or the `user.` form)
+/// here, at load, because a subscription to a name nothing emits is a handler
+/// that never fires — the one failure with no symptom at all. Refused the way
+/// an unknown capability is, with the file named and the alternatives listed.
+fn read_events(def: &Table, file: &str) -> Result<Vec<String>, String> {
+    let declared: Option<Vec<String>> = def
+        .get("events")
+        .map_err(|e| format!("{file}.events: {e}"))?;
+    let mut out = Vec::new();
+    for name in declared.unwrap_or_default() {
+        crate::kernel::events::validate_subscription(&name)
+            .map_err(|e| format!("{file}.events: {e}"))?;
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
+
+/// Read `commands = { { action = …, desc = … } }` — the palette's rows.
+///
+/// Same shape as a key without the chord: the action id is the one `on_action`
+/// is called back with, so a command and a key for one action are one thing
+/// reached two ways.
+fn read_commands(def: &Table, plugin: &str) -> Result<Vec<CommandDecl>, String> {
+    let raw: Value = def
+        .get("commands")
+        .map_err(|e| format!("{plugin}.commands: {e}"))?;
+    let Value::Table(list) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut commands = Vec::new();
+    for (index, entry) in list.sequence_values::<Table>().enumerate() {
+        let entry = entry.map_err(|e| format!("{plugin}.commands[{}]: {e}", index + 1))?;
+        let where_ = format!("{plugin}.commands[{}]", index + 1);
+        let action: String = entry
+            .get::<Option<String>>("action")
+            .map_err(|e| format!("{where_}.action: {e}"))?
+            .ok_or_else(|| format!("{where_}: needs an action"))?;
+        let description: String = entry
+            .get::<Option<String>>("desc")
+            .map_err(|e| format!("{where_}.desc: {e}"))?
+            .unwrap_or_default();
+        commands.push(CommandDecl {
+            plugin: plugin.to_string(),
+            action,
+            description,
+        });
+    }
+    Ok(commands)
 }
 
 /// Read `capabilities = { "run" }` off a declaration.
@@ -287,6 +347,12 @@ fn read_bindings(def: &Table, plugin: &str) -> Result<Vec<Binding>, String> {
             .get::<Option<String>>("key")
             .map_err(|e| format!("{where_}.key: {e}"))?
             .ok_or_else(|| format!("{where_}: needs a key"))?;
+        // An empty chord would never fire and — because a chord-less command
+        // the user binds is synthesised with an empty *default* — would be
+        // dropped on the next override pass. Refused, like a missing one.
+        if chord.trim().is_empty() {
+            return Err(format!("{where_}: needs a key"));
+        }
         let action: String = entry
             .get::<Option<String>>("action")
             .map_err(|e| format!("{where_}.action: {e}"))?

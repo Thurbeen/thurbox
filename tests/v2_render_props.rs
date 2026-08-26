@@ -434,3 +434,98 @@ fn normalizing_ambiguous_width_strips_the_selector_and_nothing_else() {
         }
     });
 }
+
+// --- the command palette ---------------------------------------------------
+
+/// Any keystroke the modal layer can be handed, as a `KeyEvent` rather than a
+/// `KeyPress`: the palette is chrome, so it takes the terminal's own events.
+fn any_modal_key() -> impl Strategy<Value = crossterm::event::KeyEvent> {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let named = prop::sample::select(vec![
+        KeyCode::Esc,
+        KeyCode::Enter,
+        KeyCode::Tab,
+        KeyCode::Backspace,
+        KeyCode::Delete,
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::F(1),
+        KeyCode::F(10),
+    ]);
+    let code = prop_oneof![
+        3 => proptest::char::range(' ', '~').prop_map(KeyCode::Char),
+        1 => named,
+    ];
+    (code, any::<bool>(), any::<bool>()).prop_map(|(code, ctrl, alt)| {
+        let mut modifiers = KeyModifiers::NONE;
+        if ctrl {
+            modifiers |= KeyModifiers::CONTROL;
+        }
+        if alt {
+            modifiers |= KeyModifiers::ALT;
+        }
+        KeyEvent::new(code, modifiers)
+    })
+}
+
+#[test]
+fn no_key_sequence_makes_the_palette_throw_or_stop_drawing() {
+    // Every keystroke is query text or navigation; none may panic the modal
+    // layer, and after any sequence the palette still paints at any size.
+    use thurbox::kernel::modals::{ModalKind, Modals, World};
+    use thurbox::kernel::theme::Themes;
+
+    let host = host();
+
+    proptest!(ProptestConfig::with_cases(48), |(
+        keys in proptest::collection::vec(any_modal_key(), 1..30),
+        width in 1u16..=160,
+        height in 1u16..=50,
+    )| {
+        // Per case: the closure is `Fn`, and the modal layer writes through both.
+        let mut registry = registry(&host);
+        registry.declare_commands(host.commands());
+        let mut themes = Themes::load(None);
+        let mut modals = Modals::default();
+        modals.toggle(ModalKind::Palette);
+        for key in &keys {
+            if !modals.is_open() {
+                break;
+            }
+            let mut run = None;
+            let mut world = World {
+                settings_on_disk: &Default::default(),
+                save_settings: &mut None,
+                inventory: &[],
+                interface_edit: &mut None,
+                run_action: &mut run,
+                registry: &mut registry,
+                themes: &mut themes,
+                db: None,
+            };
+            let chord = format!("{:?}", key.code).to_lowercase();
+            modals.on_key(key, &chord, &mut world);
+        }
+        if modals.is_open() {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    modals.render(
+                        frame,
+                        Rect::new(0, 0, width, height),
+                        &registry,
+                        &themes,
+                        &Default::default(),
+                        thurbox::kernel::modals::interface::Files { rows: &[], dir: "ui" },
+                    );
+                })
+                .expect("draw");
+        }
+    });
+}

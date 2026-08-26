@@ -150,8 +150,12 @@ fn fire(host: &LuaHost, chord: &str) {
 /// below, in `CHORDS_AWAITING_THEIR_PANE`. They are listed rather than dropped so
 /// re-adding a pane has an obvious place to reconnect, and so the shortfall is
 /// counted rather than forgotten.
-const GLOBAL_CHORDS: [(&str, &str); 22] = [
+const GLOBAL_CHORDS: [(&str, &str); 23] = [
     ("ctrl+n", "new_session.open"),
+    // Reassigned deliberately, not reused quietly: v1 spent it on the
+    // automations pane, and the palette is the way *into* that pane — and every
+    // other — once it returns. See `CHORDS_AWAITING_THEIR_PANE`, which it left.
+    ("ctrl+p", "palette.open"),
     ("ctrl+u", "restore.open"),
     // One declaration, three spellings: the kernel folds the encodings a
     // terminal may deliver `Ctrl+/` as, where v1 bound all three by hand.
@@ -181,8 +185,11 @@ const GLOBAL_CHORDS: [(&str, &str); 22] = [
 /// v1 chords with no v2 owner, each named with the pane that would bring it
 /// back. Asserted to be *unbound* — a chord that silently resolved to something
 /// else would be worse than one that does nothing.
-const CHORDS_AWAITING_THEIR_PANE: [(&str, &str); 9] = [
-    ("ctrl+p", "automations"),
+///
+/// `ctrl+p` was here for the automations pane and was reassigned to the command
+/// palette on purpose (`GLOBAL_CHORDS`): a deliberate, recorded reassignment is
+/// the one thing this list does not forbid.
+const CHORDS_AWAITING_THEIR_PANE: [(&str, &str); 8] = [
     ("ctrl+w", "tasks"),
     ("ctrl+x", "review"),
     ("ctrl+b", "info"),
@@ -398,6 +405,12 @@ fn the_chords_v1_leaves_to_the_agent_are_marked_and_no_others_are() {
             else {
                 continue;
             };
+            // The one deliberate divergence: v1 deferred `ctrl+p` (automations) to
+            // the agent, and the palette on the same chord must NOT be — it has
+            // to open from a focused terminal, which is where the user mostly is.
+            if binding.action == "palette.open" {
+                continue;
+            }
             assert_eq!(
                 binding.passthrough,
                 action.terminal_passthrough(),

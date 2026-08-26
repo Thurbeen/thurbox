@@ -20,6 +20,7 @@ pub(crate) mod chrome;
 mod commands;
 mod draw;
 pub(crate) mod editor;
+pub(crate) mod events;
 mod focus;
 mod input;
 mod interface;
@@ -51,6 +52,10 @@ impl App {
             self.sync_terminals_and_agents();
             self.serve_worker_stores();
             self.apply_external_requests();
+            // After everything above has published and before the paint, so a
+            // handler sees this iteration's state and its writes land in the
+            // frame about to be painted. A no-op while nothing is queued.
+            self.dispatch_events(&mut terminal);
 
             // Recorded BEFORE the paint so `tick` and `frame` decompose rather
             // than nest: the iteration is roughly tick + republish + frame +
@@ -92,7 +97,7 @@ impl App {
         if self.reload_at.is_some_and(|at| Instant::now() >= at) {
             self.reload_at = None;
             self.time_op("interface_reload", |app| {
-                app.reload_interface();
+                app.reload_interface(events::ReloadReason::Watch);
                 app.refresh_sources();
                 app.collect_declarations();
             });

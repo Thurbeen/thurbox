@@ -531,7 +531,7 @@ local function render_repo(flow)
     hints = {
       { "tab", suggestion ~= "" and "complete" or "browse" },
       { "enter", "add repo" },
-      { "ctrl+p", "import parent" },
+      { "alt+p", "import parent" },
       { "s-tab", "list" },
     }
   end
@@ -857,7 +857,9 @@ return {
       group = "New session",
     },
     {
-      key = "ctrl+p",
+      -- `alt`, not `ctrl`: `ctrl+p` is the command palette everywhere, and a
+      -- float's own claim on a global chord is a conflict the registry reports.
+      key = "alt+p",
       action = "new_session.import",
       desc = "import a folder of repositories",
       group = "New session",
@@ -1035,7 +1037,7 @@ return {
       -- Works from any focus, as v1's does, because it acts on the typed path.
       local path = (flow.input.value or ""):match("^%s*(.-)%s*$")
       if path == "" then
-        flow.message = "Type a folder path, then ctrl+p to import its repos as a parent"
+        flow.message = "Type a folder path, then alt+p to import its repos as a parent"
       else
         command("bookmark", { host = flow.host, repo = path, action = "parent" })
         textinput.clear(flow.input)

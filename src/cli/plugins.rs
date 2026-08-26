@@ -68,6 +68,8 @@ pub enum Action {
     },
     /// List the example plugins a bare name resolves to.
     Available,
+    /// List every event a plugin can subscribe to, with its payload fields.
+    Events,
 }
 
 pub fn run(action: Action) -> Result<CommandOutput, String> {
@@ -81,7 +83,41 @@ pub fn run(action: Action) -> Result<CommandOutput, String> {
         Action::Update { name } => update(name.as_deref()),
         Action::Remove { name } => remove(&name),
         Action::Available => available(),
+        Action::Events => events(),
     }
+}
+
+/// The events the kernel emits — the same table the loader validates a
+/// subscription against and the help modal renders, so what this prints is
+/// exactly what a plugin may declare in `events = { … }`.
+fn events() -> Result<CommandOutput, String> {
+    let specs = crate::kernel::events::KERNEL_EVENTS;
+    let mut rows: Vec<Vec<String>> = specs
+        .iter()
+        .map(|spec| {
+            vec![
+                spec.name.to_string(),
+                spec.fields.join(", "),
+                spec.when.to_string(),
+            ]
+        })
+        .collect();
+    rows.push(vec![
+        format!("{}<name>", crate::kernel::events::USER_PREFIX),
+        "source, plus whatever the emitter passed".to_string(),
+        "a plugin ran command(\"emit\", { text = \"<name>\", … })".to_string(),
+    ]);
+    let table = super::output::table(&["event", "payload", "fires when"], &rows);
+    Ok(CommandOutput::new(
+        json!({
+            "events": specs
+                .iter()
+                .map(|spec| json!({ "name": spec.name, "fields": spec.fields, "when": spec.when }))
+                .collect::<Vec<_>>(),
+            "user_prefix": crate::kernel::events::USER_PREFIX,
+        }),
+        table,
+    ))
 }
 
 /// The directory the interface would load, without creating one.
@@ -643,6 +679,39 @@ fn available() -> Result<CommandOutput, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A subscription to a name the kernel does not emit is the one failure
+    /// with no symptom at runtime — the handler simply never fires — so `check`
+    /// has to be the place it is caught, with the name in the message.
+    #[test]
+    fn check_refuses_a_subscription_to_an_unknown_event() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plugins = dir.path().join("plugins");
+        std::fs::create_dir_all(&plugins).expect("mkdir");
+        std::fs::write(
+            plugins.join("10_typo.lua"),
+            r#"return {
+                 name = "typo", slot = "center",
+                 events = { "sesion.status" },
+                 on_event = function() end,
+                 render = function() return { text = "" } end,
+               }"#,
+        )
+        .expect("write");
+        // The override is the documented way to point the CLI at a directory,
+        // and nextest runs each test in its own process, so setting it here
+        // reaches nothing else.
+        std::env::set_var("THURBOX_UI_DIR", dir.path());
+        let output = check().expect("check runs");
+        std::env::remove_var("THURBOX_UI_DIR");
+        assert!(
+            output.failure.is_some(),
+            "an unknown subscription must fail the check"
+        );
+        let error = output.json["error"].as_str().unwrap_or_default();
+        assert!(error.contains("sesion.status"), "{error}");
+        assert!(error.contains("session.status"), "{error}");
+    }
 
     /// The starter has to be a plugin, not a snippet: the whole point is that a
     /// new file loads before it is edited.

@@ -155,6 +155,7 @@ pub(super) fn execute(
         | Command::Program { .. }
         | Command::Editor { .. }
         | Command::Focus { .. }
+        | Command::Emit { .. }
         | Command::Plugin { .. } => unreachable!("applied on the UI thread"),
     }
 }

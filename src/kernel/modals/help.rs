@@ -307,6 +307,39 @@ impl HelpModal {
             ));
         }
 
+        // The events a plugin may subscribe to, from the same table the loader
+        // validates against — so what help shows is what `events = { … }` may
+        // name, and a plugin author need not leave the interface to find out.
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "Events (for plugins: events = { … } + on_event)",
+            chrome.section_header(),
+        )));
+        let event_width = crate::kernel::events::KERNEL_EVENTS
+            .iter()
+            .map(|spec| spec.name.chars().count())
+            .max()
+            .unwrap_or(0)
+            + 2;
+        for spec in crate::kernel::events::KERNEL_EVENTS {
+            lines.push(entry_line(
+                event_width,
+                spec.name,
+                &format!("{} — {}", spec.fields.join(", "), spec.when),
+                None,
+                false,
+                chrome,
+            ));
+        }
+        lines.push(entry_line(
+            event_width,
+            &format!("{}<name>", crate::kernel::events::USER_PREFIX),
+            "source, … — a plugin ran command(\"emit\", { text = \"<name>\", … })",
+            None,
+            false,
+            chrome,
+        ));
+
         let total = lines.len();
         let height = usize::from(body.height);
         let scroll = scroll_for(total, height, selected_line);

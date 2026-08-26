@@ -95,7 +95,7 @@ pane from being the thing that makes the whole interface feel slow:
 - **Declare `pure = true` unless the render writes.** The kernel then reuses
   your last tree until something you read changes, and skips your Lua on every
   other frame. It is only wrong if `render` writes `store`/`state` or calls
-  `command` — move those into `on_key`/`on_action`/`on_click`. Floats
+  `command` — move those into `on_key`/`on_action`/`on_click`/`on_event`. Floats
   especially: a float renders every frame *even while closed*.
 - **Memoize on table identity.** The published groups (`thurbox.sessions`,
   `thurbox.theme`, `thurbox.registry`, `thurbox.bookmarks`, …) keep the *same

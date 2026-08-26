@@ -221,7 +221,7 @@ not applicable.
    a remote host the repo picker shows the repos previously used *on
    that host* (bookmarks are host-scoped, schema v39) and every remote
    filesystem touch — the path browser's listings, Enter validation,
-   `Ctrl+P` parent scans — runs on a worker, never blocking the UI on
+   `Alt+P` parent scans — runs on a worker, never blocking the UI on
    an ssh round trip; the worktree + tmux window are created on that
    host over SSH.
 2. **Repo picker** — fuzzy-searchable list of bookmarked repo
@@ -459,7 +459,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+N` | Global | New session (opens repo picker) | **N**ew |
 | `Ctrl+C` | Terminal | Copy selection, or send SIGINT if none | **C**opy |
 | `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
-| `Ctrl+P` | Global | Automations (scheduled agent runs) | **P**rogram |
+| `Ctrl+P` | Global | Command palette — every action, filtered as you type | **P**alette |
 | `Ctrl+W` / `F5` | Global | Toggle tasks panel (todo list) | Work items |
 | `Ctrl+/` | Global | Global search across every scope | **/** = search |
 | `Ctrl+T` / `F8` | Global | Toggle shell pane alongside the agent session | **T**erminal |
@@ -503,7 +503,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `↑`/`↓` | Repo picker browser | Move the dropdown selection | |
 | `Enter` | Repo picker browser | Descend into a dir / pick a git repo | |
 | `Esc` | Repo picker browser | Close the dropdown (modal stays open) | |
-| `Ctrl+P` | Repo picker | Import typed path as a parent folder (local + remote) | |
+| `Alt+P` | Repo picker | Import typed path as a parent folder (local + remote) | |
 | `Enter` | Repo picker | Confirm selection | |
 | `Esc` | Repo picker | Cancel | |
 | `Shift+Up` | Focused terminal | Scroll up 1 line | |
@@ -653,6 +653,12 @@ and — for a remote session — runs *locally*, told the host by
 Deliberately not the same thing as the built-in `hooks` *extension*
 (`<config>/hooks/`), which is the reverse direction: files thurbox
 installs into the agent CLIs so they can report status.
+
+The four `post_*` events are also delivered to interface plugins under the
+same names (`events = { "session.post_create" }` + `on_event`, see
+`docs/PLUGINS.md` → Events), so a shell hook and a Lua handler learn one
+vocabulary. A `pre_*` hook has no Lua form: a plugin cannot answer, so it
+cannot veto.
 
 ### Why UUID v4?
 
@@ -954,7 +960,8 @@ each part. `CLAUDE.md` keeps a summary and points here.
 > working. Author and inspect them with `thurbox-cli automation`. The keeper's 60 s
 > cadence is the current resolution; a ~1 s in-TUI pass is owed.
 
-`Ctrl+P` opens the automations list. An **automation** is a named,
+In 1.x, `Ctrl+P` opened the automations list (the chord is the command
+palette now). An **automation** is a named,
 enable/disable-able task that fires on a schedule (one-shot or
 recurring) and, when it fires, either pastes a prompt into an
 existing session (**send**) or spawns a new session — optionally on
@@ -1079,9 +1086,9 @@ is the usual `SessionList → Terminal` (+ file viewer). Switching
 *between* the two contexts is done with `j`/`k` in the left column,
 not the focus cycle.
 
-### Ctrl+P list + editor
+### List + editor (1.x)
 
-`Ctrl+P` opens the same set over the full list (a modal, available
+`Ctrl+P` opened the same set over the full list (a modal, available
 at any width). Keys: `n` new, `e`/`Enter` edit, `Space` toggle
 enabled, `r` run-now, `d` delete, `Esc` close.
 

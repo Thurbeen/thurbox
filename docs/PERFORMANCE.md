@@ -666,7 +666,7 @@ strand a placeholder row forever).
 *Extension (repo-picker path entry).* The picker itself later gained the same
 treatment: its three remote round trips — the path-browser directory listing
 (Tab), the Enter-commit path check (exists + git-ness, one trip), and the
-`Ctrl+P` parent scan — each run on a `BackgroundTask` worker drained by
+`Alt+P` parent scan — each run on a `BackgroundTask` worker drained by
 `App::poll_repo_picker` in `tick_core` (`src/app/repo_picker.rs`), replacing
 the synchronous `list_dir_on` probes that ran in the key handler. The modal
 stays fully interactive while a fetch is in flight (spinner rows/labels);

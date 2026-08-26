@@ -10,6 +10,7 @@ use super::{
     instruction_budget, memory_limit, Persisted, Private, Queue, Roots, Shared, StateVersion,
 };
 use crate::kernel::command::{Args, Command, ExtraMember};
+use crate::kernel::events::Field;
 
 /// Install `require`, `state` and `store` into a fresh VM.
 #[allow(clippy::too_many_arguments)]
@@ -217,6 +218,28 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
                                 worktree: entry.get::<Option<bool>>("worktree").ok().flatten()
                                     == Some(true),
                             })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            // Every scalar the plugin passed, for an event's payload. `text` is
+            // the event's name and is left out; nothing else is interpreted.
+            payload: opts
+                .as_ref()
+                .map(|table| {
+                    table
+                        .pairs::<String, Value>()
+                        .filter_map(Result::ok)
+                        .filter(|(key, _)| key != "text")
+                        .filter_map(|(key, value)| {
+                            let field = match value {
+                                Value::String(s) => Field::Text(s.to_string_lossy()),
+                                Value::Boolean(b) => Field::Bool(b),
+                                Value::Integer(n) => Field::Number(n as f64),
+                                Value::Number(n) => Field::Number(n),
+                                _ => return None,
+                            };
+                            Some((key, field))
                         })
                         .collect()
                 })

@@ -84,6 +84,24 @@ impl App {
                 self.bookmark_in_flight = true;
                 return false;
             }
+            // A user event: queued for the next dispatch, with the emitting
+            // plugin's *name* as its source — the owner is stamped by path, and
+            // the name is what subscribers know a plugin by.
+            Command::Emit {
+                owner,
+                name,
+                payload,
+            } => {
+                let source = self
+                    .host
+                    .name_of_path(owner)
+                    .unwrap_or(owner.as_str())
+                    .to_string();
+                let mut event = thurbox::kernel::events::Event::new(name.clone());
+                event.payload = payload.clone();
+                event.payload.push(("source".to_string(), source.into()));
+                self.enqueue_event(event);
+            }
             _ => return false,
         }
         true
@@ -191,11 +209,6 @@ impl App {
         // rather than waiting out the interval — that is what makes a
         // delete feel immediate instead of arriving up to 400ms later.
         if self.commands.poll() {
-            self.report_finished_commands();
-            // A finished creation is deliberately not acted on here: see
-            // `focus_on_session` for why a session that just spawned does not
-            // pull the view onto itself.
-
             // Wait for the last one: two adds in quick succession would
             // otherwise re-read between them and publish a list missing the
             // second.
@@ -209,7 +222,13 @@ impl App {
                 self.bookmark_in_flight = false;
                 self.repos.invalidate_bookmarks();
             }
+            // Re-read BEFORE reporting: a `session.post_create` names the row
+            // the command made, which only exists here once the rows are.
             self.snapshots.refresh();
+            self.report_finished_commands();
+            // A finished creation is deliberately not acted on here: see
+            // `focus_on_session` for why a session that just spawned does not
+            // pull the view onto itself.
             self.note_data_change();
         } else {
             self.snapshots.refresh_if_due();
@@ -238,10 +257,12 @@ impl App {
             if let Some(tracked) = self.tracked_commands.get_mut(&id) {
                 let (kind, label) = (tracked.kind, tracked.label.clone());
                 tracked.failed = true;
+                let tracked = tracked.clone();
                 self.report(
                     thurbox::kernel::messages::failed(kind, label.as_deref(), &error),
                     Level::Error,
                 );
+                self.note_command_failed(&tracked, &error);
             }
         }
 
@@ -279,6 +300,7 @@ impl App {
             {
                 self.toast(message);
             }
+            self.note_command_done(&tracked);
         }
         self.reported_failures.retain(|id| live.contains(id));
     }
@@ -297,6 +319,7 @@ impl App {
     /// It is also the only moment the subject can be resolved: a delete's row is
     /// gone by the time it reports.
     pub(crate) fn dispatch_tracked(&mut self, command: thurbox::kernel::command::Command) {
+        use thurbox::kernel::command::Command;
         let kind = command.kind();
         let session = command.session().to_string();
         let label = self
@@ -305,6 +328,15 @@ impl App {
             .session(&session)
             .map(|row| row.name.clone())
             .filter(|label| !label.is_empty());
+        // What `session.post_*` will need once the command has finished and its
+        // row is gone (a delete) or only just arrived (a create).
+        let name = match &command {
+            Command::Create { name, .. } | Command::Fork { name, .. } => {
+                Some(name.clone()).filter(|n| !n.is_empty())
+            }
+            _ => None,
+        };
+        let force = matches!(command, Command::Delete { force: true, .. });
         let id = self.commands.dispatch(command);
         self.tracked_commands.insert(
             id,
@@ -313,6 +345,8 @@ impl App {
                 session,
                 label,
                 failed: false,
+                name,
+                force,
             },
         );
         // Accepting a command changes `thurbox.commands`, which panes draw from:

@@ -444,6 +444,7 @@ fn closing_the_picker_by_its_own_chord_also_reverts() {
             save_settings: &mut None,
             inventory: &[],
             interface_edit: &mut None,
+            run_action: &mut None,
             registry: &mut registry,
             themes: &mut themes,
             db: None,
@@ -473,6 +474,7 @@ fn send(
         save_settings: &mut None,
         inventory: &[],
         interface_edit: &mut None,
+        run_action: &mut None,
         registry,
         themes,
         db,
@@ -515,6 +517,7 @@ fn every_modal_chord_v1_binds_opens_its_modal() {
         ("ctrl+y", ModalKind::Theme),
         ("f6", ModalKind::Settings),
         ("ctrl+,", ModalKind::Settings),
+        ("ctrl+p", ModalKind::Palette),
     ] {
         let binding = registry
             .resolve(&key_press(chord), None)
@@ -1036,6 +1039,7 @@ fn click(
         save_settings: &mut None,
         inventory: &[],
         interface_edit: &mut None,
+        run_action: &mut None,
         registry,
         themes,
         db,

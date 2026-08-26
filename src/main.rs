@@ -157,6 +157,11 @@ struct TrackedCommand {
     session: String,
     label: Option<String>,
     failed: bool,
+    /// The name a creation or a fork was given, so `session.post_create` can
+    /// find the row it made — the command itself names no session.
+    name: Option<String>,
+    /// Whether a delete was a force delete, for `session.post_delete`.
+    force: bool,
 }
 
 struct App {
@@ -473,6 +478,9 @@ struct App {
     trust_stale: bool,
     /// Whether the perf counters are painted over the interface (F12).
     hud: bool,
+    /// Events queued for plugins, and what the kernel's own are derived from.
+    /// See `coordinator::events`.
+    events: coordinator::events::Events,
     quit: bool,
 }
 

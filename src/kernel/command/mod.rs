@@ -263,6 +263,18 @@ pub enum Command {
         file: String,
         edit: PluginEdit,
     },
+    /// Publish a user event to every plugin subscribed to it.
+    ///
+    /// UI-thread applied: the event queue is the loop's own, and delivery is the
+    /// next thing the loop does. `owner` is **stamped by the kernel** from the
+    /// plugin executing, like [`Command::Program`]'s, so a plugin cannot forge
+    /// the `source` its subscribers see. `name` already carries the `user.`
+    /// prefix — a kernel name was refused at parse time.
+    Emit {
+        owner: String,
+        name: String,
+        payload: Vec<(String, super::events::Field)>,
+    },
 }
 
 /// A further repository a new session spans.
@@ -329,6 +341,7 @@ impl Command {
             Command::Configure { .. } => "configure",
             Command::Order { .. } => "order",
             Command::Setting { .. } => "set",
+            Command::Emit { .. } => "emit",
         }
     }
 
@@ -364,6 +377,7 @@ impl Command {
             // the whole point of it, and why it must never appear in anything
             // that enumerates sessions.
             | Command::Program { .. }
+            | Command::Emit { .. }
             | Command::Focus { .. } => "",
         }
     }
@@ -391,6 +405,7 @@ impl Command {
                 | Command::Editor { .. }
                 | Command::Focus { .. }
                 | Command::Plugin { .. }
+                | Command::Emit { .. }
         )
     }
 
@@ -435,7 +450,22 @@ impl Command {
             extras,
             owner,
             argv,
+            payload,
         } = args;
+        // An event names nothing the kernel owns: the name is the subject, and
+        // every other field travels as the payload. Refused for a kernel name so
+        // a plugin cannot forge what only the kernel derives.
+        if kind == "emit" {
+            let Some(name) = text.filter(|t| !t.is_empty()) else {
+                return Err("command \"emit\" needs an event name in text".to_string());
+            };
+            let name = super::events::user_event_name(&name)?;
+            return Ok(Command::Emit {
+                owner,
+                name,
+                payload,
+            });
+        }
         // The interface's own files name no session, and the verb is explicit:
         // removing a plugin is destructive, so it is never the default.
         if kind == "plugin" {
@@ -631,7 +661,7 @@ impl Command {
             "editor" => Ok(Command::Editor { session }),
             other => Err(format!(
                 "unknown command {other:?} — try create, fork, sync, copy, diff, \
-                 delete, restore, restart, send, reorder, theme or set"
+                 delete, restore, restart, send, reorder, theme, set or emit"
             )),
         }
     }
@@ -676,6 +706,9 @@ pub struct Args {
     pub owner: String,
     /// Arguments for a program a plugin asked to run.
     pub argv: Vec<String>,
+    /// Every other scalar field of the options table, for a command that
+    /// forwards them whole — an event's payload.
+    pub payload: Vec<(String, super::events::Field)>,
 }
 
 #[cfg(test)]

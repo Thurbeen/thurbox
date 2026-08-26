@@ -51,8 +51,9 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
    convert   table <-> node              lib/widgets   list, gauge, panel…
    paint     node -> ratatui             lib/tree      decoration helper
    host      VM, reload, isolation       plugins/*     3 panes + 3 floats
-   registry  keys + settings
-   modals    help, settings, theme, files
+   registry  keys, settings, commands
+   modals    help, settings, theme, files, palette
+   events    derived from the snapshot
    snapshot  the read side
    command   the write side
    config    the user's settings, live and restart-only
@@ -149,6 +150,34 @@ The cost, accepted: a plugin must handle the absence, exactly as it handles a
 session having no worktree. `docs/examples/composite.lua` shows the shape — draw
 what is missing, not a blank pane.
 
+## Events are derived, never raised
+
+A plugin can declare `events = { … }` and an `on_event(name, payload)`, and the
+loop calls it once per change (`kernel::events`, `coordinator::events`). The
+kernel's own events come from **diffing published state** — the snapshot's rows
+between two versions, the focus ring between two iterations, the command bus's
+completions — never from the code that mutates it. Raising them from
+`session_ops` was the obvious design and the wrong one: it misses every other
+process (`thurbox-cli`, the cron tick, a second interface), it puts a kernel
+concern inside a layer the kernel may not `use`, and it is the model where one
+mutation site forgets to fire. The four `session.post_*` names are the only ones
+raised rather than derived — from a *tracked* command finishing — which is why
+they carry the operation's facts and fire only for this interface's own work.
+
+One dispatch point per iteration, after the stores and the bus have published
+and before the paint, so a handler's writes land in the frame about to be
+painted. It is a `VecDeque::is_empty` on every quiet iteration and never marks
+the frame dirty itself: a handler's `state` write bumps the state version and
+its commands go through `dispatch_tracked`, both of which already do
+(`frame-cost`). Emits from handlers are applied inside the same dispatch, which
+is what makes the cascade bound (`MAX_DEPTH`) a bound rather than a
+per-iteration trickle. A reload clears the queue, resets the deriver so the next
+snapshot seeds silently, and puts `interface.reloaded` first.
+
+The set is closed (`KERNEL_EVENTS`) with three readers — the loader, help and
+`thurbox-cli plugin events` — so a name a plugin may subscribe to is always one
+the kernel emits.
+
 ## Drawn is not the same as focusable
 
 A `switch` slot draws one occupant, so an alternate is not on screen — but
@@ -213,7 +242,11 @@ other. Modularity moved one level down — plugins contribute **data**
 (`Registry::bindings` → help, `Registry::settings` → settings) and the kernel
 renders it, so declaring one table field is enough to appear in either. The
 theme picker takes no contribution at all: there is nothing a plugin could add
-to a list of palettes.
+to a list of palettes. The **command palette** (`Ctrl+P`,
+`kernel::modals::palette`) is the fourth, and contributes in the other
+direction: it lists the registry — keys, chord-less `commands` declarations, the
+kernel's own — and `Enter` hands the loop a `Dispatch` that runs through the
+same `on_action` a key press takes, after the modal has closed itself.
 
 The **file list** — settings' Interface tab (`kernel::modals::interface`) — is here
 for a second reason on top of those three. It is the recovery tool: it is where a

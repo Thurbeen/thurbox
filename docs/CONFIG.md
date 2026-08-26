@@ -262,7 +262,10 @@ tail of its stderr as the reported reason (the in-flight error in the
 TUI, the error and exit status of `thurbox-cli`). Later hooks for that
 event do not run. **A `post_*` hook is informational**: every one runs,
 a failure is logged to `thurbox.log` and carried in the CLI's JSON
-(`hook_failures`), and never fails the operation.
+(`hook_failures`), and never fails the operation. Each `post_*` is also
+delivered to interface plugins as an event of the same name (`events = {
+"session.post_create" }` + `on_event`; `docs/PLUGINS.md` → Events) — the
+Lua side of the same vocabulary, informational for the same reason.
 
 **What a hook receives.** Environment variables — **unset** (never
 empty) when the fact is not known at that moment:

@@ -15,7 +15,10 @@
 # that to plain functions but not to a table's fields, so `os.time()` passed
 # review while `dofile` was caught. Verified by probing both.
 #
-# Keep in step with `plugin_stdlib` and `install_api` in `src/kernel/host.rs`.
+# Keep in step with `plugin_stdlib` and `install_api` in `src/kernel/host/`.
+# Events and the palette add nothing here on purpose: `events`, `commands` and
+# `on_event` are fields of the declaration table, and `emit` is a kind of
+# `command` — the one write channel a plugin already has.
 # Arguments are declared as varargs: the value here is knowing a name exists and
 # is reachable, not policing arity that Lua itself does not.
 

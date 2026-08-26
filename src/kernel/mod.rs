@@ -15,6 +15,7 @@ pub mod config;
 pub mod consent;
 pub mod convert;
 pub mod diff;
+pub mod events;
 pub mod files;
 pub mod focus;
 pub mod host;
