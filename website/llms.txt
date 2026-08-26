@@ -49,6 +49,7 @@
 ## Docs
 
 - [Documentation hub](https://thurbox.thurbeen.eu/docs/index.html): entry point to all Thurbox documentation.
+- [Tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html): onboarding walkthrough with screenshots — adding a repository to the picker, creating a first session on its own git worktree, the everyday keybindings, and the equivalent thurbox-cli commands.
 - [FAQ](https://thurbox.thurbeen.eu/docs/faq.html): short answers to the most common questions (what it is, how it differs, install, platforms, license).
 - [Features](https://thurbox.thurbeen.eu/docs/features.html): the customizable interface and a full v1-to-v2 surface map, plus sessions, agent definitions, git worktrees, remote SSH and WSL hosts, automations, tasks, global search, headless CLI.
 - [Built-in agents](https://thurbox.thurbeen.eu/docs/agents.html): every built-in coding agent (claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp) with its recommended agents.toml config, resume/fork behavior, and status support.

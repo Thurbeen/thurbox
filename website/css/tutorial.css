@@ -1,0 +1,60 @@
+/* Styles specific to the onboarding tutorial page (docs/tutorial.html).
+ *
+ * The page is mostly prose the docs sheet already styles; what it adds is the
+ * screenshot, which is framed like a code block (same bevel, same header strip)
+ * so a captured terminal and a copied command read as the same kind of object. */
+
+.shot {
+  margin: var(--space-lg) 0 var(--space-xl);
+  background: var(--bg-code);
+  border: 1px solid var(--hud-edge);
+  box-shadow:
+    var(--bevel),
+    0 8px 30px rgb(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.shot figcaption {
+  padding: 10px 16px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* The chord a step is about, called out beside its caption. */
+.shot figcaption kbd {
+  margin-right: var(--space-sm);
+}
+
+/* A step's opening line: what to press, before the paragraph explaining it. */
+.step-key {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-secondary);
+  border-left: 2px solid var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+/* The sandbox note under the intro, and the regenerate note at the end. */
+.tutorial-note {
+  margin: var(--space-lg) 0;
+  padding: var(--space-md);
+  background: var(--bg-secondary);
+  border-left: 2px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}

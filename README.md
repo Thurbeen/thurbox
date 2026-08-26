@@ -116,6 +116,10 @@ sandbox (`scripts/dev/sandbox.sh`) — see
 
 ## Getting Started
 
+> **New here?** [**docs/TUTORIAL.md**](docs/TUTORIAL.md) walks the first ten
+> minutes with screenshots — adding a repository, creating your first
+> worktree session, and the commands you will use every day.
+
 Run it:
 
 ```bash
@@ -1296,6 +1300,9 @@ maintained on the [`v1.x`](https://github.com/Thurbeen/thurbox/tree/v1.x) branch
 
 ## Documentation
 
+- [docs/TUTORIAL.md](docs/TUTORIAL.md) — Onboarding walkthrough with
+  screenshots: add a repository, create a session, the everyday keys and
+  commands
 - [docs/CONSTITUTION.md](docs/CONSTITUTION.md) — Core principles
   and non-negotiable rules
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architectural

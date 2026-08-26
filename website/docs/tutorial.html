@@ -1,0 +1,435 @@
+---
+layout: docs.njk
+title: 'Tutorial — Thurbox Docs'
+description: 'Onboarding walkthrough with screenshots: add a repository, create your first worktree session, and the keys and thurbox-cli commands you use every day.'
+currentPage: 'tutorial'
+breadcrumb: 'Tutorial'
+extraCss: ['tutorial.css']
+---
+<h1>Tutorial: your first sessions</h1>
+<p>
+  The first ten minutes of Thurbox &mdash; from an empty screen to two coding agents running side by
+  side, each on its own git worktree, plus the handful of commands you will use every day.
+</p>
+<p class="tutorial-note">
+  Every screenshot below is the real TUI, captured by driving it through this exact sequence
+  (<code>scripts/demo/record-tutorial.sh</code> in the repository). The paths in them
+  (<code>/tmp/tutorial-home/code/&hellip;</code>) come from the throwaway sandbox the capture runs
+  in; yours will be your own <code>~/code</code>, <code>~/src</code>, or wherever you keep
+  repositories.
+</p>
+
+<h2 id="before-you-start">
+  Before you start
+  <a href="#before-you-start" class="heading-anchor">#</a>
+</h2>
+<p>Install Thurbox &mdash; both the TUI and the headless companion binary:</p>
+<pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+<p>
+  Windows, Homebrew, AUR, winget and Chocolatey are on the
+  <a href="installation.html">Installation</a> page. You also need:
+</p>
+<ul>
+  <li>
+    <strong>tmux &ge; 3.2</strong> (or <a href="https://github.com/psmux/psmux">psmux</a> on native
+    Windows) &mdash; it is what keeps your agents alive when Thurbox is closed
+  </li>
+  <li><strong>git</strong></li>
+  <li>
+    <strong>at least one coding-agent CLI</strong> &mdash; <code>claude</code>, <code>codex</code>,
+    <code>agy</code>, <code>opencode</code>, <code>aider</code>, <code>copilot</code>, &hellip;
+    Thurbox launches whichever you have; it is not tied to any of them
+  </li>
+</ul>
+<p>
+  Nothing to configure. On first launch Thurbox seeds <code>~/.config/thurbox/</code> with the agents
+  it knows, the themes, and the interface itself.
+</p>
+
+<h2 id="launch">
+  1. Launch it
+  <a href="#launch" class="heading-anchor">#</a>
+</h2>
+<pre><code class="language-bash">thurbox</code></pre>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/01-first-launch.png"
+    alt="An empty Thurbox: the session list on the left, an empty agent pane on the right"
+  />
+  <figcaption>First launch &mdash; no sessions yet, and the list says so.</figcaption>
+</figure>
+<p>
+  Two panes between two bars: the <strong>session list</strong> on the left, the
+  <strong>agent terminal</strong> on the right, and the keys you need on the footer.
+</p>
+
+<h2 id="add-a-repository">
+  2. Add a repository
+  <a href="#add-a-repository" class="heading-anchor">#</a>
+</h2>
+<p class="step-key"><kbd>Ctrl</kbd>+<kbd>N</kbd> &mdash; open the creation flow</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/02-repo-picker.png"
+    alt="The repo picker, with only the interface directory listed"
+  />
+  <figcaption>The repo step. On a fresh install, memory holds one row you did not add.</figcaption>
+</figure>
+<p>
+  The list is Thurbox's <strong>repo memory</strong> &mdash; the repositories you have used before.
+  The one row already there is your own interface directory, offered because editing the panes is a
+  thing you might want a session for.
+</p>
+<p>
+  To add a repository, press <kbd>Tab</kbd> to move to the <strong>Add Repo Path</strong> field and
+  type a path. <code>~</code> is expanded for you.
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/03-add-repo-path.png"
+    alt="Typing ~/code/ into the Add Repo Path field"
+  />
+  <figcaption>The path field, with the footer naming what each key does from here.</figcaption>
+</figure>
+<p>Two ways to finish:</p>
+<ul>
+  <li><kbd>Enter</kbd> adds the path you typed, if it is a repository.</li>
+  <li>
+    <kbd>Tab</kbd> browses instead &mdash; a listing of that directory, marking which subdirectories
+    are git repositories.
+  </li>
+</ul>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/04-browse-directory.png"
+    alt="The browse dropdown listing ~/code, with a git marker beside two entries"
+  />
+  <figcaption>
+    Browsing <code>~/code</code>. <kbd>&uarr;</kbd>/<kbd>&darr;</kbd> move; <kbd>Enter</kbd> on a
+    <code>&#x25CF;git</code> row picks it, on a plain folder descends into it.
+  </figcaption>
+</figure>
+<p>
+  Either way the repository lands in memory, <strong>selected</strong>, with the cursor on it &mdash;
+  and stays there for next time.
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/05-repo-added.png"
+    alt="The repository added to the list and selected"
+  />
+  <figcaption>Remembered and selected. Adding it once is the last time you type that path.</figcaption>
+</figure>
+<p>The rest of what this step can do, all on the list:</p>
+<table>
+  <thead>
+    <tr>
+      <th>Key</th>
+      <th>Does</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><kbd>Space</kbd></td>
+      <td>Select / deselect a repository &mdash; select several for a <strong>multi-repo</strong> session</td>
+    </tr>
+    <tr>
+      <td><kbd>w</kbd></td>
+      <td>Give the selected repository its own <strong>worktree</strong></td>
+    </tr>
+    <tr><td><kbd>/</kbd></td><td>Filter a long list</td></tr>
+    <tr><td><kbd>d</kbd></td><td>Forget a remembered repository</td></tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>P</kbd></td>
+      <td>
+        Import a <strong>folder of repositories</strong> at once &mdash; type a parent path, press it,
+        and every git subdirectory is added under one header
+      </td>
+    </tr>
+    <tr><td><kbd>Tab</kbd></td><td>Move between the list and the path field</td></tr>
+  </tbody>
+</table>
+
+<h2 id="worktree">
+  3. Give the session its own worktree
+  <a href="#worktree" class="heading-anchor">#</a>
+</h2>
+<p class="step-key"><kbd>w</kbd> &mdash; worktree mode on the selected repository</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/06-worktree-mode.png"
+    alt="The selected repository marked wt for worktree mode"
+  />
+  <figcaption>
+    <code>[wt]</code> &mdash; this session gets a git worktree of its own, not your checkout.
+  </figcaption>
+</figure>
+<p>
+  The agent works on its own branch, in its own directory, and your working tree is untouched. Press
+  <kbd>Enter</kbd> when the selection is right. Because a worktree needs something to branch from,
+  the next step asks which branch:
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/07-base-branch.png"
+    alt="The base branch step, offering main"
+  />
+  <figcaption>
+    Base branch. Without worktree mode this step does not appear &mdash; the session simply runs in
+    the repository as it is.
+  </figcaption>
+</figure>
+
+<h2 id="name-and-agent">
+  4. Name it and pick an agent
+  <a href="#name-and-agent" class="heading-anchor">#</a>
+</h2>
+<p>
+  Name the session after the <strong>work</strong>, not the tool &mdash; the list reads as a backlog
+  that way. <kbd>Enter</kbd> on an empty field accepts the suggested name (the repository's own), so
+  you can press straight through.
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/08-session-name.png"
+    alt="The session name step with rate-limit typed"
+  />
+  <figcaption>The session name.</figcaption>
+</figure>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/09-branch-name.png"
+    alt="The branch name step, prefilled with rate-limit"
+  />
+  <figcaption>The branch name, prefilled from the name you just gave.</figcaption>
+</figure>
+<p>
+  Then the agent. This is the list from <code>~/.config/thurbox/agents.toml</code> &mdash; the
+  built-ins Thurbox seeds, plus any CLI you have described yourself. With only one agent defined,
+  the step is skipped.
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/10-agent-picker.png"
+    alt="The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi and omp"
+  />
+  <figcaption>
+    <kbd>Enter</kbd> creates everything: the worktree, the tmux window, and the agent inside it.
+  </figcaption>
+</figure>
+
+<h2 id="running">
+  5. You have a session
+  <a href="#running" class="heading-anchor">#</a>
+</h2>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/11-session-running.png"
+    alt="The session list with one session, beside a live agent terminal"
+  />
+  <figcaption>One session, grouped under its repository, beside the live agent.</figcaption>
+</figure>
+<ul>
+  <li>
+    the session row, grouped under its <strong>repository</strong>, with the <code>&#x2442;</code>
+    worktree mark, its agent, and a status dot
+  </li>
+  <li>
+    the <strong>agent terminal</strong> on the right &mdash; a real terminal. Everything you type
+    goes to the agent; <kbd>Ctrl</kbd>+<kbd>O</kbd> opens the worktree in your editor, and
+    <kbd>Ctrl</kbd>+<kbd>T</kbd> gives you a shell in the same directory
+  </li>
+  <li>
+    the status dot tracks the agent through <strong>working / blocked / done / idle</strong>,
+    reported by the agent's own hooks rather than guessed
+  </li>
+</ul>
+<p>
+  Press <kbd>Ctrl</kbd>+<kbd>Q</kbd> whenever you like: it detaches. tmux keeps every agent running,
+  and relaunching <code>thurbox</code> puts you back where you were &mdash; after a crash, a reboot,
+  or a week away.
+</p>
+
+<h2 id="second-session">
+  6. The second session is faster
+  <a href="#second-session" class="heading-anchor">#</a>
+</h2>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/12-repo-remembered.png"
+    alt="The repo picker with the remembered repository listed"
+  />
+  <figcaption>
+    Nothing to type: <kbd>Space</kbd> to select, <kbd>Enter</kbd>, and through the same steps.
+  </figcaption>
+</figure>
+<p>
+  That is the shape of a working day &mdash; one session per piece of work, each on its own branch,
+  all alive at once.
+</p>
+
+<h2 id="everyday-keys">
+  Everyday keys
+  <a href="#everyday-keys" class="heading-anchor">#</a>
+</h2>
+<p>
+  The authoritative list is <kbd>F1</kbd> (or <kbd>Ctrl</kbd>+<kbd>G</kbd>), which renders the live
+  key registry, so it can never drift from what is actually bound. Every chord in it is rebindable
+  from that screen; the full reference is <a href="keybindings.html">Keybindings</a>.
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/14-keybindings.png"
+    alt="The keybindings help, rendered from the live registry"
+  />
+  <figcaption>The help screen is the registry, rendered.</figcaption>
+</figure>
+<table>
+  <thead>
+    <tr>
+      <th>Key</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>New session</td></tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>J</kbd> / <kbd>Ctrl</kbd>+<kbd>K</kbd></td>
+      <td>Select the next / previous session</td>
+    </tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>H</kbd> / <kbd>Ctrl</kbd>+<kbd>L</kbd></td>
+      <td>Move focus between panes &mdash; the way out of a focused agent</td>
+    </tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>/</kbd></td>
+      <td>Search sessions <strong>and the text on their screens</strong></td>
+    </tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open the session's directory in your editor</td></tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>T</kbd> or <kbd>F8</kbd></td>
+      <td>A shell in the session's directory</td>
+    </tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>F</kbd></td>
+      <td>
+        Fork the session &mdash; same repo, branch and agent, with the conversation carried over and
+        the source recorded as its parent
+      </td>
+    </tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Sync the worktree with its base branch</td></tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>D</kbd></td>
+      <td>Delete the session (<kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes it)</td>
+    </tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>U</kbd></td><td>Restore a deleted session</td></tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>Y</kbd> or <kbd>F4</kbd></td>
+      <td>Theme picker &mdash; 36 palettes</td>
+    </tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>,</kbd> or <kbd>F6</kbd></td>
+      <td>Settings &mdash; <kbd>]</kbd> for the Interface tab</td>
+    </tr>
+    <tr><td><kbd>F10</kbd></td><td>Reload the interface from disk</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Quit, leaving every agent running</td></tr>
+  </tbody>
+</table>
+<p>
+  <kbd>Ctrl</kbd>+<kbd>/</kbd> is the one to remember when the list gets long: it matches names,
+  agents, branches and repositories &mdash; and the text on each session's screen, which is how you
+  find the session with the error in it. Matches highlight <strong>inside</strong> the panes rather
+  than being reprinted.
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/13-search.png"
+    alt="Search, with the query rate and its match highlighted"
+  />
+  <figcaption>Search is a strip, not a modal, so it never covers what it is pointing at.</figcaption>
+</figure>
+
+<h2 id="command-line">
+  The same thing from the command line
+  <a href="#command-line" class="heading-anchor">#</a>
+</h2>
+<p>
+  <code>thurbox-cli</code> drives the same sessions with no TUI, against the same database &mdash; so
+  anything you do here shows up in a running Thurbox within a tick, and vice versa. It is on your
+  <code>PATH</code> inside every session, which is what lets an agent orchestrate other agents (see
+  <a href="orchestration.html">Orchestration</a>).
+</p>
+<pre data-wrap><code class="language-bash"># What is running
+thurbox-cli session list
+thurbox-cli session list --json | jq       # JSON is automatic when piped
+
+# Start one headlessly, on its own worktree branch
+thurbox-cli session create --name docs --repo-path ~/code/web-app
+thurbox-cli session create --name rate-limit --repo-path ~/code/api-server \
+    --agent claude --worktree-branch rate-limit
+
+# Talk to one, and read what it printed
+thurbox-cli session send &lt;uuid&gt; "run the tests and fix what fails"
+thurbox-cli session capture &lt;uuid&gt;
+
+# Clean up (soft by default — `session restore` brings it back)
+thurbox-cli session delete &lt;uuid&gt;</code></pre>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/15-cli.png"
+    alt="thurbox-cli session list, a headless session create, and the list again"
+  />
+  <figcaption>A session created with no TUI running at all &mdash; the same database either way.</figcaption>
+</figure>
+<p>
+  <code>thurbox-cli config show</code> prints every resolved path,
+  <code>thurbox-cli plugin dir</code> prints the interface directory, and
+  <code>thurbox-cli --help</code> lists the rest (<code>automation</code>, <code>task</code>,
+  <code>message</code>, <code>extension</code>, <code>editor</code>, <code>notify</code>).
+</p>
+
+<h2 id="next">
+  Where to go next
+  <a href="#next" class="heading-anchor">#</a>
+</h2>
+<ul>
+  <li>
+    <strong>Make it yours</strong> &mdash; every pane is a Lua file in a directory you own. Ask an
+    agent in any session to change it, or read <a href="v2-interface.html">The Interface</a>.
+    <kbd>Ctrl</kbd>+<kbd>,</kbd> then <kbd>]</kbd> lists every pane and turns one off;
+    <kbd>F10</kbd> reloads.
+  </li>
+  <li>
+    <strong>Run a fleet</strong> &mdash; <a href="orchestration.html">Orchestration</a> and
+    <a href="recipes.html">Recipes</a>.
+  </li>
+  <li>
+    <strong>Work on another machine</strong> &mdash; declare an SSH host or a WSL distro in
+    <code>hosts.toml</code> and sessions run there while the TUI stays local
+    (<a href="configuration.html">Configuration</a>).
+  </li>
+  <li>
+    <strong>Configure it</strong> &mdash; <a href="configuration.html">Configuration</a> is every
+    file and knob in one place; <a href="features.html">Features</a> is why each one behaves the way
+    it does.
+  </li>
+</ul>
+<p class="tutorial-note">
+  The screenshots on this page are generated. Regenerate them from a checkout with
+  <code>scripts/demo/record-tutorial.sh</code>, which drives the real TUI through the steps above.
+</p>

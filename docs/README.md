@@ -4,6 +4,10 @@ This directory contains the **rationale** behind Thurbox's design
 decisions. For operational guidance (build commands, module layout,
 event loop), see [`CLAUDE.md`](../CLAUDE.md).
 
+Two files here are not rationale: [`TUTORIAL.md`](TUTORIAL.md), the onboarding
+walkthrough (its screenshots are generated — see
+`scripts/demo/record-tutorial.sh`), and [`DEVELOPMENT.md`](DEVELOPMENT.md).
+
 ## Documents
 
 | Document | Purpose | Update when... |
