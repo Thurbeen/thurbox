@@ -93,11 +93,13 @@ cargo nextest run -E 'test(name)'    # run a single test by name
 
 The interface is Lua on a Rust kernel, so most coverage drives the **real kernel
 over the real `ui/`**: `tests/kernel_mvp.rs` for the kernel's contract and
-`tests/v2_*.rs` one file per surface. There is also a black-box smoke test
-(`scripts/dev/smoke/tui-smoke.sh`) that launches the real binary in a throwaway
-tmux pane. v1's in-process acceptance harness and its `insta` snapshots were
-deleted with `src/app`; there are no snapshots to update. See the Testing section
-of [`CLAUDE.md`](CLAUDE.md) for the full picture.
+`tests/v2_*.rs` one file per surface. Pane frames are pinned as literals in
+`tests/v2_frames.rs` — when a frame changes on purpose, the failing test prints
+the new one to paste; there are no snapshot files and no tool to run. Crash
+invariants are properties in `tests/v2_render_props.rs`, and `tests/tui_e2e.rs`
+drives the real binary on a real pty (`just smoke`). All of it runs in the one
+`cargo nextest run --all`. See the Testing section of [`CLAUDE.md`](CLAUDE.md)
+for the full picture.
 
 ## Linting & formatting
 

@@ -1,8 +1,8 @@
 //! A plugin running an interactive program in a pane it owns.
 //!
 //! **No multiplexer is started here.** Spawning a real program needs tmux, which
-//! the unit suite deliberately does not have (that is what the gated
-//! `tui-smoke` job is for), so what is asserted is everything up to and including
+//! this file deliberately does not touch (the real binary against a real pane is
+//! `tests/tui_e2e.rs`'s job), so what is asserted is everything up to and including
 //! the decision to spawn: who may ask, what the ask resolves to, what is drawn
 //! when nothing is behind the surface, and where keys would go. The parts that
 //! genuinely need a process are exercised by hand — see the change's tasks.

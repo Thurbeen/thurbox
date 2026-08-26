@@ -53,7 +53,7 @@ runs — `selene`, `stylua` and `lua-language-server`. Run `npm ci` once, or
 | `just fmt` | format Rust + website |
 | `just arch` | architecture-rule + rustdoc checks |
 | `just hooks-install` | `prek install` |
-| `just smoke` | black-box TUI smoke test |
+| `just smoke` | black-box TUI test: the real binary on a pty (`tests/tui_e2e.rs`) |
 | `just sandbox*` | dev runtime sandbox (below) |
 
 ## 3. Runtime sandbox — run thurbox isolated
@@ -101,8 +101,7 @@ To run the dev TUI against **this checkout's** `ui/` instead of a copy, ask for 
   your real, logged-in agents without polluting your real thurbox state.
 - **full (`--isolate-home`)** — also overrides `HOME` + `XDG_*`, so the env is
   hermetic and agents boot with no credentials. This is what `scripts/demo/
-  record.sh` and `scripts/dev/smoke/tui-smoke.sh` use (via
-  `tbx_sandbox_init_full`).
+  record.sh` uses (via `tbx_sandbox_init_full`).
 
 **Profile lifetimes:**
 
@@ -111,11 +110,12 @@ To run the dev TUI against **this checkout's** `ui/` instead of a copy, ask for 
   under `$XDG_RUNTIME_DIR` (AF_UNIX socket paths are length-limited, and the
   repo's `target/` path is often too long). Sessions survive across runs.
 - **Fresh** (`--fresh`) is a `mktemp` dir wiped on exit — same isolation the
-  demo/smoke scripts use.
+  demo recorder uses.
 
 The isolation logic is one helper, `scripts/dev/lib/sandbox-env.sh`, sourced by
-`scripts/dev/sandbox.sh`, `scripts/demo/record.sh`, and
-`scripts/dev/smoke/tui-smoke.sh` (one source of truth).
+`scripts/dev/sandbox.sh` and `scripts/demo/record.sh` (one source of truth).
+`tests/tui_e2e.rs` isolates the same way in Rust — private profile dirs, a short
+private `TMUX_TMPDIR` — so it never touches a real profile either.
 
 ### Example: watch a session's status hook end-to-end
 

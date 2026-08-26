@@ -65,9 +65,9 @@ unchanged and idle CPU drops by ~25×.
 
 **Correctness net**: dirtiness is deliberately over-approximated (any input, any
 status change → repaint) and the 250 ms floor guarantees nothing time-driven
-stays stale longer than a blink. The black-box smoke test
-(`scripts/dev/smoke/tui-smoke.sh`) still asserts the first frame and every
-post-keystroke frame paint.
+stays stale longer than a blink. The black-box test (`tests/tui_e2e.rs`) still
+asserts the first frame, every post-keystroke frame, and that a reflow repaints
+without clearing the screen.
 
 **One pass rides along after each paint**:
 `App::paint_outer_hyperlinks` re-emits the frame's OSC 8 hyperlinks so the

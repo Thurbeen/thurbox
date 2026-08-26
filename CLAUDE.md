@@ -62,9 +62,9 @@ not the interface. That rule is gone, and the `cd` is now belt-and-braces.)
 
 The isolation lives in one helper, `scripts/dev/lib/sandbox-env.sh`
 (`tbx_sandbox_init` = thurbox-only, `tbx_sandbox_init_full` = full HOME/XDG),
-sourced by the sandbox entrypoint plus `scripts/demo/record.sh` and
-`scripts/dev/smoke/tui-smoke.sh` (which use the full flavor). Single source of
-truth for the `thurbox-dev` sandbox pattern.
+sourced by the sandbox entrypoint plus `scripts/demo/record.sh` (which uses the
+full flavor). Single source of truth for the `thurbox-dev` sandbox pattern;
+`tests/tui_e2e.rs` isolates the same way in Rust.
 
 ## Testing
 
@@ -98,9 +98,28 @@ kernel over the real `ui/`** rather than a harness that imitates either:
 - **Lua statics** — `selene ui` (undefined names + the sandbox, via `thurbox.yml`),
   `lua-language-server --check` (types + withheld libraries), `stylua` (format).
   The three cover different halves; see **Linting & Formatting**.
-- **Black-box smoke test** (`scripts/dev/smoke/tui-smoke.sh`) — launches the real
-  binary in a throwaway tmux pane with isolated `HOME`/XDG/`TMUX_TMPDIR` and
-  asserts on captured frames. Gated behind the `tui-smoke` CI job (needs tmux).
+- **`tests/v2_frames.rs`** — the bundled panes' frames pinned cell for cell, as
+  literals in the file (no snapshot tool): the session list grouped, nested,
+  windowed, narrow and under double-width names; the selection as a *style*;
+  the agent pane empty, detached, failed, and with a real vt100 screen behind
+  its surface. A failing test prints the new frame as a literal to paste. Every
+  input is pinned (the `default` preset by name, a fixed `elapsed`, a fixed
+  snapshot) — keep it that way; a frame that moves on its own is worse than none.
+- **`tests/v2_render_props.rs`** — proptest crash invariants: every bundled pane
+  renders and paints at any size down to one cell, the arrangement places its
+  slots inside the screen and apart, no key sequence makes a pane throw (the
+  creation flow included), and selection extraction survives arbitrary buffers
+  and arbitrary vt100 byte streams.
+- **`tests/tui_e2e.rs`** (unix) — the real binary on a real pty, via `libc`'s
+  `openpty` (no PTY crate), fully isolated (private HOME/config/data, a short
+  private `TMUX_TMPDIR`, network and heartbeat features off). It asserts what no
+  `TestBackend` test can: the boot frame, the kernel overlays opening and closing,
+  the search strip taking focus, a column toggle reflowing with no screen clear,
+  a resize storm down to 1×1, a broken pane reported through the Interface tab,
+  exit restoring the terminal (alternate screen, mouse, bracketed paste, cursor)
+  — and, where tmux exists, a headlessly created session attached, painted and
+  typed into (`sh` as the agent). Also `just smoke`. It replaced the bash tmux
+  smoke script, which could not see the byte stream and duplicated this harness.
 
 Tests that shell out to `git` **must scrub the `GIT_*` location variables**
 (`git::GIT_LOCATION_ENV`): git exports them to hook processes, so the suite running

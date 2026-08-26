@@ -101,7 +101,7 @@ fi
 
 # --- Isolated environment (reuse the repo's single source of truth) ----------
 # Don't hand-roll isolation: scripts/dev/lib/sandbox-env.sh is the shared
-# dev-sandbox helper already used by the demo recorder + TUI smoke test.
+# dev-sandbox helper already used by the demo recorder.
 # `tbx_sandbox_init_full fresh` gives FULL hermetic isolation — a throwaway
 # mktemp root with fresh HOME + XDG_* — and crucially UNSETS any inherited
 # THURBOX_CONFIG_DIR / THURBOX_DATA_DIR. paths.rs honors those ahead of XDG, so an

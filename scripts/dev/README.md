@@ -30,11 +30,14 @@ scripts/dev/e2e/windows-vm.sh up           # first run installs Windows (~10-20 
 scripts/dev/e2e/real-host.sh devbox check  # readiness probe on a real host
 ```
 
-## smoke — TUI smoke test (`smoke/`)
+## The TUI smoke test moved
 
-`smoke/tui-smoke.sh` launches the real `thurbox` binary in a throwaway tmux
-pane, drives it with `send-keys`, and asserts on captured frames (boot → F1 →
-theme → quit). Runs in CI as the `tui-smoke` job; also `just smoke`.
+The black-box TUI test is `tests/tui_e2e.rs`: the real `thurbox` binary on a
+real pty, asserting on the reconstructed frames *and* on the byte stream (the
+alternate screen, mouse modes, a reflow without a screen clear). It runs in the
+ordinary `cargo nextest run --all` — `just smoke` runs only it — and replaced
+`smoke/tui-smoke.sh`, which drove a tmux pane and could see neither the bytes
+nor a session's own terminal.
 
 ## Dev utilities (not tests)
 
@@ -42,7 +45,7 @@ theme → quit). Runs in CI as the `tui-smoke` job; also `just smoke`.
 |---|---|
 | `sandbox.sh` | run the dev TUI/CLI against an isolated sandbox (`just sandbox*`); launched from the sandbox root so the interface directory is isolated too, not just the database |
 | `render-og-image.sh` | rasterize the website OpenGraph card |
-| `lib/sandbox-env.sh` | shared isolation helper sourced by `sandbox.sh`, `smoke/tui-smoke.sh`, and `scripts/demo/record.sh` |
+| `lib/sandbox-env.sh` | shared isolation helper sourced by `sandbox.sh` and `scripts/demo/record.sh` |
 
 ## Result contract
 
@@ -60,4 +63,4 @@ references:
 | `scripts/dev/remote-ssh-test.sh` | `scripts/dev/e2e/linux-container.sh` |
 | `scripts/dev/windows-test.sh` | `scripts/dev/e2e/windows-vm.sh` |
 | `scripts/dev/lab-test.sh` | `scripts/dev/e2e/real-host.sh` |
-| `scripts/dev/tui-smoke-test.sh` | `scripts/dev/smoke/tui-smoke.sh` |
+| `scripts/dev/tui-smoke-test.sh` | `tests/tui_e2e.rs` (a Rust integration test, not a script) |

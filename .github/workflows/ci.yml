@@ -62,8 +62,8 @@ jobs:
               # `include_str!`d into the binary, and the suite asserts on their
               # CONTENT — `tests/v2_new_session.rs` checks a string that exists
               # only in `ui/plugins/10_sessions.lua`. Without these, a Lua-only
-              # change skips check, clippy, nextest, the architecture rules and
-              # both Windows jobs, and can red-build main while its own PR is
+              # change skips clippy, nextest and both Windows jobs, and can
+              # red-build main while its own PR is
               # green. The `lua` filter below already lists all three.
               - 'ui/**'
               - 'ui-plugins/**'
@@ -113,17 +113,10 @@ jobs:
               - 'scripts/install.Tests.ps1'
               - '.github/workflows/ci.yml'
 
-  check:
-    name: Check
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo check --all
-
+  # No `check` job. `clippy --all-targets -D warnings` below type-checks the
+  # same targets, so a separate `cargo check` was a second full build on its
+  # own runner asserting nothing extra — the reasoning the Windows gate already
+  # applied when it dropped its own check pass.
   fmt:
     name: Rustfmt
     needs: changes
@@ -161,6 +154,13 @@ jobs:
       - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2.86.3
         with:
           tool: cargo-nextest
+      # A real multiplexer, so the tests that drive one run here rather than
+      # skip: `tests/create_e2e.rs`, `tests/v2_attach_by_name.rs`, and the
+      # live-session scenario of `tests/tui_e2e.rs` — the real binary on a pty,
+      # attached to a pane with a shell in it. Every one of them lands on a
+      # private socket under a private `TMUX_TMPDIR`.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
       - run: cargo nextest run --all --profile ci
 
   # Native-Windows gate (psmux backend selection, known-folder paths, toast
@@ -214,30 +214,15 @@ jobs:
       # (the `ci` profile is fail-fast); easier to triage runner-specific issues.
       - run: cargo nextest run --all --profile ci --no-fail-fast
 
-  architecture:
-    name: Architecture Rules
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo test --test architecture_rules
-
-  tui-smoke:
-    name: TUI Smoke Test
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
-      - name: Black-box TUI smoke test
-        run: scripts/dev/smoke/tui-smoke.sh
+  # No `architecture` job: `tests/architecture_rules.rs` is an ordinary
+  # integration test, so `nextest run --all` above already runs it, and the
+  # dedicated job was a second build and run on its own runner.
+  #
+  # No `tui-smoke` job either. The bash smoke script it ran (a tmux pane,
+  # `send-keys`, `capture-pane`) was replaced by `tests/tui_e2e.rs`, which runs
+  # the real binary on a real pty inside the `nextest` job — against the build
+  # that job already made — and sees the byte stream `capture-pane` discards
+  # (alternate screen, mouse modes, a screen clear on a reflow).
 
   # No `acceptance` job. It ran `-E 'test(app::acceptance::)'`, which was v1's
   # in-process TEA harness under `src/app` — deleted when the kernel took the
@@ -474,14 +459,11 @@ jobs:
     if: always()
     needs:
       - changes
-      - check
       - fmt
       - clippy
       - nextest
-      - architecture
       - windows-clippy
       - windows-test
-      - tui-smoke
       - deny
       - docs
       - conventional-commits

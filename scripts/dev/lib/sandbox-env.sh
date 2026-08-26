@@ -13,10 +13,10 @@
 #                           authenticated agent CLIs (claude/codex/antigravity/…) work.
 #   tbx_sandbox_init_full — *full* isolation: also overrides HOME + XDG_* under
 #                           the sandbox (hermetic; agents boot with no creds).
-#                           Used by the demo recorder + TUI smoke test.
+#                           Used by the demo recorder.
 #
 # Source it (don't execute) AFTER setting REPO_ROOT (or TBX_REPO_ROOT). Written
-# in POSIX sh so both bash callers (sandbox.sh, smoke/tui-smoke.sh) and the
+# in POSIX sh so both the bash caller (sandbox.sh) and the
 # /usr/bin/env sh caller (record.sh) can source it. Both flavors prepend the
 # repo's target/debug to PATH so an agent hook's `thurbox-cli` resolves to *this*
 # dev binary (and writes to the sandbox DB the dev TUI reads).
@@ -95,7 +95,7 @@ tbx_sandbox_init() {
 
 # tbx_sandbox_init_full <fresh|persistent> [profile] — FULL isolation.
 # Overrides HOME + XDG_* under the sandbox too (hermetic; agents boot fresh with
-# no creds). For the demo recorder + smoke test. Uses the dev_build `thurbox-dev`
+# no creds). For the demo recorder. Uses the dev_build `thurbox-dev`
 # XDG subdir (no THURBOX_*_DIR override needed).
 tbx_sandbox_init_full() {
     _tbx_resolve_root "$@" || return $?

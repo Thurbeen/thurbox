@@ -103,9 +103,9 @@ sandbox-shell:
 sandbox-clean PROFILE="default":
     scripts/dev/sandbox.sh --clean {{PROFILE}}
 
-# Black-box TUI smoke test (real binary in a throwaway tmux pane).
+# Black-box TUI test: the real binary on a real pty (tests/tui_e2e.rs).
 smoke:
-    scripts/dev/smoke/tui-smoke.sh
+    cargo nextest run --test tui_e2e
 
 # Drive tests against a real SSH host: `just lab <host> <verb>`.
 lab HOST *ARGS:
