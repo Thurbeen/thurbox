@@ -92,6 +92,12 @@ serde_ignored = "0.1.14"
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
 
+# The console input mode, for the mouse. Already in the tree (crossterm's own
+# Windows backend is built on it), so this costs no new dependency -- see
+# `coordinator::chrome`'s `windows_console` for what it is needed for.
+[target.'cfg(windows)'.dependencies]
+crossterm_winapi = "0.9"
+
 [[bin]]
 name = "thurbox-cli"
 path = "src/bin/thurbox-cli.rs"

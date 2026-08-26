@@ -256,6 +256,9 @@ pub(crate) fn restore_terminal() {
         crossterm::event::DisableMouseCapture,
         crossterm::event::DisableBracketedPaste
     );
+    // The console's own mouse handling is a mode, not an escape, so the line
+    // above does not give it back. Idempotent, and a no-op if we never took it.
+    windows_console::release_mouse();
     ratatui::restore();
 }
 
@@ -314,8 +317,73 @@ pub(crate) fn pop_keyboard_enhancement() {
 /// `DisableMouseCapture` still turns everything off, so teardown is unchanged.
 pub(crate) fn enable_mouse_clicks() -> bool {
     use std::io::Write;
+    // The escape asks the TERMINAL to report. On Windows something else has to
+    // be asked as well, or the console keeps every drag for itself.
+    windows_console::capture_mouse();
     let mut out = std::io::stdout();
     out.write_all(b"\x1b[?1000h\x1b[?1003h\x1b[?1006h").is_ok() && out.flush().is_ok()
+}
+
+/// The Windows console's own mouse handling, which that escape does not reach.
+///
+/// A console with `ENABLE_QUICK_EDIT_MODE` set -- the Windows default -- takes
+/// every drag for **its** selection: it highlights a rectangle of the whole
+/// screen buffer, copies through conhost, and never tells the application. So a
+/// drag selected across panes instead of within one, and the copy that followed
+/// raised no toast, because thurbox was not involved in either. crossterm does
+/// not touch these bits (its raw mode clears only the line, echo and processed
+/// flags), so this does.
+///
+/// Three bits, and all three are load-bearing: `ENABLE_MOUSE_INPUT` to be told
+/// about the mouse at all, `ENABLE_EXTENDED_FLAGS` because without it a write
+/// of the quick-edit bit is ignored, and quick edit **off** so the drag is
+/// ours. The mode that was there is put back by [`restore_terminal`].
+#[cfg(windows)]
+mod windows_console {
+    use crossterm_winapi::{ConsoleMode, Handle};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    const ENABLE_MOUSE_INPUT: u32 = 0x0010;
+    const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
+    const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
+    /// Not a mode any console reports, so it cannot be one we saved.
+    const NOT_SAVED: u32 = u32::MAX;
+
+    static SAVED_MODE: AtomicU32 = AtomicU32::new(NOT_SAVED);
+
+    pub(super) fn capture_mouse() {
+        let Ok(handle) = Handle::current_in_handle() else {
+            return;
+        };
+        let console = ConsoleMode::from(handle);
+        let Ok(current) = console.mode() else {
+            return;
+        };
+        let wanted =
+            (current | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS) & !ENABLE_QUICK_EDIT_MODE;
+        match console.set_mode(wanted) {
+            // Saved only once it is really ours, so a failed take restores
+            // nothing on the way out.
+            Ok(()) => SAVED_MODE.store(current, Ordering::SeqCst),
+            Err(e) => tracing::warn!("could not take the console's mouse input: {e}"),
+        }
+    }
+
+    pub(super) fn release_mouse() {
+        let saved = SAVED_MODE.swap(NOT_SAVED, Ordering::SeqCst);
+        if saved == NOT_SAVED {
+            return;
+        }
+        if let Ok(handle) = Handle::current_in_handle() {
+            let _ = ConsoleMode::from(handle).set_mode(saved);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod windows_console {
+    pub(super) fn capture_mouse() {}
+    pub(super) fn release_mouse() {}
 }
 
 /// The next terminal event, or `None` if none arrived within `timeout`.
