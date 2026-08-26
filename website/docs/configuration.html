@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Configuration — Thurbox Docs'
-description: 'Every config file and knob Thurbox reads: agents.toml, hosts.toml, settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, extension manifests, SQLite-backed state, and environment variables.'
+description: 'Every config file and knob Thurbox reads: agents.toml, hosts.toml, hooks.toml session lifecycle hooks, settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, extension manifests, SQLite-backed state, and environment variables.'
 currentPage: 'configuration'
 breadcrumb: 'Configuration'
 ---
@@ -74,6 +74,17 @@ breadcrumb: 'Configuration'
                 <td>you</td>
                 <td>startup</td>
                 <td>custom theme palettes</td>
+              </tr>
+              <tr>
+                <td><code>~/.config/thurbox/hooks.toml</code></td>
+                <td>TOML</td>
+                <td>you</td>
+                <td>on each session operation</td>
+                <td>
+                  <strong>session lifecycle hooks</strong>
+                  &mdash; your commands, run before/after a session is created, deleted,
+                  restarted or restored
+                </td>
               </tr>
               <tr>
                 <td><code>~/.config/thurbox/ui/</code></td>
@@ -227,6 +238,13 @@ thurbox-cli config show       # effective config + where each value came from</c
                 <td><a href="#themes-toml"><code>themes.toml</code></a></td>
               </tr>
               <tr>
+                <td>
+                  Run my own command when a session is created, deleted, restarted or restored
+                  &mdash; or refuse one
+                </td>
+                <td><a href="#hooks-toml"><code>hooks.toml</code></a></td>
+              </tr>
+              <tr>
                 <td>Rebind a key</td>
                 <td><a href="#keybindings-json"><code>keybindings.json</code> (or the F1 editor)</a></td>
               </tr>
@@ -351,6 +369,254 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
             Auth comes entirely from your
             <code>~/.ssh/config</code>
             ; thurbox never handles credentials. Host changes require a restart.
+          </p>
+
+          <h2 id="hooks-toml">
+            hooks.toml
+            <a href="#hooks-toml" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Declares
+            <strong>session lifecycle hooks</strong>
+            : your own shell commands, run by thurbox before and after it creates, deletes,
+            restarts or restores a session. Seeded fully commented-out (a fresh install runs
+            nothing) and read
+            <strong>each time an event fires</strong>
+            , so an edit is in force at the next operation with no restart. A malformed file
+            means no hooks run, a warning in the log, and a failing
+            <code>config validate</code>
+            .
+          </p>
+          <div class="callout">
+            <p>
+              Not the
+              <code>hooks/</code>
+              <strong>directory</strong>
+              beside it. That is the home of the built-in
+              <a href="agent-hooks.html">agent hooks extension</a>
+              , which installs status-hook files
+              <em>into</em>
+              the agent CLIs so they can tell thurbox what they are doing.
+              <code>hooks.toml</code>
+              is the other direction: thurbox telling
+              <em>your</em>
+              scripts what
+              <em>it</em>
+              is doing.
+            </p>
+          </div>
+          <pre data-title="hooks.toml"><code class="language-toml">[[hooks]]
+event = "session.pre_create"
+command = 'case "$THURBOX_BRANCH" in main|master) echo "refusing: protected branch" &gt;&amp;2; exit 1;; esac'
+
+[[hooks]]
+event = "session.post_create"
+command = '[ -n "$THURBOX_CWD" ] &amp;&amp; cp -n .env.local "$THURBOX_CWD/.env"; true'
+timeout_secs = 120</code></pre>
+          <table>
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Required</th>
+                <th>Default</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>event</code></td>
+                <td>yes</td>
+                <td>&mdash;</td>
+                <td>one of the eight events below</td>
+              </tr>
+              <tr>
+                <td><code>command</code></td>
+                <td>yes</td>
+                <td>&mdash;</td>
+                <td>run through <code>sh -c</code> (<code>cmd /C</code> on Windows)</td>
+              </tr>
+              <tr>
+                <td><code>timeout_secs</code></td>
+                <td>no</td>
+                <td><code>30</code></td>
+                <td>the hook is killed after this long</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            A
+            <code>pre_*</code>
+            event fires before the operation has any side effect; a
+            <code>post_*</code>
+            event fires after it has fully succeeded, and never after a failure. Hooks fire
+            <strong>once per operation whichever interface asked</strong>
+            &mdash; the TUI,
+            <code>thurbox-cli</code>
+            , an automation, an extension &mdash; because every interface ends in the same
+            pipeline. Hooks for one event run one at a time, in file order.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Operation</th>
+                <th>Events</th>
+                <th>Fired by</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>create (incl. fork)</td>
+                <td><code>session.pre_create</code> / <code>session.post_create</code></td>
+                <td>
+                  the creation flow, <code>Ctrl+F</code>, <code>thurbox-cli session create</code>,
+                  a <code>spawn</code> automation, an extension's sessions
+                </td>
+              </tr>
+              <tr>
+                <td>delete (soft or force)</td>
+                <td><code>session.pre_delete</code> / <code>session.post_delete</code></td>
+                <td>
+                  <code>Ctrl+D</code>, <code>thurbox-cli session delete [--force]</code>,
+                  extension uninstall
+                </td>
+              </tr>
+              <tr>
+                <td>restart</td>
+                <td><code>session.pre_restart</code> / <code>session.post_restart</code></td>
+                <td><code>Ctrl+R</code>, <code>thurbox-cli session restart</code></td>
+              </tr>
+              <tr>
+                <td>restore (incl. undo)</td>
+                <td><code>session.pre_restore</code> / <code>session.post_restore</code></td>
+                <td>
+                  <code>Ctrl+Z</code>/<code>Ctrl+U</code>, <code>thurbox-cli session restore</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            <strong>A <code>pre_*</code> hook can refuse.</strong>
+            Exit non-zero (or exceed the timeout) and the operation is aborted before it has done
+            anything &mdash; no worktree, no process, no row changed &mdash; with the hook's
+            command, exit status and the tail of its stderr as the reported reason (the in-flight
+            error in the TUI; the error and exit status of
+            <code>thurbox-cli</code>
+            ). Later hooks for that event do not run.
+            <strong>A <code>post_*</code> hook is informational</strong>
+            : every one runs, a failure is logged to
+            <code>thurbox.log</code>
+            and carried in the CLI's JSON as
+            <code>hook_failures</code>
+            , and never fails the operation.
+          </p>
+          <p>
+            <strong>What a hook receives.</strong>
+            Environment variables &mdash;
+            <strong>unset</strong>
+            (never empty) when the fact is not known at that moment:
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Variable</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>THURBOX_HOOK_EVENT</code></td>
+                <td>the event name, e.g. <code>session.post_create</code></td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_SESSION</code></td>
+                <td>
+                  the thurbox session id (at <code>pre_create</code>: the id it will have if
+                  creation succeeds)
+                </td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_SESSION_ID</code></td>
+                <td>the agent's own conversation id</td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_SESSION_NAME</code>, <code>THURBOX_AGENT</code></td>
+                <td>the session name and its agent</td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_REPO</code></td>
+                <td>the primary repository path</td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_CWD</code></td>
+                <td>
+                  the directory the agent runs in (the worktree, or the symlink workspace of a
+                  multi-repo session); unset at <code>pre_create</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_BRANCH</code> / <code>THURBOX_BASE_BRANCH</code></td>
+                <td>the worktree branch and what it was created from (base: create events only)</td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_HOST</code></td>
+                <td>the remote host name; unset for a local session</td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_PARENT_SESSION</code></td>
+                <td>the parent session id (a fork, or <code>--parent</code>)</td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_TASK</code></td>
+                <td>the originating task id, for a task-spawned session</td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_CONFIG_DIR</code> / <code>THURBOX_DATA_DIR</code></td>
+                <td>
+                  so a <code>thurbox-cli</code> run inside the hook hits the database of the
+                  thurbox that fired it
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            The same facts &mdash; plus
+            <code>worktrees</code>
+            (<code>repo_path</code>, <code>worktree_path</code>, <code>branch</code>),
+            <code>additional_dirs</code>
+            ,
+            <code>force</code>
+            (delete) and
+            <code>force_deleted</code>
+            (restore) &mdash; arrive as
+            <strong>one JSON object on stdin</strong>
+            (<code>jq -r .cwd</code>).
+          </p>
+          <p>
+            <strong>Where and how it runs.</strong>
+            In the primary repository when that is a directory on this machine, otherwise in
+            thurbox's own working directory &mdash; the repository is the one path that exists at
+            every event (at
+            <code>pre_create</code>
+            the worktree is not made; at
+            <code>post_delete</code>
+            it is gone). With
+            <strong>no terminal</strong>
+            : stdin is the JSON, stdout/stderr are captured and only their tail (500 chars) is
+            reported, so a hook can neither draw on nor read from the TUI's screen. A hook for a
+            <strong>remote</strong>
+            (SSH/WSL) session still runs
+            <strong>locally</strong>
+            ;
+            <code>THURBOX_HOST</code>
+            names the host and the paths are the host's &mdash;
+            <code>ssh "$THURBOX_HOST" &hellip;</code>
+            from the hook is your call.
+          </p>
+          <p>
+            <code>thurbox-cli config validate</code>
+            strict-parses the file;
+            <code>config show</code>
+            lists the hooks in force.
           </p>
 
           <h2 id="settings-toml">
@@ -891,6 +1157,17 @@ thurbox-cli extension status [&lt;name&gt;]      # per-resource presence + versi
               </tr>
             </tbody>
           </table>
+          <p>
+            Every
+            <a href="#hooks-toml">lifecycle hook</a>
+            additionally receives the
+            <code>THURBOX_*</code>
+            facts of the session it concerns (event, id, name, agent, repository, working
+            directory, branch, host, parent) and the config/data-dir overrides; the full list is
+            in the
+            <code>hooks.toml</code>
+            section above.
+          </p>
           <p>
             Editor resolution order: DB
             <code>editor_command</code>

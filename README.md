@@ -573,6 +573,10 @@ colours, so a pane you write looks right under all thirty-six.
   over SSH while the TUI stays local; declare hosts in `hosts.toml` and they
   become `ssh:<name>` backends with the same persistence and restore as
   local ones.
+- **[Session lifecycle hooks](docs/CONFIG.md#hookstoml)** — your own commands,
+  run before and after a session is created, deleted, restarted or restored
+  (`hooks.toml`); a pre-hook can refuse the operation, a post-hook reacts to
+  it, and both fire once whichever interface asked.
 - **[OS notifications](docs/CONFIG.md)** — desktop alerts when a session
   needs you, with click-to-focus on Linux.
 - **Mouse navigation** — the whole TUI is clickable: select rows, confirm
@@ -604,6 +608,7 @@ you can open in an editor.
 | Panes somebody else wrote | `ui/plugins.toml` → `thurbox-cli plugin sync` |
 | Which agent CLIs you can launch | `agents.toml` |
 | Remote SSH machines and WSL distros | `hosts.toml` |
+| Commands to run around a session's creation, deletion, restart, restore | `hooks.toml` |
 | Colours | `Ctrl+Y`, or `themes.toml` |
 | Chords | the `F1` editor, or `ui.json` |
 | Core and plugin settings | `Ctrl+,`, or `settings.toml` |
@@ -766,6 +771,9 @@ a different name — possible on equal terms.
 - **Hosts** — `hosts.toml` declares SSH machines and WSL distros; each becomes
   an `ssh:<name>` / `wsl:<name>` backend a session can spawn on, with the same
   persistence and restore as a local one.
+- **Lifecycle hooks** — `hooks.toml` runs your commands before and after
+  thurbox creates, deletes, restarts or restores a session; a `pre_*` hook can
+  refuse, and every interface fires the same hook once.
 - **Themes** — thirty-six presets, plus your own as a `base` and per-colour
   overrides in `themes.toml`. Panes ask for roles, not colours.
 - **Keybindings** — one registry, so `F1` renders what is actually bound and

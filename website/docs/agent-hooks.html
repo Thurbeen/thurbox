@@ -56,6 +56,20 @@ breadcrumb: 'Agent hooks'
             ), so a hook firing headlessly is honored too.
           </p>
 
+          <div class="callout">
+            <p>
+              These are the hooks thurbox installs
+              <em>into</em>
+              the agents. The other direction &mdash; your own commands that thurbox runs when it
+              creates, deletes, restarts or restores a session &mdash; is
+              <a href="configuration.html#hooks-toml"><code>hooks.toml</code></a>
+              (<a href="features.html#session-hooks">session lifecycle hooks</a>), a file that
+              sits beside this extension's
+              <code>hooks/</code>
+              directory and shares nothing with it but the word.
+            </p>
+          </div>
+
           <h2 id="states">
             The five states
             <a href="#states" class="heading-anchor">#</a>
