@@ -257,6 +257,7 @@ fn two_sessions_sharing_a_name_get_distinct_pane_ids() {
 /// Isolate config + data under a fresh home, install a `sh` agent, and return
 /// the config directory. Every hooks test below starts here; the process-wide
 /// override is safe because nextest runs one process per test.
+#[cfg(unix)]
 fn isolated_config() -> (tempfile::TempDir, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("tempdir");
     // Both forms: the thread-local override for this thread, and the
@@ -282,18 +283,21 @@ fn isolated_config() -> (tempfile::TempDir, std::path::PathBuf) {
 
 /// The database at the path a `thurbox-cli` run *inside* a hook resolves —
 /// the same file, so what the hook reads is what the pipeline wrote.
+#[cfg(unix)]
 fn on_disk_db() -> thurbox::storage::Database {
     let path = thurbox::paths::database_file().expect("db path");
     std::fs::create_dir_all(path.parent().expect("data dir")).expect("mkdir");
     thurbox::storage::Database::open(&path).expect("open db")
 }
 
+#[cfg(unix)]
 fn write_hooks(config: &Path, body: &str) {
     std::fs::write(config.join("hooks.toml"), body).expect("write hooks.toml");
 }
 
 /// A hook entry that appends `$THURBOX_HOOK_EVENT` (and, for the create pair,
 /// the paths) to `log`.
+#[cfg(unix)]
 fn logging_hook(event: &str, log: &Path) -> String {
     format!(
         "[[hooks]]\nevent = \"{event}\"\ncommand = 'echo \"$THURBOX_HOOK_EVENT ${{THURBOX_CWD:-unset}} ${{THURBOX_REPO:-unset}} ${{THURBOX_SESSION:-unset}}\" >> {}'\n\n",
@@ -301,6 +305,7 @@ fn logging_hook(event: &str, log: &Path) -> String {
     )
 }
 
+#[cfg(unix)]
 fn shell_request(repo: &Path, branch: Option<&str>) -> thurbox::session_ops::spawn::SpawnRequest {
     thurbox::session_ops::spawn::SpawnRequest {
         name: "hooked".into(),
