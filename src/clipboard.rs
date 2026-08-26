@@ -1,7 +1,7 @@
 //! Clipboard writes that survive SSH.
 //!
-//! Two transports, tried in order (see [`ClipboardProvider`] for the config
-//! knob that overrides the order):
+//! Two transports, and by default both are used (see [`ClipboardProvider`] for
+//! the config knob that forces one):
 //!
 //! 1. **Native** ([`arboard`]) — talks to the local display server. Verifiable:
 //!    it reports real success or a real error. Unavailable the moment thurbox
@@ -11,19 +11,31 @@
 //!    many SSH hops are in between. Fire-and-forget: a terminal that doesn't
 //!    implement it discards the sequence, and we can never tell.
 //!
-//! ## Why the order is "native, then OSC 52" and not a check for SSH
+//! ## Why `auto` writes BOTH, and still does not check for SSH
 //!
-//! The obvious design — sniff `$SSH_TTY` and pick a transport — is a trap, and
-//! the ecosystem has already walked out of it. Neovim shipped exactly that in
-//! 0.10 and **removed it as a breaking change** in 0.11 (PR #31730): the SSH
-//! check is only ever a proxy for "no local clipboard here", and *trying* the
-//! local clipboard answers that question directly and correctly. Helix and
-//! gitui order their providers the same way; nothing modern branches on SSH for
-//! a clipboard *write*.
+//! Sniffing `$SSH_TTY` to pick a transport is a trap, and the ecosystem has
+//! already walked out of it. Neovim shipped exactly that in 0.10 and **removed
+//! it as a breaking change** in 0.11 (PR #31730); nothing modern branches on
+//! SSH for a clipboard *write*. thurbox has an extra reason to distrust the
+//! env: the tmux server daemonizes with the environment of its **first**
+//! client, so panes routinely carry stale or missing `SSH_*`.
 //!
-//! thurbox has an extra reason to distrust the env: the tmux server daemonizes
-//! with the environment of its **first** client, so panes routinely carry stale
-//! or missing `SSH_*` from whenever the server happened to start.
+//! What that reasoning got wrong here was the next step: "*trying* the local
+//! clipboard answers the question directly". It answers it only where a native
+//! clipboard is **absent when nobody is at the machine** — X11 and Wayland,
+//! where a headless SSH session has no display and `arboard` fails, so the
+//! fallback to OSC 52 ran and copy worked. Windows has no such property: the
+//! clipboard of a session nobody is looking at accepts writes and reports
+//! success. So a copy from a Windows host over SSH landed in that host's
+//! clipboard, reported success, and never reached the person who pressed the
+//! key.
+//!
+//! Hence `auto` writes to **both**: native for the local case (verifiable, and
+//! what a clipboard manager sees), OSC 52 for whoever is actually looking at
+//! the screen. No SSH check, no platform branch, no way for one transport's
+//! success to hide the other's necessity — and either one succeeding is a
+//! successful copy. `native` and `osc52` still force a single transport for
+//! anyone who wants one.
 //!
 //! ## Why we don't probe for OSC 52 support either
 //!
@@ -62,6 +74,10 @@ pub enum CopyRoute {
     Native,
     /// An OSC 52 sequence was written to the terminal (unverifiable).
     Osc52,
+    /// Both: the local clipboard took it AND the sequence went out, which is
+    /// what `auto` does so that neither the person at the machine nor the
+    /// person at the far end of an SSH hop is the one who misses out.
+    Both,
 }
 
 impl CopyRoute {
@@ -70,7 +86,10 @@ impl CopyRoute {
     /// drops it can tell which path ran.
     pub fn toast_suffix(self) -> &'static str {
         match self {
-            CopyRoute::Native => "",
+            // The unremarkable cases: something verifiable took it.
+            CopyRoute::Native | CopyRoute::Both => "",
+            // Named, so a user whose terminal drops OSC 52 can tell that this
+            // was the only path that ran.
             CopyRoute::Osc52 => " (OSC 52)",
         }
     }
@@ -156,29 +175,43 @@ pub fn copy(
 
     let mut detail = String::new();
 
-    // Native first when permitted: it is the only transport that can confirm it
-    // worked, so preferring it keeps the common local case verifiable.
+    // Native when permitted: the only transport that can confirm it worked, and
+    // the one a local clipboard manager sees. Its success is no longer the end
+    // of the story under `auto` — see the module docs for why a Windows host
+    // says yes to a clipboard nobody is looking at.
+    let mut native_ok = false;
     if provider != ClipboardProvider::Osc52 {
         match native {
             Some(cb) => match cb.set_text(text) {
-                Ok(()) => return Ok(CopyRoute::Native),
+                Ok(()) => native_ok = true,
                 Err(e) => detail = format!("native: {e}"),
             },
             None => detail = "native: unavailable".into(),
         }
         if provider == ClipboardProvider::Native {
-            return Err(CopyError::NoTransport { detail });
+            return native_ok
+                .then_some(CopyRoute::Native)
+                .ok_or(CopyError::NoTransport { detail });
         }
     }
 
     // OSC 52 carries the payload whole or not at all, so refuse oversized text
-    // rather than let tmux discard it silently.
+    // rather than let tmux discard it silently. Text that big is still a
+    // successful copy when the local clipboard took it — only the far end
+    // misses out, and saying so beats reporting a failure that did not happen.
     if text.len() > OSC52_MAX_BYTES {
-        return Err(CopyError::TooLarge { bytes: text.len() });
+        return native_ok
+            .then_some(CopyRoute::Native)
+            .ok_or(CopyError::TooLarge { bytes: text.len() });
     }
 
     match write_osc52(text) {
+        Ok(()) if native_ok => Ok(CopyRoute::Both),
         Ok(()) => Ok(CopyRoute::Osc52),
+        Err(e) if native_ok => {
+            tracing::warn!("copied natively, but the OSC 52 write failed: {e}");
+            Ok(CopyRoute::Native)
+        }
         Err(e) => {
             if !detail.is_empty() {
                 detail.push_str("; ");
@@ -259,5 +292,18 @@ mod tests {
     fn toast_suffix_names_only_the_unverifiable_route() {
         assert_eq!(CopyRoute::Native.toast_suffix(), "");
         assert!(CopyRoute::Osc52.toast_suffix().contains("OSC 52"));
+        // Both is the ordinary `auto` outcome, and something verifiable took
+        // it: naming a transport there would be noise on every copy.
+        assert_eq!(CopyRoute::Both.toast_suffix(), "");
+    }
+
+    /// Oversized text is only a failure when nothing else carried it. The
+    /// far end misses out; the local clipboard still has it, and reporting a
+    /// failure that did not happen is worse than saying so.
+    #[test]
+    fn oversized_text_without_a_native_clipboard_is_still_an_error() {
+        let huge = "x".repeat(OSC52_MAX_BYTES + 1);
+        let err = copy(&huge, None, ClipboardProvider::Auto).unwrap_err();
+        assert!(matches!(err, CopyError::TooLarge { .. }));
     }
 }

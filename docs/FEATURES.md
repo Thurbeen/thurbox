@@ -2137,18 +2137,29 @@ provider` in settings.toml (`auto` | `native` | `osc52` | `none`):
    to `/dev/tty` rather than stdout, because a multiplexer intercepts
    OSC 52 arriving on a child's stdout.
 
-`auto` tries native first (it is the only one that can confirm it
-worked) and falls back to OSC 52. There is deliberately **no**
-`$SSH_TTY` check: the SSH env vars are only a proxy for "no local
-clipboard", trying the local clipboard answers that directly, and
-under tmux those vars are frequently stale (the server daemonizes with
-its first client's environment). Neovim shipped SSH detection here and
-removed it in 0.11 for the same reason.
+`auto` writes to **both**: native for the local case, OSC 52 for
+whoever is actually looking at the screen. There is deliberately **no**
+`$SSH_TTY` check — those vars are frequently stale under tmux (the
+server daemonizes with its first client's environment), and Neovim
+shipped SSH detection here and removed it in 0.11.
 
-The toast names the transport (`Copied to clipboard (OSC 52)`) so a
-terminal that silently ignores the sequence is diagnosable. Text over
-~74 KB is refused with an explicit error rather than written, because
-tmux discards an oversized OSC 52 sequence **entirely**.
+It used to *stop* at a successful native write, on the reasoning that
+trying the local clipboard answers "is there one?" directly. That
+holds only where a native clipboard is absent when nobody is at the
+machine — X11 and Wayland, where a headless SSH session has no display
+and `arboard` fails. Windows has no such property: the clipboard of a
+session nobody is looking at accepts writes and reports success, so a
+copy from a Windows host over SSH landed there, said `copied 15
+line(s)`, and never reached the person who pressed the key. Writing
+both costs one escape sequence a terminal either uses or ignores, and
+removes the platform difference rather than adding a branch.
+
+The toast names the transport only when OSC 52 was the *only* path that
+ran (`copied 8 line(s) (OSC 52)`), so a terminal that silently ignores
+the sequence is diagnosable while an ordinary copy stays quiet. Text
+over ~74 KB skips OSC 52 — tmux discards an oversized sequence
+**entirely** — and is an error only when the native write did not
+carry it either.
 
 thurbox sets `set-clipboard on` and `terminal-features ,*:clipboard`
 on its own tmux server (`TmuxBackend::apply_clipboard_config`). Both
