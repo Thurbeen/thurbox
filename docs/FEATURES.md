@@ -2168,6 +2168,18 @@ for one can stall for seconds. When no local clipboard is reachable,
 (usually **`Ctrl+Shift+V`**), which delivers the text as an ordinary
 bracketed paste that thurbox routes exactly like `Ctrl+V`.
 
+### Pasting on Windows
+
+A Windows terminal reports no paste at all — crossterm delivers one there as
+ordinary key presses, so a multi-line prompt used to submit itself a line at a
+time. thurbox rebuilds the paste from that key stream before it is dispatched,
+by timing: characters arriving faster than anyone can type are gathered, and a
+gathered run that carries a line break is handed over as one paste (so an agent
+shows it as a paste, not as typing). Everything else is left exactly as it was
+— every editing key passes straight through, ordinary typing is untouched, and
+a line you type and submit with `Enter` still submits. Rationale: ADR-4 in
+`docs/ARCHITECTURE.md`.
+
 ---
 
 ## Mouse Navigation

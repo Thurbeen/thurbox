@@ -4,7 +4,8 @@
 //! is the one type here. Its methods are split across this directory by *what
 //! they are for*, because a hundred of them in one `impl` block was not a
 //! surface anybody reviews: the loop and its workers here, then `commands`, `publish`,
-//! `draw`, `input`, `mouse`, `focus` and `interface` — plus `boot` (the startup
+//! `draw`, `input`, `mouse`, `focus` and `interface` — plus `paste` (turning a
+//! Windows key stream back into a paste), `boot` (the startup
 //! sequence `main` delegates to) and `chrome` (the free helpers for the
 //! terminal, the error panel and the perf HUD).
 //!
@@ -23,6 +24,7 @@ mod focus;
 mod input;
 mod interface;
 mod mouse;
+pub(crate) mod paste;
 mod publish;
 
 use super::*;

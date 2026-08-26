@@ -190,6 +190,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         selected_text: None,
         hovered: None,
         mouse: config.features().mouse,
+        paste_burst: crate::coordinator::paste::PasteBurst::for_platform(),
         config,
         registry: Registry::load(),
         modals: Modals::default(),

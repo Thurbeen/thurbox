@@ -124,6 +124,60 @@ are handled in one place.
   crossterm's internal byte representation doesn't match xterm
   sequences. Modifier keys, in particular, would break.
 
+### A paste on Windows arrives as keys, not as a paste
+
+`Event::Paste` is unix-only. crossterm's Windows source reads console
+INPUT_RECORDs, and `EnableBracketedPaste` there is documented as unsupported
+(`execute_winapi` returns `Unsupported`), so a paste into the TUI arrives as a
+stream of key presses — every line break an `Enter` that thurbox forwarded to
+the agent, which submitted the prompt one line at a time.
+
+`coordinator::paste` turns that stream back into a paste before anything is
+dispatched. Its shape is dictated by what the console actually delivers,
+measured against the `ssh` → ConPTY path with a key dumper rather than assumed:
+
+- **The bracketed-paste markers are gone.** The ConPTY strips `ESC[200~` /
+  `ESC[201~` before the app sees them; a paste is plain `Char`/`Enter` events
+  with no framing at all. There is nothing to match on, so there is no marker
+  machinery.
+- **Editing keys arrive whole.** An arrow key, `Delete`, `Ctrl+Delete`, a
+  function key each arrive as their own `KeyEvent` (`KeyCode::Left`, …), not as
+  a run of `ESC` `[` `…` character events.
+
+So the only thing separating a paste from typing is **timing**, and two small
+rules follow:
+
+1. **Grouping is by the inter-key gap.** A plain character joins a run when it
+   lands within 10 ms of the previous one; a person's fastest two keys stay
+   well above that and a pasted stream runs far under it. **Everything that is
+   not a plain character passes straight through the instant it arrives** — an
+   arrow, `Delete`, `Esc`, any `Ctrl`/`Alt` chord is never buffered, so it can
+   never be swallowed. (Earlier attempts carried a marker/`Esc`/VT-sequence
+   state machine that matched none of these inputs yet sat between every one of
+   them and the agent; each rev fixed one input and broke another until it was
+   removed.)
+2. **A run is a paste only if it carries an interior newline.** Delivering
+   newlines to the agent one keystroke at a time is the sole thing this path
+   exists to prevent — it is what submits a prompt mid-paste — so it is the only
+   thing acted on. A newline-free run is emitted as the keys it was, because the
+   clock times when a key is *read*, not when it was pressed: under load two
+   keys a person typed 100 ms apart can be read together, and coalescing on
+   length alone announced a phantom "pasted 2 characters" mid-type. A run that
+   merely *ends* at a newline is a typed line submitted with `Enter`, so it too
+   stays keys and still submits.
+
+The result is that a multi-line paste reaches the agent as one bracketed paste
+— which it renders as a paste (Claude Code collapses it to `[Pasted text #1 +N
+lines]`) rather than as typing — while every editing key and every keystroke of
+ordinary typing is untouched. The loop waits at most 10 ms for the next key
+while a run is open and not at all otherwise, so an idle interface polls exactly
+as before. The coalescer is inert where `Event::Paste` arrives on its own, and
+its decisions are unit-tested on every platform against a driven clock.
+
+This is the *inbound* half of a journey whose outbound half is ADR-13's
+`PsmuxPaste`: the reassembled paste is carried to a psmux pane in one piece by
+psmux's own paste command.
+
 ---
 
 ## ADR-5: Responsive layout breakpoints

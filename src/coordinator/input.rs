@@ -8,6 +8,7 @@
 //! outranks a global one — which is why search cannot take `Ctrl+N` from
 //! new-session.
 
+use super::paste::Input;
 use super::*;
 
 impl App {
@@ -30,9 +31,11 @@ impl App {
         let mut published = false;
         let mut waited = false;
         loop {
-            // Only the first read waits; the rest take what is already queued.
+            // Only the first read waits; the rest take what is already queued —
+            // except while the paste coalescer holds a key it cannot yet
+            // decide about, which is worth a few milliseconds of the batch.
             let timeout = if waited {
-                Duration::ZERO
+                self.paste_burst.drain_timeout()
             } else {
                 self.poll_timeout()
             };
@@ -64,10 +67,13 @@ impl App {
                 }
             };
             match event {
+                // Where the terminal reports no paste of its own, one arrives
+                // here as keys and has to be recognised as one — the coalescer
+                // hands back whichever of the two this turned out to be.
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    self.publish_for_batch(&mut published);
-                    self.time_op("input_dispatch", |app| app.on_key(&key));
-                    self.note_input();
+                    for input in self.paste_burst.push(key, Instant::now()) {
+                        self.apply_input(input, &mut published);
+                    }
                 }
                 // Dropped rather than merely uncaptured when the feature is
                 // off, so the flag stays authoritative even if a terminal
@@ -93,7 +99,22 @@ impl App {
                 _ => {}
             }
         }
+        // Nothing is queued behind the batch, so a run being watched has to go
+        // somewhere: a paste, or the keys it was made of.
+        for input in self.paste_burst.flush() {
+            self.apply_input(input, &mut published);
+        }
         Ok(())
+    }
+
+    /// Dispatch one resolved input, publishing `thurbox.*` once per batch.
+    fn apply_input(&mut self, input: Input, published: &mut bool) {
+        self.publish_for_batch(published);
+        match input {
+            Input::Key(key) => self.time_op("input_dispatch", |app| app.on_key(&key)),
+            Input::Paste(text) => self.on_paste(text),
+        }
+        self.note_input();
     }
 
     pub(crate) fn on_key(&mut self, key: &KeyEvent) {
@@ -116,7 +137,6 @@ impl App {
         if self.dispatch_session_input(key) {
             return;
         }
-
         // An `Esc` no pane claimed means "leave this one" — the v2 spelling of
         // v1 closing a modal, since a centre-slot pane is dismissed by focusing
         // whatever you came from.

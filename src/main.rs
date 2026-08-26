@@ -303,6 +303,11 @@ struct App {
     /// `[features] mouse`. Off means no capture escape was ever sent, so the
     /// terminal keeps its native selection and scrolling.
     mouse: bool,
+    /// Turns a key stream back into a paste where the terminal reports none
+    /// (see `coordinator::paste`). Held across input batches so a run's timing
+    /// is judged against the previous key even when the drain boundary falls
+    /// between them. Inert where `Event::Paste` arrives on its own.
+    paste_burst: coordinator::paste::PasteBurst,
     /// The session shown by the focused plugin's surface, as of the last frame.
     /// Read off the tree that was just painted, so the kernel never needs to
     /// know which plugin is "the terminal".
