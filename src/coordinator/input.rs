@@ -118,6 +118,14 @@ impl App {
     }
 
     pub(crate) fn on_key(&mut self, key: &KeyEvent) {
+        // Any key press clears the selection and still does what it does —
+        // v1's rule. The one exception is the copy chord, which is what the
+        // selection is for; it clears it itself once the copy is made.
+        let is_copy =
+            matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL);
+        if !is_copy && self.selection.take().is_some() {
+            self.dirty = true;
+        }
         if self.dispatch_to_modal(key) {
             return;
         }
@@ -220,10 +228,8 @@ impl App {
             KeyCode::Char('c') if ctrl && self.selection.is_some() => {
                 // No focused session required: a selection over the session
                 // list, a modal or the footer is still a selection, and v1
-                // copies it. Only the fall-back-to-whole-screen path needs a
-                // terminal, because only a terminal HAS a screen.
-                let session = self.focused_session.clone();
-                self.copy_selection_or_screen(session.as_deref());
+                // copies it.
+                self.copy_selection();
             }
             KeyCode::Char('v') if ctrl => self.paste_into_focused(),
             _ => return false,

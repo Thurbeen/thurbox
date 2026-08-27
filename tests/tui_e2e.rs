@@ -17,10 +17,10 @@
 //!
 //! Hermetic: private HOME, config, data and tmux dirs per test, and the
 //! network-facing and tmux-arming features off, so a run never touches a real
-//! profile or a real tmux server. The one scenario that needs a multiplexer
-//! (`a_session_shows_its_terminal_and_takes_keystrokes`) skips where tmux is
-//! absent, as `tests/create_e2e.rs` does — a missing multiplexer is an
-//! environment fact, not a regression.
+//! profile or a real tmux server. The scenarios that need a multiplexer (the
+//! ones built on `shell_session`) skip where tmux is absent, as
+//! `tests/create_e2e.rs` does — a missing multiplexer is an environment fact,
+//! not a regression.
 //!
 //! Unix-only, and on `libc` directly: the PTY is `openpty` + `setsid` +
 //! `TIOCSCTTY` + `TIOCSWINSZ`, four calls that are already in the dependency
@@ -369,7 +369,22 @@ impl Tui {
 
     /// The last lines of the binary's log, for a failure message.
     fn log_tail(&self) -> String {
-        let text = std::fs::read_to_string(&self.log).unwrap_or_default();
+        // The appender rolls daily, so the file carries a date suffix.
+        let dir = self.log.parent().expect("log dir");
+        let stem = self
+            .log
+            .file_name()
+            .expect("log name")
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(&stem))
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .collect::<String>();
         let lines: Vec<&str> = text.lines().collect();
         lines[lines.len().saturating_sub(30)..].join("\n")
     }
@@ -692,16 +707,17 @@ fn repo(under: &Path) -> PathBuf {
     dir
 }
 
-#[test]
-fn a_session_shows_its_terminal_and_takes_keystrokes() {
-    // The product, end to end: a session created headlessly appears in the
-    // list, its pane is attached and painted, and a keystroke sent to the
-    // focused terminal reaches the process behind it. The "agent" is `sh`,
-    // declared in the profile's own agents.toml — thurbox is agent-neutral,
-    // so a shell is as good an agent as any and the only one CI has.
+/// A profile with one `sh` session, and the binary attached to it with the
+/// agent pane focused and its prompt painted — the ground every scenario that
+/// drives a real terminal starts from. `None` where tmux is absent.
+///
+/// The "agent" is `sh`, declared in the profile's own agents.toml — thurbox is
+/// agent-neutral, so a shell is as good an agent as any and the only one CI
+/// has.
+fn shell_session() -> Option<(Profile, Tui)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
-        return;
+        return None;
     }
     let profile = Profile::new();
     std::fs::write(
@@ -726,7 +742,7 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
     // headless answer to it.
     profile.cli(&["config", "accept-interface"]);
 
-    let mut tui = Tui::spawn(&profile, 40, 120);
+    let tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("probe");
 
     // The agent pane has focus at boot, and the action band names the focused
@@ -739,6 +755,19 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
             .is_some_and(|band| band.trim_start().starts_with("Agent"))
     });
     tui.wait_for("$ ");
+    Some((profile, tui))
+}
+
+#[test]
+fn a_session_shows_its_terminal_and_takes_keystrokes() {
+    // The product, end to end: a session created headlessly appears in the
+    // list, its pane is attached and painted, and a keystroke sent to the
+    // focused terminal reaches the process behind it. The "agent" is `sh`,
+    // declared in the profile's own agents.toml — thurbox is agent-neutral,
+    // so a shell is as good an agent as any and the only one CI has.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
 
     // Typed into the focused terminal. The echo is the assertion: the marker
     // is printed by the shell, so seeing it means the pane was attached,
@@ -748,6 +777,117 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
     // marker was typed into, so a routing regression cannot pass this.
     tui.send(b"echo tb-e2e-\"\"marker\r");
     tui.wait_for("tb-e2e-marker");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+// --- selection, copy, and the interrupt a shell is owed ----------------------
+
+const OSC52: &str = "\x1b]52;c;";
+
+/// The text an OSC 52 sequence in `out` carries, if there is one.
+fn osc52_payload(out: &str) -> Option<String> {
+    let start = out.find(OSC52)? + OSC52.len();
+    let end = out[start..].find('\x07')? + start;
+    let bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &out[start..end])
+            .expect("OSC 52 payload is base64");
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+impl Tui {
+    /// Where `needle` is painted, as a 0-based (column, row).
+    ///
+    /// The column is counted in cells, not bytes: the borders to the left of
+    /// a pane are multi-byte glyphs, and a byte offset lands a press several
+    /// cells into the text it was aimed at.
+    fn find(&self, needle: &str) -> (u16, u16) {
+        let rows = self.screen.lock().unwrap().screen().size().0;
+        (0..rows)
+            .find_map(|y| {
+                let row = self.row(y);
+                row.find(needle)
+                    .map(|byte| (row[..byte].chars().count() as u16, y))
+            })
+            .unwrap_or_else(|| self.give_up(&format!("{needle:?} to be on screen")))
+    }
+
+    /// A left press at a 0-based cell, dragged `over` cells to the right (none
+    /// for a bare click), and released — as SGR mouse reports, which is what
+    /// the binary asked the terminal for.
+    fn drag(&mut self, (x, y): (u16, u16), over: u16) {
+        let (px, py) = (x + 1, y + 1);
+        self.send(format!("\x1b[<0;{px};{py}M").as_bytes());
+        for cx in px + 1..=px + over {
+            self.send(format!("\x1b[<32;{cx};{py}M").as_bytes());
+        }
+        self.send(format!("\x1b[<0;{};{py}m", px + over).as_bytes());
+        // The frame that paints the selection is the one that reads its text.
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    /// `Ctrl+C`, then a marker typed straight after: the marker echoing is
+    /// the shell having taken the chord as its interrupt and gone back to its
+    /// prompt. What the binary wrote in between is returned for the caller to
+    /// judge — an OSC 52 there is a copy that stole the chord.
+    fn ctrl_c_then(&mut self, marker: &str) -> String {
+        let mark = self.raw_len();
+        self.send(b"\x03");
+        self.send(format!("echo {marker}-\"\"ok\r").as_bytes());
+        self.wait_for(&format!("{marker}-ok"));
+        self.raw_since(mark)
+    }
+}
+
+#[test]
+fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
+    // Clicking into a terminal is how it is focused, and the press used to
+    // stay armed as an empty selection afterwards: every `Ctrl+C` from then on
+    // was taken by the copy chord, which — finding nothing selected — pushed
+    // the whole visible screen at the outer terminal as OSC 52 and never
+    // reached the shell as the interrupt it was. v1's rule, restored here: a
+    // press that never moved is a click, and a selection is only what was
+    // dragged over.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"echo tb-select-\"\"me\r");
+    tui.wait_for("tb-select-me");
+    let at = tui.find("tb-select-me");
+
+    // A bare click, then a command to interrupt. Were the chord stolen, the
+    // shell would still be in `sleep` when the marker is typed, and the
+    // marker would not echo inside the wait.
+    tui.drag(at, 0);
+    tui.send(b"sleep 30 && echo tb-not-\"\"interrupted\r");
+    std::thread::sleep(Duration::from_millis(200));
+    let out = tui.ctrl_c_then("tb-click");
+    assert!(
+        !out.contains(OSC52),
+        "a click alone must not turn Ctrl+C into a copy; wrote:\n{out:?}"
+    );
+    assert!(!tui.frame().contains("tb-not-interrupted"));
+
+    // A drag is a selection, and the chord copies exactly what was dragged
+    // over — as OSC 52, since a headless pty has no native clipboard.
+    tui.drag(at, 12);
+    let mark = tui.raw_len();
+    tui.send(b"\x03");
+    tui.wait_for("copied 1 line(s)");
+    let copied = osc52_payload(&tui.raw_since(mark))
+        .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the copy"));
+    assert_eq!(copied.trim(), "tb-select-me");
+
+    // Any other key drops the selection and still does what it does, so the
+    // next Ctrl+C is the shell's again.
+    tui.drag(at, 12);
+    tui.send(b":");
+    let out = tui.ctrl_c_then("tb-key");
+    assert!(
+        !out.contains(OSC52),
+        "a key press must clear the selection; wrote:\n{out:?}"
+    );
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");

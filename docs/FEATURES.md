@@ -2120,7 +2120,10 @@ confined to the active pane bounds.
 
 - **Mouse drag**: Select text (anchor at press, cursor follows
   drag). Dragging past the top/bottom edge scrolls the grid, so a
-  selection can extend beyond one screenful.
+  selection can extend beyond one screenful. A press that never
+  moves is a click, not a selection — so clicking into a shell to
+  focus it leaves `Ctrl+C` as the shell's interrupt — and any key
+  press or wheel tick drops a selection (the key still does its job).
 - **`Shift`+drag**: Bypasses thurbox entirely and uses your
   **terminal's own** selection. Most emulators reserve Shift for this
   while an application holds the mouse; use it when you want the

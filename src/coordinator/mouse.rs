@@ -17,6 +17,13 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => {
                 if let Some(selection) = &mut self.selection {
                     selection.dragging = false;
+                    // A press that never moved is a click, not a selection —
+                    // v1's rule on release. Keeping it armed made every later
+                    // `Ctrl+C` a copy of the whole screen instead of the
+                    // interrupt the shell was waiting for.
+                    if selection.anchor == selection.cursor {
+                        self.selection = None;
+                    }
                 }
             }
             MouseEventKind::ScrollUp => self.on_scroll(mouse.column, mouse.row, true),
@@ -42,6 +49,9 @@ impl App {
     /// the arrow keys cannot come to mean different things — the same reasoning
     /// behind the `key:<chord>` click role.
     pub(crate) fn on_scroll(&mut self, x: u16, y: u16, up: bool) {
+        // The selection is in screen cells and the text under them is about
+        // to move; v1 drops it on every scroll for the same reason.
+        self.selection = None;
         let code = if up { KeyCode::Up } else { KeyCode::Down };
         let key = KeyEvent::new(code, KeyModifiers::NONE);
 
@@ -369,21 +379,18 @@ impl App {
         };
     }
 
-    /// Copy the selection when there is one, else the whole visible screen.
+    /// Copy the selection to the clipboard.
     ///
-    /// v1's rule, and worth keeping: `Ctrl+C` with nothing selected should do
-    /// something useful rather than nothing.
-    pub(crate) fn copy_selection_or_screen(&mut self, session: Option<&str>) {
+    /// Only the selection: there is deliberately no fall-back to the whole
+    /// visible screen. That fall-back fired whenever the selection was empty
+    /// — which, until a click stopped arming one, was after every click into
+    /// a terminal — so `Ctrl+C` in a shell pushed tens of kilobytes of OSC 52
+    /// at the outer terminal and never interrupted anything. A pane that
+    /// wants the screen copied has `command("copy")` for it.
+    pub(crate) fn copy_selection(&mut self) {
         // The selection was read off the frame that painted it, whichever pane
-        // that was. Falling back to the whole visible screen is v1's rule for
-        // "Ctrl+C with nothing selected should do something useful", and needs
-        // a terminal to have a screen at all.
-        let text = match self.selected_text.clone() {
-            Some(text) => Some(text),
-            None => session.and_then(|session| self.terminals.visible_text(session)),
-        };
-
-        let message = match text {
+        // that was.
+        let message = match self.selected_text.clone() {
             Some(text) if !text.trim().is_empty() => {
                 let outcome = thurbox::clipboard::copy(
                     &text,
