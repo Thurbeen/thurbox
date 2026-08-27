@@ -2359,6 +2359,20 @@ open review lets F8 fall through to the global binding instead of swallowing
 it), and `toggle_shell_view` is review-aware — with a review open it closes it
 and lands on the shell, mirroring the Shell tab.
 
+**Giving the terminal back.** The escapes that turn reporting on are undone by
+`restore_terminal` on every exit thurbox can see: a clean `Ctrl+Q`, a panic, and
+— since the signal handler in `coordinator::boot` — a `SIGHUP`, `SIGTERM` or
+`SIGINT`, which the process used to die on with the default action and no
+cleanup, leaving the shell that came next printing `\x1b[<64;12;30M` on every
+wheel notch (thurbox asks for `?1003`, so every pointer *move* reported too).
+The exit status is the shell's `128 + signal`, so a wrapper can tell the two
+apart. What no handler can fix is a **dropped ssh connection** to a remote
+thurbox: the `?1003l` has no pty left to travel down, so the local emulator is
+left reporting exactly as a killed remote `vim` leaves it on the alternate
+screen. Type `reset` there (or `printf '\e[?1000l\e[?1003l\e[?1006l\e[?2004l\e[?1049l'`),
+or run the ssh session inside a local tmux, which owns the outer terminal's
+modes and puts them back on detach.
+
 ---
 
 ## Shell Pane Toggle

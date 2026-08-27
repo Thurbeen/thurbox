@@ -389,6 +389,25 @@ impl Tui {
     /// caller's to judge.
     fn quit(&mut self) -> ExitStatus {
         self.send(CTRL_Q);
+        self.wait_exit("Ctrl+Q")
+    }
+
+    /// Send `signal` to the binary and wait for it to go; the exit status is
+    /// the caller's to judge.
+    fn signal(&mut self, signal: libc::c_int) -> ExitStatus {
+        // SAFETY: a plain `kill(2)` on a pid this harness spawned and has not
+        // yet reaped (`poll_exit` is the only reaper, and `exited` is `None`).
+        let sent = unsafe { libc::kill(self.child.id() as libc::pid_t, signal) };
+        assert_eq!(
+            sent,
+            0,
+            "kill({signal}) failed: {}",
+            std::io::Error::last_os_error()
+        );
+        self.wait_exit(&format!("signal {signal}"))
+    }
+
+    fn wait_exit(&mut self, after: &str) -> ExitStatus {
         let deadline = Instant::now() + WAIT;
         while Instant::now() < deadline {
             if let Some(status) = self.poll_exit() {
@@ -396,7 +415,7 @@ impl Tui {
             }
             std::thread::sleep(Duration::from_millis(40));
         }
-        self.give_up("the process to exit after Ctrl+Q");
+        self.give_up(&format!("the process to exit after {after}"));
     }
 }
 
@@ -431,22 +450,53 @@ fn boots_paints_and_quits_restoring_the_terminal() {
 
     let status = tui.quit();
     assert!(status.success(), "Ctrl+Q must exit cleanly: {status:?}");
+    assert_terminal_restored(&tui.raw_since(0), "a clean exit");
+}
 
-    // A missing one of these is the "my shell is streaming mouse reports"
-    // bug, which no in-process test and no capture-pane assertion can see.
-    let raw = tui.raw_since(0);
-    for (seq, meaning) in [
-        ("\x1b[?1049l", "leave the alternate screen"),
-        ("\x1b[?1000l", "stop mouse reporting"),
-        ("\x1b[?1003l", "stop mouse motion reporting"),
-        ("\x1b[?2004l", "disable bracketed paste"),
-        ("\x1b[?25h", "show the cursor again"),
-    ] {
+/// What every exit owes the terminal. A missing one of these is the "my shell
+/// is streaming mouse reports" bug, which no in-process test and no
+/// capture-pane assertion can see.
+const RESTORE_ESCAPES: [(&str, &str); 5] = [
+    ("\x1b[?1049l", "leave the alternate screen"),
+    ("\x1b[?1000l", "stop mouse reporting"),
+    ("\x1b[?1003l", "stop mouse motion reporting"),
+    ("\x1b[?2004l", "disable bracketed paste"),
+    ("\x1b[?25h", "show the cursor again"),
+];
+
+fn assert_terminal_restored(raw: &str, exit: &str) {
+    for (seq, meaning) in RESTORE_ESCAPES {
         assert!(
             raw.contains(seq),
-            "exit must {meaning} ({seq:?} missing from the byte stream)"
+            "{exit} must {meaning} ({seq:?} missing from the byte stream)"
         );
     }
+}
+
+#[test]
+fn a_signal_restores_the_terminal_before_exiting() {
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 24, 80);
+    tui.wait_for("No sessions yet");
+    let taken = tui.raw_len();
+
+    // What a session manager, a closed ssh connection or a machine waking from
+    // a long sleep sends. The default action runs no hook, which is how the
+    // shell that came next was left printing `\x1b[<64;…M` on every scroll.
+    let status = tui.signal(libc::SIGTERM);
+    assert!(
+        !status.success(),
+        "a signalled exit must not pass for a clean one: {status:?}"
+    );
+    assert_eq!(
+        status.code(),
+        Some(128 + libc::SIGTERM),
+        "exit status follows the shell's 128 + signal convention: {status:?}"
+    );
+
+    // Only the bytes written AFTER the boot count, so a `…l` from setup could
+    // not satisfy this.
+    assert_terminal_restored(&tui.raw_since(taken), "a signalled exit");
 }
 
 // --- the kernel-owned overlays ---------------------------------------------

@@ -41,6 +41,17 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         original_hook(info);
     }));
 
+    // The same restore for a signal, which the panic hook cannot see. A
+    // `SIGHUP` (the terminal or ssh session went away), a `SIGTERM` (a session
+    // manager, or the machine waking from a long sleep and reaping what it
+    // suspended) or a `kill -INT` ends the process with the default action,
+    // and the default action runs no hook — so mouse reporting stayed on and
+    // the next shell printed `\x1b[<64;…M` on every scroll. Spawned before the
+    // terminal is taken: every step of `restore_terminal` is a no-op for a mode
+    // that was never enabled, and a signal that lands during boot is otherwise
+    // the one this misses.
+    install_signal_restore();
+
     // File-based logging: stdout belongs to the TUI, so every `tracing` call in
     // this process — the panic hook, a worker's warning, the perf lines below —
     // has nowhere else to go. Without a subscriber they are not merely
@@ -285,6 +296,59 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let result = app.run(terminal);
     restore_terminal();
     result
+}
+
+/// Put the terminal back and exit when a signal ends the process.
+///
+/// Exits directly rather than asking the loop to quit: the loop is on the
+/// thread blocked in `app.run`, and after a `SIGHUP` its `event::poll` may be
+/// reading a pty that is already gone, so a request would be honoured late or
+/// never. Exiting from the runtime's thread skips the loop's drops, exactly as
+/// the panic path does — tmux keeps the sessions alive, so nothing is lost.
+/// The status is the shell's convention, `128 + signal`, so a wrapper script
+/// can tell a signal from a clean quit.
+///
+/// `restore_terminal` is idempotent and takes no lock, so racing the normal
+/// exit path — a `SIGTERM` that lands while `Ctrl+Q` is being honoured —
+/// costs a redundant escape and nothing else.
+fn install_signal_restore() {
+    fn restore_and_exit(name: &str, number: i32) -> ! {
+        restore_terminal();
+        tracing::info!("exiting on {name}");
+        std::process::exit(128 + number)
+    }
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        // The numbers are POSIX's (1, 2, 15 on Linux and macOS alike), spelled
+        // here because `SignalKind` does not expose them portably and `libc`
+        // is a dev-dependency only.
+        let hangup = ("SIGHUP", signal(SignalKind::hangup()), 1);
+        let terminate = ("SIGTERM", signal(SignalKind::terminate()), 15);
+        let interrupt = ("SIGINT", signal(SignalKind::interrupt()), 2);
+        for (name, stream, number) in [hangup, terminate, interrupt] {
+            match stream {
+                Ok(mut stream) => {
+                    tokio::spawn(async move {
+                        if stream.recv().await.is_some() {
+                            restore_and_exit(name, number);
+                        }
+                    });
+                }
+                Err(e) => tracing::warn!("could not listen for {name}: {e}"),
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Ctrl+C / Ctrl+Break / a closed console window all arrive here.
+        tokio::spawn(async {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                restore_and_exit("SIGINT", 2);
+            }
+        });
+    }
 }
 
 /// Index into the host's focusable plugins for `name`, or 0.

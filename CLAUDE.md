@@ -1748,7 +1748,17 @@ tokio::main → load config + settings → heal extensions → arm the heartbeat
 - Logging goes to `~/.local/share/thurbox/thurbox.log` (stdout is the TUI's)
 - A panic hook restores the terminal, pops the kitty flags and disables mouse
   reporting before printing — otherwise the shell inherits a raw-mode terminal
-  streaming mouse reports
+  streaming mouse reports. A **signal** gets the same treatment
+  (`coordinator::boot::install_signal_restore`): `SIGHUP`/`SIGTERM`/`SIGINT`
+  run `restore_terminal` and exit `128 + n`, since the default action runs no
+  hook and a terminal emulator closing, a session manager, or a machine waking
+  from a long sleep used to leave the next shell printing `\x1b[<64;…M` on
+  every scroll. `restore_terminal` shows the cursor itself for the same
+  reason — a signal exits from the runtime's thread and drops no `Terminal`.
+  The one case no handler reaches is a **dropped ssh connection** to a remote
+  thurbox: the `?1003l` has no pty to travel down, so the *local* emulator
+  keeps reporting — `reset` there, or run the ssh session inside a local tmux.
+  `tests/tui_e2e.rs` pins both exits' escapes.
 
 ## Pre-commit Hooks
 

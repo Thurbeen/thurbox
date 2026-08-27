@@ -250,11 +250,15 @@ pub(crate) fn restore_terminal() {
     // cooked terminal.
     pop_keyboard_enhancement();
     // Unconditional: cheaper than tracking whether capture was on, and a
-    // terminal left reporting is the failure this exists to prevent.
+    // terminal left reporting is the failure this exists to prevent. The
+    // cursor is shown here too, not left to `Terminal`'s drop: a signal exits
+    // from the runtime's thread and drops nothing, and a shell with no cursor
+    // is the leftover that path had.
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableBracketedPaste
+        crossterm::event::DisableBracketedPaste,
+        crossterm::cursor::Show
     );
     // The console's own mouse handling is a mode, not an escape, so the line
     // above does not give it back. Idempotent, and a no-op if we never took it.
