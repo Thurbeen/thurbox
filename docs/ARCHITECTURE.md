@@ -1236,6 +1236,22 @@ network, a different schema) or with `share_sessions = false` is used exactly
 as ADR-13 describes: worktrees over ssh, the hooks rewrite, the pane-option
 status channel, which are now the **legacy path for non-shareable hosts**.
 
+The verdict is cached per host, and a failing one **backs off**:
+`host_cli::retry_after` doubles `PROBE_RETRY` (60 s) per consecutive failure
+up to `PROBE_RETRY_MAX` (15 min), the count reset by the first usable answer
+and by `forget` (what `session sync` calls, since somebody running it by hand
+has usually just fixed the host). A flat interval was wrong because the
+failures divide in two and only one of them is transient: a host that is
+rebooting answers on the next pass, while a host whose shell will not take a
+10 MB payload fails *identically* every time — and each of those attempts
+re-downloaded the release archive and opened an ssh, once a minute, for as
+long as thurbox ran. The transfer itself reaps its transport child on both
+paths (`git::stream_into_child`, killing it first when the write failed):
+`Child`'s `Drop` neither kills nor waits, so returning on the `EPIPE`
+`write_all` saw left one orphaned `ssh` per attempt. It also reports the
+peer's own stderr in preference to that `EPIPE`, which is the symptom of the
+remote dying and never the reason.
+
 **Why**: two thurboxes already shared a host's tmux server — a laptop spawning
 on `ssh:devbox` and a thurbox on devbox both use `tmux -L thurbox` there —
 but each kept its own database, so each saw only what it made. The laptop

@@ -476,6 +476,13 @@ has the rationale; the shape:
   says so (`sharing` in its JSON, a line in `thurbox.log`). Sessions
   created that way are listed by `session sync` as unknown to the host;
   `session sync --host <name> --adopt` registers them there.
+- **Retrying.** A host that answers "no usable CLI" is asked again
+  after 60 s, and each further consecutive failure doubles that up to
+  15 minutes — so a host that is merely rebooting is picked up on the
+  next pass, while one that can never be provisioned stops costing an
+  archive download and a connection every minute. The first usable
+  answer resets it, and so does `session sync`, since running it by
+  hand usually means the host was just fixed.
 - **Status.** Hooks on a shared host call the host's own `thurbox-cli
   session signal`, which writes the host's database (mirrored at 10 s)
   **and** the pane option a remote observer's control-mode subscription

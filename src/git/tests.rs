@@ -1260,3 +1260,55 @@ fn parse_url_trailing_slash() {
         None
     );
 }
+
+/// A peer that reads the whole payload is the ordinary path, and one that dies
+/// holding the pipe open is the path that used to leak an `ssh` per attempt:
+/// `write_all` returned `EPIPE`, the `?` skipped the wait, and `Child`'s `Drop`
+/// neither killed nor reaped it. Unix-only because both need a POSIX shell.
+#[cfg(unix)]
+mod stream_into_child {
+    use std::process::{Command, Stdio};
+
+    fn peer(script: &str) -> std::process::Child {
+        Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the test peer")
+    }
+
+    #[test]
+    fn a_payload_the_peer_reads_is_delivered() {
+        let child = peer("cat > /dev/null; echo done");
+        let out = super::super::stream_into_child(child, &vec![b'x'; 1 << 20], "test-copy")
+            .expect("a peer that reads the payload succeeds");
+        assert_eq!(String::from_utf8_lossy(&out).trim(), "done");
+    }
+
+    #[test]
+    fn a_peer_that_dies_mid_payload_reports_its_own_stderr() {
+        // Big enough to outrun the pipe buffer, so the write is still going
+        // when the peer exits and `write_all` really does see `EPIPE`.
+        let child = peer("echo 'no room on device' >&2; exit 1");
+        let error = super::super::stream_into_child(child, &vec![b'x'; 8 << 20], "test-copy")
+            .expect_err("a peer that exits mid-payload fails");
+        // The remote's reason, not our end noticing a broken pipe.
+        assert!(
+            format!("{error:#}").contains("no room on device"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn a_peer_that_dies_silently_still_returns() {
+        // Nothing on stderr to explain it: the write error is the fallback, and
+        // the point is that this returns at all rather than waiting forever.
+        let child = peer("exit 1");
+        let error = super::super::stream_into_child(child, &vec![b'x'; 8 << 20], "test-copy")
+            .expect_err("a silent peer still fails");
+        assert!(format!("{error:#}").contains("test-copy"), "{error:#}");
+    }
+}

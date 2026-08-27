@@ -31,6 +31,8 @@
 - [x] 4.4 Reaper: a mirrored (remote) row is never reaped here — `reap_soft_deleted` already returns `Ok(false)` for a remote backend, so the reaper's `Reap` command is a no-op for them; the host's tick reaps its own overdue soft deletes
 - [x] 4.5 Sharing note: `SpawnResult.sharing` → `session create` JSON (`sharing`) and human output, and a `warn` line in `thurbox.log` for the interface's creation (v2 has no info panel of its own; `hook_wiring` is not published either)
 - [x] 4.6 Tests `tests/v2_shared_sessions.rs` (in-memory DB, fake host runner returning canned `list`/`list --deleted` JSON): a host row is adopted with the same id and `ssh:H`; facts update; a host-deleted row is soft-deleted with the force mark and the reaper forgets it; a host-restored row is restored; an unknown local row is reported, and adopted with `--adopt` through `register`; an idle pass writes nothing (`data_version` unchanged); hook state echo does not re-write; a mirrored row with no window issues `restart --if-missing` and launches nothing locally
+- [x] 4.7 Failure backoff: `host_cli::retry_after` doubles `PROBE_RETRY` per consecutive `No` up to `PROBE_RETRY_MAX` (15 min), the count carried on the cached `Verdict` and reset by the first `Yes` (and by `forget`, which `session sync` already calls); `git::stream_into_child` reaps the transport child on **both** paths — killing it first when the write failed — and prefers the peer's stderr over our `EPIPE`, since `Child`'s `Drop` neither kills nor waits and a failed provisioning left one orphaned `ssh` per attempt. Tests: `a_failing_host_is_asked_less_and_less_often`, `git::tests::stream_into_child::*`
+
 
 ## 5. CLI + headless
 

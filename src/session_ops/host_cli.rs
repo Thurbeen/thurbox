@@ -26,10 +26,43 @@ use crate::session::HostDef;
 pub const HOST_BIN_DIR: &str = "bin";
 
 /// How long a host that answered "no usable CLI" is left alone before it is
-/// asked again. Bounds what an unreachable host costs the mirror worker: one
-/// ssh connect attempt (its own `ConnectTimeout`) per this interval, not per
-/// pass.
+/// asked again — the **first** time. Keeps what an unreachable host costs the
+/// mirror worker to one ssh connect attempt (its own `ConnectTimeout`) per
+/// interval rather than per pass; a host that keeps failing is then spaced out
+/// further still, up to [`PROBE_RETRY_MAX`].
 pub const PROBE_RETRY: Duration = Duration::from_secs(60);
+
+/// The ceiling `retry_after` climbs to after repeated failures.
+///
+/// A host that cannot be provisioned *at all* — no release artifact for its
+/// platform, a remote shell that will not take a payload that size — fails
+/// identically every time it is asked, and on the flat [`PROBE_RETRY`] that
+/// cost a release-archive download, an ssh connect and a 10 MB stream once a
+/// minute for as long as thurbox ran. Backing off to this bounds a permanent
+/// failure at a few attempts an hour, while a transient one (a host rebooting,
+/// a laptop off the network) is still picked up within the minute because its
+/// first success resets the count.
+pub const PROBE_RETRY_MAX: Duration = Duration::from_secs(15 * 60);
+
+/// How long to leave a host alone after `failures` consecutive `No`s:
+/// [`PROBE_RETRY`] doubled once per failure, capped at [`PROBE_RETRY_MAX`].
+fn retry_after(failures: u32) -> Duration {
+    // Capped before the shift rather than after: 20 doublings of a minute is
+    // already far past the ceiling, and it keeps the shift in range.
+    let doublings = failures.saturating_sub(1).min(20);
+    PROBE_RETRY
+        .saturating_mul(1 << doublings)
+        .min(PROBE_RETRY_MAX)
+}
+
+/// A cached probe verdict: what the host said, when it said it, and how many
+/// times in a row it has now failed — which is what sets the next retry's
+/// distance. A `Yes` carries `failures: 0` and never expires.
+struct Verdict {
+    usable: Usable,
+    at: Instant,
+    failures: u32,
+}
 
 /// What a host's `thurbox-cli version --json` said about itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,14 +89,16 @@ pub enum Usable {
 
 /// The probe verdict for each host, so a spawn, a delete and the mirror do not
 /// each pay an ssh round trip to learn the same thing. Keyed by backend name.
-fn verdicts() -> &'static Mutex<HashMap<String, (Usable, Instant)>> {
-    static VERDICTS: OnceLock<Mutex<HashMap<String, (Usable, Instant)>>> = OnceLock::new();
+fn verdicts() -> &'static Mutex<HashMap<String, Verdict>> {
+    static VERDICTS: OnceLock<Mutex<HashMap<String, Verdict>>> = OnceLock::new();
     VERDICTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Whether `host` has — or can be given — a `thurbox-cli` this binary can
 /// delegate to. Cached per host: a `Yes` for the process lifetime (the host's
-/// CLI does not change under us), a `No` for [`PROBE_RETRY`].
+/// CLI does not change under us), a `No` for `retry_after` its consecutive
+/// failure count — [`PROBE_RETRY`] the first time, doubling towards
+/// [`PROBE_RETRY_MAX`] for a host that cannot be made usable at all.
 ///
 /// A host with `share_sessions = false` is never contacted: it is used
 /// exactly as before sharing existed.
@@ -76,15 +111,19 @@ pub fn usable(host: &HostDef) -> Usable {
         return forced;
     }
     let key = host.backend_name();
+    // Carried across the re-probe below, so a host that keeps failing keeps
+    // backing off instead of restarting at `PROBE_RETRY` on every attempt.
+    let mut failures = 0;
     if let Ok(cache) = verdicts().lock() {
-        if let Some((verdict, at)) = cache.get(&key) {
-            let fresh = match verdict {
+        if let Some(verdict) = cache.get(&key) {
+            let fresh = match &verdict.usable {
                 Usable::Yes(_) => true,
-                Usable::No(_) => at.elapsed() < PROBE_RETRY,
+                Usable::No(_) => verdict.at.elapsed() < retry_after(verdict.failures),
             };
             if fresh {
-                return verdict.clone();
+                return verdict.usable.clone();
             }
+            failures = verdict.failures;
         }
     }
     let verdict = establish(host);
@@ -93,8 +132,27 @@ pub fn usable(host: &HostDef) -> Usable {
             crate::agent::tmux::learn_host_socket(host, socket);
         }
     }
+    let failures = match &verdict {
+        Usable::Yes(_) => 0,
+        Usable::No(reason) => {
+            let failures = failures.saturating_add(1);
+            tracing::debug!(
+                "host '{}' is not usable ({reason}); asking again in {}s",
+                host.name,
+                retry_after(failures).as_secs()
+            );
+            failures
+        }
+    };
     if let Ok(mut cache) = verdicts().lock() {
-        cache.insert(key, (verdict.clone(), Instant::now()));
+        cache.insert(
+            key,
+            Verdict {
+                usable: verdict.clone(),
+                at: Instant::now(),
+                failures,
+            },
+        );
     }
     verdict
 }
@@ -731,5 +789,19 @@ mod tests {
             "{windows}"
         );
         assert!(windows.contains("version --json"));
+    }
+
+    #[test]
+    fn a_failing_host_is_asked_less_and_less_often() {
+        // The first failure keeps the flat interval, so a host that is merely
+        // rebooting is picked up as promptly as it always was.
+        assert_eq!(retry_after(0), PROBE_RETRY);
+        assert_eq!(retry_after(1), PROBE_RETRY);
+        assert_eq!(retry_after(2), PROBE_RETRY * 2);
+        assert_eq!(retry_after(3), PROBE_RETRY * 4);
+        // And a host that can never be provisioned settles at the ceiling
+        // rather than costing an archive download a minute forever.
+        assert_eq!(retry_after(10), PROBE_RETRY_MAX);
+        assert_eq!(retry_after(u32::MAX), PROBE_RETRY_MAX);
     }
 }

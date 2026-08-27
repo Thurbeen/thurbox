@@ -472,8 +472,6 @@ pub(super) fn powershell_quote(s: &str) -> String {
 /// the agent — launched with a `--settings <path>` that thurbox generated
 /// against the *local* config dir — finds the file at that path there too.
 pub fn copy_bytes_to_remote(host: &HostDef, bytes: &[u8], remote_path: &str) -> Result<()> {
-    use std::io::Write;
-
     let parent = Path::new(remote_path)
         .parent()
         .map(|p| p.to_string_lossy().into_owned())
@@ -486,21 +484,12 @@ pub fn copy_bytes_to_remote(host: &HostDef, bytes: &[u8], remote_path: &str) -> 
         file = posix_quote(remote_path),
     );
 
-    let mut child = host_shell_c(host, &script)
+    let child = host_shell_c(host, &script)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to spawn remote file-copy")?;
-    child
-        .stdin
-        .take()
-        .context("remote file-copy stdin unavailable")?
-        .write_all(bytes)
-        .context("failed to stream file to remote")?;
-    let output = child
-        .wait_with_output()
-        .context("failed to wait on remote file-copy")?;
-    remote_output_or_stderr(output, "file-copy").map(|_| ())
+    stream_into_child(child, bytes, "file-copy").map(|_| ())
 }
 
 /// [`copy_bytes_to_remote`] for a **native-Windows** SSH host: `cat > file`
@@ -559,8 +548,6 @@ pub fn copy_stream_to_remote_windows(
     bytes: &[u8],
     remote_path: &str,
 ) -> Result<()> {
-    use std::io::Write;
-
     let parent = Path::new(remote_path)
         .parent()
         .map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -573,21 +560,59 @@ pub fn copy_stream_to_remote_windows(
         parent = powershell_quote(&parent),
         path = powershell_quote(remote_path),
     );
-    let mut child = host_powershell_c(host, &script)
+    let child = host_powershell_c(host, &script)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to spawn windows remote stream-copy")?;
-    child
+    stream_into_child(child, bytes, "windows stream-copy").map(|_| ())
+}
+
+/// Write `bytes` into `child`'s stdin and collect what it said, reaping it
+/// whichever way that goes.
+///
+/// The write is the half that fails in practice: the peer dies mid-payload — a
+/// remote shell that will not take one that size, a dropped connection — and
+/// the next `write_all` gets `EPIPE`. Returning on that without waiting is what
+/// left one `ssh` behind per attempt: [`std::process::Child`]'s `Drop` neither
+/// kills nor waits, so the process outlives the error, and once thurbox exits
+/// it is reparented and keeps running. The kill is what bounds the wait — the
+/// peer is already gone, so there is nothing left to collect but the stderr it
+/// managed to write before it went.
+///
+/// A broken pipe is the *symptom* and never the cause, so the remote's own
+/// stderr is preferred as the reported error; ours is the fallback for a peer
+/// that died silently.
+pub(super) fn stream_into_child(
+    mut child: std::process::Child,
+    bytes: &[u8],
+    action: &str,
+) -> Result<Vec<u8>> {
+    use std::io::Write;
+
+    let mut stdin = child
         .stdin
         .take()
-        .context("remote stream-copy stdin unavailable")?
-        .write_all(bytes)
-        .context("failed to stream file to remote")?;
+        .with_context(|| format!("remote {action} stdin unavailable"))?;
+    let written = stdin.write_all(bytes);
+    // Before the wait, not at the end of the scope: the peer reads to EOF, so a
+    // handle still held here is a deadlock on the success path.
+    drop(stdin);
+    if written.is_err() {
+        let _ = child.kill();
+    }
     let output = child
         .wait_with_output()
-        .context("failed to wait on remote stream-copy")?;
-    remote_output_or_stderr(output, "windows stream-copy").map(|_| ())
+        .with_context(|| format!("failed to wait on remote {action}"))?;
+    if let Err(e) = written {
+        let detail = reportable_stderr(&output.stderr);
+        if detail.is_empty() {
+            return Err(anyhow::Error::new(e)
+                .context(format!("failed to stream the payload for remote {action}")));
+        }
+        anyhow::bail!("remote {action} failed: {detail}");
+    }
+    remote_output_or_stderr(output, action)
 }
 
 /// Expand a leading `~` in a remote path against the host's `$HOME`. Remote

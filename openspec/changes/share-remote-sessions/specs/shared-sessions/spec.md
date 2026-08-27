@@ -127,6 +127,38 @@ render path and SHALL never block the interface's start.
 - **THEN** a matching one is provisioned under thurbox's directory and used
   in preference; H's own install is not touched
 
+### Requirement: A host that cannot be made usable is asked less and less often
+
+A host that answers "no usable CLI" SHALL be left alone for a growing interval
+before it is probed again — the base interval on the first failure, doubling
+with each consecutive one up to a ceiling — and the count SHALL reset the
+moment the host answers usably. Obtaining and shipping the release artifact
+SHALL never leave a transport process behind: whatever the outcome of the
+transfer, the process fronting it SHALL be reaped before the attempt returns,
+and the reported reason SHALL be what the host said rather than the local end
+noticing the connection close.
+
+#### Scenario: A host that can never be provisioned
+
+- **WHEN** H fails provisioning for a reason that will not change on its own —
+  its shell will not accept a payload that size, no artifact exists for its
+  platform
+- **THEN** the retry interval grows to the ceiling instead of re-downloading
+  the release archive and opening a connection on the base interval for as
+  long as thurbox runs
+
+#### Scenario: A host that was only briefly away
+
+- **WHEN** H is unreachable for one pass and answers on the next
+- **THEN** it is asked again at the base interval, and its verdict is cached
+  as usable with no penalty carried forward
+
+#### Scenario: The transfer dies mid-payload
+
+- **WHEN** the host's end exits while the artifact is being streamed to it
+- **THEN** the attempt reports the host's own stderr, and no transport process
+  survives the attempt
+
 ### Requirement: Hosts are mirrored on a cadence and after every operation
 
 The system SHALL mirror every shareable host on a slow cadence from a worker,
