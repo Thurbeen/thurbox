@@ -77,8 +77,11 @@ host's own message.
 ### Requirement: The host's CLI is provisioned when absent
 
 On first use of a shareable host, the system SHALL probe for a `thurbox-cli`
-of the same major version — on the host's PATH, then in thurbox's own directory
-on the host. When none is found, the system SHALL obtain the release artifact
+of the same major version — the one a thurbox running on the host advertises
+in thurbox's own directory there, then the host's PATH. Every running thurbox
+SHALL advertise its own CLI in that directory, so a host that runs thurbox at
+all is shareable without provisioning. When none is found, the system SHALL
+obtain the release artifact
 matching the host's platform, verify it against the release checksums, place
 `thurbox-cli` in thurbox's own directory on the host and use it from there.
 When no artifact can be obtained (a development build with no release, a
@@ -87,6 +90,13 @@ exactly as it is today — remote worktree creation, the hooks rewrite, the pane
 option status channel — and the session SHALL carry a visible note saying
 sharing is off for that host and why. Provisioning SHALL never run on the
 render path and SHALL never block the interface's start.
+
+#### Scenario: The host runs thurbox itself
+
+- **WHEN** a thurbox — a release install or a development checkout — has run
+  on H at least once
+- **THEN** a peer's probe finds H's own CLI before anything on PATH, and
+  nothing is provisioned as long as it is compatible
 
 #### Scenario: A Linux host with nothing installed
 

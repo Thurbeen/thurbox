@@ -165,6 +165,9 @@ pub(crate) fn parse_extra_repos(
 /// Run a parsed CLI invocation against `db`, rendering the result in the
 /// resolved [`Format`] (human by default, JSON when piped or forced).
 pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
+    // A peer probing this machine looks for its CLI under the data dir; keep
+    // that pointer true (a readlink when it already is).
+    crate::session_ops::host_cli::advertise_running_cli();
     let format = Format::resolve(cli.json, cli.text, cli.pretty);
     let output: CommandOutput = match cli.command {
         Command::Editor { action } => editor::run(action, db),

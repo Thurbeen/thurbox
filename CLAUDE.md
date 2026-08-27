@@ -801,7 +801,11 @@ session), never on the loop, ADR-P12).
   branched inside the four pipelines so every caller delegates). A host with
   no CLI is **provisioned** one under `~/.local/share/thurbox/bin/` (the
   release archive of this version, checksum-verified; a dev build ships its
-  own sibling binary when the platform matches). `version --json` reports the
+  own sibling binary when the platform matches) — but a thurbox running on
+  the host **advertises its own CLI** there first (`host_cli::
+  advertise_running_cli`, a symlink refreshed at TUI boot and on every CLI
+  call), which is how a host running a dev checkout is shareable without any
+  provisioning. `version --json` reports the
   host CLI's `tmux_socket`, which the backend adopts (`agent::tmux::
   learn_host_socket`) so a dev laptop attaches to a release host's server.
   Everything below this bullet — the hooks rewrite, remote provisioning, the

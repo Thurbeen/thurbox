@@ -125,6 +125,48 @@ pub fn sharing_off_note(host: &HostDef, reason: &str) -> String {
     format!("sharing off for host '{}': {reason}", host.name)
 }
 
+/// Put **this** thurbox's CLI where a peer's probe looks — `<data dir>/bin/
+/// thurbox-cli`, as a symlink to the running binary's `thurbox-cli` — so a
+/// machine that runs thurbox at all is shareable without being provisioned.
+///
+/// The case that needs it is a development build: a checkout's
+/// `target/debug/thurbox-cli` is on nobody's PATH, so a peer probing this
+/// machine found only a release install (a different major) and had to
+/// provision, which a dev peer can only do onto its own platform. A release
+/// build gains nothing it did not have (its CLI is already on PATH) but the
+/// link is kept true regardless, so a later dev checkout cannot leave a stale
+/// one behind. Refreshed at TUI start and on every CLI invocation; a cheap
+/// `readlink` compare when nothing changed. Unix only — Windows symlinks need
+/// a privilege, and `install.ps1`'s directory is already a probe candidate.
+pub fn advertise_running_cli() {
+    #[cfg(unix)]
+    {
+        let Some(dir) =
+            crate::paths::database_file().and_then(|db| db.parent().map(|d| d.join(HOST_BIN_DIR)))
+        else {
+            return;
+        };
+        let target = crate::agent::tmux::resolve_cli_binary();
+        if !target.is_absolute() || !target.exists() {
+            return;
+        }
+        let link = dir.join("thurbox-cli");
+        if std::fs::read_link(&link).is_ok_and(|current| current == target) {
+            return;
+        }
+        if let Err(e) = std::fs::create_dir_all(&dir)
+            .and_then(|()| match std::fs::symlink_metadata(&link) {
+                Ok(_) => std::fs::remove_file(&link),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
+            })
+            .and_then(|()| std::os::unix::fs::symlink(&target, &link))
+        {
+            tracing::debug!("could not advertise thurbox-cli at {}: {e}", link.display());
+        }
+    }
+}
+
 fn establish(host: &HostDef) -> Usable {
     let found = match probe(host) {
         Ok(found) => found,
@@ -644,6 +686,32 @@ mod tests {
             ..HostDef::default()
         };
         assert!(matches!(usable(&host), Usable::No(reason) if reason.contains("share_sessions")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn advertising_links_the_running_cli_where_a_peer_probes() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        advertise_running_cli();
+        let link = crate::paths::database_file()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(HOST_BIN_DIR)
+            .join("thurbox-cli");
+        let target = crate::agent::tmux::resolve_cli_binary();
+        if target.is_absolute() && target.exists() {
+            assert_eq!(std::fs::read_link(&link).unwrap(), target);
+            // A stale link is replaced, a true one left alone.
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink("/nowhere/thurbox-cli", &link).unwrap();
+            advertise_running_cli();
+            assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        } else {
+            // A test binary with no `thurbox-cli` beside it advertises nothing.
+            assert!(std::fs::symlink_metadata(&link).is_err());
+        }
     }
 
     #[test]

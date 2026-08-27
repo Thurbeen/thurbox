@@ -132,6 +132,16 @@ different major or none triggers provisioning:
    `<host thurbox data dir>/bin/thurbox-cli` (`chmod +x` on POSIX), then
    re-probe.
 
+**The host advertises its own CLI.** A peer looks in `<data dir>/bin/` first,
+and every thurbox — the TUI at boot, `thurbox-cli` on every call — keeps a
+symlink there to its own `thurbox-cli` (`host_cli::advertise_running_cli`).
+This is what makes a host running a **dev checkout** shareable: its
+`target/debug/thurbox-cli` is on nobody's PATH, so without the pointer a peer
+found only the release install (a different major) and had to provision —
+which a dev peer can do only onto its own platform. Found in the first live
+test: a macOS dev laptop against a Linux host running a dev checkout got the
+legacy path on both sides.
+
 The host thurbox data dir is the *release* layout on the host
 (`$HOME/.local/share/thurbox`, `%LOCALAPPDATA%\thurbox`), which is where a
 full install would look — so a later `install.sh` on H finds the database the

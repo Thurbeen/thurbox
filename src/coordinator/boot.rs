@@ -114,6 +114,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Best-effort: a missing or old tmux just means no headless firing. Skipped
     // when the feature is off, exactly as v1 skips it.
     let phase = Instant::now();
+    // Where a peer sharing sessions with this machine looks for its CLI: a
+    // pointer to this build's own, so a dev checkout is found before a release
+    // install on PATH (ADR-24).
+    thurbox::session_ops::host_cli::advertise_running_cli();
     if thurbox::session::settings::global().features.automations {
         let cli = thurbox::agent::tmux::resolve_cli_binary();
         if let Err(e) = thurbox::agent::tmux::ensure_automation_heartbeat(&cli) {

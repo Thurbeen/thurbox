@@ -452,7 +452,12 @@ has the rationale; the shape:
   `THURBOX_HOST` set; the host's fires there. A refusal on the host is
   the caller's error, verbatim.
 - **Provisioning.** On first use, thurbox looks for a `thurbox-cli` of
-  the same major (PATH, `~/.local/bin`, then its own directory). When
+  the same major — first the one a thurbox running *on the host*
+  advertises (every thurbox links its own CLI at
+  `<data dir>/bin/thurbox-cli` at start and on each CLI call, which is
+  what makes a host running a **dev checkout** shareable at all: its
+  `target/debug/thurbox-cli` is on nobody's PATH), then PATH and
+  `~/.local/bin`. When
   there is none, it downloads the release archive of **its own
   version** for the host's platform, verifies it against the release
   checksums, and places `thurbox-cli` under
