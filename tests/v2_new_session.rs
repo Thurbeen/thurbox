@@ -596,6 +596,62 @@ fn a_dotted_prefix_offers_the_hidden_entries() {
 }
 
 #[test]
+fn tab_on_an_empty_field_browses_home() {
+    // The regression behind "tab no longer browses directories": the flow asked
+    // for a listing only once something had been typed, so `tab` on a fresh
+    // field opened a dropdown whose want was never published — it sat on "(no
+    // subdirectories)" forever. An empty field means home, exactly as a bare
+    // `~` does.
+    let host = host();
+    let mut world = World::default();
+    world.repos.set_listing_for_test(
+        "",
+        "~",
+        Listing::Ready(vec![BrowseEntry {
+            name: "src".into(),
+            is_git: false,
+        }]),
+    );
+    world.wants.browse = Some((String::new(), "~".into()));
+    open(&host, &world);
+    press(&host, &world, "tab");
+    // Nothing typed yet, and nothing to complete — so this `tab` opens the
+    // browser rather than taking a suggestion.
+    press(&host, &world, "tab");
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("\0~"),
+        "the open dropdown asks for home"
+    );
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("src/"), "home is listed: {screen}");
+}
+
+#[test]
+fn a_closed_dropdown_over_an_empty_field_asks_for_no_listing() {
+    // The other half of the same rule: a flow only picking from memory must not
+    // pay for a directory read. The want is restated on every render, so what a
+    // frame asks for is read after one — closing the browser stops the asking.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse"),
+        None,
+        "an empty field with no dropdown has nothing to list"
+    );
+    press(&host, &world, "tab");
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_browse").as_deref(), Some("\0~"));
+    // Shift+Tab closes the dropdown and hands focus back to the list.
+    press(&host, &world, "backtab");
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_browse"), None);
+}
+
+#[test]
 fn a_bare_tilde_browses_home_rather_than_filtering_by_it() {
     // v1's exception: `~` is where to look, not something to match names against.
     let host = host();

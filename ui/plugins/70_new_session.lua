@@ -130,8 +130,15 @@ local function ask(flow)
   -- The listing of the typed path's directory. Requested whether or not the
   -- dropdown is open, because the ghost completion is derived from it — which is
   -- how completion works for a remote target here and does not in v1.
+  --
+  -- An EMPTY field still names a directory: `split_typed` answers `~` for it,
+  -- exactly as it does for a bare `~`. Asking only once something had been typed
+  -- is what made `tab` on a fresh field open a dropdown nothing could ever fill —
+  -- and `tab` on a fresh field is how browsing starts, so it read as "tab no
+  -- longer browses". The want is still dropped the moment the dropdown closes, so
+  -- a flow that is only picking from memory asks for no listing at all.
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
-  if typed ~= "" then
+  if flow.step == "repo" and (typed ~= "" or flow.browse) then
     local dir = pathpicker.split_typed(typed)
     store.want_browse = (flow.host or "") .. "\0" .. dir
   else
