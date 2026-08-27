@@ -581,6 +581,22 @@ exists). Beyond that:
   unless function keys are set to standard; `Cmd+V` already pastes
   through the terminal's native paste → bracketed paste path.
 
+### Windows
+
+- **AltGr is not a chord.** The Windows console reports an AltGr press
+  as left-`Ctrl` plus right-`Alt`, so every character a layout hides
+  behind AltGr (`\` and `|` on AZERTY; `@`, `[`, `]`, `{`, `}` and `~`
+  on QWERTZ) arrives carrying two modifiers. Thurbox drops that pair
+  before anything looks at the keystroke
+  (`coordinator::input::resolve_altgr`), so the character is typed into
+  a field and sent to the agent as itself rather than being swallowed as
+  an unbound chord or wrapped in an `ESC`. The pair is dropped only for
+  a character no key produces unmodified — punctuation, or a non-ASCII
+  letter (`ą`, `€`) — so a real `Ctrl+Alt`+letter/digit chord still
+  resolves as one. Off Windows, AltGr is a level-3 shift the terminal
+  composes before thurbox sees it, and `Ctrl+Alt`+punctuation stays
+  bindable.
+
 ---
 
 ## Session Lifecycle

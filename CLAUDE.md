@@ -1834,6 +1834,14 @@ because `ratatui::restore()` does not). That is what makes `cmd+…` bindable at
 leaves free. F-keys need `Fn` on Mac laptops unless "Use F1, F2, etc. as standard
 function keys" is on.
 
+**Windows.** The console reports AltGr as `Ctrl`+`Alt`, so the pair is dropped at
+the input boundary (`coordinator::input::resolve_altgr`) for any character no key
+produces unmodified — punctuation, or a non-ASCII letter. Without it every AltGr
+character (`\` on AZERTY, `@`/`[`/`]` on QWERTZ) was swallowed by every text
+field and reached the agent ESC-wrapped. A `Ctrl+Alt`+letter/digit chord is
+untouched, and the rule is Windows-only: elsewhere the terminal composes AltGr
+itself before thurbox sees the key.
+
 ## Themes
 
 Thirty-six palettes — twenty-eight dark, eight light; the enumeration is in

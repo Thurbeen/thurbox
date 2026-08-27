@@ -71,6 +71,10 @@ impl App {
                 // here as keys and has to be recognised as one — the coalescer
                 // hands back whichever of the two this turned out to be.
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Before anything else looks at it, so the coalescer, the
+                    // registry, the fields and the pty encoder all see the same
+                    // keystroke. See `resolve_altgr`.
+                    let key = resolve_altgr(key, cfg!(windows));
                     for input in self.paste_burst.push(key, Instant::now()) {
                         self.apply_input(input, &mut published);
                     }
@@ -548,5 +552,121 @@ impl App {
             return;
         };
         self.on_paste(text);
+    }
+}
+
+/// Undo Windows' spelling of AltGr, which is `Ctrl+Alt`.
+///
+/// The Windows console reports an AltGr press as left-Ctrl plus right-Alt and
+/// crossterm passes that through, so every character a layout hides behind
+/// AltGr arrives carrying two modifiers. Nothing downstream types one: a text
+/// field swallows any key with `ctrl` or `alt` on it rather than inserting it,
+/// and `agent::input::key_to_bytes` wraps it in an ESC, so a focused agent
+/// reads `Alt+\` where a backslash was typed. On an AZERTY keyboard that is
+/// `\` and `|`; on a German one `@`, `[`, `]`, `{`, `}` and `~` — characters
+/// a path or a shell command cannot do without, and they worked in no field
+/// and no terminal.
+///
+/// Crossterm has already resolved the layout, so the character on the event
+/// **is** the one that was typed and the modifiers only describe how it was
+/// reached. They are dropped for a character no keyboard produces unshifted:
+/// punctuation, or a non-ASCII letter (Polish `ą`, a `€`). An ASCII letter or
+/// digit is left alone, so a real `Ctrl+Alt+d` chord still resolves as one —
+/// no layout puts a bare ASCII alphanumeric behind AltGr, since that is the
+/// key's own unmodified output.
+///
+/// `windows` is a parameter rather than a `cfg!` inside so the rule is
+/// testable on any platform, as [`super::paste::PasteBurst`] does for the same
+/// reason. Elsewhere AltGr is a level-3 shift the terminal composes before
+/// thurbox ever sees it, and `Ctrl+Alt+<punctuation>` is a chord someone may
+/// have rebound onto.
+fn resolve_altgr(key: KeyEvent, windows: bool) -> KeyEvent {
+    if !windows {
+        return key;
+    }
+    let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    if !key.modifiers.contains(altgr) {
+        return key;
+    }
+    let KeyCode::Char(ch) = key.code else {
+        return key;
+    };
+    if ch.is_ascii_alphanumeric() || ch.is_control() {
+        return key;
+    }
+    KeyEvent {
+        modifiers: key.modifiers - altgr,
+        ..key
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn altgr(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL | KeyModifiers::ALT)
+    }
+
+    /// The reported bug: AltGr+8 on an AZERTY layout is a backslash, and it has
+    /// to reach a field and a pty as one.
+    #[test]
+    fn altgr_punctuation_is_typed_rather_than_treated_as_a_chord() {
+        for ch in ['\\', '|', '@', '[', ']', '{', '}', '~', '#', '€', 'ą'] {
+            let resolved = resolve_altgr(altgr(ch), true);
+            assert_eq!(resolved.code, KeyCode::Char(ch));
+            assert!(
+                resolved.modifiers.is_empty(),
+                "{ch:?} kept {:?}",
+                resolved.modifiers
+            );
+            // And the pty encoding is the character itself, not an ESC-wrapped
+            // one — which is what a focused agent actually receives.
+            assert_eq!(
+                thurbox::agent::input::key_to_bytes(resolved.code, resolved.modifiers),
+                Some(ch.to_string().into_bytes()),
+            );
+        }
+    }
+
+    /// A chord someone could genuinely press, and could have rebound onto: no
+    /// layout puts a bare ASCII alphanumeric behind AltGr, so it is left whole.
+    #[test]
+    fn a_real_ctrl_alt_chord_is_left_alone() {
+        for ch in ['d', 'D', '7'] {
+            assert_eq!(resolve_altgr(altgr(ch), true), altgr(ch));
+        }
+    }
+
+    /// Off the Windows console AltGr is a level-3 shift the terminal composes
+    /// itself, so `Ctrl+Alt` there means what it says.
+    #[test]
+    fn other_platforms_keep_ctrl_alt_as_a_chord() {
+        assert_eq!(resolve_altgr(altgr('\\'), false), altgr('\\'));
+    }
+
+    /// Only the pair is an AltGr artifact: either modifier on its own is a
+    /// chord in the ordinary way, `alt+p` among them.
+    #[test]
+    fn one_modifier_alone_is_never_altgr() {
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let key = KeyEvent::new(KeyCode::Char('\\'), modifiers);
+            assert_eq!(resolve_altgr(key, true), key);
+        }
+    }
+
+    /// Shift rides along on some layouts (AltGr+Shift is a fourth level); only
+    /// the Ctrl+Alt pair is removed, so what is left still says so.
+    #[test]
+    fn a_fourth_level_press_keeps_its_shift() {
+        let key = KeyEvent::new(
+            KeyCode::Char('¤'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        );
+        assert_eq!(
+            resolve_altgr(key, true).modifiers,
+            KeyModifiers::SHIFT,
+            "the layout level that produced the character is not a chord"
+        );
     }
 }
