@@ -80,6 +80,18 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #       Windows machine (psmux speaks the same control-mode wire protocol);
 #       WSL distros use "tmux".
 #
+#   share_sessions (bool, optional, default: true)
+#       The host's own thurbox database is the record of the sessions on it:
+#       thurbox mirrors that database into this one (a session made on the
+#       host, or by another thurbox reaching it, shows up here) and creates,
+#       deletes, restarts and restores sessions there by running the host's
+#       own `thurbox-cli` — which it provisions under
+#       ~/.local/share/thurbox/bin/ on the host when the host has none
+#       (a release archive of this thurbox's version, checksum-verified;
+#       a dev build ships its own binary under thurbox-dev/bin/ instead).
+#       Set to false to use the host exactly as before: worktrees and hooks
+#       driven from here, nothing mirrored, nothing installed there.
+#
 config_version = 1
 
 # ──────────────────────────────────────────────────────────────────────────

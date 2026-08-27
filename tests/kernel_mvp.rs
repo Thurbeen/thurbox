@@ -2070,6 +2070,7 @@ fn the_spawn_pipeline_reports_the_stage_it_reached() {
             [
                 "resolving",
                 "hooks",
+                "host",
                 "worktrees",
                 "backend",
                 "launching",

@@ -17,6 +17,10 @@ pub enum Action {
         /// Only list children of this parent session UUID.
         #[arg(long)]
         parent: Option<String>,
+        /// List the deleted sessions instead — what a peer thurbox mirroring
+        /// this machine reads, with each row's `force_deleted` mark.
+        #[arg(long)]
+        deleted: bool,
     },
     /// Get a session by UUID.
     Get {
@@ -87,6 +91,29 @@ pub enum Action {
     Restart {
         /// Session UUID.
         uuid: String,
+        /// Relaunch only if the session has no live window; a running session
+        /// is left alone. What a peer asks for after this host rebooted.
+        #[arg(long)]
+        if_missing: bool,
+    },
+    /// Mirror the sessions of a shareable host (or every one) into this
+    /// database — the pass the interface runs on its own cadence.
+    Sync {
+        /// One host from hosts.toml; every shareable host when omitted.
+        #[arg(long)]
+        host: Option<String>,
+        /// Also register, on the host, the local sessions it does not know —
+        /// ones created here before the host's database became the record.
+        #[arg(long)]
+        adopt: bool,
+    },
+    /// Record a session that is already running on this machine's tmux server
+    /// — a row for a window a peer created before sharing existed. Takes the
+    /// JSON `session get` prints; launches nothing.
+    Register {
+        /// The session as `session get --json` prints it.
+        #[arg(long = "json-row")]
+        json_row: String,
     },
     /// Type text into a session's terminal, followed by Enter.
     Send {
@@ -136,7 +163,39 @@ pub enum Action {
 
 pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
     match action {
-        Action::List { parent } => {
+        Action::List {
+            deleted: true,
+            parent: _,
+        } => {
+            let rows = db
+                .list_deleted_sessions()
+                .map_err(|e| format!("list_deleted_sessions: {e}"))?;
+            let json = Value::Array(rows.iter().map(deleted_session_to_json).collect());
+            let human = if rows.is_empty() {
+                "No deleted sessions.".to_string()
+            } else {
+                output::table(
+                    &["NAME", "AGENT", "BACKEND", "RECOVERABLE", "ID"],
+                    &rows
+                        .iter()
+                        .map(|r| {
+                            vec![
+                                r.name.clone(),
+                                r.agent.clone(),
+                                r.backend_type.clone(),
+                                if r.force_deleted { "in part" } else { "fully" }.to_string(),
+                                r.id.to_string(),
+                            ]
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            };
+            Ok(CommandOutput::new(json, human))
+        }
+        Action::List {
+            parent,
+            deleted: false,
+        } => {
             let parent_id = parent.as_deref().map(parse_session_id).transpose()?;
             let sessions: Vec<SharedSession> = db
                 .list_active_sessions()
@@ -145,10 +204,11 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
                 .collect();
             let states = db.load_hook_states().unwrap_or_default();
+            let bases = db.load_base_branches().unwrap_or_default();
             let json = Value::Array(
                 sessions
                     .iter()
-                    .map(|s| session_json_with_state(s, &states))
+                    .map(|s| session_json_with_state(s, &states, &bases))
                     .collect(),
             );
             Ok(CommandOutput::new(json, render_session_list(&sessions)))
@@ -156,8 +216,9 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         Action::Get { uuid } => {
             let session = resolve(db, &uuid)?;
             let states = db.load_hook_states().unwrap_or_default();
+            let bases = db.load_base_branches().unwrap_or_default();
             Ok(CommandOutput::new(
-                session_json_with_state(&session, &states),
+                session_json_with_state(&session, &states, &bases),
                 render_session_detail(&session),
             ))
         }
@@ -186,6 +247,10 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 ..Default::default()
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
+            // A host driven from afar has no interface of its own to arm the
+            // heartbeat: this creation is the moment its sessions start needing
+            // the tick (status polls, extension self-heal, reaping).
+            super::automations::arm_heartbeat();
             let mut human = format!(
                 "Created session '{}' ({}) — {}\ncwd: {}",
                 res.name,
@@ -193,6 +258,9 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 res.session_id,
                 res.cwd.display()
             );
+            if let Some(note) = &res.sharing {
+                human.push_str(&format!("\n  {note}"));
+            }
             push_hook_failures(&mut human, &res.hook_failures);
             Ok(CommandOutput::new(
                 json!({
@@ -203,15 +271,18 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     "cwd": res.cwd.display().to_string(),
                     "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
                     "hook_failures": res.hook_failures,
+                    "sharing": res.sharing,
                 }),
                 human,
             ))
         }
         Action::Delete { uuid, force } => delete_session(db, &uuid, force),
         Action::Restore { uuid, best_effort } => restore_deleted(db, &uuid, best_effort),
-        Action::Restart { uuid } => {
+        Action::Restart { uuid, if_missing } => {
             let session = resolve(db, &uuid)?;
-            let report = crate::session_ops::restart_session_headless(db, session.id)?;
+            let report = crate::session_ops::restart::restart_session_headless_with(
+                db, session.id, if_missing,
+            )?;
             let mut human = format!("Restarted session '{}' ({})", session.name, session.id);
             push_hook_failures(&mut human, &report.hook_failures);
             Ok(CommandOutput::new(
@@ -269,10 +340,38 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 format!("Focus requested for '{}'.", session.name),
             ))
         }
+        Action::Sync { host, adopt } => {
+            let reports = crate::session_ops::mirror::sync(db, host.as_deref(), adopt)?;
+            let json = Value::Array(reports.iter().map(|r| r.to_json()).collect());
+            let human = if reports.is_empty() {
+                "No shareable hosts configured.".to_string()
+            } else {
+                reports
+                    .iter()
+                    .map(render_mirror_report)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Ok(CommandOutput::new(json, human))
+        }
+        Action::Register { json_row } => {
+            let value: Value =
+                serde_json::from_str(&json_row).map_err(|e| format!("--json-row: {e}"))?;
+            let row = crate::session_ops::mirror::session_from_json(
+                &value,
+                crate::session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE,
+            )?;
+            register_running_session(db, row)
+        }
         Action::Signal { state, session } => {
             let target = resolve_signal_target(db, session.as_deref())?;
             db.set_hook_state(target.id, &state)
                 .map_err(|e| format!("set_hook_state: {e}"))?;
+            // The same state on the pane, for a peer's live subscription:
+            // best-effort, and nothing at all outside tmux.
+            if let Err(e) = crate::agent::tmux::set_own_pane_state(&state) {
+                tracing::debug!("could not set the pane state option: {e:#}");
+            }
             Ok(CommandOutput::new(
                 json!({
                     "signaled": true,
@@ -489,31 +588,113 @@ fn resolve(db: &Database, uuid: &str) -> Result<SharedSession, String> {
 fn session_json_with_state(
     s: &SharedSession,
     states: &std::collections::HashMap<crate::session::SessionId, crate::storage::HookRow>,
+    bases: &std::collections::HashMap<crate::session::SessionId, String>,
 ) -> Value {
-    let mut json = shared_session_to_json(s);
-    json["hook_state"] = states
-        .get(&s.id)
-        .and_then(|r| r.state.clone())
-        .map_or(Value::Null, Value::String);
-    json
+    crate::session_ops::mirror::session_to_json(
+        s,
+        states.get(&s.id).and_then(|r| r.state.as_deref()),
+        bases.get(&s.id).map(String::as_str),
+    )
 }
 
-fn shared_session_to_json(s: &SharedSession) -> Value {
+/// A deleted row as `session list --deleted` prints it: the session's facts
+/// plus when it went and whether only committed work can come back.
+fn deleted_session_to_json(r: &crate::storage::DeletedSessionInfo) -> Value {
     json!({
-        "id": s.id.to_string(),
-        "name": s.name,
-        "agent": s.agent,
-        "backend_type": s.backend_type,
-        "agent_session_id": s.agent_session_id,
-        "cwd": s.cwd.as_ref().map(|p| p.display().to_string()),
-        "parent_session_id": s.parent_session_id.map(|id| id.to_string()),
-        "display_order": s.display_order,
-        "worktrees": s.worktrees.iter().map(|w| json!({
+        "id": r.id.to_string(),
+        "name": r.name,
+        "agent": r.agent,
+        "backend_type": r.backend_type,
+        "backend_id": r.backend_id,
+        "agent_session_id": r.agent_session_id,
+        "cwd": r.cwd.as_ref().map(|p| p.display().to_string()),
+        "parent_session_id": r.parent_session_id.map(|id| id.to_string()),
+        "deleted_at": r.deleted_at,
+        "force_deleted": r.force_deleted,
+        "worktrees": r.worktrees.iter().map(|w| json!({
             "repo_path": w.repo_path.display().to_string(),
             "worktree_path": w.worktree_path.display().to_string(),
             "branch": w.branch,
         })).collect::<Vec<_>>(),
     })
+}
+
+fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String {
+    match &r.error {
+        Some(error) => format!("{}: not mirrored — {error}", r.host),
+        None => format!(
+            "{}: {} adopted, {} updated, {} deleted, {} restored{}{}",
+            r.host,
+            r.adopted.len(),
+            r.updated.len(),
+            r.deleted.len(),
+            r.restored.len(),
+            match r.unknown_local.len() {
+                0 => String::new(),
+                n => format!(", {n} local session(s) the host does not know (use --adopt)"),
+            },
+            match r.registered.len() {
+                0 => String::new(),
+                n => format!(", {n} registered on the host"),
+            },
+        ),
+    }
+}
+
+/// `session register`: a row for an agent window that is already running on
+/// this machine's server. The window must exist — this records, it never
+/// launches — and neither the id nor the name may already be a session here.
+fn register_running_session(
+    db: &Database,
+    row: crate::session_ops::mirror::HostRow,
+) -> Result<CommandOutput, String> {
+    let mut session = row.session;
+    if db
+        .get_session_by_id(session.id)
+        .map_err(|e| format!("get_session_by_id: {e}"))?
+        .is_some()
+    {
+        return Err(format!("session {} is already registered here", session.id));
+    }
+    if let Some(existing) = db
+        .get_session_by_name(&session.name)
+        .map_err(|e| format!("get_session_by_name: {e}"))?
+    {
+        return Err(format!(
+            "a session named '{}' already exists here ({})",
+            session.name, existing.id
+        ));
+    }
+    let pane = crate::agent::tmux::agent_window_pane(None, &session.name)
+        .map_err(|e| format!("could not list windows: {e:#}"))?
+        .ok_or_else(|| {
+            format!(
+                "no live window for '{}' on this machine's tmux server; register records a \
+                 running session, it does not launch one",
+                session.name
+            )
+        })?;
+    session.backend_id = pane;
+    db.upsert_session(&session)
+        .map_err(|e| format!("upsert_session: {e}"))?;
+    if let Some(state) = row.hook_state.as_deref() {
+        let _ = db.set_hook_state(session.id, state);
+    }
+    if let Some(base) = row.base_branch.as_deref() {
+        let _ = db.set_session_base_branch(session.id, base);
+    }
+    Ok(CommandOutput::new(
+        json!({
+            "registered": true,
+            "id": session.id.to_string(),
+            "name": session.name,
+            "backend_id": session.backend_id,
+        }),
+        format!(
+            "Registered running session '{}' ({})",
+            session.name, session.id
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -527,7 +708,14 @@ mod tests {
     #[test]
     fn list_empty_returns_array() {
         let db = db();
-        let v = run(Action::List { parent: None }, &db).unwrap();
+        let v = run(
+            Action::List {
+                parent: None,
+                deleted: false,
+            },
+            &db,
+        )
+        .unwrap();
         assert!(v.is_array(), "got {v}");
         assert_eq!(v.as_array().unwrap().len(), 0);
         assert_eq!(v.human, "No active sessions.");
@@ -639,7 +827,14 @@ mod tests {
         };
         db.upsert_session(&shared).unwrap();
 
-        let v = run(Action::List { parent: None }, &db).unwrap();
+        let v = run(
+            Action::List {
+                parent: None,
+                deleted: false,
+            },
+            &db,
+        )
+        .unwrap();
         let arr = v.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         let s = &arr[0];
@@ -682,7 +877,14 @@ mod tests {
         db.upsert_session(&child).unwrap();
 
         // Unfiltered list carries the field on both rows.
-        let v = run(Action::List { parent: None }, &db).unwrap();
+        let v = run(
+            Action::List {
+                parent: None,
+                deleted: false,
+            },
+            &db,
+        )
+        .unwrap();
         let arr = v.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         let worker = arr.iter().find(|s| s["name"] == "worker").unwrap();
@@ -695,6 +897,7 @@ mod tests {
         let v = run(
             Action::List {
                 parent: Some(parent_id.to_string()),
+                deleted: false,
             },
             &db,
         )
@@ -707,6 +910,7 @@ mod tests {
         let err = run(
             Action::List {
                 parent: Some("not-a-uuid".into()),
+                deleted: false,
             },
             &db,
         )

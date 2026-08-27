@@ -1,0 +1,50 @@
+## 1. Data (`session`)
+
+- [x] 1.1 Add `share_sessions: bool` to `HostDef` (serde default `true`; `HostDef::wsl` sets it) and `shareable()`; the sharing note lives on `SpawnResult.sharing` (the CLI JSON + human output) rather than `SessionInfo` — v2 publishes neither `SessionInfo.hook_wiring` nor anything beside it, so a field there would be dead
+- [x] 1.2 Unit tests: `hosts.toml` without the key reads `true`; `share_sessions = false` parses; `SessionInfo::new` has `sharing: None`
+
+## 2. Host CLI runner + provisioning (`session_ops::host_cli`, `agent::self_update`)
+
+- [x] 2.1 `host_cli::run(host, args: &[&str]) -> Result<serde_json::Value, String>`: builds the command via `git::host_shell_c` / `host_powershell_c` by `HostDef::is_windows`, quotes args for the target shell, forces `--json`, parses stdout, and reports failures through `reportable_stderr`; bounded by the ssh hardening timeouts
+- [x] 2.2 `host_cli::probe(host) -> Result<Option<CliInfo { path, version, tmux_socket, data_dir }>>`: `thurbox-cli version --json` on PATH, then at `<host data dir>/bin/thurbox-cli`; `version --json` gains `tmux_socket`, `data_dir` and `schema_version`
+- [x] 2.3 `host_cli::usable(host) -> Usable | Unusable(reason)`: probe → same major and same `schema_version` → `Usable`; else provision (2.5) and re-probe; result cached per backend name for the process; `share_sessions = false` short-circuits to `Unusable("sharing off")` without contacting the host
+- [x] 2.4 `self_update`: extend `target_triple` with `("windows", "x86_64") → x86_64-pc-windows-msvc` and the zip artifact name; add `fetch_artifact(version, target) -> Result<PathBuf>` (download + checksum verify, extracted `thurbox-cli` path) reusing `perform_update`'s steps; refuse `0.0.0-dev`
+- [x] 2.5 `host_cli::provision(host)`: detect the host platform (`uname -sm` / `$env:PROCESSOR_ARCHITECTURE`), pick the target, `fetch_artifact` for the running version — or, for a dev build whose target equals the host's, use the running binary's sibling `thurbox-cli` — then `copy_bytes_to_remote` to `<data dir>/bin/thurbox-cli` (`chmod +x`; `Expand-Archive` on Windows) and return the path
+- [x] 2.6 Unit tests (fake runner): argument quoting for POSIX and PowerShell (spaces, quotes, `$`), a probe answer with a different major → provision path chosen, an equal major → no download, `share_sessions = false` never invokes the runner, dev build + foreign target → `Unusable` with the documented reason, the artifact name for each target
+
+## 3. Delegation in the four pipelines (`session_ops`)
+
+- [x] 3.1 `spawn`: after `resolve_host` and the local parent check (a `--parent` must have `backend_type == host backend`; else refuse), when `usable(host)` → report `SpawnPhase::Host`, `fire_pre`, run `session create` with the pass-through flags, then `session get <id>`, write the local row (host id, facts, `backend_type`, empty `backend_id`), `fire_post`; `Unusable(reason)` → set `sharing` on the result and continue into the existing path
+- [x] 3.2 `delete`: when the row is on a usable host → `fire_pre`, run `session delete <id> [--force]`, apply (soft delete + force mark) locally from the answer, `fire_post`; the laptop's reaper skips mirrored rows (a `mirrored` predicate: remote backend + host usable)
+- [x] 3.3 `restart`: delegate `session restart <id>`; add `--if-missing` to the CLI action (relaunch only when `find_window`/`discover` shows no window for the row) and use it from `missing_agents` (4.3)
+- [x] 3.4 `restore`: delegate `session restore <id> [--best-effort]`; the local-only refusal stays only for a non-usable host
+- [x] 3.5 Add `SpawnPhase::Host` to the pinned sequence in `tests/kernel_mvp.rs` and a label to `PHASE_LABEL` in `ui/plugins/10_sessions.lua`; Lua gates clean
+- [x] 3.6 Duplicate names: **not** made a refusal after all — `tests/create_e2e.rs::two_sessions_sharing_a_name_get_distinct_pane_ids` pins that two sessions may share a name (the pane id disambiguates), and a mirrored row carries the host's pane id on the shared server, so by-name attach is only the fallback for a host that cannot report one (psmux); `session register` still refuses a name collision, since it *has* to resolve by name
+- [x] 3.7 Unit tests (in-memory DB + fake runner): each pipeline delegates when usable and runs the legacy path when not; the delegated create writes the host's id; a cross-host parent is refused before any runner call; hooks fire locally around the delegated call and a local veto prevents it; a host error becomes the caller's error verbatim; `restart --if-missing` launches nothing when the window exists
+
+## 4. Mirror (`session_ops::mirror`, `kernel::terminal`, `coordinator`)
+
+- [x] 4.1 `session list --deleted [--json]` (uses `list_deleted_sessions`, emits `force_deleted`); `session register --json '<row>'` (inserts a row for an existing `tb-<name>` window on this server, no launch; refuses when the window is absent or the id/name exists)
+- [x] 4.2 `mirror::mirror_host(db, host, cli) -> MirrorReport { adopted, updated, deleted, restored, unknown_local }` implementing D4 (adopt / update facts / soft-delete + force mark / restore flags / leave-and-report), writing nothing when nothing changed, `set_hook_state` only when the host's differs from the local raw state; `mirror::sync(db, only: Option<&str>, adopt: bool)` over every shareable host (WSL discovery included), `--adopt` registering `unknown_local` rows on the host
+- [x] 4.3 `kernel::terminal`: `MIRROR_INTERVAL` (10 s) per shareable host on the attach worker (first pass queued after boot; a down host skipped and retried), an immediate pass after any delegated command completes, the report published as a worker result; drop the `!is_remote_backend` filter on by-name pane resolution; `missing_agents` for a mirrored row issues `restart --if-missing` on the worker (throttled by `ATTACH_RETRY_INTERVAL`) instead of launching; `TmuxBackend::from_host` takes the socket from the usable CLI's `tmux_socket`
+- [x] 4.4 Reaper: a mirrored (remote) row is never reaped here — `reap_soft_deleted` already returns `Ok(false)` for a remote backend, so the reaper's `Reap` command is a no-op for them; the host's tick reaps its own overdue soft deletes
+- [x] 4.5 Sharing note: `SpawnResult.sharing` → `session create` JSON (`sharing`) and human output, and a `warn` line in `thurbox.log` for the interface's creation (v2 has no info panel of its own; `hook_wiring` is not published either)
+- [x] 4.6 Tests `tests/v2_shared_sessions.rs` (in-memory DB, fake host runner returning canned `list`/`list --deleted` JSON): a host row is adopted with the same id and `ssh:H`; facts update; a host-deleted row is soft-deleted with the force mark and the reaper forgets it; a host-restored row is restored; an unknown local row is reported, and adopted with `--adopt` through `register`; an idle pass writes nothing (`data_version` unchanged); hook state echo does not re-write; a mirrored row with no window issues `restart --if-missing` and launches nothing locally
+
+## 5. CLI + headless
+
+- [x] 5.1 `thurbox-cli session sync [--host <name>] [--adopt]` → `mirror::sync`, human table per host, JSON when piped
+- [x] 5.2 `automation tick`: `mirror::sync(db, None, false)` after `heal_active_extensions`; `synced` in the tick JSON; the host-side `session create` arms the host's heartbeat keeper (as the TUI does at startup) so a host with no TUI still ticks
+- [x] 5.3 `session signal`: after the DB write, set `@thurbox_state` on the own pane when `$TMUX`/`$TMUX_PANE` are set (`agent::tmux::set_own_pane_state`); best-effort
+- [x] 5.4 `config validate`/`show`: `share_sessions` in the resolved hosts output
+- [x] 5.5 Unit tests: `sync` JSON shape; tick reports `synced`; `set_own_pane_state` parses `$TMUX` and is a no-op outside tmux
+
+## 6. Docs, seed, e2e
+
+- [x] 6.1 Seeded `hosts.toml` documents `share_sessions`; `docs/CONFIG.md` hosts table gains the row and a note on the provisioned CLI location
+- [x] 6.2 `docs/FEATURES.md` → Remote SSH & WSL sessions: a "Shared sessions" subsection (host database as record, delegation, provisioning, mirror cadence, status channels, reboot/relaunch, undo/restore from either side, `session sync --adopt`, Windows, the resize note)
+- [x] 6.3 `docs/ARCHITECTURE.md`: ADR-24 "The host's database owns its sessions; remote thurbox is a client" — D1–D10 condensed, the tmux-stamp and SQLite-over-ssh alternatives recorded; ADR-13's remote-hooks bullets marked as the legacy path for non-shareable hosts
+- [x] 6.4 `docs/AGENTS.md` status-hook table: psmux hosts report through the mirror when shared; `CLAUDE.md`: Remote section bullet + `sync`/`register`/`list --deleted`/`restart --if-missing` in the subcommand list
+- [x] 6.5 `scripts/dev/e2e/linux-container.sh test`: the container starts with **no** thurbox; the first `session create --host podman` provisions the dev `thurbox-cli` (platform match) and the container's `~/.local/share/thurbox/thurbox.db` exists afterwards; a session created *inside* the container with that CLI appears locally after `session sync --host podman`; `session delete --force` from outside shows in the container's `list --deleted`; a soft delete inside + `session restore` from outside brings it back on both sides; `podman restart` + `session sync` relaunches once via `restart --if-missing`
+- [x] 6.6 `scripts/dev/e2e/windows-vm.sh test`: probe E — the VM's `thurbox-cli` answering `version --json` with a schema over the PowerShell path (evidence, like the other psmux probes; a delegated create needs the cross-built binaries deployed first, which `cmd_deploy` does)
+- [x] 6.7 Gates run: fmt `--check`, clippy `-D warnings`, `cargo doc` with warnings denied, architecture rules (`shell` added to `session_ops`' allowlist for the two quoting helpers), shellcheck on both e2e scripts, the full nextest suite (2094 passed). Not runnable here: `rumdl`, `selene`, `stylua`, `lua-language-server` are not installed on this machine (the one Lua change is a single table entry in `PHASE_LABEL`), and `cargo-deny` (no dependency changes)

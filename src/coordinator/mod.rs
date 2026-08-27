@@ -548,6 +548,7 @@ impl App {
                 .unwrap_or_else(|| id.clone());
             self.dispatch_tracked(thurbox::kernel::command::Command::Restart {
                 session: id.clone(),
+                if_missing: true,
             });
             self.toast(format!("{name}: agent was gone, relaunching"));
         }

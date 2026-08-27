@@ -70,10 +70,21 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     // Headless session ops: no TUI state or PTY-attached backend. Talks to
     // tmux through the narrow helpers in `agent::tmux` via fully-qualified
-    // paths only (never `use`), same pattern as the cli module.
+    // paths only (never `use`), same pattern as the cli module. `shell` for
+    // the same reason `agent` has it: `host_cli` spells a `thurbox-cli`
+    // invocation for a host's `sh` or PowerShell, and the two quoting rules
+    // have exactly one home (`shell::posix_quote` / `powershell_quote`).
     ModuleRules {
         name: "session_ops",
-        allowed: &["session", "storage", "git", "sync", "paths", "workspace"],
+        allowed: &[
+            "session",
+            "storage",
+            "git",
+            "sync",
+            "paths",
+            "workspace",
+            "shell",
+        ],
         allowed_path_only: &["agent"],
     },
     // Thin headless dispatch — must not depend on TUI or the live backend.

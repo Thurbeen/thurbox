@@ -1217,3 +1217,60 @@ own repository, installed by clone. What is still owed is tracked in
   database doubles the surface every engine change has to satisfy.
 - *An embedded scripting language with the host's capabilities* — the point of
   rule 4 is that a plugin someone else wrote is safe to load.
+
+## ADR-24: A host's database owns its sessions; a remote thurbox is a client
+
+**Choice**: A session that runs on a shareable host is a row in **that host's**
+thurbox database, whoever created it. A thurbox reaching the host from
+elsewhere *mirrors* that database (`session list --json` + `--deleted`) into
+local rows on `ssh:<name>` / `wsl:<name>` — same id, the host's facts and hook
+status — and performs every write there by running the host's own
+`thurbox-cli`: `session create|delete|restart|restore`, inside the four
+`session_ops` pipelines, so every caller delegates without knowing it
+(`session_ops::host_cli`, `session_ops::mirror`). A host with no CLI is
+**provisioned** one: the release archive of this binary's version for the
+host's platform, checksum-verified by the code `thurbox-cli update` uses,
+placed under `~/.local/share/thurbox/bin/` on the host — never on PATH. A
+host where that cannot be done (a dev build on a foreign platform, no
+network, a different schema) or with `share_sessions = false` is used exactly
+as ADR-13 describes: worktrees over ssh, the hooks rewrite, the pane-option
+status channel, which are now the **legacy path for non-shareable hosts**.
+
+**Why**: two thurboxes already shared a host's tmux server — a laptop spawning
+on `ssh:devbox` and a thurbox on devbox both use `tmux -L thurbox` there —
+but each kept its own database, so each saw only what it made. The laptop
+did everything *to* the host from afar because nothing of thurbox was assumed
+to exist there; that is also why a host with its own thurbox could not see
+those sessions. Every other remote tool solves this the same way: the host
+owns its records and the client asks. Once "thurbox-cli on the host" stopped
+being an obstacle, the host's database already had what a shared session
+needs — `deleted_at`, `force_deleted`, `restore`, `hook_state` — and the
+laptop-driven remote path shrank to a fallback.
+
+**Rejected**:
+
+- *Stamp each session's facts on its tmux window and reconcile from the
+  server* (the first draft of the change). No host requirement, but the tmux
+  server is a volatile store with no notion of deleted or restored, so it
+  needed tombstones with a TTL, a claim protocol for relaunch after a reboot,
+  a lowest-pane-id rule, a pane-id heuristic for undo and a probe before
+  relaunch — every one a consequence of the store.
+- *Read and write the host's SQLite file from afar.* SQLite's locking needs
+  the writer on the file's own filesystem; a copy-back loses whatever a host
+  process wrote in between.
+- *`sqlite3` on the host.* No likelier to be installed than thurbox, and the
+  schema and every rule twice.
+
+**Consequences**: the id is the host's, so `THURBOX_SESSION` inside the agent
+matches a row in whichever database a `thurbox-cli` on that machine reaches —
+`session signal` and `message send` work natively on the host for a session
+created from afar, and the psmux hooks-rewrite gate (ADR-13) is not consulted
+for a shared Windows host. Relaunch after a reboot is the host's
+(`session restart --if-missing`, idempotent across observers). The mirror
+writes nothing when nothing changed. Status keeps its sub-second channel on
+tmux hosts because `session signal` also sets the pane option (`agent::tmux::
+set_own_pane_state`). A fork — which resumes the parent's conversation in the
+parent's checkout, two facts the host's `create` does not take — stays on the
+legacy path and is registered on the host by `session sync --adopt`, as is
+any session created before this change. `session register` is the one place
+a row is made for a window that already runs, and it refuses to launch.

@@ -35,7 +35,20 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
     let current = crate::agent::version_check::current_version();
 
     if !args.check {
-        return CommandOutput::new(json!({ "version": current }), format!("thurbox {current}"));
+        // The extra facts are what a *peer* thurbox reads when it probes this
+        // machine's CLI before delegating to it (`session_ops::host_cli`): the
+        // tmux server this build's sessions live on, where its data lives, and
+        // whether the two databases speak the same schema.
+        return CommandOutput::new(
+            json!({
+                "version": current,
+                "tmux_socket": crate::agent::tmux::local_socket_name(),
+                "data_dir": crate::paths::database_file()
+                    .and_then(|p| p.parent().map(|d| d.display().to_string())),
+                "schema_version": crate::storage::SCHEMA_VERSION,
+            }),
+            format!("thurbox {current}"),
+        );
     }
 
     if !enabled {

@@ -10,10 +10,14 @@ pub mod builtin_hooks;
 pub mod builtin_ui_skill;
 pub mod delete;
 pub mod extensions;
+pub mod host_cli;
 pub mod lifecycle_hooks;
+pub mod mirror;
 pub mod remote_hooks;
 pub mod restart;
 pub mod restore;
+#[cfg(test)]
+mod shared_tests;
 pub mod spawn;
 
 pub use builtin::{builtin_extension, ensure_builtin_extensions, Builtin};

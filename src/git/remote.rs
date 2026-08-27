@@ -202,7 +202,7 @@ pub fn remove_remote_workspace(host: &HostDef, id: &str) -> Result<()> {
 /// CLIXML envelope with no error in it. The caller then reports the exit status
 /// rather than pasting the noise back in, which would recreate the very
 /// confusion this removes.
-pub(super) fn reportable_stderr(stderr: &[u8]) -> String {
+pub(crate) fn reportable_stderr(stderr: &[u8]) -> String {
     /// OpenSSH's marker for an advisory it prints without failing.
     const SSH_ADVISORY_PREFIX: &str = "**";
 
@@ -545,6 +545,49 @@ pub(crate) fn copy_bytes_to_remote_windows(
         .output()
         .context("failed to spawn windows remote file-copy")?;
     remote_output_or_stderr(output, "windows file-copy").map(|_| ())
+}
+
+/// [`copy_bytes_to_remote`] for a **native-Windows** host and a payload too
+/// large for a command line — a binary. The bytes travel on **stdin**, which
+/// ssh passes through to the PowerShell the encoded script runs in; the script
+/// copies the standard input stream into the file. Unlike
+/// `copy_bytes_to_remote_windows` there is no size budget, and unlike `cat >`
+/// there is no shell to quote for — the path is single-quoted inside the
+/// script. Delivery is probed by `scripts/dev/e2e/windows-vm.sh test`.
+pub fn copy_stream_to_remote_windows(
+    host: &HostDef,
+    bytes: &[u8],
+    remote_path: &str,
+) -> Result<()> {
+    use std::io::Write;
+
+    let parent = Path::new(remote_path)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let script = format!(
+        "New-Item -ItemType Directory -Force -Path {parent} | Out-Null; \
+         $in = [Console]::OpenStandardInput(); \
+         $out = [IO.File]::Create({path}); \
+         $in.CopyTo($out); $out.Close()",
+        parent = powershell_quote(&parent),
+        path = powershell_quote(remote_path),
+    );
+    let mut child = host_powershell_c(host, &script)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn windows remote stream-copy")?;
+    child
+        .stdin
+        .take()
+        .context("remote stream-copy stdin unavailable")?
+        .write_all(bytes)
+        .context("failed to stream file to remote")?;
+    let output = child
+        .wait_with_output()
+        .context("failed to wait on remote stream-copy")?;
+    remote_output_or_stderr(output, "windows stream-copy").map(|_| ())
 }
 
 /// Expand a leading `~` in a remote path against the host's `$HOME`. Remote

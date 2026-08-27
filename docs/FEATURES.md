@@ -395,6 +395,7 @@ documents each field inline:
 | `socket` | no | `thurbox` | host `tmux -L` socket name |
 | `session` | no | `thurbox` | host tmux session name |
 | `worktrees_dir` | no | `$HOME/.local/share/thurbox/worktrees` | absolute dir on the host/distro for git worktrees |
+| `share_sessions` | no | `true` | the host's database is the record of its sessions (see **Shared sessions** below); `false` drives the host from here as before |
 
 Each host becomes a session backend named `ssh:<name>` / `wsl:<name>`.
 For **SSH**, thurbox shells out to the system `ssh` binary, so
@@ -425,6 +426,73 @@ credential path and inherits whatever the user already configured.
 
 Headless: `thurbox-cli session create --host devbox --repo-path
 /srv/repo --worktree-branch feat/x` does the same over the CLI.
+
+#### Shared sessions: the host's database is the record
+
+A session that runs on a host is a row in **that host's** thurbox
+database, whoever created it — a thurbox running on the host and one
+reaching it as `ssh:<name>` see the same list, and either side can
+create, delete, restart or restore. ADR-24 in `docs/ARCHITECTURE.md`
+has the rationale; the shape:
+
+- **Mirror.** A remote thurbox mirrors the host's `session list
+  --json` (and `--deleted`) into local rows on `ssh:<name>` — same id,
+  the host's facts and hook status — every 10 s from a worker, right
+  after anything it delegated, and from the headless `automation tick`.
+  `thurbox-cli session sync [--host <name>]` runs one pass by hand.
+  What is the observer's stays the observer's: display order, the
+  companion shell. A pass that changes nothing writes nothing.
+- **Delegation.** Create, delete (soft or forced), restart and restore
+  on a shareable host run `thurbox-cli session …` *on the host*, which
+  does the worktree, the hooks and the launch with the host's own
+  `agents.toml` and `hooks.toml` and mints the id. Every caller goes
+  through the same four `session_ops` pipelines, so the creation flow,
+  the CLI, `spawn` automations and extension self-heal all delegate.
+  The caller's own `hooks.toml` fires around the delegated call with
+  `THURBOX_HOST` set; the host's fires there. A refusal on the host is
+  the caller's error, verbatim.
+- **Provisioning.** On first use, thurbox looks for a `thurbox-cli` of
+  the same major (PATH, `~/.local/bin`, then its own directory). When
+  there is none, it downloads the release archive of **its own
+  version** for the host's platform, verifies it against the release
+  checksums, and places `thurbox-cli` under
+  `~/.local/share/thurbox/bin/` on the host (`thurbox-dev/bin/` for a
+  dev build, which then uses the host's `thurbox-dev` database and
+  socket — dev and release stay as separate there as they are locally)
+  — never on PATH; an install the user makes later wins. That first
+  session creates the
+  host's database at the standard location, so a later full install
+  finds every session already there. A dev build ships its own sibling
+  binary when the host is the same platform and refuses otherwise.
+- **When it cannot.** No CLI and no artifact (a dev build on a foreign
+  platform, no network, a schema mismatch), or `share_sessions =
+  false`: the host is used exactly as before — worktree over ssh, the
+  hooks rewrite, the pane-option status channel — and `session create`
+  says so (`sharing` in its JSON, a line in `thurbox.log`). Sessions
+  created that way are listed by `session sync` as unknown to the host;
+  `session sync --host <name> --adopt` registers them there.
+- **Status.** Hooks on a shared host call the host's own `thurbox-cli
+  session signal`, which writes the host's database (mirrored at 10 s)
+  **and** the pane option a remote observer's control-mode subscription
+  already reads, so a tmux host's status still lands within a second.
+  On a Windows (psmux) host status arrives through the mirror — which
+  replaces the `Hooks: degraded` those hosts showed.
+- **Reboot.** The host relaunches its own sessions, as it does locally.
+  A remote observer whose survey finds a mirrored row with no window
+  asks the host to relaunch it (`session restart --if-missing`), and
+  the host launches only if the window is still absent — so two
+  observers asking produce one launch. A window killed by hand is
+  indistinguishable from a crash and comes back the same way.
+- **Undo and restore.** `Ctrl+Z` inside the undo window leaves no
+  trace. Once the host records a deletion every mirror shows it;
+  a restore from any side runs on the host and every mirror shows it
+  back. A soft delete asked for headlessly is reaped by the host's tick
+  once the undo window has passed.
+- **Windows hosts** share through the same path: the probe, the
+  provisioning (the release zip) and every delegated command go
+  through the PowerShell path the probes already use.
+- **Two observers on one pane** resize it to their own rects — the
+  existing behaviour for two thurbox instances on one database.
 
 ---
 

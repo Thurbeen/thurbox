@@ -41,8 +41,12 @@ pub const CONFIG_DIR_OVERRIDE_ENV: &str = "THURBOX_CONFIG_DIR";
 pub const DATA_DIR_OVERRIDE_ENV: &str = "THURBOX_DATA_DIR";
 
 /// Returns "thurbox-dev" for dev builds, "thurbox" for release builds.
-#[cfg_attr(test, allow(dead_code))] // only used by the non-test XDG fallback
-fn app_dir_name() -> &'static str {
+///
+/// Also the name of thurbox's directory on a *host* this build shares sessions
+/// with (`session_ops::host_cli`): a dev build provisions and looks for its
+/// CLI under `thurbox-dev` there, so a dev and a release laptop sharing one
+/// host never overwrite each other's copy.
+pub fn app_dir_name() -> &'static str {
     if cfg!(dev_build) {
         "thurbox-dev"
     } else {

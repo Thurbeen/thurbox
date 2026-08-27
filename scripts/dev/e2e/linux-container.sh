@@ -71,7 +71,7 @@ cmd_up() {
   cp "$KEY.pub" "$WORKDIR/authorized_keys"
 
   cat > "$WORKDIR/Containerfile" <<'EOF'
-FROM docker.io/library/debian:bookworm-slim
+FROM docker.io/library/debian:trixie-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends openssh-server tmux git ca-certificates procps && \
     rm -rf /var/lib/apt/lists/* && \
@@ -118,9 +118,99 @@ remote_reset() {
     git worktree prune
     git for-each-ref --format="%(refname:short)" "refs/heads/test/*" \
       | while read -r b; do git branch -D "$b"; done
-    rm -rf /root/.codex
+    rm -rf /root/.codex /root/.local/share/thurbox /root/.local/share/thurbox-dev /root/.config/thurbox-dev
     tmux -L thurbox-dev kill-server 2>/dev/null || true
   ' 2>/dev/null || true
+}
+
+# The container's own thurbox-cli: the dev binary the first shared spawn
+# provisions there (the container is the same platform as this machine), under
+# the dev flavour's directory — a release laptop would use thurbox/bin.
+REMOTE_CLI='/root/.local/share/thurbox-dev/bin/thurbox-cli'
+remote_cli() { ssh_remote "$REMOTE_CLI --json $*"; }
+
+# The sharing half of the e2e: the container starts with NO thurbox. The first
+# `session create --host podman` must provision the CLI and create the session
+# through it, after which both directions — a session created inside the
+# container, one created from here — are one list, and delete/restore/relaunch
+# travel both ways. Runs inside cmd_test's isolated XDG home.
+shared_sessions_probe() {
+  log "asserting shared sessions (provisioning + both directions)"
+  # Sharing is the default, and `hosts_block` writes no `share_sessions`, so the
+  # sessions created above were already delegated: the CLI must be there.
+  if ssh_remote "test -x $REMOTE_CLI"; then
+    ok "thurbox-cli provisioned under ~/.local/share/thurbox-dev/bin on the container"
+  else
+    bad "no thurbox-cli provisioned on the container"
+    return
+  fi
+  case "$(remote_cli version)" in
+    *'"schema_version"'*) ok "provisioned CLI answers version --json with a schema" ;;
+    *) bad "provisioned CLI does not answer version --json" ;;
+  esac
+  # The host's database is the record: the sessions created from here are in it.
+  case "$(remote_cli session list)" in
+    *'"name":"e2e"'*) ok "a session created from here is in the container's own database" ;;
+    *) bad "the container's database does not list the session created from here" ;;
+  esac
+
+  # A session created INSIDE the container, by its own CLI, with its own
+  # agents.toml (seeded by the first delegated create; `shell` is added here).
+  ssh_remote "mkdir -p /root/.config/thurbox-dev && printf 'default = \"shell\"\n[[agents]]\nname = \"shell\"\ncommand = \"bash\"\n' >> /root/.config/thurbox-dev/agents.toml"
+  local inside_id
+  inside_id="$(remote_cli session create --name e2e-inside --repo-path "$REMOTE_REPO" --agent shell | json_field id)"
+  if [ -n "$inside_id" ]; then
+    ok "a session was created inside the container by its own CLI ($inside_id)"
+  else
+    bad "session create inside the container failed"
+    return
+  fi
+  local sync_out
+  sync_out="$(e2e_cli session sync --host podman)" || die "session sync failed"
+  case "$sync_out" in
+    *"$inside_id"*) ok "session sync adopted the session created inside" ;;
+    *) bad "session sync did not report the inside session (got: $sync_out)" ;;
+  esac
+  case "$(e2e_cli session get "$inside_id")" in
+    *'"backend_type":"ssh:podman"'*) ok "the adopted session is on ssh:podman with the host's id" ;;
+    *) bad "the adopted session is not listed here on ssh:podman" ;;
+  esac
+
+  # Delete from here, forced: the host tears down and its deleted list shows it.
+  e2e_cli session delete "$inside_id" --force >/dev/null || die "delegated delete failed"
+  case "$(remote_cli session list --deleted)" in
+    *"$inside_id"*) ok "a force-delete from here lands in the container's deleted list" ;;
+    *) bad "the container does not list the deleted session" ;;
+  esac
+
+  # Soft-delete inside, restore from here: the host relaunches, both sides agree.
+  local e2e_id
+  e2e_id="$(e2e_cli session list | json_field id)"
+  remote_cli session delete "$e2e_id" >/dev/null || die "soft delete inside the container failed"
+  e2e_cli session sync --host podman >/dev/null
+  case "$(e2e_cli session list --deleted)" in
+    *"$e2e_id"*) ok "a soft-delete inside the container is mirrored here" ;;
+    *) bad "the soft-delete inside the container was not mirrored" ;;
+  esac
+  e2e_cli session restore "$e2e_id" --best-effort >/dev/null || die "delegated restore failed"
+  case "$(remote_cli session list)" in
+    *"$e2e_id"*) ok "a restore from here brings the session back on the container" ;;
+    *) bad "the container does not list the restored session" ;;
+  esac
+
+  # A host restart: the tmux server is gone, the database is not. A relaunch
+  # asked for from here is the host's, and asking twice launches once.
+  podman restart "$CONTAINER" >/dev/null
+  for _ in $(seq 1 20); do ssh_remote true 2>/dev/null && break; sleep 1; done
+  e2e_cli session restart "$e2e_id" --if-missing >/dev/null || die "relaunch after restart failed"
+  e2e_cli session restart "$e2e_id" --if-missing >/dev/null || die "second relaunch failed"
+  local windows
+  windows="$(ssh_remote 'tmux -L thurbox-dev list-windows -t thurbox-dev -F "#{window_name}" 2>/dev/null' | grep -c '^tb-e2e$' || true)"
+  if [ "$windows" = "1" ]; then
+    ok "after a container restart the session was relaunched exactly once"
+  else
+    bad "expected one tb-e2e window after the relaunch, found ${windows:-0}"
+  fi
 }
 
 cmd_test() {
@@ -237,8 +327,10 @@ EOF
     *) bad "hook_state lost after a steady-state tick" ;;
   esac
 
+  shared_sessions_probe
+
   if [ "$FAILS" -gt 0 ]; then
-    fail "remote hook provisioning checks failed ($FAILS)"
+    fail "remote hook provisioning / shared sessions checks failed ($FAILS)"
     return 1
   fi
   e2e_assert "ssh:podman" "$backend" "$remote_window" "$remote_wt" \

@@ -345,7 +345,12 @@ fn show(db: &Database) -> Result<Value, String> {
             "database": crate::paths::database_file().map(|p| p.display().to_string()),
         },
         "agents": { "default": agents.default_name(), "names": agents.names() },
-        "hosts": { "names": hosts.names() },
+        "hosts": {
+            "names": hosts.names(),
+            // Which of them share their sessions through their own database
+            // (ADR-24) — every host unless its entry says `share_sessions = false`.
+            "shared": hosts.hosts.iter().filter(|h| h.shareable()).map(|h| h.name.as_str()).collect::<Vec<_>>(),
+        },
         "settings": settings,
         "keybindings": { "overridden_actions": overridden_actions },
         "editor": { "command": editor, "source": editor_source, "mode": editor_mode.as_db_value() },

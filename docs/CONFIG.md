@@ -196,6 +196,7 @@ configured hosts, error shown.
 | `session` | no | `thurbox` | host tmux session name |
 | `worktrees_dir` | no | host `$HOME/.local/share/thurbox/worktrees` | absolute worktrees dir on the host/distro |
 | `multiplexer` | no | `tmux` | host multiplexer binary; set to `psmux` for a Windows SSH host |
+| `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
 
 **SSH** auth comes entirely from your `~/.ssh/config`; thurbox never
 handles credentials. **WSL** distros are reached with

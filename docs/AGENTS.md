@@ -140,6 +140,14 @@ Each `requires_dir` guard makes the drop a no-op when that agent isn't installed
 so a fresh install with only claude present doesn't scatter files for agents you
 don't have.
 
+**On a shared host** (`hosts.toml` `share_sessions = true`, the default — see
+ADR-24) none of the remote rewriting applies: the host's own `thurbox-cli`
+launches the agent with the host's own hooks extension, so each agent reports
+exactly as it does locally, into the host's database, which the remote thurbox
+mirrors. That includes a **Windows (psmux) host**, whose remote path stays
+gated (`psmux_hook_rewrite_supported`) but is simply not used when the host
+has — or is provisioned with — a CLI.
+
 ### `hook_schema` (custom rebrands only)
 
 The built-ins never set `hook_schema` — the hooks extension already knows them by

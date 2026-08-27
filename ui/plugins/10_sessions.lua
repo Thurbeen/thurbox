@@ -301,6 +301,7 @@ local PHASE_LABEL = {
   running = "creating…",
   resolving = "setting up…",
   hooks = "running hooks…",
+  host = "on the host…",
   worktrees = "creating…",
   backend = "setting up…",
   launching = "spawning…",

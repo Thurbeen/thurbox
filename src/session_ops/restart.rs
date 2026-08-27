@@ -108,6 +108,19 @@ pub fn restart_session_headless(
     db: &Database,
     session_id: SessionId,
 ) -> Result<RestartReport, String> {
+    restart_session_headless_with(db, session_id, false)
+}
+
+/// [`restart_session_headless`], or — with `if_missing` — a **relaunch**: the
+/// agent is started only when the session has no live window, and a session
+/// that is running is left exactly as it is. This is what "the agent is gone"
+/// asks for after a reboot, and what makes two observers asking for the same
+/// session produce one launch: the second finds the window the first made.
+pub fn restart_session_headless_with(
+    db: &Database,
+    session_id: SessionId,
+    if_missing: bool,
+) -> Result<RestartReport, String> {
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
@@ -124,6 +137,38 @@ pub fn restart_session_headless(
             session.name, session.backend_type
         )
     })?;
+
+    // A session on a shareable host is restarted by the host's CLI, which
+    // kills and relaunches where the agent runs, with the host's own
+    // configuration; the local row is then mirrored from the host's.
+    if let Some((host, cli)) = host
+        .as_ref()
+        .and_then(|h| super::host_cli::delegated(h).map(|cli| (h, cli)))
+    {
+        let mut hook_ctx = super::lifecycle_hooks::context_for(&session);
+        super::fire_pre(crate::session::HookEvent::PreRestart, &hook_ctx)?;
+        let id = session_id.to_string();
+        let mut args = vec!["session", "restart", &id];
+        if if_missing {
+            args.push("--if-missing");
+        }
+        super::host_cli::run(host, &cli, &args)?;
+        if let Err(e) = super::mirror::mirror_host(db, host, &cli) {
+            tracing::warn!("mirror of '{}' after restart failed: {e}", host.name);
+        }
+        hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session_id);
+        let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);
+        return Ok(RestartReport { hook_failures });
+    }
+
+    if if_missing {
+        let alive = crate::agent::tmux::agent_window_alive(host.as_ref(), &session.name)
+            .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
+        if alive {
+            tracing::debug!("'{}' is running; nothing to relaunch", session.name);
+            return Ok(RestartReport::default());
+        }
+    }
 
     let hooks_enabled = super::hooks_enabled(db);
     let plan = build_restart_plan(&session, host.as_ref(), hooks_enabled)?;

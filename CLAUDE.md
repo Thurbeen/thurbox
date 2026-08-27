@@ -791,6 +791,27 @@ session), never on the loop, ADR-P12).
   nothing is looking at (ADR-P7/ADR-P12, `docs/PERFORMANCE.md`).
 - **Headless**: `thurbox-cli session create --host <name>` spawns on the host
   (an SSH name or an auto-discovered WSL distro name).
+- **Shared sessions (ADR-24).** A shareable host (`share_sessions = true`, the
+  default) owns the record of the sessions on it: its **own thurbox database**.
+  A remote thurbox *mirrors* that database into local rows on `ssh:<name>`
+  (`session_ops::mirror` — same id, the host's facts and hook status; every
+  10 s from a worker in `kernel::terminal`, right after anything it delegated,
+  and from `automation tick`), and performs create/delete/restart/restore by
+  running `thurbox-cli session …` **on the host** (`session_ops::host_cli`,
+  branched inside the four pipelines so every caller delegates). A host with
+  no CLI is **provisioned** one under `~/.local/share/thurbox/bin/` (the
+  release archive of this version, checksum-verified; a dev build ships its
+  own sibling binary when the platform matches). `version --json` reports the
+  host CLI's `tmux_socket`, which the backend adopts (`agent::tmux::
+  learn_host_socket`) so a dev laptop attaches to a release host's server.
+  Everything below this bullet — the hooks rewrite, remote provisioning, the
+  pane-option status channel — is the **legacy path** for a host that cannot
+  be delegated to (no artifact, no network, schema mismatch, `share_sessions =
+  false`); `session create` then reports `sharing` and `session sync --adopt`
+  registers such rows on the host later. `session signal` also sets the pane
+  option, so tmux hosts keep sub-second status. Relaunch after a reboot is the
+  host's (`session restart --if-missing`). A fork stays on the legacy path.
+  Docs: `docs/FEATURES.md` → Shared sessions.
 - **Agent config on the host**: agent args referencing thurbox-managed config
   by *local* path (the hooks extension's `--settings <config>/hooks/
   claude.json`) would kill the remote agent on launch ("Settings file not
@@ -895,8 +916,9 @@ thurbox-cli session list --json | jq           # machine output for scripts
 thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children only
 ```
 
-Subcommands: `session` (create/list/get/delete/restore/restart/
-send/capture/focus/signal), `automation` (alias `auto`:
+Subcommands: `session` (create/list [`--deleted`]/get/delete/restore/restart
+[`--if-missing`]/send/capture/focus/signal/sync/register — the last two and the
+flags serve session sharing, ADR-24), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `message` (alias `msg`:
 send/inbox/prune — the inter-session mailbox queue; see below), `editor`

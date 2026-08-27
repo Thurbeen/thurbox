@@ -38,8 +38,10 @@ pub enum Command {
         /// committed work only. Refused unless the caller says it knows.
         best_effort: bool,
     },
+    // Kill and relaunch; with `if_missing`, relaunch only when the window is gone.
     Restart {
         session: String,
+        if_missing: bool,
     },
     /// Paste text into a running session's agent.
     Send {
@@ -350,7 +352,7 @@ impl Command {
         match self {
             Command::Delete { session, .. }
             | Command::Restore { session, .. }
-            | Command::Restart { session }
+            | Command::Restart { session, .. }
             | Command::Send { session, .. }
             | Command::Reorder { session, .. }
             | Command::Fork { session, .. }
@@ -641,7 +643,10 @@ impl Command {
                 session,
                 best_effort: force,
             }),
-            "restart" => Ok(Command::Restart { session }),
+            "restart" => Ok(Command::Restart {
+                session,
+                if_missing: false,
+            }),
             "send" => match text {
                 Some(text) => Ok(Command::Send { session, text }),
                 None => Err("command \"send\" needs text".to_string()),

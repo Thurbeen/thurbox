@@ -386,6 +386,23 @@ cmd_test() {
   fi
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
 
+  # --- shared-sessions probe (evidence, not verdict) -------------------------
+  # A shared Windows host (ADR-24) is driven through its own thurbox-cli over
+  # the PowerShell path: `session_ops::host_cli` probes for the CLI where
+  # install.ps1 and provisioning put it, and delegates `session create` to it.
+  # With the cross-built binaries deployed (`cmd_deploy`), this asks the VM's
+  # CLI the exact question the probe asks — `version --json` with a schema —
+  # and reports what a delegation would find. Never fails the smoke test.
+  log "probing the shared-sessions CLI path on the VM"
+  local vcli
+  # shellcheck disable=SC2016 # the $… are PowerShell's, evaluated on the VM
+  vcli="$(ssh_vm '$c = @("thurbox-cli", "$env:LOCALAPPDATA\thurbox\bin\thurbox-cli.exe", "$env:LOCALAPPDATA\Programs\thurbox\thurbox-cli.exe"); foreach ($p in $c) { $g = Get-Command $p -ErrorAction SilentlyContinue; if ($g) { & $g.Source version --json; exit 0 } }; Write-Output "@none"' 2>/dev/null | tr -d '\r')"
+  case "$vcli" in
+    *'"schema_version"'*) ok "probe E: the VM's thurbox-cli answers version --json with a schema (delegation possible)" ;;
+    *'"version"'*) info "probe E: the VM's thurbox-cli predates session sharing (no schema_version): a matching one would be provisioned" ;;
+    *) info "probe E: no thurbox-cli on the VM — run '$0 deploy' first, or let a shared spawn provision one (got: ${vcli:-<none>})" ;;
+  esac
+
   echo
   if printf '%s\n' "$sessions" | grep -qx smoke; then
     pass "psmux is installed and a -L $SOCKET session round-tripped"

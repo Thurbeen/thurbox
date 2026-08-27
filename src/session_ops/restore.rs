@@ -62,10 +62,17 @@ pub fn restore_session_headless(
         ));
     }
 
-    // A remote session's worktrees and window live on its host, and every helper
-    // below drives the local machine. Silently restoring it here would produce a
-    // local impostor of a remote session — `restart` refuses for the same reason.
-    if crate::session::is_remote_backend(&deleted.backend_type) {
+    // A session on a shareable host is restored by the host's CLI — the
+    // worktrees are recreated and the agent relaunched where they live — and
+    // the local row is then mirrored from the host's. A remote host that cannot
+    // be delegated to keeps the refusal: every helper below drives the local
+    // machine, and restoring there would produce a local impostor of a remote
+    // session — `restart` refuses for the same reason.
+    let remote = super::resolve_host(&deleted.backend_type).flatten();
+    let delegated = remote
+        .as_ref()
+        .and_then(|host| super::host_cli::delegated(host).map(|cli| (host.clone(), cli)));
+    if crate::session::is_remote_backend(&deleted.backend_type) && delegated.is_none() {
         return Err(format!(
             "'{}' runs on remote backend '{}'; restoring it is local-only for now",
             deleted.name, deleted.backend_type
@@ -96,6 +103,39 @@ pub fn restore_session_headless(
         ..crate::session::HookContext::default()
     };
     super::fire_pre(crate::session::HookEvent::PreRestore, &hook_ctx)?;
+
+    if let Some((host, cli)) = delegated {
+        let id = deleted.id.to_string();
+        let mut args = vec!["session", "restore", &id];
+        if best_effort {
+            args.push("--best-effort");
+        }
+        let answer = super::host_cli::run(&host, &cli, &args)?;
+        db.restore_session(deleted.id)
+            .map_err(|e| format!("restore session: {e}"))?;
+        if let Err(e) = super::mirror::mirror_host(db, &host, &cli) {
+            tracing::warn!("mirror of '{}' after restore failed: {e}", host.name);
+        }
+        let count = |key: &str| {
+            answer
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize
+        };
+        hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, deleted.id);
+        let hook_failures = super::fire_post(crate::session::HookEvent::PostRestore, &hook_ctx);
+        return Ok(RestoreReport {
+            name: deleted.name,
+            best_effort: deleted.force_deleted,
+            worktrees_wanted: count("worktrees_wanted"),
+            worktrees_recovered: count("worktrees_recovered"),
+            respawn_error: answer
+                .get("respawn_error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            hook_failures,
+        });
+    }
 
     db.restore_session(deleted.id)
         .map_err(|e| format!("restore session: {e}"))?;
@@ -159,6 +199,16 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
         .ok_or_else(|| format!("restored session not found: {id}"))?;
     // Local by design: `restore_session_headless` refuses a remote session
     // above, since its worktrees cannot be recreated from here.
+    //
+    // A soft-deleted session keeps its agent until the reaper lets it go; a
+    // restore inside that window — or one asked for from a peer before this
+    // machine's reaper ran — finds the window still alive, and a second launch
+    // beside it would be two agents on one conversation.
+    if let Ok(Some(pane)) = crate::agent::tmux::agent_window_pane(None, &session.name) {
+        db.set_backend_id(session.id, &pane)
+            .map_err(|e| format!("record the live pane: {e}"))?;
+        return Ok(());
+    }
     let hooks_enabled = super::hooks_enabled(db);
     let plan = super::restart::build_restart_plan(&session, None, hooks_enabled)?;
     let pane = crate::agent::tmux::spawn_window(

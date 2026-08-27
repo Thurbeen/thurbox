@@ -60,10 +60,16 @@ pub enum UpdateOutcome {
 /// Pure (takes os/arch) so it's testable; note Rust spells these
 /// `"macos"`/`"aarch64"` where `uname` says `darwin`/`arm64`, but they map to
 /// the same triples.
-fn target_triple(os: &str, arch: &str) -> Result<&'static str, String> {
-    match (os, arch) {
-        ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
-        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+pub fn target_triple(os: &str, arch: &str) -> Result<&'static str, String> {
+    // Accepts both Rust's spellings (`macos`/`aarch64`) and `uname`'s
+    // (`Darwin`/`arm64`), plus PowerShell's `AMD64`, because a *host's* platform
+    // arrives as whatever that host's shell printed (`session_ops::host_cli`).
+    let os = os.to_ascii_lowercase();
+    let arch = arch.to_ascii_lowercase();
+    match (os.as_str(), arch.as_str()) {
+        ("linux", "x86_64" | "amd64") => Ok("x86_64-unknown-linux-musl"),
+        ("macos" | "darwin", "aarch64" | "arm64") => Ok("aarch64-apple-darwin"),
+        ("windows", "x86_64" | "amd64") => Ok("x86_64-pc-windows-msvc"),
         _ => Err(format!(
             "unsupported platform: {os}-{arch} (no release artifact is built \
              for it; see scripts/install.sh)"
@@ -71,8 +77,65 @@ fn target_triple(os: &str, arch: &str) -> Result<&'static str, String> {
     }
 }
 
+/// The release archive for `target`: a `.tar.gz` everywhere but Windows, whose
+/// artifact is the `.zip` `install.ps1` extracts.
+pub fn archive_name(version: &str, target: &str) -> String {
+    if target.ends_with("-windows-msvc") {
+        format!("thurbox-v{version}-{target}.zip")
+    } else {
+        tarball_name(version, target)
+    }
+}
+
+/// A verified release archive on local disk, ready to be shipped somewhere.
+#[derive(Debug)]
+pub struct FetchedArchive {
+    /// The archive file, inside a scratch directory that is removed when this
+    /// value drops.
+    pub path: PathBuf,
+    /// The artifact's file name (`thurbox-v1.2.3-<target>.tar.gz` / `.zip`).
+    pub name: String,
+    _scratch: ScratchDir,
+}
+
+/// Download the release archive of `version` for `target` and verify it
+/// against the release checksums, without extracting or installing anything.
+///
+/// This is [`perform_update`]'s download half, split out so a peer host can be
+/// provisioned with a **foreign** target — the host's platform rather than the
+/// running one — and with an exact version rather than "latest": a peer must
+/// speak this binary's JSON, so it is given this binary's release. A dev build
+/// has no release to fetch and is refused here; `host_cli` decides what a dev
+/// build ships instead.
+pub fn fetch_archive(version: &str, target: &str) -> Result<FetchedArchive, String> {
+    if crate::session::extension_def::is_dev_version(version) {
+        return Err(format!(
+            "no release archive exists for the development build {version}"
+        ));
+    }
+    let scratch = ScratchDir::new()?;
+    let checksums_path = scratch.path.join(checksums_name(version));
+    crate::agent::extension_config::http_get_to_file(&checksums_url(version), &checksums_path)?;
+    let name = archive_name(version, target);
+    let path = scratch.path.join(&name);
+    crate::agent::extension_config::http_get_to_file(
+        &format!("{RELEASE_BASE}/v{version}/{name}"),
+        &path,
+    )?;
+    let checksums =
+        std::fs::read_to_string(&checksums_path).map_err(|e| format!("read checksums: {e}"))?;
+    let expected = parse_checksum(&checksums, &name)
+        .ok_or_else(|| format!("no checksum for {name} in release checksums"))?;
+    verify_sha256(&path, &expected)?;
+    Ok(FetchedArchive {
+        path,
+        name,
+        _scratch: scratch,
+    })
+}
+
 /// The target triple for the running binary's platform.
-fn current_target() -> Result<&'static str, String> {
+pub fn current_target() -> Result<&'static str, String> {
     target_triple(std::env::consts::OS, std::env::consts::ARCH)
 }
 
@@ -138,14 +201,19 @@ fn verify_sha256(file: &Path, expected: &str) -> Result<(), String> {
 
 /// A temp dir removed (best-effort) when dropped, so a failed/early-returned
 /// update leaves nothing behind. Avoids the `tempfile` crate (dev-only).
+#[derive(Debug)]
 struct ScratchDir {
     path: PathBuf,
 }
 
 impl ScratchDir {
     fn new() -> Result<Self, String> {
+        // Unique per call, not per process: a peer host being provisioned
+        // (`fetch_archive`) can overlap the TUI's own startup update check.
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let base = crate::paths::log_directory().unwrap_or_else(std::env::temp_dir);
-        let path = base.join(format!(".update-{}", std::process::id()));
+        let path = base.join(format!(".update-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&path)
             .map_err(|e| format!("create temp dir {}: {e}", path.display()))?;
         Ok(Self { path })
@@ -265,6 +333,12 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     }
 
     let target = current_target()?;
+    // The Windows artifact is a zip that `install.ps1` extracts; this tar path
+    // has never served it, and resolving the triple for a *peer* (D3 of the
+    // shared-sessions change) must not make it start pretending to.
+    if target.ends_with("-windows-msvc") {
+        return Err("self-update is not supported on Windows; re-run install.ps1".to_string());
+    }
     let scratch = ScratchDir::new()?;
 
     // Download checksums + tarball.
@@ -312,13 +386,17 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
 mod tests {
     use super::*;
 
-    /// The `.tar.gz` triples an update may download — the artifacts `cd.yml`
-    /// builds that `target_triple` actually selects (it prefers musl over the
-    /// also-built gnu tarball for Linux x86_64; the Windows artifact is a `.zip`
-    /// handled by `install.ps1`, not this tar path). `target_triple` /
-    /// `current_target` must only ever resolve to one of these — anything else
-    /// would 404 on download.
-    const SHIPPED_TRIPLES: [&str; 2] = ["x86_64-unknown-linux-musl", "aarch64-apple-darwin"];
+    /// The triples an update or a peer provisioning may download — the
+    /// artifacts `cd.yml` builds that `target_triple` actually selects (it
+    /// prefers musl over the also-built gnu tarball for Linux x86_64; the
+    /// Windows artifact is a `.zip`, served by `archive_name`). `target_triple`
+    /// / `current_target` must only ever resolve to one of these — anything
+    /// else would 404 on download.
+    const SHIPPED_TRIPLES: [&str; 3] = [
+        "x86_64-unknown-linux-musl",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+    ];
 
     #[test]
     fn target_triple_maps_supported_platforms() {
@@ -330,17 +408,44 @@ mod tests {
             target_triple("macos", "aarch64").unwrap(),
             "aarch64-apple-darwin"
         );
+        // A host's platform arrives as its shell spells it.
+        assert_eq!(
+            target_triple("Darwin", "arm64").unwrap(),
+            "aarch64-apple-darwin"
+        );
+        assert_eq!(
+            target_triple("Linux", "x86_64").unwrap(),
+            "x86_64-unknown-linux-musl"
+        );
+        assert_eq!(
+            target_triple("windows", "AMD64").unwrap(),
+            "x86_64-pc-windows-msvc"
+        );
+        assert_eq!(
+            archive_name("1.2.3", "x86_64-pc-windows-msvc"),
+            "thurbox-v1.2.3-x86_64-pc-windows-msvc.zip"
+        );
+        assert_eq!(
+            archive_name("1.2.3", "x86_64-unknown-linux-musl"),
+            "thurbox-v1.2.3-x86_64-unknown-linux-musl.tar.gz"
+        );
     }
 
     #[test]
     fn target_triple_rejects_unshipped_platforms() {
-        // Platforms `cd.yml` does NOT build a `.tar.gz` for must error cleanly
-        // rather than resolve to a non-existent artifact.
-        assert!(target_triple("windows", "x86_64").is_err());
+        // Platforms `cd.yml` does NOT build an artifact for must error cleanly
+        // rather than resolve to a non-existent one.
+        assert!(target_triple("windows", "arm64").is_err());
         assert!(target_triple("linux", "riscv64").is_err());
         // aarch64 Linux and Intel macOS are intentionally not shipped.
         assert!(target_triple("linux", "aarch64").is_err());
         assert!(target_triple("macos", "x86_64").is_err());
+    }
+
+    #[test]
+    fn a_dev_build_has_no_archive_to_fetch() {
+        let err = fetch_archive("0.0.0-dev", "x86_64-unknown-linux-musl").unwrap_err();
+        assert!(err.contains("development build"), "{err}");
     }
 
     #[test]

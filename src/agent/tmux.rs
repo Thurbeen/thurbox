@@ -45,6 +45,44 @@ fn local_socket() -> String {
         .unwrap_or_else(|| TMUX_SOCKET.to_string())
 }
 
+/// The socket name this build's local sessions live on — what `thurbox-cli
+/// version --json` reports so a peer attaching over ssh joins the right server.
+pub fn local_socket_name() -> String {
+    local_socket()
+}
+
+/// Socket names learned from a host's own `thurbox-cli` (`version --json`'s
+/// `tmux_socket`), keyed by backend name. A host entry with no explicit
+/// `socket` uses *this* build's socket name by default, which is wrong exactly
+/// when the flavours differ — a dev laptop against a release host would attach
+/// to an empty `thurbox-dev` server while the host's sessions sit on `thurbox`.
+/// `session_ops::host_cli` records what the host said; [`host_socket`] and every
+/// backend built for that host consult it at use, so a backend constructed at
+/// startup follows the host once it has been asked.
+fn learned_host_sockets() -> &'static Mutex<HashMap<String, String>> {
+    static LEARNED: std::sync::OnceLock<Mutex<HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    LEARNED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record the socket a host's own CLI reported for itself. Ignored for a host
+/// that pins `socket` in `hosts.toml` — the user's word wins.
+pub fn learn_host_socket(host: &crate::session::HostDef, socket: &str) {
+    if host.socket.is_some() || socket.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = learned_host_sockets().lock() {
+        map.insert(host.backend_name(), socket.to_string());
+    }
+}
+
+fn learned_host_socket(backend_name: &str) -> Option<String> {
+    learned_host_sockets()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(backend_name).cloned())
+}
+
 /// The `-L` socket name a remote `host`'s multiplexer runs on: the host's
 /// `socket` override, else the same compile-time default the local backend
 /// uses. Single source of truth shared by [`TmuxBackend::from_host`] and the
@@ -53,6 +91,7 @@ fn local_socket() -> String {
 pub fn host_socket(host: &crate::session::HostDef) -> String {
     host.socket
         .clone()
+        .or_else(|| learned_host_socket(&host.backend_name()))
         .unwrap_or_else(|| TMUX_SOCKET.to_string())
 }
 
@@ -255,7 +294,8 @@ const MAX_TITLE_SEED_BYTES: usize = 512;
 pub struct TmuxBackend {
     /// How `tmux` is launched (local `Command` vs `ssh <dest> tmux …`).
     transport: TmuxTransport,
-    /// tmux socket name passed via `-L` (e.g. `thurbox`).
+    /// tmux socket name passed via `-L` (e.g. `thurbox`) as configured; read
+    /// through [`Self::socket`], which prefers what the host's own CLI said.
     socket: String,
     /// tmux session name grouping all thurbox windows.
     session: String,
@@ -333,6 +373,13 @@ impl TmuxBackend {
         Self::with_transport(transport, socket, session, host.backend_name())
     }
 
+    /// The socket this backend talks to: the configured one, unless the host's
+    /// own CLI has since reported a different one (see [`learn_host_socket`]).
+    /// Resolved per call so a backend registered at startup follows the host.
+    fn socket(&self) -> String {
+        learned_host_socket(&self.name).unwrap_or_else(|| self.socket.clone())
+    }
+
     /// Run a tmux command and return its stdout (used before control mode is available).
     fn tmux_output(&self, args: &[&str]) -> Result<String> {
         let output = self.run_tmux(args)?;
@@ -349,7 +396,7 @@ impl TmuxBackend {
     fn run_tmux(&self, args: &[&str]) -> Result<std::process::Output> {
         let output = self
             .transport
-            .tmux_command(&self.socket, args)
+            .tmux_command(&self.socket(), args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -472,7 +519,8 @@ impl TmuxBackend {
         if !self.session_exists() {
             debug!(
                 "Creating tmux session '{}' on socket '{}'",
-                self.session, self.socket
+                self.session,
+                self.socket()
             );
             self.run_tmux(&[
                 "new-session",
@@ -698,7 +746,7 @@ impl TmuxBackend {
         // hitting `control = None` and reporting the misleading "call
         // ensure_ready() first". Assigning `Some(fresh)` drops the dead
         // ControlMode (its cleanup) as it replaces it.
-        let fresh = ControlMode::start(&self.transport, &self.socket, &self.session)?;
+        let fresh = ControlMode::start(&self.transport, &self.socket(), &self.session)?;
         *guard = Some(fresh);
         debug!("Control mode reconnected successfully");
         Ok(())
@@ -772,8 +820,8 @@ impl TmuxBackend {
         // differently for it (see `control_mode::send_keys_commands`) and routes
         // a paste out of band (see `control_mode::PsmuxPaste`).
         let psmux = self.transport.uses_psmux();
-        let paste = psmux
-            .then(|| control_mode::PsmuxPaste::new(self.transport.clone(), self.socket.clone()));
+        let paste =
+            psmux.then(|| control_mode::PsmuxPaste::new(self.transport.clone(), self.socket()));
         self.with_control(|ctrl| {
             Ok(ControlModeWriter {
                 stdin: Arc::clone(&ctrl.stdin),
@@ -905,7 +953,7 @@ impl SessionBackend for TmuxBackend {
         // the SSH transport this verifies remote connectivity at the same time.
         let output = self
             .transport
-            .tmux_command(&self.socket, &["-V"])
+            .tmux_command(&self.socket(), &["-V"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -934,7 +982,7 @@ impl SessionBackend for TmuxBackend {
             debug!("Starting tmux control mode");
             *guard = Some(ControlMode::start(
                 &self.transport,
-                &self.socket,
+                &self.socket(),
                 &self.session,
             )?);
         }
@@ -1736,7 +1784,20 @@ pub fn spawn_window_remote(
 /// server/session; an unreachable host or absent server is an `Err` the
 /// caller treats as "no reports this cycle".
 pub fn list_remote_hook_states(host: &crate::session::HostDef) -> Result<Vec<(String, String)>> {
-    let backend = TmuxBackend::from_host(host);
+    list_hook_states_on(&TmuxBackend::from_host(host))
+}
+
+/// [`list_remote_hook_states`] for this machine's own server: the pane option
+/// a session created *from afar* on this host sets (its hooks were rewritten to
+/// that form), which nothing here read before sessions were shared.
+pub fn list_local_hook_states() -> Result<Vec<(String, String)>> {
+    list_hook_states_on(&TmuxBackend::local())
+}
+
+fn list_hook_states_on(backend: &TmuxBackend) -> Result<Vec<(String, String)>> {
+    if !backend.session_exists() {
+        return Ok(Vec::new());
+    }
     let session = backend.session.clone();
     let format = format!(
         "#{{pane_id}} #{{{}}}",
@@ -1744,6 +1805,86 @@ pub fn list_remote_hook_states(host: &crate::session::HostDef) -> Result<Vec<(St
     );
     let body = backend.tmux_output(&["list-panes", "-s", "-t", &session, "-F", &format])?;
     Ok(control_mode::parse_pane_hook_states(&body))
+}
+
+/// The live pane of the agent window a session's name produces, on the local
+/// server or on `host` — `None` when the window is absent, its pane has died,
+/// or the name is ambiguous (two windows; keystrokes to the wrong agent are
+/// worse than none). A one-shot listing, no control mode: this is asked by the
+/// headless relaunch paths.
+pub fn agent_window_pane(
+    host: Option<&crate::session::HostDef>,
+    session_name: &str,
+) -> Result<Option<String>> {
+    let backend = match host {
+        Some(host) => TmuxBackend::from_host(host),
+        None => TmuxBackend::local(),
+    };
+    let window = agent_window_name(session_name);
+    let mut panes = backend
+        .discover()?
+        .into_iter()
+        .filter(|w| w.name == window && w.is_alive)
+        .map(|w| w.backend_id);
+    let first = panes.next();
+    Ok(match (first, panes.next()) {
+        (Some(pane), None) => Some(pane),
+        _ => None,
+    })
+}
+
+/// Whether a session's agent window is alive — see [`agent_window_pane`].
+pub fn agent_window_alive(
+    host: Option<&crate::session::HostDef>,
+    session_name: &str,
+) -> Result<bool> {
+    Ok(agent_window_pane(host, session_name)?.is_some())
+}
+
+/// Record a hook state on the pane this process runs in — the pane option a
+/// remote observer's control-mode subscription reads — so a status reported
+/// through the CLI reaches a peer within a second, not at the mirror's
+/// cadence. `$TMUX` is `<socket path>,<pid>,<session index>`; the socket is
+/// addressed by path (`-S`) because it is whichever server the pane is on,
+/// which need not be this build's own. Silently nothing outside tmux.
+pub fn set_own_pane_state(state: &str) -> Result<()> {
+    let (Some(tmux), Some(pane)) = (
+        std::env::var_os("TMUX").map(|s| s.to_string_lossy().into_owned()),
+        std::env::var_os("TMUX_PANE").map(|s| s.to_string_lossy().into_owned()),
+    ) else {
+        return Ok(());
+    };
+    let Some(socket_path) = own_socket_path(&tmux) else {
+        return Ok(());
+    };
+    if !control_mode::is_valid_pane_id(&pane) {
+        return Ok(());
+    }
+    let status = Command::new(DEFAULT_MUX)
+        .args([
+            "-S",
+            &socket_path,
+            "set-option",
+            "-p",
+            "-t",
+            &pane,
+            crate::session::REMOTE_HOOK_STATE_OPTION,
+            state,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("run tmux set-option on the own pane")?;
+    if !status.success() {
+        bail!("tmux set-option exited {status}");
+    }
+    Ok(())
+}
+
+/// The socket path in a `$TMUX` value (`<path>,<pid>,<index>`).
+pub(crate) fn own_socket_path(tmux_env: &str) -> Option<String> {
+    let path = tmux_env.split(',').next()?.trim();
+    (!path.is_empty()).then(|| path.to_string())
 }
 
 /// Kill a remote tmux pane on `host` by its pane id (`%N`), best-effort.
@@ -1959,6 +2100,36 @@ mod tests {
         ));
         assert_eq!(backend.socket, TMUX_SOCKET);
         assert_eq!(backend.session, TMUX_SESSION);
+    }
+
+    #[test]
+    fn the_own_socket_path_is_the_first_field_of_tmux_env() {
+        assert_eq!(
+            own_socket_path("/tmp/tmux-1000/thurbox,4242,0").as_deref(),
+            Some("/tmp/tmux-1000/thurbox")
+        );
+        assert_eq!(own_socket_path(",1,0"), None);
+        assert_eq!(own_socket_path(""), None);
+    }
+
+    #[test]
+    fn a_learned_socket_is_used_unless_the_host_pins_one() {
+        let learned = crate::session::HostDef {
+            name: "learned-socket-host".into(),
+            destination: "me@h".into(),
+            ..Default::default()
+        };
+        assert_eq!(host_socket(&learned), TMUX_SOCKET);
+        learn_host_socket(&learned, "thurbox");
+        assert_eq!(host_socket(&learned), "thurbox");
+        let pinned = crate::session::HostDef {
+            name: "pinned-socket-host".into(),
+            destination: "me@h".into(),
+            socket: Some("mine".into()),
+            ..Default::default()
+        };
+        learn_host_socket(&pinned, "thurbox");
+        assert_eq!(host_socket(&pinned), "mine");
     }
 
     #[test]

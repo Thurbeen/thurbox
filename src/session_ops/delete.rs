@@ -49,6 +49,42 @@ pub fn delete_session_headless(
 
     let mut report = ForceDeleteReport::default();
 
+    // A session on a shareable host is the host's to delete: its CLI kills the
+    // window and removes the worktrees where they are, and marks its own row;
+    // the local row is marked from its answer. Soft or forced as asked.
+    if let Some(host) = super::resolve_host(&session.backend_type).flatten() {
+        if let Some(cli) = super::host_cli::delegated(&host) {
+            let id = session_id.to_string();
+            let mut args = vec!["session", "delete", &id];
+            if force {
+                args.push("--force");
+            }
+            let answer = super::host_cli::run(&host, &cli, &args)?;
+            report.killed_window = answer
+                .get("killed_window")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            report.removed_worktrees = string_list(&answer, "removed_worktrees");
+            report.worktree_errors = string_list(&answer, "worktree_errors");
+            report.remote_teardown_error = answer
+                .get("remote_teardown_error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            report.disabled_automations = db
+                .disable_send_automations_for_session(session_id)
+                .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
+            db.soft_delete_session(session_id)
+                .map_err(|e| format!("soft_delete_session: {e}"))?;
+            if force {
+                db.mark_session_force_deleted(session_id)
+                    .map_err(|e| format!("mark_session_force_deleted: {e}"))?;
+            }
+            report.hook_failures =
+                super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
+            return Ok(report);
+        }
+    }
+
     if force {
         teardown_runtime_resources(&session, &mut report);
         report.disabled_automations = db
@@ -69,6 +105,19 @@ pub fn delete_session_headless(
     report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
 
     Ok(report)
+}
+
+fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {
+    answer
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Tear down a session's slow runtime resources: kill the tmux window, remove

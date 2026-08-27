@@ -99,6 +99,12 @@ const DISCOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_millis
 /// process, because the candidate pane never changes.
 const ATTACH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// How often a shareable host's database is mirrored into local rows. One
+/// multiplexed ssh round trip per host per interval, on a worker; the
+/// pipelines mirror again right after anything they delegate, so this is the
+/// cadence for changes *other* observers made.
+const MIRROR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The key a plugin leaves in `store` to ask for terminal text.
 ///
 /// A parameterised read, like the creation flow's repository questions: nobody
@@ -245,6 +251,11 @@ pub struct Terminals {
     /// Backends whose window list is being read on a worker.
     discovering: std::collections::HashSet<String>,
     discovered_rx: (Sender<Discovered>, Receiver<Discovered>),
+    /// Hosts with a mirror pass in flight, and when each host was last
+    /// mirrored — `None` until its first pass returns.
+    mirroring: std::collections::HashSet<String>,
+    mirrored_at: HashMap<String, std::time::Instant>,
+    mirror_rx: (Sender<Mirrored>, Receiver<Mirrored>),
     /// The runtime the interface runs on, so a worker can enter it.
     ///
     /// Adopting a pane wires its reader and writer as tokio tasks, which need a
@@ -288,6 +299,9 @@ impl Terminals {
             adopted: Vec::new(),
             discovering: std::collections::HashSet::new(),
             discovered_rx: std::sync::mpsc::channel(),
+            mirroring: std::collections::HashSet::new(),
+            mirrored_at: HashMap::new(),
+            mirror_rx: std::sync::mpsc::channel(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
             rows_cache: RefCell::new(HashMap::new()),
@@ -306,6 +320,8 @@ impl Terminals {
     /// adoption is queued for the loop to persist, so it happens once per row.
     pub fn sync(&mut self, snapshot: &Snapshot, rows: u16, cols: u16) {
         self.collect_discovered();
+        self.collect_mirrored();
+        self.refresh_mirrors();
         self.collect_attached(rows, cols);
         self.drop_lost_panes(snapshot);
         // A surface that lost its parser takes its cached rows with it.
@@ -313,9 +329,10 @@ impl Terminals {
             .borrow_mut()
             .retain(|surface, _| self.surface_parser(surface).is_some());
 
-        // Only pay for discovery while something needs it, and never for a remote
-        // row: a remote spawn drives control mode and records the real pane id, so
-        // a remote row is not something a window name can fix.
+        // Only pay for discovery while something needs it. Remote rows are
+        // surveyed too, since sessions were shared: a row mirrored from a host's
+        // database names the pane the host reported, or none at all, and its
+        // window is found on the host's server the same way a local one is.
         //
         // A row that already names a pane is surveyed too — a persisted pane id is
         // a hint rather than a fact, see [`Self::pane_is_stale`] — which costs
@@ -326,7 +343,6 @@ impl Terminals {
             .iter()
             .filter(|row| !self.live.contains_key(&row.id) && !self.attaching.contains_key(&row.id))
             .map(|row| (row.id.as_str(), row.backend.as_str()))
-            .filter(|(_, backend)| !crate::session::is_remote_backend(backend))
             .collect();
 
         // Stamp each row with where its backend's survey count stood when it first
@@ -669,6 +685,66 @@ impl Terminals {
                 let _guard = runtime.as_ref().map(|handle| handle.enter());
                 let _ = tx.send(discover_windows(&backend, backend_name, already_ready));
             });
+        }
+    }
+
+    /// Mirror every shareable host whose last pass is older than
+    /// `MIRROR_INTERVAL` (or has never run), one worker each, whether or not a
+    /// row lives on it: a host the observer has never used can hold sessions a
+    /// peer created. Readying the host — the ssh connect, the CLI probe, a
+    /// provisioning on first use — all happens on that worker, never here.
+    fn refresh_mirrors(&mut self) {
+        let due: Vec<crate::session::HostDef> = self
+            .hosts
+            .hosts
+            .iter()
+            .filter(|host| host.shareable())
+            .filter(|host| !self.mirroring.contains(&host.backend_name()))
+            .filter(|host| {
+                !matches!(
+                    self.mirrored_at.get(&host.backend_name()),
+                    Some(at) if at.elapsed() < MIRROR_INTERVAL
+                )
+            })
+            .cloned()
+            .collect();
+        for host in due {
+            let name = host.backend_name();
+            self.mirroring.insert(name.clone());
+            let tx = self.mirror_rx.0.clone();
+            let runtime = self.runtime.clone();
+            std::thread::spawn(move || {
+                let _guard = runtime.as_ref().map(|handle| handle.enter());
+                let report = mirror_host(&host);
+                let _ = tx.send(Mirrored {
+                    backend: name,
+                    report,
+                });
+            });
+        }
+    }
+
+    /// Fold in finished mirror passes. The rows themselves arrive through the
+    /// database — the snapshot's `data_version` poll — so all that is kept here
+    /// is when each host was last mirrored, and a log line for a pass that
+    /// changed something or could not run.
+    fn collect_mirrored(&mut self) {
+        while let Ok(done) = self.mirror_rx.1.try_recv() {
+            self.mirroring.remove(&done.backend);
+            self.mirrored_at
+                .insert(done.backend.clone(), std::time::Instant::now());
+            match done.report {
+                Ok(report) if report.changed() => tracing::info!(
+                    "mirrored {}: {} adopted, {} updated, {} deleted, {} restored",
+                    done.backend,
+                    report.adopted.len(),
+                    report.updated.len(),
+                    report.deleted.len(),
+                    report.restored.len()
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::debug!("mirror of {} skipped: {e}", done.backend),
+            }
         }
     }
 
@@ -1299,6 +1375,26 @@ fn discover_windows(
         readied: true,
         panes,
     }
+}
+
+/// A mirror pass that came back from its worker.
+struct Mirrored {
+    backend: String,
+    report: Result<crate::session_ops::mirror::MirrorReport, String>,
+}
+
+/// One mirror pass for `host`, on the worker: its own database handle, the
+/// CLI probe (cached across passes), and the reconcile.
+fn mirror_host(
+    host: &crate::session::HostDef,
+) -> Result<crate::session_ops::mirror::MirrorReport, String> {
+    let cli = match crate::session_ops::host_cli::usable(host) {
+        crate::session_ops::host_cli::Usable::Yes(cli) => cli,
+        crate::session_ops::host_cli::Usable::No(reason) => return Err(reason),
+    };
+    let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
+    let db = crate::storage::Database::open(&path).map_err(|e| format!("open database: {e}"))?;
+    crate::session_ops::mirror::mirror_host(&db, host, &cli)
 }
 
 /// What an agent reported about itself over its own terminal.

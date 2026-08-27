@@ -479,8 +479,100 @@ fn tick(db: &Database) -> Result<Value, String> {
         if polled > 0 {
             tracing::info!("remote status poll: {polled} hook state(s) updated");
         }
+        // The same option on this machine's own panes: a session a peer created
+        // *here* had its hooks rewritten to set it, and nothing local read it.
+        let polled = poll_local_pane_states(db);
+        if polled > 0 {
+            tracing::info!("local pane status poll: {polled} hook state(s) updated");
+        }
     }
-    Ok(json!({ "fired": fired, "skipped": skipped, "healed": healed }))
+    // Shared hosts, mirrored at the heartbeat's cadence so `session list`
+    // readers see peer sessions with the interface closed. After the
+    // due-automation pass for the same reason as the remote poll above.
+    let synced: Vec<Value> = match crate::session_ops::mirror::sync(db, None, false) {
+        Ok(reports) => reports.iter().map(|r| r.to_json()).collect(),
+        Err(e) => {
+            tracing::warn!("mirror sync: {e}");
+            Vec::new()
+        }
+    };
+    // A soft delete asked for headlessly — from a peer, or from this CLI —
+    // has no interface here to reap it once the undo window has closed.
+    let reaped = reap_overdue_soft_deletes(db);
+    Ok(json!({
+        "fired": fired,
+        "skipped": skipped,
+        "healed": healed,
+        "synced": synced,
+        "reaped": reaped,
+    }))
+}
+
+/// Write the `@thurbox_state` pane option of every live local pane into the
+/// hook columns, for sessions whose rows are here. Returns how many changed.
+fn poll_local_pane_states(db: &Database) -> usize {
+    let states = match crate::agent::tmux::list_local_hook_states() {
+        Ok(states) if !states.is_empty() => states,
+        Ok(_) => return 0,
+        Err(e) => {
+            tracing::debug!("local pane status poll skipped: {e:#}");
+            return 0;
+        }
+    };
+    let Ok(sessions) = db.list_active_sessions() else {
+        return 0;
+    };
+    let hook_rows = db.load_hook_states().unwrap_or_default();
+    let mut written = 0;
+    for (pane, state) in states {
+        if !crate::session::HOOK_STATES.contains(&state.as_str()) {
+            continue;
+        }
+        let Some(session) = sessions
+            .iter()
+            .find(|s| !crate::session::is_remote_backend(&s.backend_type) && s.backend_id == pane)
+        else {
+            continue;
+        };
+        if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
+            continue;
+        }
+        if db.set_hook_state(session.id, &state).is_ok() {
+            written += 1;
+        }
+    }
+    written
+}
+
+/// Let go of the agents of local sessions soft-deleted longer ago than the
+/// interface's undo window, when their window is still up. Returns the ids
+/// reaped. Only rows with a live window are touched, so a row reaped once
+/// costs nothing on every later tick.
+fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
+    let Ok(rows) = db.list_deleted_sessions() else {
+        return Vec::new();
+    };
+    let now = current_time_millis();
+    let window = crate::kernel::reaper::UNDO_WINDOW.as_millis() as u64;
+    let mut reaped = Vec::new();
+    for row in rows {
+        if row.force_deleted
+            || crate::session::is_remote_backend(&row.backend_type)
+            || now.saturating_sub(row.deleted_at) < window
+        {
+            continue;
+        }
+        match crate::agent::tmux::agent_window_alive(None, &row.name) {
+            Ok(true) => {}
+            _ => continue,
+        }
+        match crate::session_ops::reap_soft_deleted(db, row.id) {
+            Ok(true) => reaped.push(row.id.to_string()),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("reap of '{}': {e}", row.name),
+        }
+    }
+    reaped
 }
 
 /// Execute one automation's action without a TUI, returning the run outcome.
@@ -699,10 +791,50 @@ mod tests {
 
     #[test]
     fn tick_reports_fired_and_skipped_arrays() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
         let db = Database::open_in_memory().unwrap();
         let v = tick(&db).unwrap();
         assert_eq!(v["fired"], json!([]));
         assert_eq!(v["skipped"], json!([]));
+        // The mirror pass and the overdue reap report too, empty here: no
+        // shareable host is configured and nothing was soft-deleted.
+        assert_eq!(v["synced"], json!([]));
+        assert_eq!(v["reaped"], json!([]));
+    }
+
+    #[test]
+    fn the_overdue_reap_skips_fresh_forced_and_remote_rows() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let fresh = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "fresh".into(),
+            agent: "claude".into(),
+            backend_id: "%1".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&fresh).unwrap();
+        db.soft_delete_session(fresh.id).unwrap();
+        let mut remote = fresh.clone();
+        remote.id = SessionId::default();
+        remote.name = "remote".into();
+        remote.backend_type = "ssh:devbox".into();
+        db.upsert_session(&remote).unwrap();
+        db.soft_delete_session(remote.id).unwrap();
+        // Inside the undo window, and on another machine: neither is touched
+        // (and no tmux is consulted for either).
+        assert!(reap_overdue_soft_deletes(&db).is_empty());
     }
 
     #[test]

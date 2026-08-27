@@ -11,7 +11,7 @@ use crate::sync::{SharedSession, SharedWorktree};
 const DEFAULT_BASE_BRANCH: &str = "main";
 
 /// Backend identifier for the local-tmux backend (matches `LocalTmuxBackend`).
-const LOCAL_TMUX_BACKEND_TYPE: &str = "local-tmux";
+pub const LOCAL_TMUX_BACKEND_TYPE: &str = "local-tmux";
 
 /// Request to create a new headless session.
 ///
@@ -85,6 +85,11 @@ pub struct SpawnResult {
     /// `session.post_create` hooks that failed. The session exists and is
     /// running regardless; these are for the caller's report.
     pub hook_failures: Vec<String>,
+    /// Why this session on a remote host was **not** created by the host's own
+    /// CLI — sharing is off for the host, or no `thurbox-cli` could be found
+    /// or provisioned there — so it was driven from here the way every remote
+    /// session used to be. `None` for a local session and for a shared one.
+    pub sharing: Option<String>,
 }
 
 /// Spawn a new session inside `tmux -L thurbox`, persisting its state to the
@@ -101,6 +106,9 @@ pub enum SpawnPhase {
     Resolving,
     /// Running the user's `session.pre_create` hooks, which may refuse.
     Hooks,
+    /// The host's own `thurbox-cli` creating the session, start to finish —
+    /// one blocking call from here, so the phases below never show for it.
+    Host,
     /// Creating or attaching worktrees — the `git fetch` and checkout.
     Worktrees,
     /// Readying the backend: for a remote host, the ssh connect.
@@ -116,6 +124,7 @@ impl SpawnPhase {
         match self {
             SpawnPhase::Resolving => "resolving",
             SpawnPhase::Hooks => "hooks",
+            SpawnPhase::Host => "host",
             SpawnPhase::Worktrees => "worktrees",
             SpawnPhase::Backend => "backend",
             SpawnPhase::Launching => "launching",
@@ -149,14 +158,42 @@ pub fn spawn_session_headless_with_progress(
     crate::paths::validate_safe_name(&req.name)?;
     validate_parent_session(db, req.parent_session_id)?;
 
+    // Resolve the optional remote host. `backend_type` is `local-tmux` or
+    // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
+    let (backend_type, host) = resolve_host(req.host.as_deref())?;
+
+    // A shareable host creates its own sessions: its CLI does the worktree,
+    // the hooks and the launch with its own configuration, and its database
+    // is the record. Everything below is the path for a local session and for
+    // a host that cannot be delegated to (ADR-24).
+    let mut sharing = None;
+    if let Some(h) = host.as_ref() {
+        match super::host_cli::usable(h) {
+            super::host_cli::Usable::Yes(cli) if req.fork_session_id.is_none() => {
+                return spawn_delegated(db, req, h, &cli, &report);
+            }
+            super::host_cli::Usable::Yes(_) => {
+                // A fork resumes the parent's conversation in the parent's
+                // checkout — two facts the host CLI's `create` does not take.
+                // Driven from here; `session sync --adopt` registers it after.
+                sharing = Some(super::host_cli::sharing_off_note(
+                    h,
+                    "a fork is created from here and registered on the host by sync --adopt",
+                ));
+            }
+            super::host_cli::Usable::No(reason) => {
+                sharing = Some(super::host_cli::sharing_off_note(h, &reason));
+            }
+        }
+    }
+    if let Some(note) = &sharing {
+        tracing::warn!("'{}': {note}", req.name);
+    }
+
     // Resolve the agent definition once; `agent_name` is derived from it so the
     // persisted name always matches the def that's actually launched.
     let mut agent_def = super::resolve_agent_def(req.agent.as_deref());
     let agent_name = agent_def.name.clone();
-
-    // Resolve the optional remote host. `backend_type` is `local-tmux` or
-    // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
-    let (backend_type, host) = resolve_host(req.host.as_deref())?;
 
     // Both ids are minted before anything happens, so the pre-create hook can
     // name the session it is being asked about — and correlate with the
@@ -357,6 +394,155 @@ pub fn spawn_session_headless_with_progress(
         worktrees,
         parent_session_id: req.parent_session_id,
         hook_failures,
+        sharing,
+    })
+}
+
+/// Create the session by running `thurbox-cli session create` **on the host**.
+///
+/// The host's CLI does what the rest of this file does — resolves the
+/// repository, makes the worktrees, wires the hooks, launches the agent,
+/// persists the row — with the host's own `agents.toml` and `hooks.toml`, and
+/// mints the id. The local row is then a mirror of the host's, taken by the
+/// same pass the mirror worker runs. The caller's own `hooks.toml` fires here,
+/// around the delegated call, with `THURBOX_HOST` set; the host's fires there.
+fn spawn_delegated(
+    db: &Database,
+    req: SpawnRequest,
+    host: &HostDef,
+    cli: &super::host_cli::CliInfo,
+    report: &dyn Fn(SpawnPhase),
+) -> Result<SpawnResult, String> {
+    let backend = host.backend_name();
+    // The host validates the parent against its own database; a parent that
+    // lives anywhere else is refused here, before any round trip, with a
+    // message that says where it lives.
+    if let Some(parent_id) = req.parent_session_id {
+        let parent = db
+            .get_session_by_id(parent_id)
+            .map_err(|e| format!("get parent session: {e}"))?
+            .ok_or_else(|| format!("parent session not found: {parent_id}"))?;
+        if parent.backend_type != backend {
+            return Err(format!(
+                "parent session '{}' runs on {}, not on host '{}'; a session's parent must be on the same host",
+                parent.name, parent.backend_type, host.name
+            ));
+        }
+    }
+
+    report(SpawnPhase::Hooks);
+    let base_branch = req.worktree_branch.as_ref().map(|_| {
+        req.base_branch
+            .as_deref()
+            .unwrap_or(DEFAULT_BASE_BRANCH)
+            .to_string()
+    });
+    let mut hook_ctx = crate::session::HookContext {
+        name: req.name.clone(),
+        agent: req.agent.clone().unwrap_or_default(),
+        repo: Some(req.repo_path.clone()),
+        branch: req.worktree_branch.clone(),
+        base_branch,
+        host: Some(host.name.clone()),
+        parent_session_id: req.parent_session_id,
+        task_id: req.task_id,
+        additional_dirs: req
+            .extra_repos
+            .iter()
+            .filter(|extra| !extra.worktree)
+            .map(|extra| extra.repo_path.clone())
+            .collect(),
+        ..crate::session::HookContext::default()
+    };
+    super::fire_pre(crate::session::HookEvent::PreCreate, &hook_ctx)?;
+
+    report(SpawnPhase::Host);
+    let repo = req.repo_path.to_string_lossy().into_owned();
+    let mut args: Vec<String> = vec![
+        "session".into(),
+        "create".into(),
+        "--name".into(),
+        req.name.clone(),
+        "--repo-path".into(),
+        repo,
+    ];
+    if let Some(agent) = &req.agent {
+        args.extend(["--agent".to_string(), agent.clone()]);
+    }
+    if let Some(branch) = &req.worktree_branch {
+        args.extend(["--worktree-branch".to_string(), branch.clone()]);
+    }
+    if let Some(base) = &req.base_branch {
+        args.extend(["--base-branch".to_string(), base.clone()]);
+    }
+    if let Some(parent) = req.parent_session_id {
+        args.extend(["--parent".to_string(), parent.to_string()]);
+    }
+    for extra in &req.extra_repos {
+        let path = extra.repo_path.to_string_lossy().into_owned();
+        if extra.worktree {
+            let spec = match &extra.base_branch {
+                Some(base) => format!("{path}@{base}"),
+                None => path,
+            };
+            args.extend(["--add-repo".to_string(), spec]);
+        } else {
+            args.extend(["--add-dir".to_string(), path]);
+        }
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let created = super::host_cli::run(host, cli, &arg_refs)?;
+    let session_id: SessionId = created
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            format!(
+                "host '{}' created the session but reported no id",
+                host.name
+            )
+        })?
+        .parse()
+        .map_err(|e| format!("host '{}' reported a malformed session id: {e}", host.name))?;
+
+    // The row, as the host now lists it — one mirror pass, the same one the
+    // worker runs, so a delegated creation and a peer's creation land the same
+    // way. A host that lists nothing for the id it just minted is a bug there.
+    if let Err(e) = super::mirror::mirror_host(db, host, cli) {
+        tracing::warn!("mirror of '{}' after create failed: {e}", host.name);
+    }
+    let row = db
+        .get_session_by_id(session_id)
+        .map_err(|e| format!("get created session: {e}"))?
+        .ok_or_else(|| {
+            format!(
+                "host '{}' created session {session_id} but does not list it",
+                host.name
+            )
+        })?;
+
+    hook_ctx.session_id = Some(session_id);
+    hook_ctx.agent = row.agent.clone();
+    hook_ctx.agent_session_id = row.agent_session_id.clone();
+    hook_ctx.cwd = row.cwd.clone();
+    hook_ctx.backend_id = Some(row.backend_id.clone()).filter(|id| !id.is_empty());
+    hook_ctx.worktrees = row
+        .worktrees
+        .iter()
+        .map(super::lifecycle_hooks::worktree)
+        .collect();
+    let hook_failures = super::fire_post(crate::session::HookEvent::PostCreate, &hook_ctx);
+
+    Ok(SpawnResult {
+        session_id,
+        name: row.name,
+        agent: row.agent,
+        agent_session_id: row.agent_session_id.unwrap_or_default(),
+        backend_id: row.backend_id,
+        cwd: row.cwd.unwrap_or(req.repo_path),
+        worktrees: row.worktrees,
+        parent_session_id: row.parent_session_id,
+        hook_failures,
+        sharing: None,
     })
 }
 

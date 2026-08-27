@@ -54,7 +54,7 @@ pub enum HostKind {
 }
 
 /// A single off-local host: an SSH machine or a local WSL distro.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostDef {
     /// Short, unique name. The backend is registered as `ssh:<name>` or
     /// `wsl:<name>` depending on [`kind`](Self::kind).
@@ -91,6 +91,38 @@ pub struct HostDef {
     /// Windows SSH host (psmux speaks the same control-mode wire protocol).
     #[serde(default)]
     pub multiplexer: Option<String>,
+    /// Whether the host's own thurbox database is the record of the sessions
+    /// on it (`true`, the default): a remote thurbox mirrors that database and
+    /// delegates create/delete/restart/restore to `thurbox-cli` on the host,
+    /// provisioning that CLI when the host has none. `false` uses the host
+    /// exactly as before sharing existed — worktrees and hooks driven from
+    /// here, nothing mirrored, nothing installed on the host.
+    #[serde(default = "default_share_sessions")]
+    pub share_sessions: bool,
+}
+
+fn default_share_sessions() -> bool {
+    true
+}
+
+// By hand rather than derived: a derived `Default` would make `share_sessions`
+// `false`, and every `HostDef { name, .. Default::default() }` — the tests, the
+// WSL constructor — would silently opt its host out of sharing.
+impl Default for HostDef {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: HostKind::default(),
+            destination: String::new(),
+            distro: None,
+            socket: None,
+            session: None,
+            ssh_opts: Vec::new(),
+            worktrees_dir: None,
+            multiplexer: None,
+            share_sessions: true,
+        }
+    }
 }
 
 impl HostDef {
@@ -101,8 +133,15 @@ impl HostDef {
             name: distro.clone(),
             kind: HostKind::Wsl,
             distro: Some(distro),
+            share_sessions: true,
             ..Self::default()
         }
+    }
+
+    /// Whether sessions on this host are shared through its own database
+    /// ([`share_sessions`](Self::share_sessions)).
+    pub fn shareable(&self) -> bool {
+        self.share_sessions
     }
 
     /// Whether this host is a WSL distro.
@@ -242,6 +281,19 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn sharing_is_on_unless_the_entry_says_otherwise() {
+        let on: HostDef = toml::from_str("name = \"devbox\"\ndestination = \"me@devbox\"").unwrap();
+        assert!(on.shareable());
+        assert!(HostDef::default().shareable());
+        assert!(HostDef::wsl("Ubuntu").shareable());
+        let off: HostDef = toml::from_str(
+            "name = \"devbox\"\ndestination = \"me@devbox\"\nshare_sessions = false",
+        )
+        .unwrap();
+        assert!(!off.shareable());
     }
 
     #[test]

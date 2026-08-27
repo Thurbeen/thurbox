@@ -17,6 +17,7 @@ pub mod messages;
 pub mod repo_bookmarks;
 pub mod review;
 mod schema;
+pub use schema::SCHEMA_VERSION;
 mod sessions;
 mod settings;
 pub use sessions::{DeletedSessionInfo, HookRow};
