@@ -15,6 +15,7 @@ wrote. No fork, no recompile, no restart. **[Customization →](#customization)*
 [![CI](https://github.com/Thurbeen/thurbox/workflows/CI/badge.svg)](https://github.com/Thurbeen/thurbox/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Website](https://img.shields.io/badge/Website-thurbox.thurbeen.eu-blue)](https://thurbox.thurbeen.eu/)
+[![Discord](https://img.shields.io/discord/1542644702984142928?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/fGumcHaxFY)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Thurbeen_thurbox&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Thurbeen_thurbox)
 
 ![Thurbox Demo](./docs/media/thurbox-demo.gif)
@@ -1431,7 +1432,12 @@ This project is licensed under the MIT License - see the
   — one of the supported coding agents
 - [tmux](https://github.com/tmux/tmux) — terminal multiplexer
 
-## Support
+## Community & Support
 
-For issues, questions, or contributions, please visit our
-[GitHub repository](https://github.com/Thurbeen/thurbox).
+- **[Discord](https://discord.gg/fGumcHaxFY)** — questions, setup
+  help, and showing off your interface. Ask in `#help`, one
+  thread per problem.
+- **[GitHub Issues](https://github.com/Thurbeen/thurbox/issues)**
+  — confirmed bugs and concrete feature requests.
+- **[Contributing](CONTRIBUTING.md)** — everything about getting
+  a change merged.

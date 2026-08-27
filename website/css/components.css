@@ -95,7 +95,8 @@
   text-shadow: var(--glow-red);
 }
 
-.nav-links .github-link {
+.nav-links .github-link,
+.nav-links .discord-link {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
@@ -656,8 +657,9 @@
   }
 }
 
-/* ---- GitHub icon (inline SVG) ---- */
-.icon-github {
+/* ---- GitHub / Discord icons (inline SVG) ---- */
+.icon-github,
+.icon-discord {
   width: 20px;
   height: 20px;
   fill: currentColor;
