@@ -2395,8 +2395,19 @@ recorded before their pane's whole-rect focus fallback.
 - **Hover**: the clickable row under the pointer is underlined
   (driven by mouse-move events; applied post-render from the same
   click registry).
+- **One notch, one step**: a wheel *notch* is not one report. A
+  terminal turns a detent into its line-scroll count — three, for
+  ghostty, kitty and xterm — and under mouse reporting sends that
+  many reports back to back, so one flick of the wheel used to walk
+  the session list through three sessions and open each one on the
+  way. Reports closer together than a person can turn a wheel
+  (20 ms) are folded into the notch that started them, and a
+  direction change always steps. A tick **forwarded to a pty** is
+  deliberately left whole: there the three reports are the three
+  lines the terminal means to scroll, and the program inside owns
+  what they do.
 - **Modal scrolling**: while a modal is open the wheel steps its
-  selection (one row per tick, like `j`/`k`); overflowing picker
+  selection (one row per notch, like `j`/`k`); overflowing picker
   lists window around the selection and draw a draggable scrollbar
   (`ScrollTarget::Modal`) in their rightmost column. Drag replays
   Up/Down through the modal's own key handler, so clamping and side

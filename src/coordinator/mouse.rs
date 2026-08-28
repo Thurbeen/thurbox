@@ -48,6 +48,13 @@ impl App {
     /// its own: every scrollable pane already declares those, so the wheel and
     /// the arrow keys cannot come to mean different things — the same reasoning
     /// behind the `key:<chord>` click role.
+    ///
+    /// One notch of a wheel is **not** one report, so every leg that steps a
+    /// selection asks [`WheelNotch`] first — without it a single detent walked
+    /// the session list through three sessions and opened each one on the way.
+    /// A tick *forwarded to a pty* is deliberately left alone: there the three
+    /// reports are the three lines the terminal means to scroll, and the
+    /// program inside owns what they do.
     pub(crate) fn on_scroll(&mut self, x: u16, y: u16, up: bool) {
         // The selection is in screen cells and the text under them is about
         // to move; v1 drops it on every scroll for the same reason.
@@ -59,7 +66,7 @@ impl App {
         // covers. While help is capturing a chord it is left alone: the capture
         // would record the synthesized keystroke as the new binding.
         if self.modals.is_open() {
-            if !self.modals.captures_everything() {
+            if !self.modals.captures_everything() && self.wheel_notch.opens(Instant::now(), up) {
                 self.dispatch_modal_key(&key);
             }
             return;
@@ -67,8 +74,10 @@ impl App {
 
         // A float owns the wheel for the same reason it owns clicks.
         if let Some(index) = self.grabbed {
-            self.dispatch_key_to(index, &key);
-            self.dirty = true;
+            if self.wheel_notch.opens(Instant::now(), up) {
+                self.dispatch_key_to(index, &key);
+                self.dirty = true;
+            }
             return;
         }
 
@@ -78,8 +87,10 @@ impl App {
         }
 
         if let Some(target) = self.target_at(x, y) {
-            self.dispatch_key_to(target.plugin, &key);
-            self.dirty = true;
+            if self.wheel_notch.opens(Instant::now(), up) {
+                self.dispatch_key_to(target.plugin, &key);
+                self.dirty = true;
+            }
         }
     }
 
@@ -559,5 +570,98 @@ impl App {
                     .get(index)
                     .is_some_and(|(float, _)| float.intersects(rect))
         })
+    }
+}
+
+/// How close two reports have to be to belong to the same wheel notch.
+///
+/// A detent's reports are written in one go — microseconds apart, well inside
+/// this — while nobody can turn a wheel twice in 20 ms. So nothing a person
+/// meant as two steps is folded into one, and a held spin still steps fifty
+/// times a second.
+const WHEEL_NOTCH: Duration = Duration::from_millis(20);
+
+/// The wheel notch in progress: when its first report arrived, and which way it
+/// pointed.
+///
+/// A terminal turns one detent into its line-scroll count — three, for ghostty,
+/// kitty and xterm — and under mouse reporting sends that many reports back to
+/// back. The report that opens a notch steps; the ones riding behind it do not.
+#[derive(Default)]
+pub(crate) struct WheelNotch {
+    /// The report that opened the notch in progress, if one is open.
+    opened: Option<(Instant, bool)>,
+}
+
+impl WheelNotch {
+    /// Whether this report opens a new notch, recording it when it does.
+    ///
+    /// Timed from the last report that *stepped*, never from the ones dropped
+    /// behind it: extending the window on every report would let a continuous
+    /// spin hold it open forever and stop the list dead. A direction change
+    /// always opens one — the reports of a single detent all point the same way.
+    fn opens(&mut self, now: Instant, up: bool) -> bool {
+        if let Some((at, direction)) = self.opened {
+            if direction == up && now.duration_since(at) < WHEEL_NOTCH {
+                return false;
+            }
+        }
+        self.opened = Some((now, up));
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ghostty, kitty and xterm send one report per line of their scroll
+    /// setting: three for one detent. Each report steps the selection and opens
+    /// what it lands on, so the tail of the burst has to go.
+    #[test]
+    fn a_burst_of_reports_is_one_notch() {
+        let start = Instant::now();
+        let mut notch = WheelNotch::default();
+        let mut steps = 0;
+        for offset in [0, 1, 2] {
+            if notch.opens(start + Duration::from_micros(offset * 200), false) {
+                steps += 1;
+            }
+        }
+        assert_eq!(steps, 1, "one detent must move the selection once");
+    }
+
+    /// The window is timed from the report that stepped, not from the ones
+    /// dropped behind it — otherwise a continuous spin holds it open and the
+    /// list never moves again.
+    #[test]
+    fn a_held_spin_keeps_stepping() {
+        let start = Instant::now();
+        let mut notch = WheelNotch::default();
+        let mut steps = 0;
+        // A report every 5 ms for a fifth of a second: a burst per notch that
+        // never stops.
+        for tick in 0..40 {
+            if notch.opens(start + Duration::from_millis(tick * 5), false) {
+                steps += 1;
+            }
+        }
+        assert_eq!(steps, 10, "a spin must keep moving, at one step per notch");
+    }
+
+    #[test]
+    fn reversing_steps_immediately() {
+        let now = Instant::now();
+        let mut notch = WheelNotch::default();
+        assert!(notch.opens(now, false));
+        assert!(notch.opens(now, true), "a direction change is a new notch");
+    }
+
+    #[test]
+    fn separated_notches_both_step() {
+        let start = Instant::now();
+        let mut notch = WheelNotch::default();
+        assert!(notch.opens(start, false));
+        assert!(notch.opens(start + WHEEL_NOTCH, false));
     }
 }

@@ -242,6 +242,9 @@ struct App {
     data_epoch: u64,
     /// Active mouse text selection over a terminal surface, if any.
     selection: Option<Selection>,
+    /// The wheel notch in progress, so the tail of one detent's reports does
+    /// not step a selection again. See `coordinator::mouse`.
+    wheel_notch: coordinator::mouse::WheelNotch,
     themes: Themes,
     /// Which occupant of each `switch` slot is visible, by slot name.
     ///

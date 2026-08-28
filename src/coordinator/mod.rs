@@ -24,7 +24,7 @@ pub(crate) mod events;
 mod focus;
 mod input;
 mod interface;
-mod mouse;
+pub(crate) mod mouse;
 pub(crate) mod paste;
 mod publish;
 
