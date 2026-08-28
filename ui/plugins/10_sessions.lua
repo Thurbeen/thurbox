@@ -366,6 +366,17 @@ local function soft_delete()
   return plugin_settings.feature("soft_delete", true) ~= false
 end
 
+--- Does a session this interface just created take the cursor and the keyboard?
+---
+--- Off by default, because a spawn finishes on a worker seconds after the flow
+--- closed: the moment the row lands is not a moment you chose, and being moved
+--- then interrupts whatever you went back to reading. Turned on, it saves
+--- hunting for the row you just asked for — which is the whole of the trade,
+--- so it is yours to make rather than ours.
+local function focus_new_session()
+  return plugin_settings.enabled("sessions", "focus_new_session", false)
+end
+
 --- What deleting this session would destroy, itemised — or nil when it would
 --- destroy nothing.
 ---
@@ -488,15 +499,28 @@ return {
   -- Declared as DATA, not just handled. That is what lets the kernel list these
   -- in help, detect a clash with another plugin, and let you rebind them —
   -- none of which it could do if they only existed inside on_key.
-  --- Declared as data, so the settings modal renders a row for it without
-  --- knowing what a repo group is. Read back through `lib.settings`.
+  --- Declared as data, so the settings modal renders a row for each without
+  --- knowing what a repo group is or what creating a session does. Read back
+  --- through `lib.settings`.
   settings = {
     {
       id = "group_by_repo",
       desc = "Group sessions under a repo header",
       default = true,
     },
+    {
+      id = "focus_new_session",
+      desc = "Select and open a session when you create or fork it",
+      default = false,
+    },
   },
+
+  -- The one event this pane needs: a create or a fork THIS interface finished.
+  -- A session `thurbox-cli`, an automation or another instance made arrives as
+  -- `session.created` instead, and subscribing to that would let a background
+  -- spawn take the keyboard out from under you — so it deliberately is not
+  -- subscribed to.
+  events = { "session.post_create" },
 
   keys = {
     { key = "j", action = "sessions.next", desc = "next session", group = "Navigation" },
@@ -802,6 +826,33 @@ return {
     children[#children + 1] = { type = "text", len = 1, text = { chrome.cells_to_spans(bottom) } }
 
     return { type = "box", children = children }
+  end,
+
+  --- Go to a session you just made, when you asked to be taken there.
+  ---
+  --- The event fires once the spawn has landed and the snapshot has been
+  --- re-read, so the row exists by now and the jump is a single frame.
+  on_event = function(name, payload)
+    if name ~= "session.post_create" or not focus_new_session() then
+      return
+    end
+    -- No id means the row could not be resolved from the name (a spawn that
+    -- landed nothing, or two sessions sharing a name). Nothing to go to, and
+    -- taking the keyboard to the agent pane anyway would only re-open the
+    -- session already selected.
+    local id = payload.session
+    if not id then
+      return
+    end
+    -- The two halves `Enter` performs, for the row you did not have to find:
+    -- the cursor follows the id — sticky until a render lands on it, and
+    -- dropped the moment you move the cursor yourself — while the agent pane,
+    -- the one that shows a session, takes the keyboard. `store.selected` is
+    -- written here as well as followed, because a pane that draws before this
+    -- one otherwise shows the previous session for a frame.
+    state.follow = id
+    store.selected = id
+    command("focus", { text = "agent" })
   end,
 
   -- A click on a row selects it, exactly as `j`/`k` would — v1's

@@ -7,8 +7,9 @@
 //! that; here it is a value two plugins share, so the rule has to be asserted.
 
 use thurbox::kernel::command::Command;
+use thurbox::kernel::events::Event;
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
-use thurbox::kernel::registry::Registry;
+use thurbox::kernel::registry::{Registry, Value};
 use thurbox::kernel::snapshot::{GitState, SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 
@@ -54,10 +55,20 @@ fn snapshot() -> Snapshot {
 }
 
 fn publish_in(host: &LuaHost, snapshot: &Snapshot) {
-    let themes = Themes::load(None);
+    publish_with(host, snapshot, &registry_for(host));
+}
+
+/// The registry the kernel would build from what the bundled plugins declare —
+/// separate so a test can override a setting before publishing it.
+fn registry_for(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
+    registry
+}
+
+fn publish_with(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) {
+    let themes = Themes::load(None);
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
@@ -66,7 +77,7 @@ fn publish_in(host: &LuaHost, snapshot: &Snapshot) {
         attach_errors: &Default::default(),
         inflight: &[],
         themes: &themes,
-        registry: &registry,
+        registry,
         diffs: &diffs,
         links: &Default::default(),
         content: &Default::default(),
@@ -91,7 +102,11 @@ fn render(host: &LuaHost) {
 }
 
 fn render_in(host: &LuaHost, snapshot: &Snapshot) {
-    publish_in(host, snapshot);
+    render_with(host, snapshot, &registry_for(host));
+}
+
+fn render_with(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) {
+    publish_with(host, snapshot, registry);
     let index = host.index_of(PLUGIN).expect("no sessions plugin");
     host.render(
         index,
@@ -207,6 +222,110 @@ fn a_session_that_went_away_does_not_freeze_the_selection() {
         host.shared_string("selected").as_deref(),
         Some("aaa"),
         "the cursor stayed on a row that exists"
+    );
+}
+
+/// What the kernel hands the list when a create or a fork this interface asked
+/// for has landed, with the row already resolved in the snapshot.
+fn post_create(id: &str, name: &str) -> Event {
+    Event::new("session.post_create")
+        .with("session", Some(id))
+        .with("name", Some(name))
+        .with("agent", Some("claude"))
+}
+
+/// The setting on, in the registry the plugin reads its value back from.
+fn following_new_sessions(host: &LuaHost) -> Registry {
+    let mut registry = registry_for(host);
+    registry
+        .set_setting(PLUGIN, "focus_new_session", Some(Value::Bool(true)))
+        .expect("set focus_new_session");
+    registry
+}
+
+#[test]
+fn a_session_this_interface_created_moves_nothing_by_default() {
+    // The default this interface has always had: the row appears and waits to
+    // be picked. Asserted rather than assumed, because the machinery that can
+    // move the cursor is now loaded either way — only the setting is off.
+    let host = host();
+    render(&host);
+
+    let failures = host.dispatch_event(&post_create("bbb", "second"));
+    assert!(failures.is_empty(), "{failures:?}");
+    render(&host);
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        Some("aaa"),
+        "creating a session must not move the selection unless asked"
+    );
+    assert!(
+        host.drain_commands().is_empty(),
+        "and must not take the keyboard either"
+    );
+}
+
+#[test]
+fn with_the_setting_on_a_created_session_is_selected_and_opened() {
+    // The whole of what the setting buys: the two halves `Enter` performs, for
+    // a row the user did not have to find.
+    let host = host();
+    let registry = following_new_sessions(&host);
+    render_with(&host, &snapshot(), &registry);
+
+    // Nothing is drained first: a render that started issuing commands should
+    // fail this assertion rather than hide behind a reset buffer.
+    host.dispatch_event(&post_create("bbb", "second"));
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Focus {
+            plugin: "agent".into(),
+            toggle: false,
+        }],
+        "the agent pane is what shows a session, so opening one focuses it"
+    );
+    render_with(&host, &snapshot(), &registry);
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        Some("bbb"),
+        "the cursor followed the session that was just created"
+    );
+}
+
+#[test]
+fn a_pending_jump_loses_to_the_users_own_cursor_move() {
+    // The follow is sticky, not a lock: moving the cursor yourself after the
+    // jump is a choice made later, so it stands.
+    let host = host();
+    let registry = following_new_sessions(&host);
+    render_with(&host, &snapshot(), &registry);
+
+    host.dispatch_event(&post_create("bbb", "second"));
+    render_with(&host, &snapshot(), &registry);
+    press(&host, "k");
+    render_with(&host, &snapshot(), &registry);
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        Some("aaa"),
+        "the jump must not pull the cursor back"
+    );
+}
+
+#[test]
+fn only_a_create_this_interface_made_is_subscribed_to() {
+    // `session.created` fires for every row that appears, whoever made it —
+    // subscribing to it would let a `thurbox-cli session create`, an automation
+    // or a second instance take the keyboard out from under the user.
+    let host = host();
+    let index = host.index_of(PLUGIN).expect("no sessions plugin");
+    let events = &host.plugins[index].events;
+    assert!(
+        events.iter().any(|name| name == "session.post_create"),
+        "the list must hear about the creates this interface performed: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|name| name == "session.created"),
+        "a session created elsewhere must not move this cursor: {events:?}"
     );
 }
 

@@ -247,15 +247,28 @@ not applicable.
    session. Skipped when only one agent is defined in
    `agents.toml`.
 
-**Creating a session moves nothing.** The new row appears in the list and waits
-to be picked; the selection, the pane showing it and the keyboard all stay where
-they were. Creation is a command that finishes on a worker seconds after the flow
-closed, so the moment it lands is not a moment the user chose — steering the view
-then interrupted whatever they had gone back to reading, and made creating three
-sessions in a row a fight with the cursor. `Ctrl+F` fork behaves the same way.
-Selection is still *steerable*, by the two requests that are deliberate: a
-clicked notification and `thurbox-cli session focus`, both through
-`focus_session`, which the list follows by id rather than by row number.
+**Creating a session moves nothing — unless you ask it to.** By default the new
+row appears in the list and waits to be picked; the selection, the pane showing
+it and the keyboard all stay where they were. Creation is a command that
+finishes on a worker seconds after the flow closed, so the moment it lands is
+not a moment the user chose — steering the view then interrupted whatever they
+had gone back to reading, and made creating three sessions in a row a fight with
+the cursor. `Ctrl+F` fork behaves the same way. Selection is still *steerable*,
+by the two requests that are deliberate: a clicked notification and
+`thurbox-cli session focus`, both through `focus_session`, which the list
+follows by id rather than by row number.
+
+Not having to hunt for the row you just asked for is worth that interruption to
+some people, so it is **a setting rather than a decision**: the session list's
+`focus_new_session` (settings → Sessions, off by default) makes a create or a
+fork select the new session and give the agent pane the keyboard, exactly as
+`Enter` on its row would. It is the *list's* setting rather than a core one
+because the list owns the selection — it subscribes to `session.post_create`
+and does there what `Enter` does. That event fires only for a create **this
+interface** performed, which is what keeps a `thurbox-cli session create`, an
+automation or a second instance from taking the keyboard out from under you;
+and the cursor only *follows* the new id, so moving it yourself in the meantime
+wins.
 
 A session is fully described by its repos and agent. There is no
 per-session model selection, permissions, prompt, tool, or skill
