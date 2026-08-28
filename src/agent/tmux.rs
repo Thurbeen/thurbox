@@ -16,17 +16,22 @@ use crate::agent::control_mode::{
 };
 use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
 
-/// Dedicated tmux socket name — isolates thurbox sessions from the user's tmux.
-/// Dev builds use "thurbox-dev" to avoid interfering with an installed release
-/// binary. Crate-visible as the last-resort fallback when a host's configured
-/// socket sanitizes to empty (`builtin_hooks::remote_signal_target`).
+/// Dedicated tmux socket name for an instance running out of the **default**
+/// data dir — isolates thurbox sessions from the user's tmux. Dev builds use
+/// "thurbox-dev" to avoid interfering with an installed release binary. An
+/// instance relocated by `THURBOX_DATA_DIR` derives its own name from this one
+/// ([`derived_socket`]). Crate-visible as the last-resort fallback when a
+/// host's configured socket sanitizes to empty
+/// (`builtin_hooks::remote_signal_target`).
 pub(crate) const TMUX_SOCKET: &str = if cfg!(dev_build) {
     "thurbox-dev"
 } else {
     "thurbox"
 };
 
-/// Env var overriding the **local** multiplexer socket name.
+/// Env var overriding the **local** multiplexer socket name. Wins over the
+/// data-dir derivation below, so tooling that needs a socket by name (the dev
+/// sandbox, whose teardown kills it) keeps naming it.
 ///
 /// Unix test/sandbox tooling scopes the socket by pointing `TMUX_TMPDIR` at a
 /// private directory, but psmux (native Windows) has no socket-directory
@@ -36,17 +41,65 @@ pub(crate) const TMUX_SOCKET: &str = if cfg!(dev_build) {
 /// comes from `hosts.toml`).
 pub const SOCKET_OVERRIDE_ENV: &str = "THURBOX_SOCKET";
 
-/// The local multiplexer socket name: [`SOCKET_OVERRIDE_ENV`] when set and
-/// non-empty, else the compile-time default.
+/// The local multiplexer socket name — see [`socket_for`] for the precedence.
 fn local_socket() -> String {
-    std::env::var(SOCKET_OVERRIDE_ENV)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| TMUX_SOCKET.to_string())
+    socket_for(
+        std::env::var(SOCKET_OVERRIDE_ENV).ok(),
+        crate::paths::relocated_data_dir().as_deref(),
+    )
 }
 
-/// The socket name this build's local sessions live on — what `thurbox-cli
-/// version --json` reports so a peer attaching over ssh joins the right server.
+/// Resolve the socket name from the two things that can move it:
+/// [`SOCKET_OVERRIDE_ENV`] when set and non-empty, else a name derived from a
+/// relocated data dir, else the compile-time default. Pure, so the precedence
+/// is testable without touching the process environment.
+///
+/// The data dir is the anchor because it holds the database, and the database
+/// is the record of which sessions exist: an instance with its own record of
+/// them has no business creating their windows on someone else's server. A
+/// relocated **config** dir alone does not move the socket — it shares the
+/// default instance's sessions and must keep reaching them.
+fn socket_for(override_name: Option<String>, relocated_data_dir: Option<&Path>) -> String {
+    if let Some(name) = override_name.filter(|s| !s.is_empty()) {
+        return name;
+    }
+    match relocated_data_dir {
+        Some(dir) => derived_socket(dir),
+        None => TMUX_SOCKET.to_string(),
+    }
+}
+
+/// The socket an instance whose data dir is `dir` runs on: the default name
+/// suffixed with a short digest of that directory. Deterministic, so the same
+/// relocated instance finds its own server on every run and across releases;
+/// distinct, so two of them do not share one. Separator noise is normalized
+/// away first, so `/tmp/lab` and `/tmp/lab/` are one instance rather than two.
+///
+/// A digest collision costs no more than today's behaviour — two instances on
+/// one server — and never reaches the default socket, whose name has no suffix.
+fn derived_socket(dir: &Path) -> String {
+    let normalized: std::path::PathBuf = dir.components().collect();
+    let digest = fnv1a32(normalized.to_string_lossy().as_bytes());
+    format!("{TMUX_SOCKET}-{digest:08x}")
+}
+
+/// FNV-1a, 32 bits. Written out rather than reached for in `std`: this name has
+/// to be the same string in every process and every release, and neither
+/// `DefaultHasher`'s algorithm nor its seed is guaranteed to be.
+fn fnv1a32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for b in bytes {
+        hash ^= u32::from(*b);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+/// The socket name this instance's local sessions live on — what `thurbox-cli
+/// version --json` reports so a peer attaching over ssh joins the right server,
+/// and so an integrator never has to guess the name. Resolved, not constant:
+/// an instance relocated by `THURBOX_DATA_DIR` runs on its own socket (see
+/// `socket_for`).
 pub fn local_socket_name() -> String {
     local_socket()
 }
@@ -84,10 +137,13 @@ fn learned_host_socket(backend_name: &str) -> Option<String> {
 }
 
 /// The `-L` socket name a remote `host`'s multiplexer runs on: the host's
-/// `socket` override, else the same compile-time default the local backend
-/// uses. Single source of truth shared by [`TmuxBackend::from_host`] and the
-/// psmux hook-signal rewrite (which must bake the socket into the command —
-/// psmux has no `$TMUX`-style in-pane socket resolution to rely on).
+/// `socket` override, else what its own CLI reported, else the compile-time
+/// default. Deliberately **not** this process's own local socket: a relocation
+/// here moves *our* sessions, while the host's sessions live wherever the
+/// thurbox on that host put them — which is what [`learn_host_socket`] records.
+/// Single source of truth shared by [`TmuxBackend::from_host`] and the psmux
+/// hook-signal rewrite (which must bake the socket into the command — psmux has
+/// no `$TMUX`-style in-pane socket resolution to rely on).
 pub fn host_socket(host: &crate::session::HostDef) -> String {
     host.socket
         .clone()
@@ -2441,6 +2497,60 @@ mod tests {
         };
         learn_host_socket(&pinned, "thurbox");
         assert_eq!(host_socket(&pinned), "mine");
+    }
+
+    #[test]
+    fn a_default_instance_keeps_the_build_socket() {
+        // The backwards-compatibility guarantee: nothing about an operator's
+        // existing instance moves, including one whose `THURBOX_DATA_DIR`
+        // merely restates the default (which is what thurbox injects into
+        // every session it spawns).
+        assert_eq!(socket_for(None, None), TMUX_SOCKET);
+    }
+
+    #[test]
+    fn a_relocated_instance_gets_its_own_socket() {
+        let lab = socket_for(None, Some(Path::new("/tmp/lab/data")));
+        let other = socket_for(None, Some(Path::new("/tmp/other/data")));
+        assert_ne!(lab, TMUX_SOCKET, "a relocated instance leaves the default");
+        assert_ne!(other, lab, "two of them do not share a server");
+        assert_eq!(
+            lab,
+            socket_for(None, Some(Path::new("/tmp/lab/data"))),
+            "and it finds the same server on the next run"
+        );
+        assert!(
+            lab.starts_with(TMUX_SOCKET),
+            "still recognisable as thurbox's: {lab}"
+        );
+        assert!(
+            lab.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
+            "safe to splice into a `-L` argument: {lab}"
+        );
+    }
+
+    #[test]
+    fn a_relocated_socket_ignores_separator_noise() {
+        // One directory named two ways is one instance — otherwise a script
+        // with a trailing slash would strand the sessions of one without it.
+        assert_eq!(
+            socket_for(None, Some(Path::new("/tmp/lab/data"))),
+            socket_for(None, Some(Path::new("/tmp/lab/./data/"))),
+        );
+    }
+
+    #[test]
+    fn an_explicit_socket_wins_over_the_derivation() {
+        assert_eq!(
+            socket_for(Some("thurbox-named".into()), Some(Path::new("/tmp/lab"))),
+            "thurbox-named"
+        );
+        // Empty is unset, and then the relocation still applies.
+        assert_eq!(
+            socket_for(Some(String::new()), Some(Path::new("/tmp/lab"))),
+            socket_for(None, Some(Path::new("/tmp/lab")))
+        );
     }
 
     #[test]

@@ -274,6 +274,11 @@ fn render_show(report: &Value) -> String {
         output::kv(&[("active", output::dash(report["theme"].as_str()))])
     ));
 
+    sections.push(format!(
+        "Sessions\n{}",
+        output::kv(&[("tmux socket", output::dash(report["tmux_socket"].as_str()))])
+    ));
+
     // The lifecycle hooks in force, one line each: event, then the command.
     let hooks: Vec<(&str, String)> = report["hooks"]
         .as_array()
@@ -344,6 +349,10 @@ fn show(db: &Database) -> Result<Value, String> {
                 .map(|p| p.display().to_string()),
             "database": crate::paths::database_file().map(|p| p.display().to_string()),
         },
+        // Not a path, but the same question: which instance is this? A
+        // relocated data dir gets a socket of its own, so the name is resolved
+        // rather than constant and worth reporting where the dirs are.
+        "tmux_socket": crate::agent::tmux::local_socket_name(),
         "agents": { "default": agents.default_name(), "names": agents.names() },
         "hosts": {
             "names": hosts.names(),

@@ -108,6 +108,48 @@ fn test_build_ignores_config_and_data_dir_override_env() {
 }
 
 #[test]
+fn a_data_dir_matching_the_default_is_not_a_relocation() {
+    // thurbox injects THURBOX_DATA_DIR into every session it spawns, pointing
+    // at whatever it resolved itself. A `thurbox-cli` inside such a session
+    // must still read as the default instance — otherwise every hook would
+    // look for its sessions on a socket nobody created.
+    let default = Path::new("/home/u/.local/share/thurbox");
+    assert_eq!(
+        relocated_from(
+            Some(OsStr::new("/home/u/.local/share/thurbox")),
+            Some(default)
+        ),
+        None
+    );
+    // A trailing separator names the same directory.
+    assert_eq!(
+        relocated_from(
+            Some(OsStr::new("/home/u/.local/share/thurbox/")),
+            Some(default)
+        ),
+        None
+    );
+    // Unset, and empty-as-unset.
+    assert_eq!(relocated_from(None, Some(default)), None);
+    assert_eq!(relocated_from(Some(OsStr::new("")), Some(default)), None);
+}
+
+#[test]
+fn a_data_dir_elsewhere_is_a_relocation() {
+    let default = Path::new("/home/u/.local/share/thurbox");
+    assert_eq!(
+        relocated_from(Some(OsStr::new("/tmp/lab/data")), Some(default)),
+        Some(PathBuf::from("/tmp/lab/data"))
+    );
+    // No resolvable default (no HOME, no XDG) means there is no default
+    // instance to share with, so the override stands alone.
+    assert_eq!(
+        relocated_from(Some(OsStr::new("/tmp/lab/data")), None),
+        Some(PathBuf::from("/tmp/lab/data"))
+    );
+}
+
+#[test]
 fn override_isolates_paths() {
     let base = PathBuf::from("/test/base");
     set_test_dir(&base);

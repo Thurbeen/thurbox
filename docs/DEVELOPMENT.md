@@ -64,7 +64,11 @@ sandbox (via `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`), so it never touches you
 real `~/.config/thurbox` or sessions. It **keeps your real `HOME`**, so your
 authenticated agent CLIs (`claude`/`codex`/`antigravity`/…) work normally — and it puts
 the dev `target/debug` first on `PATH`, so an agent's status hook calls *this*
-`thurbox-cli` and writes to the sandbox DB the TUI reads.
+`thurbox-cli` and writes to the sandbox DB the TUI reads. The tmux socket is
+scoped twice over: a private `TMUX_TMPDIR`, and `THURBOX_SOCKET` naming the
+server outright — a relocated `THURBOX_DATA_DIR` derives a socket of its own
+(`docs/CONFIG.md` → Relocating an instance), and teardown kills the socket by
+name.
 
 ```bash
 scripts/dev/sandbox.sh                 # persistent "default" profile, launch the TUI

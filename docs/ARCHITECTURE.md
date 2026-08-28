@@ -439,6 +439,23 @@ bugs (#641, #2989), required 3 external deps in the data path
 
 **Window naming**: `tb-<session-name>` prefix for discovery.
 
+**Which socket**: `thurbox` (`thurbox-dev` for a dev build) for an instance
+running out of the default data dir, and `thurbox-<digest of that dir>` for one
+`THURBOX_DATA_DIR` has relocated (`agent::tmux::socket_for`). The data dir is
+the anchor because it holds the database, and the database is the record of
+which sessions exist: an instance keeping its own record of them has no
+business creating their windows on the operator's server — which is what made
+a real-binary `session create` unsafe for an integrator to test, and left the
+`automation-heartbeat` window (not a session, so no `session delete` reclaims
+it) behind on it. A relocated *config* dir alone changes nothing: it shares the
+default instance's database, and so its sessions. `THURBOX_SOCKET` overrides
+both, and is what thurbox injects into each session it spawns so an in-session
+`thurbox-cli` is *told* the socket rather than re-deriving it from a tmux
+server's inherited environment. `version --json` reports the name in force —
+never assume it. Relocation is not a migration: an instance moved before this
+existed keeps its old sessions on the old server (docs/CONFIG.md → Relocating
+an instance).
+
 **Output streaming**: `%output` notifications from control mode,
 demultiplexed by pane ID into per-pane broadcast channels. Multiple
 instances can simultaneously register the same pane; output is
@@ -621,9 +638,9 @@ summary; this is the reference to read before touching that path.
   spawns (`psmux_window_command`) frame it in double quotes (psmux's tokenizer
   concatenates adjacent `'…'` segments but passes `'` through `"…"` tokens); the
   headless local `spawn_window` passes it as a single argv arg. The local socket
-  honors the `THURBOX_SOCKET` env override (`local_socket()`) so test/sandbox
-  tooling can scope an instance on Windows, where every `-L <name>` resolves
-  machine-wide (no `TMUX_TMPDIR`).
+  honors the `THURBOX_SOCKET` env override (`local_socket()`, ahead of the
+  data-dir derivation in ADR-12) so test/sandbox tooling can scope an instance
+  on Windows, where every `-L <name>` resolves machine-wide (no `TMUX_TMPDIR`).
 - **A paste cannot be key-encoded at all** (the encoding above emits ESC as its
   own `Escape` key-name, so the agent saw a bare Escape instead of the
   `ESC[200~` marker and took each embedded CR as Enter — a pasted stack trace

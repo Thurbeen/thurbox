@@ -812,7 +812,7 @@ User-set (read by thurbox):
 | `SHELL` | the `Ctrl+T` companion shell pane (fallback `/bin/sh`). For a remote/WSL session the pane uses the **host's** `$SHELL` as an interactive login shell (the SSH-login environment), not the local one. |
 | `RUST_LOG` | log filter for `thurbox.log` |
 | `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, per-session `restore_adopt`/`adopt_split` lines, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/PERFORMANCE.md`. |
-| `THURBOX_SOCKET` | overrides the **local** multiplexer socket name (default `thurbox`; dev builds `thurbox-dev`). For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
+| `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
 
 Set **by** thurbox into every spawned agent process (not user-set;
 `session_ops::inject_thurbox_env` / `App::build_spawn_inputs`). An
@@ -826,10 +826,11 @@ these to prove its own identity without scraping panes or names:
 | `THURBOX_TASK` | the originating task id; task-spawned sessions only (headless `task run`) |
 | `THURBOX_METRICS_DIR` | metrics output dir |
 | `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` | the resolved config/data dirs, so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a stale tmux-server env. Also honored if you set them yourself to relocate thurbox's state. |
+| `THURBOX_SOCKET` | the multiplexer socket that instance's sessions live on, so an in-session `thurbox-cli` reaches the same server instead of re-deriving one from the session's own environment |
 
 Set **by** thurbox into every [lifecycle hook](#hookstoml) it runs
 (`session_ops::lifecycle_hooks`), beside `THURBOX_SESSION`,
-`THURBOX_SESSION_ID`, `THURBOX_TASK` and the two dir overrides above:
+`THURBOX_SESSION_ID`, `THURBOX_TASK` and the location overrides above:
 
 | Variable | Set into hook process |
 |----------|-----------------------|
@@ -848,6 +849,39 @@ Set **at build time** (not runtime):
 
 Editor resolution order: DB `editor_command` → `$VISUAL` → `$EDITOR` →
 error toast.
+
+### Relocating an instance (`THURBOX_DATA_DIR`)
+
+`THURBOX_CONFIG_DIR` and `THURBOX_DATA_DIR` move thurbox's config and its
+database. Because the database *is* the record of which sessions exist, an
+instance whose data dir has moved also gets a **multiplexer socket of its own**
+— `thurbox-<digest of the data dir>` (`thurbox-dev-…` on a dev build) — instead
+of creating its windows on the server holding your everyday sessions. That is
+what makes a scratch instance safe to run a real `session create` in, and it is
+also why its `automation-heartbeat` window is reclaimable: killing that
+instance's server (`tmux -L "$(thurbox-cli version --json | jq -r .tmux_socket)"
+kill-server`) takes the whole instance with it and touches nothing else.
+
+Three rules keep the ordinary case ordinary:
+
+- **The default instance never moves.** It stays on `thurbox`
+  (`thurbox-dev` for a dev build), including when `THURBOX_DATA_DIR` merely
+  restates the default — which is exactly what thurbox injects into every
+  session it spawns.
+- **A relocated *config* dir alone changes nothing.** It shares the default
+  instance's database, and therefore its sessions and their server.
+- **`THURBOX_SOCKET` wins over both**, so anything that needs the socket *by
+  name* (the dev sandbox, whose teardown kills it) keeps naming it.
+
+Ask a build which server it is on rather than assuming: `thurbox-cli version
+--json` reports the socket in force as `tmux_socket`, and `thurbox-cli config
+show` prints it under `Sessions`.
+
+**An instance relocated before this existed is a new instance.** Its old
+sessions are still on the default server, and its database still lists them —
+on the new socket they read as sessions whose window is gone. There is no
+migration: point that instance back at the old server with
+`THURBOX_SOCKET=thurbox` if you want them, or let it create fresh ones.
 
 ## Versioning
 

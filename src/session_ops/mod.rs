@@ -104,14 +104,20 @@ pub(crate) fn exec_tail(stream: &[u8]) -> String {
     ring.into_iter().collect()
 }
 
-/// The config/data-dir overrides this process resolved, as the two env vars
-/// `thurbox-cli` honours (`THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`). Derived
-/// from the resolved file paths' parents, so a dev build, a sandbox and a
-/// `THURBOX_*_DIR` override all hand the same answer on. One definition, shared
-/// by the agent's environment and a lifecycle hook — "a `thurbox-cli` inside
-/// hits the right DB" is one property, not two.
-pub(crate) fn thurbox_dir_overrides() -> Vec<(String, String)> {
-    let mut vars = Vec::with_capacity(2);
+/// Where this process resolved thurbox's state, as the env vars `thurbox-cli`
+/// honours: the config/data dirs (`THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`,
+/// derived from the resolved file paths' parents, so a dev build, a sandbox and
+/// a `THURBOX_*_DIR` override all hand the same answer on) and the multiplexer
+/// socket those sessions live on (`THURBOX_SOCKET`). One definition, shared by
+/// the agent's environment and a lifecycle hook — "a `thurbox-cli` inside hits
+/// the right DB, and finds the right server" is one property, not two.
+///
+/// The socket is passed rather than left to be re-derived: the child would
+/// otherwise recompute it (`agent::tmux::socket_for`) from an environment that
+/// need not match this one — a tmux server carries the env it was started with,
+/// which is the same reason the dirs are pinned here at all.
+pub(crate) fn thurbox_env_overrides() -> Vec<(String, String)> {
+    let mut vars = Vec::with_capacity(3);
     if let Some(dir) = crate::paths::config_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
     {
         vars.push((
@@ -127,6 +133,10 @@ pub(crate) fn thurbox_dir_overrides() -> Vec<(String, String)> {
             dir.to_string_lossy().into(),
         ));
     }
+    vars.push((
+        crate::agent::tmux::SOCKET_OVERRIDE_ENV.into(),
+        crate::agent::tmux::local_socket_name(),
+    ));
     vars
 }
 
@@ -319,10 +329,14 @@ pub fn resolve_host(backend_type: &str) -> Option<Option<crate::session::HostDef
 /// - `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` — the resolved config/data dirs,
 ///   so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI
 ///   reads regardless of XDG / PATH / a stale tmux-server env.
+/// - `THURBOX_SOCKET` — the multiplexer socket this instance's sessions live
+///   on, so an in-session `thurbox-cli` reaches the same server rather than
+///   re-deriving one from an environment that need not match.
 ///
-/// The three *path* vars are **local-only**: a remote (SSH/WSL) session skips
-/// them — the local dirs don't exist on the host, and a remote `thurbox-cli`
-/// pinned to them would resolve garbage instead of its own defaults. The
+/// The four *location* vars are **local-only**: a remote (SSH/WSL) session skips
+/// them — the local dirs don't exist on the host, its socket is the host's own,
+/// and a remote `thurbox-cli` pinned to them would resolve garbage instead of
+/// its own defaults. The
 /// identity vars (`THURBOX_SESSION`/`THURBOX_SESSION_ID`/`THURBOX_TASK`) are
 /// opaque and travel everywhere.
 ///
@@ -361,10 +375,11 @@ pub(crate) fn inject_thurbox_env(
             .insert("THURBOX_METRICS_DIR".into(), dir.to_string_lossy().into());
     }
     // Pin the agent's `thurbox-cli` (its status hook) to the *same* config/data
-    // dirs this thurbox resolved, so a status `signal` always lands in the DB
-    // the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a
-    // stale tmux-server env. Derived from the resolved file paths' parents.
-    config.env.extend(thurbox_dir_overrides());
+    // dirs and multiplexer socket this thurbox resolved, so a status `signal`
+    // always lands in the DB the TUI reads and a `session send` reaches the
+    // server the session is actually on — independent of XDG, which
+    // `thurbox-cli` is on PATH, or a stale tmux-server env.
+    config.env.extend(thurbox_env_overrides());
 }
 
 #[cfg(test)]
@@ -407,9 +422,10 @@ mod tests {
     }
 
     #[test]
-    fn inject_env_pins_config_and_data_dirs() {
-        // The agent's status hook must target the same DB the TUI reads, so the
-        // resolved config/data dirs are injected for `thurbox-cli` to honour.
+    fn inject_env_pins_config_data_dirs_and_socket() {
+        // The agent's status hook must target the same DB the TUI reads and the
+        // same multiplexer server its session lives on, so both are injected
+        // for `thurbox-cli` to honour rather than resolve for itself.
         let tmp = tempfile::tempdir().unwrap();
         let _guard = crate::paths::TestPathGuard::new(tmp.path());
         let mut config = SessionConfig {
@@ -438,6 +454,11 @@ mod tests {
                 .as_deref()
                 .and_then(|p| p.parent())
         );
+        assert_eq!(
+            config.env.get(crate::agent::tmux::SOCKET_OVERRIDE_ENV),
+            Some(&crate::agent::tmux::local_socket_name()),
+            "the session is told which server it is on"
+        );
     }
 
     #[test]
@@ -460,6 +481,11 @@ mod tests {
             .env
             .contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
         assert!(!config.env.contains_key(crate::paths::DATA_DIR_OVERRIDE_ENV));
+        // The socket is a local name too: the host's sessions live on the host's
+        // own server, which `hosts.toml` (or the host's CLI) names.
+        assert!(!config
+            .env
+            .contains_key(crate::agent::tmux::SOCKET_OVERRIDE_ENV));
     }
 
     #[test]

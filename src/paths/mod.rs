@@ -30,6 +30,7 @@
 //! ```
 
 use std::cell::RefCell;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Env var pinning the resolved config app dir for a child process (an agent
@@ -158,6 +159,41 @@ fn data_app_dir() -> Option<PathBuf> {
 #[cfg(test)]
 fn data_app_dir() -> Option<PathBuf> {
     Some(test_sandbox_base().join("data"))
+}
+
+/// The data directory when this instance has been **relocated** — i.e.
+/// [`DATA_DIR_OVERRIDE_ENV`] names a directory other than the XDG default.
+/// `None` for a default instance, *including* one whose `THURBOX_DATA_DIR`
+/// merely restates the default: thurbox injects that variable into every
+/// session it spawns (`session_ops::inject_thurbox_env`), so "the variable is
+/// set" is a different question from "this instance was moved".
+///
+/// A relocated instance keeps its own database, and so its own record of which
+/// sessions exist; `agent::tmux` reads this to put those sessions on a tmux
+/// socket of their own instead of the operator's shared server.
+#[cfg(not(test))]
+pub fn relocated_data_dir() -> Option<PathBuf> {
+    let over = std::env::var_os(DATA_DIR_OVERRIDE_ENV);
+    let default = data_base().map(|b| b.join(app_dir_name()));
+    relocated_from(over.as_deref(), default.as_deref())
+}
+
+/// Test build: never relocated. The data dir is a per-process temp sandbox
+/// (see [`test_sandbox_base`]), so deriving from it would make every unit
+/// test's socket a function of the pid; [`relocated_from`] carries the
+/// behaviour under test.
+#[cfg(test)]
+pub fn relocated_data_dir() -> Option<PathBuf> {
+    None
+}
+
+/// The pure half of [`relocated_data_dir`]: `override_dir` when it names a
+/// directory other than `default_dir`. Compared as paths, so a trailing
+/// separator is not a relocation. An unresolvable default (no `HOME`, no XDG)
+/// counts as one — there is then no default instance to share a server with.
+fn relocated_from(override_dir: Option<&OsStr>, default_dir: Option<&Path>) -> Option<PathBuf> {
+    let dir = PathBuf::from(override_dir.filter(|s| !s.is_empty())?);
+    (Some(dir.as_path()) != default_dir).then_some(dir)
 }
 
 /// `<config_app_dir>/<filename>`.

@@ -143,7 +143,7 @@ pub fn run_hook(hook: &LifecycleHook, event: HookEvent, ctx: &HookContext) -> Re
 
     let mut cmd = super::platform_shell(&hook.command);
     cmd.envs(ctx.env(event))
-        .envs(super::thurbox_dir_overrides())
+        .envs(super::thurbox_env_overrides())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

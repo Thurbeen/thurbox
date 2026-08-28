@@ -34,9 +34,13 @@ if [ -z "$TBX_REPO_ROOT" ]; then
 fi
 export TBX_REPO_ROOT
 
-# The dev build's tmux socket name (mirrors src/agent/tmux.rs TMUX_SOCKET for a
-# dev_build). It lives inside the sandbox's private TMUX_TMPDIR, so killing it
-# can never reach a real server.
+# The sandbox's tmux socket name (the dev build's default — mirrors
+# src/agent/tmux.rs TMUX_SOCKET for a dev_build). It lives inside the sandbox's
+# private TMUX_TMPDIR, so killing it can never reach a real server. Exported to
+# thurbox as THURBOX_SOCKET by the init flavors below: a sandbox relocates
+# THURBOX_DATA_DIR, and thurbox derives a socket of its own from a relocated
+# data dir, so the teardown below would otherwise be killing a name nothing
+# created.
 export TBX_DEV_SOCKET="thurbox-dev"
 
 # Populated by an init call.
@@ -78,6 +82,10 @@ _tbx_resolve_root() {
 
     export TMUX_TMPDIR
     mkdir -p "$TMUX_TMPDIR"
+    # Name the socket outright (see TBX_DEV_SOCKET) so teardown/clean can find
+    # it whichever flavor of isolation ran.
+    THURBOX_SOCKET="$TBX_DEV_SOCKET"
+    export THURBOX_SOCKET
     PATH="$TBX_REPO_ROOT/target/debug:$PATH"
     export PATH
 }

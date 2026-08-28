@@ -43,6 +43,9 @@ thurbox's config/data into the sandbox (via the `THURBOX_CONFIG_DIR`/
 `THURBOX_DATA_DIR` overrides paths.rs honors) while keeping your real `HOME` —
 so your authenticated agent CLIs (claude/codex/…) work — and puts dev
 `target/debug` first on PATH so an agent hook's `thurbox-cli` hits the sandbox DB.
+It also names the sandbox's tmux socket outright (`THURBOX_SOCKET`, `=
+$TBX_DEV_SOCKET`): a relocated `THURBOX_DATA_DIR` otherwise derives one of its
+own, and teardown kills the socket *by name*.
 
 ```bash
 scripts/dev/sandbox.sh               # persistent "default" profile, launch the TUI
@@ -842,10 +845,11 @@ session), never on the loop, ADR-P12).
   clean — surfaced as a `Hooks: degraded` row in the info panel
   (`SessionInfo.hook_wiring`). Literal signal commands carried directly in
   args (aider's `--notifications-command`) are rewritten too.
-  The local-path env hints
-  (`THURBOX_METRICS_DIR`/`THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR`) are likewise
-  skipped for remote spawns (`inject_thurbox_env`); only the opaque identity
-  vars travel.
+  The local-location env hints
+  (`THURBOX_METRICS_DIR`/`THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR`, and
+  `THURBOX_SOCKET` — the host's sessions are on the host's own server) are
+  likewise skipped for remote spawns (`inject_thurbox_env`); only the opaque
+  identity vars travel.
 - **Remote session status** (hooks-driven, like local, **all agents**):
   `thurbox-cli session signal` can't work from a host (no CLI there; it would
   write the host's own DB), so hook commands are **rewritten**
@@ -1098,9 +1102,9 @@ the pre-create hooks run, so the placeholder row says so.
   failure; `hooks_for(event)` in file order. `config validate`/`show` cover
   it.
 - **Runner**: `session_ops::lifecycle_hooks::run_hook` — `platform_shell`
-  (shared with `Exec` automations), `ctx.env()` + `thurbox_dir_overrides()`
+  (shared with `Exec` automations), `ctx.env()` + `thurbox_env_overrides()`
   (shared with `inject_thurbox_env`, so a `thurbox-cli` inside hits the same
-  DB), JSON on a piped stdin, both output pipes drained on threads, a
+  DB and the same tmux socket), JSON on a piped stdin, both output pipes drained on threads, a
   `try_wait` poll against the timeout, `kill()` at the deadline. Synchronous
   by design — it runs on whichever thread runs the operation (a worker in
   the TUI, rule 5), and `session_ops` has no runtime to lean on.
@@ -1873,7 +1877,12 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 - Async runtime: tokio (multi-threaded)
 - Session backend: `TmuxBackend` over a `TmuxTransport`
   (local `tmux -L thurbox`, or `ssh <dest> tmux …` for
-  `ssh:<host>` backends from `hosts.toml`)
+  `ssh:<host>` backends from `hosts.toml`). The local socket is
+  `thurbox`/`thurbox-dev` only for an instance on the **default** data dir; one
+  relocated by `THURBOX_DATA_DIR` derives its own (`thurbox-<digest>`) so it
+  never creates windows on the operator's server, and `THURBOX_SOCKET`
+  overrides both. `thurbox-cli version --json` reports the name in force —
+  ADR-12, `docs/CONFIG.md` → Relocating an instance
 - Output reader runs in `tokio::task::spawn_blocking`
   (blocking I/O), writer in `tokio::spawn` (async)
 - Terminal state parsed by `vt100::Parser`,
