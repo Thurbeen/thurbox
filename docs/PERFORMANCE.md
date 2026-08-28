@@ -1170,6 +1170,74 @@ exactly as the Lua path does, the bug the focus request used to hit.
 
 ---
 
+## ADR-P19: A remote round trip is not a local one, and neither is unpaced (2026-08-28)
+
+**Context**: shared sessions (ADR-24) gave the loop two new pieces of periodic
+work against a host, and both inherited a cadence sized for a local process.
+
+`Terminals::sync` used to exclude remote rows from window discovery outright —
+"a remote spawn drives control mode and records the real pane id, so a remote
+row is not something a window name can fix". Sharing made that false: a row
+mirrored from a host's database names the pane the host reported, or none, and
+its window is found on the host's server by name like a local one. So the
+filter went. What went with it was the *reason* it was there — a remote
+listing is `ssh <host> tmux list-windows`, not a fork on this machine. The
+throttle behind it was a single process-wide `discovered_at`, so every backend
+with an unresolved row was surveyed at `DISCOVERY_INTERVAL` (500 ms). A remote
+row that cannot attach — a host that is down, a mirrored row whose pane is
+gone — therefore held a backend permanently unresolved and cost **two ssh
+commands a second, forever**: `ensure_ready()` (the connect) and `discover()`
+(the listing). `ATTACH_RETRY_INTERVAL`'s 20 s backoff, which exists for exactly
+this host, guards only the attach; discovery ran beside it unpaced, and each
+survey re-issued the connect the instant the previous one gave up.
+
+The mirror worker had two of its own. It reopened the database with
+`Database::open` every `MIRROR_INTERVAL` per host — the constructor that
+replays the migrations, re-issues the WAL pragma (**which takes the write
+lock**) and runs both retention prunes, against the database the loop is
+reading. That is the cost `kernel::repos` had already paid and fixed. And
+`host_cli::usable` caches a `Yes` for the process lifetime — correct, a host's
+CLI does not change under us — so a host reachable at its first probe and down
+since keeps a usable verdict, and every pass ran its ssh out to the connect
+timeout, six times a minute.
+
+**Choice**: pace each piece of work by what it actually costs.
+
+- **Discovery is throttled per backend**, at that backend's own interval:
+  `DISCOVERY_INTERVAL` (500 ms) locally — it is also how fast a fresh local
+  spawn finds its window, so it stays tight — and `REMOTE_DISCOVERY_INTERVAL`
+  (5 s) over ssh or `wsl.exe`, where nothing is waiting on it the way a local
+  spawn is. `discovery_due` holds *when a backend may next be surveyed* rather
+  than when it last was, stamped when a survey **returns** — so the interval
+  separates one round trip from the next however long it took, and a slow one is
+  not re-issued the instant it gives up. `refresh_mirrors` paces itself the same
+  way; in both, the in-flight set is what holds a second attempt off while the
+  first is still out.
+- **A survey that learned nothing backs off to `ATTACH_RETRY_INTERVAL`** — it
+  could not ready its backend or could not list it, and the next one a moment
+  later learns the same nothing. A down host is now probed on one schedule
+  instead of two. `Terminals::forget` clears that backoff, for the reason it
+  already clears the attach failure: a local restart records no pane id, so the
+  session is resolved by name and a held-off listing would freeze it just as
+  long.
+- **The mirror worker uses `Database::open_existing`**, following
+  `kernel::repos`: the TUI ran the schema pass at startup.
+- **A mirror pass that could not run backs off to `MIRROR_RETRY_INTERVAL`**
+  (60 s). The verdict cache and the pass cadence are separate questions; the
+  pass is the one that pays for an unreachable host.
+
+**Consequence**: a down host costs a bounded handful of ssh attempts a minute
+rather than a continuous stream, and the mirror stops taking the database's
+write lock on a timer. The rule this closes out for remote work is ADR-P13's,
+one level up: a cache carries an age, and so does a *probe* — anything issued
+on a timer against a host needs an interval sized to the round trip, and a
+failure needs an interval of its own. Pinned by
+`kernel::terminal::tests::{a_remote_backend_is_surveyed_on_its_own_cadence,
+a_survey_that_learned_nothing_backs_off_to_the_attach_retry,
+a_mirror_pass_that_could_not_run_backs_its_host_off}`.
+
+---
+
 ## Investigation 2026-07-09: where the time actually goes
 
 A measurement pass over the render loop, the tick, the draw path, startup, the

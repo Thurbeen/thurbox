@@ -87,10 +87,23 @@ struct Discovered {
 /// ambiguity be *reported* rather than resolved by whichever tmux listed last.
 type WindowPanes = HashMap<String, Vec<String>>;
 
-/// How often panes may be looked up by window name.
+/// How often a *local* backend's panes may be looked up by window name.
 ///
 /// Discovery is one `list-windows` per backend — cheap, but not 60× a second.
+/// This is also how fast a freshly spawned session finds its window, so it
+/// stays tight for the server on this machine.
 const DISCOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The same, for a backend reached over ssh or `wsl.exe`.
+///
+/// A remote listing is an ssh round trip rather than a local process, and
+/// nothing remote is waiting on it the way a local spawn is: a remote spawn
+/// records its real pane id, and the rows that do need a listing — mirrored
+/// from a host's own database — describe sessions that already exist. Sharing
+/// made remote rows discoverable at all (before it, they were skipped
+/// outright); pacing them apart from the local cadence is what keeps that from
+/// being two ssh commands a second for as long as one row is unattached.
+const REMOTE_DISCOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long the *same* failed attempt is left alone before it is made again.
 ///
@@ -104,6 +117,16 @@ const ATTACH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// pipelines mirror again right after anything they delegate, so this is the
 /// cadence for changes *other* observers made.
 const MIRROR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a host is left alone after a mirror pass that could not run.
+///
+/// [`crate::session_ops::host_cli::usable`] caches a `Yes` for the process
+/// lifetime — a host's CLI does not change under us — so a host that was
+/// reachable at its first probe and has since gone down keeps a usable
+/// verdict, and every pass runs its ssh out to the connect timeout. Backing
+/// the *pass* off is what bounds that; the verdict is a separate question
+/// with its own retry.
+const MIRROR_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The key a plugin leaves in `store` to ask for terminal text.
 ///
@@ -208,9 +231,18 @@ pub struct Terminals {
     /// "session has no pane yet" forever. It also validates a *carried* id —
     /// see [`Self::pane_is_stale`].
     discovered: HashMap<String, WindowPanes>,
-    /// When discovery last ran. It is a tmux round trip per backend, so it is
-    /// throttled and only runs while some row actually needs resolving.
-    discovered_at: Option<std::time::Instant>,
+    /// When each backend may next be surveyed. It is a round trip per backend
+    /// — a local process, or an ssh command — so it is throttled per backend
+    /// and only runs while some row actually needs resolving. A survey that
+    /// came back empty-handed pushes its backend out to [`ATTACH_RETRY_INTERVAL`]
+    /// so an unreachable host is probed on one schedule rather than two.
+    ///
+    /// Stamped when a survey *returns*, not when it is issued — so the interval
+    /// separates one round trip from the next however long it took, and a slow
+    /// one is not re-issued the instant it gives up. `discovering` is what holds
+    /// a second off while the first is still out. [`Self::refresh_mirrors`]
+    /// paces itself the same way.
+    discovery_due: HashMap<String, std::time::Instant>,
     /// How many times each backend's window list has been read successfully.
     ///
     /// The difference between "this session's window is gone" and "we have not
@@ -251,10 +283,10 @@ pub struct Terminals {
     /// Backends whose window list is being read on a worker.
     discovering: std::collections::HashSet<String>,
     discovered_rx: (Sender<Discovered>, Receiver<Discovered>),
-    /// Hosts with a mirror pass in flight, and when each host was last
-    /// mirrored — `None` until its first pass returns.
+    /// Hosts with a mirror pass in flight, and when each host may next be
+    /// mirrored — absent until its first pass returns.
     mirroring: std::collections::HashSet<String>,
-    mirrored_at: HashMap<String, std::time::Instant>,
+    mirror_due: HashMap<String, std::time::Instant>,
     mirror_rx: (Sender<Mirrored>, Receiver<Mirrored>),
     /// The runtime the interface runs on, so a worker can enter it.
     ///
@@ -288,7 +320,7 @@ impl Terminals {
             ready: RefCell::new(std::collections::HashSet::new()),
             failed: HashMap::new(),
             discovered: HashMap::new(),
-            discovered_at: None,
+            discovery_due: HashMap::new(),
             surveys: HashMap::new(),
             waiting_since: HashMap::new(),
             meta: HashMap::new(),
@@ -300,7 +332,7 @@ impl Terminals {
             discovering: std::collections::HashSet::new(),
             discovered_rx: std::sync::mpsc::channel(),
             mirroring: std::collections::HashSet::new(),
-            mirrored_at: HashMap::new(),
+            mirror_due: HashMap::new(),
             mirror_rx: std::sync::mpsc::channel(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
@@ -336,8 +368,9 @@ impl Terminals {
         //
         // A row that already names a pane is surveyed too — a persisted pane id is
         // a hint rather than a fact, see [`Self::pane_is_stale`] — which costs
-        // nothing extra: one listing per backend, throttled by
-        // `DISCOVERY_INTERVAL`.
+        // nothing extra: one listing per backend, throttled by that backend's
+        // own interval (`DISCOVERY_INTERVAL` locally, `REMOTE_DISCOVERY_INTERVAL`
+        // over ssh).
         let unresolved: Vec<(&str, &str)> = snapshot
             .sessions
             .iter()
@@ -606,6 +639,18 @@ impl Terminals {
     fn collect_discovered(&mut self) {
         while let Ok(done) = self.discovered_rx.1.try_recv() {
             self.discovering.remove(&done.backend);
+            // A survey that could not ready its backend or could not list it
+            // learned nothing, and the next one a moment later would learn the
+            // same nothing: hold it off as long as the attach it serves is held
+            // off, so a down host costs one connect attempt per interval rather
+            // than a continuous stream of them.
+            let interval = if done.readied && done.panes.is_some() {
+                discovery_interval(&done.backend)
+            } else {
+                ATTACH_RETRY_INTERVAL
+            };
+            self.discovery_due
+                .insert(done.backend.clone(), std::time::Instant::now() + interval);
             if done.readied {
                 self.ready.borrow_mut().insert(done.backend.clone());
             }
@@ -634,9 +679,14 @@ impl Terminals {
     ///
     /// The recorded failure is cleared too, or the next attach would be held off
     /// by the retry interval and the session would sit frozen for another 20s
-    /// after the pane it needs is already there.
+    /// after the pane it needs is already there. The discovery backoff goes for
+    /// the same reason: a local restart records no pane id, so the session is
+    /// found by *name*, and a survey held off after an earlier failure would
+    /// freeze it just as long. One extra listing per backend, on an operation a
+    /// person asked for.
     pub fn forget(&mut self, session: &str) {
         self.live.remove(session);
+        self.discovery_due.clear();
         if self.failed.remove(session).is_some() {
             self.mark_failures_changed();
         }
@@ -656,21 +706,20 @@ impl Terminals {
     }
 
     /// Re-read window names on each of `backends`, which the caller has already
-    /// reduced to the local ones that have a row waiting.
+    /// reduced to the ones that have a row waiting.
     ///
-    /// Throttled: this is a `list-windows` per backend, and a session waiting for
-    /// its window to appear would otherwise issue one per frame.
+    /// Throttled **per backend**, at its own cadence: this is a `list-windows`
+    /// per backend, and a session waiting for its window to appear would
+    /// otherwise issue one per frame. One shared clock would pace a remote
+    /// backend at the local rate, which is the whole cost this avoids — see
+    /// [`REMOTE_DISCOVERY_INTERVAL`].
     fn refresh_discovery(&mut self, backends: &[String]) {
-        if self
-            .discovered_at
-            .is_some_and(|at| at.elapsed() < DISCOVERY_INTERVAL)
-        {
-            return;
-        }
-        self.discovered_at = Some(std::time::Instant::now());
-
+        let now = std::time::Instant::now();
         for name in backends.iter().map(String::as_str) {
             if self.discovering.contains(name) {
+                continue;
+            }
+            if !due_now(&self.discovery_due, name, now) {
                 continue;
             }
             let Some(backend) = self.backends.get(name).cloned() else {
@@ -694,22 +743,19 @@ impl Terminals {
     /// peer created. Readying the host — the ssh connect, the CLI probe, a
     /// provisioning on first use — all happens on that worker, never here.
     fn refresh_mirrors(&mut self) {
-        let due: Vec<crate::session::HostDef> = self
+        let now = std::time::Instant::now();
+        let due: Vec<(String, crate::session::HostDef)> = self
             .hosts
             .hosts
             .iter()
             .filter(|host| host.shareable())
-            .filter(|host| !self.mirroring.contains(&host.backend_name()))
-            .filter(|host| {
-                !matches!(
-                    self.mirrored_at.get(&host.backend_name()),
-                    Some(at) if at.elapsed() < MIRROR_INTERVAL
-                )
+            .map(|host| (host.backend_name(), host))
+            .filter(|(name, _)| {
+                !self.mirroring.contains(name) && due_now(&self.mirror_due, name, now)
             })
-            .cloned()
+            .map(|(name, host)| (name, host.clone()))
             .collect();
-        for host in due {
-            let name = host.backend_name();
+        for (name, host) in due {
             self.mirroring.insert(name.clone());
             let tx = self.mirror_rx.0.clone();
             let runtime = self.runtime.clone();
@@ -731,8 +777,13 @@ impl Terminals {
     fn collect_mirrored(&mut self) {
         while let Ok(done) = self.mirror_rx.1.try_recv() {
             self.mirroring.remove(&done.backend);
-            self.mirrored_at
-                .insert(done.backend.clone(), std::time::Instant::now());
+            let interval = if done.report.is_ok() {
+                MIRROR_INTERVAL
+            } else {
+                MIRROR_RETRY_INTERVAL
+            };
+            self.mirror_due
+                .insert(done.backend.clone(), std::time::Instant::now() + interval);
             match done.report {
                 Ok(report) if report.changed() => tracing::info!(
                     "mirrored {}: {} adopted, {} updated, {} deleted, {} restored",
@@ -1332,6 +1383,26 @@ impl Terminals {
     }
 }
 
+/// Whether a per-backend timer has come due. An entry is *when it may next
+/// run*, so an absent one has never run and is due now.
+fn due_now(
+    schedule: &HashMap<String, std::time::Instant>,
+    name: &str,
+    now: std::time::Instant,
+) -> bool {
+    !schedule.get(name).is_some_and(|due| *due > now)
+}
+
+/// How long to leave `backend` alone between window listings — the local
+/// cadence, or the remote one for a backend whose listing travels over ssh.
+fn discovery_interval(backend: &str) -> std::time::Duration {
+    if crate::session::is_remote_backend(backend) {
+        REMOTE_DISCOVERY_INTERVAL
+    } else {
+        DISCOVERY_INTERVAL
+    }
+}
+
 /// One backend's window inventory, on the discovery worker.
 ///
 /// Split out of [`Terminals::refresh_discovery`] so the throttle and the spawn
@@ -1393,7 +1464,13 @@ fn mirror_host(
         crate::session_ops::host_cli::Usable::No(reason) => return Err(reason),
     };
     let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
-    let db = crate::storage::Database::open(&path).map_err(|e| format!("open database: {e}"))?;
+    // `open_existing`: the TUI ran the schema pass at startup, and this worker
+    // reopens every `MIRROR_INTERVAL` per host. `open` would replay the
+    // migrations, re-issue the WAL pragma — which takes the write lock — and
+    // run both retention prunes, every ten seconds, against the database the
+    // loop is reading. Same rule `kernel::repos` follows.
+    let db = crate::storage::Database::open_existing(&path)
+        .map_err(|e| format!("open database: {e}"))?;
     crate::session_ops::mirror::mirror_host(&db, host, &cli)
 }
 
@@ -1728,5 +1805,129 @@ mod tests {
             terminals.launch_cwd(&row),
             Some(PathBuf::from("/src/alpha"))
         );
+    }
+
+    /// Sharing made remote rows discoverable, and one shared clock would have
+    /// paced an ssh `list-windows` at the local cadence: two ssh commands a
+    /// second for as long as one remote row was unattached.
+    #[test]
+    fn a_remote_backend_is_surveyed_on_its_own_cadence() {
+        assert_eq!(discovery_interval("local-tmux"), DISCOVERY_INTERVAL);
+        assert_eq!(discovery_interval("ssh:devbox"), REMOTE_DISCOVERY_INTERVAL);
+        assert_eq!(discovery_interval("wsl:ubuntu"), REMOTE_DISCOVERY_INTERVAL);
+        assert!(
+            REMOTE_DISCOVERY_INTERVAL > DISCOVERY_INTERVAL,
+            "a listing that travels over ssh costs more than a local one"
+        );
+    }
+
+    /// A down host answers a survey no faster than it answers an attach, and
+    /// the next survey would learn the same nothing. Without this the 20 s
+    /// attach retry is bypassed by a discovery loop that re-issues the connect
+    /// the moment the last one gives up.
+    #[test]
+    fn a_survey_that_learned_nothing_backs_off_to_the_attach_retry() {
+        let mut terminals = Terminals::new();
+        terminals
+            .discovered_rx
+            .0
+            .send(Discovered {
+                backend: "ssh:devbox".to_string(),
+                readied: false,
+                panes: None,
+            })
+            .unwrap();
+        terminals.collect_discovered();
+
+        let due = terminals.discovery_due["ssh:devbox"];
+        assert!(
+            due > std::time::Instant::now() + REMOTE_DISCOVERY_INTERVAL,
+            "a fruitless survey must wait longer than an ordinary one"
+        );
+    }
+
+    #[test]
+    fn a_survey_that_found_windows_keeps_the_ordinary_cadence() {
+        let mut terminals = Terminals::new();
+        terminals
+            .discovered_rx
+            .0
+            .send(Discovered {
+                backend: "ssh:devbox".to_string(),
+                readied: true,
+                panes: Some(WindowPanes::new()),
+            })
+            .unwrap();
+        terminals.collect_discovered();
+
+        let due = terminals.discovery_due["ssh:devbox"];
+        assert!(
+            due <= std::time::Instant::now() + REMOTE_DISCOVERY_INTERVAL,
+            "a survey that worked is not penalised"
+        );
+    }
+
+    /// `host_cli::usable` caches a `Yes` for the process lifetime, so a host
+    /// that goes down after its first probe keeps one — and every pass then
+    /// runs its ssh out to the connect timeout. The pass backs off even though
+    /// the verdict does not.
+    /// A local restart records no pane id, so the session is resolved by name —
+    /// and a survey sitting in a failure backoff would freeze it exactly as long
+    /// as the attach retry `forget` already clears.
+    #[test]
+    fn a_restart_surveys_afresh_rather_than_waiting_out_a_backoff() {
+        let mut terminals = Terminals::new();
+        terminals.discovery_due.insert(
+            "local-tmux".to_string(),
+            std::time::Instant::now() + ATTACH_RETRY_INTERVAL,
+        );
+
+        terminals.forget("a");
+
+        assert!(
+            due_now(
+                &terminals.discovery_due,
+                "local-tmux",
+                std::time::Instant::now()
+            ),
+            "a restart must not wait out a backoff for the listing that finds its new pane"
+        );
+    }
+
+    #[test]
+    fn a_mirror_pass_that_could_not_run_backs_its_host_off() {
+        let mut terminals = Terminals::new();
+        terminals
+            .mirror_rx
+            .0
+            .send(Mirrored {
+                backend: "ssh:devbox".to_string(),
+                report: Err("host unreachable".to_string()),
+            })
+            .unwrap();
+        terminals.collect_mirrored();
+
+        let due = terminals.mirror_due["ssh:devbox"];
+        assert!(
+            due > std::time::Instant::now() + MIRROR_INTERVAL,
+            "a host that could not be reached is not asked again in ten seconds"
+        );
+    }
+
+    #[test]
+    fn a_mirror_pass_that_ran_keeps_the_ordinary_cadence() {
+        let mut terminals = Terminals::new();
+        terminals
+            .mirror_rx
+            .0
+            .send(Mirrored {
+                backend: "ssh:devbox".to_string(),
+                report: Ok(crate::session_ops::mirror::MirrorReport::default()),
+            })
+            .unwrap();
+        terminals.collect_mirrored();
+
+        let due = terminals.mirror_due["ssh:devbox"];
+        assert!(due <= std::time::Instant::now() + MIRROR_INTERVAL);
     }
 }

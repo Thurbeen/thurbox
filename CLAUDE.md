@@ -200,7 +200,12 @@ was treated as surveyed since, and a session's diff held its first computation
 for the life of the process. Each is now a TTL, an in-flight marker, or a
 generation counter — if you add a cache here, give it one (ADR-P13/P18; the one
 exemption, the repo-name cache, keys on an origin URL that cannot move within a
-process).
+process). The same rule holds one level up for anything issued **on a timer
+against a host**: window discovery is throttled per backend, at 500 ms locally
+but `REMOTE_DISCOVERY_INTERVAL` over ssh, and a survey or a mirror pass that
+failed backs off further still (ADR-P19). Sharing made remote rows discoverable
+and the one shared clock behind that throttle then cost two ssh commands a
+second for as long as a single remote row stayed unattached.
 
 `republish` — the one call that rebuilds every `thurbox.*` table — runs once per
 painted frame and **once per input batch**, not once per event: a held-down key
@@ -795,8 +800,11 @@ session), never on the loop, ADR-P12).
   default) owns the record of the sessions on it: its **own thurbox database**.
   A remote thurbox *mirrors* that database into local rows on `ssh:<name>`
   (`session_ops::mirror` — same id, the host's facts and hook status; every
-  10 s from a worker in `kernel::terminal`, right after anything it delegated,
-  and from `automation tick`), and performs create/delete/restart/restore by
+  10 s from a worker in `kernel::terminal` — 60 s after a pass that could not
+  run, since a `Yes` verdict is cached for the process lifetime and a host that
+  has since gone down would otherwise run its ssh out to the connect timeout six
+  times a minute — right after anything it delegated, and from `automation
+  tick`), and performs create/delete/restart/restore by
   running `thurbox-cli session …` **on the host** (`session_ops::host_cli`,
   branched inside the four pipelines so every caller delegates). A host with
   no CLI is **provisioned** one under `~/.local/share/thurbox/bin/` (the
