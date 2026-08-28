@@ -1,6 +1,6 @@
 //! The default interface, compiled into the binary.
 //!
-//! Design.md D11. With no pane in the kernel, a broken plugin directory means
+//! With no pane in the kernel, a broken plugin directory means
 //! no interface *at all* — a failure mode v1 could not have. The embedded
 //! copies make a blank screen unreachable while keeping the shipped interface
 //! readable and editable as ordinary files, which matters when extensibility is
@@ -710,8 +710,7 @@ impl Chosen {
 /// they edited. There is deliberately no automatic `./ui` rule; the comment on
 /// the branch below says why. A missing or unwritable config directory is not
 /// fatal: the embedded copies are written somewhere throwaway and used from
-/// there, because no interface at all is the one outcome worth avoiding
-/// (`v2-plugin-kernel` design.md D11).
+/// there, because no interface at all is the one outcome worth avoiding.
 ///
 /// Lives here rather than in the interface binary so that anything asking "which
 /// directory is live" gets the same answer the interface will use — two

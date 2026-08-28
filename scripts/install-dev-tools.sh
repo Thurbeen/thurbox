@@ -57,15 +57,6 @@ if ! command -v shellcheck &> /dev/null; then
     echo "     Arch:          sudo pacman -S shellcheck"
 fi
 
-# OpenSpec is an npm CLI — the openspec-* skills (claude/pi/opencode) shell out
-# to it and are restricted to Bash(openspec:*), so an npx fallback would not work.
-if ! command -v openspec &> /dev/null; then
-    echo ""
-    echo "⚠️  openspec not found — install it for the OpenSpec workflow skills:"
-    echo "     npm install -g @fission-ai/openspec"
-fi
-
-
 echo ""
 echo "✅ All development tools installed successfully!"
 echo ""

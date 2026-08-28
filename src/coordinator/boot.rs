@@ -376,7 +376,7 @@ fn focus_index_of(host: &LuaHost, name: &str) -> usize {
 /// materialized from the embedded interface on first run, preserving anything
 /// they edited. A missing or unwritable config directory is not fatal: the
 /// embedded copies are written somewhere throwaway and used from there, because
-/// no interface at all is the one outcome worth avoiding (design.md D11).
+/// no interface at all is the one outcome worth avoiding.
 fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
     // The resolution itself lives in the library, so `thurbox-cli plugin dir`
     // reports the directory this will actually load. Writing the user's copy is

@@ -190,7 +190,7 @@ impl LuaHost {
         // The active palette, as role -> colour. Plugins name roles and never
         // colours, so this is the only place a literal enters the UI — and
         // swapping it restyles every pane, including ones the theme's author
-        // never saw (design.md D14).
+        // never saw.
         // Thirty-six palettes, each a table, rebuilt for every frame that was
         // painted — and changed only when someone picks a different one.
         let theme = self.group("theme", [epoch.themes, 0, 0, 0], || {

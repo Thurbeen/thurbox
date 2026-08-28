@@ -102,7 +102,6 @@ fn install_run(
 /// The capability that is *not* granted here is the point: a plugin gets a
 /// directory listing and a file's text, both rooted at that session's working
 /// directory and refusing anything outside it. It never gets a filesystem.
-/// design.md D2 of v2-navigation-panes.
 fn install_files(lua: &Lua, roots: Roots) -> mlua::Result<()> {
     let files = lua.create_table()?;
 
@@ -144,8 +143,8 @@ fn install_files(lua: &Lua, roots: Roots) -> mlua::Result<()> {
 /// `command("delete", { session = id })` — the only way a plugin changes state.
 ///
 /// It enqueues and returns; it never runs the operation. That is the whole of
-/// design.md D5's write side, and it is why a plugin cannot stall the render
-/// loop with a database write or an unreachable host.
+/// the write side, and it is why a plugin cannot stall the render loop with a
+/// database write or an unreachable host.
 ///
 /// A malformed command raises immediately, because the mistake is in the
 /// plugin's own call and there is nothing to report asynchronously about.
@@ -261,8 +260,9 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
 /// arbitrary paths. `print` is just as unwelcome — stdout belongs to the TUI,
 /// so a stray `print` would corrupt the screen rather than log anything.
 ///
-/// Removed rather than replaced with a stub that refuses, because design.md D9
-/// is enforcement by *absence*: a plugin should find nothing there at all.
+/// Removed rather than replaced with a stub that refuses, because the
+/// capability model is enforcement by *absence*: a plugin should find nothing
+/// there at all.
 /// (`tests/kernel_mvp.rs` probes for each of these — that test is what found
 /// `dofile`/`loadfile` in the first place.)
 const WITHHELD_GLOBALS: [&str; 7] = [

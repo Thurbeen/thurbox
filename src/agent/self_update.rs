@@ -334,8 +334,8 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
 
     let target = current_target()?;
     // The Windows artifact is a zip that `install.ps1` extracts; this tar path
-    // has never served it, and resolving the triple for a *peer* (D3 of the
-    // shared-sessions change) must not make it start pretending to.
+    // has never served it, and resolving the triple for a *peer* (shared
+    // sessions) must not make it start pretending to.
     if target.ends_with("-windows-msvc") {
         return Err("self-update is not supported on Windows; re-run install.ps1".to_string());
     }

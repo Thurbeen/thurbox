@@ -9,10 +9,10 @@
 //! are keyed and idempotent, work happens on a thread, and the result is
 //! published.**
 //!
-//! Requests reach here from the flow through `store`, which the loop reads (see
-//! `design.md` D1 of `openspec/changes/v2-new-session-flow/`). A plugin cannot
-//! call something that waits, and a command is an at-most-once *act* — neither
-//! fits "tell me what is in this directory, and ask again as I type".
+//! Requests reach here from the flow through `store`, which the loop reads. A
+//! plugin cannot call something that waits, and a command is an at-most-once
+//! *act* — neither fits "tell me what is in this directory, and ask again as I
+//! type".
 //!
 //! Two consequences a plugin renders rather than hides:
 //!
@@ -36,7 +36,7 @@ use crate::storage::Database;
 /// One shape for every row, whatever produced it: a standalone bookmark, a
 /// parent folder, a child scanned live under a local parent, or a child
 /// persisted under a remote one. The flow builds headers and indentation from
-/// `parent`/`is_parent` and never learns which (see design.md D3).
+/// `parent`/`is_parent` and never learns which.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookmarkRow {
     /// Absolute path on the target host's filesystem.
@@ -106,7 +106,7 @@ pub const WANT_BRANCHES: &str = "want_branches";
 
 /// What the flow is asking about right now.
 ///
-/// Read off `store` each iteration (design.md D1). Absent means *not asking* —
+/// Read off `store` each iteration. Absent means *not asking* —
 /// which is why the local machine is `Some("")` rather than an empty string
 /// standing in for both: a closed flow must cost nothing, and asking about local
 /// must be expressible.

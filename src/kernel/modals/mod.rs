@@ -1,6 +1,6 @@
 //! System modals: help, settings and the theme picker.
 //!
-//! These three are not panes and not plugins (design.md D1/D2). A pane shows
+//! These three are not panes and not plugins. A pane shows
 //! your work and belongs in the layout; these are **system chrome** — they are
 //! about thurbox itself, they overlay, they are modal, and they are the same in
 //! every install. Making them plugins bought no extensibility (nobody replaces
@@ -228,7 +228,7 @@ impl Modals {
     /// Whether the open modal is swallowing *everything*, the kernel's reserved
     /// chords included.
     ///
-    /// True only while help is capturing a chord (design.md D3): binding
+    /// True only while help is capturing a chord: binding
     /// `ctrl+q` has to be possible, and it is possible precisely because the
     /// kernel knows it is capturing and for exactly one keystroke. A plugin
     /// could never be trusted with that.

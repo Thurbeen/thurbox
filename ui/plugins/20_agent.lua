@@ -58,9 +58,8 @@ local SELECT_AGENT, SELECT_SHELL = "terminal.agent", "terminal.shell"
 --- Scrollback, declared rather than matched inside `on_key`: a key that only
 --- exists there is invisible to help and cannot be rebound.
 local SCROLL_UP, SCROLL_DOWN = "terminal.scroll_up", "terminal.scroll_down"
---- Rows one page key moves. v1 pages by half the pane's height; the fixed count
---- is tracked in `openspec/changes/v2-parity-gaps/` (#42) rather than changed
---- here.
+--- Rows one page key moves. v1 pages by half the pane's height; the fixed
+--- count is a deliberate divergence rather than an oversight.
 local SCROLL_LINES = 10
 --- Bring the input focus onto this pane, from anywhere.
 local FOCUS = "terminal.focus"

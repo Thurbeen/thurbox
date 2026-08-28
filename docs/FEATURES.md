@@ -12,7 +12,6 @@ For architectural choices, see [ARCHITECTURE.md](ARCHITECTURE.md).
 >
 > The engine below the interface — sessions, worktrees, agents, hosts, storage,
 > extensions, the CLI — is unchanged, and so are those sections.
-> What is owed to v1: `openspec/changes/v2-parity-gaps/`.
 
 ---
 
@@ -832,8 +831,7 @@ editor of choice can open them as a workspace.
 > What it builds on is still here: `session::review` (pure diff types +
 > `parse_unified_diff`), `storage::review` (`review_comments` + `review_marks`,
 > schema v38), and `kernel::diff` (diffs on a worker, published into the snapshot).
-> `openspec/changes/v2-code-review/` has the design that was written for a native
-> replacement. v1 keeps the view on `v1.x`.
+> v1 keeps the view on `v1.x`.
 
 Thurbox ships a **native, built-in** tuicr-like review view (`Ctrl+X`, `F7` alternate): a
 GitHub-style continuous diff of the active session's worktree
@@ -1257,7 +1255,7 @@ the tmux keeper and the optional OS timers invoke).
 
 > **CLI only.** There is no tasks pane. The data, the storage and the agent
 > linkage are unchanged, so `thurbox-cli task` does everything below and scripts
-> and extensions that used tasks still work. A pane is Tier 2 in the parity gaps.
+> and extensions that used tasks still work. A pane is owed.
 
 A **task list** of todo items that can be **connected to a coding
 agent**. Tasks deliberately reuse the automation **Send/Spawn** action
@@ -1446,9 +1444,8 @@ Two more ship in `extensions/`, both built the same agent-agnostic way
 > floats: it is a full-width slot the arrangement carves above the chrome bands,
 > because it highlights matches *inside* the panes it is searching and a modal
 > would cover the thing it is pointing at. Sessions is the only scope with a pane
-> today; the tasks, automations and files scopes went with their panes and are
-> listed in `openspec/changes/v2-parity-gaps/`. The rationale below is kept
-> because it is what a scope being added back needs.
+> today; the tasks, automations and files scopes went with their panes. The
+> rationale below is kept because it is what a scope being added back needs.
 
 `Ctrl+/` (the near-universal "search" chord) opens a **non-modal strip** that
 searches every scope with a pane. The opener is rebindable like every other

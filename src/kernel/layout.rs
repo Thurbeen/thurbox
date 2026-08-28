@@ -1,6 +1,6 @@
 //! The constraint pass: resolve every rect **before** any plugin renders.
 //!
-//! This is design.md D2, and it is the one place the POC had to be inverted.
+//! This is the one place the POC had to be inverted.
 //! The POC rendered every plugin first and arranged the returned trees
 //! afterwards, which makes a plugin's own rect unknowable while it is
 //! rendering — so percentage widths, wrapping, truncation and scroll-window

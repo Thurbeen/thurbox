@@ -1,7 +1,6 @@
 //! Plugin events, through the real kernel: a plugin declares what it listens
 //! for, the kernel derives what changed and hands each subscriber one call per
-//! change, and a handler that fails costs only itself
-//! (`openspec/changes/plugin-events-and-command-palette`).
+//! change, and a handler that fails costs only itself.
 //!
 //! What lives in the loop — the dispatch point, the cascade bound, focus and
 //! command events, the reload — is the binary's and is asserted by its unit

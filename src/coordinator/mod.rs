@@ -406,7 +406,7 @@ impl App {
             // Deliberately NOT a data change: new agent output moves the vt100
             // grid a surface paints from, not anything published. Treating it as
             // one would move the epoch on every frame under a printing agent and
-            // make the whole gate worthless (design.md — Risks).
+            // make the whole gate worthless.
             self.dirty = true;
         }
         // The stuck-`working` fallback, run here because it asks the

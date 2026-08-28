@@ -223,7 +223,7 @@ fn every_global_chord_v1_binds_resolves_to_a_v2_action() {
 fn a_chord_whose_pane_was_removed_is_unbound_rather_than_reused() {
     // Re-pointing a freed chord at something else would silently change what a
     // v1 user's muscle memory does. Better that it does nothing until its pane
-    // returns — see `openspec/changes/v2-parity-gaps/`.
+    // returns.
     let host = host();
     let registry = registry(&host);
     for (chord, pane) in CHORDS_AWAITING_THEIR_PANE {

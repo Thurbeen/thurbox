@@ -2,7 +2,7 @@
 //!
 //! `text`, `box`, `input`, `surface`. Lists, gauges, dividers, tables and
 //! titled panels are *not* here — they are composed in Lua from these four
-//! (`ui/lib/widgets.lua`). That is the whole point of design.md D1: a prior
+//! (`ui/lib/widgets.lua`). That is the whole point: a prior
 //! attempt froze a catalog at 6 kinds and watched it reach 16 without gaining
 //! the ability to express code review, because every new appearance had
 //! nowhere to live but a kernel enum variant. Adding a variant here costs a
@@ -62,9 +62,9 @@ impl Size {
 /// Optional targeting information carried by any node.
 ///
 /// Present so that an input event can be attributed to the node under it, and
-/// so styling can one day be expressed separately from structure (design.md
-/// D4/D6). The kernel stores and propagates it; it does **not** resolve
-/// selectors against it — that stays in userland until a real consumer exists.
+/// so styling can one day be expressed separately from structure. The kernel
+/// stores and propagates it; it does **not** resolve selectors against it —
+/// that stays in userland until a real consumer exists.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Identity {
     pub id: Option<String>,
@@ -213,7 +213,7 @@ impl Frame {
 ///
 /// Every variant carries `size` (what it asks of its parent) and `identity`
 /// (how it can be targeted). `Surface` carries no children by design — it is
-/// the geometry-first escape hatch (design.md D3).
+/// the geometry-first escape hatch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     Text {
@@ -393,7 +393,7 @@ impl Node {
 
 /// Divide `total` among `children` along one axis.
 ///
-/// This is the arithmetic behind design.md D2's promise that a plugin is told
+/// This is the arithmetic behind the promise that a plugin is told
 /// its *own* rect: the parent resolves every child's length here, before any
 /// child is asked to render into it.
 ///
@@ -615,8 +615,8 @@ mod tests {
 
     #[test]
     fn the_catalog_is_exactly_four_kinds() {
-        // The tripwire for design.md D1. Growing this is a design decision,
-        // not a convenience — see the module docs.
+        // The tripwire for the four-kind rule. Growing this is a design
+        // decision, not a convenience — see the module docs.
         assert_eq!(KINDS.len(), 4);
         assert_eq!(KINDS, ["text", "box", "input", "surface"]);
     }

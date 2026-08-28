@@ -10,11 +10,11 @@
 //! - A plugin whose `render` throws is replaced by an error panel **in its own
 //!   rect**. Its neighbours keep drawing and keep their state.
 //! - A plugin that never returns is *interrupted*. Luau would have donated
-//!   this; on Lua 5.4 it is ours to build (design.md D8), so every call runs
+//!   this; on Lua 5.4 it is ours to build, so every call runs
 //!   under an instruction-count hook and a memory ceiling.
 //!
 //! The VM is deliberately not `Send` — mlua's `send` feature stays off, which
-//! makes "plugins never touch the render thread" a compile error (D10).
+//! makes "plugins never touch the render thread" a compile error.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -93,7 +93,7 @@ pub const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 ///
 /// Chosen deliberately, not inherited: `io`, `os` and `debug` are **absent**,
 /// so a plugin has no filesystem, process or clock-tampering access — the
-/// capability model is enforced by absence (design.md D9), not by a binding
+/// capability model is enforced by absence, not by a binding
 /// that refuses. `package` is withheld too; `require` is ours (see
 /// [`install_require`]), scoped to the plugin directory.
 fn plugin_stdlib() -> StdLib {
@@ -219,11 +219,11 @@ pub struct Plugin {
     pub session_input: bool,
     /// Space this plugin asks of its slot. Declared **statically** here rather
     /// than in render output — that is what lets the layout pass resolve rects
-    /// before any plugin runs (design.md D2).
+    /// before any plugin runs.
     pub size: Size,
     /// Slot whose rendered tree this plugin may transform.
     ///
-    /// The answer to design.md D6: a decorator receives another plugin's tree
+    /// Cross-plugin decoration: a decorator receives another plugin's tree
     /// and returns a modified one, matching on the identity nodes already
     /// carry. No selector engine — that was the largest available instance of
     /// the mistake this whole design exists to avoid.
@@ -597,7 +597,7 @@ pub struct LuaHost {
     /// these; only the nested group values are reused. That is deliberate — it
     /// means a gating mistake can produce a stale *group* but never a torn
     /// table, and it keeps the change local to the group builders
-    /// (`frame-cost`, design.md).
+    /// (`frame-cost`).
     groups: RefCell<HashMap<&'static str, (GroupKey, Value)>>,
     store: Shared,
     state: Private,
@@ -623,7 +623,7 @@ pub struct LuaHost {
     ///
     /// Queued rather than executed inline: `command()` must return instantly,
     /// and a plugin must never be able to run a database write from inside a
-    /// render call (design.md D5).
+    /// render call.
     queue: Queue,
     /// Runs plugins asked for, drained once per frame like `queue`.
     ///
@@ -1350,7 +1350,7 @@ impl LuaHost {
     /// Publish the current snapshot so plugins can read it.
     ///
     /// Called once per frame from the event loop — never from inside a plugin,
-    /// which is what keeps every read immediate (design.md D5).
+    /// which is what keeps every read immediate.
     /// Build one published group, or hand back the one built at the same key.
     ///
     /// `key` combines only the versions that group actually reads, so a source

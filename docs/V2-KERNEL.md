@@ -3,15 +3,15 @@
 thurbox v2 is a session engine with a Lua-driven renderer. The kernel owns no
 pane: the session list, the terminal and every other surface that shows *your
 work* is a plugin under `ui/`. The bundled set is currently **three** — the
-session list, the agent pane and the search strip — plus the new-session flow, the
-confirmation and the restore list, which float rather than filling a slot; the interface was cut
-back to its core and v1's other surfaces are listed with their gaps in
-`openspec/changes/v2-parity-gaps/`. It does own the **system modals** — help,
-settings, the theme picker and the interface's own file list — which are chrome
-about thurbox itself rather than panes (see below). The file list was a pane and
-is deliberately no longer one: it is how a broken interface is recovered, so it
-must not be a file the interface loads. Written for someone about to change the
-kernel; if you want to *write* a plugin, read `docs/PLUGINS.md`.
+session list, the agent pane and the search strip — plus the new-session flow,
+the confirmation and the restore list, which float rather than filling a slot;
+the interface was cut back to its core, and v1's other surfaces are not
+bundled. It does own the **system modals** — help, settings, the theme picker
+and the interface's own file list — which are chrome about thurbox itself
+rather than panes (see below). The file list was a pane and is deliberately no
+longer one: it is how a broken interface is recovered, so it must not be a file
+the interface loads. Written for someone about to change the kernel; if you
+want to *write* a plugin, read `docs/PLUGINS.md`.
 
 Writing a plugin starts at `docs/PLUGINS.md` — **Start here**, which is four
 `thurbox-cli plugin` commands and needs no terminal.
@@ -30,8 +30,7 @@ the only safe direction — see `docs/RELEASING.md`.
 A profile with v1 history is asked once, before the interface takes the terminal
 (`kernel::consent`): it names every surface that is gone, says the database is
 shared and unmigrated, and declining turns auto-update off and prints how to
-reinstall 1.x. What is still owed to v1 is listed in
-`openspec/changes/v2-parity-gaps/`.
+reinstall 1.x.
 
 Two of those surfaces are answered by panes rather than by the kernel, which is
 the mechanism working as designed:
@@ -264,8 +263,7 @@ delivered (`thurbox-cli plugin sync` is).
 The one genuinely modal input in the product lives here too: while help is
 capturing a chord, **every** key is data, `ctrl+q` included. A plugin could
 never be allowed to swallow the quit chord; the kernel can, because it knows
-the capture lasts one keystroke. See
-`openspec/changes/v2-system-modals/design.md` (D1–D3).
+the capture lasts one keystroke.
 
 ## Two things that will bite you
 
@@ -381,16 +379,10 @@ thurbox from a checkout and an unoptimised Lua VM is felt in the UI.
 
 ## The gap to v1
 
-Two lists, and they answer different questions. `tests/v2_parity.rs` holds the
-**rendering** divergences — what v2 draws differently — and asserts their exact
-count, so adding one without recording it fails. `openspec/changes/v2-parity-gaps/`
-holds the **behavioural** ones, found by auditing each v1 pane against its
-plugin; it is the longer and more serious list, and Tier 0 of it is what
-`v2-retire-v1` is really waiting on.
-
-## Decisions
-
-Each is recorded with its alternatives in
-`openspec/changes/v2-plugin-kernel/design.md` (D1–D14), and each later change
-carries its own. The "Findings from implementing" sections are the honest part:
-what the design got wrong, discovered by building it.
+Nothing measures it. v1's parity test went with v1, so no test compares the
+two: `tests/v2_frames.rs` pins what v2 draws, but against itself rather than
+against what v1 drew. The behavioural gaps — the longer and more serious list —
+are not inventoried anywhere. What exists is prose: the consent gate names every
+surface that is gone (`kernel::consent`), and `docs/FEATURES.md` says per
+surface what replaced it. Of v1's three paneless surfaces, code review and the
+info panel are out-of-tree panes; the file viewer has no replacement.

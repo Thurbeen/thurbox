@@ -10,7 +10,7 @@
 //! grows and disappears with the plugins that name it — including one v1 never
 //! had, which is listed after v1's own.
 //!
-//! **Why this is an editor** (design.md D3): v1's F1 panel rebinds live, and
+//! **Why this is an editor**: v1's F1 panel rebinds live, and
 //! `Registry::rebind` already carries conflict detection and persistence. While
 //! capturing, *every* chord is data — including `ctrl+q`, which no plugin could
 //! ever be allowed to swallow. That is the reason the modal layer is the

@@ -32,11 +32,11 @@ pub(super) const BUDGET_EXCEEDED: &str = "thurbox: instruction budget exceeded";
 
 /// Arms the instruction-count hook for the duration of one plugin call.
 ///
-/// This is the Lua 5.4 half of design.md D8. Luau donates `set_interrupt`;
-/// stock Lua does not, so the equivalent is a count hook that raises an error
-/// once the budget is spent — which unwinds the plugin call and surfaces as an
-/// ordinary plugin failure. It is what stops `while true do end` from taking
-/// the render loop with it.
+/// This is the Lua 5.4 half of the instruction bound. Luau donates
+/// `set_interrupt`; stock Lua does not, so the equivalent is a count hook that
+/// raises an error once the budget is spent — which unwinds the plugin call
+/// and surfaces as an ordinary plugin failure. It is what stops
+/// `while true do end` from taking the render loop with it.
 ///
 /// Disarmed on drop, so the budget is per call rather than per VM.
 pub(super) struct Budget<'a> {

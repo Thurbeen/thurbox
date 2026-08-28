@@ -1,7 +1,6 @@
 //! The command palette against the real bundled plugins: every action the
 //! registry knows is a row, typing filters them, and `Enter` runs the chosen one
-//! through the same path a key press takes
-//! (`openspec/changes/plugin-events-and-command-palette`).
+//! through the same path a key press takes.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;

@@ -9,7 +9,7 @@
 //! with what broke without it — plus the loop's constants. Startup lives in
 //! `coordinator::boot`, the terminal/chrome helpers in `coordinator::chrome`,
 //! and `App`'s behaviour in the rest of [`coordinator`], split by what each
-//! group of methods is for. See `openspec/changes/archive/*-v2-plugin-kernel/`.
+//! group of methods is for.
 
 mod coordinator;
 
@@ -246,7 +246,7 @@ struct App {
     /// Which occupant of each `switch` slot is visible, by slot name.
     ///
     /// Focusing a plugin in a switch slot makes it the visible one, which is
-    /// both how switching is driven and how the spec's "focus never rests on a
+    /// both how switching is driven and how the "focus never rests on a
     /// hidden pane" rule is satisfied without a second mechanism.
     slot_selection: std::collections::HashMap<String, usize>,
     /// Whether a newer release exists, and the silent update if it was allowed.

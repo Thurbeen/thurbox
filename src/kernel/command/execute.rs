@@ -372,8 +372,7 @@ fn bookmark_add(
     };
 
     // Touches recency as well as adding, which is what lets the flow re-select a
-    // path that was already remembered: the row it asked for is the newest one
-    // (design.md D2).
+    // path that was already remembered: the row it asked for is the newest one.
     db.upsert_repo_bookmark_checked(host, expanded, is_git)
         .map_err(|e| format!("remember repo: {e}"))
 }

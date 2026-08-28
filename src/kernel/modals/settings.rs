@@ -2,10 +2,9 @@
 //!
 //! Like help, it renders the registry rather than a list it maintains, grouped
 //! by the plugin that declared each row — so a plugin gets a settings row by
-//! declaring one table field and never learns how the row is drawn (design.md
-//! D1).
+//! declaring one table field and never learns how the row is drawn.
 //!
-//! Values stay a knob rather than a document (design.md D5): `Bool`, `Number`,
+//! Values stay a knob rather than a document: `Bool`, `Number`,
 //! `Text`, and nothing else. A plugin wanting structured configuration reads a
 //! file through its own capability.
 //!

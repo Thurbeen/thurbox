@@ -6,7 +6,7 @@
 # There is deliberately **no `base:`**. `kernel::host::plugin_stdlib` grants
 # plugins `string`, `table`, `math`, `coroutine` and `utf8` and nothing else, and
 # the capability model is enforced by *absence* rather than by a binding that
-# refuses (design.md D9). Declaring the granted set and inheriting nothing
+# refuses. Declaring the granted set and inheriting nothing
 # reproduces that exactly: `os`, `io`, `debug`, `package`, `print` and the loaders
 # are simply not here, so reaching for one is `undefined_variable` — a lint
 # failure instead of "attempt to index a nil value" when someone opens the pane.

@@ -4,9 +4,6 @@
 //! the arithmetic that resolves where things go ([`layout`]), a read-only view
 //! of the session engine ([`snapshot`]), and the VM that plugins run in
 //! ([`host`]). Everything a user sees — the session list included — is Lua.
-//!
-//! See `openspec/changes/v2-plugin-kernel/` for the specs and the decisions
-//! (design.md) behind this shape.
 
 pub mod bands;
 pub mod bundled;

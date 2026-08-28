@@ -1,9 +1,9 @@
 //! Adding, replacing and removing parts of the interface.
 //!
 //! Every one of these already worked, or nearly did, and none of them was held
-//! by anything: the bundled set is changing pane by pane under `v2-parity-gaps`,
-//! so "you can drop a file in" is exactly the kind of promise that regresses
-//! without anyone noticing until a user's plugin stops loading.
+//! by anything: the bundled set changes pane by pane, so "you can drop a file
+//! in" is exactly the kind of promise that regresses without anyone noticing
+//! until a user's plugin stops loading.
 //!
 //! The interface is built in a temporary directory the same way the binary
 //! builds the user's, so these exercise delivery and loading together.

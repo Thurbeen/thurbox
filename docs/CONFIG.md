@@ -316,8 +316,7 @@ lists the hooks in force.
 > are accepted and preserved untouched so an existing file does not fail
 > `thurbox-cli config validate`, and simply not listed in the panel, since a
 > row that gates nothing reads as broken. `automations` is honoured, but it
-> arms the headless heartbeat rather than an in-TUI scheduler. The gap is
-> tracked in `openspec/changes/v2-parity-gaps/`.
+> arms the headless heartbeat rather than an in-TUI scheduler.
 
 Scalar tuning knobs plus the `[features]` switches, seeded fully
 commented-out (defaults apply when absent). Only knobs a user plausibly

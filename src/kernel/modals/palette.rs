@@ -5,8 +5,7 @@
 //! spent; help could *list* an action but not run it. The palette lists every
 //! plugin's keys, every chord-less `commands` declaration and the kernel's own,
 //! filters them as you type, and runs the chosen one through the same
-//! `on_action` path a key press takes — so a plugin cannot tell the two apart
-//! (`command-palette`).
+//! `on_action` path a key press takes — so a plugin cannot tell the two apart.
 //!
 //! Chrome like help and settings: plugins contribute rows by declaring data,
 //! the kernel draws and dispatches.

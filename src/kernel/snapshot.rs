@@ -1,7 +1,7 @@
 //! The read side: an in-memory picture of the session engine that plugins
 //! read from, refreshed on the kernel's own schedule.
 //!
-//! Design.md D5 in one rule: **Lua never blocks and never awaits.** A plugin
+//! One rule: **Lua never blocks and never awaits.** A plugin
 //! renders on the UI thread ~20×/s, so a read that could touch SQLite, git, a
 //! subprocess or an unreachable SSH host would stall the loop — and would do
 //! so for plugins nobody has written yet. Serving every read from a snapshot

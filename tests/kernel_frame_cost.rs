@@ -1,4 +1,5 @@
-//! What a frame is allowed to recompute (`frame-cost`).
+//! What a frame is allowed to recompute — the `frame-cost` rule, named
+//! wherever the kernel's change-signals are explained and enforced here.
 //!
 //! The change-signals these assert on gate both the published tables and the
 //! pure-pane tree cache, so a source that moves without its signal moving is
@@ -270,7 +271,7 @@ fn a_moved_source_is_published_even_though_groups_are_gated() {
 
 #[test]
 fn a_gated_publish_matches_a_full_rebuild() {
-    // The proof named in design.md: for the same inputs, gating changes nothing
+    // The proof: for the same inputs, gating changes nothing
     // a plugin can observe. `always_fresh` rebuilds every group, so it stands in
     // for the ungated build.
     let (_dir, host) = interface();

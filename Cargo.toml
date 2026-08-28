@@ -35,8 +35,7 @@ base64 = "0.23"
 # v2 plugin kernel: the Lua runtime plugins are written in, and the filesystem
 # watch that reloads them on save. Lua 5.4 is vendored so no system Lua is
 # needed; the `send` feature is deliberately NOT enabled, which makes "plugins
-# never touch the render thread" a compile error rather than a review rule
-# (design.md D10).
+# never touch the render thread" a compile error rather than a review rule.
 mlua = { version = "0.12", default-features = false, features = ["lua54", "vendored"] }
 notify = "8.2"
 

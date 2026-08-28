@@ -33,8 +33,8 @@ pub struct Hit {
 /// Fills a session-backed surface.
 ///
 /// The kernel owns this because a live terminal grid cannot round-trip through
-/// Lua tables at 20 fps — see design.md D3. A plugin *places and frames* a
-/// surface; the provider paints inside the rect it was given.
+/// Lua tables at 20 fps. A plugin *places and frames* a surface; the provider
+/// paints inside the rect it was given.
 ///
 /// Painting into the frame rather than returning lines is deliberate: a live
 /// terminal is rendered by `tui_term` straight off the vt100 screen, which

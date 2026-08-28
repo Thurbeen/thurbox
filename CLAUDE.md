@@ -347,7 +347,7 @@ standard library for `ui/`, and it deliberately declares **no `base:`** — it l
 only what `kernel::host::plugin_stdlib` grants (`string`, `table`, `math`,
 `coroutine`, `utf8`) plus the six globals `install_api` injects. So `os`, `io`,
 `debug`, `package`, `print` and the loaders are *absent* rather than marked
-removed, which is the same shape the VM enforces (design.md D9) and means a plugin
+removed, which is the same shape the VM enforces and means a plugin
 reaching for one fails lint instead of failing at runtime. Inheriting a base and
 marking things `removed` does **not** work: selene applies that to plain functions
 but not to a table's fields, so `os.time()` passed review while `dofile` was
@@ -1169,11 +1169,10 @@ command (enable/disable/run/delete — `run_now` only marks it due, so the tick
 stays the one execution path), so a pane is a plugin somebody can write: both
 halves are done and nothing in `ui/` uses them yet.
 
-> A pane is owed, and it is Tier 2 in `openspec/changes/v2-parity-gaps/` beside
-> the tasks one. v1's shape — a pane under the session list, sharing one circular
-> `j`/`k` list with it, with the centre pane as its editor and the run history
-> below — is in that ledger and on the `v1.x` branch; it is deliberately not
-> described here as if it existed.
+> A pane is owed. v1's shape — a pane under the session list, sharing one
+> circular `j`/`k` list with it, with the centre pane as its editor and the run
+> history below — is on the `v1.x` branch; it is deliberately not described here
+> as if it existed.
 
 ## Tasks (todo list)
 
@@ -1200,9 +1199,8 @@ close it), and `task run` sends or spawns. Triggering advances `Todo → InProgr
   the external-sync flags. `[features] tasks` is **accepted and ignored** — nothing
   reads it, in the CLI or anywhere else.
 
-> A pane is owed. It is Tier 2 in `openspec/changes/v2-parity-gaps/`, and the shape
-> a plugin would take is the same one `10_sessions.lua` uses: read the snapshot,
-> return a tree, send a command.
+> A pane is owed, and the shape a plugin would take is the same one
+> `10_sessions.lua` uses: read the snapshot, return a tree, send a command.
 
 ## Extensions
 
@@ -1400,9 +1398,9 @@ their screens**, which is the half that finds a session by the error in it.
   at.
 - Sessions is the only scope with a pane today. A result carries the pane it
   belongs to, so a returning surface is a scope added and nothing else changed.
-- One deliberate divergence, recorded in `tests/v2_parity.rs`'s successor notes: v1
-  also took `Ctrl+P`/`Ctrl+N` inside the strip because its search focus captured
-  input ahead of the keybinding table. Here every chord goes through one registry
+- One deliberate divergence: v1 also took `Ctrl+P`/`Ctrl+N` inside the strip
+  because its search focus captured input ahead of the keybinding table. Here
+  every chord goes through one registry
   where a plugin-scoped claim does not outrank a global one, so declaring them
   would take `Ctrl+N` from new-session everywhere.
 
@@ -1562,10 +1560,8 @@ overflow the banner.
 ## Code review
 
 **The view is gone from the binary.** v1's native diff reviewer
-(`ui/code_review.rs` + `app/code_review.rs`) went with `src/ui`
-(`openspec/changes/v2-code-review/` has the design that was written for a native
-replacement, `v2-parity-gaps` tracks it); v1 keeps it on the `v1.x` branch. It came
-back **as a pane**, in its own repository:
+(`ui/code_review.rs` + `app/code_review.rs`) went with `src/ui`; v1 keeps it on
+the `v1.x` branch. It came back **as a pane**, in its own repository:
 [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) —
 installed by clone (`thurbox-cli plugin install
 git+https://github.com/Thurbeen/thurbox-code-review`), takes the `center` switch
@@ -1989,51 +1985,11 @@ live half and toasts, noting a restart when `restart_only_differs` says so.
 > rather than failing on an unknown key, and setting one does nothing in either
 > direction. The settings panel does not offer them.
 
-## OpenSpec (spec-driven changes)
-
-Non-trivial changes can be planned through
-[OpenSpec](https://github.com/Fission-AI/OpenSpec) before any code is written.
-It is **tooling, not a gate** — small fixes still go straight to a commit.
-
-Six skills drive the loop: **propose** (draft `proposal.md` → `specs/` deltas →
-`design.md` → `tasks.md`) → **apply** (implement the tasks) → **archive** (fold
-the deltas into `openspec/specs/`, move the change to
-`openspec/changes/archive/<date>-<name>/`). `explore` (think first), `update`
-(revise artifacts), and `sync` (merge deltas without archiving) fill the gaps.
-
-They are installed for the three agents this repo already configures, each in
-that agent's own layout (the skills are identical; only the command alias and
-its spelling differ):
-
-| Agent | Skills | Commands | Invoked as |
-|-------|--------|----------|------------|
-| claude | `.claude/skills/openspec-*/` | `.claude/commands/opsx/` | `/opsx:propose` |
-| pi | `.pi/skills/openspec-*/` | `.pi/prompts/opsx-*.md` | `/opsx-propose` |
-| opencode | `.opencode/skills/openspec-*/` | `.opencode/commands/opsx-*.md` | `/opsx-propose` |
-
-- **Layout**: `openspec/config.yaml` (schema `spec-driven`, plus optional
-  project `context` and per-artifact `rules`), `openspec/specs/` (current
-  requirements), `openspec/changes/<name>/` (in-flight work). One shared
-  `openspec/` tree serves all three agents.
-- **CLI**: `npm install -g @fission-ai/openspec`. The skills are restricted to
-  `Bash(openspec:*)`, so the binary must be on PATH — an `npx` fallback will
-  not work. `openspec update` refreshes the skills after a CLI upgrade;
-  regenerate them with `openspec init --tools claude,pi,opencode` (re-running
-  `init` is additive — it leaves already-configured agents intact).
-- Skill and command files are generated — edit `openspec/config.yaml` to shape
-  the workflow rather than hand-patching them, since `update` overwrites them.
-- `.opencode` joins `.claude`/`.pi`/`openspec` in `rumdl`'s exclude list
-  (`.rumdl.toml`). The generated skills and change artifacts would otherwise
-  block commits on prose we don't author; excluding the whole agent dir (rather
-  than the generated files inside it) is how `.claude`/`.pi` were already
-  treated.
-
 ## Writing an interface plugin
 
 The bundled set is deliberately small: `10_sessions`, `20_agent`, `65_search`, plus
 three floats that occupy no slot — the creation flow (`70_new_session`), the
 confirmation (`60_confirm`) and the restore list (`80_restore`, v1's `Ctrl+U`).
-What v1 had and this does not is listed in `openspec/changes/v2-parity-gaps/`.
 
 ```bash
 thurbox-cli plugin dir            # which directory is live, and which rule chose it
@@ -2212,7 +2168,6 @@ and the creation flow's folder import moved to `Alt+P` for it.
 - `docs/V2-KERNEL.md` — the kernel's shape, its five rules, and the traps
 - `docs/PLUGINS.md` — writing a plugin; **Start here** needs no TTY, and **Traps**
   lists the mistakes that are invisible until runtime
-- `openspec/changes/v2-*` — the changes, their specs, and what each got wrong
 
 ## Design Documentation
 

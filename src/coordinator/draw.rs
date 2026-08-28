@@ -658,10 +658,6 @@ impl App {
         let state = BandState {
             version: env!("THURBOX_VERSION"),
             theme_label: &self.themes.active().display_name,
-            // Nothing detects a newer release yet — v2 has no startup update
-            // check (`v2-parity-gaps`, "no startup update check and no silent
-            // auto-update"). The band renders the notice when something does;
-            // until then there is honestly nothing to announce.
             update_available: self.updates.available(),
             session: session.as_deref(),
             session_count: snapshot.sessions.len(),

@@ -1,6 +1,6 @@
 //! The theme picker: the presets plus `themes.toml`, and nothing else.
 //!
-//! Deliberately asymmetric with the other two (design.md D1): there is nothing
+//! Deliberately asymmetric with the other two: there is nothing
 //! a plugin could usefully add to a list of palettes, so this modal declares no
 //! extension point at all rather than an unused one.
 //!

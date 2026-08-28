@@ -4,7 +4,7 @@
 //! What is under test is the shape rather than the pixels: that these three are
 //! *not* plugins, that they overlay the interface instead of replacing a pane,
 //! that they capture input while open, and that a plugin reaches them by
-//! declaring data and nothing else (`openspec/changes/v2-system-modals`).
+//! declaring data and nothing else.
 //!
 //! Renders the modals through the same entry point the binary uses
 //! (`Modals::render`), so a modal that stopped drawing would fail here.
@@ -662,7 +662,7 @@ fn one_row_per_action_joins_its_chords_the_way_v1_spells_them() {
 
 #[test]
 fn capturing_ctrl_q_in_help_is_data_rather_than_a_quit() {
-    // design.md D3, and the reason the modal layer belongs to the kernel: while
+    // The reason the modal layer belongs to the kernel: while
     // capturing, EVERY chord reaches the modal — including the one chord the
     // loop otherwise handles before anything else.
     let host = host();

@@ -898,8 +898,8 @@ return {
     -- A path just added is selected, which is v1's select-or-add. The row cannot
     -- be found by name — the expansion of a `~` on a remote host happened on the
     -- worker — so it is found by RECENCY: memory is published most-recent-first
-    -- and an add touches recency, so the row asked for is the newest one
-    -- (design.md D2). Newest is not the same as first: the kernel offers the
+    -- and an add touches recency, so the row asked for is the newest one.
+    -- Newest is not the same as first: the kernel offers the
     -- interface directory ahead of memory, and taking row 1 selected THAT for
     -- every repository added. Consumed only once the write has landed and the
     -- list has been re-read, or it would select whatever was previously on top.

@@ -1,7 +1,7 @@
 //! The new-session flow, against the real bundled plugin.
 //!
-//! What is worth testing here is not the pixels — `tests/v2_parity.rs` owns that
-//! — but the two things v1 got wrong often enough to have grown machinery for:
+//! What is worth testing here is not the pixels, but the two things v1 got
+//! wrong often enough to have grown machinery for:
 //! **which step the flow is on** after each keystroke, and **what the create
 //! command it finally issues actually carries**. Both are observable from
 //! outside: the step from what is drawn, the command from the queue it is pushed

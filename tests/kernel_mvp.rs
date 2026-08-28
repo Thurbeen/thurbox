@@ -349,7 +349,7 @@ fn the_working_spinner_advances_with_elapsed_time() {
 
 #[test]
 fn a_plugin_is_told_its_own_rect_not_the_screens() {
-    // design.md D2. The session list budgets its name column against the width
+    // The session list budgets its name column against the width
     // it was given, so a narrow pane must truncate where a wide one does not.
     let host = host();
     publish(
@@ -399,7 +399,7 @@ fn a_long_list_windows_against_the_resolved_height() {
 
 #[test]
 fn the_agent_pane_places_a_surface_it_does_not_paint() {
-    // design.md D3: the plugin frames and positions the terminal; the kernel
+    // The plugin frames and positions the terminal; the kernel
     // fills it. The plugin never sees a cell.
     let host = host();
     publish(&host, &sample());
@@ -516,7 +516,7 @@ fn an_unclaimed_key_is_left_for_the_kernel() {
 
 #[test]
 fn plugin_reads_are_served_from_the_snapshot() {
-    // design.md D5: reads never consult the database, so they cannot block.
+    // Reads never consult the database, so they cannot block.
     // Rendering a thousand times touches nothing but the published table.
     let host = host();
     publish(&host, &sample());
@@ -528,9 +528,9 @@ fn plugin_reads_are_served_from_the_snapshot() {
 
 #[test]
 fn the_kernel_still_exposes_exactly_four_node_kinds() {
-    // The D1 tripwire. If this fails, something was added to the kernel that
-    // should have been composed in ui/lib/widgets.lua — read design.md D1
-    // before changing the number.
+    // The four-kind tripwire. If this fails, something was added to the kernel
+    // that should have been composed in ui/lib/widgets.lua — read the module
+    // docs before changing the number.
     assert_eq!(
         KINDS,
         ["text", "box", "input", "surface"],
@@ -631,7 +631,7 @@ fn a_failed_reload_keeps_the_last_good_plugins_running() {
 
 #[test]
 fn an_unterminated_plugin_is_interrupted_rather_than_hanging() {
-    // design.md D8: Lua 5.4 gives no set_interrupt, so the kernel builds this
+    // Lua 5.4 gives no set_interrupt, so the kernel builds this
     // from a count hook. Without it, this test would never return.
     let dir = tempfile::tempdir().expect("tempdir");
     let plugins = dir.path().join("plugins");
@@ -656,7 +656,7 @@ fn an_unterminated_plugin_is_interrupted_rather_than_hanging() {
 
 #[test]
 fn plugins_have_no_filesystem_or_process_access() {
-    // design.md D9: enforcement by ABSENCE. `io`, `os` and the real `package`
+    // Enforcement by ABSENCE. `io`, `os` and the real `package`
     // are simply not in the environment, so there is no binding to refuse.
     let dir = tempfile::tempdir().expect("tempdir");
     let plugins = dir.path().join("plugins");
@@ -1094,7 +1094,7 @@ fn the_manual_order_is_published_so_a_reorder_is_visible() {
 
 #[test]
 fn the_theme_reaches_plugins_as_roles() {
-    // design.md D14: the kernel resolves, plugins name roles. Publishing is the
+    // The kernel resolves, plugins name roles. Publishing is the
     // whole interface between them, so this asserts a plugin can read the
     // resolved theme — through a throwaway plugin that prints it, since no
     // bundled pane shows the theme's name any more (the header is gone and the
@@ -1291,7 +1291,7 @@ fn capitals_route_the_same_from_either_terminal_encoding() {
 
 #[test]
 fn the_lua_vm_stays_non_send() {
-    // design.md D10: with mlua's `send` feature off, "plugins never touch the
+    // With mlua's `send` feature off, "plugins never touch the
     // render thread" is a compile error rather than a review rule. Enabling it
     // would silently remove that guarantee, so the dependency is asserted here.
     let manifest =
@@ -1309,7 +1309,7 @@ fn the_lua_vm_stays_non_send() {
 
 #[test]
 fn the_granted_capability_set_matches_a_declared_list() {
-    // design.md D9: capabilities are introduced with their consumer, never
+    // Capabilities are introduced with their consumer, never
     // ahead of one. This is the tripwire — a new global in the plugin
     // environment has to be added here deliberately.
     const GRANTED: [&str; 6] = [
@@ -1317,7 +1317,7 @@ fn the_granted_capability_set_matches_a_declared_list() {
         // Two rooted reads — directory entries and a file's text — confined to
         // a session's working directory. NOT a filesystem: there is no open,
         // no write, no path outside the root. Granted with its consumer (the
-        // file viewer), per design.md D9.
+        // file viewer).
         "files",
     ];
 
@@ -1820,7 +1820,7 @@ fn a_failing_decorator_leaves_the_pane_drawn() {
 
 #[test]
 fn the_review_body_is_a_surface_not_a_tree() {
-    // design.md D3: the diff body is geometry-first, so it is cells. If this
+    // The diff body is geometry-first, so it is cells. If this
     // ever becomes a tree, the pane has stopped being able to do side-by-side
     // and horizontal scrolling.
     let dir = tempfile::tempdir().expect("tempdir");

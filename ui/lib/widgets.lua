@@ -40,7 +40,7 @@ end
 ---
 --- This is the function that could not exist before the layout pass: it needs
 --- the pane's RESOLVED height, which a plugin only has because the kernel
---- resolves rects before calling render (design.md D2).
+--- resolves rects before calling render.
 ---
 --- Returns first, last (1-based, inclusive) and whether rows are hidden above
 --- and below.

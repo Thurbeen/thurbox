@@ -3,8 +3,7 @@
 //! Three single-row surfaces — who is running (`identity`), what just happened
 //! (`message`), and what can be pressed (`action`). They are the non-modal half
 //! of the rule `kernel::modals` states for the modal half: **system chrome is
-//! kernel-owned, and plugins contribute data to it**
-//! (`openspec/changes/v2-system-modals/design.md` D1).
+//! kernel-owned, and plugins contribute data to it**.
 //!
 //! Two properties follow from that, and both are the point:
 //!
@@ -16,8 +15,6 @@
 //!   is named as a slot in `ui/layout.lua` exactly as a pane's region is, so the
 //!   bars stay movable in the file whose whole purpose is deciding what the
 //!   screen looks like. A band the arrangement omits simply does not draw.
-//!
-//! See `openspec/changes/v2-chrome-bands/` for the specs and the decisions.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

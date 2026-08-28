@@ -3,8 +3,8 @@
 //! v1 learned to assert on counters rather than timings: a test that says
 //! "idle should be fast" is flaky on shared hardware, while one that says "an
 //! idle loop painted no frames" is exact. These are the v2 equivalents of
-//! `MetricsState::perf`, and they exist so the demand-driven redraw (design.md
-//! D12) is provable rather than hoped for.
+//! `MetricsState::perf`, and they exist so the demand-driven redraw is
+//! provable rather than hoped for.
 //!
 //! On top of them sits the **observability layer** of ADR-P11: fixed-bucket
 //! duration histograms, a ring of named slow operations, and the startup phase

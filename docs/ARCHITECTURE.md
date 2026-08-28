@@ -1205,8 +1205,7 @@ file viewer has no equivalent, and tasks, automations and the restore list are
 intended — as panes, outside the binary:
 [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) and
 [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel), each its
-own repository, installed by clone. What is still owed is tracked in
-`openspec/changes/v2-parity-gaps/`.
+own repository, installed by clone.
 
 **Rejected**:
 

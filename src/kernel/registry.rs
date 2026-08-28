@@ -1,6 +1,6 @@
 //! Keys and settings, declared by plugins and collected in one place.
 //!
-//! Design.md D7: coherence has to be a property of the API, not a request in
+//! Coherence has to be a property of the API, not a request in
 //! the docs. A plugin declares its keys and settings as *data*, so the kernel
 //! can enumerate them without invoking anything — which is what makes a new
 //! plugin's keys show up in help and become rebindable with no other file

@@ -1,5 +1,5 @@
 //! Resource limits: the guarantees Luau would have donated and Lua 5.4 makes
-//! the kernel build (design.md D8).
+//! the kernel build.
 //!
 //! Separate from `kernel_mvp` because both tests mutate a process-wide bound,
 //! and running them beside the rest would change the limits under those tests.

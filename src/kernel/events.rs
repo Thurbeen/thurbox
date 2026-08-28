@@ -3,7 +3,7 @@
 //! A plugin used to learn that the world changed only by being rendered and
 //! diffing the snapshot itself — once per frame, in every pane that cared. This
 //! is the push: the loop hands each subscriber one call per change, off the
-//! render path (`plugin-events`).
+//! render path.
 //!
 //! The kernel's events are **derived by diffing published state**, never raised
 //! by the code that mutates it. A session created by `thurbox-cli`, a cron tick

@@ -1,10 +1,11 @@
 //! The write side: commands a plugin issues, executed off the render path.
 //!
-//! Design.md D5's other half. A plugin **cannot** wait for anything, so a
-//! state-changing operation is not a function that returns a result — it is a
-//! command that is accepted immediately and whose effect appears in a later
-//! snapshot. That removes a whole class of stall (SQLite contention, a git
-//! shell-out, an unreachable SSH host) for plugins nobody has written yet.
+//! The other half of "Lua never blocks". A plugin **cannot** wait for
+//! anything, so a state-changing operation is not a function that returns a
+//! result — it is a command that is accepted immediately and whose effect
+//! appears in a later snapshot. That removes a whole class of stall (SQLite
+//! contention, a git shell-out, an unreachable SSH host) for plugins nobody
+//! has written yet.
 //!
 //! Three consequences the spec requires and this implements:
 //!

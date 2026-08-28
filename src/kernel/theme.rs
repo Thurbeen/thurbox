@@ -1,6 +1,6 @@
 //! The active colour scheme, resolved once and published as named roles.
 //!
-//! Design.md D14: resolution is a *contract* — every plugin expresses colour by
+//! Resolution is a *contract* — every plugin expresses colour by
 //! naming a role, so something must turn roles into colours before any pane can
 //! draw. Choosing a theme, by contrast, is presentation, and stays a plugin.
 //!

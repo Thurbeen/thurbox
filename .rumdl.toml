@@ -1,8 +1,8 @@
 [global]
-# The agent-tooling dirs plus "openspec": both the OpenSpec skills/commands and
-# the change artifacts are generated from the CLI's own templates, so linting
-# them would block commits on prose we don't author.
-exclude = [".git", ".claude", ".pi", ".opencode", "openspec"]
+# The agent-tooling dirs. Their files follow each CLI's own skill/command
+# conventions — frontmatter first, no leading h1 — which this linter's
+# document rules reject (MD041) without anything being wrong with them.
+exclude = [".git", ".claude", ".pi", ".opencode"]
 
 [MD013]
 line_length = 100
