@@ -991,7 +991,7 @@ cannot drift from what is running.
 |-----|--------|-------|
 | `Ctrl+Q` | Quit (sessions keep running) | kernel |
 | `Ctrl+H` / `Ctrl+L` | Focus back / forward through the ring | kernel |
-| `Ctrl+C` / `Ctrl+V` | Copy selection / paste | kernel |
+| `Ctrl+C` / `Ctrl+V` | Copy selection / paste (`Cmd+C`/`Cmd+V` too, on macOS) | kernel |
 | `F1` / `Ctrl+G` | Keybindings help | kernel |
 | `F6` / `Ctrl+,` | Settings (`]` for the Interface tab) | kernel |
 | `F4` / `Ctrl+Y` | Theme picker | kernel |
@@ -1032,9 +1032,9 @@ and you are told which one lost it; a chord freed by a pane you removed stays
 unbound.
 
 **macOS:** in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm,
-Ghostty) the Command key works as a modifier — `Cmd+J`/`Cmd+Shift+J`
-switch sessions and `Cmd+L`/`Cmd+Shift+L` cycle panes by default, and
-any action can be rebound to a `cmd+…` chord from the F1 editor.
+Ghostty) the Command key works as a modifier, and any action can be rebound to a
+`cmd+…` chord from the F1 editor. Copy and paste ship on `Cmd+C`/`Cmd+V` there
+as well as on the Ctrl pair, because `Ctrl+C` in a terminal means interrupt.
 Terminal.app delivers no Cmd chords; everything else works there.
 
 ### List Navigation

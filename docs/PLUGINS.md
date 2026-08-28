@@ -470,7 +470,10 @@ declare `j`.
 
 Chords are canonicalised, which matters more than it sounds: `shift+j` reaches
 you the same way whether the terminal reports a bare `J` or `j` plus SHIFT, and
-`ctrl+/` works across all three encodings terminals use for it.
+`ctrl+/` works across all three encodings terminals use for it. `cmd+…` is the
+macOS Command key (`super`, `command` and `win` parse as aliases; `cmd` is
+canonical), which arrives only from a terminal speaking the kitty keyboard
+protocol — `on_key` sees it as `key.cmd` beside `key.ctrl`/`key.alt`/`key.shift`.
 
 A global `ctrl+<letter>` is also a chord the agent's own line editing wants
 (`ctrl+r` is reverse-search, `ctrl+d` is EOF). Add `passthrough = true` and a
@@ -688,7 +691,8 @@ the terminal grows.
 A modal is *open* on the frames it returns a `float` node, and closed on the
 ones it does not. There is no open/close state for the kernel and your plugin to
 disagree about. While it floats it takes every key — except the reserved ones,
-so it can never trap the user.
+so it can never trap the user, and except copy and paste, which have to work
+from any pane.
 
 ## Decorating another pane
 

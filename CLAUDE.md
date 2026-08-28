@@ -1849,10 +1849,23 @@ Global chords (kernel-owned):
 | `F1` / `Ctrl+G` | Keybindings help |
 | `F10` | Reload the interface from disk |
 | `F12` | Perf HUD |
+| `Ctrl+C` / `Ctrl+V` (+ `Cmd+C` / `Cmd+V` on macOS) | Copy the selection / paste |
 
 Everything else belongs to a plugin and is listed in `F1`. Rebindings persist to
 `ui.json` beside trust and the disabled set — a *user decision*, distinct from the
 delivery facts in `.bundled.json`.
+
+**Reserved is not the same as kernel-owned.** Five chords are handled before the
+registry is consulted and cannot be rebound at all (`registry::RESERVED`: quit,
+`F10`, `Ctrl+H`/`Ctrl+L`, `F12`) — they are the escape route out of a pane that
+consumes every key. Everything else the kernel owns is an ordinary *binding* with
+no Lua plugin behind it: the modal chords (`kernel::modals::bindings`) and copy
+and paste (`kernel::clipboard`). Copy and paste used to be literal `KeyCode`
+arms in the loop, which is why help listed them as fixed and a Mac user could
+not put copy on `Cmd+C` (issue #1024). They resolve through the registry now,
+ahead of a float's exclusive grab so they still work from any pane, and copy
+*declines* the chord when there is no selection so `Ctrl+C` still interrupts the
+agent.
 
 Two properties the registry holds and `tests/v2_keymap.rs` asserts:
 
@@ -1873,10 +1886,17 @@ instead. Navigation and app-control chords (`Ctrl+H/J/K/L`, `Ctrl+Q`, `Ctrl+N`) 
 `supports_keyboard_enhancement()`, popped in `restore_terminal` and the panic hook
 because `ratatui::restore()` does not). That is what makes `cmd+…` bindable at all
 (iTerm2 3.5+, kitty, WezTerm, Ghostty — not Terminal.app) and what separates
-`Ctrl+/` from the bytes a legacy terminal sends for it. Emulator-level shortcuts
-(`Cmd+Q/W/N/T/C/V`, `Cmd+K`, …) never reach the TUI; only bind what the terminal
-leaves free. F-keys need `Fn` on Mac laptops unless "Use F1, F2, etc. as standard
-function keys" is on.
+`Ctrl+/` from the bytes a legacy terminal sends for it. `Cmd` then reaches the
+registry as an ordinary modifier (`KeyPress::cmd`, canonical spelling `cmd+…`),
+and the pty boundary refuses a `SUPER`-modified key, so an unbound Cmd chord is
+swallowed rather than injected into the agent as a bare letter. The **emulator
+still decides**: it applies its own `Cmd+Q/W/N/T/C/V`, `Cmd+K`, … first, and only
+what it leaves free arrives. So `Cmd+C`/`Cmd+V` are shipped as macOS defaults
+*and* documented as conditional — an emulator that forwards a shortcut it did not
+perform (Ghostty's `performable:` keybinds) passes them on, one that swallows its
+own does not, and thurbox can do nothing about a key it never receives. F-keys
+need `Fn` on Mac laptops unless "Use F1, F2, etc. as standard function keys" is
+on.
 
 **Windows.** The console reports AltGr as `Ctrl`+`Alt`, so the pair is dropped at
 the input boundary (`coordinator::input::resolve_altgr`) for any character no key

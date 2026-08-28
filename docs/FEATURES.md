@@ -654,20 +654,26 @@ exists). Beyond that:
 
 - **Cmd as a modifier.** Thurbox enables the kitty keyboard protocol
   when the terminal supports it, so the Command key is a first-class
-  modifier: write `cmd+j` in `keybindings.json` (`super`, `command`,
-  and `win` parse as aliases; `cmd` is canonical) or capture a Cmd
-  chord live in the F1 editor. Supported by iTerm2 3.5+, kitty,
-  WezTerm, and Ghostty; Terminal.app lacks the protocol, so Cmd
-  chords never arrive there (everything else degrades gracefully).
-  Note the emulator consumes its own Cmd shortcuts (`Cmd+Q/W/N/T/C/V`,
-  `Cmd+K` clear, `Cmd+H` hide, `Cmd+digit` tabs) before Thurbox can
-  see them — only unclaimed chords are bindable.
-- **macOS default alternates.** On macOS builds four Cmd chords are
-  appended after the Ctrl primaries (Linux defaults are identical):
-  `Cmd+J` / `Cmd+Shift+J` select the next/previous session and
-  `Cmd+L` / `Cmd+Shift+L` cycle pane focus forward/backward. The
-  pattern is "Cmd mirrors the Ctrl primary, Shift reverses" —
-  `Cmd+K` and `Cmd+H` themselves are unusable (see above).
+  modifier: rebind an action onto `cmd+j` from the F1 editor (`super`,
+  `command`, and `win` parse as aliases; `cmd` is canonical). Supported
+  by iTerm2 3.5+, kitty, WezTerm, and Ghostty; Terminal.app lacks the
+  protocol, so Cmd chords never arrive there (everything else degrades
+  gracefully). Note the emulator consumes its own Cmd shortcuts
+  (`Cmd+Q/W/N/T/C/V`, `Cmd+K` clear, `Cmd+H` hide, `Cmd+digit` tabs)
+  before Thurbox can see them — only unclaimed chords are bindable.
+  The modifier reaches the registry at all only since issue #1024: it
+  was dropped when a keypress was flattened, so `Cmd+C` arrived as a
+  bare `c` and every `cmd+…` binding was unreachable.
+- **macOS default alternates.** One pair, appended after the Ctrl
+  primaries on macOS builds (Linux defaults are otherwise identical):
+  `Cmd+C` / `Cmd+V` copy and paste, because `Ctrl+C` in a terminal is
+  the interrupt. The pattern is "Cmd mirrors the Ctrl primary". These
+  are two of the chords an emulator commonly claims for itself, so
+  whether they arrive is the emulator's decision — see *Text Selection
+  and Copy-Paste* below. v1 also shipped `Cmd+J`/`Cmd+L` alternates for
+  session and pane movement; they went with v1's key table, and pane
+  focus has no binding to alternate — it is a reserved chord
+  (`Ctrl+H`/`Ctrl+L`).
 - **Unbound Cmd chords are swallowed**, never forwarded to the PTY:
   injecting the bare letter into the agent would corrupt its input.
 - **F-keys** (`F1`–`F5` alternates) require `Fn` on Mac laptops
@@ -2252,6 +2258,20 @@ confined to the active pane bounds.
   the active PTY.
 - **`Ctrl+Shift+V`** (your terminal's paste): the way to paste when
   thurbox runs over SSH — see "Pasting over SSH" below.
+- **`Cmd+C` / `Cmd+V`** (macOS): the same two actions, declared beside the
+  Ctrl pair because `Ctrl+C` in a terminal means interrupt. They arrive only
+  under the kitty keyboard protocol (iTerm2 3.5+, kitty, WezTerm, Ghostty),
+  which thurbox pushes at startup; Terminal.app delivers no Cmd chord. The
+  **emulator still gets the chord first**: one that copies its own selection
+  on `Cmd+C` and swallows the key when it has none never lets thurbox see it —
+  and with thurbox holding the mouse, the emulator's selection is usually
+  empty. Emulators that forward a shortcut they did not perform (Ghostty's
+  `performable:` keybinds) pass it through; elsewhere, unmap the emulator's
+  own `Cmd+C` (thurbox's copy writes the *system* clipboard, so nothing is
+  lost by doing so), or use `Ctrl+C`.
+- **Both pairs are ordinary bindings** (`kernel::clipboard`), listed in `F1`
+  and rebindable — they were literal key arms in the loop, matched ahead of the
+  registry, which is why help used to list them as *Fixed*.
 - Any other keypress clears the selection.
 
 Selection is highlighted in the terminal render buffer using

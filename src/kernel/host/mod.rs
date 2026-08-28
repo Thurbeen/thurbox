@@ -322,6 +322,13 @@ pub struct KeyPress {
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
+    /// The macOS Command key (crossterm's `SUPER`).
+    ///
+    /// Carried rather than dropped, which it was until issue #1024: a `Cmd`
+    /// chord arrived as the bare letter, so `cmd+c` could be written in a
+    /// binding and never fire. It reaches a terminal at all only under the
+    /// kitty keyboard protocol — see [`super::clipboard`].
+    pub cmd: bool,
 }
 
 /// A click resolved onto a node one plugin painted.
@@ -1517,6 +1524,7 @@ impl LuaHost {
         table
             .set("shift", key.shift)
             .map_err(|e| fail(e.to_string()))?;
+        table.set("cmd", key.cmd).map_err(|e| fail(e.to_string()))?;
 
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);

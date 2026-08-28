@@ -2,14 +2,21 @@
 //!
 //! Every chord resolves through one registry (`kernel::registry`), and the order
 //! here is the whole of the policy: a modal first (it captures), then the
-//! kernel's reserved chords, then an exclusive grab, then a plugin's declared
-//! binding, then the focused plugin's raw `on_key` hook, and only then the key
-//! goes to whatever surface the focused pane shows. A plugin-scoped claim never
-//! outranks a global one — which is why search cannot take `Ctrl+N` from
-//! new-session.
+//! kernel's reserved chords, then copy and paste, then an exclusive grab, then a
+//! plugin's declared binding, then the focused plugin's raw `on_key` hook, and
+//! only then the key goes to whatever surface the focused pane shows. A
+//! plugin-scoped claim never outranks a global one — which is why search cannot
+//! take `Ctrl+N` from new-session.
+//!
+//! Copy and paste sit that high because they must work from any pane, and low
+//! enough to be *bindings* rather than literal key arms: they are declared
+//! (`kernel::clipboard`), so help lists them and they can be moved — onto
+//! `Cmd+C` on a Mac, which is the point of carrying the Command modifier at
+//! all.
 
 use super::paste::Input;
 use super::*;
+use thurbox::kernel::clipboard;
 
 impl App {
     /// Drain EVERY pending event, not one per iteration, and dispatch each.
@@ -122,11 +129,17 @@ impl App {
     }
 
     pub(crate) fn on_key(&mut self, key: &KeyEvent) {
+        let press = to_press(key);
+        // Resolved once, and used twice: it decides both whether the selection
+        // survives this keystroke and, further down, whether the loop runs the
+        // action itself.
+        let kernel_action = self.kernel_action(&press);
         // Any key press clears the selection and still does what it does —
         // v1's rule. The one exception is the copy chord, which is what the
-        // selection is for; it clears it itself once the copy is made.
-        let is_copy =
-            matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL);
+        // selection is for; it clears it itself once the copy is made. Asked of
+        // the registry rather than matched literally, so the exception follows a
+        // rebound copy instead of staying on `Ctrl+C`.
+        let is_copy = kernel_action.as_deref() == Some(clipboard::COPY_ACTION);
         if !is_copy && self.selection.take().is_some() {
             self.dirty = true;
         }
@@ -136,7 +149,9 @@ impl App {
         if self.dispatch_reserved(key) {
             return;
         }
-        let press = to_press(key);
+        if self.dispatch_clipboard(kernel_action.as_deref()) {
+            return;
+        }
         if self.dispatch_grabbed(&press) {
             return;
         }
@@ -225,20 +240,64 @@ impl App {
                 self.hud = !self.hud;
                 self.dirty = true;
             }
-            // Copy and paste are reserved, like v1's: they must work from any
-            // pane, and `Ctrl+C` must not reach the agent when there is a
-            // selection to copy — that is the one case where thurbox wins the
-            // chord back from the terminal.
-            KeyCode::Char('c') if ctrl && self.selection.is_some() => {
+            // Copy and paste are NOT here: they are declared bindings owned by
+            // the kernel (`kernel::clipboard`), so help lists them, the palette
+            // offers them and they can be rebound — including onto `Cmd+C` on a
+            // Mac, where `Ctrl+C` is spent on interrupt. `dispatch_clipboard`,
+            // immediately below this in the order, runs them.
+            _ => return false,
+        }
+        true
+    }
+
+    /// The action this chord fires **if the kernel itself owns it** — a system
+    /// modal, or copy and paste. `None` for a plugin's chord or an unbound one.
+    ///
+    /// The owner check is the point: nothing stops a plugin declaring the action
+    /// id `kernel.copy`, and running the kernel's copy for it would be a pane
+    /// taking a capability by naming it. Resolved with nothing focused, because
+    /// the kernel's chords are all global — a plugin-scoped claim does not
+    /// outrank a global one.
+    pub(crate) fn kernel_action(&self, press: &KeyPress) -> Option<String> {
+        let binding = self.registry.resolve(press, None)?;
+        (binding.plugin == thurbox::kernel::modals::OWNER).then(|| binding.action.clone())
+    }
+
+    /// Copy and paste, run ahead of a float's exclusive grab and of every plugin
+    /// binding — which is where the literal `Ctrl+C`/`Ctrl+V` arms used to sit.
+    ///
+    /// They "must work from any pane", and a pane that grabs every key would
+    /// otherwise swallow them. Any other kernel action falls through: this step
+    /// claims only the two it knows.
+    pub(crate) fn dispatch_clipboard(&mut self, action: Option<&str>) -> bool {
+        action.is_some_and(|action| self.run_clipboard_action(action) == Some(true))
+    }
+
+    /// Run the kernel's own clipboard actions, or report that this was not one.
+    ///
+    /// `Some(false)` is the load-bearing answer: copy with **no selection**
+    /// declines the chord, so `Ctrl+C` falls through to the focused agent and
+    /// still interrupts a turn. That is the one case where thurbox wins the
+    /// chord back from the terminal, and it is decided per press rather than by
+    /// the binding — see [`thurbox::kernel::clipboard`].
+    pub(crate) fn run_clipboard_action(&mut self, action: &str) -> Option<bool> {
+        match action {
+            clipboard::COPY_ACTION => {
+                if self.selection.is_none() {
+                    return Some(false);
+                }
                 // No focused session required: a selection over the session
                 // list, a modal or the footer is still a selection, and v1
                 // copies it.
                 self.copy_selection();
+                Some(true)
             }
-            KeyCode::Char('v') if ctrl => self.paste_into_focused(),
-            _ => return false,
+            clipboard::PASTE_ACTION => {
+                self.paste_into_focused();
+                Some(true)
+            }
+            _ => None,
         }
-        true
     }
 
     /// A float takes every key while it is up — that is what makes it a modal
@@ -309,7 +368,8 @@ impl App {
             return false;
         }
         // A chord the kernel declared for itself opens a system modal; there is
-        // no plugin to hand it to.
+        // no plugin to hand it to. (The kernel's other declarations — copy and
+        // paste — are resolved before a float can grab them, above.)
         if plugin == thurbox::kernel::modals::OWNER {
             if let Some(kind) = ModalKind::from_action(&action) {
                 self.toggle_modal(kind);
@@ -392,10 +452,7 @@ impl App {
     /// rebound chord keeps opening its modal — including from inside another
     /// one.
     pub(crate) fn modal_chord(&self, key: &KeyEvent) -> Option<ModalKind> {
-        let binding = self.registry.resolve(&to_press(key), None)?;
-        (binding.plugin == thurbox::kernel::modals::OWNER)
-            .then(|| ModalKind::from_action(&binding.action))
-            .flatten()
+        ModalKind::from_action(&self.kernel_action(&to_press(key))?)
     }
 
     /// Hand a keystroke to the open modal, and report whatever it says.
@@ -452,6 +509,16 @@ impl App {
             if let Some(kind) = ModalKind::from_action(action) {
                 self.toggle_modal(kind);
                 return;
+            }
+            // Chosen by name rather than pressed, so a decline falls through to
+            // nothing and would look like a dead row: say why instead.
+            match self.run_clipboard_action(action) {
+                Some(true) => return,
+                Some(false) => {
+                    self.toast("nothing to copy");
+                    return;
+                }
+                None => {}
             }
             match action {
                 thurbox::kernel::modals::palette::RELOAD_ACTION => self.reload_by_key(),

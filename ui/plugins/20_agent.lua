@@ -55,6 +55,13 @@ end
 
 local AGENT_TAB, SHELL_TAB = "agent", "shell"
 local SELECT_AGENT, SELECT_SHELL = "terminal.agent", "terminal.shell"
+--- Scrollback, declared rather than matched inside `on_key`: a key that only
+--- exists there is invisible to help and cannot be rebound.
+local SCROLL_UP, SCROLL_DOWN = "terminal.scroll_up", "terminal.scroll_down"
+--- Rows one page key moves. v1 pages by half the pane's height; the fixed count
+--- is tracked in `openspec/changes/v2-parity-gaps/` (#42) rather than changed
+--- here.
+local SCROLL_LINES = 10
 --- Bring the input focus onto this pane, from anywhere.
 local FOCUS = "terminal.focus"
 
@@ -109,6 +116,26 @@ local function set_scroll(id, scroll, scroll_max)
   end
   state["scroll:" .. id] = scroll ~= 0 and scroll or nil
   state["scrollmax:" .. id] = scroll_max ~= 0 and scroll_max or nil
+end
+
+--- Move the agent tab's scrollback by `lines`, or decline.
+---
+--- Scrollback is this pane's policy rather than the kernel's, so a replacement
+--- pane can choose differently. Declining on the shell tab is what leaves a page
+--- key to the pty, where whatever is running (a pager, an editor) has its own
+--- idea of what it means.
+local function scroll_by(id, lines)
+  if not id or tab_of(id) ~= AGENT_TAB then
+    return false
+  end
+  local scroll, scroll_max = scroll_of(id)
+  scroll = math.max(0, scroll + lines)
+  -- How far back the user has ever gone. The snapshot carries no total
+  -- scrollback (v1 probes the vt100 screen for it), so this high-water mark is
+  -- what the scrollbar is scaled against — see the report accompanying this
+  -- port.
+  set_scroll(id, scroll, math.max(scroll_max, scroll))
+  return true
 end
 
 -- --- text measurement ------------------------------------------------------
@@ -658,6 +685,23 @@ return {
       scope = "global",
       group = "UI",
     },
+    -- Pane-scoped: the page keys belong to whoever is focused, and on the shell
+    -- tab the action declines them so the pty keeps them (a pager has its own
+    -- idea of what a page is).
+    {
+      key = "pageup",
+      action = SCROLL_UP,
+      desc = "scroll the agent's output back",
+      scope = "plugin",
+      group = "Terminal",
+    },
+    {
+      key = "pagedown",
+      action = SCROLL_DOWN,
+      desc = "scroll the agent's output forward",
+      scope = "plugin",
+      group = "Terminal",
+    },
   },
 
   render = function(ctx)
@@ -753,31 +797,6 @@ return {
     })
   end,
 
-  on_key = function(key)
-    -- Scrollback stays here rather than in the kernel: it is this pane's
-    -- policy, so a replacement pane can choose differently. On the shell tab a
-    -- page key is left to the pty, where whatever is running (a pager, an
-    -- editor) has its own idea of what it means.
-    if tab_of(store.selected) ~= AGENT_TAB then
-      return false
-    end
-    local id = store.selected
-    local scroll, scroll_max = scroll_of(id)
-    if key.key == "pageup" then
-      scroll = scroll + 10
-      -- How far back the user has ever gone. The snapshot carries no total
-      -- scrollback (v1 probes the vt100 screen for it), so this high-water mark
-      -- is what the scrollbar is scaled against — see the report accompanying
-      -- this port.
-      set_scroll(id, scroll, math.max(scroll_max, scroll))
-      return true
-    elseif key.key == "pagedown" then
-      set_scroll(id, math.max(0, scroll - 10), scroll_max)
-      return true
-    end
-    return false
-  end,
-
   -- The palette's rows (Ctrl+P). None of these spends a chord: the tabs are
   -- already click targets on the border, and focusing the pane is what the
   -- session list's Enter does — but neither was reachable by name until now.
@@ -789,6 +808,12 @@ return {
 
   on_action = function(action)
     local id = store.selected
+    if action == SCROLL_UP then
+      return scroll_by(id, SCROLL_LINES)
+    end
+    if action == SCROLL_DOWN then
+      return scroll_by(id, -SCROLL_LINES)
+    end
     if action == FOCUS then
       -- Where `sessions.open` sends focus too: the pane that shows the session.
       command("focus", { text = NAME })

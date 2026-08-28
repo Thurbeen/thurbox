@@ -40,9 +40,10 @@ fn registry(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (mut bindings, settings) = host.declarations();
     // As the binary does: the kernel's own chords — the ones that open a system
-    // modal — are declared alongside the plugins', so they are listed, routed
-    // and conflict-checked with everything else.
+    // modal, and the clipboard pair — are declared alongside the plugins', so
+    // they are listed, routed and conflict-checked with everything else.
     bindings.extend(thurbox::kernel::modals::bindings());
+    bindings.extend(thurbox::kernel::clipboard::bindings());
     registry.declare(bindings, settings);
     registry
 }
@@ -115,6 +116,7 @@ fn press(chord: &str) -> KeyPress {
             "ctrl" => key.ctrl = true,
             "alt" => key.alt = true,
             "shift" => key.shift = true,
+            "cmd" => key.cmd = true,
             name => {
                 key.name = name.to_string();
                 let mut chars = name.chars();
@@ -462,4 +464,80 @@ fn the_bundled_plugins_agree_on_who_owns_which_chord() {
         "{:?}",
         registry.conflicts()
     );
+}
+
+/// Copy and paste are *bindings*, not literal key arms in the loop.
+///
+/// They were matched ahead of the registry, which meant help listed them under
+/// "Fixed (not rebindable)" and a Mac user could not put copy where a Mac user
+/// reaches for it (issue #1024).
+#[test]
+fn copy_and_paste_resolve_through_the_registry_and_can_be_rebound() {
+    use thurbox::kernel::clipboard::{COPY_ACTION, PASTE_ACTION};
+
+    let host = host();
+    let mut registry = registry(&host);
+    for (chord, action) in [("ctrl+c", COPY_ACTION), ("ctrl+v", PASTE_ACTION)] {
+        let binding = registry
+            .resolve(&press(chord), None)
+            .unwrap_or_else(|| panic!("{chord} is bound to nothing"));
+        assert_eq!(binding.action, action, "{chord}");
+        assert_eq!(
+            binding.scope,
+            Scope::Global,
+            "{chord} must fire from any pane, as it did when the loop matched it"
+        );
+    }
+    // Reserved chords are refused; these two are not reserved, which is the
+    // whole difference. Onto `alt+c` rather than an F-key: the free ones are
+    // held for the panes that have not come back (`CHORDS_AWAITING_THEIR_PANE`).
+    registry
+        .rebind(COPY_ACTION, Some("alt+c"))
+        .expect("copy must be rebindable");
+    assert_eq!(
+        registry
+            .resolve(&press("alt+c"), None)
+            .map(|b| b.action.clone()),
+        Some(COPY_ACTION.to_string())
+    );
+}
+
+/// The macOS half of the same issue: `Ctrl+C` is spent on interrupt, so copy
+/// lives on `Cmd+C` — a chord that resolved to nothing because the Command
+/// modifier was dropped before any chord was built.
+#[test]
+fn a_cmd_chord_canonicalises_and_resolves() {
+    use thurbox::kernel::registry::{canonical_chord, normalise_chord};
+
+    assert_eq!(canonical_chord(&press("cmd+c")), "cmd+c");
+    // Both spellings have to agree, or a declared chord never matches its press.
+    assert_eq!(normalise_chord("Cmd+C"), canonical_chord(&press("cmd+c")));
+    assert_eq!(normalise_chord("super+j"), "cmd+j");
+
+    let host = host();
+    let mut registry = registry(&host);
+    registry
+        .rebind(thurbox::kernel::clipboard::COPY_ACTION, Some("cmd+c"))
+        .expect("cmd+c must be bindable");
+    assert_eq!(
+        registry
+            .resolve(&press("cmd+c"), None)
+            .map(|b| b.action.clone()),
+        Some(thurbox::kernel::clipboard::COPY_ACTION.to_string()),
+        "a Cmd chord that resolves to nothing is issue #1024"
+    );
+}
+
+/// The pane's scrollback keys are declared, so help lists them and they move.
+#[test]
+fn the_agent_panes_page_keys_are_declared_rather_than_hidden_in_on_key() {
+    let host = host();
+    let index = index_of(&host, "agent");
+    let bindings = &host.plugins[index].bindings;
+    for chord in ["pageup", "pagedown"] {
+        assert!(
+            bindings.iter().any(|binding| binding.chord == chord),
+            "a key that only exists inside on_key is invisible to help and unrebindable"
+        );
+    }
 }

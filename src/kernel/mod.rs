@@ -10,6 +10,7 @@
 
 pub mod bands;
 pub mod bundled;
+pub mod clipboard;
 pub mod command;
 pub mod config;
 pub mod consent;

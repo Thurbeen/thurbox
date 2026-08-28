@@ -406,19 +406,22 @@ fn each_session_keeps_its_own_tab() {
 
 #[test]
 fn paging_is_the_agent_views_and_the_ptys_everywhere_else() {
-    // Scrollback is read off the agent's parser only, so on the shell tab a
-    // page key is declined and reaches whatever is running in it instead.
+    // Scrollback is read off the agent's parser only, so on the shell tab the
+    // action declines and the key reaches whatever is running in it instead.
+    //
+    // Through the action rather than `on_key`: the page keys are *declared*
+    // now, so they are listed in help and can be rebound — which is the whole
+    // difference between a key a pane owns and a key it merely intercepts.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
-    let page = KeyPress {
-        name: "pageup".into(),
-        ..KeyPress::default()
-    };
-    assert!(host.on_key(index, &page).expect("key"), "the agent scrolls");
+    assert!(
+        host.on_action(index, "terminal.scroll_up").expect("action"),
+        "the agent scrolls"
+    );
 
     host.on_action(index, "terminal.shell").expect("select");
     assert!(
-        !host.on_key(index, &page).expect("key"),
+        !host.on_action(index, "terminal.scroll_up").expect("action"),
         "the shell leaves it to the pty"
     );
     // And the title says nothing about a scroll the shell surface cannot honour.

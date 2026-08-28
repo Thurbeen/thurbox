@@ -45,17 +45,19 @@ const KEY_WIDTH: usize = 16;
 ///
 /// Listed because they are real and cannot be rebound, which is exactly what
 /// someone reading help wants to know. Kept in step with
-/// [`crate::kernel::registry::RESERVED`] by a test below; copy and paste are
-/// here too because the loop handles them before any binding is consulted, and
-/// the settings tabs because they belong to a modal rather than to the registry
-/// — a key nobody can discover is a key nobody uses.
-const RESERVED_ROWS: [(&str, &str); 7] = [
+/// [`crate::kernel::registry::RESERVED`] by a test below; the settings tabs are
+/// here too because they belong to a modal rather than to the registry — a key
+/// nobody can discover is a key nobody uses.
+///
+/// **Copy and paste used to be listed here** and no longer are: they are
+/// declared bindings now ([`crate::kernel::clipboard`]), so they appear in the
+/// editable rows above like anything else and can be moved — onto `Cmd+C` on a
+/// Mac, where `Ctrl+C` is spent on interrupt.
+const RESERVED_ROWS: [(&str, &str); 5] = [
     (QUIT_CHORD, "Quit"),
     ("f10", "Reload plugins"),
     ("ctrl+h / ctrl+l", "Focus previous / next pane"),
     ("f12", "Perf counters"),
-    ("ctrl+c", "Copy selection"),
-    ("ctrl+v", "Paste"),
     ("[ / ]", "Previous / next tab, in settings"),
 ];
 
@@ -526,7 +528,7 @@ mod tests {
         use crate::kernel::registry::RESERVED;
         // Rows that are not registry chords are documented exceptions, each of which
         // the loop handles before any binding is consulted, or a modal owns.
-        const HANDLED_ELSEWHERE: [&str; 3] = ["ctrl+c", "ctrl+v", "[ / ]"];
+        const HANDLED_ELSEWHERE: [&str; 1] = ["[ / ]"];
         for (chord, description) in RESERVED_ROWS {
             if HANDLED_ELSEWHERE.contains(&chord) {
                 continue;

@@ -559,6 +559,12 @@ pub(crate) fn to_press(key: &KeyEvent) -> KeyPress {
         ctrl: key.modifiers.contains(KeyModifiers::CONTROL),
         alt: key.modifiers.contains(KeyModifiers::ALT),
         shift: key.modifiers.contains(KeyModifiers::SHIFT),
+        // Dropped until issue #1024, which made every `cmd+…` chord
+        // unresolvable: `Cmd+C` arrived as a bare `c` and was offered to the
+        // focused pane as one. The pty boundary already refuses a SUPER-modified
+        // key (`agent::input::key_to_bytes`), so carrying it here costs nothing
+        // and is what lets the registry match a Cmd chord.
+        cmd: key.modifiers.contains(KeyModifiers::SUPER),
     }
 }
 

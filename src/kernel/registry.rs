@@ -803,6 +803,11 @@ pub fn canonical_chord(press: &KeyPress) -> String {
     if key == "backtab" {
         return "shift+tab".to_string();
     }
+    // Last modifier, matching `normalise_chord`'s order — the two spellings have
+    // to agree or a declared `cmd+c` never matches the press that made it.
+    if press.cmd {
+        parts.push("cmd".to_string());
+    }
     parts.push(key);
     parts.join("+")
 }
@@ -1161,6 +1166,7 @@ mod tests {
             ctrl,
             alt: false,
             shift,
+            cmd: false,
         }
     }
 

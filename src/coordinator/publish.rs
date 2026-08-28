@@ -250,12 +250,6 @@ impl App {
         self.trust_stale = false;
     }
 
-    /// Hand the registry what every loaded plugin declared, plus the kernel's
-    /// own chords.
-    ///
-    /// The system modals go through the same registry as everything else, which
-    /// is what makes them listable in help, conflict-checked against a plugin's
-    /// keys, and rebindable — they simply have no Lua plugin behind them.
     /// Tell the host which plugins the user trusted, by the path it knows them by.
     ///
     /// Relative, because that is `Plugin::path`; trust is stored absolute so two
@@ -312,9 +306,17 @@ impl App {
             .collect()
     }
 
+    /// Hand the registry what every loaded plugin declared, plus the kernel's
+    /// own chords.
+    ///
+    /// The system modals and the clipboard pair go through the same registry as
+    /// everything else, which is what makes them listable in help, conflict-checked
+    /// against a plugin's keys, and rebindable — they simply have no Lua plugin
+    /// behind them.
     pub(crate) fn collect_declarations(&mut self) {
         let (mut bindings, settings, mut pills) = self.host.all_declarations();
         bindings.extend(thurbox::kernel::modals::bindings());
+        bindings.extend(thurbox::kernel::clipboard::bindings());
         pills.extend(thurbox::kernel::modals::pills());
         self.registry.declare_all(bindings, settings, pills);
         self.registry.declare_commands(self.host.commands());

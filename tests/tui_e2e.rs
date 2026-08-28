@@ -41,6 +41,7 @@ use std::time::{Duration, Instant};
 const WAIT: Duration = Duration::from_secs(20);
 
 /// The bytes a terminal sends for the chords the scenarios press.
+const CTRL_P: &[u8] = b"\x10";
 const CTRL_Q: &[u8] = b"\x11";
 const CTRL_Y: &[u8] = b"\x19";
 /// What a legacy terminal sends for `ctrl+/` (the search plugin folds
@@ -577,6 +578,26 @@ fn the_search_strip_opens_with_focus_in_it() {
 
     tui.send(ESC);
     tui.wait_gone("Search zq");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_palette_lists_the_kernels_clipboard_actions() {
+    // The one thing a unit test over a hand-assembled registry cannot show: the
+    // *binary* declares copy and paste (`collect_declarations`), so they are
+    // real bindings — listed, runnable by name, and rebindable — rather than the
+    // literal key arms in the loop they used to be (issue #1024).
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+
+    tui.send(CTRL_P);
+    tui.send(b"paste");
+    // The row's description, which only the registry could have supplied.
+    tui.wait_for("ctrl+v");
+
+    tui.send(ESC);
+    tui.wait_gone("ctrl+v");
     assert!(tui.quit().success());
 }
 
