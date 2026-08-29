@@ -9,8 +9,8 @@
 # session list nests children under their parent with a `└` tree prefix, and
 # the info panel (Ctrl+B) shows a `Parent:` row.
 
-Output docs/media/thurbox-fork.gif
-Output docs/media/thurbox-fork.mp4
+Output media/thurbox-fork.gif
+Output media/thurbox-fork.mp4
 
 Set Shell "bash"
 Set FontSize 18

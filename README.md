@@ -18,7 +18,7 @@ wrote. No fork, no recompile, no restart. **[Customization →](#customization)*
 [![Discord](https://img.shields.io/discord/1542644702984142928?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/fGumcHaxFY)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Thurbeen_thurbox&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Thurbeen_thurbox)
 
-![Thurbox Demo](./docs/media/thurbox-demo.gif)
+![Thurbox Demo](./media/thurbox-demo.gif)
 
 ## Installation
 
@@ -372,7 +372,7 @@ filesystem, no network, no process unless you trust it.
 
 </td>
 <td width="50%">
-  <img src="./docs/media/thurbox-interface.gif"
+  <img src="./media/thurbox-interface.gif"
        alt="Turning a pane off from the Interface tab" width="100%" />
 </td>
 </tr>
@@ -391,7 +391,7 @@ by hand (`Shift+J`/`Shift+K`), sort (`Shift+S`), restart with resume
 
 </td>
 <td width="50%">
-  <img src="./docs/media/thurbox-session-creation.gif"
+  <img src="./media/thurbox-session-creation.gif"
        alt="Session creation workflow" width="100%" />
 </td>
 </tr>
@@ -409,7 +409,7 @@ never cascades to its workers.
 
 </td>
 <td width="50%">
-  <img src="./docs/media/thurbox-fork.gif" alt="Session forking" width="100%" />
+  <img src="./media/thurbox-fork.gif" alt="Session forking" width="100%" />
 </td>
 </tr>
 <tr>
@@ -467,7 +467,7 @@ per-pane, so a returning pane is a scope added and nothing else changed.
 
 </td>
 <td width="50%">
-  <img src="./docs/media/search-demo.gif" alt="Global search demo" width="100%" />
+  <img src="./media/search-demo.gif" alt="Global search demo" width="100%" />
 </td>
 </tr>
 <tr>
@@ -548,7 +548,7 @@ colours, so a pane you write looks right under all thirty-six.
 
 </td>
 <td width="50%">
-  <img src="./docs/media/thurbox-theme.gif" alt="Theme switcher" width="100%" />
+  <img src="./media/thurbox-theme.gif" alt="Theme switcher" width="100%" />
 </td>
 </tr>
 </table>

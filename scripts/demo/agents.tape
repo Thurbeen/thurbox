@@ -20,8 +20,8 @@
 #   Ctrl+A search (really Ctrl+/)      Ctrl+E tasks  (really F5)
 #   Ctrl+B settings (really Ctrl+,/F6) Ctrl+W top    (really F7)
 
-Output docs/media/thurbox-demo.gif
-Output docs/media/thurbox-demo.mp4
+Output media/thurbox-demo.gif
+Output media/thurbox-demo.mp4
 
 Set Shell "bash"
 Set FontSize 18

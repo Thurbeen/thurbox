@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate the onboarding tutorial's screenshots (docs/media/tutorial/*.png).
+# Regenerate the onboarding tutorial's screenshots (media/tutorial/*.png).
 #
 # One PNG per step of docs/TUTORIAL.md, taken from the REAL TUI: this drives
 # `Ctrl+N` through the creation flow the way a first-time reader does, so a step
@@ -38,7 +38,7 @@
 #
 # Usage:  scripts/demo/record-tutorial.sh [OUTPUT_DIR]
 #
-#   OUTPUT_DIR  where the PNGs go (default: <repo>/docs/media/tutorial)
+#   OUTPUT_DIR  where the PNGs go (default: <repo>/media/tutorial)
 #
 # Env: THEME (default doom), COLS, ROWS, FONT_SIZE, LINE_HEIGHT, FONT_DIR,
 # FONT_FAMILY.
@@ -51,7 +51,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
-OUT_DIR="${1:-$REPO_ROOT/docs/media/tutorial}"
+OUT_DIR="${1:-$REPO_ROOT/media/tutorial}"
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 

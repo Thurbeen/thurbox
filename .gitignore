@@ -60,7 +60,7 @@ __pycache__/
 # it describes one directory's state and belongs to nobody else.
 ui/.bundled.json
 
-# Demo videos are copied into website/assets/ from docs/media/ at deploy time
+# Demo videos are copied into website/assets/ from media/ at deploy time
 # (.github/workflows/pages.yml) and for local `npm run dev:website`. They are
-# tracked once, in docs/media/ — never duplicated here.
+# tracked once, in media/ — never duplicated here.
 website/assets/*.mp4

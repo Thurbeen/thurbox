@@ -1603,7 +1603,7 @@ diff types stay in `session` (architecture rule).
 
 The media is **generated**, not hand-recorded. One script drives the *real* TUI via
 [VHS](https://github.com/charmbracelet/vhs) (needs `vhs` + `ffmpeg` + `ttyd` +
-`tmux`) and writes GIF **and** MP4 into `docs/media/`:
+`tmux`) and writes GIF **and** MP4 into `media/`:
 
 ```bash
 scripts/demo/record.sh                 # regenerate ALL demo videos
@@ -1634,7 +1634,7 @@ is shared by every dev build, so without a private socket directory the cleanup
 and `README.md` embeds the gifs, so regenerating them propagates everywhere.
 
 **The website's `iddqd` easter egg is a separate recording.**
-`scripts/demo/record-doom.sh` writes `docs/media/doom-easter-egg.mp4` plus its
+`scripts/demo/record-doom.sh` writes `media/doom-easter-egg.mp4` plus its
 poster, and it is not a VHS tape: asciinema records the real TUI and agg rasterises
 the cast. Doom is a **plugin** there, not an agent — the script installs
 [`thurbox-doom`](https://github.com/Thurbeen/thurbox-doom) into the throwaway
@@ -1645,7 +1645,7 @@ read the phase comments before changing any of the numbers — including which f
 becomes the poster, since Doom flashes the whole view red when the player is hit.
 
 **The onboarding tutorial's screenshots are a third recorder.**
-`scripts/demo/record-tutorial.sh` writes `docs/media/tutorial/*.png` — one still per
+`scripts/demo/record-tutorial.sh` writes `media/tutorial/*.png` — one still per
 step of `docs/TUTORIAL.md`, taken by driving the real TUI through the creation flow.
 Three things separate it from the tapes. The profile starts with **zero sessions and
 an empty repo memory**, because the tutorial's subject is a first launch. It is not
@@ -1660,7 +1660,7 @@ The walkthrough exists twice — `docs/TUTORIAL.md` for a checkout, and
 `website/docs/tutorial.html` (screenshots copied to `website/assets/tutorial/`,
 page styles in `website/css/tutorial.css`) for the site. They are separate documents
 in different voices, not a generated pair, so **a step edited in one is edited in
-both**; the recorder writes only `docs/media/tutorial/`.
+both**; the recorder writes only `media/tutorial/`.
 
 ## Architecture (plugin kernel)
 

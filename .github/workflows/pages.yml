@@ -8,7 +8,7 @@ on:
       # Demo media is copied into website/assets/ at deploy time, so a change to
       # the rendered videos must also redeploy the site (e.g. after re-running
       # scripts/demo/record.sh). Without this the live site keeps stale mp4s.
-      - 'docs/media/**'
+      - 'media/**'
       # The build reads these from the repo root, outside `website/`:
       # `eleventy.config.js` generates the CSS bundle, the TOC rail and the code
       # highlighting, and the two package files decide which versions do it. A
@@ -46,7 +46,7 @@ jobs:
       # Demo videos are copied into the Eleventy input (website/assets/) before the
       # build, so the passthrough-copy step picks them up into the built _site/.
       - name: Copy demo videos into website assets
-        run: cp docs/media/*.mp4 website/assets/
+        run: cp media/*.mp4 website/assets/
 
       - name: Install dependencies
         run: npm ci

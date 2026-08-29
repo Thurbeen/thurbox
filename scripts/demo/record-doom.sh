@@ -2,7 +2,7 @@
 # Regenerate the website's `iddqd` easter-egg clip: Doom running *inside* a
 # thurbox pane.
 #
-#   docs/media/doom-easter-egg.mp4              (copied into website/assets/ at
+#   media/doom-easter-egg.mp4              (copied into website/assets/ at
 #                                                deploy time by pages.yml)
 #   website/assets/doom-easter-egg-poster.webp  (committed; the poster frame)
 #
@@ -317,14 +317,14 @@ agg --font-dir "$FONT_DIR" --font-family "$FONT_FAMILY" \
     exit 1
 }
 
-echo "==> encoding docs/media/doom-easter-egg.mp4"
+echo "==> encoding media/doom-easter-egg.mp4"
 # The GIF is the intermediate agg gives us; per-frame palettes cost little here
 # because Doom's own palette is 256 colours to begin with. `-r $FPS` is required,
 # not cosmetic: ffmpeg reads GIF frame delays as a ~100 fps variable rate and
 # would otherwise emit a bloated 100 fps mp4 full of duplicate frames.
 ffmpeg -y -loglevel error -i "$GIF" -r "$FPS" \
     -c:v libx264 -preset slow -crf 30 -pix_fmt yuv420p -movflags +faststart \
-    "$ROOT/docs/media/doom-easter-egg.mp4"
+    "$ROOT/media/doom-easter-egg.mp4"
 
 echo "==> encoding website/assets/doom-easter-egg-poster.webp"
 ffmpeg -y -loglevel error -ss "$POSTER_AT" -i "$GIF" -frames:v 1 \
@@ -333,13 +333,13 @@ ffmpeg -y -loglevel error -ss "$POSTER_AT" -i "$GIF" -frames:v 1 \
 
 echo "==> done"
 ffprobe -v error -show_entries stream=width,height:format=duration -of default=nw=1 \
-    "$ROOT/docs/media/doom-easter-egg.mp4"
-ls -la "$ROOT/docs/media/doom-easter-egg.mp4" \
+    "$ROOT/media/doom-easter-egg.mp4"
+ls -la "$ROOT/media/doom-easter-egg.mp4" \
     "$ROOT/website/assets/doom-easter-egg-poster.webp"
 # The mp4 only reaches website/assets/ in CI (pages.yml), and that path is
 # gitignored — so a local `npm run dev:website` preview 404s without this copy.
 echo
-echo "for a local preview: cp docs/media/doom-easter-egg.mp4 website/assets/"
+echo "for a local preview: cp media/doom-easter-egg.mp4 website/assets/"
 # If the overlay's intrinsic size in website/js/main.js no longer matches, the
 # modal reflows when the first frame decodes.
 echo "if the dimensions above changed, update doomVideo.width/height in website/js/main.js"

@@ -16,8 +16,8 @@
 # up in this clip: they came from session-creation.tape selecting the wrong
 # repository. Check a frame after changing any tape, not just this one.
 
-Output docs/media/search-demo.gif
-Output docs/media/search-demo.mp4
+Output media/search-demo.gif
+Output media/search-demo.mp4
 
 Set Shell "bash"
 Set FontSize 18

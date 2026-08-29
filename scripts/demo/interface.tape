@@ -33,8 +33,8 @@
 # Movement is `j`/`k`, as the modal's own hint line says; arrows are not bound for
 # up. Verify with `thurbox-cli plugin list` after changing anything here.
 
-Output docs/media/thurbox-interface.gif
-Output docs/media/thurbox-interface.mp4
+Output media/thurbox-interface.gif
+Output media/thurbox-interface.mp4
 
 Set Shell "bash"
 Set FontSize 18

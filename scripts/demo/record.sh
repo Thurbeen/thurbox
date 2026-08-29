@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Regenerate ALL Thurbox demo media in one pass, using REAL coding-agent CLIs.
 #
-# This single script records every video pair under docs/media/:
+# This single script records every video pair under media/:
 #
 #   * thurbox-demo.{gif,mp4}            (agents.tape          — the hero demo)
 #   * thurbox-interface.{gif,mp4}       (interface.tape       — panes are files)
@@ -44,7 +44,7 @@
 set -eu
 
 # Tapes to record (stems of scripts/demo/<stem>.tape), hero first. `agents` is
-# the combined hero demo (docs/media/thurbox-demo.*); the rest are per-feature
+# the combined hero demo (media/thurbox-demo.*); the rest are per-feature
 # clips (`search`
 # -> search-demo.*, others -> thurbox-<stem>.*).
 ALL_TAPES="agents interface theme session-creation fork search"
@@ -579,7 +579,7 @@ sleep 6
 
 # --- Record -----------------------------------------------------------------
 # Each tape declares its own Output paths, so one VHS run == one output pair.
-# Loop over the requested tapes, rendering each into docs/media/.
+# Loop over the requested tapes, rendering each into media/.
 # Persist the TUI theme into the seeded db so the next launched TUI starts in it.
 # The db + metadata table already exist (the `session create` calls above opened
 # them). No TUI is running between vhs invocations, so this write is conflict-free.
@@ -643,7 +643,7 @@ for tape in $TAPES; do
     vhs "$SCRIPT_DIR/$tape.tape"
 done
 
-echo "==> Done. Updated docs/media/ for tape(s):$([ "$TAPES" = "$ALL_TAPES" ] && echo " all" || echo " $TAPES")"
+echo "==> Done. Updated media/ for tape(s):$([ "$TAPES" = "$ALL_TAPES" ] && echo " all" || echo " $TAPES")"
 for tape in $TAPES; do
     case "$tape" in
         agents)      echo "    thurbox-demo.{gif,mp4}" ;;

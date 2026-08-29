@@ -12,8 +12,8 @@
 # fresh demo profile is `Default` (the first entry), so stepping up would go
 # nowhere. 36 palettes are listed, grouped under Dark and Light headers.
 
-Output docs/media/thurbox-theme.gif
-Output docs/media/thurbox-theme.mp4
+Output media/thurbox-theme.gif
+Output media/thurbox-theme.mp4
 
 Set Shell "bash"
 Set FontSize 18

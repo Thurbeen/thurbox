@@ -9,8 +9,8 @@
 # modals. Steps: host (skipped with no hosts.toml) -> repositories (multi-select,
 # `w` per repo for a worktree) -> base branch -> name -> branch name -> agent.
 
-Output docs/media/thurbox-session-creation.gif
-Output docs/media/thurbox-session-creation.mp4
+Output media/thurbox-session-creation.gif
+Output media/thurbox-session-creation.mp4
 
 Set Shell "bash"
 Set FontSize 18
