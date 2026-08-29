@@ -19,6 +19,13 @@
 //! with the exit code saying which kind they are — 0 success, 1 failure, 2
 //! usage ([`error_output`], principle 6). The rest are per-command and marked
 //! where they are met.
+//!
+//! One consequence of principle 6 is a rule the entrypoint enforces: **stdout
+//! carries exactly one document per invocation**. A command that renders a
+//! report and *then* asks for a non-zero exit (`session doctor`, `config
+//! validate`) has already written it, so its failure comes back as
+//! [`Outcome::Failed`] and the sentence explaining the exit goes to stderr —
+//! see [`Outcome`].
 
 use clap::{Parser, Subcommand};
 
@@ -211,9 +218,30 @@ pub(crate) fn parse_extra_repos(
     extra
 }
 
+/// What a completed invocation asks the process to do next.
+///
+/// The distinction that matters is *whether stdout has already been written*.
+/// A command that could not run at all produced nothing, so the caller is free
+/// to print the structured error document ([`error_output`]). A command that
+/// rendered its answer and then asked for a non-zero exit has already put the
+/// one document on stdout that a machine consumer will parse — printing a
+/// second one there turns `session doctor --json` into two JSON values and
+/// breaks every single-document parser reading it.
+pub enum Outcome {
+    /// Rendered; exit 0.
+    Ok,
+    /// Rendered, and the command asks for a non-zero exit. Nothing more may go
+    /// to stdout; the message is a diagnostic for stderr.
+    Failed(String),
+}
+
 /// Run a parsed CLI invocation against `db`, rendering the result in the
-/// resolved [`Format`] (human by default, JSON when piped or forced).
-pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
+/// resolved [`Format`] (human in a terminal, TOON down a pipe, or whatever
+/// `--json`/`--pretty`/`--toon`/`--text` forced).
+///
+/// `Err` means nothing was printed. A command that rendered normally and still
+/// wants a non-zero exit comes back as [`Outcome::Failed`].
+pub fn run(cli: Cli, db: &Database) -> Result<Outcome, String> {
     // A peer probing this machine looks for its CLI under the data dir; keep
     // that pointer true (a readlink when it already is).
     crate::session_ops::host_cli::advertise_running_cli();
@@ -237,11 +265,13 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
 
     println!("{}", format.render(&output));
     // A command can render normally yet still request a non-zero exit (e.g.
-    // `config validate` on an invalid file).
-    match output.failure {
-        Some(msg) => Err(msg),
-        None => Ok(()),
-    }
+    // `config validate` on an invalid file, `session doctor` on a broken one).
+    // Its report is the answer and is already on stdout, so the failure travels
+    // as an outcome rather than an `Err` the caller would print again.
+    Ok(match output.failure {
+        Some(msg) => Outcome::Failed(msg),
+        None => Outcome::Ok,
+    })
 }
 
 /// Read a `--fields` value into the column set a list view should show.

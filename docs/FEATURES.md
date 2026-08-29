@@ -178,11 +178,11 @@ a hook command resolve `thurbox-cli` on `PATH` at all, what was last
 reported and when, and does the pane agree. Every shipped hook command
 ends in `|| true`, so a signal that never lands is otherwise
 indistinguishable from an agent that has not signalled — this is how to
-tell them apart. It exits non-zero when a session's wiring is broken;
-an uncovered agent that is signalling anyway warns rather than fails,
-since state is demonstrably reaching thurbox from
-a session, and reads without ever repairing (`thurbox-cli extension
-reinstall hooks` is the repair).
+tell them apart. It reads without ever repairing (`thurbox-cli
+extension reinstall hooks` is the repair), and exits non-zero when a
+session's wiring is broken. An agent thurbox ships no hooks for but
+which is signalling anyway — a driver calling `session signal` itself —
+is a warning, not a failure: state is demonstrably arriving.
 
 ### Smart ordering & repo groups
 

@@ -144,6 +144,64 @@ fn get_when_pane_settles(
     }
 }
 
+/// Pin `PATH` for the duration of a test, restoring what was there on drop.
+///
+/// `session doctor` looks for `thurbox-cli` the way a hook command does — by
+/// bare name on `PATH` — and reports `FAIL` when it is absent. That is the
+/// check under test in one assertion and pure noise in every other, so the
+/// operator's install layout must not decide it: a machine with the binary in
+/// `~/.local/bin` and a CI runner without one would otherwise disagree about
+/// every verdict below.
+struct PathGuard(Option<std::ffi::OsString>);
+
+impl PathGuard {
+    /// `PATH` holding exactly `dir`, which is created and — when `cli` — given
+    /// a file named the way a hook command spells the binary.
+    fn only(dir: &Path, cli: bool) -> Self {
+        let previous = std::env::var_os("PATH");
+        std::fs::create_dir_all(dir).expect("mkdir");
+        let named = dir.join(format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX));
+        if cli {
+            std::fs::write(&named, "#!/bin/sh\nexit 0\n").expect("write");
+        } else {
+            let _ = std::fs::remove_file(&named);
+        }
+        std::env::set_var("PATH", dir);
+        Self(previous)
+    }
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(previous) => std::env::set_var("PATH", previous),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+}
+
+/// One session's doctor report.
+fn doctor(db: &Database, id: SessionId) -> thurbox::cli::output::CommandOutput {
+    run(
+        Action::Doctor {
+            uuid: Some(id.to_string()),
+        },
+        db,
+    )
+    .expect("doctor runs")
+}
+
+/// One named check out of a report.
+fn check(out: &thurbox::cli::output::CommandOutput, key: &str) -> Value {
+    out.json.as_array().expect("reports")[0]["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|c| c["check"] == Value::String(key.into()))
+        .unwrap_or_else(|| panic!("{key} is checked: {out}"))
+        .clone()
+}
+
 #[test]
 fn a_reported_state_carries_its_age_and_its_agents_coverage() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -455,30 +513,22 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
 fn doctor_names_the_wiring_that_is_missing_and_exits_non_zero() {
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());
+    // Every verdict below is about *hook* wiring, so the one check that reads
+    // the machine — `thurbox-cli` on PATH — is pinned present rather than left
+    // to whether the operator happens to have installed it.
+    let _path = PathGuard::only(&dir.path().join("path"), true);
     let db = Database::open_in_memory().expect("db");
     let row = session_row("unwired", "claude", "local-tmux");
     db.upsert_session(&row).expect("persist");
 
-    let out = run(
-        Action::Doctor {
-            uuid: Some(row.id.to_string()),
-        },
-        &db,
-    )
-    .expect("doctor runs");
+    let out = doctor(&db, row.id);
 
     // Nothing was ever installed into this scratch config, so claude's hooks
     // cannot fire — and the whole point is that this is *sayable* rather than
     // indistinguishable from an agent that has not signalled yet.
     let report = out.json.as_array().expect("one report per session")[0].clone();
-    assert_eq!(report["verdict"], Value::String("fail".into()));
-    let payload = report["checks"]
-        .as_array()
-        .expect("checks")
-        .iter()
-        .find(|c| c["check"] == Value::String("payload".into()))
-        .expect("the payload is checked")
-        .clone();
+    assert_eq!(report["verdict"], Value::String("fail".into()), "{report}");
+    let payload = check(&out, "payload");
     assert_eq!(payload["level"], Value::String("fail".into()));
     assert!(
         payload["detail"]
@@ -493,21 +543,8 @@ fn doctor_names_the_wiring_that_is_missing_and_exits_non_zero() {
     // of it, not a shrug.
     let driver = session_row("driver-owned", "shell", "local-tmux");
     db.upsert_session(&driver).expect("persist");
-    let out = run(
-        Action::Doctor {
-            uuid: Some(driver.id.to_string()),
-        },
-        &db,
-    )
-    .expect("doctor runs");
-    let checks = out.json.as_array().expect("reports")[0]["checks"].clone();
-    let coverage = checks
-        .as_array()
-        .expect("checks")
-        .iter()
-        .find(|c| c["check"] == Value::String("coverage".into()))
-        .expect("coverage is checked")
-        .clone();
+    let out = doctor(&db, driver.id);
+    let coverage = check(&out, "coverage");
     assert_eq!(coverage["level"], Value::String("fail".into()));
     assert!(
         coverage["detail"]
@@ -520,17 +557,48 @@ fn doctor_names_the_wiring_that_is_missing_and_exits_non_zero() {
     // and a verdict of `fail` — with the non-zero exit behind it — would be
     // false for exactly the shape this feature exists to serve.
     db.set_hook_state(driver.id, "working").expect("signal");
-    let out = run(
-        Action::Doctor {
-            uuid: Some(driver.id.to_string()),
-        },
-        &db,
-    )
-    .expect("doctor runs");
+    let out = doctor(&db, driver.id);
     let report = out.json.as_array().expect("reports")[0].clone();
     assert_eq!(report["verdict"], Value::String("warn".into()), "{report}");
     assert!(
         out.failure.is_none(),
         "a session that is reporting must not exit non-zero: {out}"
     );
+    assert_eq!(check(&out, "cli")["level"], Value::String("ok".into()));
+}
+
+#[test]
+fn doctor_fails_a_session_whose_hook_command_cannot_find_the_binary_it_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+    let db = Database::open_in_memory().expect("db");
+    // A session that is otherwise as healthy as this scratch config gets: its
+    // driver signals for itself, so coverage is a warning rather than a
+    // failure and the `cli` check is the only thing left that can fail.
+    let row = session_row("driver-owned", "shell", "local-tmux");
+    db.upsert_session(&row).expect("persist");
+    db.set_hook_state(row.id, "working").expect("signal");
+
+    let empty = dir.path().join("empty-path");
+    {
+        let _path = PathGuard::only(&empty, false);
+        let out = doctor(&db, row.id);
+        let cli = check(&out, "cli");
+        assert_eq!(cli["level"], Value::String("fail".into()), "{cli}");
+        assert!(
+            cli["detail"].as_str().is_some_and(|d| d.contains("PATH")),
+            "the report must say where it looked: {cli}"
+        );
+        assert!(
+            out.failure.is_some(),
+            "a hook that cannot find its binary signals nothing: {out}"
+        );
+    }
+
+    // Same session, same database, same everything but the one fact under
+    // test — so the verdict is the wiring's and not the machine's.
+    let _path = PathGuard::only(&dir.path().join("with-cli"), true);
+    let out = doctor(&db, row.id);
+    assert_eq!(check(&out, "cli")["level"], Value::String("ok".into()));
+    assert!(out.failure.is_none(), "{out}");
 }

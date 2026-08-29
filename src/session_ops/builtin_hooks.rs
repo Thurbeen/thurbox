@@ -511,11 +511,6 @@ mod tests {
         // With opt-out set, ensure is a no-op (no install attempted).
         assert!(HOOKS.ensure(&db).is_empty());
     }
-    /// The one thing `session::hook_status`'s coverage table asserts about the
-    /// world: that each agent's shipped payload really does signal exactly the
-    /// states the table promises. A reader trusting `hook_states_reportable` is
-    /// trusting this — so it is checked against the payloads, not maintained by
-    /// hand beside them.
     /// How a payload has to be read to find out what it signals.
     #[derive(Clone, Copy)]
     enum PayloadKind {
@@ -671,6 +666,11 @@ mod tests {
             .collect()
     }
 
+    /// The one thing `session::hook_status`'s coverage table asserts about the
+    /// world: that each agent's shipped payload really does signal exactly the
+    /// states the table promises. A reader trusting `hook_states_reportable` is
+    /// trusting this — so it is checked against the payloads, not maintained by
+    /// hand beside them.
     #[test]
     fn the_coverage_table_matches_what_each_payload_actually_signals() {
         use crate::session::hook_status::{HookDelivery, AGENT_HOOK_COVERAGE};

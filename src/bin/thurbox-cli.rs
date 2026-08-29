@@ -2,12 +2,20 @@
 //! Every subcommand works without the TUI running.
 //!
 //! This entrypoint owns the parts of the AXI contract (`axi/1.0-2026-07`) that
-//! are about the *process* rather than about any one command: every failure is
-//! a structured document on **stdout**, and the exit code says which kind of
-//! failure it was — `0` success, `1` the command ran and failed, `2` the
-//! invocation was wrong. An agent reads one stream and one status; splitting
-//! the answer across stdout and stderr costs it a retry to find out what
-//! happened.
+//! are about the *process* rather than about any one command: a failure that
+//! left nothing to print is a structured document on **stdout**, and the exit
+//! code says which kind of failure it was — `0` success, `1` the command ran
+//! and failed, `2` the invocation was wrong. An agent reads one stream and one
+//! status; splitting the answer across stdout and stderr costs it a retry to
+//! find out what happened.
+//!
+//! The other half of that promise is that stdout carries **exactly one**
+//! document. A command that renders its report and then asks for a non-zero
+//! exit (`session doctor` on a broken session, `config validate` on an invalid
+//! file) comes back as [`cli::Outcome::Failed`]: the report is the answer, the
+//! exit code carries the verdict, and the sentence explaining it goes to
+//! stderr — appending a second document there would break `jq` and every other
+//! single-document parser on exactly the commands an integrator scripts.
 
 use clap::Parser;
 use thurbox::cli::{self, output::Format, output::FormatFlags, Cli};
@@ -63,13 +71,20 @@ fn main() {
         ),
     };
 
-    if let Err(e) = cli::run(cli, &db) {
-        fail(
+    match cli::run(cli, &db) {
+        Ok(cli::Outcome::Ok) => {}
+        // The report is already on stdout and is the answer; only the verdict
+        // is left to carry, and it carries as an exit code.
+        Ok(cli::Outcome::Failed(msg)) => {
+            eprintln!("{msg}");
+            std::process::exit(EXIT_ERROR);
+        }
+        Err(e) => fail(
             &e,
             "check the arguments against this command's usage",
             "thurbox-cli <command> --help",
             format,
-        );
+        ),
     }
 }
 

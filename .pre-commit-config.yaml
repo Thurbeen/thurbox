@@ -87,6 +87,18 @@ repos:
         files: scripts/install\.(sh|bats)
         pass_filenames: false
 
+      - id: extension-script-tests
+        name: Extension script tests
+        # The extensions' shell scripts have bats files beside them; without
+        # this hook (and its CI twin) nothing ran them, so the guards they add
+        # pinned nothing. Globbed rather than passed filenames: a .bats file
+        # and the .sh it drives are different paths, and either changing means
+        # the whole suite should run.
+        entry: bash -c 'bats extensions/*/scripts/*.bats'
+        language: system
+        files: ^extensions/.*\.(sh|bats)$
+        pass_filenames: false
+
       - id: shellcheck
         name: ShellCheck
         entry: shellcheck

@@ -110,6 +110,14 @@ jobs:
               - 'scripts/install.ps1'
               - 'scripts/install.Tests.ps1'
               - '.github/workflows/ci.yml'
+            # The extensions' shell scripts are tested by bats files sitting
+            # beside them. They are not covered by `install_sh` (a different
+            # tree) and not by `rust` (no Rust in them), so without their own
+            # filter the suite that guards them never runs.
+            extension_scripts:
+              - 'extensions/**/*.sh'
+              - 'extensions/**/*.bats'
+              - '.github/workflows/ci.yml'
 
   # No `check` job. `clippy --all-targets -D warnings` below type-checks the
   # same targets, so a separate `cargo check` was a second full build on its
@@ -296,6 +304,20 @@ jobs:
       - name: Run install script tests
         run: bats scripts/install.bats
 
+  extension-script-tests:
+    name: Extension Script Tests
+    needs: changes
+    if: needs.changes.outputs.extension_scripts == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install bats-core
+        # `jq` is what the snapshot scripts parse with, and what their stub
+        # `thurbox-cli` renders its non-JSON shape from.
+        run: sudo apt-get update && sudo apt-get install -y bats jq
+      - name: Run extension script tests
+        run: bats extensions/*/scripts/*.bats
+
   install-script-ps:
     name: Install Script Tests (PowerShell)
     needs: changes
@@ -468,6 +490,7 @@ jobs:
       - markdown-lint
       - install-script
       - install-script-ps
+      - extension-script-tests
       - shellcheck
       - lua
       - website-lint

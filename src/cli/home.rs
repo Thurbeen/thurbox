@@ -4,13 +4,15 @@
 //! actionable data rather than a usage manual — an agent that runs a tool to
 //! find out what it can do should learn the state of the world in the same
 //! breath. So this answers *what is going on right now*: every session with the
-//! status its hooks last reported, the calling session's unread mail, and the
+//! `state` its hooks last reported, the calling session's unread mail, and the
 //! counts that would otherwise cost three more invocations to assemble
 //! (principle 4, "pre-computed aggregates").
 //!
-//! It is deliberately cheap and read-only — four SQLite reads, no tmux, no
-//! network, no writes. A command an agent runs to orient itself must not be
-//! one it has to think twice about running.
+//! It is deliberately cheap — six SQLite reads, no tmux, no network. It is
+//! not quite write-free: reading the agent registry seeds `agents.toml` (and
+//! its directory) when a machine has none, the same first-run seeding every
+//! other entrypoint performs. A command an agent runs to orient itself must
+//! not be one it has to think twice about running.
 
 use serde_json::{json, Value};
 
@@ -37,11 +39,12 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
     // record; this view has no compatibility surface to preserve, so it carries
     // only what it is for.
     //
-    // The status is `Assessment::state_word`, the same owner `session list`
-    // renders — so the two surfaces cannot disagree about a row, and a session
+    // `state` is `Assessment::state_word`, under the same key and from the same
+    // owner `session list` publishes — so the two surfaces cannot disagree
+    // about a row, or make an agent learn two names for one fact, and a session
     // that has never said anything reads `uncovered`/`unreported` rather than
     // being laundered into `idle`. The pane is deliberately not probed
-    // (`probe = false`): a bare invocation stays four SQLite reads and no tmux.
+    // (`probe = false`): a bare invocation touches no multiplexer.
     let rows: Vec<Value> = sessions
         .iter()
         .map(|s| {
@@ -49,7 +52,7 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
             json!({
                 "name": s.name,
                 "agent": s.agent,
-                "status": hook.state_word(),
+                "state": hook.state_word(),
                 "id": s.id.to_string(),
             })
         })
@@ -69,7 +72,7 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
         crate::session::STATE_UNCOVERED,
         crate::session::STATE_UNREPORTED,
     ] {
-        let n = rows.iter().filter(|r| r["status"] == json!(state)).count();
+        let n = rows.iter().filter(|r| r["state"] == json!(state)).count();
         if n > 0 {
             totals.insert(state.into(), json!(n));
         }
@@ -140,7 +143,7 @@ fn suggestions(rows: &[Value], unread: usize, inside_session: bool) -> Vec<Strin
             "thurbox-cli message inbox --claim   read and claim your {unread} unread message(s)"
         ));
     }
-    if rows.iter().any(|r| r["status"] == json!("blocked")) {
+    if rows.iter().any(|r| r["state"] == json!("blocked")) {
         help.push(
             "thurbox-cli session capture <id>   see what a blocked agent is waiting on".to_string(),
         );
@@ -149,7 +152,7 @@ fn suggestions(rows: &[Value], unread: usize, inside_session: bool) -> Vec<Strin
     // diagnostic is the difference between reading that as "at rest" and asking.
     if rows
         .iter()
-        .any(|r| r["status"] == json!(crate::session::STATE_UNCOVERED))
+        .any(|r| r["state"] == json!(crate::session::STATE_UNCOVERED))
     {
         help.push("thurbox-cli session doctor   why a session reports no state at all".to_string());
     }
@@ -177,11 +180,11 @@ fn human(rows: &[Value], unread: usize) -> String {
         return "No active sessions. `thurbox-cli session create --name <name> --repo-path <path>` starts one.".to_string();
     }
     let table = crate::cli::output::table(
-        &["NAME", "AGENT", "STATUS", "ID"],
+        &["NAME", "AGENT", "STATE", "ID"],
         &rows
             .iter()
             .map(|r| {
-                ["name", "agent", "status", "id"]
+                ["name", "agent", "state", "id"]
                     .iter()
                     .map(|k| r[*k].as_str().unwrap_or("-").to_string())
                     .collect()
@@ -244,15 +247,17 @@ mod tests {
             .to_string()
     }
 
-    /// What the bare home view publishes as the same session's `status`.
-    fn home_status(db: &Database, name: &str) -> String {
+    /// What the bare home view publishes as the same session's `state` — the
+    /// same key `session list` uses, which is half of the two surfaces
+    /// agreeing.
+    fn home_state(db: &Database, name: &str) -> String {
         let out = run(db).unwrap();
         out.json["sessions"]
             .as_array()
             .unwrap()
             .iter()
             .find(|row| row["name"] == json!(name))
-            .unwrap_or_else(|| panic!("{name} not in the home view"))["status"]
+            .unwrap_or_else(|| panic!("{name} not in the home view"))["state"]
             .as_str()
             .unwrap()
             .to_string()
@@ -282,7 +287,7 @@ mod tests {
             ("foreign", STATE_UNCOVERED),
             ("busy", "blocked"),
         ] {
-            assert_eq!(home_status(&db, name), want, "home view for {name}");
+            assert_eq!(home_state(&db, name), want, "home view for {name}");
             assert_eq!(listed_state(&db, name), want, "session list for {name}");
         }
     }

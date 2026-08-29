@@ -25,6 +25,12 @@ test:
 test-one NAME:
     cargo nextest run -E 'test({{NAME}})'
 
+# Run the bats suites: the install scripts and the extensions' shell scripts.
+# Not part of `just test` (which is cargo's), and needs bats + jq on PATH.
+test-scripts:
+    bats scripts/install.bats
+    bats extensions/*/scripts/*.bats
+
 # Format Rust + website code.
 fmt:
     cargo fmt --all

@@ -75,7 +75,9 @@ full flavor). Single source of truth for the `thurbox-dev` sandbox pattern;
 cargo nextest run --all              # Run all tests (preferred runner)
 cargo nextest run -E 'test(name)'    # Run a single test by name
 cargo nextest run --all --profile ci # Run with CI profile
-bats scripts/install.bats            # Test install script (requires bats-core)
+bats scripts/install.bats             # Test install script (requires bats-core)
+bats extensions/*/scripts/*.bats      # Test the extensions' shell scripts
+just test-scripts                     # Both of the above, the way CI runs them
 ```
 
 ### Kernel and interface tests
@@ -989,7 +991,8 @@ The shape that follows from that:
   `dispatch-*` scripts) already passes it explicitly. A pipeline that relied
   on the *auto* JSON has to spell the flag out.
 - **A bare `thurbox-cli` prints live state**, not a usage dump: every session
-  with the status its hooks last reported, the calling session's unread mail,
+  with the `state` its hooks last reported — the same word and the same key
+  `session list` publishes — the calling session's unread mail,
   and the counts that would otherwise take three more invocations
   (`src/cli/home.rs`). Exit 0.
 - **List views default to three or four fields**, the ones that let an agent
@@ -1891,14 +1894,19 @@ tokio::main → load config + settings → heal extensions → arm the heartbeat
 
 ## Pre-commit Hooks
 
-19 hooks run automatically via `prek` (Rust-based pre-commit
+20 hooks run automatically via `prek` (Rust-based pre-commit
 framework). Install with `prek install`. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
 - **pre-commit**: fmt, clippy, check, nextest, architecture,
-  deny, doc, bats, shellcheck, rumdl, selene, stylua, prettier,
+  deny, doc, bats (install script + the extensions' shell scripts,
+  one hook each), shellcheck, rumdl, selene, stylua, prettier,
   htmlhint, stylelint, eslint
 - **pre-push**: commit history check (`cog check`)
+
+Each bats hook has a CI twin (`install-script`,
+`extension-script-tests`), so a suite that guards a script is
+actually run rather than merely present.
 
 Shell scripts are linted with **shellcheck** (config in
 `.shellcheckrc`); install it from your package manager (it is not a
