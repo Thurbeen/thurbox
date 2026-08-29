@@ -148,14 +148,25 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         Action::List => {
             let tasks = db.list_tasks().map_err(|e| format!("list_tasks: {e}"))?;
             let json = Value::Array(tasks.iter().map(task_to_json).collect());
-            Ok(CommandOutput::new(json, render_task_list(&tasks)))
+            Ok(CommandOutput::new(json, render_task_list(&tasks))
+                .list("tasks", &["id", "title", "status", "source"])
+                .empty("0 tasks — the todo list is empty")
+                .help([
+                    "thurbox-cli task show <id>   the full description",
+                    "thurbox-cli task run <id>   hand it to an agent",
+                    "thurbox-cli task create --title <title>   add one",
+                ]))
         }
         Action::Show { id } => {
             let task = load(db, id)?;
-            Ok(CommandOutput::new(
-                task_to_json(&task),
-                render_task_detail(&task),
-            ))
+            Ok(
+                CommandOutput::new(task_to_json(&task), render_task_detail(&task))
+                    .truncate(2000)
+                    .help([
+                        "thurbox-cli task edit <id> --status done   close it",
+                        "thurbox-cli task run <id>   hand it to an agent",
+                    ]),
+            )
         }
         Action::Edit {
             id,

@@ -247,7 +247,14 @@ fn list_automations(db: &Database) -> Result<CommandOutput, String> {
         .list_automations()
         .map_err(|e| format!("list_automations: {e}"))?;
     let json = Value::Array(autos.iter().map(automation_to_json).collect());
-    Ok(CommandOutput::new(json, render_automation_list(&autos)))
+    Ok(CommandOutput::new(json, render_automation_list(&autos))
+        .list("automations", &["id", "name", "enabled", "next_run_at"])
+        .empty("0 automations scheduled")
+        .help([
+            "thurbox-cli automation show <id>   its schedule, action and prompt",
+            "thurbox-cli automation run <id>   mark it due so the next tick fires it",
+            "thurbox-cli automation tick   run everything that is due now",
+        ]))
 }
 
 /// Handle `automation edit`: apply the supplied field overrides and persist.

@@ -211,10 +211,22 @@ fn read_inbox(
             .map_err(|e| format!("list_messages: {e}"))?
     };
     let json = Value::Array(messages.iter().map(message_to_json).collect());
-    Ok(CommandOutput::new(
-        json,
-        render_inbox(&recipient.name, &messages, claim),
-    ))
+    Ok(
+        CommandOutput::new(json, render_inbox(&recipient.name, &messages, claim))
+            // `body` is the payload and stays: an inbox an agent has to re-fetch to
+            // read is not an inbox. It is `from_session_id` and the timestamps that go.
+            .list("messages", &["id", "kind", "body", "from_session_id"])
+            .truncate(2000)
+            .empty(format!(
+                "0 {}messages for {}",
+                if all { "" } else { "unread " },
+                recipient.name
+            ))
+            .help([
+                "thurbox-cli message reply <message_id> --body <text>   answer the sender",
+                "thurbox-cli message inbox --claim   drain unread, exactly once",
+            ]),
+    )
 }
 
 /// Handle `message prune`: retention sweep of old messages.

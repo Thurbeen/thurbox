@@ -190,7 +190,16 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                         .collect::<Vec<_>>(),
                 )
             };
-            Ok(CommandOutput::new(json, human))
+            Ok(CommandOutput::new(json, human)
+                .list(
+                    "deleted_sessions",
+                    &["name", "agent", "force_deleted", "id"],
+                )
+                .empty("0 deleted sessions to restore")
+                .help([
+                    "thurbox-cli session restore <id>   bring one back",
+                    "thurbox-cli session restore <id> --best-effort   for a force-deleted row",
+                ]))
         }
         Action::List {
             parent,
@@ -211,7 +220,19 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     .map(|s| session_json_with_state(s, &states, &bases))
                     .collect(),
             );
-            Ok(CommandOutput::new(json, render_session_list(&sessions)))
+            Ok(CommandOutput::new(json, render_session_list(&sessions))
+                // The id is not decoration: every follow-up command resolves a
+                // session by UUID, so omitting it would only buy a second call.
+                .list("sessions", &["name", "agent", "hook_state", "id"])
+                .empty(match parent_id {
+                    Some(id) => format!("0 sessions with parent {id}"),
+                    None => "0 active sessions on this machine".to_string(),
+                })
+                .help([
+                    "thurbox-cli session get <id>   the full record, worktrees included",
+                    "thurbox-cli session capture <id> --lines 50   what its pane is showing",
+                    "thurbox-cli session list --json   every field, for a script",
+                ]))
         }
         Action::Get { uuid } => {
             let session = resolve(db, &uuid)?;
@@ -325,7 +346,16 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     "output": output,
                 }),
                 human,
-            ))
+            )
+            // `--lines` is the real control here and the caller already chose
+            // it; this cap only catches the case where those lines are far
+            // wider than anyone expected. `--json` is uncapped, which is what
+            // the `| jq -r .output` sentinel greps in the extensions rely on.
+            .truncate(CAPTURE_TEXT_CAP)
+            .help([
+                "thurbox-cli session capture <id> --lines 40   a shorter tail",
+                "thurbox-cli session send <id> <text>   type into the pane",
+            ]))
         }
         Action::Focus { uuid } => {
             let session = resolve(db, &uuid)?;
@@ -511,6 +541,12 @@ fn resolve_signal_target(db: &Database, session: Option<&str>) -> Result<SharedS
     crate::cli::identity::calling_session_or_by_agent_id(db)?
         .ok_or_else(|| "not inside a thurbox session; pass --session <uuid>".into())
 }
+
+/// How much captured pane text the TOON view shows before it says how much
+/// more there is. Roughly a screenful of wide output — past that an agent is
+/// paying for scrollback it did not ask to read, and `--lines`/`--full` are
+/// both one flag away.
+const CAPTURE_TEXT_CAP: usize = 4000;
 
 /// Render the session list as an aligned table (or a friendly empty line).
 fn render_session_list(sessions: &[SharedSession]) -> String {
