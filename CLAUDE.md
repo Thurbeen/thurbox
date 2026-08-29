@@ -2178,7 +2178,7 @@ For rationale behind decisions, see `docs/`:
 - `docs/CONSTITUTION.md` — Core principles and non-negotiable rules
 - `docs/ARCHITECTURE.md` — Architectural decisions with rationale
 - `docs/FEATURES.md` — Feature-level design choices
-- `docs/CONFIG.md` — Every config file/env var/DB setting in one place
+- `docs/CONFIG.md` — Thurbox's own config files/env vars/DB settings in one place
 - `docs/AGENTS.md` — Each built-in agent's exact config + behavior, and
   the checklist for adding a new built-in
 - `docs/PERFORMANCE.md` — Render/tick performance: demand-driven redraw,

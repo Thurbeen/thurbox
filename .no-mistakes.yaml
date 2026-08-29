@@ -180,6 +180,20 @@ review:
         and never block. Ask for a theme role rather than a colour, so one pane
         looks right under all thirty-six palettes.
 
+        Read the change for structure as well as correctness, the same way a
+        Rust one is read: names that reveal intent, functions that do one
+        thing, duplication folded into ui/lib/ rather than repeated across
+        panes, dead code and unused locals gone, magic numbers named, early
+        returns rather than deep nesting, and no abstraction introduced before
+        there is real duplication to justify it.
+
+        Read it for coherence too, across the whole diff and against the panes
+        around it: naming, patterns and widget use consistent with the rest of
+        ui/, the shape a helper returns agreeing with what every caller
+        expects, snapshot fields read as they are published, and no
+        contradictory conditions, redundant branches or unreachable code left
+        behind.
+
     - path: "ui-plugins/**"
       instructions: |
         Example panes that install by bare name. The same plugin sandbox as
@@ -187,6 +201,13 @@ review:
         snapshot-read and command-write, and theme roles rather than colours.
         These are examples to read and copy from, not a catalogue thurbox
         maintains for anyone.
+
+        Hold them to the same structure and coherence rubric as ui/, and more
+        strictly for being examples: intention-revealing names, one thing per
+        function, no duplication or dead code, magic numbers named, early
+        returns over deep nesting, no abstraction ahead of real duplication,
+        and patterns consistent with the panes under ui/ - somebody will copy
+        whatever shape this file teaches.
 
     - path: "tests/**"
       instructions: |
@@ -233,6 +254,12 @@ review:
         linter. The same plugin sandbox as ui/
         applies: no os, io, debug, package or print, four node kinds only,
         snapshot-read and command-write, and theme roles rather than colours.
+
+        The structure and coherence rubric applies here as it does to ui/, and
+        a worked example carries it further than most code: intention-revealing
+        names, one thing per function, no duplication or dead code, magic
+        numbers named, early returns over deep nesting, and shapes consistent
+        with the panes a reader will go on to write.
 
     - path: "website/**"
       instructions: |
