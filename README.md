@@ -139,7 +139,7 @@ under [Keybindings](#keybindings).
 Many coding agents side by side, each in its own tmux-backed pane that survives
 crashes, restarts and reboots. Pick the agent and repo(s) at `Ctrl+N`. Reorder
 by hand (`Shift+J` / `Shift+K`), sort (`Shift+S`), restart with resume
-(`Ctrl+R`), or soft-delete with undo (`Ctrl+Z`).
+(`Ctrl+R`), or soft-delete (`Ctrl+D`), undoable with `Ctrl+Z`.
 
 ![Session creation](./media/thurbox-session-creation.gif)
 
@@ -440,7 +440,7 @@ done
 for i in $(seq 1 "$N_REVIEWERS"); do
   id="$(thurbox-cli session create --name "reviewer-$i" --repo-path "$REPO" \
         --agent reviewer $(host_flag) --json | jq -r '.id')"
-  thurbox-cli session send --to "$id" --no-wake --body \
+  thurbox-cli session send "$id" \
 "You are a continuous security & code-quality reviewer for this monorepo.
 Loop: pick the most recently changed files, review for security issues,
 correctness bugs, and quality regressions. Do not modify code — review only."

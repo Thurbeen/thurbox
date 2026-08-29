@@ -168,9 +168,7 @@ breadcrumb: 'Configuration'
           </table>
           <p>
             <code>agents.toml</code>
-            ,
-            <code>keybindings.json</code>
-            , and
+            and
             <code>settings.toml</code>
             reload
             <strong>live</strong>
@@ -998,9 +996,24 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             files you trust &mdash; all three are decisions <em>you</em> made about the interface,
             which is why they share a file. Its
             <code>bindings</code>
-            object maps an action id to the one chord string that action answers to:
+            object maps an action id to the one chord string that action answers to. Action ids are
+            dotted and lowercase &mdash; the kernel's own are
+            <code>help.open</code>
+            ,
+            <code>settings.open</code>
+            ,
+            <code>themes.open</code>
+            and
+            <code>palette.open</code>
+            , and panes declare theirs in the same style (
+            <code>sessions.delete</code>
+            ,
+            <code>sessions.restart</code>
+            , &hellip;).
+            <strong>F1</strong>
+            lists every id in force:
           </p>
-          <pre data-title="ui.json"><code class="language-json">{ "bindings": { "QuitApp": "ctrl+a", "OpenThemePicker": "f4" } }</code></pre>
+          <pre data-title="ui.json"><code class="language-json">{ "bindings": { "themes.open": "f2", "sessions.delete": "f3" } }</code></pre>
           <ul>
             <li>
               The editing path is the
@@ -1048,9 +1061,28 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
               ) is the macOS Command key, delivered only by kitty-keyboard-protocol terminals.
             </li>
             <li>
-              Unknown action names, invalid chords, and the same chord bound to two actions in
-              overlapping contexts are reported at startup (the file still loads; bad entries fall
-              back to defaults).
+              The same chord claimed by two actions in overlapping contexts is reported at startup
+              (the file still loads; the loser keeps its default). An entry naming an action no
+              plugin declares is
+              <strong>dropped silently</strong>
+              &mdash; a typo just does nothing, which is why the F1 editor, which refuses an unknown
+              action outright, is the safer path.
+            </li>
+            <li>
+              Five chords are
+              <strong>reserved</strong>
+              and cannot be rebound at all &mdash;
+              <code>ctrl+q</code>
+              (quit),
+              <code>f10</code>
+              (reload),
+              <code>ctrl+h</code>
+              /
+              <code>ctrl+l</code>
+              (focus) and
+              <code>f12</code>
+              (perf HUD). They are the way out of a pane that consumes every key, so quit is not a
+              declared action and has no id to bind.
             </li>
           </ul>
           <p>
