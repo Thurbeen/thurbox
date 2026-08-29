@@ -1,13 +1,24 @@
 //! Command-line interface dispatcher for the `thurbox-cli` binary.
 //!
-//! Output is human-readable by default and switches to JSON automatically when
-//! stdout is a pipe (so `thurbox-cli … | jq` keeps working). Force a format with
-//! `--json` (compact), `--pretty` (indented JSON), or `--text` (human). See
-//! [`output::Format`].
+//! Output is human-readable in a terminal and TOON down a pipe, because what
+//! is usually on the other end of that pipe is an agent. Force a format with
+//! `--json` (compact), `--pretty` (indented JSON), `--toon`, or `--text`. See
+//! [`output::Format`] for the precedence and [`toon`] for the format itself.
 //!
 //! The CLI is intentionally thin: it parses arguments, calls into
 //! `storage::Database`, `session_ops`, or the tmux helpers in
 //! `agent::tmux`, and prints the result. No TUI, no event loop.
+//!
+//! It is also an **AXI** (`axi/1.0-2026-07`, <https://axi.md>) — an interface
+//! shaped for an agent rather than for a person at a keyboard. Four of that
+//! spec's rules are structural and live here rather than in any one
+//! subcommand: output is TOON down a pipe (principle 1), running the binary
+//! with no subcommand prints live state instead of a usage dump
+//! ([`home::run`], principle 8), every result can carry `help[N]:` next steps
+//! ([`output::AgentView`], principle 9), and errors are structured on stdout
+//! with the exit code saying which kind they are — 0 success, 1 failure, 2
+//! usage ([`error_output`], principle 6). The rest are per-command and marked
+//! where they are met.
 
 use clap::{Parser, Subcommand};
 
@@ -21,6 +32,7 @@ pub mod automations;
 pub mod config;
 pub mod editor;
 pub mod extensions;
+pub mod home;
 pub mod identity;
 pub mod messages;
 pub mod notify;
@@ -33,23 +45,25 @@ pub mod toon;
 pub mod update;
 pub mod version;
 
-use output::{CommandOutput, Format};
+use output::{CommandOutput, Format, FormatFlags};
 
-/// Thurbox CLI — manage sessions, scheduled commands, and more.
+/// Drive thurbox's sessions, tasks, automations and interface without the TUI.
 ///
-/// `version` is spelled out rather than left bare: clap's implicit form reads
-/// `CARGO_PKG_VERSION`, which is the static `0.0.0-dev` marker this project
-/// never bumps, so `--version` reported a dev build on every release while the
-/// `version` subcommand was right. Both now call the one
-/// `version_check::current_version`.
+/// Run with no subcommand for the current state of this machine's sessions.
+// `version` is spelled out rather than left bare: clap's implicit form reads
+// `CARGO_PKG_VERSION`, which is the static `0.0.0-dev` marker this project
+// never bumps, so `--version` reported a dev build on every release while the
+// `version` subcommand was right. Both now call the one
+// `version_check::current_version`.
 #[derive(Parser, Debug)]
 #[command(
     name = "thurbox-cli",
     version = crate::agent::version_check::current_version(),
-    about
+    about,
+    after_help = EXAMPLES
 )]
 pub struct Cli {
-    /// Output JSON instead of the human-readable default.
+    /// Output JSON — every field, the format scripts parse.
     #[arg(long, global = true)]
     pub json: bool,
 
@@ -57,19 +71,52 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub pretty: bool,
 
-    /// Force human-readable output even when piped.
+    /// Output TOON, the agent format (the default when piped).
+    #[arg(long, global = true)]
+    pub toon: bool,
+
+    /// Columns for a list view: a comma-separated set, or `all`.
     ///
-    /// `id = "text_format"` disambiguates from subcommand positional args also
-    /// named `text` (e.g. `sessions::Action::Send`). Without the explicit id,
-    /// clap registers two args with id "text" (this bool flag and the String
-    /// positional), and `get_one::<String>("text")` at parse time panics with
-    /// a TypeId downcast mismatch.
+    /// A list defaults to the three or four fields that let you decide what to
+    /// do next (AXI principle 2). This asks for a different set by name —
+    /// `--fields name,cwd,base_branch` — without going all the way to `--json`.
+    #[arg(long, global = true, value_name = "LIST")]
+    pub fields: Option<String>,
+
+    /// Do not shorten long text fields (AXI principle 3's escape hatch).
+    #[arg(long, global = true)]
+    pub full: bool,
+
+    /// Force human-readable output even when piped.
+    // `id = "text_format"` disambiguates from subcommand positional args also
+    // named `text` (e.g. `sessions::Action::Send`). Without the explicit id,
+    // clap registers two args with id "text" (this bool flag and the String
+    // positional), and `get_one::<String>("text")` at parse time panics with
+    // a TypeId downcast mismatch.
     #[arg(long, global = true, id = "text_format")]
     pub text: bool,
 
+    /// The operation to run. Absent means the home view — AXI principle 8 asks
+    /// a bare invocation for live state, not a usage manual, so this is
+    /// `Option` rather than required.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
+
+/// Worked examples for `--help`. AXI principle 10 asks every help surface for
+/// two or three of them; a list of subcommand names alone leaves an agent to
+/// guess the shape of an invocation.
+const EXAMPLES: &str = "\
+Examples:
+  thurbox-cli                                  live state: sessions, inbox, tasks
+  thurbox-cli session list                     every session, with status and branch
+  thurbox-cli session create --name fix-ci --repo-path . --worktree-branch fix/ci
+  thurbox-cli session capture <id> --lines 50  what an agent's pane is showing
+  thurbox-cli message send --to <id> --kind result --body 'done'
+  thurbox-cli session list --json | jq         full records for a script
+
+Output is human-readable in a terminal and TOON when piped; --json restores the
+full JSON record on any command.";
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
@@ -169,8 +216,53 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
     // A peer probing this machine looks for its CLI under the data dir; keep
     // that pointer true (a readlink when it already is).
     crate::session_ops::host_cli::advertise_running_cli();
-    let format = Format::resolve(cli.json, cli.text, cli.pretty);
-    let output: CommandOutput = match cli.command {
+    let format = Format::resolve(FormatFlags {
+        json: cli.json,
+        pretty: cli.pretty,
+        text: cli.text,
+        toon: cli.toon,
+    });
+    let mut output: CommandOutput = match cli.command {
+        // No subcommand: live state, not a usage dump (AXI principle 8).
+        None => home::run(db),
+        Some(command) => dispatch(command, db),
+    }?;
+    if cli.full {
+        output.agent.max_text = None;
+    }
+    if let Some(spec) = &cli.fields {
+        output.agent.fields = parse_fields(spec);
+    }
+
+    println!("{}", format.render(&output));
+    // A command can render normally yet still request a non-zero exit (e.g.
+    // `config validate` on an invalid file).
+    match output.failure {
+        Some(msg) => Err(msg),
+        None => Ok(()),
+    }
+}
+
+/// Read a `--fields` value into the column set a list view should show.
+///
+/// `all` yields an empty set, which is what the renderer already takes to mean
+/// "no projection — show the record as it is", so the escape hatch needs no
+/// second code path. Blank entries are dropped so a trailing comma is not a
+/// column named nothing.
+fn parse_fields(spec: &str) -> Vec<String> {
+    if spec.eq_ignore_ascii_case("all") {
+        return Vec::new();
+    }
+    spec.split(',')
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Route one subcommand to the module that owns it.
+fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, String> {
+    match command {
         Command::Editor { action } => editor::run(action, db),
         Command::Session { action } => sessions::run(action, db),
         Command::Automation { action } => automations::run(action, db),
@@ -184,13 +276,23 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Perf => perf::run(db),
         // The only command that needs no database: a plugin is a file.
         Command::Plugin { action } => plugins::run(action),
-    }?;
-
-    println!("{}", format.render(&output));
-    // A command can render normally yet still request a non-zero exit (e.g.
-    // `config validate` on an invalid file).
-    match output.failure {
-        Some(msg) => Err(msg),
-        None => Ok(()),
     }
+}
+
+/// Render a failure the way AXI principle 6 asks for: a structured document on
+/// **stdout**, not a bare line on stderr.
+///
+/// An agent reads one stream. A message on stderr is one it has to be told to
+/// capture, and half the time the capture is dropped — so the error becomes an
+/// empty stdout and an exit code, which is indistinguishable from a command
+/// that produced nothing. `suggestion` says what to do about it in prose and
+/// `next` is that same advice as something runnable, which is the difference
+/// between an error an agent can act on and one it can only report.
+pub fn error_output(message: &str, suggestion: &str, next: &str, format: Format) -> String {
+    let out = CommandOutput::new(
+        serde_json::json!({ "error": message, "suggestion": suggestion }),
+        format!("error: {message}\n  {suggestion}"),
+    )
+    .help([next]);
+    format.render(&out)
 }

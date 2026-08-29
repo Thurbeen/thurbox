@@ -5,6 +5,13 @@
 use super::*;
 use clap::Parser;
 
+/// The parsed subcommand. [`Cli::command`] is an `Option` because a bare
+/// `thurbox-cli` prints the home view rather than a usage dump (AXI principle
+/// 8); every test in this file passes one, so unwrapping is the assertion.
+fn subcommand(cli: Cli) -> Command {
+    cli.command.expect("these tests always parse a subcommand")
+}
+
 #[test]
 fn parse_extra_repos_splits_base_on_last_at() {
     // A path containing '@' must keep it: only the suffix after the LAST
@@ -49,7 +56,7 @@ fn pretty_flag_is_global() {
     let cli = Cli::try_parse_from(["thurbox-cli", "session", "list", "--pretty"]).unwrap();
     assert!(cli.pretty);
     assert!(matches!(
-        cli.command,
+        subcommand(cli),
         Command::Session {
             action: sessions::Action::List {
                 parent: None,
@@ -96,7 +103,7 @@ fn parse_session_create_requires_name_and_repo() {
                 worktree_branch,
                 ..
             },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::Create");
     };
@@ -122,7 +129,7 @@ fn parse_session_create_accepts_parent() {
     .unwrap();
     let Command::Session {
         action: sessions::Action::Create { parent, .. },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::Create");
     };
@@ -150,7 +157,7 @@ fn parse_session_send_disambiguates_global_text_flag() {
     .unwrap();
     let Command::Session {
         action: sessions::Action::Send { uuid, text },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::Send");
     };
@@ -170,7 +177,7 @@ fn parse_session_send_disambiguates_global_text_flag() {
     assert!(cli.text);
     let Command::Session {
         action: sessions::Action::Send { text, .. },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::Send");
     };
@@ -188,7 +195,7 @@ fn parse_session_focus_takes_uuid() {
     .unwrap();
     let Command::Session {
         action: sessions::Action::Focus { uuid },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::Focus");
     };
@@ -203,7 +210,7 @@ fn parse_session_signal_accepts_state_and_rejects_garbage() {
         Cli::try_parse_from(["thurbox-cli", "session", "signal", "--state", "blocked"]).unwrap();
     let Command::Session {
         action: sessions::Action::Signal { state, session },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::Signal");
     };
@@ -231,7 +238,7 @@ fn parse_session_list_accepts_parent_filter() {
             parent,
             deleted: false,
         },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::List");
     };
@@ -245,7 +252,7 @@ fn parse_session_list_accepts_parent_filter() {
 fn parse_editor_set_and_get() {
     let cli = Cli::try_parse_from(["thurbox-cli", "editor", "get"]).unwrap();
     assert!(matches!(
-        cli.command,
+        subcommand(cli),
         Command::Editor {
             action: editor::Action::Get
         }
@@ -253,7 +260,7 @@ fn parse_editor_set_and_get() {
     let cli = Cli::try_parse_from(["thurbox-cli", "editor", "set", "code --wait"]).unwrap();
     let Command::Editor {
         action: editor::Action::Set { command },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Editor::Set");
     };
@@ -283,7 +290,7 @@ fn parse_automation_create_requires_args() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
+        subcommand(cli),
         Command::Automation {
             action: automations::Action::Create { .. }
         }
@@ -294,7 +301,7 @@ fn parse_automation_create_requires_args() {
 fn automation_alias_auto_parses() {
     let cli = Cli::try_parse_from(["thurbox-cli", "auto", "list"]).unwrap();
     assert!(matches!(
-        cli.command,
+        subcommand(cli),
         Command::Automation {
             action: automations::Action::List
         }
@@ -305,7 +312,7 @@ fn automation_alias_auto_parses() {
 fn automation_tick_parses() {
     let cli = Cli::try_parse_from(["thurbox-cli", "automation", "tick"]).unwrap();
     assert!(matches!(
-        cli.command,
+        subcommand(cli),
         Command::Automation {
             action: automations::Action::Tick
         }
@@ -327,7 +334,7 @@ fn parse_task_create_requires_title() {
                 repo,
                 ..
             },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Task::Create");
     };
@@ -350,7 +357,7 @@ fn parse_task_create_accepts_description() {
     .unwrap();
     let Command::Task {
         action: tasks::Action::Create { description, .. },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Task::Create");
     };
@@ -372,7 +379,7 @@ fn parse_task_edit_accepts_description() {
         action: tasks::Action::Edit {
             id, description, ..
         },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Task::Edit");
     };
@@ -384,7 +391,7 @@ fn parse_task_edit_accepts_description() {
 fn task_alias_todo_parses() {
     let cli = Cli::try_parse_from(["thurbox-cli", "todo", "list"]).unwrap();
     assert!(matches!(
-        cli.command,
+        subcommand(cli),
         Command::Task {
             action: tasks::Action::List
         }
@@ -410,7 +417,7 @@ fn parse_extension_install() {
                 home,
                 force,
             },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Extension::Install");
     };
@@ -425,7 +432,7 @@ fn parse_extension_uninstall() {
         Cli::try_parse_from(["thurbox-cli", "extension", "uninstall", "flow", "--purge"]).unwrap();
     let Command::Extension {
         action: extensions::Action::Uninstall { name, purge },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Extension::Uninstall");
     };
@@ -438,7 +445,7 @@ fn parse_extension_activate() {
     let cli = Cli::try_parse_from(["thurbox-cli", "extension", "activate", "flow"]).unwrap();
     let Command::Extension {
         action: extensions::Action::Activate { name },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Extension::Activate");
     };
@@ -458,7 +465,7 @@ fn parse_extension_deactivate_with_flags() {
     .unwrap();
     let Command::Extension {
         action: extensions::Action::Deactivate { name, force, purge },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Extension::Deactivate");
     };
@@ -472,7 +479,7 @@ fn parse_extension_update() {
     let cli = Cli::try_parse_from(["thurbox-cli", "extension", "update", "flow"]).unwrap();
     let Command::Extension {
         action: extensions::Action::Update { name, all, force },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Extension::Update");
     };
@@ -484,7 +491,7 @@ fn parse_extension_update() {
         Cli::try_parse_from(["thurbox-cli", "ext", "update", "--all", "--force"]).unwrap();
     let Command::Extension {
         action: extensions::Action::Update { name, all, force },
-    } = all_cli.command
+    } = subcommand(all_cli)
     else {
         panic!("expected Extension::Update");
     };
@@ -499,7 +506,7 @@ fn parse_extension_update_no_name_means_all() {
     let cli = Cli::try_parse_from(["thurbox-cli", "extension", "update"]).unwrap();
     let Command::Extension {
         action: extensions::Action::Update { name, all, force },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Extension::Update");
     };
@@ -514,7 +521,7 @@ fn parse_extension_reinstall() {
         Cli::try_parse_from(["thurbox-cli", "extension", "reinstall", "flow", "--purge"]).unwrap();
     let Command::Extension {
         action: extensions::Action::Reinstall { name, purge },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Extension::Reinstall");
     };
@@ -527,7 +534,7 @@ fn parse_extension_available_and_search_alias() {
     let cli = Cli::try_parse_from(["thurbox-cli", "extension", "available"]).unwrap();
     let Command::Extension {
         action: extensions::Action::Available { query },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Extension::Available");
     };
@@ -536,7 +543,7 @@ fn parse_extension_available_and_search_alias() {
     let cli = Cli::try_parse_from(["thurbox-cli", "ext", "search", "deps"]).unwrap();
     let Command::Extension {
         action: extensions::Action::Available { query },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Extension::Available via search alias");
     };
@@ -547,7 +554,7 @@ fn parse_extension_available_and_search_alias() {
 fn extension_alias_ext_parses() {
     let cli = Cli::try_parse_from(["thurbox-cli", "ext", "list"]).unwrap();
     assert!(matches!(
-        cli.command,
+        subcommand(cli),
         Command::Extension {
             action: extensions::Action::List
         }
@@ -585,7 +592,7 @@ fn parse_message_send_requires_to_kind_body() {
                 no_wake,
                 ..
             },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Message::Send");
     };
@@ -615,7 +622,7 @@ fn parse_message_inbox_claim() {
                 all,
                 ..
             },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Message::Inbox");
     };
@@ -632,7 +639,7 @@ fn message_alias_msg_parses() {
         action: messages::Action::Prune {
             older_than_days, ..
         },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Message::Prune via msg alias");
     };
@@ -642,13 +649,13 @@ fn message_alias_msg_parses() {
 #[test]
 fn parse_version_with_and_without_check() {
     let cli = Cli::try_parse_from(["thurbox-cli", "version"]).unwrap();
-    let Command::Version(args) = cli.command else {
+    let Command::Version(args) = subcommand(cli) else {
         panic!("expected Version");
     };
     assert!(!args.check);
 
     let cli = Cli::try_parse_from(["thurbox-cli", "version", "--check"]).unwrap();
-    let Command::Version(args) = cli.command else {
+    let Command::Version(args) = subcommand(cli) else {
         panic!("expected Version");
     };
     assert!(args.check);
@@ -657,13 +664,13 @@ fn parse_version_with_and_without_check() {
 #[test]
 fn parse_update_with_and_without_force() {
     let cli = Cli::try_parse_from(["thurbox-cli", "update"]).unwrap();
-    let Command::Update(args) = cli.command else {
+    let Command::Update(args) = subcommand(cli) else {
         panic!("expected Update");
     };
     assert!(!args.force);
 
     let cli = Cli::try_parse_from(["thurbox-cli", "update", "--force"]).unwrap();
-    let Command::Update(args) = cli.command else {
+    let Command::Update(args) = subcommand(cli) else {
         panic!("expected Update");
     };
     assert!(args.force);
@@ -672,13 +679,13 @@ fn parse_update_with_and_without_force() {
 #[test]
 fn parse_notify_with_and_without_test() {
     let cli = Cli::try_parse_from(["thurbox-cli", "notify"]).unwrap();
-    let Command::Notify(args) = cli.command else {
+    let Command::Notify(args) = subcommand(cli) else {
         panic!("expected Notify");
     };
     assert!(!args.test);
 
     let cli = Cli::try_parse_from(["thurbox-cli", "notify", "--test"]).unwrap();
-    let Command::Notify(args) = cli.command else {
+    let Command::Notify(args) = subcommand(cli) else {
         panic!("expected Notify");
     };
     assert!(args.test);
@@ -688,7 +695,7 @@ fn parse_notify_with_and_without_test() {
 fn task_run_parses() {
     let cli = Cli::try_parse_from(["thurbox-cli", "task", "run", "7"]).unwrap();
     assert!(matches!(
-        cli.command,
+        subcommand(cli),
         Command::Task {
             action: tasks::Action::Run { id: 7 }
         }
@@ -731,4 +738,38 @@ fn version_flag_reports_the_injected_version_not_the_dev_marker() {
         "the Cli #[command(..)] must name the injected version explicitly; \
          a bare `version` falls back to CARGO_PKG_VERSION. Got: {command_attr:?}"
     );
+}
+
+#[test]
+fn fields_flag_names_the_columns_a_list_shows() {
+    assert_eq!(parse_fields("name,agent"), vec!["name", "agent"]);
+    // Spaces around a comma are how a person writes it, so accept them.
+    assert_eq!(parse_fields("name, agent "), vec!["name", "agent"]);
+    // A trailing comma must not become a column with no name.
+    assert_eq!(parse_fields("name,"), vec!["name"]);
+}
+
+#[test]
+fn fields_all_clears_the_projection() {
+    // Empty is the renderer's own spelling of "no projection", so `all` needs
+    // no second branch downstream.
+    assert!(parse_fields("all").is_empty());
+    assert!(parse_fields("ALL").is_empty());
+}
+
+#[test]
+fn a_bare_invocation_parses_with_no_subcommand() {
+    // AXI principle 8: `thurbox-cli` on its own is the home view, so the parse
+    // must succeed rather than fail with a usage error.
+    let cli = Cli::parse_from(["thurbox-cli"]);
+    assert!(cli.command.is_none());
+}
+
+#[test]
+fn the_output_flags_are_global_and_parse_after_a_subcommand() {
+    let cli = Cli::parse_from(["thurbox-cli", "session", "list", "--toon", "--full"]);
+    assert!(cli.toon);
+    assert!(cli.full);
+    let cli = Cli::parse_from(["thurbox-cli", "session", "list", "--fields", "name,id"]);
+    assert_eq!(cli.fields.as_deref(), Some("name,id"));
 }
