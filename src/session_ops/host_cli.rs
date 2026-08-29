@@ -451,7 +451,19 @@ fn run_script(host: &HostDef, script: &str, action: &str) -> Result<String, Stri
             .trim()
             .strip_prefix("error: ")
             .unwrap_or(stderr.trim());
-        return Err(if stderr.is_empty() {
+        // The host CLI reports its failures on *stdout* now, as a structured
+        // document (AXI principle 6), so an empty stderr no longer means it
+        // said nothing. Reading only stderr turned every remote error into a
+        // bare "failed (exit 1)" and threw away the reason, which is the whole
+        // value of delegating to the host in the first place. stderr is still
+        // read first: a transport failure — ssh could not connect, the shell
+        // could not find the binary — never reaches the CLI at all.
+        let reported = if stderr.is_empty() {
+            reported_error(&output.stdout)
+        } else {
+            Some(stderr.to_string())
+        };
+        return Err(reported.unwrap_or_else(|| {
             format!(
                 "{action} on '{}' failed (exit {})",
                 host.name,
@@ -460,11 +472,29 @@ fn run_script(host: &HostDef, script: &str, action: &str) -> Result<String, Stri
                     .code()
                     .map_or("?".to_string(), |c| c.to_string())
             )
-        } else {
-            stderr.to_string()
-        });
+        }));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Pull the message out of a failed host CLI's stdout.
+///
+/// Every remote invocation passes `--json` (see [`cli_script_posix`]), so a
+/// failure is `{"error": …, "suggestion": …}`. A host running an older thurbox
+/// wrote nothing to stdout on failure and a host running something else
+/// entirely could write anything, so both fall back to the caller's generic
+/// message rather than surfacing a stray line as if it were a diagnosis.
+fn reported_error(stdout: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stdout);
+    let value: Value = serde_json::from_str(text.trim()).ok()?;
+    let message = value.get("error")?.as_str()?.trim();
+    if message.is_empty() {
+        return None;
+    }
+    match value.get("suggestion").and_then(Value::as_str) {
+        Some(hint) if !hint.trim().is_empty() => Some(format!("{message} ({})", hint.trim())),
+        _ => Some(message.to_string()),
+    }
 }
 
 /// `(os, arch)` as the host's shell spells them (`uname -sm`, or
@@ -803,5 +833,35 @@ mod tests {
         // rather than costing an archive download a minute forever.
         assert_eq!(retry_after(10), PROBE_RETRY_MAX);
         assert_eq!(retry_after(u32::MAX), PROBE_RETRY_MAX);
+    }
+
+    #[test]
+    fn a_host_cli_failure_is_read_off_stdout() {
+        // The host CLI reports failures as a document on stdout now, so this
+        // is the whole reason a delegated create says what went wrong instead
+        // of "exit 1".
+        let stdout = br#"{"error":"Session not found: abc","suggestion":"run session list"}"#;
+        assert_eq!(
+            reported_error(stdout).as_deref(),
+            Some("Session not found: abc (run session list)")
+        );
+    }
+
+    #[test]
+    fn a_host_cli_failure_without_a_suggestion_is_just_the_message() {
+        assert_eq!(
+            reported_error(br#"{"error":"boom"}"#).as_deref(),
+            Some("boom")
+        );
+    }
+
+    #[test]
+    fn output_that_is_not_a_thurbox_error_is_left_to_the_generic_message() {
+        // An older host wrote nothing; something that is not thurbox at all
+        // could write anything. Neither is a diagnosis worth surfacing as one.
+        assert_eq!(reported_error(b""), None);
+        assert_eq!(reported_error(b"command not found"), None);
+        assert_eq!(reported_error(br#"{"ok":true}"#), None);
+        assert_eq!(reported_error(br#"{"error":"  "}"#), None);
     }
 }
