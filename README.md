@@ -636,7 +636,8 @@ policy is yours. The decisive check is the pane — `session get` resolves its
 foreground process and flags a `working` session sitting over a bare shell,
 **reporting** the contradiction rather than overwriting the agent's own word.
 `session list` skips that probe unless you pass `--verify` (it costs a query and
-a `ps` per session), and a remote session answers `unavailable`.
+a `ps` per session), `session get --no-verify` turns it off there, and a remote
+session answers `unavailable`.
 
 **An agent thurbox did not launch is still seen.** If your harness owns the
 agent launch — asking thurbox for a bare interactive shell and starting the

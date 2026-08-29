@@ -986,10 +986,11 @@ The shape that follows from that:
   is wide and the useful part is narrow. Force a format with `--json`
   (compact), `--pretty` (indented), `--toon`, or `--text`.
 - **`--json` is unchanged** — every field, exactly the bytes it always
-  produced. It is the format scripts parse, and every in-repo consumer
-  (`flow-snapshot.sh`, `link-sessions.sh`, `shepherd-snapshot.sh`, the
-  `dispatch-*` scripts) already passes it explicitly. A pipeline that relied
-  on the *auto* JSON has to spell the flag out.
+  produced. It is the format scripts parse, and every in-repo consumer (each
+  extension's `*-snapshot.sh`, `flow-summary.sh`, `link-sessions.sh` and the
+  `dispatch-*` scripts) already passes it explicitly — the snapshot scripts
+  with a bats file beside them pinning it. A pipeline that relied on the
+  *auto* JSON has to spell the flag out.
 - **A bare `thurbox-cli` prints live state**, not a usage dump: every session
   with the `state` its hooks last reported — the same word and the same key
   `session list` publishes — the calling session's unread mail,

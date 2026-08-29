@@ -49,8 +49,9 @@ cat "$UI/layout.lua"   # the arrangement — which slots exist and where
 ls "$UI/plugins" "$UI/lib"
 ```
 
-The `--text` is load-bearing: `thurbox-cli` switches to JSON the moment its
-stdout is a pipe, so a bare `plugin dir | head -1` hands you JSON, not a path.
+The `--text` is load-bearing: `thurbox-cli` switches to TOON — its compact
+machine encoding — the moment its stdout is a pipe, so a bare `plugin dir |
+head -1` hands you that, not a path.
 
 Read `AGENTS.md` before your first edit of a session. The rest of this skill is
 the short version — enough to judge a request and to not make the two mistakes
