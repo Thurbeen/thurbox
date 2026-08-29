@@ -130,7 +130,8 @@ publishes to GitHub Pages.
    then open the printed URL — a front-matter page won't render if opened directly),
    then **publish**: commit the new/updated `website/**` files on a branch, push, and
    open a PR. The `.github/workflows/pages.yml` workflow deploys `website/` to GitHub
-   Pages on merge to `main`. Use the `/ship` skill (or `gh pr create`) to open the PR.
+   Pages on merge to `main`. Run the branch through the no-mistakes gate
+   (`/no-mistakes`), which opens the PR itself, or `gh pr create` by hand.
 
 ### Standalone self-contained variant (optional)
 

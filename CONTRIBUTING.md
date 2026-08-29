@@ -70,16 +70,17 @@ directly, and [opencode](https://opencode.ai) loads it automatically as project
 rules via its Claude-Code compatibility (it's picked up when no `AGENTS.md`
 exists, so there's deliberately no `AGENTS.md` duplicating it).
 
-Slash-command workflows and skills are checked in for both:
+One skill is checked in, `ui-review`, under `.claude/skills/`. opencode
+auto-discovers that directory, so a single copy serves both agents — don't
+mirror a skill under `.opencode/skills/`, which would double-register it. A
+minimal [`opencode.json`](opencode.json) declares the `$schema` for editor
+validation.
 
-| Kind | Claude Code | opencode | Notes |
-|------|-------------|----------|-------|
-| Commands (`/ship`, `/sync`) | `.claude/commands/` | `.opencode/commands/` | opencode does **not** auto-discover `.claude/commands/`, so the two are kept in sync by hand |
-| Skills (`ui-review`) | `.claude/skills/` | `.claude/skills/` | opencode auto-discovers `.claude/skills/`, so one copy serves both — don't mirror them under `.opencode/skills/` (it would double-register) |
-
-A minimal [`opencode.json`](opencode.json) declares the `$schema` for editor
-validation. When you add or change a command, update **both** directories so the
-two agents stay in sync.
+There are no checked-in slash commands: `/publish`, `/refactor`, `/ship` and
+`/sync` were replaced by the no-mistakes gate below, and `.opencode/` went with
+them. Commands are the one kind opencode does **not** auto-discover from
+`.claude/`, so if you add one, put it in both `.claude/commands/` and
+`.opencode/commands/` and keep the two in sync by hand.
 
 ### The no-mistakes gate
 
@@ -87,8 +88,9 @@ Reviewing and shipping a change is the job of
 [no-mistakes](https://github.com/kunchenguid/no-mistakes), a local gate that
 runs the change through one pipeline — intent, rebase, review, test, document,
 lint, push, PR, then watching CI and rebasing the branch itself when the base
-moves. It replaces the checked-in `/publish` skill and `/refactor` command,
-which did the same work by hand and with none of that pipeline's gating.
+moves. It replaces the checked-in `/publish` skill and the `/refactor`, `/ship`
+and `/sync` commands, which did the same work by hand and with none of that
+pipeline's gating.
 
 Set it up once per checkout with `no-mistakes init`, then drive it from your
 agent with `/no-mistakes` or by hand with `no-mistakes axi run --intent "..."`.
@@ -104,7 +106,7 @@ configuration. Note that the gate reads the fields that steer its behaviour
 (`commands`, `document.instructions`, `review.path_instructions`) from **main**
 rather than from your branch, so an edit to them only takes effect once merged.
 
-The code-quality rubric those two workflows carried did not go away with them:
+The code-quality rubric those workflows carried did not go away with them:
 it is the per-path guidance in `review.path_instructions`, so the gate's
 reviewer applies it to every change instead of only to the changes someone
 remembered to run a command on. Extend that file rather than reintroducing a
