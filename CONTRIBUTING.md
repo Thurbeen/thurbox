@@ -94,8 +94,9 @@ pipeline's gating.
 
 Set it up once per checkout with `no-mistakes init`, then drive it from your
 agent with `/no-mistakes` or by hand with `no-mistakes axi run --intent "..."`.
-The lint step runs `just lint`, so the gate needs the same dev toolchain the
-manual workflow does.
+The lint step runs `just lint` plus the rustdoc check, so the gate needs the
+same dev toolchain the manual workflow does. It does not run the website
+linters — those need `npm ci`, and CI's `website-lint` job covers them.
 
 [`.no-mistakes.yaml`](.no-mistakes.yaml) at the repo root configures it — the
 lint and format commands, the paths excluded from review, this repo's

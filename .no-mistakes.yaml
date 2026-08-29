@@ -9,12 +9,20 @@
 # any of them takes effect once the change is merged to main.
 
 commands:
-  # The repo's canonical gate, byte-for-byte what CI lints: rustfmt, clippy
-  # -D warnings, cargo-deny, rumdl, shellcheck, selene, stylua and the Lua
-  # type check. Explicit rather than agent-detected so the lint step is
-  # deterministic. Needs the dev toolchain on the daemon host (`nix develop`,
-  # or scripts/install-dev-tools.sh plus a lua-language-server package).
-  lint: "just lint"
+  # The repo's canonical gate: rustfmt, clippy -D warnings, cargo-deny, rumdl,
+  # shellcheck, selene, stylua and the Lua type check. Explicit rather than
+  # agent-detected so the lint step is deterministic. Needs the dev toolchain
+  # on the daemon host (`nix develop`, or scripts/install-dev-tools.sh plus a
+  # lua-language-server package).
+  #
+  # The rustdoc check is appended because `just lint` does not carry it (`just
+  # arch` does) while CI's docs job and the prek hook both do: a broken
+  # intra-doc link in a src/** change would otherwise pass the gate green and
+  # fail only after the push, which is the round-trip this step exists to
+  # prevent. What is deliberately left to CI is `npm run lint:website`, for the
+  # same reason `format` avoids `just fmt` - it needs `npm ci` in every fresh
+  # run worktree.
+  lint: 'just lint && RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features'
 
   # Run before the push step commits agent fixes. Deliberately not `just fmt`:
   # that also runs `npm run fmt:website`, which needs node_modules installed in
@@ -43,8 +51,15 @@ ignore_patterns:
   - "proptest-regressions/**"
   # Demo GIFs/MP4s and tutorial stills, produced by scripts/demo/record*.sh.
   - "docs/media/**"
-  # Copied from docs/media/ at Pages deploy time by pages.yml.
-  - "website/assets/**"
+  # Only the generated part of website/assets: the tutorial stills that
+  # scripts/demo/record-tutorial.sh copies from docs/media/tutorial/, the
+  # ui-review skill's captures, and the poster frames cut from the demo
+  # recordings. Everything else there - favicon.svg, logo*.svg, og-image.*,
+  # the fonts - is hand-authored source and stays under review; an SVG is text
+  # and can carry a script element or an external reference.
+  - "website/assets/tutorial/**"
+  - "website/assets/ui-review/**"
+  - "*-poster.webp"
 
 # Pin review auto-fix to the product default so this repo does not inherit an
 # operator's global override: review findings park for a human decision.
