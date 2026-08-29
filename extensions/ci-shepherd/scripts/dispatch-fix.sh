@@ -170,7 +170,9 @@ thurbox-cli session send "\$(thurbox-cli session list --json | jq -r '.[] | sele
 EOF
 )"
 
-CREATED="$(thurbox-cli task create --title "fix #$NUMBER: $TITLE" \
+# `--json` is explicit because `jq` parses this below: thurbox-cli answers TOON
+# when its stdout is a pipe, which a command substitution is.
+CREATED="$(thurbox-cli --json task create --title "fix #$NUMBER: $TITLE" \
   --description "$DESC" --repo "$WT" --agent "$AGENT")"
 printf '%s\n' "$CREATED"
 

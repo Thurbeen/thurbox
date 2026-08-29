@@ -201,7 +201,9 @@ fetch_if_remote() {  # $1 = repo dir, $2 = base ref
   [[ "$2" == origin/* ]] && git -C "$1" fetch origin --quiet 2>/dev/null || true
 }
 
-ARGS=(task create --title "$TITLE")
+# `--json` is explicit because this output is parsed by `jq` below: thurbox-cli
+# answers TOON when its stdout is a pipe, which a command substitution is.
+ARGS=(--json task create --title "$TITLE")
 [[ -n "$DESC" ]] && ARGS+=(--description "$DESC")
 if [[ -n "$REPO" ]]; then
   [[ -n "$AGENT" ]] || { echo "--repo requires --agent" >&2; exit 2; }
