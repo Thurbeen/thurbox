@@ -235,6 +235,11 @@ won't pay off.
 - **Local profiling**: `cargo flamegraph --bin thurbox` (build with the
   `release-with-debug` profile for symbols) for CPU; `cargo bloat --release
   --crates` for size attribution. Neither is a dependency — run them ad hoc.
+- **What a frame costs, and what the binary costs under load**: `just bench`
+  (`benches/frame_cost.rs`, `harness = false`, no benchmarking dependency) and
+  `just perf` (`scripts/dev/perf-run.sh`, which refuses to run inside a
+  validation step). Both are opt-in and local for the reason this ADR gives; see
+  **Measuring: the bench and the load harness**, below.
 
 **Why**: criterion/divan pull a large transitive dependency tree, and
 `cargo deny check licenses` (a **gating** CI job with a strict allowlist) would
@@ -1412,11 +1417,14 @@ does. There is no frame in between on which a stale tree could be served —
 asserted in `kernel_frame_cost::a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on`,
 alongside the two directions and one test against the real bundled interface.
 
-**Consequences**: one visible change to the plugin contract — `elapsed` is not a
-key of `ctx`, so it does not appear in `pairs(ctx)`. Nothing iterates a render
-context, and `docs/PLUGINS.md` now states the rule the mechanism creates: reading
-`ctx.elapsed` is what subscribes a tree to the animation tick, so read it where
-you animate and not at the top of a render that usually draws nothing moving.
+**Consequences**: the render context stops being an ordinary table — `elapsed`
+is served by a metatable rather than being a key, and that metatable is sealed
+so one plugin cannot replace the `__index` behind every other pane's clock.
+Neither is load-bearing for any pane (nothing iterates or re-metatables a render
+context); both are stated for plugin authors in `docs/PLUGINS.md`, which owns
+that contract, along with the rule the mechanism creates: reading `ctx.elapsed`
+is what subscribes a tree to the animation tick, so read it where you animate and
+not at the top of a render that usually draws nothing moving.
 
 ---
 
@@ -1451,6 +1459,7 @@ scripts/dev/perf-run.sh                        # 8 sessions, 1 printing, 30s
 scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62   # a working machine's shape
 scripts/dev/perf-run.sh --idle                 # the settled floor
 scripts/dev/perf-run.sh -u 0                   # the control for ADR-P20
+scripts/dev/perf-run.sh -w 4                   # sessions reporting `working`, for ADR-P21
 scripts/dev/perf-run.sh --no-perf-log          # is the instrumentation the cost?
 ```
 

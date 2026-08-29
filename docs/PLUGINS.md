@@ -121,9 +121,12 @@ and you are animated, do not and you are still. Read it under a condition (only
 for a `working` row, say) and the render that first reads it is the one that
 re-keys the entry, so there is no frame on which a stale tree is served.
 
-The mechanism is a metatable on the render context, which has one visible
-consequence: `elapsed` is not a *key* of `ctx`, so it does not appear in
-`pairs(ctx)`. Every other field is an ordinary one. Ask `ctx` for facts by name.
+The mechanism is a metatable on the render context, which has two visible
+consequences: `elapsed` is not a *key* of `ctx`, so it does not appear in
+`pairs(ctx)`; and that metatable is sealed — `getmetatable(ctx)` is `false` and
+`setmetatable(ctx, …)` raises, because one table is shared by every render and a
+plugin replacing it would stop every other pane's clock. Every other field is an
+ordinary one. Ask `ctx` for facts by name.
 
 Reading `store`/`state` is fine, and so is `command(...)` from a handler. If you
 are unsure, leave it undeclared: a pane that says nothing behaves exactly as it

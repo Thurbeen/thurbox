@@ -191,10 +191,13 @@ that can make the whole interface feel slow.
 - **Strings: concatenate through a table.** `s = s .. piece` in a loop over a
   wide row is O(width²); accumulate into a table and `table.concat`, or emit
   `string.rep` runs.
-- **Animation is not free-running.** `ctx.elapsed` plus the shared spinner
-  helper in `lib/` follows the kernel's animation clock, which only ticks
-  while something is actually animating — a pane that derives its own timer
-  from elapsed on every frame re-renders forever and defeats its own `pure`.
+- **Animation is not free-running, and reading the clock is what buys it.**
+  `ctx.elapsed` plus the shared spinner helper in `lib/` follows the kernel's
+  animation clock, which only ticks while something is actually animating — a
+  pane that derives its own timer from elapsed on every frame re-renders forever
+  and defeats its own `pure`. Reading `ctx.elapsed` is also what keys your
+  cached tree on that tick, so read it where you animate and not at the top of a
+  render that usually draws nothing moving.
 
 `F12` opens the perf HUD: `renders` climbing while you touch nothing means a
 pane is not settling — usually an impure render or a per-frame `store` write of

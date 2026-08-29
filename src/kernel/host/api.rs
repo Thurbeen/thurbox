@@ -60,10 +60,19 @@ pub(super) const CTX_META: &str = "__ctx_meta";
 /// read and pays nothing. Built once per VM and shared by every render, because
 /// a closure per render would cost more than the field it replaces.
 ///
+/// The key is taken as a `Value` rather than a `String`: `__index` also fires
+/// for `ctx[nil]` or `ctx[true]`, which Lua defines as nil, and coercing would
+/// raise out of the index and fail the whole render instead.
+///
 /// One visible consequence: `elapsed` is not a key of the ctx table, so it does
 /// not appear in `pairs(ctx)`. Nothing iterates a render context — a plugin asks
 /// it for named facts — and the alternative is to give up knowing who reads the
 /// clock.
+///
+/// `__metatable` seals it, because `getmetatable`/`setmetatable` are both in the
+/// plugin sandbox and this one table is shared by every pane: without the seal a
+/// plugin could replace the `__index` behind every other pane's clock, freezing
+/// their spinners and making the read-detection above silently answer "no".
 fn install_clock(
     lua: &Lua,
     clock: Rc<std::cell::Cell<f64>>,
