@@ -1892,7 +1892,20 @@ pub struct PaneState {
 /// Separator for the one-shot `display-message` that reads a pane's whole
 /// state. ASCII unit separator: paths and command names may contain spaces,
 /// tabs and newlines, so a whitespace delimiter would split a value in half.
+///
+/// Keeping it intact costs a flag — see [`PANE_STATE_UTF8_FLAG`].
 const PANE_STATE_SEP: char = '\x1f';
+
+/// tmux's `-u` — "assume the terminal supports UTF-8".
+///
+/// tmux decides a client speaks UTF-8 from `LC_ALL`/`LC_CTYPE`/`LANG`, and
+/// sanitizes what it prints for one that does not: every control byte becomes
+/// `_`, [`PANE_STATE_SEP`] included. Under `LC_ALL=C` or no locale at all — a
+/// systemd unit, a cron job, most containers — the whole answer then parses as
+/// one field and every pane-state field reports null. `-u` sets the flag
+/// outright, so the separator survives whatever the environment says.
+/// psmux is excluded: it has no such sanitizing and need not know the flag.
+const PANE_STATE_UTF8_FLAG: &str = "-u";
 
 /// Read a session pane's cursor position, foreground process and live cwd.
 ///
@@ -1914,7 +1927,13 @@ pub fn pane_state(session_name: &str, pane_id: &str) -> PaneState {
     ]
     .join(&PANE_STATE_SEP.to_string());
 
-    let Some(raw) = local_mux_command(&["display-message", "-p", "-t", &target, &format])
+    let mut argv = Vec::with_capacity(6);
+    if DEFAULT_MUX != "psmux" {
+        argv.push(PANE_STATE_UTF8_FLAG);
+    }
+    argv.extend(["display-message", "-p", "-t", &target, &format]);
+
+    let Some(raw) = local_mux_command(&argv)
         .output()
         .ok()
         .filter(|out| out.status.success())

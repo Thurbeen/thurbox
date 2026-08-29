@@ -263,3 +263,64 @@ fn capture_still_rejects_an_unusable_uuid() {
         );
     }
 }
+
+#[test]
+fn capture_reports_pane_state_under_a_non_utf8_locale() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    // A client tmux does not believe speaks UTF-8 gets its output sanitized:
+    // every control byte is rewritten to `_`, the separator `pane_state` joins
+    // its fields with included. That is the ordinary environment of a systemd
+    // unit, a cron job or a container with no locale set, so the state fields
+    // must survive it rather than all coming back null.
+    std::env::set_var("LC_ALL", "C");
+    std::env::set_var("LANG", "C");
+    std::env::remove_var("LC_CTYPE");
+
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", home.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+
+    let workdir = tempfile::tempdir().expect("tempdir");
+    let workdir_path = workdir.path().canonicalize().expect("canonicalize");
+
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    let script = format!("printf '{MARKER}\\n'; while :; do sleep 1; done");
+    tmux(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-locale-probe",
+        "-c",
+        &workdir_path.to_string_lossy(),
+        &script,
+    ]);
+
+    let db = Database::open_in_memory().expect("db");
+    let row = session_row("locale-probe", "local-tmux");
+    let id = row.id;
+    db.upsert_session(&row).expect("persist");
+
+    let plain = capture_when_ready(&db, id, false);
+    tmux(&["kill-server"]);
+
+    assert_eq!(
+        plain["cursor_row"].as_u64(),
+        Some(1),
+        "the cursor position must survive a C locale: {plain}"
+    );
+    assert_eq!(
+        plain["foreground_cwd"].as_str().map(std::path::Path::new),
+        Some(workdir_path.as_path()),
+        "the live cwd must survive a C locale: {plain}"
+    );
+    assert!(
+        plain["foreground_process"]
+            .as_str()
+            .is_some_and(|p| !p.is_empty()),
+        "the foreground process must survive a C locale: {plain}"
+    );
+}
