@@ -148,3 +148,53 @@ fn config_validate_on_an_invalid_file_prints_one_document_and_exits_non_zero() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A failure that happened while the command *ran* must not be advised as a bad
+/// invocation. The two kinds already exit differently (1 vs 2) and clap owns the
+/// usage wording; a runtime failure that also answered "check the arguments" and
+/// pointed at `--help` sends an agent to a page that cannot fix "no such
+/// session".
+#[test]
+fn a_runtime_failure_is_not_advised_as_a_usage_error() {
+    let env = Env::new();
+    // A well-formed UUID no row carries: the invocation is correct, the world
+    // is not what it asked for.
+    let missing = "00000000-0000-4000-8000-00000000dead";
+
+    let json = env.run(&["session", "get", missing, "--json"]);
+    let doc = sole_document(&json);
+    assert!(
+        doc["error"].as_str().unwrap_or_default().contains(missing),
+        "the message names what was not found: {doc}"
+    );
+    let suggestion = doc["suggestion"].as_str().expect("a suggestion").to_string();
+    assert!(
+        !suggestion.contains("argument"),
+        "a runtime failure does not blame the arguments: {suggestion}"
+    );
+
+    // The runnable next step only renders outside `--json`, and it is the half
+    // that pointed at the usage page.
+    let toon = env.run(&["session", "get", missing, "--toon"]);
+    let rendered = String::from_utf8_lossy(&toon.stdout).to_string();
+    assert_eq!(toon.status.code(), Some(1), "{rendered}");
+    assert!(
+        !rendered.contains("--help"),
+        "the next step for a runtime failure is not the usage page: {rendered}"
+    );
+
+    // The genuine usage error — a missing required argument — still is, and
+    // says so with its own exit code.
+    let usage = env.run(&["session", "get", "--toon"]);
+    assert_eq!(
+        usage.status.code(),
+        Some(2),
+        "a bad invocation exits 2: {}",
+        String::from_utf8_lossy(&usage.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&usage.stdout).contains("--help"),
+        "a bad invocation is the one that is sent to the usage page: {}",
+        String::from_utf8_lossy(&usage.stdout)
+    );
+}

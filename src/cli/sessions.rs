@@ -157,6 +157,11 @@ pub enum Action {
     /// The companion to `session send --no-enter`: `escape` and `ctrl-c`
     /// interrupt a turn, `ctrl-u` clears a composer line, `enter` submits what
     /// is typed. Local sessions only, like `session send`.
+    ///
+    /// On native Windows the local multiplexer is psmux, which is only known to
+    /// implement `enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>`. A
+    /// multiplexer types a key name it does not recognise into the pane as
+    /// literal text, so treat the other names as unverified there.
     Key {
         /// Session UUID.
         uuid: String,

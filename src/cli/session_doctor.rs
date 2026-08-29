@@ -249,11 +249,15 @@ fn diagnose(
     }
 
     findings.push(match cli_on_path {
-        Some(_) if remote => Finding {
+        // A remote session's hooks are rewritten to `tmux set-option -p
+        // @thurbox_state` and never invoke `thurbox-cli` at all; on a shared
+        // host they run the *host's* CLI. Either way this machine's PATH says
+        // nothing about them, so it must not decide the verdict.
+        _ if remote => Finding {
             key: "cli",
             level: Level::Warn,
-            detail: "a hook on this host would find `thurbox-cli`, but this session's hooks \
-                     run on its own host, which cannot be checked from here"
+            detail: "this session's hooks run on its own host, which cannot be checked from \
+                     here — the local `thurbox-cli` is not what they resolve"
                 .into(),
         },
         Some(path) => Finding {
@@ -557,5 +561,23 @@ mod tests {
         assert_eq!(level_of(&report, "cli"), Level::Warn);
         assert_ne!(report.verdict, Level::Fail);
         assert_eq!(hook.corroboration, Some(Corroboration::Unavailable));
+    }
+
+    #[test]
+    fn a_remote_verdict_does_not_depend_on_this_machines_cli_install() {
+        // Run by absolute path (`./target/debug/thurbox-cli`, or the
+        // provisioned one under the data dir), nothing named `thurbox-cli` is
+        // on PATH. That says nothing about a session whose hooks fire on
+        // another host, so it must not turn into a failure.
+        let hook = Assessment::from_hooks(&registry(), "claude", Some("done"), Some(0), 1_000)
+            .pane_unavailable();
+        let report = diagnose(&row("s", "claude", "ssh:devbox"), &hook, true, None);
+        assert_eq!(level_of(&report, "cli"), Level::Warn);
+        assert_ne!(report.verdict, Level::Fail);
+
+        // The same absent CLI is still a failure for a local session, whose
+        // hooks really do shell out to it.
+        let local = diagnose(&row("s", "claude", "local-tmux"), &hook, true, None);
+        assert_eq!(level_of(&local, "cli"), Level::Fail);
     }
 }

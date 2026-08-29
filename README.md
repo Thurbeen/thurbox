@@ -578,7 +578,11 @@ before the arguments when the text itself starts with a dash).
 `C-c` are the same key, and case does not matter — but a name thurbox does not
 know is **refused** rather than passed on, because tmux types an unrecognized
 key name into the pane as text. `escape` and `ctrl-c` interrupt a turn, `ctrl-u`
-clears a composer line, `enter` submits what `send --no-enter` typed. `send` and
+clears a composer line, `enter` submits what `send --no-enter` typed. On native
+Windows the local multiplexer is **psmux**, which is only known to implement
+`enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>` — the other names are
+unverified there, and the same "an unrecognized name arrives as text" caveat
+applies to whatever it does not implement. `send` and
 `key` drive **this machine's** tmux server, so a session created with `--host`
 is refused by name: run `thurbox-cli` on that host instead.
 

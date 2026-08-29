@@ -79,10 +79,16 @@ fn main() {
             eprintln!("{msg}");
             std::process::exit(EXIT_ERROR);
         }
+        // A runtime failure, not a bad invocation: clap already answered those
+        // with its own wording and exit 2. Advising `--help` here misattributes
+        // "that session has exited" to the arguments, and points at a page that
+        // cannot fix it — so the suggestion sends the caller to the state the
+        // message is about.
         Err(e) => fail(
             &e,
-            "check the arguments against this command's usage",
-            "thurbox-cli <command> --help",
+            "the command ran and failed; the message says what went wrong — \
+             `thurbox-cli` prints the state it was working against",
+            "thurbox-cli",
             format,
         ),
     }
