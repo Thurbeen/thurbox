@@ -412,11 +412,13 @@ Every push to `main` automatically triggers the release workflow:
      `feat`, `fix`, or `perf`. Only docs/chore/ci commits → no release.
    - **Artifact relevance** (`check-release`'s `shipped` step): the diff since
      the last tag must touch something a user installs (`src/`, `tests/`,
-     `build.rs`, `Cargo.toml`/`Cargo.lock`, `rust-toolchain.toml`, `Cross.toml`,
-     `extensions/`, `examples/panes/`, `packaging/`, `scripts/install.{sh,ps1}`,
-     `cd.yml`). `extensions/` and `examples/panes/` are there although no binary
-     carries them: a bare-name install resolves against the release *tag*, so a
-     change never tagged is one nobody can install.
+     `ui/`, `examples/`, `build.rs`, `Cargo.toml`/`Cargo.lock`,
+     `rust-toolchain.toml`, `Cross.toml`, `extensions/`, `packaging/`,
+     `scripts/install.{sh,ps1}`, `cd.yml`). `extensions/` and `examples/panes/`
+     are there although no binary carries them: a bare-name install resolves
+     against the release *tag*, so a change never tagged is one nobody can
+     install. `ui/` and `examples/lua/` are there more directly still — both are
+     `include_str!`d into the binary, so they are bytes a user installs.
      Commit type alone over-releases: Renovate labels a GitHub-Actions pin bump
      `fix(deps)` and the website is versioned `feat(ui)`/`fix(ui)`, so a
      CSS-only or lint-action-only change used to cut a real release (v1.2.13
