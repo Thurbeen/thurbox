@@ -276,7 +276,8 @@ its chords — is a file you can open in an editor.
 All of it lives under `~/.config/thurbox/`. Panes and the arrangement reload on
 `F10`; colours, chords and most settings apply live (the settings panel marks
 the restart-only ones `⟳`); a changed agent applies to the next session you
-create; a new agent, and any change to `hosts.toml`, needs a restart.
+create; a new agent, and any change to `hosts.toml` or `themes.toml`, needs a
+restart.
 
 ### Writing a pane
 
@@ -493,7 +494,7 @@ cannot drift from what is running.
 | `Shift+J` / `Shift+K` | Move it down / up | `10_sessions.lua` |
 | `Shift+S` | Sort by name within each repo group | `10_sessions.lua` |
 | `d` / `Ctrl+D` | Delete (reversible) | `10_sessions.lua` |
-| `Shift+D` | Delete it *and* its worktree, after confirming | `10_sessions.lua` |
+| `Shift+D` | Delete it *and* its worktree, confirming if work is at risk | `10_sessions.lua` |
 | `Ctrl+Z` | Undo the last delete | `10_sessions.lua` |
 | `Ctrl+U` | Restore a deleted session | `80_restore.lua` |
 | `r` / `Ctrl+R` | Restart the agent | `10_sessions.lua` |
