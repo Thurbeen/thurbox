@@ -208,10 +208,16 @@ so anything you do here shows up in a running thurbox within a tick, and vice
 versa. It is on your `PATH` inside every session, which is what lets an agent
 orchestrate other agents.
 
+It answers in whichever form suits the reader: an aligned table in your
+terminal, and TOON — a compact, agent-friendly encoding — when its output is
+piped somewhere. Add `--json` for the complete record when a script needs to
+parse it, or `--text` to keep the table down a pipe.
+
 ```bash
 # What is running
+thurbox-cli                                # live state: sessions, mail, counts
 thurbox-cli session list
-thurbox-cli session list --json | jq       # JSON is automatic when piped
+thurbox-cli session list --json | jq       # the full record, for a script
 
 # Start one headlessly, on its own worktree branch
 thurbox-cli session create --name docs --repo-path ~/code/web-app

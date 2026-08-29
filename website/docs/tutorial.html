@@ -373,9 +373,16 @@ extraCss: ['tutorial.css']
   <code>PATH</code> inside every session, which is what lets an agent orchestrate other agents (see
   <a href="orchestration.html">Orchestration</a>).
 </p>
+<p>
+  It answers in whichever form suits the reader: an aligned table in your terminal, and TOON &mdash; a
+  compact, agent-friendly encoding &mdash; when its output is piped somewhere. Add <code>--json</code>
+  for the complete record when a script needs to parse it, or <code>--text</code> to keep the table
+  down a pipe.
+</p>
 <pre data-wrap><code class="language-bash"># What is running
+thurbox-cli                                # live state: sessions, mail, counts
 thurbox-cli session list
-thurbox-cli session list --json | jq       # JSON is automatic when piped
+thurbox-cli session list --json | jq       # the full record, for a script
 
 # Start one headlessly, on its own worktree branch
 thurbox-cli session create --name docs --repo-path ~/code/web-app

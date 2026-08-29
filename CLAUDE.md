@@ -964,10 +964,52 @@ modal's Interface tab shows, and
 `events` lists every event a plugin may subscribe to with its payload, and
 `install|sync|update|remove|available` manage panes from a declarative spec
 — see `docs/PLUGINS.md`).
-Output is
-**human-readable by default** and switches to JSON automatically when stdout is
-piped (so `… | jq` keeps working); force a format with `--json` (compact),
-`--pretty` (indented JSON), or `--text` (human even when piped).
+
+### thurbox-cli is an AXI
+
+`thurbox-cli` is shaped for the agent that runs it, not the person who
+occasionally does — it follows **AXI** (`axi/1.0-2026-07`, <https://axi.md>),
+the agent-ergonomics spec, and `axi-axi validate` scores it 10 pass / 0 fail.
+The shape that follows from that:
+
+- **Output is human-readable in a terminal and TOON down a pipe.** It used to
+  be JSON down a pipe. TOON (`src/cli/toon.rs`, a conforming v4.1 encoder —
+  <https://github.com/toon-format/spec>) declares each list's length and field
+  names once instead of repeating every key on every row, which is about 40%
+  fewer tokens on the same answer and 80% on `session list`, where the record
+  is wide and the useful part is narrow. Force a format with `--json`
+  (compact), `--pretty` (indented), `--toon`, or `--text`.
+- **`--json` is unchanged** — every field, exactly the bytes it always
+  produced. It is the format scripts parse, and every in-repo consumer
+  (`flow-snapshot.sh`, `link-sessions.sh`, `shepherd-snapshot.sh`, the
+  `dispatch-*` scripts) already passes it explicitly. A pipeline that relied
+  on the *auto* JSON has to spell the flag out.
+- **A bare `thurbox-cli` prints live state**, not a usage dump: every session
+  with the status its hooks last reported, the calling session's unread mail,
+  and the counts that would otherwise take three more invocations
+  (`src/cli/home.rs`). Exit 0.
+- **List views default to three or four fields**, the ones that let an agent
+  decide what to look at next; `--fields <list>|all` asks for others and
+  `--json` gives the whole record. Free text is capped in the TOON view only,
+  with the total and `--full` named in place — never in `--json`, which is
+  what `session capture … --json | jq -r .output` needs.
+- **A zero-result answer says so and names what it searched**, rather than
+  printing `[]` — which an agent cannot tell apart from a command that failed
+  quietly.
+- **Errors are structured on stdout, never stderr**, and the exit code says
+  which kind: `0` success, `1` the command ran and failed, `2` the invocation
+  was wrong. Each carries a `suggestion` and a runnable `help[]` line.
+- Results can carry a `help[N]:` block of next steps. It is the one part of
+  the output that is AXI convention rather than strict TOON (bare indented
+  lines rather than the hyphen-space list items §9.4 asks for);
+  `output::render_toon` says why.
+
+The renderer is `src/cli/output.rs` — `CommandOutput` carries the JSON, the
+human string, and an `AgentView` (label, fields, help, empty-state, text cap)
+that the TOON rendering reads. A command that declares no `AgentView` still
+renders as TOON; declaring one is worth it on the commands agents run in a
+loop. `tests/toon_conformance.rs` pins the encoder against the reference
+implementation on the spec's own 179-case suite.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB row is marked
 deleted (the TUI tears down the tmux window/worktree on its next sync), and
