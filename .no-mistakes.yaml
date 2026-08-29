@@ -51,12 +51,14 @@ ignore_patterns:
   - "proptest-regressions/**"
   # Demo GIFs/MP4s and tutorial stills, produced by scripts/demo/record*.sh.
   - "docs/media/**"
-  # Only the generated part of website/assets: the tutorial stills that
+  # Only the unreviewable part of website/assets: the tutorial stills that
   # scripts/demo/record-tutorial.sh copies from docs/media/tutorial/, the
-  # ui-review skill's captures, and the poster frames cut from the demo
-  # recordings. Everything else there - favicon.svg, logo*.svg, og-image.*,
-  # the fonts - is hand-authored source and stays under review; an SVG is text
-  # and can carry a script element or an external reference.
+  # ui-review skill's captures, and the committed poster frames, which are
+  # rasters carrying no reviewable diff (only the doom one has a producer in
+  # the tree; the rest were committed by hand). Everything else there -
+  # favicon.svg, logo*.svg, og-image.*, the fonts - is hand-authored source
+  # and stays under review; an SVG is text and can carry a script element or
+  # an external reference.
   - "website/assets/tutorial/**"
   - "website/assets/ui-review/**"
   - "*-poster.webp"
@@ -283,5 +285,34 @@ review:
 
     - path: "scripts/**"
       instructions: |
-        Shell here is POSIX sh unless a script's own shebang says otherwise,
-        and every tracked *.sh is linted by shellcheck under .shellcheckrc.
+        Every tracked *.sh is linted by shellcheck under .shellcheckrc, which
+        sets no default shell: the dialect is derived per file from its own
+        shebang, or from a `# shellcheck shell=` directive in a library that
+        is sourced rather than run. Bash is the norm here - judge a script by
+        the line at the top of it rather than by a repo-wide default.
+
+        Not everything under this path is shell. scripts/demo/*.tape are VHS
+        tapes driving the real TUI, scripts/demo/trim-cast.mjs is Node, and
+        the installers have their own block.
+
+    - path: "scripts/install.*"
+      instructions: |
+        The two installers are a mirrored pair - install.sh for Linux/macOS,
+        install.ps1 for Windows - and each is fetched and piped straight into
+        a shell, so a break here is a break in the documented one-line install
+        rather than something a user can work around.
+
+        install.sh is deliberately POSIX sh, not bash: it is run as `curl ...
+        | sh`. Keep it to standard tools (curl/wget, tar, sha256sum/shasum),
+        non-interactive, and cleaning up through its trap.
+
+        install.ps1 is PowerShell 5.1+ and its source must stay ASCII-only,
+        because that is what survives `irm | iex` decoding on Windows
+        PowerShell 5.1. Write-Host for UI output is intentional and not a
+        lint to fix - Write-Output would leak into the iex pipeline - and the
+        pure helpers are guarded by $env:THURBOX_PS_TEST so the file can be
+        dot-sourced for testing without running the installer.
+
+        Both are tested, and a change to either should move its suite:
+        install.bats (bats-core) covers install.sh and install.Tests.ps1
+        (Pester 5) is its PowerShell mirror, each run by its own CI job.
