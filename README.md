@@ -126,8 +126,8 @@ the left and an agent terminal on the right.
    relaunch `thurbox` and they are all still there, or attach raw with
    `tmux -L thurbox attach`.
 5. **Make it yours** — `Ctrl+,` then `]` lists every pane and lets you turn one
-   off; `Ctrl+Y` changes the palette; `F1` rebinds any chord; `F10` reloads the
-   interface from disk.
+   off; `Ctrl+Y` changes the palette; `F1` rebinds any chord but the five
+   reserved ones; `F10` reloads the interface from disk.
 
 `F1` renders the live keybinding registry, so it cannot drift. The full table is
 under [Keybindings](#keybindings).
@@ -502,11 +502,12 @@ cannot drift from what is running.
 | `Ctrl+O` | Open in your editor | `10_sessions.lua` |
 | `F9` | Hide the session list | `10_sessions.lua` |
 
-Every chord is rebindable from the `F1` editor; rebindings persist to
-`~/.config/thurbox/ui.json`, beside the plugins you have turned off and the ones
-you trust. A chord already claimed by an overlapping action is reassigned and
-you are told which one lost it; a chord freed by a pane you removed stays
-unbound.
+Every chord except the five reserved ones (`Ctrl+Q`, `F10`, `Ctrl+H`, `Ctrl+L`,
+`F12` — the way out of a pane that consumes every key) is rebindable from the
+`F1` editor; rebindings persist to `~/.config/thurbox/ui.json`, beside the
+plugins you have turned off and the ones you trust. A chord already claimed by
+an overlapping action is reassigned to your binding; a chord freed by a pane you
+removed stays unbound.
 
 **macOS:** in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm, Ghostty)
 the Command key works as a modifier, and any action can be rebound to a `cmd+…`

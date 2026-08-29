@@ -134,13 +134,20 @@ breadcrumb: 'Configuration'
                 <td><code>~/.config/thurbox/keybindings.json</code></td>
                 <td>JSON</td>
                 <td>&mdash;</td>
-                <td><strong>never</strong></td>
+                <td>boot (migration only)</td>
                 <td>
-                  a legacy chord-override file.
-                  <strong>Ignored</strong>
-                  &mdash; rebindings live in
+                  the v1 chord-override file, kept so v1 rebindings still migrate. Read at boot
+                  <em>only</em>
+                  when
                   <code>ui.json</code>
-                  . Left in place rather than deleted, so nothing you wrote is thrown away.
+                  carries no
+                  <code>bindings</code>
+                  ; the six v1 action names it recognises become
+                  <code>ui.json</code>
+                  overrides and an unrecognised one is reported as not migrated. New rebindings go
+                  to
+                  <code>ui.json</code>
+                  .
                 </td>
               </tr>
               <tr>
@@ -171,7 +178,11 @@ breadcrumb: 'Configuration'
             reloads
             <strong>live</strong>
             : the TUI polls its mtime (~1/s) and applies edits with a confirmation toast &mdash; no
-            restart. The UI-panel feature flags apply immediately; the
+            restart. The
+            <code>shell_pane</code>/<code>perf_hud</code>/<code>soft_delete</code>
+            feature flags apply immediately; the
+            <code>[clipboard]</code>
+            block, the
             <code>[notifications]</code>
             knobs, the
             <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
@@ -189,8 +200,8 @@ breadcrumb: 'Configuration'
           <p>
             Config problems are
             <strong>not silent</strong>
-            : parse errors, unknown fields, invalid chords, and chord conflicts surface as a
-            status-bar toast on startup (and in the log file). Unknown TOML keys are tolerated and
+            : parse errors and unknown fields surface as a status-bar toast on startup (and in the
+            log file). Unknown TOML keys are tolerated and
             reported by name, while syntax/type errors fall back to built-ins (agents), zero hosts,
             or defaults (settings). Check everything from the command line:
           </p>
@@ -1060,9 +1071,8 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
               ) is the macOS Command key, delivered only by kitty-keyboard-protocol terminals.
             </li>
             <li>
-              Binding a chord another action already declares takes it: your override fires and that
-              action no longer answers to it until you rebind it. The clash is reported at startup.
-              An entry naming an action no plugin declares is
+              Binding a chord another action already claims <em>in the same context</em> takes it:
+              your override is the one that fires. An entry naming an action no plugin declares is
               <strong>dropped silently</strong>
               &mdash; a typo just does nothing, which is why the F1 editor, which refuses an unknown
               action outright, is the safer path.
