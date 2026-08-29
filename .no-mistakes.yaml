@@ -286,10 +286,16 @@ review:
         inherited from the developer's environment.
 
         Subtracting one measurement from another to isolate a phase is only
-        honest when the subtrahend is small: per-pane cost is measured across an
-        animation tick, where the publish beside it is the ~45us cache hit,
-        rather than a snapshot change, where it is a ~1ms rebuild and the
-        subtraction measures itself.
+        honest when the subtrahend is small, and the invalidator that makes the
+        subtrahend small must still invalidate everything being measured.
+        Per-pane cost is driven by `cold()` — the themes epoch — which is in the
+        pure-pane cache key unconditionally while gating only the palette, so
+        every pane really re-renders and the publish beside it stays a
+        near-cache-hit. Not a snapshot change, where the publish is a ~1ms
+        rebuild and the subtraction measures itself; and not the animation
+        epoch, which since ADR-P21 leaves a pure pane that never reads
+        `ctx.elapsed` served from its cache, so every such row would report
+        roughly zero.
 
     - path: "scripts/dev/perf-run.sh"
       instructions: |

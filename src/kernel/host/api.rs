@@ -72,8 +72,8 @@ fn install_clock(
     let meta = lua.create_table()?;
     meta.set(
         "__index",
-        lua.create_function(move |_, (_, key): (Table, String)| {
-            if key == "elapsed" {
+        lua.create_function(move |_, (_, key): (Table, Value)| {
+            if key.as_string().is_some_and(|key| key == "elapsed") {
                 read.set(true);
                 return Ok(Value::Number(clock.get()));
             }

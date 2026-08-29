@@ -332,8 +332,9 @@ tmux -L "$TBX_DEV_SOCKET" kill-session -t perf-harness >/dev/null 2>&1 || true
 field() { echo "$WINDOW" | grep -o "$1=[0-9]*" | head -1 | cut -d= -f2; }
 
 if [ "$JSON" = "1" ]; then
-    printf '{"sessions":%s,"printing":%s,"size":"%sx%s","seconds":%s,' \
-        "$SESSIONS" "$PRINTING" "$COLS" "$ROWS" "$DURATION"
+    printf '{"sessions":%s,"printing":%s,"working":%s,"rate":%s,"url_every":%s,' \
+        "$SESSIONS" "$PRINTING" "$WORKING" "$RATE" "$URL_EVERY"
+    printf '"size":"%sx%s","seconds":%s,' "$COLS" "$ROWS" "$DURATION"
     printf '"cpu_render_thread_pct":%s,"cpu_all_threads_pct":%s,' \
         "$main_pct" "$all_pct"
     printf '"frame_p50_us":%s,"frame_p95_us":%s,"republish_p50_us":%s,"tick_p50_us":%s,' \

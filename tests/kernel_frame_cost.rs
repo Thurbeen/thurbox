@@ -977,6 +977,36 @@ fn a_pane_that_reads_the_clock_sees_the_time_it_was_given() {
 }
 
 #[test]
+fn a_non_string_index_on_the_render_context_is_nil_rather_than_an_error() {
+    // `__index` fires for every absent key, including one Lua defines as nil —
+    // `ctx[nil]` from a mistyped local, `ctx[true]`. Before the metatable those
+    // evaluated to nil; a key typed as `String` would coerce and raise instead,
+    // failing the whole render over an expression the language allows.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let plugins = dir.path().join("plugins");
+    std::fs::create_dir_all(&plugins).expect("mkdir");
+    std::fs::write(
+        plugins.join("10_odd.lua"),
+        r#"return { name = "odd", slot = "left",
+             render = function(ctx)
+               local typo
+               local seen = { ctx[typo], ctx[true], ctx[7] }
+               return { text = "nils " .. tostring(#seen == 0) }
+             end }"#,
+    )
+    .expect("write");
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish_at(
+        &host,
+        Epoch::default(),
+        &Snapshot::default(),
+        &Themes::load(None),
+    );
+    assert!(render_at(&host, "odd", 0.0).contains("nils true"));
+}
+
+#[test]
 fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
     // The transition, which is where a learned optimisation would go wrong: a
     // pane may only consult the clock under some condition — the session list
