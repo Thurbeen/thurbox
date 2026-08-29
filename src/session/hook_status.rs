@@ -486,9 +486,12 @@ pub struct Assessment {
     pub reported: bool,
     pub coverage: Coverage,
     pub coverage_source: Option<CoverageSource>,
-    pub states_reportable: &'static [&'static str],
-    pub delivery: Option<HookDelivery>,
-    pub blocked_is_heuristic: bool,
+    /// The row of [`AGENT_HOOK_COVERAGE`] this session's agent resolved to —
+    /// held whole rather than copied field by field, so a caller that needs the
+    /// hook file (a diagnostic looking for it on disk) reaches the *same* entry
+    /// [`Self::coverage`] was decided from and cannot pick a different agent
+    /// that happens to report the same states.
+    pub covered: Option<&'static AgentHookCoverage>,
     /// `None` = the pane was not looked at.
     pub corroboration: Option<Corroboration>,
     pub foreground_process: Option<String>,
@@ -501,6 +504,32 @@ pub struct Assessment {
 }
 
 impl Assessment {
+    /// Every state this session's agent can report — empty when it is wired to
+    /// report nothing.
+    pub fn states_reportable(&self) -> &'static [&'static str] {
+        self.covered.map(|c| c.states).unwrap_or(&[])
+    }
+
+    /// How this agent's hooks are delivered, when it has any.
+    pub fn delivery(&self) -> Option<HookDelivery> {
+        self.covered.map(|c| c.delivery)
+    }
+
+    /// Whether this agent's `blocked` is a text match on a notification body,
+    /// and so stops working silently when the agent rewords one.
+    pub fn blocked_is_heuristic(&self) -> bool {
+        self.covered.is_some_and(|c| c.blocked_is_heuristic)
+    }
+
+    /// Where this agent's hook payload lives, when it has a file at all.
+    ///
+    /// The path is `~`-anchored for a config-dir agent and relative to the
+    /// hooks extension's own install home for an arg-patched one — see
+    /// [`AgentHookCoverage::hook_file_is_in_hooks_home`].
+    pub fn hook_file(&self) -> Option<&'static str> {
+        self.covered.and_then(|c| c.hook_file)
+    }
+
     /// What the stored hook columns and the agent registry alone can say.
     pub fn from_hooks(
         registry: &AgentRegistry,
@@ -518,9 +547,7 @@ impl Assessment {
             reported: hook_state.is_some(),
             coverage: Coverage::of(found.map(|(c, _)| c)),
             coverage_source: found.map(|(_, source)| source),
-            states_reportable: found.map(|(c, _)| c.states).unwrap_or(&[]),
-            delivery: found.map(|(c, _)| c.delivery),
-            blocked_is_heuristic: found.is_some_and(|(c, _)| c.blocked_is_heuristic),
+            covered: found.map(|(c, _)| c),
             corroboration: None,
             foreground_process: None,
             foreground_command: None,

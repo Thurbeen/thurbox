@@ -198,6 +198,19 @@ pub enum Action {
         /// Session UUID.
         uuid: String,
     },
+    /// Report whether a session's status hooks are wired and firing.
+    ///
+    /// Every shipped hook command ends in `|| true`, so a signal that never
+    /// lands is invisible: it looks exactly like an agent that has not
+    /// signalled yet. This inspects the wiring instead of the silence — the
+    /// extension, this agent's coverage, its payload on disk, whether a hook
+    /// command could find `thurbox-cli` at all, what was last reported and
+    /// when, and whether the pane agrees. Exits non-zero when no state can
+    /// reach thurbox from a session at all.
+    Doctor {
+        /// Session UUID; every active session when omitted.
+        uuid: Option<String>,
+    },
     /// Report an agent lifecycle transition (called from an agent hook).
     ///
     /// Records the session's state so the TUI can render it (working/blocked/
@@ -474,6 +487,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             )?;
             register_running_session(db, row)
         }
+        Action::Doctor { uuid } => super::session_doctor::run(db, uuid.as_deref()),
         Action::Signal { state, session } => {
             let target = resolve_signal_target(db, session.as_deref())?;
             db.set_hook_state(target.id, &state)
@@ -791,15 +805,15 @@ fn render_session_detail(s: &SharedSession, hook: &crate::session::Assessment) -
 /// What this session's agent can report, for a human: the verdict plus the
 /// states behind it, so `partial` is never a bare word.
 fn coverage_line(hook: &crate::session::Assessment) -> String {
-    if hook.states_reportable.is_empty() {
+    if hook.states_reportable().is_empty() {
         return "none (this agent reports no state)".to_string();
     }
     let mut line = format!(
         "{} ({})",
         hook.coverage.as_str(),
-        hook.states_reportable.join(", ")
+        hook.states_reportable().join(", ")
     );
-    if hook.blocked_is_heuristic {
+    if hook.blocked_is_heuristic() {
         line.push_str("; blocked matched from notification text");
     }
     line
@@ -810,7 +824,7 @@ fn parse_session_id(uuid: &str) -> Result<SessionId, String> {
         .map_err(|_| format!("Invalid session UUID: {uuid}"))
 }
 
-fn resolve(db: &Database, uuid: &str) -> Result<SharedSession, String> {
+pub(crate) fn resolve(db: &Database, uuid: &str) -> Result<SharedSession, String> {
     let id = parse_session_id(uuid)?;
     db.get_session_by_id(id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
@@ -864,7 +878,7 @@ fn unknown_key(key: &str) -> String {
 /// get` does it for one session and `session list` only on `--verify`. A
 /// **remote** session is never probed: its pane lives on its own host's
 /// multiplexer, so the answer is `unavailable` rather than a guess.
-fn assess(
+pub(crate) fn assess(
     registry: &crate::session::AgentRegistry,
     s: &SharedSession,
     states: &std::collections::HashMap<crate::session::SessionId, crate::storage::HookRow>,

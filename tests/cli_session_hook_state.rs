@@ -444,3 +444,69 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
         .as_str()
         .is_some_and(|c| c.contains("codex")));
 }
+
+#[test]
+fn doctor_names_the_wiring_that_is_missing_and_exits_non_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+    let db = Database::open_in_memory().expect("db");
+    let row = session_row("unwired", "claude", "local-tmux");
+    db.upsert_session(&row).expect("persist");
+
+    let out = run(
+        Action::Doctor {
+            uuid: Some(row.id.to_string()),
+        },
+        &db,
+    )
+    .expect("doctor runs");
+
+    // Nothing was ever installed into this scratch config, so claude's hooks
+    // cannot fire — and the whole point is that this is *sayable* rather than
+    // indistinguishable from an agent that has not signalled yet.
+    let report = out.json.as_array().expect("one report per session")[0].clone();
+    assert_eq!(report["verdict"], Value::String("fail".into()));
+    let payload = report["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|c| c["check"] == Value::String("payload".into()))
+        .expect("the payload is checked")
+        .clone();
+    assert_eq!(payload["level"], Value::String("fail".into()));
+    assert!(
+        payload["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("claude.json")),
+        "the report must name the file the agent reads: {payload}"
+    );
+    // Scriptable: a broken session is an exit code, not a sentence to grep.
+    assert!(out.failure.is_some(), "doctor must exit non-zero: {out}");
+
+    // …and an agent that reports nothing at all is a failure with a route out
+    // of it, not a shrug.
+    let driver = session_row("driver-owned", "shell", "local-tmux");
+    db.upsert_session(&driver).expect("persist");
+    let out = run(
+        Action::Doctor {
+            uuid: Some(driver.id.to_string()),
+        },
+        &db,
+    )
+    .expect("doctor runs");
+    let checks = out.json.as_array().expect("reports")[0]["checks"].clone();
+    let coverage = checks
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|c| c["check"] == Value::String("coverage".into()))
+        .expect("coverage is checked")
+        .clone();
+    assert_eq!(coverage["level"], Value::String("fail".into()));
+    assert!(
+        coverage["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("session signal") && d.contains("THURBOX_SESSION")),
+        "an integrator has no reason to know the signal route exists: {coverage}"
+    );
+}

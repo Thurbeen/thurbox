@@ -140,11 +140,11 @@ pub fn session_to_json_assessed(
             crate::session::CoverageSource::BySchema => "hook_schema",
         })),
     );
-    put("hook_states_reportable", json!(hook.states_reportable));
-    put("hook_delivery", json!(hook.delivery.map(|d| d.as_str())));
+    put("hook_states_reportable", json!(hook.states_reportable()));
+    put("hook_delivery", json!(hook.delivery().map(|d| d.as_str())));
     put(
         "hook_blocked_is_heuristic",
-        json!(hook.blocked_is_heuristic),
+        json!(hook.blocked_is_heuristic()),
     );
     put(
         "hook_corroboration",

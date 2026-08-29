@@ -33,7 +33,10 @@ pub(crate) const OMP_STATUS: &str = include_str!("../../extensions/hooks/omp-sta
 
 /// Marker prefix of every thurbox-managed hook command; the state word
 /// (`working`/`blocked`/`done`/`idle`) follows it directly.
-const SIGNAL_MARKER: &str = "thurbox-cli session signal --state ";
+///
+/// Also what a diagnostic looks for to decide whether a payload on disk really
+/// is thurbox's wiring rather than a file that merely lives at that path.
+pub const SIGNAL_MARKER: &str = "thurbox-cli session signal --state ";
 
 /// How a remote host's rewritten hook commands report state — which
 /// multiplexer binary sets the pane user option.

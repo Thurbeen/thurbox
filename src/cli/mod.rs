@@ -39,6 +39,7 @@ pub mod notify;
 pub mod output;
 pub mod perf;
 pub mod plugins;
+pub mod session_doctor;
 pub mod sessions;
 pub mod tasks;
 pub mod toon;
