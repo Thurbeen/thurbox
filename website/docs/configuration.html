@@ -167,23 +167,24 @@ breadcrumb: 'Configuration'
             </tbody>
           </table>
           <p>
-            <code>agents.toml</code>
-            and
             <code>settings.toml</code>
-            reload
+            reloads
             <strong>live</strong>
-            : the TUI polls their mtime (~1/s) and applies edits with a confirmation toast &mdash;
-            no restart. For
-            <code>settings.toml</code>
-            the UI-panel feature flags apply immediately; the
+            : the TUI polls its mtime (~1/s) and applies edits with a confirmation toast &mdash; no
+            restart. The UI-panel feature flags apply immediately; the
             <code>[notifications]</code>
             knobs, the
             <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
             feature flags, and the write-once scalars take effect on the next launch and the toast says so.
+            A changed
+            <code>agents.toml</code>
+            entry applies to the next session you create; a
+            <em>new</em>
+            agent, and any change to
             <code>hosts.toml</code>
-            and
+            or
             <code>themes.toml</code>
-            need a restart.
+            , needs a restart.
           </p>
           <p>
             Config problems are
@@ -1009,9 +1010,7 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             <code>sessions.delete</code>
             ,
             <code>sessions.restart</code>
-            , &hellip;).
-            <strong>F1</strong>
-            lists every id in force:
+            , &hellip;):
           </p>
           <pre data-title="ui.json"><code class="language-json">{ "bindings": { "themes.open": "f2", "sessions.delete": "f3" } }</code></pre>
           <ul>
@@ -1061,9 +1060,9 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
               ) is the macOS Command key, delivered only by kitty-keyboard-protocol terminals.
             </li>
             <li>
-              The same chord claimed by two actions in overlapping contexts is reported at startup
-              (the file still loads; the loser keeps its default). An entry naming an action no
-              plugin declares is
+              Binding a chord another action already declares takes it: your override fires and that
+              action no longer answers to it until you rebind it. The clash is reported at startup.
+              An entry naming an action no plugin declares is
               <strong>dropped silently</strong>
               &mdash; a typo just does nothing, which is why the F1 editor, which refuses an unknown
               action outright, is the safer path.
