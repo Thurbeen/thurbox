@@ -1197,8 +1197,38 @@ thurbox-cli extension status [&lt;name&gt;]      # per-resource presence + versi
                 <td><code>RUST_LOG</code></td>
                 <td>log filter for <code>thurbox.log</code></td>
               </tr>
+              <tr>
+                <td><code>THURBOX_CONFIG_DIR</code> / <code>THURBOX_DATA_DIR</code></td>
+                <td>relocate this instance's config / database (see below)</td>
+              </tr>
+              <tr>
+                <td><code>THURBOX_SOCKET</code></td>
+                <td>name the multiplexer socket outright, overriding both</td>
+              </tr>
             </tbody>
           </table>
+          <p>
+            <strong>Relocating an instance.</strong>
+            <code>THURBOX_CONFIG_DIR</code>
+            and
+            <code>THURBOX_DATA_DIR</code>
+            move thurbox's config and its database, and an instance whose
+            <em>data</em>
+            dir has moved also gets a
+            <strong>multiplexer socket of its own</strong>
+            , so it cannot create windows on the server holding your everyday sessions. A
+            <strong>default</strong>
+            instance keeps the socket it has always used &mdash; nothing changes for a thurbox you
+            have not relocated. Ask a build which server it is on rather than assuming:
+            <code>thurbox-cli version --json</code>
+            reports it as
+            <code>tmux_socket</code>
+            . The full rules, and what happens to an instance relocated before this existed, are in
+            <a
+              href="https://github.com/Thurbeen/thurbox/blob/main/docs/CONFIG.md#relocating-an-instance-thurbox_data_dir"
+              >docs/CONFIG.md &rarr; Relocating an instance</a
+            >.
+          </p>
           <p>
             Every
             <a href="#hooks-toml">lifecycle hook</a>
