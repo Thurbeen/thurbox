@@ -732,34 +732,28 @@ fn a_still_animation_clock_lets_a_pure_pane_settle() {
 }
 
 #[test]
-fn a_moved_animation_clock_re_renders_a_pure_pane() {
+fn a_moved_animation_clock_re_renders_a_pane_that_reads_it() {
     // The other half: while something IS animating the loop advances the clock,
-    // and the pane must run again or the spinner freezes on screen.
-    let (_dir, host) = two_panes();
+    // and a pane that draws from it must run again or its spinner freezes on
+    // screen.
+    //
+    // "That reads it" is the narrowing this test grew: the clock used to
+    // invalidate every pure pane, and now invalidates the ones whose render
+    // actually asked for `ctx.elapsed` (see `CachedTree`). So the fixture is a
+    // pane that reads the clock — `two_panes()`'s does not, and is now
+    // deliberately cached across a tick, which is what
+    // `the_animation_clock_does_not_re_render_a_pane_that_never_reads_it`
+    // asserts from the other side.
+    let (_dir, host) = clock_panes();
     let themes = Themes::load(None);
     let mut epoch = Epoch::default();
     publish_at(&host, epoch, &Snapshot::default(), &themes);
 
-    let index = host.index_of("pure").expect("plugin");
-    let render = |host: &LuaHost| {
-        host.render(
-            index,
-            thurbox::kernel::host::RenderContext {
-                width: 40,
-                height: 4,
-                focused: false,
-                elapsed: 0.0,
-                frame: 0,
-            },
-        )
-        .expect("render")
-    };
-
-    let _ = render(&host);
+    let _ = render_at(&host, "spinner", 0.0);
     let settled = host.skipped_renders();
     epoch.animation += 1;
     publish_at(&host, epoch, &Snapshot::default(), &themes);
-    let _ = render(&host);
+    let _ = render_at(&host, "spinner", 1.0);
 
     assert_eq!(
         host.skipped_renders(),
@@ -887,5 +881,191 @@ fn reading_attach_failures_is_not_itself_a_change() {
         terminals.failed_version(),
         settled,
         "reading the failure set moved its version"
+    );
+}
+
+// --- the animation clock, scoped to whoever reads it -------------------------
+
+/// Two pure panes over the same data: one that reads the clock, one that does
+/// not.
+///
+/// The clock advances eight times a second for as long as any session is
+/// `working`, so on a working machine it is the most frequent thing in the
+/// cache key. A pane whose tree cannot depend on it must not pay for it — the
+/// scoping every other TUI gets by construction, because there the animating
+/// widget is the one that asks to be redrawn.
+fn clock_panes() -> (tempfile::TempDir, LuaHost) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let plugins = dir.path().join("plugins");
+    std::fs::create_dir_all(&plugins).expect("mkdir");
+    std::fs::write(
+        plugins.join("10_spinner.lua"),
+        r#"return { name = "spinner", slot = "left", pure = true,
+             render = function(ctx)
+               return { text = "tick " .. tostring(math.floor(ctx.elapsed or 0)) }
+             end }"#,
+    )
+    .expect("write");
+    std::fs::write(
+        plugins.join("20_still.lua"),
+        r#"return { name = "still", slot = "center", pure = true,
+             render = function() return { text = "still" } end }"#,
+    )
+    .expect("write");
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    (dir, host)
+}
+
+fn render_at(host: &LuaHost, name: &str, elapsed: f64) -> String {
+    let index = host.index_of(name).expect("plugin");
+    format!(
+        "{:?}",
+        host.render(
+            index,
+            thurbox::kernel::host::RenderContext {
+                width: 40,
+                height: 4,
+                focused: false,
+                elapsed,
+                frame: 0,
+            },
+        )
+        .expect("render")
+        .node
+    )
+}
+
+#[test]
+fn the_animation_clock_does_not_re_render_a_pane_that_never_reads_it() {
+    // The saving. Measured at +51% CPU under load before this held
+    // (docs/PERFORMANCE.md, ADR-P20's animation section): every pure pane —
+    // the centre pane and all three closed floats included — re-ran eight
+    // times a second to move a spinner none of them draws.
+    let (_dir, host) = clock_panes();
+    let themes = Themes::load(None);
+    let mut epoch = Epoch::default();
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+
+    let _ = render_at(&host, "still", 0.0);
+    let settled = host.skipped_renders();
+    for step in 1..=10 {
+        epoch.animation += 1;
+        publish_at(&host, epoch, &Snapshot::default(), &themes);
+        let _ = render_at(&host, "still", f64::from(step));
+    }
+    assert_eq!(
+        host.skipped_renders() - settled,
+        10,
+        "a pane that never asked for the clock was re-rendered by it"
+    );
+}
+
+#[test]
+fn a_pane_that_reads_the_clock_sees_the_time_it_was_given() {
+    // Serving `elapsed` through a metatable rather than as a field must not
+    // change what a pane reads — the whole mechanism is meant to be invisible
+    // from Lua.
+    let (_dir, host) = clock_panes();
+    let themes = Themes::load(None);
+    let mut epoch = Epoch::default();
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+    assert!(render_at(&host, "spinner", 3.0).contains("tick 3"));
+    epoch.animation += 1;
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+    assert!(render_at(&host, "spinner", 7.0).contains("tick 7"));
+}
+
+#[test]
+fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
+    // The transition, which is where a learned optimisation would go wrong: a
+    // pane may only consult the clock under some condition — the session list
+    // draws a spinner only for a `working` row. The flag is recorded from the
+    // render that produced the cached tree, so the first render that reads the
+    // clock is itself the one that re-keys the entry; there is no frame in
+    // between on which a stale tree could be served.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let plugins = dir.path().join("plugins");
+    std::fs::create_dir_all(&plugins).expect("mkdir");
+    std::fs::write(
+        plugins.join("10_maybe.lua"),
+        r#"return { name = "maybe", slot = "left", pure = true,
+             render = function(ctx)
+               if store.spin then
+                 return { text = "tick " .. tostring(math.floor(ctx.elapsed or 0)) }
+               end
+               return { text = "quiet" }
+             end }"#,
+    )
+    .expect("write");
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let themes = Themes::load(None);
+    let mut epoch = Epoch::default();
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+
+    // Not reading the clock: cached across an animation tick.
+    let _ = render_at(&host, "maybe", 0.0);
+    let settled = host.skipped_renders();
+    epoch.animation += 1;
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+    assert!(render_at(&host, "maybe", 1.0).contains("quiet"));
+    assert_eq!(
+        host.skipped_renders() - settled,
+        1,
+        "should have been cached"
+    );
+
+    // Now it starts. The write moves the state version, so this render happens
+    // for that reason and is the one that records the dependency.
+    host.set_shared_bool("spin", true);
+    epoch.animation += 1;
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+    assert!(render_at(&host, "maybe", 2.0).contains("tick 2"));
+
+    // From here the clock alone must reach it.
+    let settled = host.skipped_renders();
+    epoch.animation += 1;
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+    assert!(render_at(&host, "maybe", 3.0).contains("tick 3"));
+    assert_eq!(
+        host.skipped_renders(),
+        settled,
+        "a pane that had begun reading the clock was cached across a tick"
+    );
+}
+
+#[test]
+fn the_bundled_centre_pane_is_not_re_rendered_by_the_clock() {
+    // Against the real interface, because the saving is only real if the panes
+    // thurbox actually ships fall on the right side of it. The session list
+    // draws a spinner and must stay clock-keyed; the agent pane draws a surface
+    // and must not.
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let host = LuaHost::new(dir);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let themes = Themes::load(None);
+    let mut epoch = Epoch::default();
+    let snapshot = Snapshot {
+        sessions: vec![row("a", "alpha")],
+        ..Snapshot::default()
+    };
+    publish_at(&host, epoch, &snapshot, &themes);
+
+    // Settle both first: each publishes its own state as it renders, so the
+    // first pass moves the state version and only the second can be reused.
+    for _ in 0..2 {
+        let _ = render_at(&host, "agent", 0.0);
+        let _ = render_at(&host, "sessions", 0.0);
+    }
+
+    let settled = host.skipped_renders();
+    epoch.animation += 1;
+    publish_at(&host, epoch, &snapshot, &themes);
+    let _ = render_at(&host, "agent", 1.0);
+    assert_eq!(
+        host.skipped_renders() - settled,
+        1,
+        "the agent pane paid for an animation tick it draws nothing for"
     );
 }

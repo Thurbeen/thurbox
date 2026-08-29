@@ -224,7 +224,17 @@ mutation and only when the value actually changed — writing an unchanged value
 counts as no change, which is the difference between the gate saving 27% and
 saving nothing. The **animation clock** obeys it too: it lives in the epoch and
 the loop advances it only while something is actually animating, because a
-free-running one invalidated every pure pane on every idle frame. And the loop
+free-running one invalidated every pure pane on every idle frame. It is also
+**scoped to its readers**: `ctx.elapsed` is served through the render context's
+metatable rather than set as a field, so the kernel can see which panes asked for
+it, and a pure tree is keyed on the animation tick only if the render that built
+it read the clock (`CachedTree`). Every other TUI gets that coupling for free
+because the animating widget is the one that asks to be redrawn — a Textual
+widget's `set_interval(…, self.refresh)`, a Bubble Tea spinner's own tick command,
+fidget.nvim's `Anime` closure — and thurbox's panes do not ask, so it is observed
+instead. Detected rather than declared on purpose: a declaration defaulting to
+"does not animate" freezes a third-party spinner silently (ADR-P21, +51% down to
++12% under load). And the loop
 itself slows its input poll to `IDLE_TICK` once nothing has happened for
 `QUIESCENT_AFTER` — free, because `event::poll` returns the instant an event
 arrives, so only things that never wake the thread are delayed.
@@ -238,7 +248,16 @@ painted can be neither clicked nor handed to the outer terminal, and the scan
 walks a whole vt100 grid — doing it for every live pane cost ~1.2ms a frame with
 three of them), the search content scan on `output_generation`, and the interface
 inventory's per-file digests on a `trust_stale` flag every path that changes the
-directory or a grant already sets.
+directory or a grant already sets. The link scan carries a **second** gate,
+`LINK_SCAN_INTERVAL` (250 ms), because the stamp is exact for a screen that has
+stopped and no gate at all for one that has not: a printing agent moves it every
+frame, and a scrolling screen puts its URLs on new rows each time, so the scan
+found a real change per frame and moved the data epoch — which un-gated every
+group and every pure pane for anyone whose agent prints a URL, i.e. all of them
+(ADR-P20: printing a URL cost +66% CPU under load, now +15%). A per-frame recompute whose
+answer legitimately changes is the way a change-signal moves that nobody is
+looking for; compare-before-store asks whether the value moved, and the missing
+question is whether it was worth asking yet.
 
 **A vt100 grid is never given fewer than two rows or two columns**
 (`agent::backend::vt_floor`). A cramped layout really does compute a one-cell pane,
@@ -249,6 +268,17 @@ session's terminal is blank for the rest of the run: the unwind poisons the pars
 mutex, and every reader of it (paint, links, selection, copy) reads a poisoned lock
 as "no live terminal". A panic is also written to `thurbox.log`, because a worker's
 stderr is scrolled away long before anyone looks.
+
+**Measuring it**: two instruments, both outside the PR gate (ADR-P5).
+`cargo bench --bench frame_cost` times the *pieces* of a frame against the real
+`ui/` — publish, arrangement, each placed pane, the paint, the vt100 surface and
+link scan — modelling what `draw` does rather than what the plugin list contains
+(a closed search strip occupies no slot, so nothing renders it).
+`scripts/dev/perf-run.sh` runs the *whole binary* under a reproducible load in an
+isolated sandbox and reports CPU from `/proc` beside the loop's own
+`perf_window` line. A reading is only comparable with another at the same
+terminal size and session count, so both pin theirs, and a change is argued with
+a paired before/after rather than two absolute numbers.
 
 **Observability**: `F12` toggles the perf HUD (`[features] perf_hud`); launching with
 `THURBOX_PERF_LOG=1` writes `startup`, `perf_window` and `slow op` lines to

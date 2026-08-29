@@ -464,6 +464,54 @@ pub const ANIMATION_HZ: f64 = 8.0;
 /// keypress would outlive it.
 type TreeKey = (Epoch, u16, u16, bool, u64);
 
+/// A pure pane's cached tree, and whether the clock is part of what keyed it.
+///
+/// [`Epoch::animation`] advances eight times a second for as long as any session
+/// is `working`, which is most of the time on a machine with an agent running.
+/// It is in [`TreeKey`], so every pure pane used to be re-rendered at that rate
+/// however little it had to do with a spinner — measured at +51% CPU under load
+/// (`docs/PERFORMANCE.md`, ADR-P20's animation section).
+///
+/// Every other TUI scopes animation to the thing that animates, and gets the
+/// coupling for free because the animating widget is the one that asks to be
+/// redrawn: a Textual widget calls `self.set_interval(1/60, self.refresh)` on
+/// *itself*, a Bubble Tea spinner returns its own tick command, fidget.nvim's
+/// `Anime` is the closure that reads `now`, and lualine redraws the statusline
+/// alone. thurbox's panes do not ask — the kernel calls them — so the coupling
+/// has to be observed instead: a tree can only depend on the clock if the render
+/// that built it read `ctx.elapsed`, and the ctx table's metatable is what
+/// notices. A pane that did not read it is served across an animation tick.
+///
+/// Deliberately detected rather than declared. A declaration defaulting to "does
+/// not animate" freezes any pane whose author never read the release note, with
+/// no error anywhere; one defaulting to "does" recovers almost nothing. Detection
+/// cannot be wrong in either direction: the flag is recorded from the render that
+/// produced the very tree being cached, and a pane that starts or stops reading
+/// the clock re-keys itself on the render where it does.
+struct CachedTree {
+    key: TreeKey,
+    rendered: Rendered,
+    /// Whether the render that produced `rendered` read `ctx.elapsed`.
+    reads_clock: bool,
+}
+
+impl CachedTree {
+    /// Whether this tree answers for `want`.
+    ///
+    /// The animation clock is compared only for a tree that read it. Masked on
+    /// *both* sides rather than skipped on one, so the comparison stays a plain
+    /// equality and cannot drift as `TreeKey` grows.
+    fn answers(&self, want: &TreeKey) -> bool {
+        if self.reads_clock {
+            return self.key == *want;
+        }
+        let (mut mine, mut theirs) = (self.key, *want);
+        mine.0.animation = 0;
+        theirs.0.animation = 0;
+        mine == theirs
+    }
+}
+
 impl Epoch {
     /// An epoch that matches no previous one, so every group is rebuilt.
     ///
@@ -590,7 +638,15 @@ pub struct LuaHost {
     /// Keyed by plugin index. Dropped whenever the VM is rebuilt, alongside
     /// [`Self::groups`] — a `Node` outlives the Lua it came from, but a tree
     /// built by the previous version of a pane is not that pane's answer.
-    trees: RefCell<HashMap<usize, (TreeKey, Rendered)>>,
+    trees: RefCell<HashMap<usize, CachedTree>>,
+    /// The clock the current render is being handed, and whether it read it.
+    ///
+    /// `ctx.elapsed` is served through the ctx table's metatable rather than set
+    /// as a field, so asking for it is observable. That is the whole mechanism
+    /// behind [`CachedTree::reads_clock`] — see it for why the kernel wants to
+    /// know.
+    clock: Rc<std::cell::Cell<f64>>,
+    clock_read: Rc<std::cell::Cell<bool>>,
     /// Published groups, each with the epoch it was built at.
     ///
     /// The outer `thurbox` table is still assembled fresh every frame from
@@ -718,6 +774,8 @@ impl LuaHost {
             ui_dir,
             groups: RefCell::new(HashMap::new()),
             trees: RefCell::new(HashMap::new()),
+            clock: Rc::new(std::cell::Cell::new(0.0)),
+            clock_read: Rc::new(std::cell::Cell::new(false)),
             epoch: RefCell::new(None),
             skipped_renders: std::cell::Cell::new(0),
             reused_groups: std::cell::Cell::new(0),
@@ -791,6 +849,8 @@ impl LuaHost {
             self.runs.clone(),
             self.current_path.clone(),
             self.state_version.clone(),
+            self.clock.clone(),
+            self.clock_read.clone(),
         )
         .map_err(|e| e.to_string())?;
 
@@ -1427,10 +1487,10 @@ impl LuaHost {
         });
         if plugin.pure {
             if let Some(key) = key {
-                if let Some((built_at, rendered)) = self.trees.borrow().get(&index) {
-                    if *built_at == key {
+                if let Some(cached) = self.trees.borrow().get(&index) {
+                    if cached.answers(&key) {
                         self.skipped_renders.set(self.skipped_renders.get() + 1);
-                        return Ok(rendered.clone());
+                        return Ok(cached.rendered.clone());
                     }
                 }
             }
@@ -1457,9 +1517,11 @@ impl LuaHost {
         table
             .set("focused", ctx.focused)
             .map_err(|e| fail(e.to_string()))?;
-        table
-            .set("elapsed", ctx.elapsed)
-            .map_err(|e| fail(e.to_string()))?;
+        // NOT set as a field: `elapsed` is served through the metatable installed
+        // below, so that reading it is observable. See `CachedTree`.
+        self.clock.set(ctx.elapsed);
+        self.clock_read.set(false);
+        api::attach_clock(&self.lua, &table).map_err(|e| fail(e.to_string()))?;
         table
             .set("frame", ctx.frame)
             .map_err(|e| fail(e.to_string()))?;
@@ -1486,9 +1548,17 @@ impl LuaHost {
         };
         if plugin.pure {
             if let Some(key) = key {
-                self.trees
-                    .borrow_mut()
-                    .insert(index, (key, rendered.clone()));
+                self.trees.borrow_mut().insert(
+                    index,
+                    CachedTree {
+                        key,
+                        rendered: rendered.clone(),
+                        // Read from the render that just produced this tree, so
+                        // the flag and the tree can never describe different
+                        // versions of the pane.
+                        reads_clock: self.clock_read.get(),
+                    },
+                );
             }
         }
         Ok(rendered)

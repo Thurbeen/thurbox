@@ -1238,6 +1238,253 @@ a_mirror_pass_that_could_not_run_backs_its_host_off}`.
 
 ---
 
+## ADR-P20: A link on a scrolling screen must not un-gate the frame (2026-08-29)
+
+**Context**: ADR-P16 made a frame cost what changed, and ADR-P18 closed the last
+ungated groups. Both rest on the data epoch, and both state the same rule out
+loud: the epoch moves on a worker result or a command transition and
+**deliberately never on agent output**, so a streaming turn reuses `diffs`,
+`links`, `content`, `commands` and `metrics` whole and every `pure` pane keeps
+the tree it last returned.
+
+It did not hold. `refresh_links` is gated on the surface's `output_stamp`, which
+is exact for a screen that has *stopped* and no gate at all for one that has
+not: a printing agent moves it on every frame. The scan then walks the whole
+vt100 grid, and — because the URLs on a scrolling screen sit on different rows
+each time — the compare-before-store below it found a real change and called
+`note_published_change()`. So agent output moved the epoch after all, once per
+painted frame, for anyone whose agent prints something link-shaped. Which is
+every coding agent: a PR link, a docs link, a `file://` path.
+
+The effect is invisible in the frame and plain in the profile. Measured with
+`scripts/dev/perf-run.sh`, 19 sessions at 255x62 with three agents printing 30
+lines a second — the same run twice, differing only in whether the printed lines
+contain a URL (`-u 0`):
+
+| output | CPU | frame p50 | republish p50 | pane trees served from cache |
+|---|---|---|---|---|
+| with URLs | 8.32% | 4000us | 500us | 179 |
+| no URLs | 5.00% | 1000us | 250us | 3487 |
+
+A URL in the output cost **66% more CPU** and took the tree cache from 3487 hits
+to 179. The gating was not degraded; it was off.
+
+**Choice**: a second gate on the scan, an age — ADR-P13's rule, which this path
+never had. `LINK_SCAN_INTERVAL` (250ms) bounds how often a surface whose screen
+is *still moving* is rescanned; the output stamp keeps serving a screen that has
+settled exactly, and for free, forever. The stamp is deliberately not recorded on
+a skipped pass, so the next publish after the interval does the scan and a
+settled screen converges back onto the stamp.
+
+250ms because nothing acts on a link's *position* faster than that, and nothing
+reads the published map to act at all: a click resolves against the live grid
+(`Terminals::url_at`) and the OSC 8 repaint recomputes from `cached_rows`
+(`hyperlink_paints`). `thurbox.links` exists for a plugin to draw, and no bundled
+pane reads it. So the interval bounds staleness in the published map and nothing
+else.
+
+**Measured**, the same run before and after, each paired with its own no-URL
+control so the machine's mood is not part of the claim:
+
+| | with URLs | no-URL control | penalty | frame p50 | cached trees |
+|---|---|---|---|---|---|
+| before | 8.32% | 5.00% | **+66%** | 4000us | 179 |
+| after | **5.27%** | 4.57% | **+15%** | 2000us | **3347** |
+
+**-37% CPU under load**, and the cost of a URL in the output falls from two
+thirds of the frame budget to a seventh. It is reduced rather than removed, and
+the residual is the honest arithmetic of the choice: four paced rescans a second
+still move the epoch four times, against thirty. Removing it entirely would mean
+either not publishing link positions at all — `thurbox.links` has no bundled
+reader, but an out-of-tree pane may — or a per-group invalidation the tree cache
+cannot express, since its key is the whole `Epoch`. Neither is worth it for the
+seventh; both are written down here so the next person does not rediscover them.
+
+**Consequences**: the rule ADR-P16 and ADR-P18 both state is now true of the one
+path that broke it. The failure mode to take from this is not "links were slow" —
+it is that **a per-frame recompute whose answer legitimately changes is a way to
+move a change-signal that no reviewer is looking for**. The compare-before-store
+that guards `store` writes is not enough on its own: it asks whether the value
+moved, and here it truly had. What was missing was the other question, whether it
+was worth asking yet.
+
+Pinned by `coordinator::publish::tests::*` for the pacing rule (including that
+the interval must sit between the output frame floor and the forced-redraw floor,
+or it is a no-op that reads as tuned), and measurable at any time with
+`just perf -n 19 -p 3 -s 255x62` against the same run with `-u 0`.
+
+**What moves the epoch now**, attributed at each call site over a 25s run of that
+same load, so the next person starts from a measurement rather than a guess:
+`refresh_links` 117 (the four paced scans a second, the residual above),
+`Metrics::poll` 36, `DiffStore::poll` 7 — around six a second between them,
+against the ~30 publishes a second a streaming turn drives. The snapshot version
+moves on roughly one publish in twenty. So the epoch stands still for about three
+publishes in four, and the pure trees and the float probes are served from the
+cache together at that rate — they share the key, so they hit and miss as one,
+which is worth knowing before reading `renders_skipped` as a per-pane figure.
+The remaining movers are each a worker result someone asked for, which is what
+the epoch is *for*.
+
+---
+
+## ADR-P21: Animation belongs to whoever reads the clock (2026-08-29)
+
+**Context**: `advance_animation` advances a shared clock while any session is
+`working` — the normal state of a machine with an agent running — and the clock
+is in the pure-pane cache key. So *every* pure pane re-rendered eight times a
+second to move a spinner glyph: the centre pane, which draws a terminal surface,
+and all three closed float probes, which draw nothing at all.
+
+The harness could not see it, because `sh` runs no status hook and nothing ever
+reported `working`. `perf-run.sh -w N` now signals N sessions the way a hook does
+(`THURBOX_SESSION` plus `session signal`), which made it measurable — and it was
+the largest single cost left:
+
+| 19 sessions, 3 printing, 255x62 | CPU | pane trees from cache |
+|---|---|---|
+| `-w 0` | 6.00% | 2922 |
+| `-w 4` | **9.08%** | 1886 |
+
+**+51%** for one glyph per working row. Unlike ADR-P20 the signal is *honest* —
+the session list really does depend on the clock. What was wrong is that every
+other pane paid for it.
+
+**How everyone else does it.** Worth reading before choosing, because the answer
+is unanimous and thurbox had neither half of it:
+
+- **Textual** — a spinner widget calls `self.set_interval(1 / 60, self.refresh)`
+  on *itself*, and `refresh` marks that widget dirty. Rich's `Spinner` derives
+  its frame from `console.get_time()`, so the frame follows the clock while the
+  *invalidation* follows the widget.
+- **Bubble Tea** — `bubbles/spinner` returns its own `TickMsg` command. The whole
+  view is re-rendered, but the renderer line-diffs against the previous frame and
+  writes only changed lines, so the cost lands at the output layer.
+- **fidget.nvim** — an `Anime` is `fun(now: number): string`, polled by fidget's
+  own heartbeat (which idles when there is no work, and never exceeds ~40Hz), and
+  it repaints fidget's own float.
+- **lualine** — does not trigger redraws at all; neovim redraws the statusline on
+  its own events, and a timer-driven `:redrawstatus` refreshes *only* the
+  statusline.
+
+One principle behind all four: **the clock invalidates only its reader**. Three
+of them get that coupling for free, because the thing that reads the clock is
+also the thing that asks to be redrawn. thurbox's panes do not ask — the kernel
+calls them — so the coupling had to be recovered some other way.
+
+**Choice**: recover it by *observation*. `ctx.elapsed` is served through the
+render context's metatable instead of being set as a field, so asking for it is
+something the kernel can see; a pure pane's cached tree records whether the
+render that built it read the clock, and the animation tick is compared only for
+trees that did (`CachedTree::answers`). `__index` fires only for absent keys, so
+every ordinary field (`width`, `height`, `focused`, `frame`, `name`, `slot`)
+stays a raw read and pays nothing, and the metatable is built once per VM rather
+than per render.
+
+**Measured**, the same paired runs:
+
+| 19 sessions, 3 printing, 255x62 | before | after |
+|---|---|---|
+| `-w 0` (nothing animating) | 6.00% | 5.32% |
+| `-w 4` (four spinners) | **9.08%** | **5.96%** |
+| animation penalty | **+51%** | **+12%** |
+| trees from cache at `-w 4` | 1886 | 2725 |
+
+The penalty is the honest figure — it is internally paired, where the two `-w 0`
+readings differ by run-to-run noise on a shared machine. The residual +12% is the
+session list, which is *supposed* to re-render: it is the pane with the spinner
+in it.
+
+**Rejected — a declaration**, in either direction, which is what this looked like
+before the prior art was read:
+
+- Defaulting to "does not animate" recovers nearly everything and silently
+  freezes any third-party spinner whose author never read the release note. A
+  wrong-direction failure with no error anywhere is the class of bug this
+  document exists to record.
+- Defaulting to "does" is safe and recovers only the panes thurbox ships.
+- Taking the spinner out of the tree and painting it as a decoration needs no
+  declaration, but reworks the session list and only moves the cost.
+
+Detection beats all three because it cannot be wrong in either direction: the
+flag is read from the render that produced the very tree being cached, so a pane
+that starts or stops reading the clock re-keys itself on the render where it
+does. There is no frame in between on which a stale tree could be served —
+asserted in `kernel_frame_cost::a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on`,
+alongside the two directions and one test against the real bundled interface.
+
+**Consequences**: one visible change to the plugin contract — `elapsed` is not a
+key of `ctx`, so it does not appear in `pairs(ctx)`. Nothing iterates a render
+context, and `docs/PLUGINS.md` now states the rule the mechanism creates: reading
+`ctx.elapsed` is what subscribes a tree to the animation tick, so read it where
+you animate and not at the top of a render that usually draws nothing moving.
+
+---
+
+## Measuring: the bench and the load harness (2026-08-29)
+
+Two instruments, because "a frame costs 2ms" and "thurbox costs 8% of a core"
+are different claims and neither implies the other. Both live outside the PR
+gate, per ADR-P5.
+
+**`cargo bench --bench frame_cost`** — the pieces of a frame, against the real
+`ui/` and a synthetic snapshot. It models what `draw` does rather than what the
+plugin list contains: it resolves the arrangement and renders only the panes an
+arrangement of that size actually *places*, plus the float probe every frame
+pays. Rendering every loaded plugin instead reported the closed search strip as
+the second most expensive pane in the interface, which it is not — it occupies no
+slot, so `draw_slots` never reaches it.
+
+It reports whole frames (settled, snapshot moved, animation tick), then the
+parts, then per placed pane, then what the caches did. `THURBOX_BENCH_SESSIONS`,
+`THURBOX_BENCH_WIDTH` and `THURBOX_BENCH_HEIGHT` sweep it — a height sweep is
+what separates "the session list costs 435us" from "a visible row costs 9us".
+
+**`scripts/dev/perf-run.sh`** — the whole binary under a reproducible load: real
+tmux panes, a real vt100 grid per session, the real loop, in a fully isolated
+sandbox with `sh` printing on a timer as the agent. It reports CPU from `/proc`
+plus the loop's own `perf_window` line, and keeps the log at
+`target/perf-run.log`. The documented instruction before it was "launch it and
+leave it idle", which measures the one regime nobody complains about.
+
+```sh
+scripts/dev/perf-run.sh                        # 8 sessions, 1 printing, 30s
+scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62   # a working machine's shape
+scripts/dev/perf-run.sh --idle                 # the settled floor
+scripts/dev/perf-run.sh -u 0                   # the control for ADR-P20
+scripts/dev/perf-run.sh --no-perf-log          # is the instrumentation the cost?
+```
+
+Two traps it now handles, both of which report a plausible number rather than
+failing:
+
+- **It must measure its own process.** `pgrep -x thurbox` finds the developer's
+  own running thurbox first, and every configuration then reports that instance:
+  idle or loaded, one session or twenty, all ~17% of a core. The run is
+  identified by its private `XDG_DATA_HOME` in `/proc/<pid>/environ` instead.
+  (`pgrep -f "$BIN_DIR/thurbox"` has the matching problem from the other end —
+  it also matches `thurbox-cli`.)
+- **The TUI starts before the sessions exist.** The v1→v2 consent gate fires for
+  a profile with session history and no acknowledgment, and waits for a keypress;
+  seeding first left the binary sitting on the gate for the whole run, reporting
+  a very restful 0%.
+
+A reading from either is only comparable with another at the same terminal size
+and session count, so both pin theirs.
+
+**And on a busy machine, trust the counters over the CPU.** A percentage from
+`/proc` is a real measurement of a shared machine: taken while something else was
+compiling, the same build measured 5.96% and 7.53% on two runs half an hour
+apart. So take a before and an after **back to back**, in one batch, and read
+them as a pair — every table in the ADRs above was gathered that way, which is
+why they quote a *penalty* (`-u 0` against `-u 12`, `-w 0` against `-w 4`) rather
+than a lone number. `renders_skipped`, `groups_reused` and `frames` in the same
+output are deterministic and do not care what else is running: for the two fixes
+above, cached trees over the same workload went from 154 to 3070 against an
+unchanged frame count, which is the claim that holds however loaded the machine
+was. `uptime` before believing a percentage.
+
+---
+
 ## Investigation 2026-07-09: where the time actually goes
 
 A measurement pass over the render loop, the tick, the draw path, startup, the
@@ -1460,4 +1707,7 @@ worktree/spawn offload should ride with that branch or follow it.
 | See binary size | Check the `Binary Size` CI job summary, or `cargo bloat --release --crates` |
 | Profile CPU | `cargo flamegraph --profile release-with-debug --bin thurbox` |
 | Verify no perf regression | `cargo nextest run -E 'test(kernel::perf)'` for the counters; the loop's settling is asserted per surface in `tests/*.rs` |
-| Confirm idle CPU is low | Launch, leave it idle — `idle skips` climbs while `frames` stays flat |
+| Confirm idle CPU is low | `scripts/dev/perf-run.sh --idle` — or launch and leave it idle, where `idle skips` climbs while `frames` stays flat |
+| Measure CPU under a real load | `scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62` (see **Measuring**, below) |
+| See where the time in a frame goes | `cargo bench --bench frame_cost` |
+| Attribute a change | Run one of the two above before and after — a paired reading at the same size and session count, never two absolute numbers from different days |

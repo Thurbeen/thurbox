@@ -220,6 +220,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         errors: Vec::new(),
         links: std::collections::HashMap::new(),
         link_stamps: std::collections::HashMap::new(),
+        link_scans: std::collections::HashMap::new(),
         content: std::collections::HashMap::new(),
         content_generation: None,
         trust: std::collections::HashMap::new(),

@@ -77,6 +77,29 @@ const DEBOUNCE: Duration = Duration::from_millis(120);
 /// what turns an idle app from ~20 fps into ~4. v1 uses the same floor.
 const FORCE_REDRAW_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Longest a session's links may be out of date while its screen keeps moving.
+///
+/// The scan is gated on the surface's output stamp, which is exact for a screen
+/// that has stopped and useless for one that has not: a printing agent moves it
+/// on every frame, so the scan ran per painted frame — walking the whole vt100
+/// grid, and, because the URLs on a scrolling screen sit on different rows each
+/// time, publishing a *changed* answer that moved the data epoch. Moving the
+/// epoch is what ADR-P16's gating exists to avoid: it rebuilds every published
+/// group and throws away every pure pane's cached tree. So an agent printing
+/// anything link-shaped — which is to say every coding agent — turned the whole
+/// change-gated frame back into an ungated one.
+///
+/// Deliberately paced rather than driven by the stamp alone, and 250ms because
+/// nothing acts on a link's *position* faster than that: a click resolves
+/// against the live grid ([`Terminals::url_at`]) and the OSC 8 repaint
+/// recomputes from it too, so this bounds how stale the *published* map may be,
+/// and nothing else. Measured with `scripts/dev/perf-run.sh`, 19 sessions at
+/// 255x62 with three agents printing 30 lines a second: 8.3% of a core down to
+/// 5.3%, frame p50 4ms down to 2ms, pane trees served from the cache 179 up to
+/// 3347. Against the same run with no URLs in its output, the penalty for
+/// printing one falls from +66% to +15% — ADR-P20 says why the rest is left.
+const LINK_SCAN_INTERVAL: Duration = Duration::from_millis(250);
+
 /// Iterations between two `perf_window` log lines (~10s at the 10ms tick).
 const PERF_WINDOW_TICKS: u64 = 1000;
 
@@ -463,6 +486,13 @@ struct App {
     /// the screen per repeat, for answers that cannot have changed.
     links: std::collections::HashMap<String, Vec<(String, usize, usize)>>,
     link_stamps: std::collections::HashMap<String, u64>,
+    /// When each session's links were last scanned, so a screen that keeps
+    /// moving is rescanned at [`LINK_SCAN_INTERVAL`] rather than per frame.
+    /// Kept beside the stamp rather than folded into it: the stamp answers
+    /// "could the answer have changed", this answers "is it worth asking again
+    /// yet", and a screen that has settled must still be served by the stamp
+    /// alone, for free, forever.
+    link_scans: std::collections::HashMap<String, Instant>,
     /// What each terminal was showing when a search last asked, and the output
     /// generation it was read at. Empty while nothing is searching.
     content: std::collections::HashMap<String, String>,

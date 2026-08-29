@@ -110,6 +110,21 @@ painted from a stale tree, with no error anywhere. Two things disqualify a pane:
   and the session list is pure — because the kernel keys a cached tree on that
   same tick. Anything finer freezes.
 
+**Reading `ctx.elapsed` is what buys you the animation tick, and only that.**
+The clock advances eight times a second for as long as any session is working,
+so it is the most frequent thing a cached tree can be keyed on. The kernel keys
+your tree on it *if the render that built the tree read `ctx.elapsed`*, and
+otherwise serves that tree across the tick — so a pane that draws no spinner
+pays nothing for one, and a pane that draws a spinner keeps it moving. There is
+nothing to declare and nothing to get wrong in either direction: read the clock
+and you are animated, do not and you are still. Read it under a condition (only
+for a `working` row, say) and the render that first reads it is the one that
+re-keys the entry, so there is no frame on which a stale tree is served.
+
+The mechanism is a metatable on the render context, which has one visible
+consequence: `elapsed` is not a *key* of `ctx`, so it does not appear in
+`pairs(ctx)`. Every other field is an ordinary one. Ask `ctx` for facts by name.
+
 Reading `store`/`state` is fine, and so is `command(...)` from a handler. If you
 are unsure, leave it undeclared: a pane that says nothing behaves exactly as it
 always has, and the only cost is that it is no faster.
@@ -215,7 +230,10 @@ levers, in the order they pay:
    O(width²); accumulate and `table.concat`, or emit `string.rep` runs.
 6. **Animate off the shared clock only** — `theme.spinner_frame(ctx.elapsed)`
    follows the kernel's animation tick, which advances only while something is
-   animating. A hand-rolled timer re-renders forever and defeats `pure`.
+   animating. A hand-rolled timer re-renders forever and defeats `pure`. And
+   read `ctx.elapsed` only where you actually animate: reading it is what
+   subscribes your tree to the tick, so hoisting it to the top of a render that
+   usually draws nothing moving costs you the cache eight times a second.
 
 `F12` (the perf HUD) is the check: `renders` climbing on an untouched screen
 means a pane is not settling. The bundled panes are worked examples — the

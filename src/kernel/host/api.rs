@@ -25,6 +25,8 @@ pub(super) fn install_api(
     runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Ask)>>>,
     current_path: Rc<RefCell<String>>,
     state_version: StateVersion,
+    clock: Rc<std::cell::Cell<f64>>,
+    clock_read: Rc<std::cell::Cell<bool>>,
 ) -> mlua::Result<()> {
     scrub_globals(lua)?;
     install_require(lua, ui_dir)?;
@@ -33,7 +35,58 @@ pub(super) fn install_api(
     install_command(lua, queue, current_path.clone())?;
     install_files(lua, roots)?;
     install_run(lua, runs, current_path)?;
+    install_clock(lua, clock, clock_read)?;
     Ok(())
+}
+
+/// The registry name of the metatable every render context carries.
+///
+/// See [`install_clock`]. In the registry rather than in globals for the same
+/// reason [`RUN_IMPL`] is: a plugin chunk's `_ENV` *is* the globals table, so
+/// anything parked there is reachable by name from every plugin.
+pub(super) const CTX_META: &str = "__ctx_meta";
+
+/// Serve `ctx.elapsed` through a metatable, and record that it was asked for.
+///
+/// The animation clock is the one render input whose reader the kernel cannot
+/// otherwise name, and it invalidates every pure pane eight times a second while
+/// any agent is working. Making it a *lookup* rather than a field is what lets
+/// the kernel see which panes actually depend on it — the coupling Textual gets
+/// from `set_interval` on a widget and Bubble Tea from a spinner returning its
+/// own tick. See `CachedTree`.
+///
+/// `__index` fires only for keys the table does not have, so every ordinary
+/// field (`width`, `height`, `focused`, `frame`, `name`, `slot`) is still a raw
+/// read and pays nothing. Built once per VM and shared by every render, because
+/// a closure per render would cost more than the field it replaces.
+///
+/// One visible consequence: `elapsed` is not a key of the ctx table, so it does
+/// not appear in `pairs(ctx)`. Nothing iterates a render context — a plugin asks
+/// it for named facts — and the alternative is to give up knowing who reads the
+/// clock.
+fn install_clock(
+    lua: &Lua,
+    clock: Rc<std::cell::Cell<f64>>,
+    read: Rc<std::cell::Cell<bool>>,
+) -> mlua::Result<()> {
+    let meta = lua.create_table()?;
+    meta.set(
+        "__index",
+        lua.create_function(move |_, (_, key): (Table, String)| {
+            if key == "elapsed" {
+                read.set(true);
+                return Ok(Value::Number(clock.get()));
+            }
+            Ok(Value::Nil)
+        })?,
+    )?;
+    lua.set_named_registry_value(CTX_META, meta)
+}
+
+/// Give one render context its clock.
+pub(super) fn attach_clock(lua: &Lua, ctx: &Table) -> mlua::Result<()> {
+    let meta: Table = lua.named_registry_value(CTX_META)?;
+    ctx.set_metatable(Some(meta))
 }
 
 /// The name the `run` implementation is parked under.

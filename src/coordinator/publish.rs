@@ -125,14 +125,23 @@ impl App {
         self.trust_stale = true;
     }
 
-    /// Rescan for the links on each session's screen, where that screen moved.
+    /// Rescan for the links on each session's screen, where that screen moved
+    /// — and no more often than [`LINK_SCAN_INTERVAL`] while it keeps moving.
     ///
     /// Part of publishing rather than a standing cost of the loop, because the
     /// answer is only ever read by a plugin — and gated on the session's
     /// `output_stamp`, because finding them walks every cell of its grid building
     /// a `String` per row. Ungated, a held-down key rescanned every terminal on
     /// screen per repeat for answers that could not have changed.
+    ///
+    /// The stamp alone is exact for a screen that has *stopped* and no gate at
+    /// all for one that has not, which is the case that matters: a printing
+    /// agent moves it every frame, and a scrolling screen puts its URLs on new
+    /// rows each time, so the compare below found a change every frame and moved
+    /// the data epoch — undoing ADR-P16's gating wholesale for anyone whose
+    /// agent prints a URL. Hence the second gate, an age (ADR-P13).
     pub(crate) fn refresh_links(&mut self, sessions: &[String]) {
+        let now = Instant::now();
         for id in sessions {
             // Only surfaces that are ON SCREEN. Extracting links walks the whole
             // vt100 grid and URL-scans every row, and doing that for every
@@ -146,6 +155,7 @@ impl App {
             // on the following frame rather than this one.
             if self.terminals.last_rect(id).is_none() {
                 self.link_stamps.remove(id);
+                self.link_scans.remove(id);
                 if self.links.remove(id).is_some() {
                     self.note_published_change();
                 }
@@ -154,8 +164,14 @@ impl App {
             match self.terminals.output_stamp(id) {
                 // Unchanged since the last scan: the answer stands.
                 Some(stamp) if self.link_stamps.get(id) == Some(&stamp) => {}
+                // Moved, but scanned too recently to ask again. The stamp is
+                // deliberately NOT recorded here, so the next publish after the
+                // interval does the scan — a screen that has settled converges
+                // on the branch above and costs nothing again.
+                Some(_) if !link_scan_due(self.link_scans.get(id).copied(), now) => {}
                 Some(stamp) => {
                     self.link_stamps.insert(id.clone(), stamp);
+                    self.link_scans.insert(id.clone(), now);
                     let found = self.terminals.links(id);
                     // Absent rather than empty when there are none, which is the
                     // shape a plugin reads: `thurbox.links[id]` is nil for a
@@ -180,6 +196,7 @@ impl App {
                 // No live pane, so no screen and no links.
                 None => {
                     self.link_stamps.remove(id);
+                    self.link_scans.remove(id);
                     self.links.remove(id);
                 }
             }
@@ -188,6 +205,7 @@ impl App {
         let known: std::collections::HashSet<&str> = sessions.iter().map(String::as_str).collect();
         self.links.retain(|id, _| known.contains(id.as_str()));
         self.link_stamps.retain(|id, _| known.contains(id.as_str()));
+        self.link_scans.retain(|id, _| known.contains(id.as_str()));
     }
 
     /// Read what each terminal is showing, while something is searching them.
@@ -323,5 +341,74 @@ impl App {
         // Trust is read against the plugin set that just loaded, so a reload —
         // including the one a trust change triggers — lands both together.
         self.publish_trust();
+    }
+}
+
+/// Whether a surface whose screen has moved is due another link scan.
+///
+/// The output stamp answers "could the answer have changed"; this answers "is it
+/// worth asking again yet". Split out as a function because the failure it
+/// guards is invisible from any frame: without it a printing agent rescanned its
+/// whole grid per frame and published a *changed* answer each time — the URLs
+/// sit on new rows as the screen scrolls — which moved the data epoch and so
+/// rebuilt every published group and dropped every pure pane's cached tree,
+/// undoing ADR-P16's gating for anyone whose agent prints a URL. Nothing about
+/// the rendered frame looks wrong while that happens; only the CPU does.
+///
+/// `map_or(true, ..)` rather than `is_none_or`: the latter is stable since 1.82
+/// and this crate's MSRV is 1.75.
+fn link_scan_due(last_scan: Option<Instant>, now: Instant) -> bool {
+    last_scan.map_or(true, |at| now.duration_since(at) >= LINK_SCAN_INTERVAL)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_surface_never_scanned_is_due_at_once() {
+        // A pane that has just appeared must show its links on the next frame,
+        // not a quarter of a second later.
+        assert!(link_scan_due(None, Instant::now()));
+    }
+
+    #[test]
+    fn a_surface_just_scanned_is_not_due_again() {
+        let now = Instant::now();
+        assert!(!link_scan_due(Some(now), now));
+        assert!(!link_scan_due(
+            Some(now),
+            now + LINK_SCAN_INTERVAL - Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn a_surface_scanned_longer_ago_than_the_interval_is_due() {
+        let now = Instant::now();
+        assert!(link_scan_due(Some(now - LINK_SCAN_INTERVAL), now));
+        assert!(link_scan_due(
+            Some(now - LINK_SCAN_INTERVAL - Duration::from_secs(1)),
+            now
+        ));
+    }
+
+    #[test]
+    fn the_scan_interval_is_slower_than_the_frames_it_paces() {
+        // The whole point is to take the scan off the per-frame path, so it has
+        // to be slower than a frame owed to output. Equal or faster and the
+        // pacing is a no-op that reads as tuned — the same trap the frame floors
+        // assert their way out of in `main.rs`.
+        assert!(
+            LINK_SCAN_INTERVAL > OUTPUT_FRAME_INTERVAL,
+            "the link scan would still run on every output frame"
+        );
+        // And no slower than the floor at which a still screen is repainted:
+        // beyond that the published map would be visibly behind a screen that
+        // has stopped moving, which is the case the output stamp already
+        // handles exactly and for free.
+        assert!(
+            LINK_SCAN_INTERVAL <= FORCE_REDRAW_INTERVAL,
+            "links could lag a settled screen by more than a forced redraw"
+        );
     }
 }
