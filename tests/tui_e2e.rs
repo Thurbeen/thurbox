@@ -905,9 +905,38 @@ impl Tui {
     fn ctrl_c_then(&mut self, marker: &str) -> String {
         let mark = self.raw_len();
         self.send(b"\x03");
+        // The interrupt has to LAND before the next keystroke is written, and
+        // these two used to be back-to-back. `\x03` travels pty -> thurbox ->
+        // tmux -> `sh`, and the shell answers it by abandoning the line it was
+        // reading and drawing a fresh prompt; a byte that arrives while it is
+        // doing that is discarded. The symptom is the command's FIRST character
+        // going missing -- `sh: cho: command not found`, from a swallowed `e` --
+        // so the marker never echoes and the wait below times out having
+        // reported nothing about why. It only showed up on a loaded machine,
+        // which is what made a race look like slowness.
+        self.wait_for_output_since(mark, "the shell to answer the interrupt");
         self.send(format!("echo {marker}-\"\"ok\r").as_bytes());
         self.wait_for(&format!("{marker}-ok"));
         self.raw_since(mark)
+    }
+
+    /// Wait until the terminal has written *anything* since `since`.
+    ///
+    /// Coarser than [`Self::wait_for`] on purpose: the caller is waiting for the
+    /// far end to have reacted at all, not for a particular string. What the
+    /// shell emits when it takes an interrupt differs between shells and between
+    /// "at an idle prompt" and "mid-command" -- `^C`, a bare newline, a fresh
+    /// prompt, or some combination -- so matching on any of them would be a
+    /// guess. That bytes came back is the one signal every case shares.
+    fn wait_for_output_since(&self, since: usize, what: &str) {
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
+            if self.raw_len() > since {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.give_up(what);
     }
 }
 
