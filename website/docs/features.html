@@ -1112,16 +1112,18 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
             &mdash; ideal for scripting. It shares the TUI's SQLite database and
             <code>tmux -L thurbox</code>
             server, so changes made by either show up live in the other. Output is
-            <strong>human-readable by default</strong>
-            and switches to JSON automatically when stdout is piped (so
-            <code>&hellip; | jq</code>
-            keeps working); force a format with
+            <strong>human-readable in a terminal</strong>
+            and <strong>TOON</strong> &mdash; a compact, agent-oriented encoding &mdash; when stdout
+            is piped; force a format with
             <code>--json</code>
-            (compact),
+            (compact, every field, the shape scripts parse),
             <code>--pretty</code>
-            (indented), or
+            (indented JSON),
+            <code>--toon</code>
+            or
             <code>--text</code>
-            (human even when piped).
+            (human even when piped). Run it with no subcommand and it prints live state &mdash; every
+            session with the state its hooks last reported &mdash; rather than a usage dump.
           </p>
           <pre data-wrap><code class="language-bash">thurbox-cli session list
 thurbox-cli session create --name reviewer --repo-path /path/to/repo --agent codex

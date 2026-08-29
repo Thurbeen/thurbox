@@ -529,9 +529,13 @@ Cmd chords; everything else works there.
 and `tmux -L thurbox` server, so changes made by either appear live in the other
 (the TUI polls `PRAGMA data_version`).
 
-Output is human-readable by default and switches to JSON automatically when
-stdout is piped (so `… | jq` keeps working); force a format with `--json`
-(compact), `--pretty` (indented JSON), or `--text` (human even when piped).
+Output is human-readable in a terminal and **TOON** — a compact, agent-oriented
+encoding — when stdout is piped; force a format with `--json` (compact, every
+field, the shape scripts parse), `--pretty` (indented JSON), `--toon`, or
+`--text` (human even when piped). A pipeline that relied on the old piped-JSON
+default has to spell `--json` out. Run with no subcommand and it prints live
+state — every session with the state its hooks last reported — rather than a
+usage dump.
 
 ### Sessions
 

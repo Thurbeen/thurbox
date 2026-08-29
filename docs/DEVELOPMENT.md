@@ -49,6 +49,7 @@ runs — `selene`, `stylua` and `lua-language-server`. Run `npm ci` once, or
 |------|--------------|
 | `just build` | build the dev binaries (`thurbox` + `thurbox-cli`) |
 | `just test` | `cargo nextest run --all` |
+| `just test-scripts` | the bats suites: `scripts/install.bats` + the extensions' shell scripts (needs `bats` + `jq`) |
 | `just lint` | fmt-check + clippy + cargo-deny + rumdl + shellcheck + selene, stylua and lua-language-server |
 | `just fmt` | format Rust + website |
 | `just arch` | architecture-rule + rustdoc checks |

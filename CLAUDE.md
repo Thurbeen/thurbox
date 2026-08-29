@@ -1005,7 +1005,13 @@ The shape that follows from that:
   quietly.
 - **Errors are structured on stdout, never stderr**, and the exit code says
   which kind: `0` success, `1` the command ran and failed, `2` the invocation
-  was wrong. Each carries a `suggestion` and a runnable `help[]` line.
+  was wrong. Each carries a `suggestion` and a runnable `help[]` line. stdout
+  carries **exactly one** document, so a command that renders its report and
+  *then* asks for a non-zero exit (`session doctor` on a broken session,
+  `config validate` on an invalid file) comes back as `cli::Outcome::Failed`:
+  the report is the answer, the exit code is the verdict, and the sentence
+  explaining it goes to stderr rather than becoming a second document `jq`
+  cannot parse.
 - Results can carry a `help[N]:` block of next steps. It is the one part of
   the output that is AXI convention rather than strict TOON (bare indented
   lines rather than the hyphen-space list items §9.4 asks for);
