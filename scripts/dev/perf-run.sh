@@ -113,6 +113,43 @@ done
 
 say() { [ "$JSON" = "1" ] || echo "$@" >&2; }
 
+# --- not inside a validation step -------------------------------------------
+#
+# This script builds a release binary, spawns a tmux server and N agents, and
+# then deliberately sits still for -d seconds. That is the right shape for a
+# measurement and the wrong shape for anything a gate runs: it looks like a test
+# -- it is under scripts/dev/, it drives the real binary, it prints a result --
+# so an agent asked to run the tests and gather evidence reaches for it, waits
+# for it, and burns the step's whole budget. Not hypothetical: it timed out a
+# no-mistakes test step at 30m0s with the agent silent, having decided the
+# intent's paired before/after reading was the evidence to gather.
+#
+# So it refuses, and says how to get the number instead. A benchmark that also
+# generates load has no business running unattended inside a validation step --
+# the reading would be meaningless there anyway, since the gate's own build is
+# what the machine is busy doing.
+if [ -n "${NO_MISTAKES_GATE:-}" ] && [ -z "${THURBOX_PERF_ALLOW_IN_GATE:-}" ]; then
+    cat >&2 <<'REFUSE'
+perf-run.sh: refusing to run inside a validation step.
+
+This is a benchmark, not a test: it builds a release binary, runs agents for
+tens of seconds and measures CPU. Its reading is only meaningful on a quiet
+machine, and a gate is the opposite of one.
+
+Nothing here needs it to pass. The deterministic coverage is ordinary tests --
+`cargo nextest run --all` -- and the perf claims are asserted on counters and
+change-signals in tests/kernel_frame_cost.rs and tests/kernel_perf.rs, never on
+a clock (docs/PERFORMANCE.md, ADR-P5).
+
+To take a reading by hand, on a machine you are not otherwise using:
+    just perf -n 19 -p 3 -s 255x62
+    just perf -n 19 -p 3 -s 255x62 -u 0     # the paired control
+
+Set THURBOX_PERF_ALLOW_IN_GATE=1 to override this, if you really mean to.
+REFUSE
+    exit 2
+fi
+
 # --- build ------------------------------------------------------------------
 #
 # Release by default. A dev build runs the interpreter at opt-level 1 and its

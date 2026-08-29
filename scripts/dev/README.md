@@ -58,7 +58,11 @@ scripts/dev/perf-run.sh --no-perf-log --json   # CPU alone, machine-readable
 ```
 
 A reading is only comparable with another at the same size and session count,
-so pass `-s` and `-n` explicitly when recording one. Its companion is
+so pass `-s` and `-n` explicitly when recording one. It **refuses to run inside
+a no-mistakes validation step** (`NO_MISTAKES_GATE`): it looks enough like a test
+to be picked up as one, and a step that waits through a release build and timed
+runs fails on the agent timeout — for a number a loaded machine cannot produce
+honestly anyway. Override with `THURBOX_PERF_ALLOW_IN_GATE=1` if you mean it. Its companion is
 `cargo bench --bench frame_cost`, which measures the *pieces* of a frame rather
 than the whole binary; both are explained in `docs/PERFORMANCE.md`.
 

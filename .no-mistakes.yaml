@@ -33,14 +33,28 @@ commands:
   # extra auto-fix round.
   format: "cargo fmt --all && stylua ui examples"
 
-  # test: deliberately left empty.
+  # test: the suite, named explicitly.
   #
-  # This key is targeted validation of the requested change, explicitly not a
-  # CI-parity suite, so `cargo nextest run --all` does not belong here: it
-  # rebuilds the whole crate in a fresh run worktree for every gate. Left
-  # empty, the test step picks the smallest relevant tests itself and gathers
-  # evidence, while the full suite stays mandatory in remote CI (ci.yml) and
-  # in the prek pre-commit hook.
+  # This key was deliberately empty, reasoning that the step is targeted
+  # validation rather than a CI-parity suite and that `cargo nextest run --all`
+  # rebuilds the whole crate in a fresh run worktree. Both halves proved wrong.
+  #
+  # The build is not marginal cost: the review step's own verification and the
+  # lint step's `just lint` already compile the crate in that same worktree, so
+  # the artifacts are warm by the time tests run and the suite itself is ~30s.
+  #
+  # And an empty key does not mean "a small test run" -- it means the agent
+  # decides what running the tests looks like. Given an intent that talked about
+  # performance measurements, one decided that meant taking a paired before/after
+  # reading with `scripts/dev/perf-run.sh`, waited through a release build and
+  # timed runs, and went silent until the step failed on `test_agent_timeout`
+  # (30m0s). A gate step has to be deterministic about what it executes, for the
+  # same reason `lint` above is spelled out rather than agent-detected.
+  #
+  # perf-run.sh now refuses to run under NO_MISTAKES_GATE, which closes that one
+  # hole; this closes the general one. The step's agent turn is then evidence
+  # gathering on top of a known-good suite, not a choice about what to run.
+  test: "cargo nextest run --all"
 
 # Excluded from review and documentation checks: generated or vendored trees
 # that carry no reviewable intent. `*` never crosses a `/`, and a pattern with

@@ -104,6 +104,13 @@ deterministic half is ordinary test coverage — counters and change-signals in
 compiles `benches/` through `cargo clippy --all-targets`, so the instrument
 cannot rot while nobody is running it.
 
+The load harness stays out of the gate by refusing to run there
+(`NO_MISTAKES_GATE`). It lives under `scripts/dev/`, drives the real binary and
+prints a result, so it reads as a test to anything deciding what "run the tests"
+means — and a step that waits through a release build and timed runs fails on
+the agent timeout, which is what happened once. That is also why `commands.test`
+names the suite explicitly rather than leaving the choice to the step.
+
 One discipline the gate cannot do for you, because it validates committed
 history rather than your working tree: **stage deliberately**. Commit the files
 that belong to the change and nothing else — never `git add -A` on a dirty tree
