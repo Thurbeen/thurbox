@@ -100,7 +100,7 @@ pub fn bindings() -> Vec<Binding> {
         ("f4", ModalKind::Theme, "open theme picker"),
         ("ctrl+y", ModalKind::Theme, "open theme picker"),
         // Taken deliberately from the list of chords held for v1's panes
-        // (`tests/v2_keymap.rs`): the automations pane it was held for is one
+        // (`tests/keymap.rs`): the automations pane it was held for is one
         // query away in the palette once it returns. No F-key alternate — every
         // one is bound or held, and this chord is never deferred to the agent
         // (readline's previous-history is also the up arrow).

@@ -1490,7 +1490,7 @@ which is the point of a strip rather than a float.
 v1 also took `Ctrl+P`/`Ctrl+N` inside the strip, because its search focus captured
 input ahead of the keybinding table. Here every chord goes through one registry
 where a plugin-scoped claim does not outrank a global one, so declaring them would
-take `Ctrl+N` from new-session everywhere. Recorded in `tests/v2_keymap.rs`.
+take `Ctrl+N` from new-session everywhere. Recorded in `tests/keymap.rs`.
 
 ---
 

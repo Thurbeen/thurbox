@@ -560,7 +560,7 @@ local HINT_W, HINT_H = 33, 5
 ---
 --- v1 opens with `Ctrl+N  New session`. It is absent because the new-session
 --- plugin is: advertising a chord that resolves to nothing is worse than
---- advertising nothing, and `tests/v2_keymap.rs` asserts that chord stays
+--- advertising nothing, and `tests/keymap.rs` asserts that chord stays
 --- unbound rather than being reused. Re-adding the wizard means re-adding its
 --- line here.
 local function hint_box_lines()

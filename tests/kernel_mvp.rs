@@ -1098,7 +1098,7 @@ fn the_theme_reaches_plugins_as_roles() {
     // whole interface between them, so this asserts a plugin can read the
     // resolved theme — through a throwaway plugin that prints it, since no
     // bundled pane shows the theme's name any more (the header is gone and the
-    // picker is a kernel modal — `tests/v2_modals.rs`).
+    // picker is a kernel modal — `tests/modals.rs`).
     let dir = tempfile::tempdir().expect("tempdir");
     let plugins = dir.path().join("plugins");
     std::fs::create_dir_all(&plugins).expect("mkdir");

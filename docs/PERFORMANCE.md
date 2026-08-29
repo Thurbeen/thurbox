@@ -1459,5 +1459,5 @@ worktree/spawn offload should ride with that branch or follow it.
 | See what a frame costs | `thurbox-cli perf` — `frame` is the paint and `republish` the table rebuild beside it; a frame is roughly the two added together |
 | See binary size | Check the `Binary Size` CI job summary, or `cargo bloat --release --crates` |
 | Profile CPU | `cargo flamegraph --profile release-with-debug --bin thurbox` |
-| Verify no perf regression | `cargo nextest run -E 'test(kernel::perf)'` for the counters; the loop's settling is asserted per surface in `tests/v2_*.rs` |
+| Verify no perf regression | `cargo nextest run -E 'test(kernel::perf)'` for the counters; the loop's settling is asserted per surface in `tests/*.rs` |
 | Confirm idle CPU is low | Launch, leave it idle — `idle skips` climbs while `frames` stays flat |

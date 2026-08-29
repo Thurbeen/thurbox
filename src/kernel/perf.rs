@@ -284,7 +284,7 @@ fn histogram_json(h: &DurationHistogram) -> serde_json::Value {
 /// timing is active.
 ///
 /// Built here rather than in the loop so the shape has one owner: the CLI
-/// renders whatever this produces, and `tests/v2_perf.rs` pins the keys.
+/// renders whatever this produces, and `tests/kernel_perf.rs` pins the keys.
 pub fn snapshot_json(
     counters: &Snapshot,
     timings: &Timings,

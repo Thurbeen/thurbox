@@ -60,7 +60,7 @@ jobs:
               - 'build.rs'
               # The Lua trees are Rust inputs, not merely neighbours: they are
               # `include_str!`d into the binary, and the suite asserts on their
-              # CONTENT — `tests/v2_new_session.rs` checks a string that exists
+              # CONTENT — `tests/new_session.rs` checks a string that exists
               # only in `ui/plugins/10_sessions.lua`. Without these, a Lua-only
               # change skips clippy, nextest and both Windows jobs, and can
               # red-build main while its own PR is
@@ -153,7 +153,7 @@ jobs:
         with:
           tool: cargo-nextest
       # A real multiplexer, so the tests that drive one run here rather than
-      # skip: `tests/create_e2e.rs`, `tests/v2_attach_by_name.rs`, and the
+      # skip: `tests/create_e2e.rs`, `tests/attach_by_name.rs`, and the
       # live-session scenario of `tests/tui_e2e.rs` — the real binary on a pty,
       # attached to a pane with a shell in it. Every one of them lands on a
       # private socket under a private `TMUX_TMPDIR`.
@@ -226,7 +226,7 @@ jobs:
   # in-process TEA harness under `src/app` — deleted when the kernel took the
   # binary name. The filter then matched nothing, nextest exited non-zero on "no
   # tests run", and the job was red on every push while asserting nothing. Its
-  # successors are `tests/v2_*.rs`, which the `nextest` job already runs via
+  # successors are `tests/*.rs`, which the `nextest` job already runs via
   # `--all`, so re-pointing it would only duplicate that.
 
   deny:

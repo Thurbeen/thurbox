@@ -380,7 +380,7 @@ thurbox from a checkout and an unoptimised Lua VM is felt in the UI.
 ## The gap to v1
 
 Nothing measures it. v1's parity test went with v1, so no test compares the
-two: `tests/v2_frames.rs` pins what v2 draws, but against itself rather than
+two: `tests/frames.rs` pins what v2 draws, but against itself rather than
 against what v1 drew. The behavioural gaps — the longer and more serious list —
 are not inventoried anywhere. What exists is prose: the consent gate names every
 surface that is gone (`kernel::consent`), and `docs/FEATURES.md` says per

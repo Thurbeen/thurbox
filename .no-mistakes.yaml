@@ -233,7 +233,7 @@ review:
         running under this project's own pre-commit hook inherits a GIT_DIR
         pointing at the real repository and will rewrite it.
 
-        tests/v2_frames.rs pins bundled panes' frames cell for cell as literals
+        tests/frames.rs pins bundled panes' frames cell for cell as literals
         on purpose, against fully pinned inputs; that is an owned snapshot
         contract, not an accident, and a failing test prints the new literal to
         paste. Do not propose replacing it with a snapshot tool or loosening
@@ -242,8 +242,8 @@ review:
         This repository is test-driven: a bug fix starts with a test that
         reproduces the bug, so it fails before the fix and passes after it.
         Coverage belongs in the file that owns the surface - tests/kernel_mvp.rs
-        for the kernel's contract, one tests/v2_<surface>.rs per interface
-        surface or contract, tests/v2_render_props.rs for proptest crash
+        for the kernel's contract, one tests/<surface>.rs per interface
+        surface or contract, tests/render_props.rs for proptest crash
         invariants, tests/tui_e2e.rs for the real binary on a real pty - rather
         than in a new file beside them. Follow the conventions already in that
         file and cover the edge case as well as the happy path.

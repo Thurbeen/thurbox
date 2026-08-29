@@ -85,12 +85,11 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   for a leading underscore — that is how a capability once hid under `__run_impl`),
   the instruction/memory bounds, snapshot reads, and painting a plugin to a
   `TestBackend`.
-- **`tests/v2_*.rs`** — one file per surface or contract: `v2_session_list`,
-  `v2_search`, `v2_new_session`, `v2_terminal_pane`, `v2_session_lifetime`,
-  `v2_keymap`, `v2_focus`, `v2_modals`, `v2_chrome`, `v2_mouse`, `v2_hover`,
-  `v2_decoration`, `v2_plugin_{authoring,commands,lifecycle,settings,switching}`,
-  `v2_repo_memory`, `v2_remote_status`, `v2_session_status`, `v2_core_settings`,
-  `v2_attach_by_name`.
+- **The per-surface files** — one file per surface or contract:
+  `session_list`, `search`, `new_session`, `terminal_pane`, `session_lifetime`,
+  `keymap`, `focus`, `modals`, `chrome`, `mouse`, `hover`, `decoration`,
+  `plugin_{authoring,commands,lifecycle,settings,switching}`, `repo_memory`,
+  `remote_status`, `session_status`, `core_settings`, `attach_by_name`.
   Several build an interface in a tempdir from the embedded copy, so delivery and
   loading are exercised together.
 - **`tests/kernel_limits.rs`** — instruction and memory ceilings, in their own file
@@ -98,14 +97,14 @@ kernel over the real `ui/`** rather than a harness that imitates either:
 - **Lua statics** — `selene ui` (undefined names + the sandbox, via `thurbox.yml`),
   `lua-language-server --check` (types + withheld libraries), `stylua` (format).
   The three cover different halves; see **Linting & Formatting**.
-- **`tests/v2_frames.rs`** — the bundled panes' frames pinned cell for cell, as
+- **`tests/frames.rs`** — the bundled panes' frames pinned cell for cell, as
   literals in the file (no snapshot tool): the session list grouped, nested,
   windowed, narrow and under double-width names; the selection as a *style*;
   the agent pane empty, detached, failed, and with a real vt100 screen behind
   its surface. A failing test prints the new frame as a literal to paste. Every
   input is pinned (the `default` preset by name, a fixed `elapsed`, a fixed
   snapshot) — keep it that way; a frame that moves on its own is worse than none.
-- **`tests/v2_render_props.rs`** — proptest crash invariants: every bundled pane
+- **`tests/render_props.rs`** — proptest crash invariants: every bundled pane
   renders and paints at any size down to one cell, the arrangement places its
   slots inside the screen and apart, no key sequence makes a pane throw (the
   creation flow included), and selection extraction survives arbitrary buffers
@@ -124,7 +123,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
 Tests that shell out to `git` **must scrub the `GIT_*` location variables**
 (`git::GIT_LOCATION_ENV`): git exports them to hook processes, so the suite running
 under this project's own pre-commit `cargo nextest` inherits a `GIT_DIR` pointing at
-the real repository. `tests/v2_repo_memory.rs` and `tests/create_e2e.rs` show the
+the real repository. `tests/repo_memory.rs` and `tests/create_e2e.rs` show the
 shape.
 
 > v1's in-process acceptance harness, its `insta` snapshots, its invariant monkey
@@ -1863,7 +1862,7 @@ ahead of a float's exclusive grab so they still work from any pane, and copy
 *declines* the chord when there is no selection so `Ctrl+C` still interrupts the
 agent.
 
-Two properties the registry holds and `tests/v2_keymap.rs` asserts:
+Two properties the registry holds and `tests/keymap.rs` asserts:
 
 - **A plugin-scoped claim does not outrank a global one.** This is why search does
   not take `Ctrl+P`/`Ctrl+N`: doing so would take `Ctrl+N` from new-session
@@ -2162,7 +2161,7 @@ beside every declared key and the kernel's own actions, filtered by subsequence
 as you type; `Enter` runs the row through the same `on_action` a key takes,
 focused or not, after the modal has closed. A command a user rebinds from `F1`
 becomes a binding (`Registry::apply_overrides` synthesises it). `Ctrl+P` was
-taken deliberately from the chords held for v1's panes (`tests/v2_keymap.rs`),
+taken deliberately from the chords held for v1's panes (`tests/keymap.rs`),
 and the creation flow's folder import moved to `Alt+P` for it.
 
 - `docs/V2-KERNEL.md` — the kernel's shape, its five rules, and the traps

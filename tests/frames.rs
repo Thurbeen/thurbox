@@ -1,6 +1,6 @@
 //! The bundled panes' frames, pinned cell for cell.
 //!
-//! The other `v2_*` files assert substrings and single cells, which is precise
+//! The other surface files assert substrings and single cells, which is precise
 //! but sparse: a misaligned border, a broken group header, a name that shears
 //! its row because a double-width glyph was counted as one, a selection that
 //! stopped being painted — every one of those passes a `contains`. Here the

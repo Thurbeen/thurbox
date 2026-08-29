@@ -3,7 +3,7 @@
 //! Nothing in the binary reads this any more — the registry owns chords in v2,
 //! and `kernel::registry::migrate_v1_bindings` reads `keybindings.json`
 //! directly. What still matters is the *contract* v1 encoded: which chords are
-//! terminal passthrough, and what the defaults were. `tests/v2_keymap.rs`
+//! terminal passthrough, and what the defaults were. `tests/keymap.rs`
 //! iterates these tables and asserts v2's registry agrees, deliberately
 //! reading them out of v1's own code rather than a restatement. Moved out of
 //! `src/session/` because 1,900 lines of dead-in-production code were
