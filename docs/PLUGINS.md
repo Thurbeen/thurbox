@@ -27,7 +27,7 @@ thurbox-cli plugin check        # does it load? exits non-zero if not
 thurbox-cli plugin list         # every file, where it came from, is it drawn
 ```
 
-`plugin new` writes [`docs/examples/plugin.lua`](examples/plugin.lua) under your
+`plugin new` writes [`examples/lua/plugin.lua`](../examples/lua/plugin.lua) under your
 chosen name — a pane that renders, declares a key and a setting, and comments the
 one rule that catches everybody (see **Traps**). Edit it, run `check`, and it is
 live on the next save: the interface watches the directory.
@@ -532,7 +532,7 @@ cascade (a handler emitting to a handler) four generations deep per dispatch;
 the fifth is dropped and reported, so two plugins cannot pin the loop between
 them.
 
-`docs/examples/events.lua` is the worked example: it selects the session that
+`examples/lua/events.lua` is the worked example: it selects the session that
 just went `blocked`, unless you moved the selection yourself in the last few
 seconds.
 
@@ -866,7 +866,7 @@ directory, on the session's machine.
 
 **A plugin must handle not being trusted.** The capability is *absent*, not
 refusing: `run` is nil, so `command`-style error handling never fires. Check for
-it and draw something useful, as `docs/examples/composite.lua` does — that state
+it and draw something useful, as `examples/lua/composite.lua` does — that state
 is the first thing every user of your plugin will see.
 
 ## When something goes wrong
@@ -965,8 +965,8 @@ recorded. If a decision is what you want to undo, undo it in the Interface tab.
 
 ## Examples you can install
 
-Two example panes under `ui-plugins/`, neither of them bundled, plus two more under
-`docs/examples/` you copy by hand. They exist because "every pane is a file" is
+Two example panes under `examples/panes/`, neither of them bundled, plus two more under
+`examples/lua/` you copy by hand. They exist because "every pane is a file" is
 easier to believe from a pane you added yourself than from prose.
 
 **They are examples, not a catalogue.** They are here to be read and copied from,
@@ -982,17 +982,17 @@ below.
 
 | Example file | What it is |
 |---|---|
-| [`plugin.lua`](examples/plugin.lua) | what `plugin new` writes: a pane, a key, a setting |
-| [`composite.lua`](examples/composite.lua) | the worked `run` example — git status and log, on the session's own host |
-| [`events.lua`](examples/events.lua) | the worked `on_event` example — selects a session the moment it blocks, with a palette command to switch it off |
-| [`layout.lua`](examples/layout.lua) | an arrangement putting the two panes above in a column beside the agent |
+| [`plugin.lua`](../examples/lua/plugin.lua) | what `plugin new` writes: a pane, a key, a setting |
+| [`composite.lua`](../examples/lua/composite.lua) | the worked `run` example — git status and log, on the session's own host |
+| [`events.lua`](../examples/lua/events.lua) | the worked `on_event` example — selects a session the moment it blocks, with a palette command to switch it off |
+| [`layout.lua`](../examples/lua/layout.lua) | an arrangement putting the two panes above in a column beside the agent |
 
 Together they are one demo:
 
 ```bash
 thurbox-cli plugin install tasks
 thurbox-cli plugin install top
-cp docs/examples/layout.lua ~/.config/thurbox/ui/layout.lua
+cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua
 ```
 
 Each install prints the `layout.lua` line the pane needs, because a pane whose slot
@@ -1104,7 +1104,7 @@ pin  = "v2.1.0"                 # omit to take the newest at install time
 
 TOML because that is what every hand-edited registry here is, and because a bad
 edit is a parse error naming its line rather than a nil three frames later. A bare
-name resolves to `ui-plugins/<name>` in the thurbox repository at **this binary's
+name resolves to `examples/panes/<name>` in the thurbox repository at **this binary's
 release tag**, exactly as an extension name resolves to `extensions/<name>` — a
 pane reads `thurbox.*`, which is a contract that moves, so what a bare name fetches
 matches the binary asking for it. Bare names reach the *examples*; anything you

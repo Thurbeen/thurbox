@@ -146,7 +146,7 @@ blanket exemption for a leading underscore — it used to, which is why none of 
 was caught.
 
 The cost, accepted: a plugin must handle the absence, exactly as it handles a
-session having no worktree. `docs/examples/composite.lua` shows the shape — draw
+session having no worktree. `examples/lua/composite.lua` shows the shape — draw
 what is missing, not a blank pane.
 
 ## Events are derived, never raised

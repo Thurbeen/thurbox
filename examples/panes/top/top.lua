@@ -209,7 +209,7 @@ end
 
 return {
   name = "top",
-  -- Its own slot, placed by `docs/examples/layout.lua` — copy that too, or this
+  -- Its own slot, placed by `examples/lua/layout.lua` — copy that too, or this
   -- pane loads and never draws (`plugin list` says `no slot`, which is the fastest
   -- way to spot it). To use it with the SHIPPED arrangement instead, set
   -- `slot = "center"` and `slot_mode = "switch"`: it then shares the centre with

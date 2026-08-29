@@ -48,7 +48,7 @@ pub fn official_ref() -> String {
 /// Base URL for one of the repo's officially-distributed sets, pinned to this
 /// binary's release tag.
 ///
-/// Two sets use it: `extensions/` and `ui-plugins/`. Pinning to the tag is the
+/// Two sets use it: `extensions/` and `examples/panes/`. Pinning to the tag is the
 /// property worth keeping in both cases — an extension calls `thurbox-cli` and a
 /// pane reads `thurbox.*`, and both are contracts that move, so what the official
 /// source hands over should match the binary asking for it.
@@ -316,7 +316,7 @@ pub fn resolve_source(target: &str) -> ExtensionSource {
 
 /// [`resolve_source`], for a named set within the official repo.
 ///
-/// Interface plugins resolve the same way against `ui-plugins/`, so a person
+/// Interface plugins resolve the same way against `examples/panes/`, so a person
 /// learns one vocabulary — bare name, URL, path — and it covers both kinds of
 /// thing they can install. Only where a *bare name* points differs.
 pub fn resolve_source_in(target: &str, folder: &str) -> ExtensionSource {
@@ -946,7 +946,7 @@ mod tests {
                 "git@github.com:you/thurbox-widget.git",
             ),
         ] {
-            match resolve_source_in(target, "ui-plugins") {
+            match resolve_source_in(target, "examples/panes") {
                 ExtensionSource::Git(url) => assert_eq!(url, expected, "{target}"),
                 other => panic!("{target} should be a repository, got {other:?}"),
             }
@@ -954,15 +954,15 @@ mod tests {
 
         // And these must keep the meanings they already have.
         assert!(matches!(
-            resolve_source_in("https://github.com/you/thurbox-widget", "ui-plugins"),
+            resolve_source_in("https://github.com/you/thurbox-widget", "examples/panes"),
             ExtensionSource::Remote(_)
         ));
         assert!(matches!(
-            resolve_source_in("./local/pane", "ui-plugins"),
+            resolve_source_in("./local/pane", "examples/panes"),
             ExtensionSource::Local(_)
         ));
         assert!(matches!(
-            resolve_source_in("tasks", "ui-plugins"),
+            resolve_source_in("tasks", "examples/panes"),
             ExtensionSource::Remote(_)
         ));
     }

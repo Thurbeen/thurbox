@@ -2,7 +2,7 @@
 #
 # Do NOT run this directly — run `scripts/demo/record.sh search`, which builds the
 # dev binary, sets up an isolated environment, seeds one session per real agent CLI,
-# installs the `docs/examples/` demo interface, and exports $THURBOX_BIN.
+# installs the `examples/` demo interface, and exports $THURBOX_BIN.
 #
 # Requires: vhs (charmbracelet/vhs) + ffmpeg + ttyd. Search really opens on Ctrl+/
 # (plus the Ctrl+7 and Ctrl+_ encodings the kernel folds into it), none of which

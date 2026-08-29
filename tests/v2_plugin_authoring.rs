@@ -606,8 +606,8 @@ fn the_documented_example_is_a_plugin_that_loads() {
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
     let example = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("docs")
         .join("examples")
+        .join("lua")
         .join("plugin.lua");
     std::fs::copy(&example, ui.join("plugins").join("90_example.lua")).expect("copy");
 
@@ -643,8 +643,8 @@ fn the_composite_example_loads_and_declares_what_it_needs() {
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
     let example = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("docs")
         .join("examples")
+        .join("lua")
         .join("composite.lua");
     std::fs::copy(&example, ui.join("plugins").join("95_composite.lua")).expect("copy");
 
@@ -668,8 +668,8 @@ fn an_untrusted_composite_draws_how_to_trust_it_rather_than_failing() {
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
     let example = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("docs")
         .join("examples")
+        .join("lua")
         .join("composite.lua");
     std::fs::copy(&example, ui.join("plugins").join("95_composite.lua")).expect("copy");
 

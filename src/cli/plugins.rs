@@ -23,7 +23,7 @@ use super::output::CommandOutput;
 
 /// The starting point `new` writes, and the one the guide shows: one artifact, so
 /// a correct example and a broken scaffold cannot be the same release.
-const STARTER: &str = include_str!("../../docs/examples/plugin.lua");
+const STARTER: &str = include_str!("../../examples/lua/plugin.lua");
 
 /// Where a starter lands in the load order. Above every bundled pane (10–70), so
 /// a new plugin never renders between two that expect to be neighbours.

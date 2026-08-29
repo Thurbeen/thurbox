@@ -192,7 +192,7 @@ trap cleanup EXIT INT TERM
 # The two example panes are rebound for the same reason: they declare F5 and F7.
 #
 # --- The example plugins, so the main clip shows them ------------------------
-# `docs/examples/` is not bundled, and the demo it forms is the clearest thing
+# `examples/` is not bundled, and the demo it forms is the clearest thing
 # thurbox has to show: two panes nobody shipped, stacked beside the agent by an
 # arrangement anybody can copy. Installed here so the recording is of the real
 # files rather than a mock-up of them — if an example stops loading, the clip
@@ -204,9 +204,9 @@ trap cleanup EXIT INT TERM
 # overwritten on the run that mattered.
 UI_DIR="$CFG_DIR/ui"
 mkdir -p "$UI_DIR/plugins"
-cp "$REPO_ROOT/docs/examples/layout.lua" "$UI_DIR/layout.lua"
-cp "$REPO_ROOT/ui-plugins/tasks/tasks.lua" "$UI_DIR/plugins/80_tasks.lua"
-cp "$REPO_ROOT/ui-plugins/top/top.lua" "$UI_DIR/plugins/85_top.lua"
+cp "$REPO_ROOT/examples/lua/layout.lua" "$UI_DIR/layout.lua"
+cp "$REPO_ROOT/examples/panes/tasks/tasks.lua" "$UI_DIR/plugins/80_tasks.lua"
+cp "$REPO_ROOT/examples/panes/top/top.lua" "$UI_DIR/plugins/85_top.lua"
 
 # `top.lua` asks to run a program, and declaring that is not being granted it —
 # untrusted it draws "not trusted yet" instead of gauges, which is correct and

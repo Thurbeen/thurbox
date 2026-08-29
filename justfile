@@ -38,8 +38,8 @@ lint:
     cargo deny check bans licenses sources
     rumdl check .
     git ls-files -z '*.sh' | xargs -0 shellcheck
-    selene ui docs/examples ui-plugins
-    stylua --check ui docs/examples ui-plugins
+    selene ui examples
+    stylua --check ui examples
     # Absolute path required: a relative --configpath resolves against the
     # server's install dir, and a missed config reports every injected global as
     # undefined instead of erroring.
@@ -47,7 +47,7 @@ lint:
 
 # Format the Lua interface in place (the counterpart to `cargo fmt`).
 fmt-lua:
-    stylua ui docs/examples ui-plugins
+    stylua ui examples
 
 # Architecture-rule + doc checks.
 arch:

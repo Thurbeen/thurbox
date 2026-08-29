@@ -269,4 +269,4 @@ error of the selected row, so the broken file is the first thing on the list.
 
 - `docs/PLUGINS.md` in the thurbox repository — writing a plugin, start to finish
 - `docs/V2-KERNEL.md` — the kernel's shape and why it refuses things
-- `docs/examples/composite.lua` — a worked example that runs programs
+- `examples/lua/composite.lua` — a worked example that runs programs

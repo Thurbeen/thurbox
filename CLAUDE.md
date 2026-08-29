@@ -414,8 +414,8 @@ Every push to `main` automatically triggers the release workflow:
    - **Artifact relevance** (`check-release`'s `shipped` step): the diff since
      the last tag must touch something a user installs (`src/`, `tests/`,
      `build.rs`, `Cargo.toml`/`Cargo.lock`, `rust-toolchain.toml`, `Cross.toml`,
-     `extensions/`, `ui-plugins/`, `packaging/`, `scripts/install.{sh,ps1}`,
-     `cd.yml`). `extensions/` and `ui-plugins/` are there although no binary
+     `extensions/`, `examples/panes/`, `packaging/`, `scripts/install.{sh,ps1}`,
+     `cd.yml`). `extensions/` and `examples/panes/` are there although no binary
      carries them: a bare-name install resolves against the release *tag*, so a
      change never tagged is one nobody can install.
      Commit type alone over-releases: Renovate labels a GitHub-Actions pin bump
@@ -2008,8 +2008,8 @@ reviewer, asks for `run` only for the targets the kernel does not compute) and
 panel, no capabilities — everything from the snapshot). Neither is bundled or
 vendored; both are downstream consumers of the published `thurbox.*` shape.
 
-Two **example** panes live in `ui-plugins/` (`tasks`, `top`) and install by bare
-name; `docs/examples/{plugin,composite,events,layout}.lua` are copied by hand. They are
+Two **example** panes live in `examples/panes/` (`tasks`, `top`) and install by bare
+name; `examples/lua/{plugin,composite,events,layout}.lua` are copied by hand. They are
 examples to read and copy from, not a catalogue thurbox maintains for anyone —
 `EXAMPLE_PLUGINS` is the list a bare name and a typo suggestion resolve against.
 `check` fails on a pane that **loaded but which no arrangement places** — the only
@@ -2076,7 +2076,7 @@ symptom is not "reloads too often" but "stops reloading while git is busy".
 itself; platform selection is deliberately not a manifest field.
 
 **Panes are installable** (`kernel::packages`, `session::plugin_spec`). `plugins.toml`
-in the interface directory lists a `src` (a bare name resolving to `ui-plugins/<name>`
+in the interface directory lists a `src` (a bare name resolving to `examples/panes/<name>`
 at the binary's release tag, a URL, or a path — `extension_config::resolve_source_in`,
 one resolver for both kinds of thing), a destination `file`, and an optional `pin`;
 `plugins.lock` records what each resolved to plus the digest of every file delivered.
@@ -2130,7 +2130,7 @@ the file (settings → Interface → `t`). Trust is keyed by absolute path with 
 digest recorded, so a changed trusted file reads `trusted · modified`. It is
 deliberately **not a sandbox** — a program thurbox spawns has the user's authority —
 and the position is that thurbox can only refuse to run things unasked.
-`docs/examples/composite.lua` is the worked example.
+`examples/lua/composite.lua` is the worked example.
 
 The implementation lives per-call: `LuaHost::enter` stamps the current plugin and, in
 the same breath, binds `run` to the implementation or to nil, and `enter_nothing` is
@@ -2154,7 +2154,7 @@ subscription to an unknown name refuses to load, and the same table renders in
 delivers `user.<name>` to other plugins with `source` stamped by the kernel;
 cascades stop at `MAX_DEPTH`. Dispatch never marks the frame dirty itself
 (`frame-cost`); a reload drops the queue and delivers `interface.reloaded` first.
-`docs/examples/events.lua` is the worked example.
+`examples/lua/events.lua` is the worked example.
 
 **A plugin can declare chord-less commands** — `commands = { { action, desc } }`
 — which the **command palette** (`Ctrl+P`, `kernel::modals::palette`) lists

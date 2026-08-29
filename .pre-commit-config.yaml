@@ -106,14 +106,14 @@ repos:
       # runtime.
       - id: selene
         name: Lua lint
-        entry: selene ui docs/examples ui-plugins
+        entry: selene ui examples
         language: system
         types: [lua]
         pass_filenames: false
 
       - id: stylua
         name: Lua format check
-        entry: stylua --check ui docs/examples ui-plugins
+        entry: stylua --check ui examples
         language: system
         types: [lua]
         pass_filenames: false

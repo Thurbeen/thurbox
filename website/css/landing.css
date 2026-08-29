@@ -1310,7 +1310,7 @@ main {
   }
 }
 
-/* The two demo panes in the lab (docs/examples/tasks.lua and top.lua). Their
+/* The two demo panes in the lab (examples/panes/tasks and top). Their
    chips read as examples rather than as part of the bundled set, the same way
    `.is-yours` marks the one you would write. */
 .ui-lab__chip.is-demo {

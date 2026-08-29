@@ -14,7 +14,7 @@
 //! plugin can be the thing that is broken — a bad edit to it takes away the view
 //! you would use to undo the edit. That is the same argument that made help,
 //! settings and the theme picker kernel-owned, and it outranks the API test:
-//! the API is exercised by every other pane, and `docs/examples/plugin.lua` is
+//! the API is exercised by every other pane, and `examples/lua/plugin.lua` is
 //! the thing an author copies.
 //!
 //! Being chrome also removes the reachability problem that made it useless in

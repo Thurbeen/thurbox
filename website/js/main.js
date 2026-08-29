@@ -653,7 +653,7 @@
     var WEIGHT = { sessions: 1, agent: 2.4, yours: 1 };
     var FOOTER = 18;
 
-    // The `stacked right` arrangement, mirroring docs/examples/layout.lua's own
+    // The `stacked right` arrangement, mirroring examples/lua/layout.lua's own
     // numbers so the widget and the file it advertises cannot drift: a 30%-wide
     // right column split 55/45 between tasks and top, top to bottom.
     var STACK = ['tasks', 'top'];

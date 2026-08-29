@@ -583,7 +583,7 @@ fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
 
 /// The distributed panes load, and the demo arrangement stacks them where it says.
 ///
-/// `ui-plugins/` is not bundled, so nothing else would notice it rotting: a renamed
+/// `examples/panes/` is not bundled, so nothing else would notice it rotting: a renamed
 /// snapshot field or a changed `run` signature would leave the files looking fine
 /// and failing the moment somebody installed them. This builds the interface the
 /// install instructions produce and asserts the shape the header diagram promises.
@@ -592,13 +592,13 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
     let dir = interface();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     fs::copy(
-        root.join("docs/examples/layout.lua"),
+        root.join("examples/lua/layout.lua"),
         dir.path().join("layout.lua"),
     )
     .expect("layout");
     for (from, to) in [
-        ("ui-plugins/tasks/tasks.lua", "plugins/80_tasks.lua"),
-        ("ui-plugins/top/top.lua", "plugins/85_top.lua"),
+        ("examples/panes/tasks/tasks.lua", "plugins/80_tasks.lua"),
+        ("examples/panes/top/top.lua", "plugins/85_top.lua"),
     ] {
         fs::copy(root.join(from), dir.path().join(to)).expect(from);
     }
@@ -674,13 +674,13 @@ fn the_demo_layout_drops_a_stack_slot_whose_plugin_is_missing() {
     let dir = interface();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     fs::copy(
-        root.join("docs/examples/layout.lua"),
+        root.join("examples/lua/layout.lua"),
         dir.path().join("layout.lua"),
     )
     .expect("layout");
     // Only one of the two, which is the likeliest half-finished state.
     fs::copy(
-        root.join("ui-plugins/tasks/tasks.lua"),
+        root.join("examples/panes/tasks/tasks.lua"),
         dir.path().join("plugins/80_tasks.lua"),
     )
     .expect("tasks");

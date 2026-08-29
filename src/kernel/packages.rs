@@ -338,7 +338,7 @@ fn prune_empty(dir: &Path, removed: &Path) {
 }
 
 /// The directory in the thurbox repository that bare plugin names resolve against
-/// — `ui-plugins/`, laid out like `extensions/` and pinned to the same release tag
+/// — `examples/panes/`, laid out like `extensions/` and pinned to the same release tag
 /// by the same helper.
 ///
 /// Named for what it holds rather than for the mechanism it borrows: `extensions/`
@@ -349,12 +349,12 @@ fn prune_empty(dir: &Path, removed: &Path) {
 /// Pinning to the tag is worth keeping even for examples: a pane reads `thurbox.*`,
 /// a contract that moves, so what a bare name fetches matches the binary asking
 /// for it.
-pub const EXAMPLE_SET: &str = "ui-plugins";
+pub const EXAMPLE_SET: &str = "examples/panes";
 
 /// One example pane, for discovery and for typo help on a failed bare-name
 /// install.
 ///
-/// **Examples, not a supported catalogue.** What lives in `ui-plugins/` is there to
+/// **Examples, not a supported catalogue.** What lives in `examples/panes/` is there to
 /// be read and copied from — one pane that draws the `input` node kind, one that
 /// runs a program — not a set thurbox maintains on anybody's behalf. Installing one
 /// is a convenience over `cp`, and delivery treats it as the user's the moment they
@@ -362,7 +362,7 @@ pub const EXAMPLE_SET: &str = "ui-plugins";
 ///
 /// A small static list rather than a remote index, exactly as
 /// `OFFICIAL_EXTENSIONS` is (extensions really are official): a misspelled name should be caught without a network
-/// round-trip. Keep in step with `ui-plugins/<name>/`.
+/// round-trip. Keep in step with `examples/panes/<name>/`.
 pub const EXAMPLE_PLUGINS: &[(&str, &str)] = &[
     ("tasks", "A todo pane: read the snapshot, send or spawn"),
     ("top", "CPU, memory and load as gauges, parsed from `top`"),

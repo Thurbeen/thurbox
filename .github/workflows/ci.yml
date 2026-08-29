@@ -64,10 +64,9 @@ jobs:
               # only in `ui/plugins/10_sessions.lua`. Without these, a Lua-only
               # change skips clippy, nextest and both Windows jobs, and can
               # red-build main while its own PR is
-              # green. The `lua` filter below already lists all three.
+              # green. The `lua` filter below lists the same two roots.
               - 'ui/**'
-              - 'ui-plugins/**'
-              - 'docs/examples/**'
+              - 'examples/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.config/nextest.toml'
@@ -88,12 +87,11 @@ jobs:
               - '.github/workflows/ci.yml'
             lua:
               - 'ui/**'
-              # The starter is Lua that ships: it is embedded in the binary and is
-              # what `thurbox-cli plugin new` writes, so it is linted like a pane.
-              - 'docs/examples/**'
-              # And the distributed panes, which are Lua somebody installs into
-              # their interface — subject to the same sandbox as a bundled one.
-              - 'ui-plugins/**'
+              # `examples/lua/` is Lua that ships — the starter is embedded in the
+              # binary and is what `thurbox-cli plugin new` writes. `examples/panes/`
+              # is Lua somebody installs into their interface. Both are subject to
+              # the same sandbox as a bundled pane.
+              - 'examples/**'
               - 'selene.toml'
               - 'thurbox.yml'
               - 'stylua.toml'
@@ -352,9 +350,9 @@ jobs:
         # `selene.toml` points at `thurbox.yml`, the plugin VM's real standard
         # library — so this also checks that no plugin reaches for a capability
         # the kernel withholds.
-        run: selene ui docs/examples ui-plugins
+        run: selene ui examples
       - name: Check formatting
-        run: stylua --check ui docs/examples ui-plugins
+        run: stylua --check ui examples
       - name: Install lua-language-server
         # Fetched from the release like neovim's own lint job does; there is no
         # pinned action for it. Version is explicit so a new release cannot change

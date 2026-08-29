@@ -16,7 +16,7 @@
 --   * the `input` node kind, which is the one of the four that nothing bundled
 --     draws — the other three are text, box and surface
 --   * an armed destructive key, so `x` cannot delete on a mistouch
---   * a pane in a slot of its OWN, placed by `docs/examples/layout.lua` — which is
+--   * a pane in a slot of its OWN, placed by `examples/lua/layout.lua` — which is
 --     the half people forget: adding a pane is two edits, the plugin and the slot
 
 local theme = require("lib.theme")
@@ -100,7 +100,7 @@ end
 
 return {
   name = "tasks",
-  -- Its own slot, placed by `docs/examples/layout.lua` — copy that too, or this
+  -- Its own slot, placed by `examples/lua/layout.lua` — copy that too, or this
   -- pane loads and never draws (`plugin list` says `no slot`, which is the fastest
   -- way to spot it). To use it with the SHIPPED arrangement instead, set
   -- `slot = "center"` and `slot_mode = "switch"`: it then shares the centre with

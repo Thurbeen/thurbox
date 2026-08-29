@@ -2,11 +2,11 @@
 #
 # Do NOT run directly — run `scripts/demo/record.sh interface`, which builds the
 # dev binary, sets up the isolated env, seeds one session per real agent CLI,
-# installs the `docs/examples/` demo (layout + tasks + top), trusts the pane that
+# installs the `examples/` demo (layout + tasks + top), trusts the pane that
 # runs a program, and exports $THURBOX_BIN.
 #
 # This is the clip that shows what makes thurbox thurbox, and the demo interface is
-# what makes it land: two of the four panes on screen came from `docs/examples/`,
+# what makes it land: two of the four panes on screen came from `examples/panes/`,
 # so the inventory lists them as **yours** next to the bundled ones, and
 # `layout.lua` as **edited** because the demo replaced it. Those two words are the
 # provenance column doing its job — a file you wrote and a shipped file you changed
@@ -60,7 +60,7 @@ Sleep 1400ms
 Type "]"
 Sleep 2200ms
 
-# Walk down to the two panes that came from `docs/examples/`. They are marked
+# Walk down to the two panes that came from `examples/panes/`. They are marked
 # `yours`; the bundled ones above say nothing, because there is nothing to say.
 Type "j"
 Sleep 700ms

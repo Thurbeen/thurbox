@@ -78,21 +78,21 @@ fn install(src: &Path) -> thurbox::cli::output::CommandOutput {
 
 // ── what we distribute ─────────────────────────────────────────────────────
 
-/// Every example package in `ui-plugins/` installs and loads.
+/// Every example package in `examples/panes/` installs and loads.
 ///
 /// Installed from the checkout rather than by bare name, which is the same code
 /// path with a local source — the suite must not need the network, and a bare name
 /// resolves to the *published* tag, which by definition does not yet contain what
 /// is being changed here.
 ///
-/// `ui-plugins/` is not bundled, so without this nothing notices it rotting: a
+/// `examples/panes/` is not bundled, so without this nothing notices it rotting: a
 /// renamed snapshot field would leave an example looking fine and failing the moment
 /// somebody installed it — and an example that does not work is worse than none.
 #[test]
 fn every_distributed_package_installs_and_loads() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui-plugins");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/panes");
     let mut names: Vec<String> = std::fs::read_dir(&root)
-        .expect("ui-plugins/")
+        .expect("examples/panes/")
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
@@ -135,7 +135,7 @@ fn every_distributed_package_installs_and_loads() {
     for name in &names {
         assert!(
             listed.contains(&name.as_str()),
-            "{name} is in ui-plugins/ but absent from EXAMPLE_PLUGINS, so it cannot \
+            "{name} is in examples/panes/ but absent from EXAMPLE_PLUGINS, so it cannot \
              be installed by name and a typo suggests nothing: {listed:?}"
         );
     }

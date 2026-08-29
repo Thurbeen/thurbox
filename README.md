@@ -351,7 +351,7 @@ including the arrangement, which v1 compiled in. **Installable** ones sit in
 `plugins.toml` on exactly the same terms: the review pane reclaims `Ctrl+X`/`F7`
 by itself, the info panel wants one `layout.lua` line, and the two rows marked
 `—` are things v1 had no answer for at all. **CLI only** means the records and the
-commands are all there and nobody has written the pane yet — `ui-plugins/tasks`
+commands are all there and nobody has written the pane yet — `examples/panes/tasks`
 is an example pane over the same task records. The chords of the three paneless
 surfaces stay **unbound** rather than being reused, so no muscle memory quietly
 does something else.

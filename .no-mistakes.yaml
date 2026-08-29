@@ -31,7 +31,7 @@ commands:
   # `stylua --check` over the same trees, and this repo's interface is Lua: a
   # Lua fix an agent writes would otherwise reach lint unformatted and cost an
   # extra auto-fix round.
-  format: "cargo fmt --all && stylua ui docs/examples ui-plugins"
+  format: "cargo fmt --all && stylua ui examples"
 
   # test: deliberately left empty.
   #
@@ -211,7 +211,7 @@ review:
         contradictory conditions, redundant branches or unreachable code left
         behind.
 
-    - path: "ui-plugins/**"
+    - path: "examples/panes/**"
       instructions: |
         Example panes that install by bare name. The same plugin sandbox as
         ui/ applies: no os, io, debug, package or print, four node kinds only,
@@ -256,15 +256,14 @@ review:
 
     - path: "docs/**"
       instructions: |
-        Documentation prose. Do not request test coverage for it. The one
-        exception is docs/examples/*.lua, which is linted Lua rather than prose
-        and carries its own block below - blocks are additive, so both reach a
-        change there and this paragraph is the one that does not apply.
+        Documentation prose. Do not request test coverage for it. The worked
+        Lua examples that used to sit here now live under examples/lua/ and
+        carry their own block below.
 
-    - path: "docs/examples/**"
+    - path: "examples/lua/**"
       instructions: |
         Worked example panes, not prose: selene and stylua cover them under
-        `just lint`, and docs/examples/plugin.lua is embedded in the binary as
+        `just lint`, and examples/lua/plugin.lua is embedded in the binary as
         what `thurbox-cli plugin new` writes, so a break here ships a starter
         that does not load. Read them the more carefully for it - the Lua type
         check runs against ui/ only, so a type error here reaches neither
