@@ -50,6 +50,31 @@ commit() {
   [[ "$output" == *"just fixing things"* ]]
 }
 
+# A CI checkout configures no git identity, and `cog verify` resolves the
+# author before it parses the message: unlike `cog check` it panics without
+# one, which reported every commit in the history as non compliant.
+@test "a checkout with no configured git identity is still checked" {
+  commit "feat(cli): add a flag"
+  git config --unset user.name
+  git config --unset user.email
+  local bare_home="${BATS_TEST_TMPDIR}/no-identity"
+  mkdir -p "$bare_home"
+
+  run env HOME="$bare_home" GIT_CONFIG_NOSYSTEM=1 "$CHECKER"
+  [ "$status" -eq 0 ]
+
+  commit_without_identity "just fixing things"
+  run env HOME="$bare_home" GIT_CONFIG_NOSYSTEM=1 "$CHECKER"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"just fixing things"* ]]
+}
+
+# Commit $1 while the repository declares no identity of its own.
+commit_without_identity() {
+  git -c user.name=tester -c user.email=tester@example.invalid \
+    commit -q --allow-empty -m "$1"
+}
+
 @test "the gate's own CI-fix commit is exempt" {
   commit "no-mistakes: apply CI fixes"
   run "$CHECKER"

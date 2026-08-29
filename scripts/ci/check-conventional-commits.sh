@@ -23,6 +23,22 @@ GATE_SUBJECTS=(
     "no-mistakes: apply agent fixes"
 )
 
+# `cog verify` resolves the *current* git author before it parses anything and
+# panics when `user.name` is unset — which is every fresh CI checkout, where
+# nothing commits and so nothing configures an identity. `cog check` never
+# needed one, so the rewrite to `verify` turned that into 1276 "non compliant"
+# commits. The author is only printed back, never part of the verdict, so lend
+# one through a throwaway HOME (libgit2 reads `$HOME/.gitconfig`) rather than
+# writing into the repository being checked.
+if ! git config --get user.name >/dev/null 2>&1 ||
+    ! git config --get user.email >/dev/null 2>&1; then
+    borrowed_home=$(mktemp -d)
+    trap 'rm -rf "$borrowed_home"' EXIT
+    printf '[user]\n\tname = conventional commit checker\n\temail = checker@invalid\n' \
+        >"$borrowed_home/.gitconfig"
+    export HOME="$borrowed_home"
+fi
+
 # Default to every commit reachable from HEAD, which is the range `cog check`
 # walked: this repository's history starts at its first commit, not at a tag.
 range="${1:-HEAD}"
