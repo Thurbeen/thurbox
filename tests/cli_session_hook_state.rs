@@ -291,6 +291,53 @@ fn an_unverified_read_says_nothing_about_the_pane() {
 }
 
 #[test]
+fn a_session_with_no_pane_of_its_own_is_told_apart_from_a_strangers() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", home.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+
+    // A server with a window that is *not* this session's. `display-message`
+    // against a target it cannot resolve answers for the client's current pane
+    // and exits 0, so an unguarded probe reports this stranger's process as the
+    // session's foreground — a confident, entirely wrong answer.
+    tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        SESSION,
+        "-n",
+        "someone-else",
+        "sh",
+    ]);
+
+    let db = Database::open_in_memory().expect("db");
+    let row = session_row("never-launched", "claude", "local-tmux");
+    db.upsert_session(&row).expect("persist");
+    db.set_hook_state(row.id, "working").expect("signal");
+
+    let out = get(&db, row.id, true);
+    tmux(&["kill-server"]);
+
+    assert_eq!(
+        out["hook_corroboration"],
+        Value::String("unknown".into()),
+        "nothing of this session is running, and nothing may be invented: {out}"
+    );
+    assert_eq!(out["foreground_process"], Value::Null);
+    assert_eq!(
+        out["hook_state_contradicted"],
+        Value::Bool(false),
+        "an unresolvable pane disproves nothing: {out}"
+    );
+}
+
+#[test]
 fn a_working_state_over_a_bare_shell_is_reported_as_contradicted() {
     if !have_tmux() || !have_ps() {
         eprintln!("skipping: needs tmux and a ps that knows tpgid");

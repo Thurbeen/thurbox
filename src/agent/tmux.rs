@@ -1910,6 +1910,7 @@ pub fn pane_state(session_name: &str, pane_id: &str) -> PaneState {
         "#{pane_current_path}",
         "#{pane_tty}",
         "#{pane_dead}",
+        "#{window_name}",
     ]
     .join(&PANE_STATE_SEP.to_string());
 
@@ -1922,7 +1923,15 @@ pub fn pane_state(session_name: &str, pane_id: &str) -> PaneState {
         return PaneState::default();
     };
 
-    let (mut state, tty) = parse_pane_state(&raw);
+    let (mut state, tty, window) = parse_pane_state(&raw);
+    // `display-message` against a target it cannot resolve does **not** fail:
+    // it answers for the client's current pane and exits 0. Reporting a
+    // stranger's shell as this session's foreground process is the plausible
+    // wrong answer every field here is built to avoid, so the answer is only
+    // kept when it demonstrably came from this session's own window.
+    if window.as_deref() != Some(agent_window_name(session_name).as_str()) {
+        return PaneState::default();
+    }
     if let Some((argv0, command)) = tty.as_deref().and_then(foreground_process_on_tty) {
         state.foreground_process = Some(argv0);
         state.foreground_command = Some(command);
@@ -1930,11 +1939,12 @@ pub fn pane_state(session_name: &str, pane_id: &str) -> PaneState {
     state
 }
 
-/// Split one `display-message` answer into a [`PaneState`] plus the pane's tty.
+/// Split one `display-message` answer into a [`PaneState`], the pane's tty, and
+/// the name of the window it actually came from.
 ///
 /// An empty field is `None`, not an empty string: tmux prints nothing for a
 /// format it cannot expand, and "" would read downstream as a real answer.
-fn parse_pane_state(raw: &str) -> (PaneState, Option<String>) {
+fn parse_pane_state(raw: &str) -> (PaneState, Option<String>, Option<String>) {
     let line = raw.trim_end_matches(['\n', '\r']);
     let mut fields = line.split(PANE_STATE_SEP);
     let mut next = || fields.next().filter(|f| !f.is_empty());
@@ -1952,6 +1962,8 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>) {
         _ => None,
     });
 
+    let window = next().map(str::to_string);
+
     (
         PaneState {
             cursor_row,
@@ -1962,6 +1974,7 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>) {
             dead,
         },
         tty,
+        window,
     )
 }
 
@@ -3013,7 +3026,7 @@ mod tests {
 
     #[test]
     fn parse_pane_state_reads_every_field() {
-        let (state, tty) = parse_pane_state(&pane_state_answer(&[
+        let (state, tty, _) = parse_pane_state(&pane_state_answer(&[
             "12",
             "34",
             "node",
@@ -3033,7 +3046,7 @@ mod tests {
     fn parse_pane_state_keeps_a_path_with_spaces_whole() {
         // Why the separator is a control byte and not whitespace: a path may
         // contain spaces, and splitting on them would report half of one.
-        let (state, tty) = parse_pane_state(&pane_state_answer(&[
+        let (state, tty, _) = parse_pane_state(&pane_state_answer(&[
             "0",
             "0",
             "my agent",
@@ -3053,13 +3066,13 @@ mod tests {
         // A multiplexer that does not know a format expands it to nothing
         // (psmux). An empty string would read downstream as a real answer —
         // a cursor at an unknown row is not a cursor at row 0.
-        let (state, tty) = parse_pane_state(&pane_state_answer(&["", "", "", "", ""]));
+        let (state, tty, _) = parse_pane_state(&pane_state_answer(&["", "", "", "", ""]));
         assert_eq!(state, PaneState::default());
         assert_eq!(tty, None);
 
         // And a truncated answer leaves the fields it never carried absent
         // rather than shifting later values into earlier slots.
-        let (state, tty) = parse_pane_state(&pane_state_answer(&["3", "4"]));
+        let (state, tty, _) = parse_pane_state(&pane_state_answer(&["3", "4"]));
         assert_eq!(state.cursor_row, Some(3));
         assert_eq!(state.cursor_col, Some(4));
         assert_eq!(state.foreground_cwd, None);
@@ -3067,11 +3080,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_pane_state_reports_which_window_answered() {
+        // The field that makes the answer attributable: `display-message`
+        // against a target it cannot resolve answers for the client's current
+        // pane and exits 0, so without this the caller cannot tell a session's
+        // own pane from a stranger's.
+        let (_, _, window) = parse_pane_state(&pane_state_answer(&[
+            "0",
+            "0",
+            "claude",
+            "/w",
+            "/dev/pts/2",
+            "0",
+            "tb-demo",
+        ]));
+        assert_eq!(window.as_deref(), Some("tb-demo"));
+    }
+
+    #[test]
     fn parse_pane_state_reads_whether_the_panes_command_has_exited() {
         // `remain-on-exit=on` keeps a dead pane's frame, and tmux keeps naming
         // the command that died in it — so "what is running here" is only
         // answerable with this flag beside it.
-        let (state, _) = parse_pane_state(&pane_state_answer(&[
+        let (state, _, _) = parse_pane_state(&pane_state_answer(&[
             "0",
             "0",
             "claude",
@@ -3082,7 +3113,7 @@ mod tests {
         assert_eq!(state.dead, Some(true));
         assert_eq!(state.foreground_process.as_deref(), Some("claude"));
 
-        let (live, _) = parse_pane_state(&pane_state_answer(&[
+        let (live, _, _) = parse_pane_state(&pane_state_answer(&[
             "0",
             "0",
             "claude",
@@ -3094,7 +3125,7 @@ mod tests {
 
         // A multiplexer that does not know the format expands it to nothing,
         // and "not answered" is not "alive".
-        let (unknown, _) = parse_pane_state(&pane_state_answer(&[
+        let (unknown, _, _) = parse_pane_state(&pane_state_answer(&[
             "0",
             "0",
             "claude",
@@ -3109,7 +3140,7 @@ mod tests {
     fn parse_pane_state_survives_a_dead_or_missing_pane() {
         // `display-message` against a window that is gone exits 0 printing an
         // empty line — the same shape `parse_pane_dead` guards against.
-        let (state, tty) = parse_pane_state("");
+        let (state, tty, _) = parse_pane_state("");
         assert_eq!(state, PaneState::default());
         assert_eq!(tty, None);
     }
