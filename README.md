@@ -208,7 +208,7 @@ colours, so a pane you write looks right under all thirty-six.
   (`hooks.toml`). A pre-hook can refuse the operation.
 - **[OS notifications](docs/CONFIG.md)** — desktop alerts when a session needs
   you, with click-to-focus on Linux.
-- **Mouse support** — clickable rows, buttons and scrollbars, wheel scrolling,
+- **Mouse support** — clickable rows and buttons, wheel scrolling,
   drag-to-select, `Ctrl+Click` on URLs. Toggle with `mouse` in `settings.toml`.
 - **Installable panes** — a code reviewer
   ([`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review)), an
@@ -519,12 +519,8 @@ Cmd chords; everything else works there.
 
 | Key | Action |
 |-----|--------|
-| `Shift+Up` / `Shift+Down` | Scroll 1 line |
-| `Shift+PageUp` / `Shift+PageDown` | Scroll half page |
-| `Alt+PageUp` / `Alt+PageDown` | Scroll half page (fallback where the terminal claims `Shift+Page`) |
-| Mouse wheel | Scroll 3 lines |
+| `PageUp` / `PageDown` | Scroll the agent's output by 10 lines |
 | Mouse drag | Select text |
-| Any other key | Snap to bottom + forward to PTY |
 
 ## Headless CLI (`thurbox-cli`)
 
