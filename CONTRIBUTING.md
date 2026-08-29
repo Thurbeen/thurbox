@@ -203,7 +203,8 @@ doc in the **same PR**. Rationale lives in:
 - [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) — non-negotiable principles
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — architectural decisions
 - [`docs/FEATURES.md`](docs/FEATURES.md) — feature-level design choices
-- [`docs/CONFIG.md`](docs/CONFIG.md) — every config file/env var/DB setting
+- [`docs/CONFIG.md`](docs/CONFIG.md) — thurbox's own config files, env vars and
+  DB settings
 
 Comments should explain **why**, not **what** — see the Comments section of
 [`CLAUDE.md`](CLAUDE.md).
