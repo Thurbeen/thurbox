@@ -110,6 +110,15 @@ cargo-deny = "0.16.0"
 cargo-audit = "0.21.0"
 rumdl = "0.1.19"
 
+# The frame-cost instrument (`cargo bench --bench frame_cost`). Deliberately
+# `harness = false` and outside `cargo nextest`: ADR-P5 keeps wall-clock timing
+# out of the PR gate, and the deterministic assertions live in
+# `tests/kernel_frame_cost.rs`. This is the thing those assertions cannot be --
+# a number to compare a change against.
+[[bench]]
+name = "frame_cost"
+harness = false
+
 [profile.dev]
 # Our own crate: enough optimisation to be usable, still quick to rebuild.
 #
@@ -147,6 +156,13 @@ strip = false
 # a doctest example, and doctests link dev-dependencies — so this does not need
 # to be built into the shipped binaries.
 tempfile = "3"
+
+# The frame-cost bench measures the two per-frame costs a `PlaceholderSurfaces`
+# harness cannot see: converting a live vt100 grid into cells, and the link scan
+# over it. Both are already normal dependencies of the crate -- these entries add
+# nothing to the lock, they only let `benches/` name the types.
+vt100 = "0.16"
+tui-term = "0.3"
 
 # Property/fuzz testing — proves thurbox's terminal pipeline is byte- and
 # render-transparent (control_mode transport + terminal_view rendering). Runs in

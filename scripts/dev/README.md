@@ -39,6 +39,30 @@ ordinary `cargo nextest run --all` — `just smoke` runs only it — and replace
 `smoke/tui-smoke.sh`, which drove a tmux pane and could see neither the bytes
 nor a session's own terminal.
 
+## Performance
+
+`perf-run.sh` runs the **real binary under a reproducible load** — real tmux
+panes, a real vt100 grid per session, the real render loop — in the same
+isolated sandbox as everything else, with `sh` printing on a timer as the agent
+so the measurement is of thurbox rather than of whichever coding CLI is
+installed. It reports CPU from `/proc` plus the loop's own `perf_window` line,
+and keeps the full log at `target/perf-run.log`.
+
+```bash
+scripts/dev/perf-run.sh                        # 8 sessions, 1 printing, 30s
+scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62   # a working machine's shape
+scripts/dev/perf-run.sh --idle                 # the settled floor
+scripts/dev/perf-run.sh -u 0                   # no URLs in the output (ADR-P20)
+scripts/dev/perf-run.sh -w 4                   # 4 sessions `working`: the spinner clock runs
+scripts/dev/perf-run.sh -w 4                   # 4 sessions `working`, so the spinner clock runs
+scripts/dev/perf-run.sh --no-perf-log --json   # CPU alone, machine-readable
+```
+
+A reading is only comparable with another at the same size and session count,
+so pass `-s` and `-n` explicitly when recording one. Its companion is
+`cargo bench --bench frame_cost`, which measures the *pieces* of a frame rather
+than the whole binary; both are explained in `docs/PERFORMANCE.md`.
+
 ## Dev utilities (not tests)
 
 | Script | What it does |

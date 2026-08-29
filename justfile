@@ -107,6 +107,16 @@ sandbox-clean PROFILE="default":
 smoke:
     cargo nextest run --test tui_e2e
 
+# Sweep with THURBOX_BENCH_SESSIONS / _WIDTH / _HEIGHT.
+# What a frame costs, piece by piece, against the real interface.
+bench:
+    cargo bench --bench frame_cost
+
+# Pass -s and -n explicitly: a reading only compares with one at the same size.
+# What the whole binary costs under load: `just perf --idle`, `-n 19 -p 3 -s 255x62`, `-u 0`.
+perf *ARGS:
+    scripts/dev/perf-run.sh {{ARGS}}
+
 # Drive tests against a real SSH host: `just lab <host> <verb>`.
 lab HOST *ARGS:
     scripts/dev/e2e/real-host.sh {{HOST}} {{ARGS}}

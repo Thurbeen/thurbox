@@ -54,7 +54,17 @@ runs — `selene`, `stylua` and `lua-language-server`. Run `npm ci` once, or
 | `just arch` | architecture-rule + rustdoc checks |
 | `just hooks-install` | `prek install` |
 | `just smoke` | black-box TUI test: the real binary on a pty (`tests/tui_e2e.rs`) |
+| `just bench` | what a frame costs, piece by piece (`benches/frame_cost.rs`) |
+| `just perf` | what the whole binary costs under load (`scripts/dev/perf-run.sh`) |
 | `just sandbox*` | dev runtime sandbox (below) |
+
+`just bench` and `just perf` are the two measuring instruments, and they answer
+different questions: the bench times the *pieces* of a frame against the real
+`ui/`, while `just perf` runs the whole binary against real tmux panes and
+reports CPU. Neither is in CI — wall-clock timing stays out of the gate
+(ADR-P5) — and a claim from either is a paired before/after at a stated
+terminal size and session count, never a single absolute number. Both are
+explained in [`docs/PERFORMANCE.md`](PERFORMANCE.md).
 
 ## 3. Runtime sandbox — run thurbox isolated
 
