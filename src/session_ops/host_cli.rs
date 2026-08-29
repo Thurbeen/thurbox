@@ -389,9 +389,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, String> {
 
 /// Run `thurbox-cli <args> --json` on `host` and return the parsed answer.
 ///
-/// A non-zero exit is the host CLI's own error (`error: …` on stderr), passed
-/// on verbatim: it names what went wrong *there*, which is what the caller
-/// needs to show.
+/// A non-zero exit is passed on verbatim, since it names what went wrong
+/// *there*, which is what the caller needs to show: the host's stderr when it
+/// has any (a transport failure that never reached the CLI), otherwise the
+/// message from the structured error document the CLI prints on stdout.
 pub fn run(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Value, String> {
     #[cfg(test)]
     if let Some(answer) = fake::run_override(host, args) {
