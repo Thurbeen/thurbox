@@ -1599,12 +1599,23 @@ pub fn resolve_cli_binary() -> std::path::PathBuf {
 ///
 /// Returns the visible terminal text. `lines` controls how many lines of
 /// scrollback to include before the visible region (capped to a sane max).
-pub fn capture_pane_text(session_name: &str, pane_id: &str, lines: u32) -> Result<String> {
+/// With `ansi`, tmux emits the styling escape sequences too (`capture-pane
+/// -e`) instead of flattening the screen to plain text.
+pub fn capture_pane_text(
+    session_name: &str,
+    pane_id: &str,
+    lines: u32,
+    ansi: bool,
+) -> Result<String> {
     let target = agent_target(session_name, pane_id);
     let lines = lines.min(MAX_CAPTURE_LINES);
     let start = format!("-{lines}");
 
-    let output = local_mux_command(&["capture-pane", "-p", "-J", "-t", &target, "-S", &start])
+    let mut args = vec!["capture-pane", "-p", "-J", "-t", &target, "-S", &start];
+    if ansi {
+        args.push("-e");
+    }
+    let output = local_mux_command(&args)
         .output()
         .context("Failed to run tmux capture-pane")?;
     if !output.status.success() {
@@ -1642,6 +1653,172 @@ fn title_seed_bytes(host_short: &str, title: &str) -> Vec<u8> {
         return Vec::new();
     }
     format!("\x1b]2;{text}\x1b\\").into_bytes()
+}
+
+/// A session pane's live state *around* its rendered text: where the cursor
+/// sits, what is running in the foreground of its tty, and where that process
+/// thinks it is.
+///
+/// Every field is independently optional and never guessed. A multiplexer that
+/// does not answer a format (psmux expands an unknown `#{…}` to nothing), a
+/// pane that has gone away between the capture and this call, or a platform
+/// with no `ps` each leave the affected fields `None` rather than a plausible
+/// wrong value — the caller can then say "unknown" instead of acting on a
+/// fabrication.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PaneState {
+    /// Cursor row, 0-based, relative to the visible pane (`#{cursor_y}`).
+    pub cursor_row: Option<u32>,
+    /// Cursor column, 0-based (`#{cursor_x}`).
+    pub cursor_col: Option<u32>,
+    /// The foreground process's argv0 — its executable as invoked.
+    ///
+    /// Resolved from the tty's foreground process group where that is possible,
+    /// falling back to tmux's `#{pane_current_command}`. The two agree in the
+    /// common case; [`foreground_command`](Self::foreground_command) is what
+    /// says which one this is.
+    pub foreground_process: Option<String>,
+    /// The foreground process's **full** command line.
+    ///
+    /// `Some` only when the process group was really resolved, which is also
+    /// what makes this the field worth reading: a Node-based agent CLI is a
+    /// bare `node` in every command-*name* view, and only its argv distinguishes
+    /// `node …/cursor-agent/cli.js` from a REPL.
+    pub foreground_command: Option<String>,
+    /// The pane's live working directory (`#{pane_current_path}`) — where the
+    /// foreground process is, not the directory the session was launched in.
+    pub foreground_cwd: Option<String>,
+}
+
+/// Separator for the one-shot `display-message` that reads a pane's whole
+/// state. ASCII unit separator: paths and command names may contain spaces,
+/// tabs and newlines, so a whitespace delimiter would split a value in half.
+const PANE_STATE_SEP: char = '\x1f';
+
+/// Read a session pane's cursor position, foreground process and live cwd.
+///
+/// Best-effort by construction — see [`PaneState`]. One `display-message` for
+/// everything tmux knows, plus at most one `ps` to turn the cheap command
+/// *name* into the foreground process's argv. `pane_id` is the session's
+/// persisted `backend_id`, resolved the same way [`capture_pane_text`] resolves
+/// it, so the state describes the pane the capture came from.
+pub fn pane_state(session_name: &str, pane_id: &str) -> PaneState {
+    let target = agent_target(session_name, pane_id);
+    let format = [
+        "#{cursor_y}",
+        "#{cursor_x}",
+        "#{pane_current_command}",
+        "#{pane_current_path}",
+        "#{pane_tty}",
+    ]
+    .join(&PANE_STATE_SEP.to_string());
+
+    let Some(raw) = local_mux_command(&["display-message", "-p", "-t", &target, &format])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    else {
+        return PaneState::default();
+    };
+
+    let (mut state, tty) = parse_pane_state(&raw);
+    if let Some((argv0, command)) = tty.as_deref().and_then(foreground_process_on_tty) {
+        state.foreground_process = Some(argv0);
+        state.foreground_command = Some(command);
+    }
+    state
+}
+
+/// Split one `display-message` answer into a [`PaneState`] plus the pane's tty.
+///
+/// An empty field is `None`, not an empty string: tmux prints nothing for a
+/// format it cannot expand, and "" would read downstream as a real answer.
+fn parse_pane_state(raw: &str) -> (PaneState, Option<String>) {
+    let line = raw.trim_end_matches(['\n', '\r']);
+    let mut fields = line.split(PANE_STATE_SEP);
+    let mut next = || fields.next().filter(|f| !f.is_empty());
+
+    let cursor_row = next().and_then(|f| f.parse().ok());
+    let cursor_col = next().and_then(|f| f.parse().ok());
+    let command = next().map(str::to_string);
+    let cwd = next().map(str::to_string);
+    let tty = next().map(str::to_string);
+
+    (
+        PaneState {
+            cursor_row,
+            cursor_col,
+            foreground_process: command,
+            foreground_command: None,
+            foreground_cwd: cwd,
+        },
+        tty,
+    )
+}
+
+/// The `(argv0, full command line)` of `tty`'s foreground process group.
+///
+/// One `ps` listing every process on the tty: each row carries the tty's
+/// foreground process group id (`tpgid`), so the rows whose own `pgid` equals
+/// it *are* the foreground job, and the group leader is its command. Asking
+/// `ps` for `tpgid` directly (rather than opening the tty and calling
+/// `tcgetpgrp`) keeps this to a subprocess that works the same on Linux and
+/// macOS, and leaves the tty untouched.
+fn foreground_process_on_tty(tty: &str) -> Option<(String, String)> {
+    // Both procps and BSD `ps` take the bare name; the `/dev/` prefix tmux
+    // reports is accepted by neither uniformly.
+    let name = tty.strip_prefix("/dev/").unwrap_or(tty);
+    let out = Command::new("ps")
+        .args(["-o", "pid=,pgid=,tpgid=,args=", "-t", name])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())?;
+    parse_ps_foreground(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Pick the foreground job out of `ps -o pid=,pgid=,tpgid=,args= -t <tty>`.
+///
+/// The group *leader* (`pid == pgid`) is preferred over the rest of its
+/// pipeline, so a `node … | tee` reports the node. A `tpgid` of `-1` means no
+/// foreground group (nothing has the tty), and `0` is `ps` reporting it does
+/// not know — neither is a process, so both yield nothing.
+fn parse_ps_foreground(out: &str) -> Option<(String, String)> {
+    let mut leader: Option<(String, String)> = None;
+    let mut member: Option<(String, String)> = None;
+
+    for line in out.lines() {
+        let Some((pid, pgid, tpgid, args)) = parse_ps_row(line) else {
+            continue;
+        };
+        if tpgid <= 0 || pgid != tpgid || args.is_empty() {
+            continue;
+        }
+        let argv0 = args.split_whitespace().next().unwrap_or(args).to_string();
+        let found = (argv0, args.to_string());
+        if pid == pgid {
+            leader.get_or_insert(found);
+        } else {
+            member.get_or_insert(found);
+        }
+    }
+    leader.or(member)
+}
+
+/// One `ps` row: three numeric columns then the command line.
+///
+/// Split by hand rather than with `splitn`, because `ps` right-aligns its
+/// numeric columns — a narrow pid beside a wide one is padded with *several*
+/// spaces, which `splitn` hands back as empty fields.
+fn parse_ps_row(line: &str) -> Option<(i64, i64, i64, &str)> {
+    let mut rest = line.trim_start();
+    let mut nums = [0i64; 3];
+    for slot in &mut nums {
+        let end = rest.find(char::is_whitespace)?;
+        *slot = rest[..end].parse().ok()?;
+        rest = rest[end..].trim_start();
+    }
+    Some((nums[0], nums[1], nums[2], rest.trim_end()))
 }
 
 /// Convert raw `capture-pane -p` output into vt100 parser input: drop the
@@ -2508,6 +2685,131 @@ mod tests {
         // outside it. Multi-byte chars must not be split to reach it either.
         assert!(seed.len() <= MAX_TITLE_SEED_BYTES + 6, "{}", seed.len());
         assert!(std::str::from_utf8(&seed).is_ok());
+    }
+
+    // --- pane state (cursor / foreground process / live cwd) ---
+
+    /// Build the `display-message` answer tmux produces for the format
+    /// `pane_state` asks for, so the tests speak in fields rather than bytes.
+    fn pane_state_answer(fields: &[&str]) -> String {
+        format!("{}\n", fields.join(&PANE_STATE_SEP.to_string()))
+    }
+
+    #[test]
+    fn parse_pane_state_reads_every_field() {
+        let (state, tty) = parse_pane_state(&pane_state_answer(&[
+            "12",
+            "34",
+            "node",
+            "/home/u/repo",
+            "/dev/pts/7",
+        ]));
+        assert_eq!(state.cursor_row, Some(12));
+        assert_eq!(state.cursor_col, Some(34));
+        assert_eq!(state.foreground_process.as_deref(), Some("node"));
+        assert_eq!(state.foreground_cwd.as_deref(), Some("/home/u/repo"));
+        assert_eq!(tty.as_deref(), Some("/dev/pts/7"));
+        // Only the `ps` pass can fill this in — the tmux answer never does.
+        assert_eq!(state.foreground_command, None);
+    }
+
+    #[test]
+    fn parse_pane_state_keeps_a_path_with_spaces_whole() {
+        // Why the separator is a control byte and not whitespace: a path may
+        // contain spaces, and splitting on them would report half of one.
+        let (state, tty) = parse_pane_state(&pane_state_answer(&[
+            "0",
+            "0",
+            "my agent",
+            "/home/u/My Repo/sub dir",
+            "/dev/pts/1",
+        ]));
+        assert_eq!(
+            state.foreground_cwd.as_deref(),
+            Some("/home/u/My Repo/sub dir")
+        );
+        assert_eq!(state.foreground_process.as_deref(), Some("my agent"));
+        assert_eq!(tty.as_deref(), Some("/dev/pts/1"));
+    }
+
+    #[test]
+    fn parse_pane_state_reports_an_unanswered_field_as_absent() {
+        // A multiplexer that does not know a format expands it to nothing
+        // (psmux). An empty string would read downstream as a real answer —
+        // a cursor at an unknown row is not a cursor at row 0.
+        let (state, tty) = parse_pane_state(&pane_state_answer(&["", "", "", "", ""]));
+        assert_eq!(state, PaneState::default());
+        assert_eq!(tty, None);
+
+        // And a truncated answer leaves the fields it never carried absent
+        // rather than shifting later values into earlier slots.
+        let (state, tty) = parse_pane_state(&pane_state_answer(&["3", "4"]));
+        assert_eq!(state.cursor_row, Some(3));
+        assert_eq!(state.cursor_col, Some(4));
+        assert_eq!(state.foreground_cwd, None);
+        assert_eq!(tty, None);
+    }
+
+    #[test]
+    fn parse_pane_state_survives_a_dead_or_missing_pane() {
+        // `display-message` against a window that is gone exits 0 printing an
+        // empty line — the same shape `parse_pane_dead` guards against.
+        let (state, tty) = parse_pane_state("");
+        assert_eq!(state, PaneState::default());
+        assert_eq!(tty, None);
+    }
+
+    #[test]
+    fn ps_foreground_prefers_the_group_leader_over_its_pipeline() {
+        // `tpgid` is the tty's foreground group; the rows whose own `pgid`
+        // equals it are that job, and its leader is the command to report.
+        let out = "\
+ 4210  4210  4300 -bash
+ 4300  4300  4300 node /opt/cursor-agent/cli.js --resume
+ 4301  4300  4300 tee /tmp/log
+";
+        let (argv0, command) = parse_ps_foreground(out).expect("a foreground job");
+        assert_eq!(argv0, "node");
+        // The whole point of the argv: a bare command *name* is `node` for both
+        // an agent CLI and a REPL, and only this tells them apart.
+        assert_eq!(command, "node /opt/cursor-agent/cli.js --resume");
+    }
+
+    #[test]
+    fn ps_foreground_falls_back_to_a_group_member() {
+        // The leader can have exited while the rest of its group runs on.
+        let out = " 4301  4300  4300 tee /tmp/log\n";
+        assert_eq!(
+            parse_ps_foreground(out).map(|(argv0, _)| argv0),
+            Some("tee".to_string())
+        );
+    }
+
+    #[test]
+    fn ps_foreground_reports_nothing_when_nothing_holds_the_tty() {
+        // -1 is "no foreground group"; 0 is `ps` saying it does not know.
+        // Neither is a process, and reporting the background shell for either
+        // would be a plausible wrong answer rather than an honest absence.
+        assert_eq!(parse_ps_foreground(" 4210 4210 -1 -bash\n"), None);
+        assert_eq!(parse_ps_foreground(" 4210 4210 0 -bash\n"), None);
+        assert_eq!(parse_ps_foreground(""), None);
+        // A background job is not the foreground one either.
+        assert_eq!(parse_ps_foreground(" 4210 4210 4300 -bash\n"), None);
+    }
+
+    #[test]
+    fn ps_rows_survive_right_aligned_padding_and_junk() {
+        // `ps` pads its numeric columns to the widest value, so a narrow pid
+        // arrives behind several spaces — which is what `splitn` mis-parses.
+        let out = "\
+    9     9  4300 sh
+ 4300  4300  4300 vim notes.md
+ERROR: something ps printed
+";
+        assert_eq!(
+            parse_ps_foreground(out),
+            Some(("vim".to_string(), "vim notes.md".to_string()))
+        );
     }
 
     // --- history_seed_bytes tests (adopt-time scrollback seeding) ---

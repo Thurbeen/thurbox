@@ -1127,6 +1127,7 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
 thurbox-cli session create --name reviewer --repo-path /path/to/repo --agent codex
 thurbox-cli session send &lt;uuid&gt; "run the test suite"
 thurbox-cli session capture &lt;uuid&gt; --lines 500
+thurbox-cli session capture &lt;uuid&gt; --ansi --json
 thurbox-cli message send --to flow --kind questions --task 5 --body "scope?"
 thurbox-cli message inbox --for flow --claim</code></pre>
           <ul>
@@ -1153,6 +1154,36 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               ,
               <code>restore</code>
               .
+            </li>
+            <li>
+              <strong>session capture</strong>
+              &mdash; dumps the rendered pane as text (
+              <code>--lines</code>
+              defaults to 200, max 10000);
+              <code>--ansi</code>
+              keeps tmux's styling instead of flattening it. Under
+              <code>--json</code>
+              it also reports the pane's live state &mdash;
+              <code>cursor_row</code>
+              /
+              <code>cursor_col</code>
+              (0-based, relative to the visible pane),
+              <code>foreground_process</code>
+              and
+              <code>foreground_command</code>
+              (what is running in the pane's tty, as argv0 and as its full
+              command line), and
+              <code>foreground_cwd</code>
+              (where that process is now, unlike
+              <code>session get</code>
+              's
+              <code>cwd</code>
+              , which is where the session was launched). Each is
+              <code>null</code>
+              when it cannot be determined, never guessed, and the command reads
+              the local multiplexer only &mdash; a session created with
+              <code>--host</code>
+              is refused rather than reported empty.
             </li>
             <li>
               <strong>automation</strong>

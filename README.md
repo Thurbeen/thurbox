@@ -547,6 +547,7 @@ thurbox-cli session create \
   --host devbox          # optional — run on a remote host from hosts.toml
 thurbox-cli session send <uuid> "run the test suite"
 thurbox-cli session capture <uuid> --lines 500
+thurbox-cli session capture <uuid> --ansi --json   # styled text + pane state
 thurbox-cli session restart <uuid>       # kill + re-spawn with --resume
 thurbox-cli session delete <uuid>        # soft-delete (see below)
 thurbox-cli session restore <uuid>       # undo a soft-delete
@@ -557,7 +558,25 @@ thurbox-cli session restore <uuid>       # undo a soft-delete
 `--base-branch`, default `main`) creates a git worktree; `--host` creates the
 worktree and tmux window on that remote host over SSH. `send` types text into
 the session's terminal followed by Enter; `capture` dumps the rendered pane
-(`--lines` defaults to 200, max 10000).
+(`--lines` defaults to 200, max 10000). `--ansi` keeps tmux's styling in that
+text instead of flattening it; plain text stays the default.
+
+`capture --json` also reports the pane's *live* state, so an integrator reading
+a session's screen never has to drive `tmux` itself:
+
+| field | what it is |
+|---|---|
+| `cursor_row` / `cursor_col` | cursor position, 0-based, relative to the visible pane (tmux `#{cursor_y}` / `#{cursor_x}`) |
+| `foreground_process` | argv0 of the process holding the pane's tty |
+| `foreground_command` | that process's **full** command line — what tells `node …/cursor-agent/cli.js` from a bare `node` |
+| `foreground_cwd` | where that process is *now* (tmux `#{pane_current_path}`), unlike `session get`'s `cwd`, which is where the session was launched |
+
+Every one is `null` when it cannot be determined, never guessed. Resolving the
+foreground process needs a `ps` that reports `tpgid`; without one
+`foreground_process` falls back to tmux's command *name* and
+`foreground_command` is `null`. `capture` reads the **local** multiplexer only,
+so a session created with `--host` — whose pane lives on that host's own tmux
+server — is refused by name rather than reported empty.
 
 **Deleting.** `session delete <uuid>` is a soft-delete: it only marks the
 database row. A running TUI kills the tmux window once the 10-second undo

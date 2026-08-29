@@ -195,6 +195,14 @@ option, and no amount of re-reading `session get --json` will produce
 one. This is the strongest practical argument for the mailbox: it isn't
 merely nicer than polling, it's the only thing that works.
 
+What `session capture --json` *does* add is the pane's live state
+alongside its text — `cursor_row`/`cursor_col`, `foreground_process` and
+`foreground_command`, `foreground_cwd` — which is what a lead reading a
+worker's screen needs to tell "waiting at a prompt" from "still
+printing", and which agent CLI is actually in the foreground. It is
+still screen-reading, not a lifecycle field; it just means the reading
+does not have to go around thurbox to `tmux` to get it.
+
 ### Fast-forward the base branch before creating a worktree
 
 A worktree inherits whatever the *local* base branch points at, not what

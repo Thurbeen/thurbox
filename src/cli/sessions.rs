@@ -122,13 +122,26 @@ pub enum Action {
         /// Text to send.
         text: String,
     },
-    /// Capture rendered pane contents as text.
+    /// Capture rendered pane contents, plus the pane's live cursor and
+    /// foreground-process state.
+    ///
+    /// `--json` additionally reports `cursor_row`/`cursor_col` (0-based,
+    /// relative to the visible pane), `foreground_process` and
+    /// `foreground_command` (what is running in the pane's tty right now, argv0
+    /// and full command line), and `foreground_cwd` (where that process is —
+    /// unlike `session get`'s `cwd`, which is where the session was launched).
+    /// Any of them is `null` when it cannot be determined. Local sessions only:
+    /// a session created with `--host` has no pane on this machine.
     Capture {
         /// Session UUID.
         uuid: String,
         /// Scrollback lines to include (default 200, max 10000).
         #[arg(long, default_value_t = 200)]
         lines: u32,
+        /// Preserve ANSI styling in the captured text instead of flattening it
+        /// to plain text.
+        #[arg(long)]
+        ansi: bool,
     },
     /// Mark a session as the pending focus target for the running TUI.
     ///
@@ -332,31 +345,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 format!("Sent to '{}'.", session.name),
             ))
         }
-        Action::Capture { uuid, lines } => {
-            let session = resolve(db, &uuid)?;
-            let output =
-                crate::agent::tmux::capture_pane_text(&session.name, &session.backend_id, lines)
-                    .map_err(|e| format!("capture_pane_text: {e}"))?;
-            let human = output.clone();
-            Ok(CommandOutput::new(
-                json!({
-                    "session_id": session.id.to_string(),
-                    "session_name": session.name,
-                    "lines": lines,
-                    "output": output,
-                }),
-                human,
-            )
-            // `--lines` is the real control here and the caller already chose
-            // it; this cap only catches the case where those lines are far
-            // wider than anyone expected. `--json` is uncapped, which is what
-            // the `| jq -r .output` sentinel greps in the extensions rely on.
-            .truncate(CAPTURE_TEXT_CAP)
-            .help([
-                "thurbox-cli session capture <id> --lines 40   a shorter tail",
-                "thurbox-cli session send <id> <text>   type into the pane",
-            ]))
-        }
+        Action::Capture { uuid, lines, ansi } => capture_pane(db, &uuid, lines, ansi),
         Action::Focus { uuid } => {
             let session = resolve(db, &uuid)?;
             db.set_pending_focus_session_id(session.id)
@@ -413,6 +402,63 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             ))
         }
     }
+}
+
+/// Read a session's pane: its rendered text, and the live state around it.
+///
+/// The text is the whole human rendering, unchanged — the cursor position,
+/// foreground process and live cwd are additive JSON fields, so a caller that
+/// only ever read `output` sees exactly what it always did.
+///
+/// Refuses a remote session up front. `capture` has only ever read the *local*
+/// multiplexer, so a `--host` session's pane — which lives on that host's own
+/// tmux server — was already unreachable here; saying so beats the "can't find
+/// window" tmux reports for a window that was never meant to be local.
+fn capture_pane(
+    db: &Database,
+    uuid: &str,
+    lines: u32,
+    ansi: bool,
+) -> Result<CommandOutput, String> {
+    let session = resolve(db, uuid)?;
+    if crate::session::is_remote_backend(&session.backend_type) {
+        return Err(format!(
+            "Session '{}' runs on backend '{}'; capture reads the local multiplexer only",
+            session.name, session.backend_type
+        ));
+    }
+    let output =
+        crate::agent::tmux::capture_pane_text(&session.name, &session.backend_id, lines, ansi)
+            .map_err(|e| format!("capture_pane_text: {e}"))?;
+    // Read after the capture, so a pane that is simply not there fails as it
+    // always has rather than reporting a screenful of nothing with null state.
+    // Same target resolution, so the state describes the pane just captured.
+    let state = crate::agent::tmux::pane_state(&session.name, &session.backend_id);
+    let human = output.clone();
+    Ok(CommandOutput::new(
+        json!({
+            "session_id": session.id.to_string(),
+            "session_name": session.name,
+            "lines": lines,
+            "ansi": ansi,
+            "output": output,
+            "cursor_row": state.cursor_row,
+            "cursor_col": state.cursor_col,
+            "foreground_process": state.foreground_process,
+            "foreground_command": state.foreground_command,
+            "foreground_cwd": state.foreground_cwd,
+        }),
+        human,
+    )
+    // `--lines` is the real control here and the caller already chose it; this
+    // cap only catches the case where those lines are far wider than anyone
+    // expected. `--json` is uncapped, which is what the `| jq -r .output`
+    // sentinel greps in the extensions rely on.
+    .truncate(CAPTURE_TEXT_CAP)
+    .help([
+        "thurbox-cli session capture <id> --lines 40   a shorter tail",
+        "thurbox-cli session send <id> <text>   type into the pane",
+    ]))
 }
 
 /// Delete a session, reporting what `--force` teardown actually managed.
