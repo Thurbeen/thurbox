@@ -1,0 +1,179 @@
+{"name":"arrays-nested.json:encodes nested arrays of primitives","section":"9.2","input":{"pairs":[["a","b"],["c","d"]]},"expected":"pairs[2]:\n  - [2]: a,b\n  - [2]: c,d","delimiter":",","indent":2}
+{"name":"arrays-nested.json:quotes strings containing delimiters in nested arrays","section":"9.2","input":{"pairs":[["a","b"],["c,d","e:f","true"]]},"expected":"pairs[2]:\n  - [2]: a,b\n  - [3]: \"c,d\",\"e:f\",\"true\"","delimiter":",","indent":2}
+{"name":"arrays-nested.json:encodes empty inner arrays","section":"9.2","input":{"pairs":[[],[]]},"expected":"pairs[2]:\n  - [0]:\n  - [0]:","delimiter":",","indent":2}
+{"name":"arrays-nested.json:encodes mixed-length inner arrays","section":"9.2","input":{"pairs":[[1],[2,3]]},"expected":"pairs[2]:\n  - [1]: 1\n  - [2]: 2,3","delimiter":",","indent":2}
+{"name":"arrays-nested.json:encodes root-level primitive array","section":"9.1","input":["x","y","true",true,10],"expected":"[5]: x,y,\"true\",true,10","delimiter":",","indent":2}
+{"name":"arrays-nested.json:encodes root-level array of uniform objects in tabular form","section":"9.3","input":[{"id":1},{"id":2}],"expected":"[2]{id}:\n  1\n  2","delimiter":",","indent":2}
+{"name":"arrays-nested.json:encodes root-level array of non-uniform objects in list form","section":"9.4","input":[{"id":1},{"id":2,"name":"Ada"}],"expected":"[2]:\n  - id: 1\n  - id: 2\n    name: Ada","delimiter":",","indent":2}
+{"name":"arrays-nested.json:encodes root-level array mixing primitive, object, and array of objects in list form","section":"9.4","input":["summary",{"id":1,"name":"Ada"},[{"id":2},{"status":"draft"}]],"expected":"[3]:\n  - summary\n  - id: 1\n    name: Ada\n  - [2]:\n    - id: 2\n    - status: draft","delimiter":",","indent":2}
+{"name":"arrays-nested.json:encodes root-level arrays of arrays","section":"9.2","input":[[1,2],[]],"expected":"[2]:\n  - [2]: 1,2\n  - [0]:","delimiter":",","indent":2}
+{"name":"arrays-nested.json:encodes empty root-level array","section":"9.1","input":[],"expected":"[]","delimiter":",","indent":2}
+{"name":"arrays-nested.json:encodes complex nested structure","section":"8","input":{"user":{"active":true,"id":123,"name":"Ada","prefs":[],"tags":["reading","gaming"]}},"expected":"user:\n  active: true\n  id: 123\n  name: Ada\n  prefs: []\n  tags[2]: reading,gaming","delimiter":",","indent":2}
+{"name":"arrays-nested.json:uses list form for arrays mixing primitives and objects","section":"9.4","input":{"items":[1,{"a":1},"text"]},"expected":"items[3]:\n  - 1\n  - a: 1\n  - text","delimiter":",","indent":2}
+{"name":"arrays-nested.json:uses list form for arrays mixing objects and arrays","section":"9.4","input":{"items":[{"a":1},[1,2]]},"expected":"items[2]:\n  - a: 1\n  - [2]: 1,2","delimiter":",","indent":2}
+{"name":"arrays-nested.json:quotes hash-leading string as list item","section":"7.2","input":{"items":["#x",{"a":1}]},"expected":"items[2]:\n  - \"#x\"\n  - a: 1","delimiter":",","indent":2}
+{"name":"arrays-nested.json:uses list form for a tabular-eligible array in list-item position","section":"9.3","input":{"a":[[{"x":1},{"x":2}]]},"expected":"a[1]:\n  - [2]:\n    - x: 1\n    - x: 2","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses list form for objects with different fields","section":"9.4","input":{"items":[{"id":1,"name":"First"},{"extra":true,"id":2,"name":"Second"}]},"expected":"items[2]:\n  - id: 1\n    name: First\n  - extra: true\n    id: 2\n    name: Second","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses list form for objects with nested values","section":"9.4","input":{"items":[{"id":1,"nested":{"x":1}},{"id":2,"nested":{"y":2}}]},"expected":"items[2]:\n  - id: 1\n    nested:\n      x: 1\n  - id: 2\n    nested:\n      y: 2","delimiter":",","indent":2}
+{"name":"arrays-objects.json:preserves field order in list items - array first","section":"10","input":{"items":[{"name":"Ada","nums":[1,2,3]}]},"expected":"items[1]:\n  - name: Ada\n    nums[3]: 1,2,3","delimiter":",","indent":2}
+{"name":"arrays-objects.json:preserves field order in list items - primitive first","section":"10","input":{"items":[{"name":"Ada","nums":[1,2,3]}]},"expected":"items[1]:\n  - name: Ada\n    nums[3]: 1,2,3","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses list form for objects containing arrays of arrays","section":"10","input":{"items":[{"matrix":[[1,2],[3,4]],"name":"grid"}]},"expected":"items[1]:\n  - matrix[2]:\n      - [2]: 1,2\n      - [2]: 3,4\n    name: grid","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses tabular form for nested uniform object arrays","section":"10","input":{"items":[{"status":"active","users":[{"id":1,"name":"Ada"},{"id":2,"name":"Bob"}]}]},"expected":"items[1]:\n  - status: active\n    users[2]{id,name}:\n      1,Ada\n      2,Bob","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses list form for nested object arrays with mismatched keys","section":"10","input":{"items":[{"status":"active","users":[{"id":1,"name":"Ada"},{"id":2}]}]},"expected":"items[1]:\n  - status: active\n    users[2]:\n      - id: 1\n        name: Ada\n      - id: 2","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses list form for objects with multiple array fields","section":"10","input":{"items":[{"name":"test","nums":[1,2],"tags":["a","b"]}]},"expected":"items[1]:\n  - name: test\n    nums[2]: 1,2\n    tags[2]: a,b","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses list form for objects with only array fields","section":"10","input":{"items":[{"nums":[1,2,3],"tags":["a","b"]}]},"expected":"items[1]:\n  - nums[3]: 1,2,3\n    tags[2]: a,b","delimiter":",","indent":2}
+{"name":"arrays-objects.json:encodes objects with empty arrays in list form","section":"10","input":{"items":[{"data":[],"name":"Ada"}]},"expected":"items[1]:\n  - data: []\n    name: Ada","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses canonical encoding for multi-field list-item objects with tabular arrays","section":"10","input":{"items":[{"note":"x","users":[{"id":1},{"id":2}]}]},"expected":"items[1]:\n  - note: x\n    users[2]{id}:\n      1\n      2","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses canonical encoding for single-field list-item tabular arrays","section":"10","input":{"items":[{"users":[{"id":1,"name":"Ada"},{"id":2,"name":"Bob"}]}]},"expected":"items[1]:\n  - users[2]{id,name}:\n      1,Ada\n      2,Bob","delimiter":",","indent":2}
+{"name":"arrays-objects.json:places empty arrays on hyphen line when first","section":"10","input":{"items":[{"data":[],"name":"x"}]},"expected":"items[1]:\n  - data: []\n    name: x","delimiter":",","indent":2}
+{"name":"arrays-objects.json:encodes empty object list items as bare hyphen","section":"10","input":{"items":["first","second",{}]},"expected":"items[3]:\n  - first\n  - second\n  -","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses field order from first object for tabular headers","section":"9.3","input":{"items":[{"a":1,"b":2,"c":3},{"a":10,"b":20,"c":30}]},"expected":"items[2]{a,b,c}:\n  1,2,3\n  10,20,30","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses list form when one object has nested field","section":"9.4","input":{"items":[{"data":"string","id":1},{"data":{"nested":true},"id":2}]},"expected":"items[2]:\n  - data: string\n    id: 1\n  - data:\n      nested: true\n    id: 2","delimiter":",","indent":2}
+{"name":"arrays-objects.json:uses list form for arrays containing empty objects","section":"9.4","input":{"items":[{},{}]},"expected":"items[2]:\n  -\n  -","delimiter":",","indent":2}
+{"name":"arrays-objects.json:encodes a keyed-eligible object in a tabular column as a nested field group","section":"9.5","input":{"a":[{"other":9,"t":{"p":{"x":1},"q":{"x":2}}}]},"expected":"a[1]{other,t{p{x},q{x}}}:\n  9,1,2","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:encodes string arrays inline","section":"9.1","input":{"tags":["reading","gaming"]},"expected":"tags[2]: reading,gaming","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:encodes number arrays inline","section":"9.1","input":{"nums":[1,2,3]},"expected":"nums[3]: 1,2,3","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:encodes mixed primitive arrays inline","section":"9.1","input":{"data":["x","y",true,10]},"expected":"data[4]: x,y,true,10","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:encodes empty arrays","section":"9.1","input":{"items":[]},"expected":"items: []","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:encodes empty string keys for inline arrays","section":"9.1","input":{"":[1,2,3]},"expected":"\"\"[3]: 1,2,3","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:encodes empty string keys for empty arrays","section":"9.1","input":{"":[]},"expected":"\"\": []","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:encodes empty string in single-item array","section":"9.1","input":{"items":[""]},"expected":"items[1]: \"\"","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:encodes empty string in multi-item array","section":"9.1","input":{"items":["a","","b"]},"expected":"items[3]: a,\"\",b","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:encodes whitespace-only strings in arrays","section":"9.1","input":{"items":[" ","  "]},"expected":"items[2]: \" \",\"  \"","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:quotes array strings with comma","section":"9.1","input":{"items":["a","b,c","d:e"]},"expected":"items[3]: a,\"b,c\",\"d:e\"","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:quotes strings that look like booleans in arrays","section":"9.1","input":{"items":["x","true","42","-3.14"]},"expected":"items[4]: x,\"true\",\"42\",\"-3.14\"","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:quotes strings with structural meanings in arrays","section":"9.1","input":{"items":["[5]","- item","{key}"]},"expected":"items[3]: \"[5]\",\"- item\",\"{key}\"","delimiter":",","indent":2}
+{"name":"arrays-primitive.json:quotes hash-leading string in inline array","section":"7.2","input":{"tags":["#a","b"]},"expected":"tags[2]: \"#a\",b","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:encodes arrays of uniform objects in tabular form","section":"9.3","input":{"items":[{"price":9.99,"qty":2,"sku":"A1"},{"price":14.5,"qty":1,"sku":"B2"}]},"expected":"items[2]{price,qty,sku}:\n  9.99,2,A1\n  14.5,1,B2","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:encodes null values in tabular form","section":"9.3","input":{"items":[{"id":1,"value":null},{"id":2,"value":"test"}]},"expected":"items[2]{id,value}:\n  1,null\n  2,test","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:quotes strings containing delimiters in tabular rows","section":"9.3","input":{"items":[{"desc":"cool","qty":2,"sku":"A,1"},{"desc":"wip: test","qty":1,"sku":"B2"}]},"expected":"items[2]{desc,qty,sku}:\n  cool,2,\"A,1\"\n  \"wip: test\",1,B2","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:quotes ambiguous strings in tabular rows","section":"9.3","input":{"items":[{"id":1,"status":"true"},{"id":2,"status":"false"}]},"expected":"items[2]{id,status}:\n  1,\"true\"\n  2,\"false\"","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:encodes tabular arrays with keys needing quotes","section":"9.3","input":{"items":[{"full name":"Ada","order:id":1},{"full name":"Bob","order:id":2}]},"expected":"items[2]{\"full name\",\"order:id\"}:\n  Ada,1\n  Bob,2","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:encodes tabular arrays with empty string keys","section":"9.3","input":{"":[{"id":1,"name":"Ada"},{"id":2,"name":"Bob"}]},"expected":"\"\"[2]{id,name}:\n  1,Ada\n  2,Bob","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:quotes hash-leading string in tabular cell","section":"7.2","input":{"items":[{"tag":"#a"},{"tag":"b"}]},"expected":"items[2]{tag}:\n  \"#a\"\n  b","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:collapses a uniform nested object column into a nested field group","section":"9.3","input":{"orders":[{"customer":{"country":"DK","name":"Ada"},"id":1,"total":99},{"customer":{"country":"UK","name":"Bob"},"id":2,"total":149}]},"expected":"orders[2]{customer{country,name},id,total}:\n  DK,Ada,1,99\n  UK,Bob,2,149","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:collapses sibling nested field groups with depth-first row layout","section":"9.3","input":{"shipments":[{"id":"s1","receiver":{"city":"Oslo","name":"Globex"},"sender":{"city":"Berlin","name":"ACME"}}]},"expected":"shipments[1]{id,receiver{city,name},sender{city,name}}:\n  s1,Oslo,Globex,Berlin,ACME","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:collapses nested field groups recursively without a depth cap","section":"9.3","input":{"items":[{"geo":{"point":{"lat":1.5,"lon":2.5}},"id":1},{"geo":{"point":{"lat":3,"lon":4}},"id":2}]},"expected":"items[2]{geo{point{lat,lon}},id}:\n  1.5,2.5,1\n  3,4,2","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:uses the active delimiter inside nested field groups","section":"9.3","input":{"orders":[{"customer":{"country":"DK","name":"Ada"},"id":1,"total":99},{"customer":{"country":"UK","name":"Bob"},"id":2,"total":149}]},"expected":"orders[2|]{customer{country|name}|id|total}:\n  DK|Ada|1|99\n  UK|Bob|2|149","delimiter":"|","indent":2}
+{"name":"arrays-tabular.json:quotes subfield names inside nested field groups per key encoding","section":"9.3","input":{"items":[{"customer":{"country":"UK","full name":"Ada"},"id":1}]},"expected":"items[1]{customer{country,\"full name\"},id}:\n  UK,Ada,1","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:falls back to list form when nested object keys differ per row","section":"9.3","input":{"entries":[{"id":1,"meta":{"a":1}},{"id":2,"meta":{"b":2}}]},"expected":"entries[2]:\n  - id: 1\n    meta:\n      a: 1\n  - id: 2\n    meta:\n      b: 2","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:falls back to list form when a column mixes null and objects","section":"9.3","input":{"orders":[{"customer":{"name":"Ada"},"id":1},{"customer":null,"id":2}]},"expected":"orders[2]:\n  - customer:\n      name: Ada\n    id: 1\n  - customer: null\n    id: 2","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:falls back to list form when a nested object contains an array","section":"9.3","input":{"orders":[{"customer":{"name":"Ada","tags":["x"]},"id":1}]},"expected":"orders[1]:\n  - customer:\n      name: Ada\n      tags[1]: x\n    id: 1","delimiter":",","indent":2}
+{"name":"arrays-tabular.json:falls back to list form when a nested column contains an empty object","section":"9.3","input":{"items":[{"id":1,"meta":{}}]},"expected":"items[1]:\n  - id: 1\n    meta:","delimiter":",","indent":2}
+{"name":"delimiters.json:encodes primitive arrays with tab delimiter","section":"11","input":{"tags":["reading","gaming","coding"]},"expected":"tags[3\t]: reading\tgaming\tcoding","delimiter":"\t","indent":2}
+{"name":"delimiters.json:encodes primitive arrays with pipe delimiter","section":"11","input":{"tags":["reading","gaming","coding"]},"expected":"tags[3|]: reading|gaming|coding","delimiter":"|","indent":2}
+{"name":"delimiters.json:encodes primitive arrays with comma delimiter","section":"11","input":{"tags":["reading","gaming","coding"]},"expected":"tags[3]: reading,gaming,coding","delimiter":",","indent":2}
+{"name":"delimiters.json:encodes tabular arrays with tab delimiter","section":"11","input":{"items":[{"price":9.99,"qty":2,"sku":"A1"},{"price":14.5,"qty":1,"sku":"B2"}]},"expected":"items[2\t]{price\tqty\tsku}:\n  9.99\t2\tA1\n  14.5\t1\tB2","delimiter":"\t","indent":2}
+{"name":"delimiters.json:encodes tabular arrays with pipe delimiter","section":"11","input":{"items":[{"price":9.99,"qty":2,"sku":"A1"},{"price":14.5,"qty":1,"sku":"B2"}]},"expected":"items[2|]{price|qty|sku}:\n  9.99|2|A1\n  14.5|1|B2","delimiter":"|","indent":2}
+{"name":"delimiters.json:encodes nested arrays with tab delimiter","section":"11","input":{"pairs":[["a","b"],["c","d"]]},"expected":"pairs[2\t]:\n  - [2\t]: a\tb\n  - [2\t]: c\td","delimiter":"\t","indent":2}
+{"name":"delimiters.json:encodes nested arrays with pipe delimiter","section":"11","input":{"pairs":[["a","b"],["c","d"]]},"expected":"pairs[2|]:\n  - [2|]: a|b\n  - [2|]: c|d","delimiter":"|","indent":2}
+{"name":"delimiters.json:encodes root-level array with tab delimiter","section":"11","input":["x","y","z"],"expected":"[3\t]: x\ty\tz","delimiter":"\t","indent":2}
+{"name":"delimiters.json:encodes root-level array with pipe delimiter","section":"11","input":["x","y","z"],"expected":"[3|]: x|y|z","delimiter":"|","indent":2}
+{"name":"delimiters.json:encodes root-level array of objects with tab delimiter","section":"11","input":[{"id":1},{"id":2}],"expected":"[2\t]{id}:\n  1\n  2","delimiter":"\t","indent":2}
+{"name":"delimiters.json:encodes root-level array of objects with pipe delimiter","section":"11","input":[{"id":1},{"id":2}],"expected":"[2|]{id}:\n  1\n  2","delimiter":"|","indent":2}
+{"name":"delimiters.json:quotes strings containing tab delimiter","section":"11","input":{"items":["a","b\tc","d"]},"expected":"items[3\t]: a\t\"b\\tc\"\td","delimiter":"\t","indent":2}
+{"name":"delimiters.json:quotes strings containing pipe delimiter","section":"11","input":{"items":["a","b|c","d"]},"expected":"items[3|]: a|\"b|c\"|d","delimiter":"|","indent":2}
+{"name":"delimiters.json:does not quote commas with tab delimiter","section":"11","input":{"items":["a,b","c,d"]},"expected":"items[2\t]: a,b\tc,d","delimiter":"\t","indent":2}
+{"name":"delimiters.json:does not quote commas with pipe delimiter","section":"11","input":{"items":["a,b","c,d"]},"expected":"items[2|]: a,b|c,d","delimiter":"|","indent":2}
+{"name":"delimiters.json:quotes tabular values containing comma delimiter","section":"11","input":{"items":[{"id":1,"note":"a,b"},{"id":2,"note":"c,d"}]},"expected":"items[2]{id,note}:\n  1,\"a,b\"\n  2,\"c,d\"","delimiter":",","indent":2}
+{"name":"delimiters.json:does not quote commas in tabular values with tab delimiter","section":"11","input":{"items":[{"id":1,"note":"a,b"},{"id":2,"note":"c,d"}]},"expected":"items[2\t]{id\tnote}:\n  1\ta,b\n  2\tc,d","delimiter":"\t","indent":2}
+{"name":"delimiters.json:does not quote commas in object values with pipe delimiter","section":"11","input":{"note":"a,b"},"expected":"note: a,b","delimiter":"|","indent":2}
+{"name":"delimiters.json:does not quote commas in object values with tab delimiter","section":"11","input":{"note":"a,b"},"expected":"note: a,b","delimiter":"\t","indent":2}
+{"name":"delimiters.json:quotes nested array values containing pipe delimiter","section":"11","input":{"pairs":[["a","b|c"]]},"expected":"pairs[1|]:\n  - [2|]: a|\"b|c\"","delimiter":"|","indent":2}
+{"name":"delimiters.json:quotes nested array values containing tab delimiter","section":"11","input":{"pairs":[["a","b\tc"]]},"expected":"pairs[1\t]:\n  - [2\t]: a\t\"b\\tc\"","delimiter":"\t","indent":2}
+{"name":"delimiters.json:preserves ambiguity quoting regardless of delimiter","section":"11","input":{"items":["true","42","-3.14"]},"expected":"items[3|]: \"true\"|\"42\"|\"-3.14\"","delimiter":"|","indent":2}
+{"name":"objects-keyed.json:encodes objects of uniform objects in keyed tabular form","section":"9.5","input":{"servers":{"alpha":{"host":"a.example.com","port":8080},"beta":{"host":"b.example.com","port":9090}}},"expected":"servers[2:]{host,port}:\n  alpha: a.example.com,8080\n  beta: b.example.com,9090","delimiter":",","indent":2}
+{"name":"objects-keyed.json:encodes an eligible root object with a keyless keyed header","section":"9.5","input":{"alice":{"age":30,"city":"Berlin"},"bob":{"age":25,"city":"Oslo"}},"expected":"[2:]{age,city}:\n  alice: 30,Berlin\n  bob: 25,Oslo","delimiter":",","indent":2}
+{"name":"objects-keyed.json:collapses uniform nested object columns inside keyed headers","section":"9.5","input":{"regions":{"eu":{"geo":{"lat":50,"lon":10},"name":"Europe"},"us":{"geo":{"lat":40,"lon":-100},"name":"America"}}},"expected":"regions[2:]{geo{lat,lon},name}:\n  eu: 50,10,Europe\n  us: 40,-100,America","delimiter":",","indent":2}
+{"name":"objects-keyed.json:orders fields by the first entry value's encounter order","section":"9.5","input":{"m":{"a":{"x":1,"y":2},"b":{"x":3,"y":4}}},"expected":"m[2:]{x,y}:\n  a: 1,2\n  b: 3,4","delimiter":",","indent":2}
+{"name":"objects-keyed.json:uses the active delimiter in keyed headers and entry-row cells","section":"9.5","input":{"servers":{"alpha":{"host":"a.example.com","port":8080},"beta":{"host":"b.example.com","port":9090}}},"expected":"servers[2:|]{host|port}:\n  alpha: a.example.com|8080\n  beta: b.example.com|9090","delimiter":"|","indent":2}
+{"name":"objects-keyed.json:quotes entry keys per key encoding","section":"9.5","input":{"ids":{"42":{"v":1},"my key":{"v":2}}},"expected":"ids[2:]{v}:\n  \"42\": 1\n  \"my key\": 2","delimiter":",","indent":2}
+{"name":"objects-keyed.json:quotes entry-row cells containing the active delimiter","section":"9.5","input":{"notes":{"n1":{"text":"a,b"},"n2":{"text":"c"}}},"expected":"notes[2:]{text}:\n  n1: \"a,b\"\n  n2: c","delimiter":",","indent":2}
+{"name":"objects-keyed.json:keeps single-entry objects in nested form","section":"9.5","input":{"config":{"only":{"a":1,"b":2}}},"expected":"config:\n  only:\n    a: 1\n    b: 2","delimiter":",","indent":2}
+{"name":"objects-keyed.json:keeps objects in nested form when entry values have differing key sets","section":"9.5","input":{"envs":{"dev":{"host":"x"},"prod":{"host":"y","port":1}}},"expected":"envs:\n  dev:\n    host: x\n  prod:\n    host: y\n    port: 1","delimiter":",","indent":2}
+{"name":"objects-keyed.json:keeps objects in nested form when a value is primitive","section":"9.5","input":{"m":{"a":{"x":1},"b":2}},"expected":"m:\n  a:\n    x: 1\n  b: 2","delimiter":",","indent":2}
+{"name":"objects-keyed.json:keeps objects in nested form when an entry value contains an array","section":"9.5","input":{"m":{"a":{"tags":["x"]},"b":{"tags":["y"]}}},"expected":"m:\n  a:\n    tags[1]: x\n  b:\n    tags[1]: y","delimiter":",","indent":2}
+{"name":"objects-keyed.json:emits a keyed header on the hyphen line when it is the first field of a list item","section":"10","input":{"items":[{"config":{"a":{"x":1},"b":{"x":2}},"status":"ok"},{"status":"down"}]},"expected":"items[2]:\n  - config[2:]{x}:\n      a: 1\n      b: 2\n    status: ok\n  - status: down","delimiter":",","indent":2}
+{"name":"objects-keyed.json:never encodes an anonymous array element in keyed tabular form","section":"9.5","input":{"items":[{"a":{"x":1},"b":{"x":2}},5]},"expected":"items[2]:\n  - a:\n      x: 1\n    b:\n      x: 2\n  - 5","delimiter":",","indent":2}
+{"name":"objects.json:preserves key order in objects","section":"8","input":{"active":true,"id":123,"name":"Ada"},"expected":"active: true\nid: 123\nname: Ada","delimiter":",","indent":2}
+{"name":"objects.json:encodes null values in objects","section":"8","input":{"id":123,"value":null},"expected":"id: 123\nvalue: null","delimiter":",","indent":2}
+{"name":"objects.json:encodes empty objects as empty string","section":"8","input":{},"expected":"","delimiter":",","indent":2}
+{"name":"objects.json:quotes string value with colon","section":"7.2","input":{"note":"a:b"},"expected":"note: \"a:b\"","delimiter":",","indent":2}
+{"name":"objects.json:quotes string value with comma","section":"7.2","input":{"note":"a,b"},"expected":"note: \"a,b\"","delimiter":",","indent":2}
+{"name":"objects.json:quotes string value with newline","section":"7.2","input":{"text":"line1\nline2"},"expected":"text: \"line1\\nline2\"","delimiter":",","indent":2}
+{"name":"objects.json:quotes string value with embedded quotes","section":"7.2","input":{"text":"say \"hello\""},"expected":"text: \"say \\\"hello\\\"\"","delimiter":",","indent":2}
+{"name":"objects.json:quotes string value with leading space","section":"7.2","input":{"text":" padded "},"expected":"text: \" padded \"","delimiter":",","indent":2}
+{"name":"objects.json:quotes string value with only spaces","section":"7.2","input":{"text":"  "},"expected":"text: \"  \"","delimiter":",","indent":2}
+{"name":"objects.json:quotes string value that looks like true","section":"7.2","input":{"v":"true"},"expected":"v: \"true\"","delimiter":",","indent":2}
+{"name":"objects.json:quotes string value that looks like number","section":"7.2","input":{"v":"42"},"expected":"v: \"42\"","delimiter":",","indent":2}
+{"name":"objects.json:quotes string value that looks like negative decimal","section":"7.2","input":{"v":"-7.5"},"expected":"v: \"-7.5\"","delimiter":",","indent":2}
+{"name":"objects.json:quotes key with colon","section":"7.3","input":{"order:id":7},"expected":"\"order:id\": 7","delimiter":",","indent":2}
+{"name":"objects.json:quotes key with brackets","section":"7.3","input":{"[index]":5},"expected":"\"[index]\": 5","delimiter":",","indent":2}
+{"name":"objects.json:quotes key with braces","section":"7.3","input":{"{key}":5},"expected":"\"{key}\": 5","delimiter":",","indent":2}
+{"name":"objects.json:quotes key with comma","section":"7.3","input":{"a,b":1},"expected":"\"a,b\": 1","delimiter":",","indent":2}
+{"name":"objects.json:quotes key with spaces","section":"7.3","input":{"full name":"Ada"},"expected":"\"full name\": Ada","delimiter":",","indent":2}
+{"name":"objects.json:quotes key with leading hyphen","section":"7.3","input":{"-lead":1},"expected":"\"-lead\": 1","delimiter":",","indent":2}
+{"name":"objects.json:quotes key with leading and trailing spaces","section":"7.3","input":{" a ":1},"expected":"\" a \": 1","delimiter":",","indent":2}
+{"name":"objects.json:quotes numeric key","section":"7.3","input":{"123":"x"},"expected":"\"123\": x","delimiter":",","indent":2}
+{"name":"objects.json:quotes empty string key","section":"7.3","input":{"":1},"expected":"\"\": 1","delimiter":",","indent":2}
+{"name":"objects.json:quotes non-ASCII key","section":"7.3","input":{"café":1},"expected":"\"café\": 1","delimiter":",","indent":2}
+{"name":"objects.json:quotes CJK key","section":"7.3","input":{"名前":"x"},"expected":"\"名前\": x","delimiter":",","indent":2}
+{"name":"objects.json:escapes newline in key","section":"7.1","input":{"line\nbreak":1},"expected":"\"line\\nbreak\": 1","delimiter":",","indent":2}
+{"name":"objects.json:escapes tab in key","section":"7.1","input":{"tab\there":2},"expected":"\"tab\\there\": 2","delimiter":",","indent":2}
+{"name":"objects.json:escapes quotes in key","section":"7.1","input":{"he said \"hi\"":1},"expected":"\"he said \\\"hi\\\"\": 1","delimiter":",","indent":2}
+{"name":"objects.json:escapes U+0004 control character in key via \\uXXXX","section":"7.1","input":{"a\u0004b":1},"expected":"\"a\\u0004b\": 1","delimiter":",","indent":2}
+{"name":"objects.json:escapes U+001F control character in key via \\uXXXX","section":"7.1","input":{"x\u001fy":2},"expected":"\"x\\u001fy\": 2","delimiter":",","indent":2}
+{"name":"objects.json:encodes deeply nested objects","section":"8","input":{"a":{"b":{"c":"deep"}}},"expected":"a:\n  b:\n    c: deep","delimiter":",","indent":2}
+{"name":"objects.json:encodes empty nested object","section":"8","input":{"user":{}},"expected":"user:","delimiter":",","indent":2}
+{"name":"objects.json:encodes __proto__ own property as an ordinary key","section":"15","input":{"safe":true},"expected":"safe: true","delimiter":",","indent":2}
+{"name":"objects.json:encodes constructor and prototype own properties as ordinary keys","section":"15","input":{"constructor":1,"prototype":2},"expected":"constructor: 1\nprototype: 2","delimiter":",","indent":2}
+{"name":"objects.json:encodes __proto__ as a tabular field name","section":"15","input":{"rows":[{"x":1},{"x":2}]},"expected":"rows[2]{x}:\n  1\n  2","delimiter":",","indent":2}
+{"name":"objects.json:quotes hash-leading string in object field value","section":"7.2","input":{"note":"#x"},"expected":"note: \"#x\"","delimiter":",","indent":2}
+{"name":"primitives.json:encodes safe strings without quotes","section":"7.2","input":"hello","expected":"hello","delimiter":",","indent":2}
+{"name":"primitives.json:encodes safe string with underscore and numbers","section":"7.2","input":"Ada_99","expected":"Ada_99","delimiter":",","indent":2}
+{"name":"primitives.json:quotes empty string","section":"7.2","input":"","expected":"\"\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string that looks like true","section":"7.2","input":"true","expected":"\"true\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string that looks like false","section":"7.2","input":"false","expected":"\"false\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string that looks like null","section":"7.2","input":"null","expected":"\"null\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string that looks like integer","section":"7.2","input":"42","expected":"\"42\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string that looks like negative decimal","section":"7.2","input":"-3.14","expected":"\"-3.14\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string that looks like scientific notation","section":"7.2","input":"1e-6","expected":"\"1e-6\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string with leading zero","section":"7.2","input":"05","expected":"\"05\"","delimiter":",","indent":2}
+{"name":"primitives.json:escapes newline in string","section":"7.1","input":"line1\nline2","expected":"\"line1\\nline2\"","delimiter":",","indent":2}
+{"name":"primitives.json:escapes tab in string","section":"7.1","input":"tab\there","expected":"\"tab\\there\"","delimiter":",","indent":2}
+{"name":"primitives.json:escapes carriage return in string","section":"7.1","input":"return\rcarriage","expected":"\"return\\rcarriage\"","delimiter":",","indent":2}
+{"name":"primitives.json:encodes string with U+0004 control character via \\uXXXX","section":"7.1","input":{"val":"a\u0004b"},"expected":"val: \"a\\u0004b\"","delimiter":",","indent":2}
+{"name":"primitives.json:escapes backslash in string","section":"7.1","input":"C:\\Users\\path","expected":"\"C:\\\\Users\\\\path\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string with array-like syntax","section":"7.2","input":"[3]: x,y","expected":"\"[3]: x,y\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string starting with hyphen-space","section":"7.2","input":"- item","expected":"\"- item\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes single hyphen as object value","section":"7.2","input":{"marker":"-"},"expected":"marker: \"-\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string starting with hyphen as object value","section":"7.2","input":{"note":"- item"},"expected":"note: \"- item\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes single hyphen in array","section":"7.2","input":{"items":["-"]},"expected":"items[1]: \"-\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes leading-hyphen string in array","section":"7.2","input":{"tags":["a","- item","b"]},"expected":"tags[3]: a,\"- item\",b","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string with bracket notation","section":"7.2","input":"[test]","expected":"\"[test]\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string with brace notation","section":"7.2","input":"{key}","expected":"\"{key}\"","delimiter":",","indent":2}
+{"name":"primitives.json:encodes Unicode string without quotes","section":"7.2","input":"café","expected":"café","delimiter":",","indent":2}
+{"name":"primitives.json:encodes Chinese characters without quotes","section":"7.2","input":"你好","expected":"你好","delimiter":",","indent":2}
+{"name":"primitives.json:encodes emoji without quotes","section":"7.2","input":"🚀","expected":"🚀","delimiter":",","indent":2}
+{"name":"primitives.json:encodes string with emoji and spaces","section":"7.2","input":"hello 👋 world","expected":"hello 👋 world","delimiter":",","indent":2}
+{"name":"primitives.json:encodes emoji inside a quoted string","section":"7.1","input":"a,🚀","expected":"\"a,🚀\"","delimiter":",","indent":2}
+{"name":"primitives.json:encodes positive integer","section":"2","input":42,"expected":"42","delimiter":",","indent":2}
+{"name":"primitives.json:encodes decimal number","section":"2","input":3.14,"expected":"3.14","delimiter":",","indent":2}
+{"name":"primitives.json:encodes negative integer","section":"2","input":-7,"expected":"-7","delimiter":",","indent":2}
+{"name":"primitives.json:encodes zero","section":"2","input":0,"expected":"0","delimiter":",","indent":2}
+{"name":"primitives.json:encodes negative zero as zero","section":"2","input":0,"expected":"0","delimiter":",","indent":2}
+{"name":"primitives.json:encodes large integer without exponent notation","section":"2","input":1000000,"expected":"1000000","delimiter":",","indent":2}
+{"name":"primitives.json:encodes small decimal without exponent notation","section":"2","input":0.000001,"expected":"0.000001","delimiter":",","indent":2}
+{"name":"primitives.json:encodes large number","section":"2","input":100000000000000000000,"expected":"100000000000000000000","delimiter":",","indent":2}
+{"name":"primitives.json:encodes MAX_SAFE_INTEGER","section":"2","input":9007199254740991,"expected":"9007199254740991","delimiter":",","indent":2}
+{"name":"primitives.json:encodes repeating decimal with full precision","section":"2","input":0.3333333333333333,"expected":"0.3333333333333333","delimiter":",","indent":2}
+{"name":"primitives.json:encodes true","section":"2","input":true,"expected":"true","delimiter":",","indent":2}
+{"name":"primitives.json:encodes false","section":"2","input":false,"expected":"false","delimiter":",","indent":2}
+{"name":"primitives.json:encodes null","section":"2","input":null,"expected":"null","delimiter":",","indent":2}
+{"name":"primitives.json:quotes leading-plus numeric-like string","section":"7.2","input":"+1","expected":"\"+1\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string equal to hash","section":"7.2","input":"#","expected":"\"#\"","delimiter":",","indent":2}
+{"name":"primitives.json:quotes string starting with hash","section":"7.2","input":"#hello","expected":"\"#hello\"","delimiter":",","indent":2}
+{"name":"whitespace.json:produces no trailing newline at end of output","section":"12","input":{"id":123},"expected":"id: 123","delimiter":",","indent":2}
+{"name":"whitespace.json:maintains proper indentation for nested structures","section":"12","input":{"items":["a","b"],"user":{"id":123,"name":"Ada"}},"expected":"items[2]: a,b\nuser:\n  id: 123\n  name: Ada","delimiter":",","indent":2}
+{"name":"whitespace.json:respects custom indentSize option","section":"12","input":{"user":{"name":"Ada","role":"admin"}},"expected":"user:\n    name: Ada\n    role: admin","delimiter":",","indent":4}
+{"name":"whitespace.json:leaves non-ASCII whitespace unquoted","section":"7.2","input":{"k":" x "},"expected":"k:  x ","delimiter":",","indent":2}

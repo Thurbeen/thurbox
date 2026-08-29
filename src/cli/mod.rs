@@ -29,6 +29,7 @@ pub mod perf;
 pub mod plugins;
 pub mod sessions;
 pub mod tasks;
+pub mod toon;
 pub mod update;
 pub mod version;
 
