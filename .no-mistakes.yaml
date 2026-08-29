@@ -18,8 +18,12 @@ commands:
 
   # Run before the push step commits agent fixes. Deliberately not `just fmt`:
   # that also runs `npm run fmt:website`, which needs node_modules installed in
-  # the run worktree. Website formatting is a separate CI job.
-  format: "cargo fmt --all"
+  # the run worktree. Website formatting is a separate CI job. stylua is spelled
+  # out instead (`just fmt-lua`, no npm) because `just lint` enforces
+  # `stylua --check` over the same trees, and this repo's interface is Lua: a
+  # Lua fix an agent writes would otherwise reach lint unformatted and cost an
+  # extra auto-fix round.
+  format: "cargo fmt --all && stylua ui docs/examples ui-plugins"
 
   # test: deliberately left empty.
   #
@@ -73,8 +77,11 @@ document:
     owns core principles. docs/ARCHITECTURE.md owns architectural decisions and
     their ADR-NN anchors. docs/PERFORMANCE.md owns render-loop and tick
     performance decisions and their ADR-PNN anchors. docs/FEATURES.md owns
-    feature-level design choices. docs/CONFIG.md owns every config file,
-    environment variable and database setting. docs/AGENTS.md owns each
+    feature-level design choices. docs/CONFIG.md owns thurbox's own
+    configuration - every config file, environment variable and database
+    setting it reads - while CONTRIBUTING.md owns contributor workflow and the
+    configuration of external tooling such as .no-mistakes.yaml, so a
+    root-level config file is not automatically docs/CONFIG.md's. docs/AGENTS.md owns each
     built-in coding agent's exact configuration and the checklist for adding
     one. docs/V2-KERNEL.md owns the kernel's shape and its five rules, and
     docs/PLUGINS.md owns interface-plugin authoring. packaging/README.md owns
@@ -120,6 +127,17 @@ review:
         answer is current" was needed is the mistake this code base has made
         repeatedly. A change-signal is bumped inside the mutation and only when
         the value actually changed.
+
+        A newly published thurbox.* field also goes into thurbox.yml at the
+        repo root: it is selene's standard library for the Lua tree, so a field
+        LuaHost::publish adds but it does not declare is a lint error in every
+        plugin that uses it. The change originates here, in a diff that need
+        not touch ui/ at all.
+
+        This repository is test-driven: a bug fix starts with a test that
+        reproduces the bug, so it fails before the fix and passes after it. A
+        fix here that adds no test under tests/ is the case that rule exists
+        for, so say so; the tests/** guidance covers which file it belongs in.
 
         Comments explain why, never what. A stale comment is worse than none,
         so comments around touched code are fixed or deleted. This repository
@@ -189,7 +207,19 @@ review:
 
     - path: "docs/**"
       instructions: |
-        Prose changes. Do not request test coverage for them.
+        Documentation prose. Do not request test coverage for it. The one
+        exception is docs/examples/*.lua, which is linted Lua rather than prose
+        and carries its own block below - blocks are additive, so both reach a
+        change there and this paragraph is the one that does not apply.
+
+    - path: "docs/examples/**"
+      instructions: |
+        Worked example panes, not prose: selene, stylua and the Lua type check
+        cover them under `just lint`, and docs/examples/plugin.lua is embedded
+        in the binary as what `thurbox-cli plugin new` writes, so a break here
+        ships a starter that does not load. The same plugin sandbox as ui/
+        applies: no os, io, debug, package or print, four node kinds only,
+        snapshot-read and command-write, and theme roles rather than colours.
 
     - path: "website/**"
       instructions: |
