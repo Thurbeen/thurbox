@@ -1304,14 +1304,12 @@ thurbox-cli message inbox --for flow --claim</code></pre>
             <code>session delete &lt;uuid&gt;</code>
             is a
             <strong>soft-delete</strong>
-            by default: it only marks the database row deleted. The tmux window, git worktrees, and
-            any pending scheduled commands are left untouched &mdash; the running TUI cleans those
-            up on its next sync, and the session stays recoverable with
+            by default: it only marks the database row deleted. A running TUI kills the tmux window
+            once the 10-second undo window closes; the worktrees stay, which is what makes
             <code>session restore &lt;uuid&gt;</code>
-            (or
+            &mdash; or
             <code>Ctrl+Z</code>
-            in the interface, which undoes the delete you just made). Restore revives the metadata;
-            the interface re-spawns a fresh window for it.
+            in the interface, which undoes the delete you just made &mdash; lossless.
           </p>
           <p>
             Pass
