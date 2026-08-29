@@ -205,7 +205,7 @@ fn parse_session_send_no_enter_is_opt_in() {
     .unwrap();
     let Command::Session {
         action: sessions::Action::Send { no_enter, text, .. },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::Send");
     };
@@ -229,7 +229,7 @@ fn parse_session_send_takes_text_starting_with_a_dash() {
     .unwrap();
     let Command::Session {
         action: sessions::Action::Send { text, no_enter, .. },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::Send");
     };
@@ -249,7 +249,7 @@ fn parse_session_key_takes_uuid_and_key() {
     .unwrap();
     let Command::Session {
         action: sessions::Action::Key { uuid, key },
-    } = cli.command
+    } = subcommand(cli)
     else {
         panic!("expected Session::Key");
     };
