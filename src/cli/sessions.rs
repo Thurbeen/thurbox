@@ -13,6 +13,10 @@ use crate::sync::SharedSession;
 #[derive(Subcommand, Debug)]
 pub enum Action {
     /// List all active sessions.
+    ///
+    /// Each row carries the session's reported agent state plus how old that
+    /// report is and what its agent is able to report at all (`hook_state`,
+    /// `hook_state_age_secs`, `hook_coverage`, `hook_states_reportable`).
     List {
         /// Only list children of this parent session UUID.
         #[arg(long)]
@@ -21,11 +25,25 @@ pub enum Action {
         /// this machine reads, with each row's `force_deleted` mark.
         #[arg(long)]
         deleted: bool,
+        /// Also check each session's pane against its reported state.
+        ///
+        /// Off by default because it costs a multiplexer query and a `ps` **per
+        /// session**; `session get` does it for one session without asking.
+        #[arg(long)]
+        verify: bool,
     },
     /// Get a session by UUID.
+    ///
+    /// Reports the session's agent state with the age of that report, the
+    /// coverage of its agent's hooks, and — for a local session — what the
+    /// pane's foreground process says about it (`hook_corroboration`,
+    /// `hook_state_contradicted`). Pass `--no-verify` to skip the pane probe.
     Get {
         /// Session UUID.
         uuid: String,
+        /// Skip the pane check and report the stored state alone.
+        #[arg(long)]
+        no_verify: bool,
     },
     /// Create a new session (runs synchronously — tmux window live on return).
     Create {
@@ -203,6 +221,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         Action::List {
             deleted: true,
             parent: _,
+            verify: _,
         } => {
             let rows = db
                 .list_deleted_sessions()
@@ -241,6 +260,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         Action::List {
             parent,
             deleted: false,
+            verify,
         } => {
             let parent_id = parent.as_deref().map(parse_session_id).transpose()?;
             let sessions: Vec<SharedSession> = db
@@ -251,13 +271,25 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 .collect();
             let states = db.load_hook_states().unwrap_or_default();
             let bases = db.load_base_branches().unwrap_or_default();
+            let registry = crate::agent::agent_config::load_or_seed();
+            let assessments: Vec<crate::session::Assessment> = sessions
+                .iter()
+                .map(|s| assess(&registry, s, &states, verify))
+                .collect();
             let json = Value::Array(
                 sessions
                     .iter()
-                    .map(|s| session_json_with_state(s, &states, &bases))
+                    .zip(&assessments)
+                    .map(|(s, hook)| {
+                        crate::session_ops::mirror::session_to_json_assessed(
+                            s,
+                            hook,
+                            bases.get(&s.id).map(String::as_str),
+                        )
+                    })
                     .collect(),
             );
-            Ok(CommandOutput::new(json, render_session_list(&sessions))
+            Ok(CommandOutput::new(json, render_session_list(&sessions, &assessments))
                 // The id is not decoration: every follow-up command resolves a
                 // session by UUID, so omitting it would only buy a second call.
                 .list("sessions", &["name", "agent", "hook_state", "id"])
@@ -271,13 +303,19 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     "thurbox-cli session list --json   every field, for a script",
                 ]))
         }
-        Action::Get { uuid } => {
+        Action::Get { uuid, no_verify } => {
             let session = resolve(db, &uuid)?;
             let states = db.load_hook_states().unwrap_or_default();
             let bases = db.load_base_branches().unwrap_or_default();
+            let registry = crate::agent::agent_config::load_or_seed();
+            let hook = assess(&registry, &session, &states, !no_verify);
             Ok(CommandOutput::new(
-                session_json_with_state(&session, &states, &bases),
-                render_session_detail(&session),
+                crate::session_ops::mirror::session_to_json_assessed(
+                    &session,
+                    &hook,
+                    bases.get(&session.id).map(String::as_str),
+                ),
+                render_session_detail(&session, &hook),
             ))
         }
         Action::Create {
@@ -649,18 +687,23 @@ fn resolve_signal_target(db: &Database, session: Option<&str>) -> Result<SharedS
 const CAPTURE_TEXT_CAP: usize = 4000;
 
 /// Render the session list as an aligned table (or a friendly empty line).
-fn render_session_list(sessions: &[SharedSession]) -> String {
+///
+/// The STATE column is the same word `--json` reports in `state`, so the two
+/// renderings cannot disagree about what a session is doing.
+fn render_session_list(sessions: &[SharedSession], hooks: &[crate::session::Assessment]) -> String {
     if sessions.is_empty() {
         return "No active sessions.".to_string();
     }
     let rows: Vec<Vec<String>> = sessions
         .iter()
-        .map(|s| {
+        .zip(hooks)
+        .map(|(s, hook)| {
             // `dash` already maps an empty branch (no worktree) to "-".
             let branch = s.worktrees.first().map(|w| w.branch.as_str());
             vec![
                 s.name.clone(),
                 s.agent.clone(),
+                render_state(hook),
                 s.backend_type.clone(),
                 output::dash(branch),
                 output::dash(s.cwd.as_ref().map(|p| p.display().to_string()).as_deref()),
@@ -668,16 +711,49 @@ fn render_session_list(sessions: &[SharedSession]) -> String {
             ]
         })
         .collect();
-    output::table(&["NAME", "AGENT", "BACKEND", "BRANCH", "CWD", "ID"], &rows)
+    output::table(
+        &["NAME", "AGENT", "STATE", "BACKEND", "BRANCH", "CWD", "ID"],
+        &rows,
+    )
+}
+
+/// One session's state for a human: the word, how long it has stood, and a `!`
+/// when the pane contradicts it.
+///
+/// An uninstrumented session reads `uncovered`, never `idle` — the point of the
+/// whole assessment is that a consumer (human included) can tell "the agent
+/// says it is at rest" from "this agent cannot say anything".
+fn render_state(hook: &crate::session::Assessment) -> String {
+    let Some(state) = hook.state.as_deref() else {
+        return if hook.coverage == crate::session::Coverage::None {
+            "uncovered".to_string()
+        } else {
+            "unreported".to_string()
+        };
+    };
+    let mut out = state.to_string();
+    if let Some(age) = hook.age_secs {
+        out.push_str(&format!(" ({})", output::duration_short(age)));
+    }
+    if hook.contradicted == Some(true) {
+        out.push_str(" !");
+    }
+    out
 }
 
 /// Render a single session as an aligned key/value block, with any worktrees
 /// listed one per line beneath it.
-fn render_session_detail(s: &SharedSession) -> String {
-    let pairs: Vec<(&str, String)> = vec![
+fn render_session_detail(s: &SharedSession, hook: &crate::session::Assessment) -> String {
+    let mut pairs: Vec<(&str, String)> = vec![
         ("name", s.name.clone()),
         ("id", s.id.to_string()),
         ("agent", s.agent.clone()),
+        ("state", render_state(hook)),
+        (
+            "state_source",
+            output::dash(hook.state_source.map(|src| src.as_str())),
+        ),
+        ("hook_coverage", coverage_line(hook)),
         ("backend", s.backend_type.clone()),
         (
             "agent_session_id",
@@ -692,6 +768,15 @@ fn render_session_detail(s: &SharedSession) -> String {
             output::dash(s.parent_session_id.map(|id| id.to_string()).as_deref()),
         ),
     ];
+    if let Some(corroboration) = hook.corroboration {
+        pairs.push((
+            "pane",
+            match hook.foreground_process.as_deref() {
+                Some(process) => format!("{} ({process})", corroboration.as_str()),
+                None => corroboration.as_str().to_string(),
+            },
+        ));
+    }
     let mut block = output::kv(&pairs);
     for w in &s.worktrees {
         block.push_str(&format!(
@@ -701,6 +786,23 @@ fn render_session_detail(s: &SharedSession) -> String {
         ));
     }
     block
+}
+
+/// What this session's agent can report, for a human: the verdict plus the
+/// states behind it, so `partial` is never a bare word.
+fn coverage_line(hook: &crate::session::Assessment) -> String {
+    if hook.states_reportable.is_empty() {
+        return "none (this agent reports no state)".to_string();
+    }
+    let mut line = format!(
+        "{} ({})",
+        hook.coverage.as_str(),
+        hook.states_reportable.join(", ")
+    );
+    if hook.blocked_is_heuristic {
+        line.push_str("; blocked matched from notification text");
+    }
+    line
 }
 
 fn parse_session_id(uuid: &str) -> Result<SessionId, String> {
@@ -745,21 +847,57 @@ fn unknown_key(key: &str) -> String {
     format!("Unknown key '{key}'. Known keys: {names}, or ctrl-<letter> (e.g. ctrl-c).")
 }
 
-/// [`shared_session_to_json`] plus the session's persisted hooks-driven state
-/// (`hook_state`: `working`/`blocked`/`done`/`idle`, `null` when never
-/// reported). This is the **raw persisted value** written by `session signal`
-/// and the headless remote-status poll — the TUI's display status additionally
-/// derives exited→Idle and the stuck-`working` quiescence fallback, which need
-/// a live pane and don't exist headless.
-fn session_json_with_state(
+/// Everything this machine can say about a session's agent state.
+///
+/// `hook_state` itself is the **raw persisted value** written by `session
+/// signal` and the headless remote-status poll — reported verbatim, because a
+/// consumer that has always read that word must keep reading exactly it. What
+/// is added around it is the honesty the bare word lacks: how old the report
+/// is, what this agent's hooks are able to report at all, and (when `probe`)
+/// what actually holds the pane.
+///
+/// The TUI's *display* status is derived differently again — it folds in
+/// terminal quiescence and attach failures, which need a live pane and a render
+/// loop and so cannot exist here.
+///
+/// `probe` costs one multiplexer query plus one `ps`, which is why `session
+/// get` does it for one session and `session list` only on `--verify`. A
+/// **remote** session is never probed: its pane lives on its own host's
+/// multiplexer, so the answer is `unavailable` rather than a guess.
+fn assess(
+    registry: &crate::session::AgentRegistry,
     s: &SharedSession,
     states: &std::collections::HashMap<crate::session::SessionId, crate::storage::HookRow>,
-    bases: &std::collections::HashMap<crate::session::SessionId, String>,
-) -> Value {
-    crate::session_ops::mirror::session_to_json(
-        s,
-        states.get(&s.id).and_then(|r| r.state.as_deref()),
-        bases.get(&s.id).map(String::as_str),
+    probe: bool,
+) -> crate::session::Assessment {
+    let row = states.get(&s.id);
+    let hook = crate::session::Assessment::from_hooks(
+        registry,
+        &s.agent,
+        row.and_then(|r| r.state.as_deref()),
+        row.and_then(|r| r.state_at),
+        crate::sync::current_time_millis() as i64,
+    );
+    if !probe {
+        return hook;
+    }
+    if crate::session::is_remote_backend(&s.backend_type) {
+        return hook.pane_unavailable();
+    }
+    // The agent *binary*, not the agent name: `antigravity` runs `agy`, and the
+    // pane's foreground process is spelled the way it was invoked.
+    let command = registry
+        .get(&s.agent)
+        .map(|d| d.command.clone())
+        .unwrap_or_else(|| s.agent.clone());
+    let known: Vec<String> = registry.agents.iter().map(|a| a.command.clone()).collect();
+    let pane = crate::agent::tmux::pane_state(&s.name, &s.backend_id);
+    hook.with_pane(
+        &command,
+        &known,
+        pane.foreground_process.as_deref(),
+        pane.foreground_command.as_deref(),
+        pane.dead,
     )
 }
 
@@ -878,6 +1016,7 @@ mod tests {
             Action::List {
                 parent: None,
                 deleted: false,
+                verify: false,
             },
             &db,
         )
@@ -963,12 +1102,17 @@ mod tests {
             tombstone: false,
             tombstone_at: None,
         };
-        let rendered = render_session_list(std::slice::from_ref(&s));
+        let hook = crate::session::Assessment::default();
+        let rendered = render_session_list(std::slice::from_ref(&s), std::slice::from_ref(&hook));
         assert!(rendered.contains("NAME"));
         assert!(rendered.contains("demo"));
         assert!(rendered.contains("local-tmux"));
         // No worktree → branch column shows a dash.
         assert!(rendered.contains('-'));
+        // A session whose agent has no hook wiring reads `uncovered`, never
+        // `idle`: the table must not pass off silence as a report.
+        assert!(rendered.contains("STATE"));
+        assert!(rendered.contains("uncovered"), "got {rendered}");
     }
 
     #[test]
@@ -997,6 +1141,7 @@ mod tests {
             Action::List {
                 parent: None,
                 deleted: false,
+                verify: false,
             },
             &db,
         )
@@ -1047,6 +1192,7 @@ mod tests {
             Action::List {
                 parent: None,
                 deleted: false,
+                verify: false,
             },
             &db,
         )
@@ -1064,6 +1210,7 @@ mod tests {
             Action::List {
                 parent: Some(parent_id.to_string()),
                 deleted: false,
+                verify: false,
             },
             &db,
         )
@@ -1077,6 +1224,7 @@ mod tests {
             Action::List {
                 parent: Some("not-a-uuid".into()),
                 deleted: false,
+                verify: false,
             },
             &db,
         )
@@ -1090,6 +1238,7 @@ mod tests {
         let err = run(
             Action::Get {
                 uuid: "not-a-uuid".into(),
+                no_verify: true,
             },
             &db,
         )

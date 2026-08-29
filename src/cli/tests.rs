@@ -60,7 +60,8 @@ fn pretty_flag_is_global() {
         Command::Session {
             action: sessions::Action::List {
                 parent: None,
-                deleted: false
+                deleted: false,
+                verify: false,
             }
         }
     ));
@@ -315,10 +316,12 @@ fn parse_session_list_accepts_parent_filter() {
     ])
     .unwrap();
     let Command::Session {
-        action: sessions::Action::List {
-            parent,
-            deleted: false,
-        },
+        action:
+            sessions::Action::List {
+                parent,
+                deleted: false,
+                verify: false,
+            },
     } = subcommand(cli)
     else {
         panic!("expected Session::List");

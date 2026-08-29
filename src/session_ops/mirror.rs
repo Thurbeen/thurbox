@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 
 use super::host_cli::{self, CliInfo, Usable};
-use crate::session::{HostDef, SessionId};
+use crate::session::{Assessment, HostDef, SessionId};
 use crate::storage::Database;
 use crate::sync::{SharedSession, SharedWorktree};
 
@@ -106,6 +106,56 @@ pub fn session_to_json(
             "branch": w.branch,
         })).collect::<Vec<_>>(),
     })
+}
+
+/// [`session_to_json`] plus everything [`Assessment`] knows about the session's
+/// agent state: how old the report is, what its agent is able to report at all,
+/// and — when the caller looked — what the pane's foreground process says.
+///
+/// A superset of the mirror's wire shape rather than a second one, so a peer
+/// reading it with [`session_from_json`] still finds every field it knows and
+/// simply ignores the rest. `hook_state` keeps its exact meaning and value:
+/// nothing here is derived into it, so a consumer that only ever read that word
+/// is unaffected.
+pub fn session_to_json_assessed(
+    s: &SharedSession,
+    hook: &Assessment,
+    base_branch: Option<&str>,
+) -> Value {
+    let mut value = session_to_json(s, hook.hook_state.as_deref(), base_branch);
+    let Some(obj) = value.as_object_mut() else {
+        return value;
+    };
+    let mut put = |key: &str, v: Value| {
+        obj.insert(key.to_string(), v);
+    };
+    put("hook_state_at", json!(hook.state_at));
+    put("hook_state_age_secs", json!(hook.age_secs));
+    put("hook_reported", json!(hook.reported));
+    put("hook_coverage", json!(hook.coverage.as_str()));
+    put(
+        "hook_coverage_source",
+        json!(hook.coverage_source.map(|s| match s {
+            crate::session::CoverageSource::ByName => "name",
+            crate::session::CoverageSource::BySchema => "hook_schema",
+        })),
+    );
+    put("hook_states_reportable", json!(hook.states_reportable));
+    put("hook_delivery", json!(hook.delivery.map(|d| d.as_str())));
+    put(
+        "hook_blocked_is_heuristic",
+        json!(hook.blocked_is_heuristic),
+    );
+    put(
+        "hook_corroboration",
+        json!(hook.corroboration.map(|c| c.as_str())),
+    );
+    put("hook_state_contradicted", json!(hook.contradicted));
+    put("foreground_process", json!(hook.foreground_process));
+    put("foreground_command", json!(hook.foreground_command));
+    put("state", json!(hook.state));
+    put("state_source", json!(hook.state_source.map(|s| s.as_str())));
+    value
 }
 
 /// Read one session out of [`session_to_json`]'s shape, placing it on

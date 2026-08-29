@@ -2,6 +2,7 @@ pub mod agent_def;
 pub mod automation;
 pub mod extension_def;
 pub mod hook_def;
+pub mod hook_status;
 pub mod host_def;
 pub mod hyperlink;
 pub mod message;
@@ -22,6 +23,11 @@ pub use extension_def::{
 };
 pub use hook_def::{
     HookContext, HookEvent, HookWorktree, HooksFile, LifecycleHook, DEFAULT_HOOK_TIMEOUT_SECS,
+};
+pub use hook_status::{
+    age_secs, best_state, classify_foreground, contradicts, coverage_for, AgentHookCoverage,
+    Assessment, Corroboration, Coverage, CoverageSource, HookDelivery, StateSource,
+    AGENT_HOOK_COVERAGE, STATE_RUNNING,
 };
 pub use host_def::{
     is_remote_backend, is_ssh_backend, is_wsl_backend, HostDef, HostKind, HostRegistry,

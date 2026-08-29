@@ -391,6 +391,22 @@ pub fn dash(s: Option<&str>) -> String {
     }
 }
 
+/// A duration in seconds, compactly: `45s`, `12m`, `3h`, `2d`.
+///
+/// One unit, always the largest that fits, because the reader of a status table
+/// is asking "is this recent" rather than "exactly how old".
+pub fn duration_short(secs: u64) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    match secs {
+        s if s < MINUTE => format!("{s}s"),
+        s if s < HOUR => format!("{}m", s / MINUTE),
+        s if s < DAY => format!("{}h", s / HOUR),
+        s => format!("{}d", s / DAY),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +438,17 @@ mod tests {
                 "--{flag} on a tty"
             );
         }
+    }
+
+    #[test]
+    fn duration_short_picks_one_unit() {
+        assert_eq!(duration_short(0), "0s");
+        assert_eq!(duration_short(59), "59s");
+        assert_eq!(duration_short(60), "1m");
+        assert_eq!(duration_short(3_599), "59m");
+        assert_eq!(duration_short(3_600), "1h");
+        assert_eq!(duration_short(86_399), "23h");
+        assert_eq!(duration_short(86_400), "1d");
     }
 
     #[test]

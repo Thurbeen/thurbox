@@ -50,6 +50,7 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
         Action::List {
             parent: None,
             deleted: true,
+            verify: false,
         },
         &db,
     )
@@ -67,6 +68,7 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
         Action::List {
             parent: None,
             deleted: false,
+            verify: false,
         },
         &db,
     )

@@ -508,4 +508,110 @@ mod tests {
         // With opt-out set, ensure is a no-op (no install attempted).
         assert!(HOOKS.ensure(&db).is_empty());
     }
+    /// The one thing `session::hook_status`'s coverage table asserts about the
+    /// world: that each agent's shipped payload really does signal exactly the
+    /// states the table promises. A reader trusting `hook_states_reportable` is
+    /// trusting this — so it is checked against the payloads, not maintained by
+    /// hand beside them.
+    #[test]
+    fn the_coverage_table_matches_what_each_payload_actually_signals() {
+        use crate::session::hook_status::{HookDelivery, AGENT_HOOK_COVERAGE};
+
+        // Every state word that appears after the signal marker (locally) or in
+        // a payload's own state vocabulary.
+        let signalled = |payload: &str| -> Vec<&'static str> {
+            crate::session::HOOK_STATES
+                .iter()
+                .copied()
+                .filter(|state| {
+                    payload.contains(&format!("{SIGNAL_MARKER}{state}"))
+                        || payload.contains(&format!("\"{state}\""))
+                        || payload.contains(&format!("'{state}'"))
+                })
+                .collect()
+        };
+
+        let payloads: &[(&str, &str)] = &[
+            ("claude", CLAUDE_SETTINGS),
+            ("codex", CODEX_HOOKS),
+            ("antigravity", ANTIGRAVITY_HOOKS),
+            ("opencode", OPENCODE_PLUGIN),
+            ("copilot", COPILOT_HOOKS),
+            ("vibe", VIBE_HOOKS),
+            ("pi", PI_STATUS),
+            ("omp", OMP_STATUS),
+        ];
+        for (agent, payload) in payloads {
+            let claimed = AGENT_HOOK_COVERAGE
+                .iter()
+                .find(|c| c.agent == *agent)
+                .unwrap_or_else(|| panic!("{agent} is shipped a payload but claims no coverage"));
+            let mut actual = signalled(payload);
+            actual.sort_unstable();
+            let mut promised: Vec<&str> = claimed.states.to_vec();
+            promised.sort_unstable();
+            assert_eq!(
+                actual, promised,
+                "{agent}: the payload signals {actual:?} but the coverage table promises \
+                 {promised:?}"
+            );
+        }
+
+        // aider ships no payload: its whole wiring is the `--notifications-command`
+        // arg patch in the manifest, and `blocked` is all a callback can express.
+        let manifest: crate::session::ExtensionDef =
+            toml::from_str(MANIFEST).expect("manifest parses");
+        let aider = manifest
+            .agent_patches
+            .iter()
+            .find(|p| p.name == "aider")
+            .expect("aider is arg-patched");
+        assert!(aider
+            .append_args
+            .iter()
+            .any(|a| a.contains("--state blocked")));
+        let claimed = AGENT_HOOK_COVERAGE
+            .iter()
+            .find(|c| c.agent == "aider")
+            .expect("aider coverage");
+        assert_eq!(claimed.states, &["blocked"]);
+        assert_eq!(claimed.delivery, HookDelivery::Args);
+
+        // No orphan rows: everything the table names is wired by the manifest,
+        // and every config-dir path it publishes is a path the manifest writes
+        // (a diagnostic that stats the wrong file would report hooks missing).
+        let manifest_paths: Vec<&str> = manifest
+            .config_merges
+            .iter()
+            .map(|m| m.path.as_str())
+            .chain(manifest.external_files.iter().map(|f| f.path.as_str()))
+            .collect();
+        for c in AGENT_HOOK_COVERAGE {
+            let wired = payloads.iter().any(|(a, _)| *a == c.agent)
+                || manifest.agent_patches.iter().any(|p| p.name == c.agent);
+            assert!(wired, "{} claims coverage but nothing wires it", c.agent);
+            if c.hook_file_is_in_hooks_home() {
+                continue;
+            }
+            let path = c
+                .hook_file
+                .unwrap_or_else(|| panic!("{} has no hook file", c.agent));
+            assert!(
+                manifest_paths.contains(&path),
+                "{} publishes {path}, which the manifest does not write",
+                c.agent
+            );
+        }
+        // claude's file is the one the `--settings` patch points at, inside the
+        // extension's own home rather than the agent's config dir.
+        let claude = manifest
+            .agent_patches
+            .iter()
+            .find(|p| p.name == "claude")
+            .expect("claude is arg-patched");
+        assert!(claude
+            .append_args
+            .iter()
+            .any(|a| a.ends_with("/claude.json")));
+    }
 }

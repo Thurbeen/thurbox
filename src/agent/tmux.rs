@@ -1878,6 +1878,15 @@ pub struct PaneState {
     /// The pane's live working directory (`#{pane_current_path}`) — where the
     /// foreground process is, not the directory the session was launched in.
     pub foreground_cwd: Option<String>,
+    /// Whether the pane's command has **exited** (`#{pane_dead}`).
+    ///
+    /// The backend runs with `remain-on-exit=on`, so a dead pane keeps its
+    /// frame — and keeps answering `#{pane_current_command}` with whatever last
+    /// ran there. Without this, an agent that crashed reports its own name as
+    /// the foreground process: a plausible wrong answer rather than an honest
+    /// absence, which is exactly what a caller reconciling a latched state
+    /// against reality must not be handed.
+    pub dead: Option<bool>,
 }
 
 /// Separator for the one-shot `display-message` that reads a pane's whole
@@ -1900,6 +1909,7 @@ pub fn pane_state(session_name: &str, pane_id: &str) -> PaneState {
         "#{pane_current_command}",
         "#{pane_current_path}",
         "#{pane_tty}",
+        "#{pane_dead}",
     ]
     .join(&PANE_STATE_SEP.to_string());
 
@@ -1934,6 +1944,13 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>) {
     let command = next().map(str::to_string);
     let cwd = next().map(str::to_string);
     let tty = next().map(str::to_string);
+    // `1`/`0`; anything else (a multiplexer that does not know the format) is
+    // an absent answer, not a live pane.
+    let dead = next().and_then(|f| match f {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    });
 
     (
         PaneState {
@@ -1942,6 +1959,7 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>) {
             foreground_process: command,
             foreground_command: None,
             foreground_cwd: cwd,
+            dead,
         },
         tty,
     )
@@ -3046,6 +3064,45 @@ mod tests {
         assert_eq!(state.cursor_col, Some(4));
         assert_eq!(state.foreground_cwd, None);
         assert_eq!(tty, None);
+    }
+
+    #[test]
+    fn parse_pane_state_reads_whether_the_panes_command_has_exited() {
+        // `remain-on-exit=on` keeps a dead pane's frame, and tmux keeps naming
+        // the command that died in it — so "what is running here" is only
+        // answerable with this flag beside it.
+        let (state, _) = parse_pane_state(&pane_state_answer(&[
+            "0",
+            "0",
+            "claude",
+            "/w",
+            "/dev/pts/2",
+            "1",
+        ]));
+        assert_eq!(state.dead, Some(true));
+        assert_eq!(state.foreground_process.as_deref(), Some("claude"));
+
+        let (live, _) = parse_pane_state(&pane_state_answer(&[
+            "0",
+            "0",
+            "claude",
+            "/w",
+            "/dev/pts/2",
+            "0",
+        ]));
+        assert_eq!(live.dead, Some(false));
+
+        // A multiplexer that does not know the format expands it to nothing,
+        // and "not answered" is not "alive".
+        let (unknown, _) = parse_pane_state(&pane_state_answer(&[
+            "0",
+            "0",
+            "claude",
+            "/w",
+            "/dev/pts/2",
+            "",
+        ]));
+        assert_eq!(unknown.dead, None);
     }
 
     #[test]
