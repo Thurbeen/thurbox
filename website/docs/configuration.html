@@ -996,9 +996,11 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             Rebindings live in
             <code>~/.config/thurbox/ui.json</code>, beside the panes you have turned off and the
             files you trust &mdash; all three are decisions <em>you</em> made about the interface,
-            which is why they share a file. It maps an action to one or more chord strings:
+            which is why they share a file. Its
+            <code>bindings</code>
+            object maps an action id to the one chord string that action answers to:
           </p>
-          <pre data-title="ui.json"><code class="language-json">{ "keys": { "QuitApp": ["ctrl+a"], "OpenThemePicker": ["ctrl+y", "f4"] } }</code></pre>
+          <pre data-title="ui.json"><code class="language-json">{ "bindings": { "QuitApp": "ctrl+a", "OpenThemePicker": "f4" } }</code></pre>
           <ul>
             <li>
               The editing path is the

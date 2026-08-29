@@ -10,7 +10,8 @@ technical merits, and help newcomers find their footing.
 
 ## Getting started
 
-1. **Clone** the repository — you can push branches directly, no fork needed.
+1. **Clone** the repository — push branches directly if you have write access,
+   otherwise fork first and branch there.
 2. **Create a branch** off `main` (`git switch -c feat/my-change`).
 3. **Set up the toolchain** (below).
 4. **Make your change**, with tests.

@@ -375,8 +375,8 @@ and exits non-zero. Full detail:
 
 A session launches exactly one coding-agent CLI. Agents are described as data in
 `~/.config/thurbox/agents.toml`, seeded with built-ins (claude, codex,
-antigravity, opencode, aider, copilot, vibe) on first run. Edit the file to
-tweak an agent or add a new one — no recompile.
+antigravity, opencode, aider, copilot, vibe, pi, omp) on first run. Edit the
+file to tweak an agent or add a new one — no recompile.
 
 Each `[[agents]]` entry maps the resume / fork / new-session ids onto
 argument-template groups. `args` is always passed (bake in any flags you want,
@@ -793,7 +793,8 @@ scopes: `api`, `cli`, `ui`, `git`, `core`, `docs`, `deps`, `config`, `mcp`.
 
 ## Contributing
 
-1. Fork the repository and create a feature branch
+1. Clone the repository and create a feature branch — push it directly if you
+   have write access, otherwise fork first and branch there
 2. Make your changes; keep lines under 100 chars and `clippy` clean
 3. Write tests for new functionality
 4. Ensure `cargo nextest run --all` passes
