@@ -366,7 +366,13 @@ cat "$LOG_DIR"/thurbox.log* > "$KEPT_LOG" 2>/dev/null || true
 
 tmux -L "$TBX_DEV_SOCKET" kill-session -t perf-harness >/dev/null 2>&1 || true
 
-field() { echo "$WINDOW" | grep -o "$1=[0-9]*" | head -1 | cut -d= -f2; }
+# A missing field must read 0, not the empty string: the pipeline's exit status
+# is `cut`'s, which succeeds on no input, so a caller-side `|| echo 0` never
+# fires and the JSON line comes out syntactically invalid.
+field() {
+    value="$(echo "$WINDOW" | grep -o "$1=[0-9]*" | head -1 | cut -d= -f2)"
+    echo "${value:-0}"
+}
 
 if [ "$JSON" = "1" ]; then
     printf '{"sessions":%s,"printing":%s,"working":%s,"rate":%s,"url_every":%s,' \
@@ -375,10 +381,10 @@ if [ "$JSON" = "1" ]; then
     printf '"cpu_render_thread_pct":%s,"cpu_all_threads_pct":%s,' \
         "$main_pct" "$all_pct"
     printf '"frame_p50_us":%s,"frame_p95_us":%s,"republish_p50_us":%s,"tick_p50_us":%s,' \
-        "$(field frame_p50_us || echo 0)" "$(field frame_p95_us || echo 0)" \
-        "$(field republish_p50_us || echo 0)" "$(field tick_p50_us || echo 0)"
+        "$(field frame_p50_us)" "$(field frame_p95_us)" \
+        "$(field republish_p50_us)" "$(field tick_p50_us)"
     printf '"frames":%s,"iterations":%s}\n' \
-        "$(field frames || echo 0)" "$(field iterations || echo 0)"
+        "$(field frames)" "$(field iterations)"
     exit 0
 fi
 

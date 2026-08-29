@@ -80,6 +80,7 @@ fn install_clock(
             Ok(Value::Nil)
         })?,
     )?;
+    meta.set("__metatable", false)?;
     lua.set_named_registry_value(CTX_META, meta)
 }
 

@@ -1007,6 +1007,52 @@ fn a_non_string_index_on_the_render_context_is_nil_rather_than_an_error() {
 }
 
 #[test]
+fn a_plugin_cannot_reach_or_replace_the_render_context_metatable() {
+    // The metatable is built once per VM and shared by every render, and both
+    // `getmetatable` and `setmetatable` are in the sandbox. Handing it out would
+    // let one plugin rewrite `__index` and freeze every other pane's clock —
+    // and silently make the kernel's "did this render read it" answer false
+    // everywhere. `__metatable` is what makes it neither readable nor settable
+    // from Lua, the same boundary `RUN_IMPL` gets from the registry.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let plugins = dir.path().join("plugins");
+    std::fs::create_dir_all(&plugins).expect("mkdir");
+    std::fs::write(
+        plugins.join("10_prober.lua"),
+        r#"return { name = "prober", slot = "left",
+             render = function(ctx)
+               local hidden = getmetatable(ctx) == false
+               local refused = not pcall(setmetatable, ctx, { __index = function() end })
+               return { text = "hidden " .. tostring(hidden)
+                          .. " refused " .. tostring(refused)
+                          .. " clock " .. tostring(math.floor(ctx.elapsed or -1)) }
+             end }"#,
+    )
+    .expect("write");
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish_at(
+        &host,
+        Epoch::default(),
+        &Snapshot::default(),
+        &Themes::load(None),
+    );
+    let painted = render_at(&host, "prober", 5.0);
+    assert!(
+        painted.contains("hidden true"),
+        "the metatable was handed to the plugin: {painted}"
+    );
+    assert!(
+        painted.contains("refused true"),
+        "a plugin replaced the shared metatable: {painted}"
+    );
+    assert!(
+        painted.contains("clock 5"),
+        "the clock stopped being served: {painted}"
+    );
+}
+
+#[test]
 fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
     // The transition, which is where a learned optimisation would go wrong: a
     // pane may only consult the clock under some condition — the session list
