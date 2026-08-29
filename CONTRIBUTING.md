@@ -74,12 +74,50 @@ Slash-command workflows and skills are checked in for both:
 
 | Kind | Claude Code | opencode | Notes |
 |------|-------------|----------|-------|
-| Commands (`/refactor`, `/ship`, `/sync`) | `.claude/commands/` | `.opencode/commands/` | opencode does **not** auto-discover `.claude/commands/`, so the two are kept in sync by hand |
-| Skills (`publish`, `ui-review`) | `.claude/skills/` | `.claude/skills/` | opencode auto-discovers `.claude/skills/`, so one copy serves both — don't mirror them under `.opencode/skills/` (it would double-register) |
+| Commands (`/ship`, `/sync`) | `.claude/commands/` | `.opencode/commands/` | opencode does **not** auto-discover `.claude/commands/`, so the two are kept in sync by hand |
+| Skills (`ui-review`) | `.claude/skills/` | `.claude/skills/` | opencode auto-discovers `.claude/skills/`, so one copy serves both — don't mirror them under `.opencode/skills/` (it would double-register) |
 
 A minimal [`opencode.json`](opencode.json) declares the `$schema` for editor
 validation. When you add or change a command, update **both** directories so the
 two agents stay in sync.
+
+### The no-mistakes gate
+
+Reviewing and shipping a change is the job of
+[no-mistakes](https://github.com/kunchenguid/no-mistakes), a local gate that
+runs the change through one pipeline — intent, rebase, review, test, document,
+lint, push, PR, then watching CI and rebasing the branch itself when the base
+moves. It replaces the checked-in `/publish` skill and `/refactor` command,
+which did the same work by hand and with none of that pipeline's gating.
+
+Set it up once per checkout with `no-mistakes init`, then drive it from your
+agent with `/no-mistakes` or by hand with `no-mistakes axi run --intent "..."`.
+The lint step runs `just lint`, so the gate needs the same dev toolchain the
+manual workflow does.
+
+[`.no-mistakes.yaml`](.no-mistakes.yaml) at the repo root configures it — the
+lint and format commands, the paths excluded from review, this repo's
+documentation ownership map, and the per-path house rules the reviewer is given.
+That file is its own owner: it is external tooling, so it is described here
+rather than in [`docs/CONFIG.md`](docs/CONFIG.md), which covers thurbox's own
+configuration. Note that the gate reads the fields that steer its behaviour
+(`commands`, `document.instructions`, `review.path_instructions`) from **main**
+rather than from your branch, so an edit to them only takes effect once merged.
+
+The code-quality rubric those two workflows carried did not go away with them:
+it is the per-path guidance in `review.path_instructions`, so the gate's
+reviewer applies it to every change instead of only to the changes someone
+remembered to run a command on. Extend that file rather than reintroducing a
+review command.
+
+One discipline the gate cannot do for you, because it validates committed
+history rather than your working tree: **stage deliberately**. Commit the files
+that belong to the change and nothing else — never `git add -A` on a dirty
+tree — and keep credentials, `.env` files, keys, large binaries and scratch
+files out of the commit. Preserve unrelated uncommitted work you found in the
+tree instead of sweeping it into the branch. A change that carries someone
+else's work in progress is one the reviewer has no way to tell apart from
+yours.
 
 ## Testing
 

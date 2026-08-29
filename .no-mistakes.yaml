@@ -1,0 +1,202 @@
+# no-mistakes gate configuration for thurbox.
+#
+# Reference: https://kunchenguid.github.io/no-mistakes/reference/repo-config/
+#
+# Gate-control fields (commands.*, agent, document.instructions,
+# review.path_instructions, ci.rerun_transient, no_ci, disable_project_settings)
+# are read only from the trusted default branch, never from a pushed branch, so
+# a contributor cannot weaken the gate that reviews their own change. Editing
+# any of them takes effect once the change is merged to main.
+
+commands:
+  # The repo's canonical gate, byte-for-byte what CI lints: rustfmt, clippy
+  # -D warnings, cargo-deny, rumdl, shellcheck, selene, stylua and the Lua
+  # type check. Explicit rather than agent-detected so the lint step is
+  # deterministic. Needs the dev toolchain on the daemon host (`nix develop`,
+  # or scripts/install-dev-tools.sh plus a lua-language-server package).
+  lint: "just lint"
+
+  # Run before the push step commits agent fixes. Deliberately not `just fmt`:
+  # that also runs `npm run fmt:website`, which needs node_modules installed in
+  # the run worktree. Website formatting is a separate CI job.
+  format: "cargo fmt --all"
+
+  # test: deliberately left empty.
+  #
+  # This key is targeted validation of the requested change, explicitly not a
+  # CI-parity suite, so `cargo nextest run --all` does not belong here: it
+  # rebuilds the whole crate in a fresh run worktree for every gate. Left
+  # empty, the test step picks the smallest relevant tests itself and gathers
+  # evidence, while the full suite stays mandatory in remote CI (ci.yml) and
+  # in the prek pre-commit hook.
+
+# Excluded from review and documentation checks: generated or vendored trees
+# that carry no reviewable intent. `*` never crosses a `/`, and a pattern with
+# no slash matches by basename at any depth.
+ignore_patterns:
+  - "Cargo.lock"
+  - "package-lock.json"
+  - "proptest-regressions/**"
+  # Demo GIFs/MP4s and tutorial stills, produced by scripts/demo/record*.sh.
+  - "docs/media/**"
+  # Copied from docs/media/ at Pages deploy time by pages.yml.
+  - "website/assets/**"
+
+# Pin review auto-fix to the product default so this repo does not inherit an
+# operator's global override: review findings park for a human decision.
+# Other steps keep their configured behavior.
+auto_fix:
+  review: 0
+
+# ci.yml sets `cancel-in-progress: true`, so a cancelled check here almost
+# always means a newer push superseded it, not provider-side flakiness.
+# Rerunning would restart work that was stopped on purpose and bill another
+# workflow run, so keep the budget at the default of zero.
+ci:
+  rerun_transient: 0
+
+# The default subject (`no-mistakes({{.Step}}): ...`) is not a conventional
+# commit: `no-mistakes` is not one of cog.toml's commit types, so `cog verify`
+# in the commit-msg hook and `cog check` in pre-push and CI would both reject
+# it. `chore` is scopeless (cog.toml enumerates its valid scopes and a gate fix
+# spans them), is omitted from the changelog, and drives no version bump - the
+# real feat/fix commit on the branch decides the release.
+commit:
+  fix_message: "chore: no-mistakes {{.Step}} - {{.Summary}}"
+
+# Documentation ownership map for the document step's placement policy. Every
+# fact has exactly one owner; the step reduces duplicates to pointers rather
+# than synchronizing them.
+document:
+  instructions: |
+    Each class of fact has exactly one owner document. docs/CONSTITUTION.md
+    owns core principles. docs/ARCHITECTURE.md owns architectural decisions and
+    their ADR-NN anchors. docs/PERFORMANCE.md owns render-loop and tick
+    performance decisions and their ADR-PNN anchors. docs/FEATURES.md owns
+    feature-level design choices. docs/CONFIG.md owns every config file,
+    environment variable and database setting. docs/AGENTS.md owns each
+    built-in coding agent's exact configuration and the checklist for adding
+    one. docs/V2-KERNEL.md owns the kernel's shape and its five rules, and
+    docs/PLUGINS.md owns interface-plugin authoring. packaging/README.md owns
+    the packaging overview and scripts/dev/README.md the dev-scripts index.
+    README.md owns the introduction.
+
+    CLAUDE.md is the agent-facing index into those owners: it carries pointers
+    and the operating guidance a coding agent needs, and a code change that
+    invalidates or extends a documented decision updates the owning doc in the
+    same change. ui/AGENTS.md owns interface-authoring guidance for whichever
+    coding CLI is editing ui/; ui/CLAUDE.md and ui/GEMINI.md are deliberately
+    one-line pointers to it, never copies, so do not expand them.
+
+    docs/TUTORIAL.md and website/docs/tutorial.html are two separate documents
+    in different voices covering the same walkthrough, not a generated pair: a
+    step edited in one is edited in both, and its screenshots are regenerated
+    by scripts/demo/record-tutorial.sh rather than described.
+
+    This repository intentionally has no CHANGELOG.md; release notes are
+    generated from conventional commits by cocogitto. Do not create one, and do
+    not add a new documentation file to close a perceived gap when an owner
+    above already covers the subject.
+
+# House rules a reviewer reading only the diff would not know, scoped to the
+# paths a change actually touches. Only blocks whose path matches a changed
+# file are injected, each carrying its own scope.
+review:
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        Module boundaries are enforced by tests/architecture_rules.rs as an
+        allowlist: session is pure data, agent may not reference git, and
+        kernel reaches agent or usage by fully-qualified path only, never a
+        use. A new module fails that test until its rules entry is declared.
+
+        Anything that touches the world - terminal attach, commands, diffs,
+        metrics, git, repository reads, update checks - runs on a worker and
+        publishes back, never on the render loop, because a down remote host
+        runs its ssh out to the connect timeout.
+
+        A cache here carries an age, not just a value: a TTL, an in-flight
+        marker, or a generation counter. Storing "we have an answer" where "the
+        answer is current" was needed is the mistake this code base has made
+        repeatedly. A change-signal is bumped inside the mutation and only when
+        the value actually changed.
+
+        Comments explain why, never what. A stale comment is worse than none,
+        so comments around touched code are fixed or deleted. This repository
+        uses no TODO, FIXME or HACK markers and keeps no commented-out code.
+
+        Read the change for structure as well as correctness: names that reveal
+        intent, functions that do one thing, duplication folded together, dead
+        code and unused imports gone, magic values named, early returns rather
+        than deep nesting, and no abstraction introduced before there is real
+        duplication to justify it.
+
+        Read it for coherence too, across the whole diff and against the code
+        around it: naming, patterns and abstractions consistent with the rest
+        of the tree, signatures, return types, error handling and data shapes
+        agreeing between callers and callees, and no contradictory conditions,
+        redundant branches or unreachable code left behind.
+
+    - path: "ui/**"
+      instructions: |
+        This is the Lua interface running on the Rust kernel, and the plugin
+        sandbox is enforced by absence: os, io, debug, package, print and the
+        loaders are not in the environment. thurbox.yml is selene's standard
+        library for this tree and must stay in step with LuaHost::publish, so a
+        newly published thurbox field is added there too.
+
+        There are four node kinds - text, box, input, surface - and everything
+        else composes in ui/lib/widgets.lua; do not propose a fifth. Panes
+        declare size statically, read from the snapshot and write by command,
+        and never block. Ask for a theme role rather than a colour, so one pane
+        looks right under all thirty-six palettes.
+
+    - path: "ui-plugins/**"
+      instructions: |
+        Example panes that install by bare name. The same plugin sandbox as
+        ui/ applies: no os, io, debug, package or print, four node kinds only,
+        snapshot-read and command-write, and theme roles rather than colours.
+        These are examples to read and copy from, not a catalogue thurbox
+        maintains for anyone.
+
+    - path: "tests/**"
+      instructions: |
+        A test that shells out to git must scrub the GIT_* location variables
+        (git::GIT_LOCATION_ENV). Git exports them to hook processes, so a suite
+        running under this project's own pre-commit hook inherits a GIT_DIR
+        pointing at the real repository and will rewrite it.
+
+        tests/v2_frames.rs pins bundled panes' frames cell for cell as literals
+        on purpose, against fully pinned inputs; that is an owned snapshot
+        contract, not an accident, and a failing test prints the new literal to
+        paste. Do not propose replacing it with a snapshot tool or loosening
+        its inputs - a frame that moves on its own is worse than no test.
+
+        This repository is test-driven: a bug fix starts with a test that
+        reproduces the bug, so it fails before the fix and passes after it.
+        Coverage belongs in the file that owns the surface - tests/kernel_mvp.rs
+        for the kernel's contract, one tests/v2_<surface>.rs per interface
+        surface or contract, tests/v2_render_props.rs for proptest crash
+        invariants, tests/tui_e2e.rs for the real binary on a real pty - rather
+        than in a new file beside them. Follow the conventions already in that
+        file and cover the edge case as well as the happy path.
+
+        A test must execute a real interface and assert observable behavior,
+        state, output or failure mode. A test whose only evidence is that it
+        greps implementation source for a string, a name or a token proves
+        nothing: the text can be dead, and a behavior-preserving refactor
+        changes it.
+
+    - path: "docs/**"
+      instructions: |
+        Prose changes. Do not request test coverage for them.
+
+    - path: "website/**"
+      instructions: |
+        Website prose, styles and templates. Do not request test coverage.
+        Only website CSS and JS are Prettier-formatted (see .prettierignore).
+
+    - path: "scripts/**"
+      instructions: |
+        Shell here is POSIX sh unless a script's own shebang says otherwise,
+        and every tracked *.sh is linted by shellcheck under .shellcheckrc.
