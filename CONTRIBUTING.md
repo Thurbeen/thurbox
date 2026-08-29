@@ -91,6 +91,19 @@ The project's code-quality rubric lives in that file's
 `review.path_instructions`, which is why there is no review command to run by
 hand — extend those rules rather than reintroducing one.
 
+Performance is reviewed there rather than measured there, deliberately. The
+`src/**` block carries the render loop's change-signal rules — including that a
+compare-before-store is not enough for anything recomputed per frame from a
+source that moves continuously, which is the failure ADR-P20 records — and asks
+a change claiming a performance effect to carry a paired before/after from
+`just bench` or `just perf`. What the gate does *not* do is time anything: that
+would be a flaky assertion about the machine it happened to run on, which
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) rules out in ADR-P5. The
+deterministic half is ordinary test coverage — counters and change-signals in
+`tests/kernel_perf.rs` and `tests/kernel_frame_cost.rs` — and the lint step
+compiles `benches/` through `cargo clippy --all-targets`, so the instrument
+cannot rot while nobody is running it.
+
 One discipline the gate cannot do for you, because it validates committed
 history rather than your working tree: **stage deliberately**. Commit the files
 that belong to the change and nothing else — never `git add -A` on a dirty tree

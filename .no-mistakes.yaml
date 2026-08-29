@@ -93,7 +93,10 @@ document:
     Each class of fact has exactly one owner document. docs/CONSTITUTION.md
     owns core principles. docs/ARCHITECTURE.md owns architectural decisions and
     their ADR-NN anchors. docs/PERFORMANCE.md owns render-loop and tick
-    performance decisions and their ADR-PNN anchors. docs/FEATURES.md owns
+    performance decisions and their ADR-PNN anchors, and a performance ADR
+    records the measurement that produced it - the harness invocation, the
+    terminal size, the session count and a paired before/after - so the number
+    can be reproduced rather than remembered. docs/FEATURES.md owns
     feature-level design choices. docs/CONFIG.md owns thurbox's own
     configuration - every config file, environment variable and database
     setting it reads - while CONTRIBUTING.md owns the contribution process
@@ -149,6 +152,44 @@ review:
         answer is current" was needed is the mistake this code base has made
         repeatedly. A change-signal is bumped inside the mutation and only when
         the value actually changed.
+
+        The render loop's cost is gated on those signals, so read a change to
+        anything on the per-frame path - the loop body, republish, the snapshot,
+        the published groups, the terminal stores - for what it does to them, in
+        both directions. A signal that stops moving when its source did is a
+        stale pane with no error anywhere. A signal that moves when nothing a
+        reader cares about did is silent waste: it rebuilds every published
+        group and drops every pure pane's cached tree, and the frame still looks
+        correct. Agent output in particular must never move the data epoch -
+        that is what lets a streaming turn reuse diffs, links, content, commands
+        and metrics whole.
+
+        A signal is also worth scoping to whoever reads it. The animation clock
+        invalidated every pure pane eight times a second for a spinner one of
+        them draws, until `ctx.elapsed` became something the kernel could see a
+        pane ask for (ADR-P21). Prefer observing a dependency over asking a
+        plugin to declare one: a declaration that defaults to "no dependency"
+        fails silently for whoever did not read the release note, and one that
+        defaults to "yes" saves nothing.
+
+        "Only when the value actually changed" is necessary and not sufficient,
+        and ADR-P20 is the case that proves it: the link scan compared before
+        storing, and the answer had genuinely changed, because a scrolling screen
+        puts its URLs on new rows every frame. Compare-before-store asks whether
+        the value moved; the second question, for anything recomputed on the
+        frame path from a source that moves continuously, is whether it was worth
+        asking yet - a pacing interval or a stamp, sized to what a reader can act
+        on. Ask that of any new per-frame recompute.
+
+        A change that claims a performance effect carries its measurement:
+        `cargo bench --bench frame_cost` for the pieces of a frame, or
+        `scripts/dev/perf-run.sh` for the whole binary under load, reported as a
+        paired before/after at a stated terminal size and session count. An
+        absolute number on its own says nothing - the harness and the bench both
+        pin their inputs for that reason. Timing assertions stay out of the test
+        suite (ADR-P5); the deterministic half is asserted on counters and
+        change-signals instead, in tests/kernel_frame_cost.rs and
+        tests/kernel_perf.rs.
 
         A newly published thurbox.* field also goes into thurbox.yml at the
         repo root: it is selene's standard library for the Lua tree, so a field
@@ -225,6 +266,43 @@ review:
         returns over deep nesting, no abstraction ahead of real duplication,
         and patterns consistent with the panes under ui/ - somebody will copy
         whatever shape this file teaches.
+
+    - path: "benches/**"
+      instructions: |
+        The frame-cost instrument, not a test: `harness = false`, run by
+        `cargo bench`, deliberately outside the PR gate per ADR-P5, which keeps
+        wall-clock timing out of CI. `cargo clippy --all-targets` still compiles
+        it under `just lint`, so it cannot rot silently.
+
+        Judge it on one question: does it measure what the loop actually does?
+        A bench that measures something no frame performs is worse than none,
+        because it is believed. The trap already paid for here is rendering
+        every loaded plugin rather than the panes an arrangement of that size
+        places - a closed search strip occupies no slot, `draw_slots` never
+        reaches it, and the bench reported it as the second most expensive pane
+        in the interface. So a phase must correspond to a step the loop takes,
+        and every input a number depends on - the palette, the session count,
+        the terminal size, the epoch - is pinned or swept explicitly, never
+        inherited from the developer's environment.
+
+        Subtracting one measurement from another to isolate a phase is only
+        honest when the subtrahend is small: per-pane cost is measured across an
+        animation tick, where the publish beside it is the ~45us cache hit,
+        rather than a snapshot change, where it is a ~1ms rebuild and the
+        subtraction measures itself.
+
+    - path: "scripts/dev/perf-run.sh"
+      instructions: |
+        Runs the real binary under load and reports CPU. Its failures are
+        plausible numbers rather than errors, so read it for the two it already
+        guards: it must identify its OWN process (a developer's running thurbox
+        answers to `pgrep -x thurbox` first, and every configuration then reports
+        that instance's CPU), and the TUI must start before any session exists,
+        or the v1->v2 consent gate waits for a keypress and the run reports 0%.
+
+        A reading is only comparable with another at the same terminal size and
+        session count, so both stay explicit parameters and neither acquires a
+        default that varies with the invoking window.
 
     - path: "tests/**"
       instructions: |
