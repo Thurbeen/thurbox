@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -1893,8 +1894,21 @@ pub struct PaneState {
 /// state. ASCII unit separator: paths and command names may contain spaces,
 /// tabs and newlines, so a whitespace delimiter would split a value in half.
 ///
-/// Keeping it intact costs a flag — see [`PANE_STATE_UTF8_FLAG`].
+/// Keeping it intact costs a flag — see [`PANE_STATE_UTF8_FLAG`] — and an
+/// alternate spelling — see [`PANE_STATE_SEP_ESCAPED`].
 const PANE_STATE_SEP: char = '\x1f';
+
+/// How tmux 3.4 and older spell [`PANE_STATE_SEP`] back.
+///
+/// Those versions run every `display-message -p` answer through `vis(3)`
+/// (`VIS_OCTAL|VIS_CSTYLE|VIS_NOSLASH`) *before* the UTF-8 check, so a control
+/// byte comes back as its printable octal escape whatever
+/// [`PANE_STATE_UTF8_FLAG`] says: the separator arrives as the four characters
+/// `\037` and the whole answer then parses as one field, reporting every pane
+/// field null. tmux 3.5 dropped that pass and prints the byte itself. Both
+/// spellings are accepted so one parser covers every tmux in the field —
+/// ubuntu-24.04, which CI runs on, still ships 3.4.
+const PANE_STATE_SEP_ESCAPED: &str = "\\037";
 
 /// tmux's `-u` — "assume the terminal supports UTF-8".
 ///
@@ -1964,7 +1978,12 @@ pub fn pane_state(session_name: &str, pane_id: &str) -> PaneState {
 /// An empty field is `None`, not an empty string: tmux prints nothing for a
 /// format it cannot expand, and "" would read downstream as a real answer.
 fn parse_pane_state(raw: &str) -> (PaneState, Option<String>, Option<String>) {
-    let line = raw.trim_end_matches(['\n', '\r']);
+    let trimmed = raw.trim_end_matches(['\n', '\r']);
+    let line = if trimmed.contains(PANE_STATE_SEP_ESCAPED) {
+        Cow::Owned(trimmed.replace(PANE_STATE_SEP_ESCAPED, &PANE_STATE_SEP.to_string()))
+    } else {
+        Cow::Borrowed(trimmed)
+    };
     let mut fields = line.split(PANE_STATE_SEP);
     let mut next = || fields.next().filter(|f| !f.is_empty());
 
@@ -3059,6 +3078,23 @@ mod tests {
         assert_eq!(tty.as_deref(), Some("/dev/pts/7"));
         // Only the `ps` pass can fill this in — the tmux answer never does.
         assert_eq!(state.foreground_command, None);
+    }
+
+    #[test]
+    fn parse_pane_state_reads_the_answer_an_older_tmux_prints() {
+        // Byte for byte what tmux 3.4 — ubuntu-24.04's, and so CI's — answers
+        // the same `display-message`: its `vis(3)` pass rewrites the separator
+        // to its octal escape, which used to parse as one field and report
+        // every pane fact null.
+        let raw = "12\\03734\\037node\\037/home/u/repo\\037/dev/pts/7\\0370\\037tb-demo\n";
+        let (state, tty, window) = parse_pane_state(raw);
+        assert_eq!(state.cursor_row, Some(12));
+        assert_eq!(state.cursor_col, Some(34));
+        assert_eq!(state.foreground_process.as_deref(), Some("node"));
+        assert_eq!(state.foreground_cwd.as_deref(), Some("/home/u/repo"));
+        assert_eq!(state.dead, Some(false));
+        assert_eq!(tty.as_deref(), Some("/dev/pts/7"));
+        assert_eq!(window.as_deref(), Some("tb-demo"));
     }
 
     #[test]
