@@ -79,8 +79,8 @@ breadcrumb: 'Performance'
       <td>central pane locked a vt100 parser to render</td>
     </tr>
     <tr>
-      <td><code>status_refreshes</code> / <code>automation_entries_built</code></td>
-      <td>per-tick status pass, automations-pane builds</td>
+      <td><code>status_refreshes</code></td>
+      <td>the per-tick status pass ran</td>
     </tr>
     <tr>
       <td><code>hook_state_loads</code></td>
@@ -183,10 +183,6 @@ breadcrumb: 'Performance'
     <strong>Scrollback round-trip</strong> &mdash; vt100's <code>set_scrollback</code> /
     <code>scrollback</code> are O(1), and demand-driven rendering already bounds how often it runs.
     Caching it would add borrow complexity for no measurable gain.
-  </li>
-  <li>
-    <strong>Automations-pane entries</strong> &mdash; the only repeated parse is the cron
-    humanizer, the countdown must stay live, and automations are typically a handful. Left as-is.
   </li>
   <li>
     <strong>vt100 parser lock contention</strong> &mdash; demand-driven rendering collapses

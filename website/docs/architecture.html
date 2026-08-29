@@ -15,7 +15,7 @@ breadcrumb: 'Architecture'
             thurbox boots a Rust kernel that renders whatever Lua plugins it finds under
             <code>ui/</code>. It owns no pane of its own: the session list, the agent terminal and the
             search strip are files you can edit, move, turn off or replace. See
-            <a href="v2-interface.html">the interface</a> for what that means in practice.
+            <a href="interface.html">the interface</a> for what that means in practice.
           </p>
           <div class="tui-demo">
             <div class="terminal-header">
@@ -62,38 +62,15 @@ breadcrumb: 'Architecture'
             declare a setting and the settings modal grows a row.
           </p>
 
-          <h2 id="tea">
-            Before this: The Elm Architecture
-            <a href="#tea" class="heading-anchor">#</a>
+          <h2 id="event-loop">
+            The event loop
+            <a href="#event-loop" class="heading-anchor">#</a>
           </h2>
           <p>
-            Until 2.0 the interface was Rust, built on TEA: all state in a single
-            <code>App</code>
-            model, events becoming messages,
-            <code>update()</code>
-            applying them,
-            <code>view()</code>
-            rendering the result. It is kept here because the kernel took its central idea &mdash; one
-            source of truth, one direction of data flow &mdash; and because
-            <a href="v1.html">1.x is still maintained</a>, so it is what that line still does.
+            One loop, one source of truth. It is
+            <strong>demand-driven</strong>: it paints when something changed, not on every
+            iteration, and slows its input poll once nothing has happened for a while.
           </p>
-          <div class="tui-demo">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">event loop</span>
-            </div>
-            <div class="terminal-body">
-              <pre>Event &rarr; Message &rarr; update(model, msg) &rarr; view(model) &rarr; Frame</pre>
-            </div>
-          </div>
-          <p>
-            TEA makes state transitions explicit and testable. Every input has a traceable path from
-            event to screen change. There's no hidden state scattered across components.
-          </p>
-
-          <h3>Event loop</h3>
           <div class="tui-demo">
             <div class="terminal-header">
               <div class="terminal-dot red"></div>
@@ -102,18 +79,18 @@ breadcrumb: 'Architecture'
               <span class="terminal-title">main.rs</span>
             </div>
             <div class="terminal-body">
-              <pre>tokio::main &rarr; init backend (TmuxBackend)
-  &rarr; open SQLite DB
-  &rarr; init terminal
-  &rarr; spawn/restore sessions
+              <pre>tokio::main &rarr; load config + settings
+  &rarr; heal extensions &rarr; arm the tmux heartbeat
+  &rarr; resolve ui/ &rarr; build the Lua host
+  &rarr; open SQLite &rarr; init terminal
   &rarr; loop {
-    draw frame &rarr; poll crossterm events (10ms)
-    &rarr; convert to AppMessage
-    &rarr; app.update()
-    &rarr; app.tick()
+    resolve layout &rarr; call each plugin with its rect &rarr; paint
+    &rarr; poll workers (terminals, commands, diffs, metrics, repos, runs)
+    &rarr; dispatch events to subscribed plugins
+    &rarr; drain Lua's command queue
+    &rarr; dispatch keys through the registry
   }
-  &rarr; app.shutdown() (detach sessions)
-  &rarr; restore terminal</pre>
+  &rarr; restore terminal (sessions keep running in tmux)</pre>
             </div>
           </div>
 
@@ -135,9 +112,9 @@ breadcrumb: 'Architecture'
             </div>
             <div class="terminal-body">
               <pre>session  &larr; pure data types, no project-local imports
-agent    &larr; imports session only (NEVER ui or git)
-ui       &larr; imports session only (NEVER agent or git)
-app      &larr; coordinator, imports all modules</pre>
+agent    &larr; imports session (+ path/shell utils; NEVER git)
+kernel   &larr; session + storage + paths + session_ops + git
+main     &larr; the coordinator: the loop, the workers, the chrome</pre>
             </div>
           </div>
 
@@ -151,13 +128,19 @@ app      &larr; coordinator, imports all modules</pre>
             </thead>
             <tbody>
               <tr>
-                <td><code>app/</code></td>
+                <td><code>kernel/</code></td>
                 <td>
-                  Model (
-                  <code>App</code>
-                  struct), Update (
-                  <code>AppMessage</code>
-                  + handlers), View. Owns all state, coordinates side effects.
+                  The interface: the four node primitives, layout, the Lua host and its capability
+                  grants, the key registry, the snapshot (reads) and command bus (writes), live
+                  terminal surfaces, and the worker-backed stores (diffs, metrics, repos, runs,
+                  updates).
+                </td>
+              </tr>
+              <tr>
+                <td><code>coordinator/</code></td>
+                <td>
+                  <code>main</code>'s own body: the loop and its workers, then commands, publish,
+                  draw, input, mouse, focus, events and the interface plumbing.
                 </td>
               </tr>
               <tr>
@@ -209,12 +192,15 @@ app      &larr; coordinator, imports all modules</pre>
                 </td>
               </tr>
               <tr>
-                <td><code>ui/</code></td>
+                <td><code>ui/</code> (Lua)</td>
                 <td>
-                  Pure rendering functions.
-                  <code>layout.rs</code>
-                  computes panel areas (responsive breakpoints). Widgets: project_list,
-                  terminal_view, info_panel, status_bar.
+                  Not Rust:
+                  <code>layout.lua</code>
+                  is the arrangement,
+                  <code>lib/</code>
+                  holds widgets and theme roles, and
+                  <code>plugins/</code>
+                  holds the panes.
                 </td>
               </tr>
               <tr>

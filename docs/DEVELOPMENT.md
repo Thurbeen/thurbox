@@ -85,11 +85,8 @@ database. `--fresh` is therefore a clean first-run interface every time — whic
 how the plugin lifecycle (delivery, removal, restore) is exercised without touching
 your real one.
 
-The TUI is still launched **from the sandbox root rather than the repo**, which used
-to be load-bearing: `resolve_ui_dir` preferred a `./ui` in the working directory, so
-starting it from the repo isolated the database and not the interface. That rule is
-gone — standing somewhere no longer decides which interface loads — and the `cd` is
-kept as belt-and-braces.
+The TUI is launched **from the sandbox root rather than the repo**. Where you
+stand no longer decides which interface loads, so this is belt-and-braces.
 
 To run the dev TUI against **this checkout's** `ui/` instead of a copy, ask for it:
 `just tui-ui` (which sets `THURBOX_UI_DIR`).

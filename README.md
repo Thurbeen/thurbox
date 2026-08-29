@@ -8,9 +8,9 @@ Run any coding-agent CLI — Claude Code, Codex, Antigravity, opencode, aider, o
 one you describe yourself — side by side in persistent tmux sessions, each on
 its own git worktree. Sessions survive crashes, restarts and reboots.
 
-And every pane you see is a **Lua file in a directory you own** — the session
-list included. Move it, turn it off, rewrite it, or install one somebody else
-wrote. No fork, no recompile, no restart. **[Customization →](#customization)**
+Every pane you see is a Lua file in a directory you own, the session list
+included. Move it, turn it off, rewrite it, or install one somebody else wrote.
+**[Customization →](#customization)**
 
 [![CI](https://github.com/Thurbeen/thurbox/workflows/CI/badge.svg)](https://github.com/Thurbeen/thurbox/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -39,10 +39,6 @@ headless one) — with checksum verification and platform auto-detection, to
 `~/.local/bin` on Linux/macOS and `%LOCALAPPDATA%\Programs\thurbox` (added to
 your user `PATH`) on Windows.
 
-You also need **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) on
-native Windows), **git**, and at least one coding-agent CLI — see
-[Prerequisites](#prerequisites).
-
 <details>
 <summary><b>Other ways to install</b> — Homebrew · AUR · winget · Chocolatey · from source</summary>
 
@@ -52,17 +48,12 @@ native Windows), **git**, and at least one coding-agent CLI — see
 brew install thurbeen/thurbox/thurbox
 ```
 
-Prebuilt binaries from the [tap](https://github.com/Thurbeen/homebrew-thurbox),
-with `tmux` and `git` pulled in as dependencies.
-
 **Arch Linux (AUR):**
 
 ```bash
 paru -S thurbox-bin   # prebuilt binary (fastest)
 paru -S thurbox       # build from source
 ```
-
-(Swap `paru` for `yay` or your preferred helper.)
 
 **winget / Chocolatey (Windows x86_64):**
 
@@ -71,10 +62,9 @@ winget install Thurbeen.thurbox
 choco install thurbox
 ```
 
-Both install the prebuilt `thurbox.exe` + `thurbox-cli.exe` onto your `PATH` and
-need [psmux](https://github.com/psmux/psmux) installed separately. Both channels
-are manually moderated, so thurbox publishes to each at most once every 30 days
-— they trail the newest release. The PowerShell installer and
+Both need [psmux](https://github.com/psmux/psmux) installed separately. Both
+channels are manually moderated, so thurbox publishes to each at most once
+every 30 days; the PowerShell installer and
 [GitHub Releases](https://github.com/Thurbeen/thurbox/releases) have every
 version immediately.
 
@@ -100,148 +90,139 @@ PowerShell uses `$env:THURBOX_VERSION` / `$env:THURBOX_INSTALL_DIR` the same way
 
 </details>
 
-**Contributing / hacking on thurbox?** The dev environment is a reproducible Nix
-flake (`nix develop` / `direnv allow`) with `just` tasks and an isolated runtime
-sandbox (`scripts/dev/sandbox.sh`) — see
-[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
-
 ## Prerequisites
 
 - **tmux >= 3.2** (Linux / macOS), or **[psmux](https://github.com/psmux/psmux)**
   on native Windows — a drop-in tmux clone thurbox drives identically
 - **A coding-agent CLI** — e.g.
-  [claude](https://github.com/anthropics/claude-code), codex,
-  antigravity, opencode, or aider (whichever agents you plan to run)
+  [claude](https://github.com/anthropics/claude-code), codex, antigravity,
+  opencode, or aider
 - **git** (required for worktree features)
 - **Rust 1.75+** (only to build from source)
 
 ## Getting Started
 
 > **New here?** [**docs/TUTORIAL.md**](docs/TUTORIAL.md) walks the first ten
-> minutes with screenshots — adding a repository, creating your first
-> worktree session, and the commands you will use every day.
-
-Run it:
+> minutes with screenshots.
 
 ```bash
 thurbox
 ```
 
-That is the whole setup. On first launch thurbox seeds its config — the agents
-it knows, the themes, and the interface itself — into `~/.config/thurbox/`, then
-draws a session list on the left and an agent terminal on the right.
+On first launch thurbox seeds its config — the agents it knows, the themes, and
+the interface itself — into `~/.config/thurbox/`, then draws a session list on
+the left and an agent terminal on the right.
 
-1. **Create your first session** — press `Ctrl+N` to open the repo picker.
-   Toggle repos with `Space`; press `w` on a repo to mark it as worktree mode
-   (you'll be prompted for a base branch and new branch name). Confirm with
-   `Enter`, name the session, then pick an **agent**. The agent picker is
-   skipped when only one agent is defined.
-2. **Work with the agent** — the right pane is a live agent session. All keys
-   are forwarded to it; `Ctrl+C` copies if you have a selection, otherwise sends
-   SIGINT.
-3. **Navigate** — `Ctrl+J` / `Ctrl+K` move between sessions, `Ctrl+L` /
-   `Ctrl+H` cycle focus between panes, `Ctrl+/` searches sessions *and the text
-   on their screens*. `Ctrl+O` opens the session's worktree in your editor.
-4. **Quit without killing** — `Ctrl+Q` detaches. Tmux keeps every agent
-   running; relaunch `thurbox` and they are all still there. (Prefer raw tmux?
-   `tmux -L thurbox attach`.)
+1. **Create a session** — `Ctrl+N` opens the repo picker. Toggle repos with
+   `Space`, press `w` on a repo for worktree mode (you are prompted for a base
+   branch and a new branch name), confirm with `Enter`, name the session, then
+   pick an agent.
+2. **Work with the agent** — the right pane is a live agent session. All keys go
+   to it; `Ctrl+C` copies if you have a selection, otherwise sends SIGINT.
+3. **Navigate** — `Ctrl+J` / `Ctrl+K` move between sessions, `Ctrl+L` / `Ctrl+H`
+   cycle focus between panes, `Ctrl+/` searches sessions *and the text on their
+   screens*. `Ctrl+O` opens the session's worktree in your editor.
+4. **Quit without killing** — `Ctrl+Q` detaches. Tmux keeps every agent running;
+   relaunch `thurbox` and they are all still there, or attach raw with
+   `tmux -L thurbox attach`.
 5. **Make it yours** — `Ctrl+,` then `]` lists every pane and lets you turn one
-   off; `Ctrl+Y` changes the palette; `F1` rebinds any chord. `F10` reloads the
+   off; `Ctrl+Y` changes the palette; `F1` rebinds any chord; `F10` reloads the
    interface from disk.
 
-`F1` is the authoritative key list — it renders the live registry, so it cannot
-drift. The full table is in [Keybindings](#keybindings).
+`F1` renders the live keybinding registry, so it cannot drift. The full table is
+under [Keybindings](#keybindings).
 
-## Just ask for it
+## Features
 
-Thurbox runs coding agents, and the two things you would otherwise script by
-hand — *fleets of sessions* and *the interface itself* — are both reachable in
-plain English from inside a session. `thurbox-cli` is installed beside
-`thurbox`, so it is already on the agent's `PATH`, and the interface is a
-directory of text files it can read.
+### Sessions
 
-### Orchestrate sessions
+Many coding agents side by side, each in its own tmux-backed pane that survives
+crashes, restarts and reboots. Pick the agent and repo(s) at `Ctrl+N`. Reorder
+by hand (`Shift+J` / `Shift+K`), sort (`Shift+S`), restart with resume
+(`Ctrl+R`), or soft-delete with undo (`Ctrl+Z`).
 
-`thurbox-cli` creates, prompts, forks and tears down sessions headlessly, so an
-agent can spin up a fleet for you. From any session, ask:
+![Session creation](./media/thurbox-session-creation.gif)
 
-> - *Using `thurbox-cli`, start refactor sessions for this repo — one per
->   crate, each on its own worktree branch off `main`, and send each one a
->   prompt to refactor its crate. Then show me `thurbox-cli session list`.*
-> - *Spawn a reviewer session on this repo with no worktree, and send it
->   standing instructions to review every file I change.*
-> - *Create a nightly automation that sends "triage new issues" to the `triage`
->   session on weekdays at 09:00.*
+### A customizable interface
 
-The agent discovers the surface itself with `thurbox-cli --help`; the commands
-it will reach for are `session create` (with `--worktree-branch`, `--agent`,
-`--host`, `--add-repo`), `session send`, `session list` and `automation create`
-— all documented under [Headless CLI](#headless-cli-thurbox-cli). Everything it
-does shows up in your running TUI within a tick, because both binaries share one
-SQLite database.
+Every pane is a Lua file under `ui/` — move it, turn it off, delete it, rewrite
+it, or install one someone else wrote, and the arrangement closes up around what
+is left. `F10` reloads from disk. A pane is handed a snapshot and returns a
+tree: no filesystem, no network, no process unless you trust it.
+[Customization →](#customization)
 
-Prefer a script? [Recipe: provision a monorepo headless](#recipe-provision-a-monorepo-headless)
-does the same thing in bash.
+![Turning a pane off from the Interface tab](./media/thurbox-interface.gif)
 
-### Reshape the interface
+### Global search
 
-Every pane is a Lua file, so changing the UI is also just a request. From any
-session, ask:
+`Ctrl+/` searches sessions by name, agent, branch and repo — and by the text on
+their screens, which is the half that finds a session by the error in it.
+Matches highlight inside the panes being searched; `Esc` puts back what you were
+looking at.
 
-> - *Add my project logs within a dedicated pane on the right in the thurbox
->   UI.*
-> - *Add a pane on the left with CPU and RAM usage. There is a `top` example
->   plugin — install it and give it a slot in the layout.*
-> - *Move the search strip to the bottom and make the session column 30% wide.*
-> - *The session list is too noisy — drop the repo group headers and show the
->   branch instead of the agent name.*
-> - *Install the info panel plugin.*
+![Global search](./media/search-demo.gif)
 
-That works from **any** session, in whichever CLI you run, because thurbox ships
-a built-in `ui-skill` extension: a `thurbox-ui` skill that loads only when the
-request is about the interface. It tells the agent that `thurbox-cli plugin dir`
-finds the directory, that `thurbox-cli plugin check` verifies its own work, and
-warns it off the mistakes that are invisible until runtime. Press `F10` and the
-change is on your screen.
+### Fork and lead/worker trees
 
-[More on what that looks like →](#ask-the-agent-to-do-it)
+`Ctrl+F` forks a session and records the source as its parent; children nest
+under their lead in the list. Build trees by hand or headlessly with `--parent`.
+The link is informational — deleting a lead never cascades to its workers.
 
-## Why Thurbox
+![Session forking](./media/thurbox-fork.gif)
 
-Running a coding agent in several terminals gets you far — until
-you want to keep sessions alive across crashes, isolate them
-per-branch, or juggle different agents side-by-side. Thurbox
-adds:
+### Themes
 
-- **Full customization** — the interface is a directory of Lua
-  files, not a compiled-in UI: rearrange it, switch panes off,
-  write your own, or install someone else's. Agents, hosts,
-  themes, keybindings and settings are data files beside it.
-  [More →](#customization)
-- **Persistence** — sessions live in tmux and survive Thurbox
-  crashes, restarts, and reboots. Reattach from any terminal with
-  `tmux -L thurbox attach`.
-- **Parallelism** — many agents side-by-side, each on its own
-  repo(s) and branch, each running the agent you chose.
-- **Any agent** — a session runs one coding-agent CLI selected at
-  creation time. Built-ins (claude, codex, antigravity, opencode,
-  aider, copilot, vibe) are seeded into `~/.config/thurbox/agents.toml`; add your
-  own without recompiling.
-- **Git worktree isolation** — each session can spawn on a fresh
-  worktree; `Ctrl+S` syncs them with their base branch and asks the
-  agent to resolve rebase conflicts automatically.
-- **Scriptable, or just askable** — `thurbox-cli` drives the same
-  sessions headlessly, so an agent *inside* a session can spin up a
-  fleet on your behalf. [More →](#just-ask-for-it)
+Thirty-six palettes (twenty-eight dark, eight light) plus your own in
+`themes.toml`, switched live with `Ctrl+Y` (or `F4`) and persisted across
+restarts. Plugins ask for *roles* (`theme.accent`, `theme.muted`) rather than
+colours, so a pane you write looks right under all thirty-six.
+
+![Theme switcher](./media/thurbox-theme.gif)
+
+### Also in the box
+
+- **Git worktree isolation** — spawn a session on a fresh worktree branch;
+  `Ctrl+S` syncs worktrees with their base branch and asks the agent to resolve
+  rebase conflicts.
+- **Multi-repo sessions** — one session can span several repos, each in its own
+  worktree on a shared branch, gathered into a symlink workspace the agent runs
+  in.
+- **[Remote SSH and WSL sessions](docs/CONFIG.md)** — declare hosts in
+  `hosts.toml` and they become `ssh:<name>` / `wsl:<name>` backends with the
+  same persistence and restore as local ones.
+- **[Automations](#automations-alias-auto)** *(CLI only)* — named, scheduled
+  agent runs (cron, or `hourly` / `daily` / `weekdays` / `weekly`) that send a
+  prompt to a running session or spawn a fresh one. A tmux heartbeat keeper
+  fires them whether or not thurbox is open.
+- **[Tasks](#tasks-alias-todo)** *(CLI only)* — a todo list whose items can be
+  handed to a coding agent with the same send/spawn model.
+- **[Inter-session messages](#messages-alias-msg)** — an agent-neutral mailbox
+  queue for agent↔agent coordination, with atomic exactly-once `--claim` drains.
+  Agents pass no ids; thurbox injects a stable identity.
+- **[Extensions](https://thurbeen.github.io/thurbox/docs/extensions.html)**
+  *(experimental)* — opt-in, agent-agnostic add-ons that are data, not code:
+  `flow`, `forge`, `ci-shepherd`, `renovate`. One command installs, activates
+  and self-heals each.
+- **[Session lifecycle hooks](docs/CONFIG.md#hookstoml)** — your own commands,
+  run before and after a session is created, deleted, restarted or restored
+  (`hooks.toml`). A pre-hook can refuse the operation.
+- **[OS notifications](docs/CONFIG.md)** — desktop alerts when a session needs
+  you, with click-to-focus on Linux.
+- **Mouse support** — clickable rows, buttons and scrollbars, wheel scrolling,
+  drag-to-select, `Ctrl+Click` on URLs. Toggle with `mouse` in `settings.toml`.
+- **Installable panes** — a code reviewer
+  ([`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review)), an
+  info panel with live CPU/RAM
+  ([`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)), or
+  anything else somebody publishes.
 
 ## Comparison
 
-Lots of tools now "run coding agents in parallel, each in its own git
-worktree". They mostly differ on what's underneath: whether the session
-backend is **real tmux** or a re-implemented multiplexer, whether the UI is a
-lightweight **TUI** or an Electron/native app, whether they launch the
-**unmodified vendor CLI** or their own model, and whether one session can span
-several repos. Thurbox optimizes the boring-but-load-bearing end of that list.
+Lots of tools now run coding agents in parallel, each in its own git worktree.
+They mostly differ on what is underneath: whether the session backend is real
+tmux or a re-implemented multiplexer, whether the UI is a TUI or an
+Electron/native app, whether they launch the unmodified vendor CLI, and whether
+one session can span several repos.
 
 | Tool | Interface | Session backend | Agents | Multi-repo session | Code review | Platforms | Remote / SSH | License |
 |------|-----------|-----------------|--------|--------------------|-------------|-----------|--------------|---------|
@@ -254,351 +235,29 @@ several repos. Thurbox optimizes the boring-but-load-bearing end of that list.
 | [Claude Squad](https://github.com/smtg-ai/claude-squad) | TUI | **Real tmux** | Claude, Codex, OpenCode, Aider, Amp | ✗ | Git diff view | Linux · macOS (no Windows) | ✗ | AGPL-3.0 |
 | [Cursor](https://cursor.com/) | IDE + cloud | App-managed (its **own** models) | Composer + frontier models | ✗ | IDE review | macOS · Windows · Linux | Cloud VMs + SSH | Proprietary (paid) |
 
-What makes Thurbox different (some of these are shared — the combination is the
-point):
+Where thurbox sits on those axes:
 
-- **The interface is yours, not ours.** Every other tool here ships a UI you
-  can configure at the edges; thurbox ships a *kernel* and a directory of Lua
-  files. Rearrange the panes, switch one off, delete it, write a replacement, or
-  install one somebody else wrote — while it is running, with no fork and no
-  recompile. This is what v2 is for. [More →](#customization)
-- **Real tmux, not a re-implemented multiplexer.** Sessions live in the same
-  battle-tested mux that already survives crashes, restarts, and reboots —
-  reattach from any terminal with `tmux -L thurbox attach`. A custom multiplexer
-  is one more thing that can lose your session. (Of the tools above, only Claude
-  Squad shares this.)
-- **A TUI, not an Electron app.** Tiny footprint; runs in a plain terminal,
-  over SSH, on a headless server — no desktop, no GPU, no per-window browser.
-- **Launches the unmodified vendor CLI.** Thurbox knows nothing about the
-  agent's model, prompts, or tools — it just runs `command + args` — so you get
-  the newest agent features the day the CLI ships them, with no wrapper in the
-  way (vs Cursor, which runs its own models).
-- **Any agent CLI as data** (`~/.config/thurbox/agents.toml`) — add your own with
-  no recompile; Thurbox is deliberately agent-neutral.
-- **Multi-repo sessions.** One session can span several repos at once — each
-  repo in its **own git worktree** on a shared branch, gathered into a
-  per-session symlink workspace — not just one worktree per task. (Of the GUI
-  tools above, the closest is Conductor's `/add-dir`, which links separate
-  pre-made workspaces rather than spawning one session across repos; Cursor's
-  multi-root/cloud path is folders-in-one-window, not worktree-per-repo.) Thurbox
-  also runs agents in **plain non-git directories** (and attaches them as-is with
-  `--add-dir`); worktree-only tools like Claude Squad require a git repo.
-- **Mouse support in the terminal.** Clickable session rows, buttons, and
-  scrollbars, plus drag-to-select — a gentler on-ramp than most TUIs, while
-  staying fully keyboard-first (and toggleable via `[features] mouse`).
-- **Code review, in the terminal.** A GitHub-style diff reviewer (`Ctrl+X`) —
-  browse the branch, a commit, or working changes in a folder tree, leave
-  classified comments, fold reviewed files, then send the review back to the
-  agent to address. The click-to-review visual diff that used to be a GUI-only
-  perk, without leaving the TUI. It ships as a pane you install
-  ([`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review)),
-  not in the binary — the interface is plugins, review included.
+- **The interface is a directory of Lua files**, not a UI you configure at the
+  edges — rearrange it, switch a pane off, or replace one, while it runs.
+- **Real tmux**, so sessions survive crashes and reboots and you can reattach
+  from any terminal. A custom multiplexer is one more thing that can lose them.
+- **A TUI**, so it runs in a plain terminal, over SSH, on a headless server.
+- **The unmodified vendor CLI** — thurbox knows nothing about an agent's model,
+  prompts or tools, so you get new agent features the day the CLI ships them.
+- **Agents as data** in `agents.toml`; adding a CLI needs no recompile.
+- **Multi-repo sessions**, each repo in its own worktree on a shared branch.
+  Plain non-git directories work too (`--add-dir`).
 
-On top of that, Thurbox is the only entry here that is terminal-native **and**
-runs on Windows **and** over SSH, and it ships a full headless CLI
-(`thurbox-cli`) plus cron-like automations to drive and schedule fleets of
-agents with no GUI at all — with a code-review pane one `plugin install` away, so
-the click-to-review visual diff is no longer a GUI-only trade-off. The GUI tools
-still trade footprint and that scriptability for a gentler on-ramp — and the
-most polished of them, [GitHub's Copilot App](https://github.com/github/app),
-also ties you to a single vendor's agent and a paid subscription, where Thurbox
-stays agent-neutral and runs whatever CLI you already pay for. Feature accuracy
-as of June 2026; check each project for the latest.
-
-> **Note:** The table above is a curated subset, not a leaderboard. The space of
-> agent orchestrators is large and grows weekly — see
-> [awesome-agent-orchestrators](https://github.com/andyrewlee/awesome-agent-orchestrators),
-> which already catalogs 140+ tools — so an exhaustive comparison would be both
-> enormous and stale the day it shipped. We list a representative handful along
-> the axes that actually distinguish them and keep it roughly current. Treat it
-> as a map of the terrain, not a ranking.
->
-> Thurbox itself evolves quickly to fit how people actually work, and that's the
-> deeper point: AI has lowered the cost of building tooling so far that anyone can
-> rewrite a workflow into their own custom tool rather than wait for a vendor to
-> ship it. Thurbox leans into that — the panes themselves, plus agents, hosts,
-> themes, keybindings, and extensions, are all **data you edit**, not code you
-> fork — so the "right" tool is increasingly the one you shape for yourself.
-
-## Features
-
-### What v1 had, and where it is in v2
-
-v1 drew every surface from the binary, so the only question was which chord
-opened it. v2 draws **none** of them from the binary — which is what makes the
-interface yours, and means each surface is now bundled, installable, CLI-only,
-or owed.
-
-| Surface | In v1 | In v2 | Where it lives |
-|---|---|---|---|
-| Session list | on screen | bundled | `10_sessions.lua` |
-| Agent terminal | on screen | bundled | `20_agent.lua` |
-| Global search | `Ctrl+/` | bundled | `65_search.lua` |
-| Session creation | `Ctrl+N` | bundled | `70_new_session.lua` (a float) |
-| Restore list | `Ctrl+U` | bundled | `80_restore.lua` (a float) |
-| The arrangement | fixed, compiled in | bundled | `ui/layout.lua` |
-| Themes · settings · help | `Ctrl+Y` · `Ctrl+,` · `F1` | kernel chrome | the same chords |
-| Code review | `Ctrl+X` / `F7` | installable | [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) |
-| Info panel | `Ctrl+B` / `F2` | installable | [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) |
-| CPU / RAM gauges | — | installable | `thurbox-cli plugin install top` |
-| Panes anyone else wrote | — | installable | `ui/plugins.toml` |
-| Tasks | `Ctrl+W` / `F5` | CLI only | `thurbox-cli task` |
-| Automations | — | CLI only | `thurbox-cli automation` |
-| File viewer | `Ctrl+E` / `F3` | owed | — |
-
-**Bundled** means it ships with thurbox and is yours to edit, move or delete —
-including the arrangement, which v1 compiled in. **Installable** ones sit in
-`plugins.toml` on exactly the same terms: the review pane reclaims `Ctrl+X`/`F7`
-by itself, the info panel wants one `layout.lua` line, and the two rows marked
-`—` are things v1 had no answer for at all. **CLI only** means the records and the
-commands are all there and nobody has written the pane yet — `examples/panes/tasks`
-is an example pane over the same task records. The chords of the three paneless
-surfaces stay **unbound** rather than being reused, so no muscle memory quietly
-does something else.
-
-<table>
-<tr>
-<td width="50%" valign="middle">
-
-### A Customizable Interface
-
-**v2's headline feature.** Every pane is a Lua file under `ui/` — move it,
-turn it off, delete it, rewrite it, or install one someone else wrote, and
-the arrangement closes up around what is left. `F10` reloads from disk; no
-recompile, no restart. A pane is handed a snapshot and returns a tree: no
-filesystem, no network, no process unless you trust it.
-
-[Customization →](#customization)
-
-</td>
-<td width="50%">
-  <img src="./media/thurbox-interface.gif"
-       alt="Turning a pane off from the Interface tab" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Sessions
-
-Many coding agents side-by-side, each in its own tmux-backed pane that
-survives crashes, restarts, and reboots. Pick the agent and repo(s) at
-`Ctrl+N`; reattach from any terminal with `tmux -L thurbox attach`. Reorder
-by hand (`Shift+J`/`Shift+K`), sort (`Shift+S`), restart with resume
-(`Ctrl+R`), or soft-delete with undo.
-
-[Getting started →](#getting-started)
-
-</td>
-<td width="50%">
-  <img src="./media/thurbox-session-creation.gif"
-       alt="Session creation workflow" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Fork & Lead/Worker
-
-`Ctrl+F` forks a session and records the source as its **parent**; children
-nest under their lead in the list. Build lead → worker trees by hand or
-headlessly with `--parent`. The link is informational — deleting a lead
-never cascades to its workers.
-
-[CLI →](#sessions)
-
-</td>
-<td width="50%">
-  <img src="./media/thurbox-fork.gif" alt="Session forking" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Automations
-
-> **CLI only.** No pane yet — author and inspect them with
-> `thurbox-cli automation`. They still fire on their own: the tmux heartbeat
-> keeper runs due automations whether or not thurbox is open.
-
-Named, scheduled agent runs — one-shot or recurring (cron, with
-`hourly`/`daily`/`weekdays`/`weekly` presets) that **send** a prompt to a
-running session or **spawn** a fresh one. The editor needs no cron
-knowledge, and they fire even when the TUI is closed via a tmux heartbeat
-keeper.
-
-[CLI →](#automations-alias-auto)
-
-</td>
-<td width="50%">
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Tasks
-
-> **CLI only.** No pane yet — `thurbox-cli task` does everything below, on
-> the same records.
-
-A built-in todo list whose items can be handed to a coding agent with the
-same Send/Spawn model — or stay plain local todos. Running a task
-(`task run`) fires its action and advances it to *in progress*. A pane for
-it is one of the surfaces v2 is waiting on someone to write.
-
-[CLI →](#tasks-alias-todo)
-
-</td>
-<td width="50%">
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Global Search
-
-One key (`Ctrl+/`) searches sessions by name, agent, branch and repo — **and
-by the text on their screens**, which is the half that finds a session by the
-error in it. Matches highlight *inside* the panes being searched rather than
-being reprinted; `Esc` puts back exactly what you were looking at. Scopes are
-per-pane, so a returning pane is a scope added and nothing else changed.
-
-[Keybindings →](#keybindings)
-
-</td>
-<td width="50%">
-  <img src="./media/search-demo.gif" alt="Global search demo" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Code Review
-
-> **Not in the binary** — it is a plugin now:
-> [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review), which
-> rebuilds v1's reviewer on the plugin kernel and reclaims `Ctrl+X` / `F7`.
-> Install it with
-> `thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review`.
-> `1.x` still draws it natively; see
-> [docs/v1](https://github.com/Thurbeen/thurbox/tree/v1.x/docs).
-
-A GitHub-style diff reviewer (`Ctrl+X`, `F7` alternate) — no external tool. Browse the
-branch (`<base>..HEAD`), a single commit, or the uncommitted changes; the
-changed files show as a **folder tree** with colored statuses, and the diff is
-syntax-highlighted. Leave classified comments (issue / suggestion / note /
-praise) and a summary, mark files reviewed (which **folds** them away
-tree-style), then send the whole review back to the agent to address. Reviews
-stay open **per session** as you switch around, like the shell view. Mouse- and
-keyboard-driven, with unified or side-by-side layout.
-
-[Keybindings →](#keybindings)
-
-</td>
-<td width="50%">
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Info Panel & Live Metrics
-
-> **Not in the binary** — it is a plugin now:
-> [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel), which
-> draws v1's panel from the snapshot and the metrics the kernel publishes, and
-> asks for no capability at all. Install it with
-> `thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel`,
-> then give the column a place in your `layout.lua` (its README has the line).
-
-`Ctrl+B` (`F2`) shows per-session details with live CPU/RAM and agent
-metrics, right beside the terminal.
-
-[Keybindings →](#keybindings)
-
-</td>
-<td width="50%">
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### File Viewer
-
-> **Not in the current interface**, and no replacement yet.
-
-`Ctrl+E` (`F3`) browses the session's worktree tree with fuzzy search and in-file text search.
-
-[Keybindings →](#keybindings)
-
-</td>
-<td width="50%">
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Themes
-
-Thirty-six palettes (twenty-eight dark, eight light) plus your own in
-`themes.toml`, switched live with `Ctrl+Y` (or `F4`) and persisted across
-restarts. Plugins ask for *roles* (`theme.accent`, `theme.muted`) rather than
-colours, so a pane you write looks right under all thirty-six.
-
-[Config →](docs/CONFIG.md)
-
-</td>
-<td width="50%">
-  <img src="./media/thurbox-theme.gif" alt="Theme switcher" width="100%" />
-</td>
-</tr>
-</table>
-
-**Also in the box:**
-
-- **[Extensions](https://thurbeen.github.io/thurbox/docs/extensions.html)**
-  *(experimental)* — opt-in, agent-agnostic add-ons that are **data, not
-  code**: `flow`, `forge`, `ci-shepherd`, `renovate`. One command installs,
-  activates, and self-heals each; the manifest format is documented, so your
-  own is a TOML file.
-- **[Inter-session messages](#features)** — an agent-neutral mailbox queue
-  for structured agent↔agent coordination, with atomic exactly-once
-  `--claim` drains and wake nudges. Agents pass no ids — thurbox injects a
-  stable identity.
-- **[Agent definitions](#agents)** — every launchable agent is declared as
-  data in `agents.toml` (seeded with claude, codex, antigravity, opencode,
-  aider, copilot, vibe); add your own with no recompile.
-- **[Git worktree isolation](#common-workflows)** — spawn a session on a
-  fresh worktree branch; `Ctrl+S` syncs them with their base branch and asks
-  the agent to resolve rebase conflicts.
-- **[Remote SSH sessions](docs/CONFIG.md)** — run an agent on a remote box
-  over SSH while the TUI stays local; declare hosts in `hosts.toml` and they
-  become `ssh:<name>` backends with the same persistence and restore as
-  local ones.
-- **[Session lifecycle hooks](docs/CONFIG.md#hookstoml)** — your own commands,
-  run before and after a session is created, deleted, restarted or restored
-  (`hooks.toml`); a pre-hook can refuse the operation, a post-hook reacts to
-  it, and both fire once whichever interface asked.
-- **[OS notifications](docs/CONFIG.md)** — desktop alerts when a session
-  needs you, with click-to-focus on Linux.
-- **Mouse navigation** — the whole TUI is clickable: select rows, confirm
-  picker entries in one click, wheel-scroll, drag-select text, `Ctrl+Click`
-  URLs. Toggle with `mouse` in `settings.toml`.
-- **[Settings, live](docs/CONFIG.md)** — `Ctrl+,` edits core settings and every
-  setting the loaded panes declare; `settings.toml` is written back with its
-  comments intact and re-read when you edit it from outside.
-- **Responsive layout** — the arrangement is `layout.lua`, so what appears at
-  which width is yours to decide. Vim-inspired keys throughout, all rebindable.
-
-> **Note:** Some features (tasks, extensions, the session-list display) are
-> new and still evolving — expect their UX to keep improving release to release.
+Feature accuracy as of June 2026; check each project for the latest. The table
+is a curated subset, not a leaderboard — see
+[awesome-agent-orchestrators](https://github.com/andyrewlee/awesome-agent-orchestrators)
+for the wider field.
 
 ## Customization
 
-**This is what v2 is for.** v1 had a compiled-in interface and feature flags to
-switch parts of it off. v2 has no built-in interface at all: the binary boots a
-kernel, reads a directory, and draws whatever Lua it finds there. Everything the
-tool *is* — its panes, its agents, its hosts, its colours, its chords — is a file
-you can open in an editor.
+The binary boots a kernel, reads a directory, and draws whatever Lua it finds
+there. Everything the tool *is* — its panes, its agents, its hosts, its colours,
+its chords — is a file you can open in an editor.
 
 | What you change | Where |
 |---|---|
@@ -609,80 +268,17 @@ you can open in an editor.
 | Panes somebody else wrote | `ui/plugins.toml` → `thurbox-cli plugin sync` |
 | Which agent CLIs you can launch | `agents.toml` |
 | Remote SSH machines and WSL distros | `hosts.toml` |
-| Commands to run around a session's creation, deletion, restart, restore | `hooks.toml` |
+| Commands around a session's lifecycle | `hooks.toml` |
 | Colours | `Ctrl+Y`, or `themes.toml` |
 | Chords | the `F1` editor, or `ui.json` |
 | Core and plugin settings | `Ctrl+,`, or `settings.toml` |
 
 All of it lives under `~/.config/thurbox/`. Panes and the arrangement reload on
-`F10` or when you save; colours, chords and most settings apply live (the
-settings panel marks the restart-only ones `⟳`); a changed agent or host applies
-to the next session you create. Whole workflows are a layer above all of this —
-`thurbox-cli extension install flow` and the like.
+`F10`; colours, chords and most settings apply live (the settings panel marks
+the restart-only ones `⟳`); a changed agent or host applies to the next session
+you create.
 
-### Ask the agent to do it
-
-You do not have to learn Lua to change the interface — [Just ask for
-it](#just-ask-for-it) above has the prompts, and they work from any session
-because the built-in `ui-skill` extension teaches whichever CLI you run how the
-interface is put together.
-
-Want the agent looking at the files directly instead? Point a session at the
-directory:
-
-```bash
-thurbox-cli plugin dir          # prints the directory
-thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui
-```
-
-The directory ships an **`AGENTS.md`** that any coding CLI loads as context
-without being asked. It is what stops "install a plugin" being read as an npm
-request, tells the agent that `thurbox-cli plugin check` is how it verifies its
-own work, and warns it off the mistakes that are invisible until runtime. Press
-`F10` and the change is on your screen.
-
-#### What a prompt like "add a CPU/RAM pane on the left" actually does
-
-Worth seeing once, because **every** interface change has this shape — a pane,
-and a slot for it:
-
-1. **The pane.** `thurbox-cli plugin install top` delivers `plugins/85_top.lua`
-   and records the entry in `plugins.toml`. It declares `slot = "top"` and the
-   `run` capability.
-2. **The slot.** `ui/layout.lua` decides where a slot goes, so putting it on the
-   left is putting it first in the column list:
-
-   ```lua
-   local columns = {}
-   if filled(ctx, "top") then
-     columns[#columns + 1] = { slot = "top", pct = 20, min = 24 }
-   end
-   if panels.shown("sessions") and filled(ctx, "sessions") then
-     columns[#columns + 1] = { slot = "sessions", pct = 25, min = 20 }
-   end
-   columns[#columns + 1] = { slot = "center" }
-   ```
-
-Then `F10` — and trust it, settings → Interface → `t`, because it shells out to
-`top` and an untrusted plugin does not get `run` **at all**. Until you do, it
-draws the reason rather than a blank pane.
-
-Two things that follow from the split, and are easy to miss: the plugin manager
-never writes `layout.lua` (placement stays yours, which is why step 2 is a
-separate edit), and a pane that loads but which no arrangement places draws
-nothing while looking perfectly healthy — `thurbox-cli plugin check` is what
-fails on that, and prints the line to add.
-
-The `top` pane also reads the machine **the selected session runs on**, because
-`run` executes in that session's directory on that session's host. Select a
-session running over SSH and you are looking at that box's load — without the
-plugin knowing what SSH is.
-
-### The interface is a directory you can edit
-
-Every pane — the session list included — is a Lua file under `ui/`.
-Move one, turn it off, delete it, or write your own, and the
-arrangement closes up around what is left. No recompile, no restart.
+### Writing a pane
 
 ```bash
 thurbox-cli plugin dir          # which interface directory is live, and why
@@ -692,29 +288,73 @@ thurbox-cli plugin list         # the same inventory the Interface tab shows
 ```
 
 A plugin is handed a snapshot and returns a tree of four node kinds (`text`,
-`box`, `input`, `surface`); everything else composes from those. Reads come
-from an in-memory snapshot and return instantly, writes are commands the
-kernel picks up — so no pane can stall the render loop on SQLite, git, or an
-unreachable host.
+`box`, `input`, `surface`); everything else composes from those. Reads come from
+an in-memory snapshot and return instantly, writes are commands the kernel picks
+up — so no pane can stall the render loop on SQLite, git, or an unreachable
+host.
 
 **Capabilities are granted by absence.** `io`, `os`, `debug`, `package` and the
 loaders are simply not in a plugin's environment, and the linter enforces that
-statically. Running a program is two separate capabilities — `run` for a bounded,
-captured command (`git status`, `docker compose ps`) and `program` for a real
-interactive pane (`htop`, `lazygit`) — each declared in the plugin's own header
-and granted only after **you** trust the file: settings → Interface → `t`, keyed
-to its digest, so a trusted file that changes reads `trusted · modified`. It is
-deliberately not a sandbox; thurbox's position is that it can only refuse to run
-things unasked. See [docs/PLUGINS.md](docs/PLUGINS.md) and
-[docs/V2-KERNEL.md](docs/V2-KERNEL.md).
+statically. Running a program is two separate capabilities — `run` for a
+bounded, captured command (`git status`, `docker compose ps`) and `program` for
+a real interactive pane (`htop`, `lazygit`) — each declared in the plugin's
+header and granted only after you trust the file (settings → Interface → `t`),
+keyed to its digest, so a trusted file that changes reads `trusted · modified`.
+This is not a sandbox; thurbox can only refuse to run things unasked. See
+[docs/PLUGINS.md](docs/PLUGINS.md) and [docs/V2-KERNEL.md](docs/V2-KERNEL.md).
+
+### Installing panes
+
+```bash
+thurbox-cli plugin install top                                          # by name
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+thurbox-cli plugin sync                                                 # converge to the spec
+```
+
+`plugin install` records each entry in `plugins.toml` with the commit it
+resolved to in `plugins.lock`, so `plugin sync` reproduces the same interface on
+another machine. Your edits to an installed pane are kept, and a pane you delete
+is remembered as deleted rather than reinstalled.
+
+Installing a pane does not place it: `ui/layout.lua` decides where a slot goes,
+and that edit stays yours. A pane that loads but which no arrangement places
+draws nothing while looking healthy — `thurbox-cli plugin check` is what fails
+on that, and prints the line to add.
+
+Three files record three different questions: `.bundled.json` what delivery did
+(bundled · edited · yours · removed · installed), `ui.json` what you decided
+(panes turned off, panes trusted, chords rebound), and `plugins.toml` /
+`plugins.lock` what the interface is composed of and what each entry resolved
+to. Deleting a bundled pane is how you remove it — the removal is recorded and
+never written back.
+
+### Asking an agent to do it
+
+You do not have to learn Lua to change the interface. Thurbox ships a built-in
+`ui-skill` extension: a `thurbox-ui` skill that loads in whichever CLI you run
+when the request is about the interface. From any session, ask:
+
+> - *Add a pane on the left with CPU and RAM usage. There is a `top` example
+>   plugin — install it and give it a slot in the layout.*
+> - *Move the search strip to the bottom and make the session column 30% wide.*
+> - *The session list is too noisy — drop the repo group headers and show the
+>   branch instead of the agent name.*
+
+The skill tells the agent that `thurbox-cli plugin dir` finds the directory and
+`thurbox-cli plugin check` verifies its own work. Press `F10` and the change is
+on your screen.
+
+`thurbox-cli` is on the agent's `PATH` too, so the same holds for sessions
+themselves — creating a fleet, sending prompts, scheduling automations. Both
+binaries share one SQLite database, so anything an agent does shows up in your
+running TUI within a tick.
 
 ### When a pane breaks the interface
 
-Editing the thing you are looking at means the thing you are looking at can
-break, so the way back is chrome rather than a pane: `Ctrl+,` → `]` cannot be
-edited away by anything in the directory. A file that failed to load sorts to the
-top of that list with its error underneath, and what undoes it depends on where
-that file came from.
+Editing the thing you are looking at means it can break, so the way back is
+chrome rather than a pane: `Ctrl+,` → `]` cannot be edited away by anything in
+the directory. A file that failed to load sorts to the top of that list with its
+error underneath.
 
 | The file | The way back |
 |---|---|
@@ -723,107 +363,24 @@ that file came from.
 | an installed pane (`from <src>`) | `thurbox-cli plugin sync` |
 | the whole directory | it never loaded, so the embedded copies are running — fix the file from inside them |
 
-`r` restores; it cannot restore a file thurbox never shipped, and says so instead
-of guessing. That is why the second row is `space`, which is also the key for
-bisecting *which* of several files is at fault. Both reload immediately.
+`r` cannot restore a file thurbox never shipped, and says so instead of
+guessing. `space` is also the key for bisecting which of several files is at
+fault. Both reload immediately.
 
-With no terminal to trust, `thurbox-cli plugin check` reports the same failure and
-exits non-zero, and `plugin list` / `plugin dir` print the same inventory and
-directory. Full detail:
+With no terminal to trust, `thurbox-cli plugin check` reports the same failure
+and exits non-zero. Full detail:
 [docs/PLUGINS.md → When something goes wrong](docs/PLUGINS.md#when-something-goes-wrong).
-
-### Panes you did not write
-
-```bash
-thurbox-cli plugin install top                                          # by name
-thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
-thurbox-cli plugin sync                                                 # converge to the spec
-```
-
-[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) and
-[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) give back
-two of v1's surfaces this way. `plugin install` records each in `plugins.toml`
-with the commit it resolved to in `plugins.lock`, so `plugin sync` reproduces
-the same interface on another machine. Your edits to an installed pane are kept,
-and a pane you delete is remembered as deleted rather than reinstalled — the
-same delivery rules the bundled panes follow.
-
-### Three files, three different questions
-
-Customization stays legible because *delivery*, *your decisions*, and
-*composition* are recorded separately:
-
-- `.bundled.json` — what delivery did (bundled · edited · yours · removed ·
-  installed)
-- `ui.json` — what **you** decided (panes turned off, panes trusted, chords
-  rebound)
-- `plugins.toml` / `plugins.lock` — what the interface is composed of, and what
-  each entry resolved to
-
-Deleting a bundled pane is how you remove it: the removal is recorded and never
-written back, which is what makes replacing a shipped pane with your own — under
-a different name — possible on equal terms.
-
-### Everything behind the interface is data too
-
-- **Agents** — `agents.toml` is a list of `command + args`; thurbox knows
-  nothing about any agent's model, prompts, or tools, so a new CLI is a TOML
-  entry rather than a release. [More →](#agents)
-- **Hosts** — `hosts.toml` declares SSH machines and WSL distros; each becomes
-  an `ssh:<name>` / `wsl:<name>` backend a session can spawn on, with the same
-  persistence and restore as a local one.
-- **Lifecycle hooks** — `hooks.toml` runs your commands before and after
-  thurbox creates, deletes, restarts or restores a session; a `pre_*` hook can
-  refuse, and every interface fires the same hook once.
-- **Themes** — thirty-six presets, plus your own as a `base` and per-colour
-  overrides in `themes.toml`. Panes ask for roles, not colours.
-- **Keybindings** — one registry, so `F1` renders what is actually bound and
-  cannot drift from it. Every chord is rebindable there; a chord freed by a pane
-  you removed stays unbound rather than being quietly reused.
-- **Extensions** — whole workflows (`flow`, `forge`, `ci-shepherd`, `renovate`)
-  shipped as a declarative manifest that the binary knows how to install,
-  activate, and self-heal — without knowing what any of them *are*. Two ship
-  built into the binary and are on by default: `hooks` (every session's status
-  dot) and `ui-skill` (whichever agent you run learns how to edit thurbox's own
-  interface, from any session).
-
-## Uninstall
-
-Remove the binary, depending on how you installed it:
-
-```bash
-rm ~/.local/bin/thurbox        # curl one-liner / manual install
-brew uninstall thurbox         # Homebrew
-paru -R thurbox thurbox-bin    # Arch (AUR)
-winget uninstall Thurbeen.thurbox  # winget (Windows)
-choco uninstall thurbox        # Chocolatey (Windows)
-```
-
-Sessions outlive Thurbox in tmux, so stop them too:
-
-```bash
-tmux -L thurbox kill-server    # ends all running agent sessions
-```
-
-To also delete state and config (optional — this erases your
-session history, theme, and `agents.toml`):
-
-```bash
-rm -rf ~/.local/share/thurbox ~/.config/thurbox
-```
 
 ## Agents
 
-A session launches exactly one coding-agent CLI. Agents are
-described as data in `~/.config/thurbox/agents.toml`, which is
-seeded with built-ins (claude, codex, antigravity, opencode, aider,
-vibe) on first run. Edit the file to tweak an agent or add a new one — no
-recompile required.
+A session launches exactly one coding-agent CLI. Agents are described as data in
+`~/.config/thurbox/agents.toml`, seeded with built-ins (claude, codex,
+antigravity, opencode, aider, copilot, vibe) on first run. Edit the file to
+tweak an agent or add a new one — no recompile.
 
-Each `[[agents]]` entry maps the resume / fork / new-session ids
-onto argument-template groups. `args` is always passed (bake in
-any flags you want, e.g. a model); the resume / fork /
-new-session groups are appended only when their driving value is
+Each `[[agents]]` entry maps the resume / fork / new-session ids onto
+argument-template groups. `args` is always passed (bake in any flags you want,
+e.g. a model); the other groups are appended only when their driving value is
 present, with `{id}` substituted token-by-token:
 
 ```toml
@@ -843,145 +400,75 @@ command = "codex"
 
 ## Common Workflows
 
-- **Parallel branches** — `Ctrl+N`, pick a repo in Worktree mode,
-  name a new branch. Repeat for a second branch. Two isolated
-  agents now work in parallel with no git contention.
-- **Mix agents** — run Claude Code on one repo and Codex on
-  another in side-by-side sessions; each session remembers its own
-  agent.
-- **Recover a crash** — if Thurbox dies, relaunch it: sessions
-  resume from tmux. Prefer raw tmux? `tmux -L thurbox attach`.
+- **Parallel branches** — `Ctrl+N`, pick a repo in worktree mode, name a new
+  branch. Repeat for a second branch. Two isolated agents now work in parallel
+  with no git contention.
+- **Mix agents** — run Claude Code on one repo and Codex on another side by
+  side; each session remembers its own agent.
+- **Recover a crash** — relaunch thurbox: sessions resume from tmux. Or attach
+  raw with `tmux -L thurbox attach`.
 
 ### Recipe: provision a monorepo headless
 
-A practical example for a monorepo with a production app — three
-roles, each with a different blast radius:
-
-- one or more **operator** sessions in worktrees with a custom MCP
-  config — **read/write** access to the prod backoffice;
-- one or more **developer** sessions in worktrees with a custom MCP
-  config — **read-only** access to the prod backoffice;
-- one or more **security/quality reviewer** sessions running
-  continuous code review across the monorepo.
-
-A single shell script — no glue code, no overhead:
+Three roles with different blast radius — operators with read/write access to a
+prod backoffice, developers with read-only access, and reviewers doing
+continuous review — provisioned by one script:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-REPO="${REPO:-/home/me/code/monorepo}"   # path to the monorepo
+REPO="${REPO:-/home/me/code/monorepo}"
 N_OPERATORS="${N_OPERATORS:-1}"
 N_DEVELOPERS="${N_DEVELOPERS:-2}"
 N_REVIEWERS="${N_REVIEWERS:-1}"
 HOST="${HOST:-}"                          # e.g. devbox to run remotely; empty = local
 STAMP="$(date +%y%m%d-%H%M)"
-cli() { thurbox-cli "$@"; }
 
 host_flag() { [ -n "$HOST" ] && printf -- '--host\n%s\n' "$HOST"; }
 
-# 1) Operator sessions — RW backoffice, each on its own worktree branch.
 for i in $(seq 1 "$N_OPERATORS"); do
-  cli session create \
-    --name "operator-$i" \
-    --repo-path "$REPO" \
-    --agent operator \
-    --worktree-branch "ops/$STAMP-$i" \
-    $(host_flag)
+  thurbox-cli session create --name "operator-$i" --repo-path "$REPO" \
+    --agent operator --worktree-branch "ops/$STAMP-$i" $(host_flag)
 done
 
-# 2) Developer sessions — RO backoffice, each on its own worktree branch.
 for i in $(seq 1 "$N_DEVELOPERS"); do
-  cli session create \
-    --name "developer-$i" \
-    --repo-path "$REPO" \
-    --agent developer \
-    --worktree-branch "dev/$STAMP-$i" \
-    $(host_flag)
+  thurbox-cli session create --name "developer-$i" --repo-path "$REPO" \
+    --agent developer --worktree-branch "dev/$STAMP-$i" $(host_flag)
 done
 
-# 3) Security/quality reviewer sessions — continuous review across the monorepo.
-#    No worktree: review the repo as-is (read-only stance comes from the prompt).
+# Reviewers get no worktree: they review the repo as-is.
 for i in $(seq 1 "$N_REVIEWERS"); do
-  id="$(cli session create \
-        --name "reviewer-$i" \
-        --repo-path "$REPO" \
-        --agent reviewer \
-        $(host_flag) \
-        --json | jq -r '.id')"
-  # Seed the reviewer with its standing instructions.
-  cli session send --to "$id" --no-wake --body \
+  id="$(thurbox-cli session create --name "reviewer-$i" --repo-path "$REPO" \
+        --agent reviewer $(host_flag) --json | jq -r '.id')"
+  thurbox-cli session send --to "$id" --no-wake --body \
 "You are a continuous security & code-quality reviewer for this monorepo.
-Loop: pick the most recently changed files, review for security issues, correctness bugs,
-and quality regressions. Report findings concisely, then move to the next changed area.
-Do not modify code — review only."
+Loop: pick the most recently changed files, review for security issues,
+correctness bugs, and quality regressions. Do not modify code — review only."
 done
 
-cli session list
+thurbox-cli session list
 ```
 
-The "custom MCP config" is just an **agent** that launches `claude`
-with a different `--mcp-config` file — Thurbox stays agent-neutral.
-Define the three roles in `~/.config/thurbox/agents.toml`:
+The three roles are just agents in `agents.toml` that launch `claude` with a
+different `--mcp-config`, so the read/write vs read-only split lives entirely in
+those MCP config files:
 
 ```toml
-default = "claude"
-
 [[agents]]
 name = "operator"                 # prod backoffice: read/write
 command = "claude"
-args = [
-  "--mcp-config", "/home/me/.config/thurbox/mcp/backoffice-rw.json",
-  "--model", "opus",              # bake any default flags into args
-]
-new_session_args = ["--session-id", "{id}"]
-resume_args      = ["--resume", "{id}"]
-fork_args        = ["--resume", "{id}", "--fork-session"]
-
-[[agents]]
-name = "developer"                # prod backoffice: read-only
-command = "claude"
-args = ["--mcp-config", "/home/me/.config/thurbox/mcp/backoffice-ro.json"]
-new_session_args = ["--session-id", "{id}"]
-resume_args      = ["--resume", "{id}"]
-fork_args        = ["--resume", "{id}", "--fork-session"]
-
-[[agents]]
-name = "reviewer"                 # continuous code review, no backoffice access
-command = "claude"
-args = []
+args = ["--mcp-config", "/home/me/.config/thurbox/mcp/backoffice-rw.json"]
 new_session_args = ["--session-id", "{id}"]
 resume_args      = ["--resume", "{id}"]
 fork_args        = ["--resume", "{id}", "--fork-session"]
 ```
 
-The read/write vs read-only split lives entirely in the two MCP
-config files those agents point at (`~/.config/thurbox/mcp/`):
-
-```json
-{
-  "mcpServers": {
-    "backoffice": {
-      "command": "npx",
-      "args": ["-y", "@yourco/backoffice-mcp"],
-      "env": {
-        "BACKOFFICE_URL": "https://prod-backoffice.internal",
-        "BACKOFFICE_MODE": "rw"
-      }
-    }
-  }
-}
-```
-
-`backoffice-ro.json` is identical but with `"BACKOFFICE_MODE": "ro"`.
 Scale knobs are env vars — `N_DEVELOPERS=3 ./provision.sh` — and
-`HOST=devbox ./provision.sh` runs every session's worktree + tmux on
-a remote machine from `hosts.toml`. Need one session to span several
-repos? Add `--add-repo PATH@main` (its own worktree per repo) or
-`--add-dir PATH` (attached read-only) to its `session create`.
+`HOST=devbox ./provision.sh` runs every session's worktree and tmux on a remote
+machine from `hosts.toml`. For one session across several repos, add
+`--add-repo PATH@main` (its own worktree per repo) or `--add-dir PATH`.
 
 ## Keybindings
-
-### Global Keys
 
 Every chord goes through one registry: the kernel owns a few, and each pane
 declares its own. **`F1` is authoritative** — it renders the registry, so it
@@ -1015,69 +502,38 @@ cannot drift from what is running.
 | `Ctrl+O` | Open in your editor | `10_sessions.lua` |
 | `F9` | Hide the session list | `10_sessions.lua` |
 
-Gone with the panes they opened: `Ctrl+X`/`F7` (code review), `Ctrl+E`/`F3`
-(file viewer), `Ctrl+B`/`F2` (info panel), `F5` (tasks) and `Ctrl+P`
-(automations — now the command palette, which is the way into any pane). Two of them come back
-with a pane you install:
-[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) claims
-`Ctrl+X`/`F7` again, and
-[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) claims
-`F2`. See [docs/V2-KERNEL.md](docs/V2-KERNEL.md), or the `v1.x` branch if you
-need the rest.
-
 Every chord is rebindable from the `F1` editor; rebindings persist to
-`~/.config/thurbox/ui.json`, beside the plugins you have turned off and the
-ones you trust. A chord already claimed by an overlapping action is reassigned
-and you are told which one lost it; a chord freed by a pane you removed stays
+`~/.config/thurbox/ui.json`, beside the plugins you have turned off and the ones
+you trust. A chord already claimed by an overlapping action is reassigned and
+you are told which one lost it; a chord freed by a pane you removed stays
 unbound.
 
-**macOS:** in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm,
-Ghostty) the Command key works as a modifier, and any action can be rebound to a
-`cmd+…` chord from the F1 editor. Copy and paste ship on `Cmd+C`/`Cmd+V` there
-as well as on the Ctrl pair, because `Ctrl+C` in a terminal means interrupt.
-Terminal.app delivers no Cmd chords; everything else works there.
+**macOS:** in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm, Ghostty)
+the Command key works as a modifier, and any action can be rebound to a `cmd+…`
+chord. Copy and paste ship on `Cmd+C` / `Cmd+V` there as well as on the Ctrl
+pair, because `Ctrl+C` in a terminal means interrupt. Terminal.app delivers no
+Cmd chords; everything else works there.
 
-### List Navigation
-
-| Key | Action |
-|-----|--------|
-| `j` / `Down` | Next item |
-| `k` / `Up` | Previous item |
-| `Enter` | Select / focus |
-
-Searching is unified into the global search strip (`Ctrl+/`); there
-is no separate per-list `/` filter. It matches sessions on name,
-agent, branch, repo, and live terminal-buffer content. (The theme
-picker keeps its own `/` filter — it is a kernel modal, not a pane.)
-
-### Terminal Scrollback and Selection
+### Terminal scrollback and selection
 
 | Key | Action |
 |-----|--------|
 | `Shift+Up` / `Shift+Down` | Scroll 1 line |
 | `Shift+PageUp` / `Shift+PageDown` | Scroll half page |
-| `Alt+PageUp` / `Alt+PageDown` | Scroll half page (fallback where the terminal claims `Shift+Page`, e.g. Terminal.app/iTerm2) |
+| `Alt+PageUp` / `Alt+PageDown` | Scroll half page (fallback where the terminal claims `Shift+Page`) |
 | Mouse wheel | Scroll 3 lines |
 | Mouse drag | Select text |
 | Any other key | Snap to bottom + forward to PTY |
 
 ## Headless CLI (`thurbox-cli`)
 
-The `thurbox-cli` binary drives Thurbox without the TUI — useful
-for scripting and automation. It shares the same SQLite database
-and `tmux -L thurbox` server as the TUI, so changes made by either
-appear live in the other (the TUI polls `PRAGMA data_version`).
+`thurbox-cli` drives thurbox without the TUI. It shares the same SQLite database
+and `tmux -L thurbox` server, so changes made by either appear live in the other
+(the TUI polls `PRAGMA data_version`).
 
-Output is human-readable by default and switches to JSON
-automatically when stdout is piped (so `… | jq` keeps working);
-force a format with `--json` (compact), `--pretty` (indented JSON),
-or `--text` (human even when piped). The binary is intentionally
-thin — it parses arguments, calls into the database / tmux helpers,
-and prints the result. There is no TUI and no event loop.
-
-```bash
-cargo build --bin thurbox-cli
-```
+Output is human-readable by default and switches to JSON automatically when
+stdout is piped (so `… | jq` keeps working); force a format with `--json`
+(compact), `--pretty` (indented JSON), or `--text` (human even when piped).
 
 ### Sessions
 
@@ -1098,47 +554,28 @@ thurbox-cli session delete <uuid>        # soft-delete (see below)
 thurbox-cli session restore <uuid>       # undo a soft-delete
 ```
 
-- **`create`** runs synchronously — the tmux window is live by the
-  time the command returns. `--agent` falls back to the default in
-  `agents.toml` when omitted; `--worktree-branch` (off
-  `--base-branch`, default `main`) creates a git worktree; `--host`
-  (a name from `hosts.toml`) creates the worktree and tmux window on
-  that remote host over SSH instead of locally.
-- **`send`** types text into the session's terminal followed by
-  Enter; **`capture`** dumps the rendered pane as text (`--lines`
-  defaults to 200, max 10000).
+`create` runs synchronously — the tmux window is live by the time it returns.
+`--agent` falls back to the default in `agents.toml`; `--worktree-branch` (off
+`--base-branch`, default `main`) creates a git worktree; `--host` creates the
+worktree and tmux window on that remote host over SSH. `send` types text into
+the session's terminal followed by Enter; `capture` dumps the rendered pane
+(`--lines` defaults to 200, max 10000).
 
-#### How session delete is handled
+**Deleting.** `session delete <uuid>` is a soft-delete: it only marks the
+database row. The tmux window, git worktrees and pending scheduled commands are
+left untouched — the running TUI cleans those up on its next sync, and
+`session restore <uuid>` brings it back.
 
-`session delete <uuid>` is a **soft-delete**: by default it only
-marks the database row as deleted. The tmux window, any git
-worktrees, and pending scheduled commands are **left untouched** —
-the running TUI cleans those up on its next sync, and the session
-stays recoverable with `session restore <uuid>` (the TUI's `Ctrl+U`
-/ `Ctrl+Z` undo path). Restore revives the metadata; the TUI
-re-spawns a fresh window for it.
-
-Pass **`--force`** to also tear down the session's runtime resources
-in the same call — useful for headless cleanup when no TUI is
-running to observe the deletion. With `--force` the command:
-
-- kills the tmux window,
-- removes the session's git worktrees (the underlying repos are left
-  intact),
-- removes the multi-repo symlink workspace, if any (only the
-  symlinks — never the linked repos), and
-- disables any `send` automations that target the session.
-
-Teardown is **best-effort**: individual tmux/worktree failures are
-recorded in the JSON report (`killed_window`, `removed_worktrees`,
-`worktree_errors`, `disabled_automations`) but never abort the
-delete. The DB row is always soft-deleted last, so even a forced
-delete remains restorable (it just re-spawns from a clean slate).
+Pass `--force` to tear down the runtime resources in the same call, for headless
+cleanup with no TUI running. It kills the tmux window, removes the session's git
+worktrees (the underlying repos are left intact), removes the multi-repo symlink
+workspace if any, and disables `send` automations targeting the session.
+Teardown is best-effort: individual failures are recorded in the JSON report
+(`killed_window`, `removed_worktrees`, `worktree_errors`,
+`disabled_automations`) but never abort the delete, and the row is always
+soft-deleted last.
 
 ### Automations (alias `auto`)
-
-Scheduled agent runs, persisted to the shared DB. See
-[Automations](#automations) for the model.
 
 ```bash
 thurbox-cli automation create \
@@ -1154,16 +591,13 @@ thurbox-cli automation runs <id> --limit 20   # run history
 thurbox-cli automation tick              # fire all due automations now
 ```
 
-`--trigger` accepts `hourly`, `daily`, `weekdays`, `weekly`,
-`cron:"<expr>"`, or `at:<unix_millis>`. A `--session` makes it a
-*send* automation; a `--repo` (with optional `--worktree` / `--base`
-/ `--agent`) makes it a *spawn* automation. `automation tick` is the
-headless entry point the tmux heartbeat keeper and any
-systemd/cron timer call to fire due automations without a TUI.
+`--trigger` accepts `hourly`, `daily`, `weekdays`, `weekly`, `cron:"<expr>"`, or
+`at:<unix_millis>`. A `--session` makes it a *send* automation; a `--repo` (with
+optional `--worktree` / `--base` / `--agent`) makes it a *spawn* automation;
+`--command` makes it a headless shell job. `automation tick` is the entry point
+the tmux heartbeat keeper and any systemd/cron timer call.
 
 ### Tasks (alias `todo`)
-
-The built-in todo list (see [Tasks](#tasks) for the model).
 
 ```bash
 thurbox-cli task create --title "audit deps" --description "markdown notes"
@@ -1174,13 +608,11 @@ thurbox-cli task remove <id>
 thurbox-cli task run <id>                   # trigger its Send/Spawn action
 ```
 
-`create` with neither `--session` nor `--repo` is a plain local todo;
-adding either (with optional `--worktree`/`--base`/`--agent`) connects
-it to a coding agent like an automation.
+`create` with neither `--session` nor `--repo` is a plain local todo; adding
+either (with optional `--worktree` / `--base` / `--agent`) connects it to a
+coding agent like an automation.
 
 ### Messages (alias `msg`)
-
-The [inter-session message queue](#features).
 
 ```bash
 thurbox-cli message send --to flow --kind questions --body "scope?"
@@ -1189,15 +621,12 @@ thurbox-cli message inbox --for flow --claim   # atomic, exactly-once drain
 thurbox-cli message prune --older-than-days 14
 ```
 
-Run *inside* a session, `send`/`reply`/`inbox` default their sender,
-task, and recipient to the caller's injected identity
-(`THURBOX_SESSION` / `THURBOX_TASK`), so an agent passes no ids. `send`
-and `reply` wake the recipient by default (`--no-wake` to suppress).
+Run *inside* a session, `send` / `reply` / `inbox` default their sender, task
+and recipient to the caller's injected identity (`THURBOX_SESSION` /
+`THURBOX_TASK`), so an agent passes no ids. `send` and `reply` wake the
+recipient by default (`--no-wake` to suppress).
 
 ### Interface (`plugin`)
-
-Shape the interface with no TTY — which is also how an agent does it:
-edit one file, run one command, read the exit status.
 
 ```bash
 thurbox-cli plugin dir                # which directory is live, and which rule chose it
@@ -1211,14 +640,9 @@ thurbox-cli plugin remove <name>      # withdraw it, remembering the removal
 thurbox-cli plugin available          # the example panes a bare name resolves to
 ```
 
-`check` also fails on a pane that **loaded but which no arrangement places** —
-the only failure with no symptom — and prints the `layout.lua` line to add.
 See [Customization](#customization) and [docs/PLUGINS.md](docs/PLUGINS.md).
 
 ### Extensions (alias `ext`)
-
-Manage opt-in add-ons (see [Extensions](#features) for the model).
-Every subcommand prints a JSON result with a human-readable `summary`.
 
 ```bash
 thurbox-cli extension install <name|url|dir>   # install + activate
@@ -1232,38 +656,55 @@ thurbox-cli extension deactivate <name>        # tear them down (real off-switch
 thurbox-cli extension uninstall <name> [--purge]
 ```
 
-A bare `<name>` resolves against the official source, **pinned to your
-binary's release tag** so the fetched extension matches the binary;
-a URL or local dir installs from there instead. Installed extensions
-**self-heal** — their declared sessions and automations are re-ensured
-at TUI startup and on every headless `automation tick`, so `deactivate`
-(not deleting the session) is the way to turn one off.
+A bare `<name>` resolves against the official source, pinned to your binary's
+release tag so the fetched extension matches the binary. Installed extensions
+self-heal — their declared sessions and automations are re-ensured at TUI
+startup and on every headless `automation tick` — so `deactivate`, not deleting
+the session, is the way to turn one off.
 
-### Editor
+### Editor and config
 
 ```bash
-thurbox-cli editor get                   # print configured command
+thurbox-cli editor get                   # print the command Ctrl+O runs
 thurbox-cli editor set "code --wait"     # set (empty string clears)
-```
-
-This is the command `Ctrl+O` runs in the TUI; the worktree path is
-appended as the final argument.
-
-### Config
-
-```bash
-thurbox-cli config validate              # strict-parse every config file (exit 1 on a problem)
+thurbox-cli config validate              # strict-parse every config file
 thurbox-cli config show                  # print the effective resolved config
 ```
 
-`validate` is handy in dotfiles CI; see
+The worktree path is appended to the editor command as its final argument.
+`config validate` is handy in dotfiles CI; see
 [docs/CONFIG.md](docs/CONFIG.md) for every config file in one place.
+
+## Uninstall
+
+Remove the binary, depending on how you installed it:
+
+```bash
+rm ~/.local/bin/thurbox        # curl one-liner / manual install
+brew uninstall thurbox         # Homebrew
+paru -R thurbox thurbox-bin    # Arch (AUR)
+winget uninstall Thurbeen.thurbox  # winget (Windows)
+choco uninstall thurbox        # Chocolatey (Windows)
+```
+
+Sessions outlive thurbox in tmux, so stop them too:
+
+```bash
+tmux -L thurbox kill-server    # ends all running agent sessions
+```
+
+To also delete state and config (this erases your session history, theme and
+`agents.toml`):
+
+```bash
+rm -rf ~/.local/share/thurbox ~/.config/thurbox
+```
 
 ## Architecture
 
-The interface is **Lua running on a Rust kernel**. `thurbox` boots the kernel,
-which reads `ui/` and renders whatever plugins it finds; there is no built-in
-pane. Sessions run via a `SessionBackend` trait backed by tmux over a transport
+The interface is Lua running on a Rust kernel. `thurbox` boots the kernel, which
+reads `ui/` and renders whatever plugins it finds; there is no built-in pane.
+Sessions run via a `SessionBackend` trait backed by tmux over a transport
 (local, SSH, or WSL); terminal output is parsed by `vt100::Parser` and rendered
 by `tui_term`. All persistent state (sessions, worktrees, automations, tasks,
 messages) is stored in SQLite.
@@ -1283,7 +724,7 @@ Five rules hold the kernel together:
 5. **Anything touching the world runs on a worker** — terminal attach, commands,
    diffs, metrics, git stats, repository reads, update checks.
 
-### Module Dependency Rules
+### Module dependency rules
 
 ```text
 session  ← pure data types, no crate-internal references
@@ -1292,152 +733,90 @@ kernel   ← session + storage + sync + paths + session_ops + git
 main     ← the coordinator: the loop, the workers, the chrome
 ```
 
-These rules are enforced by `tests/architecture_rules.rs` as an **allowlist**:
-a new module fails the test until its place is declared. For the full set of
-architectural decisions with rationale, see
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); for the kernel itself, see
+Enforced by `tests/architecture_rules.rs` as an allowlist: a new module fails
+the test until its place is declared. Full rationale in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the kernel itself is in
 [docs/V2-KERNEL.md](docs/V2-KERNEL.md).
-
-**Moving from v1?** The interface is Lua plugins now, so a few v1 panes are
-installable rather than compiled in and two moved to `thurbox-cli` —
-[What v1 had, and where it is in v2](#what-v1-had-and-where-it-is-in-v2) is the
-full map. Everything outside the interface — sessions, agents, worktrees, remote
-hosts, automations, your database — is unchanged. Auto-update never crosses a
-major version, so a 1.x install is told 2.x exists and stays where it is;
-`thurbox-cli update --force` is the deliberate way across, and the first v2
-launch of a profile with v1 history asks once before anything changes. v1 is
-maintained on the [`v1.x`](https://github.com/Thurbeen/thurbox/tree/v1.x) branch.
 
 ## Documentation
 
 - [docs/TUTORIAL.md](docs/TUTORIAL.md) — Onboarding walkthrough with
-  screenshots: add a repository, create a session, the everyday keys and
-  commands
-- [docs/CONSTITUTION.md](docs/CONSTITUTION.md) — Core principles
-  and non-negotiable rules
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architectural
-  decisions with rationale
-- [docs/FEATURES.md](docs/FEATURES.md) — Feature-level design
-  choices (including agent definitions)
-- [docs/CONFIG.md](docs/CONFIG.md) — Every config file, env var,
-  and DB setting in one place (settings.toml, feature flags, …)
-- [docs/V2-KERNEL.md](docs/V2-KERNEL.md) — The plugin kernel: its
-  shape, its five rules, and the traps in changing it
+  screenshots
+- [docs/CONSTITUTION.md](docs/CONSTITUTION.md) — Core principles and
+  non-negotiable rules
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architectural decisions with
+  rationale
+- [docs/FEATURES.md](docs/FEATURES.md) — Feature-level design choices
+- [docs/CONFIG.md](docs/CONFIG.md) — Every config file, env var and DB setting
+  in one place
+- [docs/V2-KERNEL.md](docs/V2-KERNEL.md) — The plugin kernel: its shape, its
+  five rules, and the traps in changing it
 - [docs/PLUGINS.md](docs/PLUGINS.md) — Writing an interface plugin
-  (start at [Customization](#customization) for the tour)
-- [docs/RELEASING.md](docs/RELEASING.md) — What a release may and may
-  not change about the artifacts (and why removing a binary silently
-  breaks auto-update)
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — The dev environment: Nix flake,
+  `just` tasks, the sandbox
+- [docs/RELEASING.md](docs/RELEASING.md) — What a release may and may not change
+  about the artifacts
 
 ## Development
 
-### Setup
+The dev environment is a reproducible Nix flake (`nix develop` /
+`direnv allow`) with `just` tasks and an isolated runtime sandbox
+(`scripts/dev/sandbox.sh`). See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ```bash
 git clone https://github.com/Thurbeen/thurbox.git
 cd thurbox
-prek install   # Install pre-commit hooks
+prek install                         # pre-commit hooks
+
+just build                           # cargo build --bin thurbox --bin thurbox-cli
+just test                            # cargo nextest run --all
+just lint                            # fmt, clippy, deny, rumdl, shellcheck, Lua gates
 ```
 
-All required dev tools are documented in `Cargo.toml` under
-`[package.metadata.dev-tools]`. Run `./scripts/install-dev-tools.sh`
-to install them, or install individually with `cargo install`.
-
-### Build and Run
-
-```bash
-cargo build                          # Debug build
-cargo build --release                # Release build (LTO, stripped)
-cargo run                            # Run in dev mode
-```
-
-### Testing
-
-```bash
-cargo nextest run --all              # Run all tests (preferred)
-cargo nextest run -E 'test(name)'    # Single test by name
-cargo test --test architecture_rules # Architecture validation
-bats scripts/install.bats            # Install script tests
-```
-
-### Code Quality
-
-```bash
-cargo fmt --all                      # Format (100 char max)
-cargo clippy --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
-rumdl check .                        # Markdown lint
-```
-
-### Architecture Checks
-
-```bash
-cargo test --test architecture_rules # Module dependency rules
-cargo deny check advisories          # Security advisories
-cargo deny check bans licenses sources  # Dependency policy
-```
+Without Nix, `./scripts/install-dev-tools.sh` installs the tools listed in
+`Cargo.toml` under `[package.metadata.dev-tools]`.
 
 ## Committing Changes
 
 This project uses
-[Conventional Commits](https://www.conventionalcommits.org/).
+[Conventional Commits](https://www.conventionalcommits.org/), enforced by
+cocogitto in a pre-commit hook.
 
 ```bash
 cog commit feat "add worktree management"
 cog commit fix "resolve memory leak" cli
 ```
 
-### Commit Types
-
-- `feat`: New features (minor version bump)
-- `fix`: Bug fixes (patch version bump)
-- `docs`, `refactor`, `test`, `chore`, `perf`, `ci`, `style`,
-  `build`, `revert`: No release
-
-### Valid Scopes
-
-`api`, `cli`, `ui`, `git`, `core`, `docs`, `deps`, `config`, `mcp`
+`feat` bumps the minor version and `fix` / `perf` the patch; `docs`, `refactor`,
+`test`, `chore`, `ci`, `style`, `build` and `revert` cut no release. Valid
+scopes: `api`, `cli`, `ui`, `git`, `core`, `docs`, `deps`, `config`, `mcp`.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes following our coding standards
-4. Write tests for new functionality
-5. Ensure all tests pass: `cargo nextest run --all`
-6. Use conventional commits: `cog commit <type> "message"`
-7. Submit a pull request
+1. Fork the repository and create a feature branch
+2. Make your changes; keep lines under 100 chars and `clippy` clean
+3. Write tests for new functionality
+4. Ensure `cargo nextest run --all` passes
+5. Commit with `cog commit <type> "message"` and open a pull request
 
-### Code Style
-
-- Follow Rust naming conventions
-- Maximum line width: 100 characters
-- Use `rustfmt` for formatting
-- Address all `clippy` warnings
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 ## License
 
-This project is licensed under the MIT License - see the
-[LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- [Ratatui](https://github.com/ratatui-org/ratatui) — TUI
-  framework
-- [tui-term](https://github.com/a-kenji/tui-term) — terminal
-  widget for ratatui
-- [vt100](https://github.com/doy/vt100-rust) — terminal
-  emulation
-- [Claude Code CLI](https://github.com/anthropics/claude-code)
-  — one of the supported coding agents
+- [Ratatui](https://github.com/ratatui-org/ratatui) — TUI framework
+- [tui-term](https://github.com/a-kenji/tui-term) — terminal widget for ratatui
+- [vt100](https://github.com/doy/vt100-rust) — terminal emulation
 - [tmux](https://github.com/tmux/tmux) — terminal multiplexer
 
 ## Community & Support
 
-- **[Discord](https://discord.gg/fGumcHaxFY)** — questions, setup
-  help, and showing off your interface. Ask in `#help`, one
-  thread per problem.
-- **[GitHub Issues](https://github.com/Thurbeen/thurbox/issues)**
-  — confirmed bugs and concrete feature requests.
-- **[Contributing](CONTRIBUTING.md)** — everything about getting
-  a change merged.
+- **[Discord](https://discord.gg/fGumcHaxFY)** — questions, setup help, and
+  showing off your interface. Ask in `#help`, one thread per problem.
+- **[GitHub Issues](https://github.com/Thurbeen/thurbox/issues)** — confirmed
+  bugs and concrete feature requests.
+- **[Contributing](CONTRIBUTING.md)** — everything about getting a change
+  merged.

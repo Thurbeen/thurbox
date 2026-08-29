@@ -136,11 +136,11 @@ breadcrumb: 'Configuration'
                 <td>&mdash;</td>
                 <td><strong>never</strong></td>
                 <td>
-                  v1's chord overrides.
+                  a legacy chord-override file.
                   <strong>Ignored</strong>
                   &mdash; rebindings live in
                   <code>ui.json</code>
-                  . Left in place rather than deleted, so going back to 1.x still finds it.
+                  . Left in place rather than deleted, so nothing you wrote is thrown away.
                 </td>
               </tr>
               <tr>
@@ -246,7 +246,7 @@ thurbox-cli config show       # effective config + where each value came from</c
               </tr>
               <tr>
                 <td>Rebind a key</td>
-                <td><a href="#keybindings-json"><code>keybindings.json</code> (or the F1 editor)</a></td>
+                <td><a href="#keybindings-json">the F1 editor (persisted to <code>ui.json</code>)</a></td>
               </tr>
               <tr>
                 <td>Set the <code>Ctrl+O</code> editor, pick a theme</td>
@@ -744,10 +744,10 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               tab (<code>Ctrl+,</code> then <code>]</code>), recorded in <code>ui.json</code>. Five
               keys are still <em>accepted and ignored</em> &mdash; <code>tasks</code>,
               <code>file_viewer</code>, <code>info_panel</code>, <code>code_review</code> and
-              <code>global_search</code> &mdash; because they gated
-              <a href="deprecated.html">v1 panes that no longer exist</a>. They are parsed rather
-              than rejected so an existing <code>settings.toml</code> keeps loading, but setting one
-              has no effect in either direction. Same for <code>three_panel_min_cols</code>.
+              <code>global_search</code> &mdash; because they gated panes the binary no longer
+              draws. They are parsed rather than rejected so an existing
+              <code>settings.toml</code> keeps loading, but setting one has no effect in either
+              direction. Same for <code>three_panel_min_cols</code>.
             </p>
           </div>
           <table>
@@ -880,19 +880,12 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
           <div class="info-box">
             <p>
               <strong>Auto-update never crosses a major version.</strong>
-              A 1.x install is told that 2.x exists &mdash; the badge and
+              A new major is reported &mdash; by the badge and by
               <code>thurbox-cli version --check</code>
-              both report it &mdash; and is never moved onto it; it keeps updating along 1.x. 2.x
-              replaced v1&rsquo;s compiled-in interface with the Lua plugin kernel, so a silent
-              crossing would hand you a different program under the same binary name.
+              &mdash; and never installed, because a silent crossing could hand you a different
+              program under the same binary name.
               <code>thurbox-cli update --force</code>
               is the deliberate way across.
-            </p>
-            <p>
-              The guard lives in the binary, so only a build carrying it is protected: releases up
-              to v1.8.7 predate it. On an existing 1.8.x install,
-              <code>auto_update = false</code>
-              is the reliable hold until a 1.x patch carrying the guard ships.
             </p>
           </div>
 
@@ -967,7 +960,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
           <p>
             User-defined themes, offered in the
             <code>Ctrl+Y</code>
-            picker alongside the nine built-in presets and persisted by
+            picker alongside the thirty-six built-in presets and persisted by
             <code>name</code>
             like any preset. Each
             <code>[[themes]]</code>
@@ -996,17 +989,22 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
           </p>
 
           <h2 id="keybindings-json">
-            keybindings.json
+            Rebound chords (<code>ui.json</code>)
             <a href="#keybindings-json" class="heading-anchor">#</a>
           </h2>
-          <p>Maps <code>Action</code> names to one or more chord strings:</p>
-          <pre data-title="keybindings.json"><code class="language-json">{ "QuitApp": ["ctrl+a"], "OpenThemePicker": ["ctrl+y", "f4"] }</code></pre>
+          <p>
+            Rebindings live in
+            <code>~/.config/thurbox/ui.json</code>, beside the panes you have turned off and the
+            files you trust &mdash; all three are decisions <em>you</em> made about the interface,
+            which is why they share a file. It maps an action to one or more chord strings:
+          </p>
+          <pre data-title="ui.json"><code class="language-json">{ "keys": { "QuitApp": ["ctrl+a"], "OpenThemePicker": ["ctrl+y", "f4"] } }</code></pre>
           <ul>
             <li>
-              The preferred editing path is the
+              The editing path is the
               <strong>F1 panel</strong>
-              (live capture, conflict stealing, immediate persistence). Hand-edits are read at
-              startup and live via mtime poll.
+              : select an action, press the chord. It takes effect on the next keystroke and
+              persists itself.
             </li>
             <li>
               Chord syntax:
@@ -1106,7 +1104,7 @@ thurbox-cli extension status [&lt;name&gt;]      # per-resource presence + versi
               <tr>
                 <td><code>active_theme</code></td>
                 <td><code>Ctrl+Y</code> / <code>F4</code> picker</td>
-                <td>TUI palette (nine built-ins)</td>
+                <td>TUI palette (thirty-six built-ins)</td>
               </tr>
               <tr>
                 <td><code>editor_command</code></td>

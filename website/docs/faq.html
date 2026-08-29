@@ -60,31 +60,6 @@ breadcrumb: 'FAQ'
   <a href="installation.html">installation</a> for details.
 </p>
 
-<h2 id="which-version">Which version should I install?</h2>
-<p>
-  <strong>The newest one</strong>, which is what every installer gives you by default &mdash; no
-  pin, no flags. 2.x is the current line: it is where the customizable Lua interface lives, and
-  where new features land.
-</p>
-<p>
-  1.x is still maintained on the <code>v1.x</code> branch and still gets bug and security fixes. Run
-  it if you want a pane 2.x does not have &mdash; the file viewer has no replacement yet, and code
-  review and the info panel are plugins you install rather than built-ins. Pinning it is one line
-  before the installer:
-</p>
-<pre data-wrap><code class="language-bash">export VERSION=v1.8.7
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
-<pre data-wrap><code class="language-powershell">$env:THURBOX_VERSION = 'v1.8.7'
-irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
-<p>
-  That pin holds: thurbox&rsquo;s auto-update never crosses a major version, so a 1.x install is
-  told 2.x exists and is never moved onto it. The package-manager channels (winget, Chocolatey,
-  Homebrew, AUR) publish only the newest release and cannot pin v1. See
-  <a href="installation.html#specific-version">pinning a version</a>
-  and
-  <a href="v1.html">using v1</a>.
-</p>
-
 <h2 id="platforms">
   Which platforms does Thurbox run on? Does it support remote machines?
 </h2>
@@ -148,14 +123,6 @@ irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 
         "acceptedAnswer": {
           "@type": "Answer",
           "text": "On Linux or macOS, run: curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh. It is also available via Homebrew (brew install thurbeen/thurbox/thurbox), the AUR (thurbox or thurbox-bin), and on Windows via winget (winget install Thurbeen.thurbox) or Chocolatey (choco install thurbox). Both of those channels are moderated and only get a new version every 30 days, so the PowerShell installer (irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex) is the recommended route on Windows. You can also build from source with cargo build --release."
-        }
-      },
-      {
-        "@type": "Question",
-        "name": "Which version should I install?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "The newest one, which is what every installer gives you by default — no pin, no flags. 2.x is the current line: it is where the customizable Lua interface lives, and where new features land. 1.x is still maintained on the v1.x branch and still gets bug and security fixes; run it if you want a pane 2.x does not have — the file viewer has no replacement yet, and code review and the info panel are plugins you install rather than built-ins. To install v1, set the version on its own line first and then run the installer: export VERSION=v1.8.7 followed by curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh on Linux or macOS, or $env:THURBOX_VERSION = 'v1.8.7' followed by irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex on Windows. That pin holds, because thurbox auto-update never crosses a major version: a 1.x install is told 2.x exists and is never moved onto it. The package-manager channels (winget, Chocolatey, Homebrew, AUR) publish only the newest release and cannot pin v1."
         }
       },
       {

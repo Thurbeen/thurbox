@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Features — Thurbox Docs'
-description: 'Thurbox features: a fully customizable Lua-plugin interface (with a v1-to-v2 surface map), persistent coding-agent sessions, agent definitions, git worktrees, remote SSH sessions, session lifecycle hooks, automations, and a headless CLI.'
+description: 'Thurbox features: a fully customizable Lua-plugin interface, persistent coding-agent sessions, agent definitions, git worktrees, remote SSH sessions, session lifecycle hooks, automations, and a headless CLI.'
 currentPage: 'features'
 breadcrumb: 'Features'
 ---
@@ -12,145 +12,110 @@ breadcrumb: 'Features'
             <a href="#customizable-interface" class="heading-anchor">#</a>
           </h2>
           <p>
-            <strong>v2's headline feature.</strong>
             There is no interface compiled into the binary. thurbox boots a kernel, reads a
             directory, and draws whatever Lua it finds there &mdash; so every pane, the session list
             included, is a file you can move, turn off, delete, rewrite, or install from someone
             else. You do not have to write any of it yourself:
-            <a href="v2-interface.html#ask-the-agent">ask the agent you already have running</a>.
+            <a href="interface.html#ask-the-agent">ask the agent you already have running</a>.
             The full tour is
-            <a href="v2-interface.html">The Interface</a>.
+            <a href="interface.html">The Interface</a>.
           </p>
 
-          <h3 id="v1-map">
-            What v1 had, and where it is in v2
-            <a href="#v1-map" class="heading-anchor">#</a>
+          <h3 id="where-surfaces-live">
+            Where each surface lives
+            <a href="#where-surfaces-live" class="heading-anchor">#</a>
           </h3>
-          <p>
-            v1 drew every surface from the binary, so the only question was which chord opened it.
-            v2 draws
-            <strong>none</strong>
-            of them from the binary &mdash; which is what makes the interface yours, and means each
-            surface is now bundled, installable, CLI-only, or owed.
-          </p>
           <table>
             <thead>
               <tr>
                 <th>Surface</th>
-                <th>In v1</th>
-                <th>In v2</th>
+                <th>Kind</th>
                 <th>Where it lives</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td>Session list</td>
-                <td>on screen</td>
                 <td>bundled</td>
                 <td><code>10_sessions.lua</code></td>
               </tr>
               <tr>
                 <td>Agent terminal</td>
-                <td>on screen</td>
                 <td>bundled</td>
                 <td><code>20_agent.lua</code></td>
               </tr>
               <tr>
                 <td><a href="#global-search">Global search</a></td>
-                <td><kbd>Ctrl</kbd>+<kbd>/</kbd></td>
                 <td>bundled</td>
                 <td><code>65_search.lua</code></td>
               </tr>
               <tr>
                 <td>Session creation</td>
-                <td><kbd>Ctrl</kbd>+<kbd>N</kbd></td>
                 <td>bundled</td>
                 <td><code>70_new_session.lua</code> (a float)</td>
               </tr>
               <tr>
                 <td>Restore list</td>
-                <td><kbd>Ctrl</kbd>+<kbd>U</kbd></td>
                 <td>bundled</td>
                 <td><code>80_restore.lua</code> (a float)</td>
               </tr>
               <tr>
                 <td><a href="#responsive-ui">The arrangement</a></td>
-                <td>fixed, compiled in</td>
                 <td>bundled</td>
                 <td><code>ui/layout.lua</code></td>
               </tr>
               <tr>
                 <td><a href="#themes">Themes</a> &middot; settings &middot; help</td>
-                <td><kbd>Ctrl</kbd>+<kbd>Y</kbd> &middot; <kbd>Ctrl</kbd>+<kbd>,</kbd> &middot; <kbd>F1</kbd></td>
                 <td>kernel chrome</td>
-                <td>the same chords</td>
+                <td><kbd>Ctrl</kbd>+<kbd>Y</kbd> &middot; <kbd>Ctrl</kbd>+<kbd>,</kbd> &middot; <kbd>F1</kbd></td>
               </tr>
               <tr>
                 <td>Code review</td>
-                <td><kbd>Ctrl</kbd>+<kbd>X</kbd> / <kbd>F7</kbd></td>
                 <td>installable</td>
                 <td><a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a></td>
               </tr>
               <tr>
                 <td>Info panel</td>
-                <td><kbd>Ctrl</kbd>+<kbd>B</kbd> / <kbd>F2</kbd></td>
                 <td>installable</td>
                 <td><a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a></td>
               </tr>
               <tr>
                 <td>CPU / RAM gauges</td>
-                <td>&mdash;</td>
                 <td>installable</td>
                 <td><code>thurbox-cli plugin install top</code></td>
               </tr>
               <tr>
                 <td>Panes anyone else wrote</td>
-                <td>&mdash;</td>
                 <td>installable</td>
                 <td><code>ui/plugins.toml</code></td>
               </tr>
               <tr>
                 <td><a href="#tasks">Tasks</a></td>
-                <td><kbd>Ctrl</kbd>+<kbd>W</kbd> / <kbd>F5</kbd></td>
                 <td>CLI only</td>
                 <td><code>thurbox-cli task</code></td>
               </tr>
               <tr>
                 <td><a href="#automations">Automations</a></td>
-                <td>&mdash;</td>
                 <td>CLI only</td>
                 <td><code>thurbox-cli automation</code></td>
-              </tr>
-              <tr>
-                <td>File viewer</td>
-                <td><kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>F3</kbd></td>
-                <td>owed</td>
-                <td>&mdash;</td>
               </tr>
             </tbody>
           </table>
           <p>
             <strong>Bundled</strong>
-            means it ships with thurbox and is yours to edit, move or delete &mdash; including the
-            arrangement, which v1 compiled in.
+            means it ships with thurbox and is yours to edit, move or delete &mdash; the
+            arrangement included.
             <strong>Installable</strong>
             ones sit in
             <code>plugins.toml</code>
-            on exactly the same terms: the review pane reclaims its chord by itself, the info panel
-            wants one
+            on exactly the same terms: the review pane claims its chord by itself, and the info
+            panel wants one
             <code>layout.lua</code>
-            line, and the two rows marked
-            &mdash;
-            are things v1 had no answer for at all.
+            line.
             <strong>CLI only</strong>
             means the records and the commands are all there and nobody has written the pane yet;
             <code>examples/panes/tasks</code>
-            is an example pane over the same task records. The chords of the four paneless surfaces
-            stay
-            <strong>unbound</strong>
-            rather than being reused, so no muscle memory quietly does something else.
-            <a href="deprecated.html">Deprecated surfaces</a>
-            covers what is owed in detail.
+            is an example pane over the same task records.
           </p>
 
           <h2 id="session-orchestration">
@@ -289,10 +254,9 @@ breadcrumb: 'Features'
           <div class="info-box">
             <p>
               <strong>No pane, but they still fire.</strong>
-              Scheduling never lived in the interface, so automations run exactly as before &mdash;
-              what the current interface lacks is the editor. Author and inspect them with
-              <code>thurbox-cli automation</code>; the pane is documented under
-              <a href="deprecated.html#automations">deprecated surfaces</a>.
+              Scheduling does not live in the interface: a detached tmux heartbeat keeper runs due
+              automations whether or not thurbox is open. Author and inspect them with
+              <code>thurbox-cli automation</code>.
             </p>
           </div>
           <h2 id="automations">
@@ -341,9 +305,8 @@ breadcrumb: 'Features'
           <div class="info-box">
             <p>
               <strong>No pane.</strong>
-              Tasks work through <code>thurbox-cli task</code>, against the same records the pane
-              edited; the pane itself is documented under
-              <a href="deprecated.html#tasks">deprecated surfaces</a>.
+              Tasks work through <code>thurbox-cli task</code>. A pane over the same records is one
+              anybody can write &mdash; <code>examples/panes/tasks</code> is an example.
             </p>
           </div>
           <h2 id="tasks">
@@ -881,7 +844,7 @@ timeout_secs = 300</code></pre>
             one. The function only
             <em>arranges</em>
             , so it never calls a plugin and a mistake in it cannot break one. See
-            <a href="v2-interface.html">the interface</a>
+            <a href="interface.html">the interface</a>
             for how it is resolved before any plugin draws.
           </p>
           <h2 id="themes">
@@ -1052,11 +1015,9 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
             <p>
               <strong>Five keys are accepted and ignored.</strong>
               <code>tasks</code>, <code>file_viewer</code>, <code>info_panel</code>,
-              <code>code_review</code> and <code>global_search</code> gated
-              <a href="deprecated.html">panes the binary no longer draws</a>, and nothing reads them
-              now &mdash; including the plugins that give two of those panes back, which are turned
-              on and off from the Interface tab like any other.
-              They are still parsed rather than rejected, so an existing
+              <code>code_review</code> and <code>global_search</code> gated panes the binary does
+              not draw, and nothing reads them &mdash; a pane is turned on and off from the
+              Interface tab instead. They are still parsed rather than rejected, so an existing
               <code>settings.toml</code> keeps loading instead of failing on an unknown key &mdash;
               but setting one has no effect, in either direction.
             </p>

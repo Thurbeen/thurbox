@@ -2,7 +2,7 @@
 layout: docs.njk
 title: 'The Interface — Thurbox Docs'
 description: 'Every thurbox pane is a Lua plugin you can edit, move, turn off, delete or replace. What the kernel guarantees, and what it will not let a plugin do.'
-currentPage: 'v2-interface'
+currentPage: 'interface'
 breadcrumb: 'Interface'
 ---
 <h1>The Interface</h1>
@@ -13,17 +13,6 @@ breadcrumb: 'Interface'
   <code>ui/</code>. You can edit one, replace one with a file of your own, turn one off, or delete
   it.
 </p>
-
-<div class="info-box">
-  <p>
-    <strong>Moved from v1?</strong>
-    Several panes are not in the binary any more &mdash; code review and the info panel are
-    <a href="#v1-panes">plugins you install</a>, the file viewer has no replacement, and tasks,
-    automations and the perf HUD moved to
-    <code>thurbox-cli</code>. thurbox asks once, on the first launch after the upgrade, before
-    changing anything. v1 stays maintained on the <code>v1.x</code> branch.
-  </p>
-</div>
 
 <h2 id="a-directory">
   The interface is a directory
@@ -204,9 +193,9 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   <figcaption>
     The Interface tab (<kbd>Ctrl</kbd>+<kbd>,</kbd> then <kbd>]</kbd>): every file, where it came
     from, and whether it is on screen. Here <code>plugins/10_sessions.lua</code> is turned off with
-    <kbd>space</kbd> &mdash; the file stays on disk, the session list stops being loaded, and the
-    session list stops loading — it declares no keys, is granted no capability, and its column is
-    not reserved, so the agent pane takes the space rather than a hole being left behind.
+    <kbd>space</kbd> &mdash; the file stays on disk and the session list stops loading, so it
+    declares no keys, is granted no capability, and its column is not reserved. The agent pane
+    takes the space rather than a hole being left behind.
   </figcaption>
 </figure>
 
@@ -380,20 +369,19 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/V2-KERNEL.md">docs/V2-KERNEL.md</a>.
 </p>
 
-<h2 id="v1-panes">
-  Two of v1's panes, as plugins
-  <a href="#v1-panes" class="heading-anchor">#</a>
+<h2 id="installable-panes">
+  Panes you install
+  <a href="#installable-panes" class="heading-anchor">#</a>
 </h2>
 <p>
-  The strongest test of &ldquo;the interface is a directory&rdquo; is whether a surface thurbox
-  itself dropped can be given back without touching the binary. Two of them have been, each
-  maintained as its own repository:
+  Two surfaces thurbox does not ship in the binary are maintained as panes, each its own
+  repository:
 </p>
 <table>
   <thead>
     <tr>
       <th>Pane</th>
-      <th>What it gives back</th>
+      <th>What it gives you</th>
       <th>What it asks for</th>
     </tr>
   </thead>
@@ -403,9 +391,9 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
         <a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a>
       </td>
       <td>
-        v1's diff reviewer &mdash; the branch, a single commit or the uncommitted changes, a
+        A diff reviewer &mdash; the branch, a single commit or the uncommitted changes, a
         changed-files tree, notes you send back to the agent. Takes the centre slot beside the
-        agent and reclaims <kbd>Ctrl</kbd>+<kbd>X</kbd> / <kbd>F7</kbd>, with no change to your
+        agent and claims <kbd>Ctrl</kbd>+<kbd>X</kbd> / <kbd>F7</kbd>, with no change to your
         arrangement
       </td>
       <td>
@@ -418,8 +406,8 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
         <a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a>
       </td>
       <td>
-        v1's info panel &mdash; session, git, agent, usage and system readouts in a column beside
-        the terminal. Reclaims <kbd>F2</kbd>; being a column, it wants one line in your
+        An info panel &mdash; session, git, agent, usage and system readouts in a column beside
+        the terminal. Claims <kbd>F2</kbd>; being a column, it wants one line in your
         <code>layout.lua</code>
       </td>
       <td>Nothing &mdash; every readout is already in the snapshot</td>
@@ -436,25 +424,5 @@ thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel</c
   panes on the same terms as one you write, recorded in your
   <code>plugins.toml</code>
   and pinned by your
-  <code>plugins.lock</code>. What each still lacks, and what remains owed to v1 altogether, is on
-  <a href="deprecated.html">deprecated surfaces</a>.
-</p>
-
-<h2 id="v1">
-  If you need v1 back
-  <a href="#v1" class="heading-anchor">#</a>
-</h2>
-<p>
-  1.x is maintained on the <code>v1.x</code> branch and still gets patch releases. The
-  first-launch prompt prints the exact command; the short version is to pin a 1.x version:
-</p>
-<pre><code class="language-bash">export VERSION=v1.8.7
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
-<pre><code class="language-powershell">$env:THURBOX_VERSION = 'v1.8.7'
-irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
-<p>
-  Auto-update will not undo that &mdash; it never crosses a major version. Declining the prompt
-  also turns auto-update off outright and tells you what it did, which is the belt-and-braces
-  answer while releases up to v1.8.7, which predate the guard, are still what you would land on.
-  See <a href="v1.html">using v1</a>.
+  <code>plugins.lock</code>.
 </p>

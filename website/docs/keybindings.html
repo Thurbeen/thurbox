@@ -158,8 +158,8 @@ breadcrumb: 'Keybindings'
   <p>
     <strong>Why not <kbd>Ctrl</kbd>+<kbd>P</kbd>/<kbd>Ctrl</kbd>+<kbd>N</kbd> in the strip?</strong>
     A pane-scoped claim never outranks a global one, so declaring them would take
-    <kbd>Ctrl</kbd>+<kbd>N</kbd> away from new-session everywhere. v1 could get away with it because
-    its search captured input ahead of the keybinding table; one registry is the trade.
+    <kbd>Ctrl</kbd>+<kbd>N</kbd> away from new-session everywhere. One registry for every chord is
+    what buys that guarantee, and this is what it costs.
   </p>
 </div>
 
@@ -201,19 +201,14 @@ breadcrumb: 'Keybindings'
   laptops unless you have enabled standard function keys.
 </p>
 
-<h2 id="v1">
-  Looking for a v1 chord?
-  <a href="#v1" class="heading-anchor">#</a>
+<h2 id="installed-panes">
+  Chords a pane you install brings with it
+  <a href="#installed-panes" class="heading-anchor">#</a>
 </h2>
 <p>
-  Several are gone with the panes they opened: <kbd>Ctrl</kbd>+<kbd>X</kbd>/<kbd>F7</kbd> (code
-  review), <kbd>Ctrl</kbd>+<kbd>E</kbd>/<kbd>F3</kbd> (file viewer),
-  <kbd>Ctrl</kbd>+<kbd>B</kbd>/<kbd>F2</kbd> (info panel), <kbd>F5</kbd> (tasks),
-  and <kbd>Ctrl</kbd>+<kbd>P</kbd> (automations, now the command palette). Two of them are one
-  install away:
+  A pane declares its own keys, so installing one can add chords the shipped set leaves free:
   <a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a>
-  claims <kbd>Ctrl</kbd>+<kbd>X</kbd>/<kbd>F7</kbd> back and
+  claims <kbd>Ctrl</kbd>+<kbd>X</kbd>/<kbd>F7</kbd> and
   <a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a>
-  claims <kbd>F2</kbd> &mdash; see <a href="v2-interface.html#v1-panes">the interface</a>. For the
-  rest, see <a href="v1.html">using v1</a>.
+  claims <kbd>F2</kbd> &mdash; see <a href="interface.html#installable-panes">the interface</a>.
 </p>

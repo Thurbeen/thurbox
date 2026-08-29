@@ -71,14 +71,20 @@ breadcrumb: 'Extensions'
           </div>
           <div class="info-box">
             <p>
-              <strong>One extension ships built in:</strong>
+              <strong>Two extensions ship built in:</strong>
               <a href="agent-hooks.html">agent hooks</a>
-              . Unlike the others it's
-              <strong>embedded in the binary and auto-activated</strong>
-              , wiring each agent's lifecycle hooks to
+              , which wires each agent's lifecycle hooks to
               <code>thurbox-cli session signal</code>
-              so the session list shows working/blocked/done/idle. It still installs through the
-              same manifest machinery shown here.
+              so the session list shows working/blocked/done/idle, and
+              <strong>ui-skill</strong>
+              , which teaches whichever coding CLI you run
+              <a href="interface.html#ask-the-agent">how to edit the interface</a>
+              . Unlike the others both are
+              <strong>embedded in the binary and auto-activated</strong>
+              &mdash; they still install through the same manifest machinery shown here. Turn either
+              off with
+              <code>thurbox-cli extension deactivate &lt;name&gt;</code>
+              .
             </p>
           </div>
 
