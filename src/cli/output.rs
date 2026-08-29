@@ -94,6 +94,17 @@ impl CommandOutput {
         self
     }
 
+    /// Name the collection a *document* wraps, without trimming its fields.
+    ///
+    /// For an answer that is an object carrying a list among other facts: the
+    /// body renders whole, and the label is what the zero-result note is
+    /// measured against — an object is never `is_empty()`, so without this a
+    /// document with no rows in it would print its header and say nothing.
+    pub fn collection(mut self, label: &str) -> Self {
+        self.agent.label = Some(label.to_string());
+        self
+    }
+
     /// Attach the next-step suggestions this result makes sensible. Each is a
     /// runnable command; parameterize what you cannot know as `<id>` rather
     /// than guessing a value.
@@ -268,7 +279,12 @@ fn render_toon(out: &CommandOutput) -> String {
     if let Some(message) = &out.agent.empty {
         let is_empty = match json {
             Value::Array(items) => items.is_empty(),
-            Value::Object(map) => map.is_empty(),
+            // A document that *wraps* its collection is empty when the
+            // collection is: the surrounding fields are always there.
+            Value::Object(map) => match out.agent.label.as_deref().and_then(|l| map.get(l)) {
+                Some(Value::Array(items)) => items.is_empty(),
+                _ => map.is_empty(),
+            },
             Value::Null => true,
             _ => false,
         };

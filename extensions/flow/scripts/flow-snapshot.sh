@@ -6,7 +6,10 @@
 set -euo pipefail
 
 echo "## tasks"
-if TASKS="$(thurbox-cli task list 2>/dev/null)"; then
+# `--json` is explicit because `jq` parses this below: thurbox-cli answers TOON
+# down a pipe, and the fallback here dumps the raw answer, so the board would
+# render as TOON rather than fail.
+if TASKS="$(thurbox-cli --json task list 2>/dev/null)"; then
   printf '%s' "$TASKS" | jq -r '
     group_by(.status) | .[] |
     "### \(.[0].status) (\(length))",

@@ -64,7 +64,10 @@ fi
 
 echo
 echo "## fixer tasks"
-if TASKS="$(thurbox-cli task list 2>/dev/null)"; then
+# `--json` is explicit because `jq` parses this below: thurbox-cli answers TOON
+# down a pipe, and this jq pipeline ends in `|| true`, so the section would
+# silently render empty rather than fail.
+if TASKS="$(thurbox-cli --json task list 2>/dev/null)"; then
   printf '%s' "$TASKS" | jq -r '
     [.[] | select(.title | startswith("fix #"))] |
     if length == 0 then "  (none)" else

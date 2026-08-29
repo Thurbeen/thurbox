@@ -207,6 +207,11 @@ gone — and each one comes with what it takes to judge it:
 | `hook_corroboration`, `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
 | `state`, `state_source` | the best answer available, and where it came from |
 
+`state` is always a word: `unreported` when nothing has reported for
+this session and `uncovered` when its agent is wired to report nothing.
+Neither is a state an agent can signal, and `state_source` is null for
+both. The piped (TOON) `session list` shows this column.
+
 There is deliberately **no staleness timeout**. A turn may legitimately
 run for an hour, so any bound thurbox picked would report live work as
 finished; the age is published instead and the policy is yours.
@@ -216,7 +221,9 @@ finished; the age is published instead and the policy is yours.
 cost is per session. A remote session answers `unavailable` — its pane
 lives on its own host's multiplexer. `thurbox-cli session doctor` is the
 same information as a verdict, plus whether the wiring is installed at
-all; it exits non-zero when no state can reach thurbox from a session.
+all; it exits non-zero when a session's wiring is broken. An agent
+thurbox ships no hooks for but which is signalling anyway — a driver
+calling `session signal` itself — is a warning, not a failure.
 
 `session capture --json` adds the pane's live state alongside its text —
 `cursor_row`/`cursor_col`, `foreground_process` and `foreground_command`,

@@ -443,6 +443,16 @@ impl StateSource {
 /// observation into a claim the observation cannot support.
 pub const STATE_RUNNING: &str = "running";
 
+/// The word for a session whose agent is wired to report nothing at all.
+///
+/// Outside [`HOOK_STATES`] for the same reason [`STATE_RUNNING`] is: it is an
+/// observation about the *wiring*, and spelling it `idle` would launder "we
+/// cannot know" into "the agent says it is at rest".
+pub const STATE_UNCOVERED: &str = "uncovered";
+
+/// The word for a session whose agent *can* report and has not yet.
+pub const STATE_UNREPORTED: &str = "unreported";
+
 /// The best answer available for a session, and where it came from.
 ///
 /// The hook state wins whenever there is one — it is the agent's own report,
@@ -504,6 +514,27 @@ pub struct Assessment {
 }
 
 impl Assessment {
+    /// The one word every surface shows for this session, never absent.
+    ///
+    /// [`Self::state`] is `None` when nothing signalled and nothing observable
+    /// holds the pane, and a bare null leaves a reader unable to tell the two
+    /// silences apart. They are different facts and get different words:
+    /// [`STATE_UNCOVERED`] (this agent is wired to report nothing, so silence
+    /// means nothing) and [`STATE_UNREPORTED`] (it can report and has not).
+    /// Neither is in [`crate::session::HOOK_STATES`], so neither can be read
+    /// as an agent's own report.
+    ///
+    /// Every rendering goes through here — the human table, the agent-facing
+    /// TOON view and the home view — so no surface can invent a third answer
+    /// for the same row.
+    pub fn state_word(&self) -> &str {
+        match self.state.as_deref() {
+            Some(state) => state,
+            None if self.coverage == Coverage::None => STATE_UNCOVERED,
+            None => STATE_UNREPORTED,
+        }
+    }
+
     /// Every state this session's agent can report — empty when it is wired to
     /// report nothing.
     pub fn states_reportable(&self) -> &'static [&'static str] {

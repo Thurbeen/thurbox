@@ -153,7 +153,10 @@ pub fn session_to_json_assessed(
     put("hook_state_contradicted", json!(hook.contradicted));
     put("foreground_process", json!(hook.foreground_process));
     put("foreground_command", json!(hook.foreground_command));
-    put("state", json!(hook.state));
+    // Always a word, never null: `uncovered` and `unreported` are the two
+    // silences spelled apart (`Assessment::state_word`). `state_source` stays
+    // null for both, which is what tells them from an agent's own report.
+    put("state", json!(hook.state_word()));
     put("state_source", json!(hook.state_source.map(|s| s.as_str())));
     value
 }

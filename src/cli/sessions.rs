@@ -17,6 +17,8 @@ pub enum Action {
     /// Each row carries the session's reported agent state plus how old that
     /// report is and what its agent is able to report at all (`hook_state`,
     /// `hook_state_age_secs`, `hook_coverage`, `hook_states_reportable`).
+    /// `state` is the one word to read: an agent's own report, or `unreported`
+    /// / `uncovered` when there is none.
     List {
         /// Only list children of this parent session UUID.
         #[arg(long)]
@@ -205,8 +207,9 @@ pub enum Action {
     /// signalled yet. This inspects the wiring instead of the silence — the
     /// extension, this agent's coverage, its payload on disk, whether a hook
     /// command could find `thurbox-cli` at all, what was last reported and
-    /// when, and whether the pane agrees. Exits non-zero when no state can
-    /// reach thurbox from a session at all.
+    /// when, and whether the pane agrees. Exits non-zero when a session's
+    /// wiring is broken; an agent thurbox ships no hooks for but which is
+    /// signalling anyway warns rather than fails.
     Doctor {
         /// Session UUID; every active session when omitted.
         uuid: Option<String>,
@@ -309,19 +312,27 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     })
                     .collect(),
             );
-            Ok(CommandOutput::new(json, render_session_list(&sessions, &assessments))
-                // The id is not decoration: every follow-up command resolves a
-                // session by UUID, so omitting it would only buy a second call.
-                .list("sessions", &["name", "agent", "hook_state", "id"])
-                .empty(match parent_id {
-                    Some(id) => format!("0 sessions with parent {id}"),
-                    None => "0 active sessions on this machine".to_string(),
-                })
-                .help([
-                    "thurbox-cli session get <id>   the full record, worktrees included",
-                    "thurbox-cli session capture <id> --lines 50   what its pane is showing",
-                    "thurbox-cli session list --json   every field, for a script",
-                ]))
+            Ok(
+                CommandOutput::new(json, render_session_list(&sessions, &assessments))
+                    // `state`, not `hook_state`: the raw latched word is null for a
+                    // session that never reported and carries no age or coverage to
+                    // judge it by, so an agent reading the default answer would get
+                    // less than the human table on the same call. `--json` still
+                    // carries `hook_state` verbatim for a consumer that reads it.
+                    //
+                    // The id is not decoration: every follow-up command resolves a
+                    // session by UUID, so omitting it would only buy a second call.
+                    .list("sessions", &["name", "agent", "state", "id"])
+                    .empty(match parent_id {
+                        Some(id) => format!("0 sessions with parent {id}"),
+                        None => "0 active sessions on this machine".to_string(),
+                    })
+                    .help([
+                        "thurbox-cli session get <id>   the full record, worktrees included",
+                        "thurbox-cli session capture <id> --lines 50   what its pane is showing",
+                        "thurbox-cli session list --json   every field, for a script",
+                    ]),
+            )
         }
         Action::Get { uuid, no_verify } => {
             let session = resolve(db, &uuid)?;
@@ -745,14 +756,10 @@ fn render_session_list(sessions: &[SharedSession], hooks: &[crate::session::Asse
 /// whole assessment is that a consumer (human included) can tell "the agent
 /// says it is at rest" from "this agent cannot say anything".
 fn render_state(hook: &crate::session::Assessment) -> String {
-    let Some(state) = hook.state.as_deref() else {
-        return if hook.coverage == crate::session::Coverage::None {
-            "uncovered".to_string()
-        } else {
-            "unreported".to_string()
-        };
-    };
-    let mut out = state.to_string();
+    let mut out = hook.state_word().to_string();
+    if hook.state.is_none() {
+        return out;
+    }
     if let Some(age) = hook.age_secs {
         out.push_str(&format!(" ({})", output::duration_short(age)));
     }

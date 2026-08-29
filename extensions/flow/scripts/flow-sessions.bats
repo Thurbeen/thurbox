@@ -34,13 +34,36 @@ JSON
 JSON
 
   mkdir -p "${STUBDIR}/bin"
+  # The stub answers like the real binary: JSON only when `--json` is passed,
+  # and TOON otherwise (stdout here is a command substitution, i.e. a pipe).
+  # A stub that answered JSON either way is why the scripts could drop `--json`
+  # and still pass while every real caller silently rendered an empty section.
   cat >"${STUBDIR}/bin/thurbox-cli" <<EOF
 #!/usr/bin/env bash
-case "\$1 \$2" in
-  "task list")    cat "${STUBDIR}/tasks.json" ;;
-  "session list") cat "${STUBDIR}/sessions.json" ;;
-  *) echo "[]" ;;
+json=0
+args=()
+for a in "\$@"; do
+  case "\$a" in
+    --json|--pretty) json=1 ;;
+    *) args+=("\$a") ;;
+  esac
+done
+case "\${args[0]:-} \${args[1]:-}" in
+  "task list")    file="${STUBDIR}/tasks.json" ;;
+  "session list") file="${STUBDIR}/sessions.json" ;;
+  *) file="" ;;
 esac
+if [ -z "\$file" ]; then
+  [ "\$json" = 1 ] && echo "[]" || echo "rows[0]:"
+  exit 0
+fi
+if [ "\$json" = 1 ]; then
+  cat "\$file"
+else
+  # Not a faithful TOON encoder — just the shape that matters here: a tabular
+  # answer that is not JSON, so a jq pipeline over it fails.
+  jq -r 'length as \$n | "rows[\(\$n)]{id}:", (.[] | "  \(.id)")' "\$file"
+fi
 EOF
   chmod +x "${STUBDIR}/bin/thurbox-cli"
   PATH="${STUBDIR}/bin:${PATH}"
@@ -58,6 +81,24 @@ teardown() {
 @test "summary syntax is valid" {
   run bash -n "$SUMMARY"
   [ "$status" -eq 0 ]
+}
+
+@test "snapshot's task board survives the pipe default (asks for --json)" {
+  # Regression: the pipe default became TOON, and this section's jq pipeline
+  # falls back to dumping the raw answer — so without `--json` the board
+  # rendered as TOON instead of the grouped task list.
+  run "$SNAPSHOT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"### in_progress"* ]]
+  [[ "$output" == *"#42 Wire up SSH backend"* ]]
+  [[ "$output" == *"### done"* ]]
+  [[ "$output" != *"rows["* ]]
+}
+
+@test "summary board survives the pipe default (asks for --json)" {
+  run "$SUMMARY"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"rows["* ]]
 }
 
 @test "snapshot lists current and legacy worker sessions, tagged with #<id>" {

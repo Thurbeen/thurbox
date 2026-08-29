@@ -615,6 +615,13 @@ takes to judge it:
 | `hook_corroboration` / `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
 | `state` / `state_source` | the best answer available, and whether it came from a hook or from the pane |
 
+`state` is always a word, never null: a session nothing has reported for reads
+`unreported`, and one whose agent is wired to report nothing at all reads
+`uncovered`. Neither is a state an agent can signal, so neither can be mistaken
+for one, and `state_source` is null for both. It is also the column the piped
+(TOON) `session list` shows, so an agent and a person reading the same call see
+the same word.
+
 There is deliberately **no staleness timeout**: a turn may run for an hour, so a
 guessed bound would report live work as finished. The age is published and the
 policy is yours. The decisive check is the pane — `session get` resolves its
@@ -641,8 +648,11 @@ by design, but not silence.
 hooks extension, this agent's coverage, its payload on disk, whether a hook
 command can resolve `thurbox-cli` on `PATH` at all, the last signal and its age,
 and whether the pane agrees. Every shipped hook command ends in `|| true`, so a
-signal that never lands is otherwise invisible. It exits non-zero when no state
-can reach thurbox from a session.
+signal that never lands is otherwise invisible. It exits non-zero when a
+session's wiring is broken — something that must work for state to reach thurbox
+does not. An agent thurbox ships no hooks for but which is signalling anyway
+(your driver calling `session signal`) is a *warning*, not a failure: state is
+demonstrably arriving.
 
 **Deleting.** `session delete <uuid>` is a soft-delete: it only marks the
 database row. A running TUI kills the tmux window once the 10-second undo

@@ -192,7 +192,8 @@ It reports whether this extension is active, what the session's agent can report
 at all, whether its payload is really on disk where the agent reads it, whether
 a hook command could resolve `thurbox-cli` on `PATH`, what was last reported and
 how long ago, and whether the pane's foreground process agrees. It exits
-non-zero when no state can reach thurbox from a session, and only ever reads —
+non-zero when a session's wiring is broken (an uncovered agent that is
+signalling anyway warns rather than fails), and only ever reads —
 `thurbox-cli extension reinstall hooks` is the repair.
 
 ## Reporting state for an agent thurbox did not launch

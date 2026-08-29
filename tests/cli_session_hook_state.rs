@@ -205,7 +205,10 @@ fn an_uninstrumented_session_is_not_reported_as_idle() {
     // The distinction the whole assessment exists for: this is *not* idle.
     assert_eq!(out["hook_coverage"], Value::String("none".into()));
     assert_eq!(out["hook_states_reportable"], serde_json::json!([]));
-    assert_eq!(out["state"], Value::Null);
+    // `state` is a word rather than a null: a bare null cannot tell "no hooks
+    // for this agent" from "wired and quiet". `state_source` staying null is
+    // what marks it as nobody's report.
+    assert_eq!(out["state"], Value::String("uncovered".into()));
     assert_eq!(out["state_source"], Value::Null);
     assert!(
         out.human.contains("uncovered"),
@@ -223,6 +226,9 @@ fn an_uninstrumented_session_is_not_reported_as_idle() {
         out["hook_states_reportable"],
         serde_json::json!(["blocked"])
     );
+    // Wired but quiet is the other silence, and it gets its own word.
+    assert_eq!(out["state"], Value::String("unreported".into()));
+    assert_eq!(out["state_source"], Value::Null);
 }
 
 #[test]
@@ -508,5 +514,23 @@ fn doctor_names_the_wiring_that_is_missing_and_exits_non_zero() {
             .as_str()
             .is_some_and(|d| d.contains("session signal") && d.contains("THURBOX_SESSION")),
         "an integrator has no reason to know the signal route exists: {coverage}"
+    );
+
+    // …but once that driver takes the route, state is demonstrably arriving,
+    // and a verdict of `fail` — with the non-zero exit behind it — would be
+    // false for exactly the shape this feature exists to serve.
+    db.set_hook_state(driver.id, "working").expect("signal");
+    let out = run(
+        Action::Doctor {
+            uuid: Some(driver.id.to_string()),
+        },
+        &db,
+    )
+    .expect("doctor runs");
+    let report = out.json.as_array().expect("reports")[0].clone();
+    assert_eq!(report["verdict"], Value::String("warn".into()), "{report}");
+    assert!(
+        out.failure.is_none(),
+        "a session that is reporting must not exit non-zero: {out}"
     );
 }

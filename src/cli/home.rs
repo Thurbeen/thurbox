@@ -30,22 +30,26 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
         .list_active_sessions()
         .map_err(|e| format!("list_active_sessions: {e}"))?;
     let states = db.load_hook_states().unwrap_or_default();
+    let registry = crate::agent::agent_config::load_or_seed();
 
     // The rows are trimmed to the four fields that let an agent decide what to
     // look at next (principle 2). `session list --json` is still the full
     // record; this view has no compatibility surface to preserve, so it carries
     // only what it is for.
+    //
+    // The status is `Assessment::state_word`, the same owner `session list`
+    // renders — so the two surfaces cannot disagree about a row, and a session
+    // that has never said anything reads `uncovered`/`unreported` rather than
+    // being laundered into `idle`. The pane is deliberately not probed
+    // (`probe = false`): a bare invocation stays four SQLite reads and no tmux.
     let rows: Vec<Value> = sessions
         .iter()
         .map(|s| {
-            let status = states
-                .get(&s.id)
-                .and_then(|r| r.state.as_deref())
-                .unwrap_or("idle");
+            let hook = crate::cli::sessions::assess(&registry, s, &states, false);
             json!({
                 "name": s.name,
                 "agent": s.agent,
-                "status": status,
+                "status": hook.state_word(),
                 "id": s.id.to_string(),
             })
         })
@@ -53,7 +57,18 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
 
     let mut totals = serde_json::Map::new();
     totals.insert("sessions".into(), json!(sessions.len()));
-    for state in ["working", "blocked", "done"] {
+    // Every state present is counted, the two silences included: a session
+    // nothing can report for is exactly the one an agent orienting itself needs
+    // told about, and rolling it into an unlisted `idle` hid it.
+    for state in [
+        "working",
+        "blocked",
+        "done",
+        "idle",
+        crate::session::STATE_RUNNING,
+        crate::session::STATE_UNCOVERED,
+        crate::session::STATE_UNREPORTED,
+    ] {
         let n = rows.iter().filter(|r| r["status"] == json!(state)).count();
         if n > 0 {
             totals.insert(state.into(), json!(n));
@@ -98,8 +113,11 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
     Ok(
         CommandOutput::new(Value::Object(document), human(&rows, unread))
             .help(suggestions(&rows, unread, calling.is_some()))
-            // The document is an object and so never empty, but a run with nothing
-            // in it still has to say so rather than print a lone header.
+            // The note is measured against `sessions`, not the document: the
+            // document always carries `bin`/`description`/`totals` and so is
+            // never empty, but a machine with no sessions still has to say so
+            // rather than print a lone header.
+            .collection("sessions")
             .empty("0 sessions on this machine — `thurbox-cli session create` starts one"),
     )
 }
@@ -126,6 +144,14 @@ fn suggestions(rows: &[Value], unread: usize, inside_session: bool) -> Vec<Strin
         help.push(
             "thurbox-cli session capture <id>   see what a blocked agent is waiting on".to_string(),
         );
+    }
+    // A row nothing can report for looks calm and is simply unknown. Naming the
+    // diagnostic is the difference between reading that as "at rest" and asking.
+    if rows
+        .iter()
+        .any(|r| r["status"] == json!(crate::session::STATE_UNCOVERED))
+    {
+        help.push("thurbox-cli session doctor   why a session reports no state at all".to_string());
     }
     if rows.is_empty() {
         help.push(
@@ -169,4 +195,128 @@ fn human(rows: &[Value], unread: usize) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{SessionId, STATE_UNCOVERED, STATE_UNREPORTED};
+    use crate::sync::SharedSession;
+
+    fn session(name: &str, agent: &str) -> SharedSession {
+        SharedSession {
+            id: SessionId::default(),
+            name: name.into(),
+            agent: agent.into(),
+            backend_id: String::new(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        }
+    }
+
+    /// What `session list` publishes as this session's `state`.
+    fn listed_state(db: &Database, name: &str) -> String {
+        let out = crate::cli::sessions::run(
+            crate::cli::sessions::Action::List {
+                parent: None,
+                deleted: false,
+                verify: false,
+            },
+            db,
+        )
+        .unwrap();
+        out.json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == json!(name))
+            .unwrap_or_else(|| panic!("{name} not listed"))["state"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// What the bare home view publishes as the same session's `status`.
+    fn home_status(db: &Database, name: &str) -> String {
+        let out = run(db).unwrap();
+        out.json["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == json!(name))
+            .unwrap_or_else(|| panic!("{name} not in the home view"))["status"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn home_and_session_list_agree_on_every_shape_of_silence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        // Never reported, but its agent's hooks could have: `unreported`.
+        let quiet = session("quiet", "claude");
+        db.upsert_session(&quiet).unwrap();
+        // An agent thurbox ships no hooks for, and nothing has signalled:
+        // `uncovered`. Reading this as `idle` is the conflation the assessment
+        // exists to remove, and it is what the home view used to print.
+        let foreign = session("foreign", "mine-own-cli");
+        db.upsert_session(&foreign).unwrap();
+        // An agent that has actually reported.
+        let busy = session("busy", "claude");
+        db.upsert_session(&busy).unwrap();
+        db.set_hook_state(busy.id, "blocked").unwrap();
+
+        for (name, want) in [
+            ("quiet", STATE_UNREPORTED),
+            ("foreign", STATE_UNCOVERED),
+            ("busy", "blocked"),
+        ] {
+            assert_eq!(home_status(&db, name), want, "home view for {name}");
+            assert_eq!(listed_state(&db, name), want, "session list for {name}");
+        }
+    }
+
+    #[test]
+    fn a_never_reported_session_is_counted_rather_than_folded_into_idle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_session(&session("foreign", "mine-own-cli"))
+            .unwrap();
+
+        let out = run(&db).unwrap();
+        assert_eq!(out.json["totals"][STATE_UNCOVERED], json!(1));
+        assert_eq!(out.json["totals"]["idle"], Value::Null);
+        // And the help names the diagnostic, since the row looks calm and is
+        // simply unknown.
+        assert!(
+            out.agent.help.iter().any(|h| h.contains("session doctor")),
+            "{:?}",
+            out.agent.help
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_sessions_says_so_rather_than_printing_a_lone_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let db = Database::open_in_memory().unwrap();
+        let out = run(&db).unwrap();
+        let rendered = crate::cli::output::Format::Toon.render(&out);
+        assert!(
+            rendered.contains("note: 0 sessions on this machine"),
+            "{rendered}"
+        );
+    }
 }

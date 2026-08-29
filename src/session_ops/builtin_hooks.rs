@@ -516,43 +516,190 @@ mod tests {
     /// states the table promises. A reader trusting `hook_states_reportable` is
     /// trusting this — so it is checked against the payloads, not maintained by
     /// hand beside them.
+    /// How a payload has to be read to find out what it signals.
+    #[derive(Clone, Copy)]
+    enum PayloadKind {
+        /// An agent's hook JSON: every hook entry carries a shell command.
+        Json,
+        /// Vibe's `[[hooks]]` TOML: same, one `command` per entry.
+        Toml,
+        /// A JS/TS extension: the states are the literals handed to the one
+        /// helper that builds the signal command.
+        Script,
+    }
+
+    /// The distinct states a payload's *hook commands* actually signal, read
+    /// out of the payload's own structure rather than scanned for anywhere in
+    /// its text.
+    ///
+    /// A raw substring scan cannot tell a signalled state from a state word in
+    /// a comment, an identifier, or a constant that is declared and never used
+    /// — it flips the assertion in either direction on an edit that changes no
+    /// behaviour. So each shape is normalised to the same thing: the set of
+    /// shell commands the agent will run, and the state each one signals.
+    fn states_signalled(payload: &str, kind: PayloadKind) -> Vec<String> {
+        let commands = match kind {
+            PayloadKind::Json => {
+                let doc: serde_json::Value =
+                    serde_json::from_str(payload).expect("payload is valid JSON");
+                json_hook_commands(&doc)
+            }
+            PayloadKind::Toml => {
+                let doc: toml::Value = toml::from_str(payload).expect("payload is valid TOML");
+                doc["hooks"]
+                    .as_array()
+                    .expect("[[hooks]] table array")
+                    .iter()
+                    .filter_map(|h| h.get("command")?.as_str().map(str::to_string))
+                    .collect()
+            }
+            // The script builds its command from a fixed prefix plus the state
+            // it was handed, so reconstructing it from the reporter's arguments
+            // is the same command the agent runs.
+            PayloadKind::Script => script_reported_states(payload)
+                .into_iter()
+                .map(|state| format!("{SIGNAL_MARKER}{state}"))
+                .collect(),
+        };
+        let mut states: Vec<String> = commands
+            .iter()
+            .filter_map(|command| {
+                let rest = command.split(SIGNAL_MARKER).nth(1)?;
+                Some(
+                    rest.split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .filter(|state| !state.is_empty())
+            .collect();
+        states.sort();
+        states.dedup();
+        states
+    }
+
+    /// Every shell command a hook JSON payload carries, wherever the agent's
+    /// own schema puts it: `command` (claude/codex/antigravity) and the
+    /// `bash`/`powershell` pair copilot splits its command into.
+    fn json_hook_commands(value: &serde_json::Value) -> Vec<String> {
+        match value {
+            serde_json::Value::Object(map) => map
+                .iter()
+                .flat_map(|(key, v)| match (key.as_str(), v.as_str()) {
+                    ("command" | "bash" | "powershell", Some(command)) => {
+                        vec![command.to_string()]
+                    }
+                    _ => json_hook_commands(v),
+                })
+                .collect(),
+            serde_json::Value::Array(items) => items.iter().flat_map(json_hook_commands).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The state literals a JS/TS payload hands to its signal reporter.
+    ///
+    /// Follows the data flow rather than the vocabulary: it finds the one
+    /// helper whose body builds the signal command, then collects the string
+    /// literals passed to calls of *that* name. A state word in a comment or a
+    /// tool-name constant is not an argument to it and is not counted.
+    fn script_reported_states(payload: &str) -> Vec<String> {
+        let reporter = ["report", "signal"]
+            .into_iter()
+            .find(|name| {
+                payload
+                    .split(&format!("const {name} ="))
+                    .nth(1)
+                    .is_some_and(|body| {
+                        let end = body.find("\n};").unwrap_or(body.len());
+                        body[..end].contains(SIGNAL_MARKER.trim_end())
+                            || body[..end].contains("SIGNAL +")
+                    })
+            })
+            .expect("payload declares a reporter that builds the signal command");
+        let call = format!("{reporter}(");
+        payload
+            .match_indices(&call)
+            .flat_map(|(at, _)| literal_results(balanced_args(&payload[at + call.len()..])))
+            .collect()
+    }
+
+    /// The text between a call's parentheses, respecting nesting — a call in
+    /// the argument list (`BLOCKING_TOOLS.has(…)`) must not end it early.
+    fn balanced_args(rest: &str) -> &str {
+        let mut depth = 0usize;
+        for (at, c) in rest.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' if depth == 0 => return &rest[..at],
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        rest
+    }
+
+    /// The string literals an argument expression can evaluate to: itself when
+    /// it is one, or a ternary's two branches. A literal in the *condition* (a
+    /// tool name being compared against) is never the value handed on, so it is
+    /// not a state the payload signals.
+    fn literal_results(args: &str) -> Vec<String> {
+        // The first `?` that opens a ternary rather than continuing `?.` or `??`.
+        let bytes = args.as_bytes();
+        let ternary = args
+            .char_indices()
+            .find(|(at, c)| {
+                *c == '?'
+                    && !matches!(bytes.get(at + 1), Some(b'.' | b'?'))
+                    && !matches!(at.checked_sub(1).and_then(|p| bytes.get(p)), Some(b'?'))
+            })
+            .map(|(at, _)| at);
+        let branches: Vec<&str> = match ternary {
+            Some(at) => args[at + 1..].split(':').collect(),
+            None => vec![args],
+        };
+        branches
+            .iter()
+            .filter_map(|branch| {
+                branch
+                    .trim()
+                    .strip_prefix('"')?
+                    .strip_suffix('"')
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
     #[test]
     fn the_coverage_table_matches_what_each_payload_actually_signals() {
         use crate::session::hook_status::{HookDelivery, AGENT_HOOK_COVERAGE};
 
-        // Every state word that appears after the signal marker (locally) or in
-        // a payload's own state vocabulary.
-        let signalled = |payload: &str| -> Vec<&'static str> {
-            crate::session::HOOK_STATES
-                .iter()
-                .copied()
-                .filter(|state| {
-                    payload.contains(&format!("{SIGNAL_MARKER}{state}"))
-                        || payload.contains(&format!("\"{state}\""))
-                        || payload.contains(&format!("'{state}'"))
-                })
-                .collect()
-        };
-
-        let payloads: &[(&str, &str)] = &[
-            ("claude", CLAUDE_SETTINGS),
-            ("codex", CODEX_HOOKS),
-            ("antigravity", ANTIGRAVITY_HOOKS),
-            ("opencode", OPENCODE_PLUGIN),
-            ("copilot", COPILOT_HOOKS),
-            ("vibe", VIBE_HOOKS),
-            ("pi", PI_STATUS),
-            ("omp", OMP_STATUS),
+        let payloads: &[(&str, &str, PayloadKind)] = &[
+            ("claude", CLAUDE_SETTINGS, PayloadKind::Json),
+            ("codex", CODEX_HOOKS, PayloadKind::Json),
+            ("antigravity", ANTIGRAVITY_HOOKS, PayloadKind::Json),
+            ("opencode", OPENCODE_PLUGIN, PayloadKind::Script),
+            ("copilot", COPILOT_HOOKS, PayloadKind::Json),
+            ("vibe", VIBE_HOOKS, PayloadKind::Toml),
+            ("pi", PI_STATUS, PayloadKind::Script),
+            ("omp", OMP_STATUS, PayloadKind::Script),
         ];
-        for (agent, payload) in payloads {
+        for (agent, payload, kind) in payloads {
             let claimed = AGENT_HOOK_COVERAGE
                 .iter()
                 .find(|c| c.agent == *agent)
                 .unwrap_or_else(|| panic!("{agent} is shipped a payload but claims no coverage"));
-            let mut actual = signalled(payload);
-            actual.sort_unstable();
-            let mut promised: Vec<&str> = claimed.states.to_vec();
-            promised.sort_unstable();
+            let actual = states_signalled(payload, *kind);
+            for state in &actual {
+                assert!(
+                    crate::session::HOOK_STATES.contains(&state.as_str()),
+                    "{agent}: signals '{state}', which is not a thurbox state"
+                );
+            }
+            let mut promised: Vec<String> =
+                claimed.states.iter().map(|s| (*s).to_string()).collect();
+            promised.sort();
             assert_eq!(
                 actual, promised,
                 "{agent}: the payload signals {actual:?} but the coverage table promises \
@@ -590,7 +737,7 @@ mod tests {
             .chain(manifest.external_files.iter().map(|f| f.path.as_str()))
             .collect();
         for c in AGENT_HOOK_COVERAGE {
-            let wired = payloads.iter().any(|(a, _)| *a == c.agent)
+            let wired = payloads.iter().any(|(a, _, _)| *a == c.agent)
                 || manifest.agent_patches.iter().any(|p| p.name == c.agent);
             assert!(wired, "{} claims coverage but nothing wires it", c.agent);
             if c.hook_file_is_in_hooks_home() {

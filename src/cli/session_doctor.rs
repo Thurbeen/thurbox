@@ -51,11 +51,13 @@ impl Level {
 
 /// Diagnose one session, or every active session when `uuid` is `None`.
 ///
-/// Exits non-zero when any session's wiring is `Fail` — no state can reach
-/// thurbox from it. A `Warn` (partial coverage, an unreadable remote pane, a
-/// pane that disagrees with the last report) prints and exits 0: those are
-/// facts to know, not breakage to fix, and a permanent non-zero exit for
-/// `aider`'s one-state coverage would be noise rather than signal.
+/// Exits non-zero when any session's wiring is `Fail` — something that must
+/// work for state to reach thurbox does not. A `Warn` (partial coverage, an
+/// unreadable remote pane, a pane that disagrees with the last report, an agent
+/// thurbox ships no hooks for that is signalling anyway) prints and exits 0:
+/// those are facts to know, not breakage to fix, and a permanent non-zero exit
+/// for `aider`'s one-state coverage — or for a driver reporting its own state
+/// exactly as documented — would be noise rather than signal.
 pub fn run(db: &Database, uuid: Option<&str>) -> Result<CommandOutput, String> {
     let sessions = match uuid {
         Some(uuid) => vec![super::sessions::resolve(db, uuid)?],
@@ -87,10 +89,14 @@ pub fn run(db: &Database, uuid: Option<&str>) -> Result<CommandOutput, String> {
         .filter(|(r, _)| r.verdict == Level::Fail)
         .map(|(_, s)| s.name.as_str())
         .collect();
+    // Named for the *wiring*, not the outcome: a session can be reporting right
+    // now through a route this build did not install (a driver calling `session
+    // signal` itself) while a check below it is still broken, and claiming no
+    // state reaches thurbox would be false for exactly that row.
     let failure = match broken.len() {
         0 => None,
         _ => Some(format!(
-            "no agent state can reach thurbox from: {}",
+            "hook wiring is broken for: {} — see the FAIL checks above",
             broken.join(", ")
         )),
     };
@@ -196,6 +202,21 @@ fn diagnose(
     });
 
     findings.push(match hook.coverage {
+        // Nothing thurbox ships wires this agent — but a driver that owns the
+        // agent launch is *documented* to call `session signal` itself, and
+        // when it does, state is demonstrably reaching thurbox. Failing that
+        // session would hand the one integration shape this exists for a
+        // permanently non-zero `doctor`.
+        Coverage::None if hook.reported => Finding {
+            key: "coverage",
+            level: Level::Warn,
+            detail: format!(
+                "thurbox ships no status hooks for agent '{}', but signals are arriving — \
+                 something in the pane is calling `thurbox-cli session signal`, so this \
+                 session reports what that caller chooses to report",
+                session.agent
+            ),
+        },
         Coverage::None => Finding {
             key: "coverage",
             level: Level::Fail,
@@ -290,14 +311,12 @@ fn diagnose(
                     Corroboration::Unknown => {
                         "no live pane for this session, so its state cannot be checked".into()
                     }
-                    Corroboration::Dead => {
-                        "the pane's command has exited (its frame is kept by                          remain-on-exit)"
-                            .into()
-                    }
-                    Corroboration::Unavailable => {
-                        "this session's pane is on its own host, so its state cannot be                          checked from here"
-                            .into()
-                    }
+                    Corroboration::Dead => "the pane's command has exited (its frame is kept \
+                         by remain-on-exit)"
+                        .into(),
+                    Corroboration::Unavailable => "this session's pane is on its own host, so \
+                         its state cannot be checked from here"
+                        .into(),
                     _ => format!("{} ({process})", corroboration.as_str()),
                 },
             }
@@ -453,6 +472,31 @@ mod tests {
             .detail;
         assert!(detail.contains("session signal"), "got {detail}");
         assert!(detail.contains("THURBOX_SESSION"), "got {detail}");
+    }
+
+    #[test]
+    fn an_uncovered_agent_that_is_actually_signalling_warns_rather_than_fails() {
+        // The firstmate shape: the driver owns the agent launch (so thurbox
+        // wired nothing) and reports state itself through the documented
+        // `session signal`. State is demonstrably arriving, so a `fail` verdict
+        // — and the non-zero exit with it — would be false for this row.
+        let hook = Assessment::from_hooks(&registry(), "shell", Some("working"), Some(0), 5_000);
+        let report = diagnose(
+            &row("s", "shell", "local-tmux"),
+            &hook,
+            true,
+            Some("/bin/x"),
+        );
+        assert_eq!(level_of(&report, "coverage"), Level::Warn);
+        assert_eq!(level_of(&report, "last-signal"), Level::Ok);
+        assert_ne!(report.verdict, Level::Fail);
+        let detail = &report
+            .findings
+            .iter()
+            .find(|f| f.key == "coverage")
+            .unwrap()
+            .detail;
+        assert!(detail.contains("signals are arriving"), "got {detail}");
     }
 
     #[test]
