@@ -586,9 +586,9 @@ clears a composer line, `enter` submits what `send --no-enter` typed. On native
 Windows the local multiplexer is **psmux**, which is only known to implement
 `enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>` — the other names are
 unverified there, and the same "an unrecognized name arrives as text" caveat
-applies to whatever it does not implement. `send` and
-`key` drive **this machine's** tmux server, so a session created with `--host`
-is refused by name: run `thurbox-cli` on that host instead.
+applies to whatever it does not implement. `send` and `key` drive **this
+machine's** tmux server, so a session created with `--host` is refused by name:
+run `thurbox-cli` on that host instead.
 
 `capture --json` also reports the pane's *live* state, so an integrator reading
 a session's screen never has to drive `tmux` itself:

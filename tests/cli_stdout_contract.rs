@@ -167,7 +167,10 @@ fn a_runtime_failure_is_not_advised_as_a_usage_error() {
         doc["error"].as_str().unwrap_or_default().contains(missing),
         "the message names what was not found: {doc}"
     );
-    let suggestion = doc["suggestion"].as_str().expect("a suggestion").to_string();
+    let suggestion = doc["suggestion"]
+        .as_str()
+        .expect("a suggestion")
+        .to_string();
     assert!(
         !suggestion.contains("argument"),
         "a runtime failure does not blame the arguments: {suggestion}"
