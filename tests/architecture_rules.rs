@@ -662,3 +662,71 @@ fn every_module_is_governed() {
         }
     }
 }
+
+/// Every persisted proptest seed must still name a source file that exists.
+///
+/// `proptest-regressions/` is proptest's own persisted failure-seed store, and
+/// its layout is a path contract rather than incidental: with the default
+/// `FileFailurePersistence::SourceParallel`, a proptest in `src/agent/
+/// backend.rs` persists to `proptest-regressions/agent/backend.txt`, and one in
+/// `tests/render_props.rs` to `proptest-regressions/render_props.txt`. proptest
+/// resolves that path at run time and **says nothing when it misses** — a
+/// renamed or moved source file silently stops re-running its saved cases, so
+/// the regression a seed was written for quietly stops being covered.
+///
+/// This is the check that a wide rename needs and that nothing else provides.
+#[test]
+fn every_proptest_seed_still_names_a_live_source_file() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let seeds_dir = root.join("proptest-regressions");
+    if !seeds_dir.exists() {
+        return;
+    }
+
+    let mut orphans = Vec::new();
+    for seed in collect_files_with_extension(&seeds_dir, "txt") {
+        let rel = seed
+            .strip_prefix(&seeds_dir)
+            .expect("seed is under proptest-regressions/")
+            .with_extension("rs");
+        // SourceParallel strips the `src/` or `tests/` root, so the seed alone
+        // cannot say which one it came from — either owning it is enough.
+        let candidates = [root.join("src").join(&rel), root.join("tests").join(&rel)];
+        if !candidates.iter().any(|c| c.exists()) {
+            orphans.push(format!(
+                "  proptest-regressions/{} -> neither src/{} nor tests/{} exists",
+                rel.display(),
+                rel.display(),
+                rel.display()
+            ));
+        }
+    }
+
+    assert!(
+        orphans.is_empty(),
+        "orphaned proptest seeds — the source file moved or was renamed without \
+         its seed, so proptest silently stopped replaying these cases:\n{}\n\
+         Move the seed alongside the source file, or delete it if the property \
+         is gone.",
+        orphans.join("\n")
+    );
+}
+
+/// Every file under `dir` (recursively) with the given extension.
+fn collect_files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => panic!("cannot read {}: {e}", dir.display()),
+    };
+    for entry in entries {
+        let path = entry.expect("readable directory entry").path();
+        if path.is_dir() {
+            out.extend(collect_files_with_extension(&path, ext));
+        } else if path.extension().is_some_and(|e| e == ext) {
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
