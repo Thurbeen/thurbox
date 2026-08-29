@@ -212,20 +212,14 @@ Comments should explain **why**, not **what** — see the Comments section of
 
 ## Architecture
 
-Thurbox follows **The Elm Architecture**
-(`Event → Message → update → view → Frame`) with one-directional module
-dependencies enforced by `tests/architecture_rules.rs`:
+Module dependencies are one-directional (`session ← agent ← kernel ← main`) and
+enforced by `tests/architecture_rules.rs`. A new module fails the architecture
+test until its dependencies are declared in the allowlist.
 
-```text
-session  ← pure data types, no crate-internal references
-agent    → session
-ui       → session + app (read-only model/view state)
-app      → coordinator, imports all modules
-```
-
-A new module fails the architecture test until its dependencies are declared in
-the allowlist. See [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) for the
-non-negotiable rules.
+The graph itself is documented once — in the Module Dependency Rules section of
+[`CLAUDE.md`](CLAUDE.md) and, with the full per-module allowlist and the
+fully-qualified-path crossings, in [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md).
+Rationale is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Pull requests
 
