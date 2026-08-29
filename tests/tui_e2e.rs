@@ -915,9 +915,38 @@ impl Tui {
         // reported nothing about why. It only showed up on a loaded machine,
         // which is what made a race look like slowness.
         self.wait_for_output_since(mark, "the shell to answer the interrupt");
+        // And then until it has finished answering. The reply is several writes
+        // -- `^C`, a newline, a fresh prompt -- and a byte arriving between them
+        // is discarded exactly as one arriving before the first is; the barrier
+        // above only proves the reply STARTED. Waiting for the stream to stop is
+        // what proves it ended, and it is the same signal for every shell.
+        self.wait_until_quiet();
         self.send(format!("echo {marker}-\"\"ok\r").as_bytes());
         self.wait_for(&format!("{marker}-ok"));
         self.raw_since(mark)
+    }
+
+    /// Wait until the terminal has stopped writing.
+    ///
+    /// The other half of [`Self::wait_for_output_since`]: that one proves the
+    /// far end started reacting, this one proves it stopped. Best-effort — a
+    /// stream that never settles simply gives the time back rather than failing,
+    /// because this is a barrier in front of an assertion and not the assertion.
+    /// Budgeted well under [`WAIT`] for the same reason.
+    fn wait_until_quiet(&self) {
+        const QUIET: Duration = Duration::from_millis(150);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (mut seen, mut still) = (self.raw_len(), Instant::now());
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            let now = self.raw_len();
+            if now != seen {
+                seen = now;
+                still = Instant::now();
+            } else if still.elapsed() >= QUIET {
+                return;
+            }
+        }
     }
 
     /// Wait until the terminal has written *anything* since `since`.
@@ -928,6 +957,9 @@ impl Tui {
     /// "at an idle prompt" and "mid-command" -- `^C`, a bare newline, a fresh
     /// prompt, or some combination -- so matching on any of them would be a
     /// guess. That bytes came back is the one signal every case shares.
+    ///
+    /// `since` must be taken BEFORE whatever is being waited on is sent, or the
+    /// echo of something already in flight satisfies it instead.
     fn wait_for_output_since(&self, since: usize, what: &str) {
         let deadline = Instant::now() + WAIT;
         while Instant::now() < deadline {
@@ -982,7 +1014,13 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     // Any other key drops the selection and still does what it does, so the
     // next Ctrl+C is the shell's again.
     tui.drag(at, 12);
+    // Wait for the key to have reached the shell and echoed back before the
+    // chord follows it. Left in flight, that echo is the first thing to arrive
+    // after `ctrl_c_then` takes its mark, and satisfies the barrier there in
+    // place of the interrupt it is meant to be waiting for.
+    let typed = tui.raw_len();
     tui.send(b":");
+    tui.wait_for_output_since(typed, "the shell to echo the key that clears the selection");
     let out = tui.ctrl_c_then("tb-key");
     assert!(
         !out.contains(OSC52),

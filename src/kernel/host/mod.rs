@@ -470,7 +470,7 @@ type TreeKey = (Epoch, u16, u16, bool, u64);
 /// is `working`, which is most of the time on a machine with an agent running.
 /// It is in [`TreeKey`], so every pure pane used to be re-rendered at that rate
 /// however little it had to do with a spinner — measured at +51% CPU under load
-/// (`docs/PERFORMANCE.md`, ADR-P20's animation section).
+/// (`docs/PERFORMANCE.md`, ADR-P21).
 ///
 /// Every other TUI scopes animation to the thing that animates, and gets the
 /// coupling for free because the animating widget is the one that asks to be

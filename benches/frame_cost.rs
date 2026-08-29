@@ -362,7 +362,9 @@ fn main() {
     ));
 
     // The animation clock ticking, which is what a `working` session does eight
-    // times a second: nothing else moved, but every pure pane is invalidated.
+    // times a second: nothing else moved, and only the panes whose render read
+    // `ctx.elapsed` are invalidated by it (ADR-P21). What is left after that
+    // scoping is what this row measures — before it, every pure pane was here.
     rows.push((
         "frame: animation tick".into(),
         counts
@@ -562,13 +564,27 @@ fn paint(
         .expect("draw");
 }
 
+/// Move the epoch so every pure pane must render, as cheaply as a publish can.
+///
+/// The themes epoch. It is in the pure-pane cache key like every other epoch
+/// field, so it invalidates all of them unconditionally, and the only published
+/// group gated on it is the palette — so the publish beside each render stays a
+/// near-cache-hit rather than the ~1ms rebuild the snapshot epoch would force.
+/// Subtracting a millisecond from a millisecond measures the subtraction, not
+/// the pane, and the palette rebuild is inside the baseline that is subtracted.
+///
+/// NOT the animation epoch, which is what this drove before ADR-P21 scoped the
+/// clock to the panes that read it: a pure pane whose render never touches
+/// `ctx.elapsed` — the bundled agent pane, and every closed float — is now
+/// served from its cache across an animation tick, so every such row would
+/// report a cache hit minus the baseline. Roughly zero, in the one table whose
+/// whole job is to say where the time went.
+fn cold(epoch: &mut Epoch) {
+    epoch.themes += 1;
+}
+
 /// Which pane the time is in, at the largest session count — the question
 /// "the frame got slower" always turns into.
-///
-/// Driven by the ANIMATION epoch, not the snapshot: that invalidates every pure
-/// pane while leaving every published group reusable, so the publish beside each
-/// render is the ~45us cache-hit one rather than the ~1ms rebuild. Subtracting a
-/// millisecond from a millisecond measures the subtraction, not the pane.
 fn per_pane(
     host: &LuaHost,
     world: &World,
@@ -589,12 +605,12 @@ fn per_pane(
         let snapshot = snapshot(sessions);
         let mut epoch = Epoch::default();
         let baseline = measure(9, 50, || {
-            epoch.animation += 1;
+            cold(&mut epoch);
             world.publish(host, epoch, &snapshot);
         });
         for (nth, (index, _, rect)) in panes.iter().enumerate() {
             let each = measure(9, 50, || {
-                epoch.animation += 1;
+                cold(&mut epoch);
                 world.publish(host, epoch, &snapshot);
                 let _ = host.render(
                     *index,
@@ -616,7 +632,7 @@ fn per_pane(
         rows,
         columns: counts.iter().map(|n| format!("{n} sessions")).collect(),
     }
-    .print("per placed pane, on an animation tick");
+    .print("per placed pane, rendered cold");
 }
 
 /// What the caches actually did — the counters the perf HUD reads.
@@ -678,12 +694,20 @@ fn agent_screen(rows: u16, cols: u16) -> vt100::Parser {
 /// What a frame costs *because an agent is printing* — the two per-frame costs
 /// a `PlaceholderSurfaces` harness cannot see.
 ///
-/// Both are paid once per painted frame per visible printing surface, at the
-/// 33ms output floor, so the per-second figure beside each is the one that
-/// matters. The link scan is keyed on the surface's output stamp, which a
-/// printing agent moves every frame — so its cache never hits while output is
-/// arriving, which is exactly when it runs.
+/// They are paid at *different rates*, which is why each row carries its own.
+/// Painting the surface happens once per painted frame per visible surface, at
+/// the 33ms output floor. The link scan does not: it is keyed on the surface's
+/// output stamp, which a printing agent moves every frame, so before ADR-P20 it
+/// ran at that rate too — the second gate paces it at `LINK_SCAN_INTERVAL`
+/// instead. Scaling it at the frame rate is how a 7.5x-too-high number gets
+/// printed by an instrument that never fails.
 fn output_frame() {
+    // The rate each phase is actually paid at. `LINK_SCAN_INTERVAL` lives in
+    // `src/main.rs` — the loop is a binary, so a bench linking the library
+    // cannot name it; changing one means changing the other.
+    const FRAME_HZ: f64 = 1000.0 / 33.0;
+    const LINK_SCAN_HZ: f64 = 1000.0 / 250.0;
+
     let (width, height) = (WIDTH() * 3 / 4, HEIGHT() - 2);
     let parser = agent_screen(height, width);
     let mut terminal = Terminal::new(TestBackend::new(WIDTH(), HEIGHT())).expect("term");
@@ -704,20 +728,24 @@ fn output_frame() {
             .expect("draw");
     });
 
-    let per_second = |d: Duration| d.as_secs_f64() * 1e6 * 30.0 / 1000.0;
     println!("\nwhile one agent prints — {width}x{height} grid, at the 33ms output floor");
-    println!("phase                          per frame     per second");
-    println!("-------------------------------------------------------");
-    for (name, each) in [
-        ("extract screen rows", extract),
-        ("detect urls", detect),
-        ("paint the vt100 surface", surface),
-        ("(link scan = extract+detect)", extract + detect),
+    println!("phase                             each      rate     per second");
+    println!("---------------------------------------------------------------");
+    for (name, each, hz) in [
+        ("extract screen rows", extract, LINK_SCAN_HZ),
+        ("detect urls", detect, LINK_SCAN_HZ),
+        ("paint the vt100 surface", surface, FRAME_HZ),
+        (
+            "(link scan = extract+detect)",
+            extract + detect,
+            LINK_SCAN_HZ,
+        ),
     ] {
         println!(
-            "{name:<30} {:>7.1}us {:>10.2}ms",
+            "{name:<30} {:>7.1}us {:>5.0}/s {:>10.2}ms",
             each.as_secs_f64() * 1e6,
-            per_second(each)
+            hz,
+            each.as_secs_f64() * 1e6 * hz / 1000.0
         );
     }
 }

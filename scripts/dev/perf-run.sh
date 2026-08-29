@@ -59,7 +59,19 @@ URL_EVERY=12
 # cache key -- so every pane re-renders at that rate for a spinner glyph. `sh`
 # runs no status hook, so without this the harness measures that cost as zero
 # while a real profile pays it nearly all the time.
+#
+# A `working` session must also PRINT, or the harness measures zero anyway by a
+# second route: `snapshot::with_output_quiescence` folds a `working` session with
+# no terminal output for WORKING_QUIET_MS (10s) back to idle, so a silent one
+# would decay a couple of seconds into the measurement window and the animation
+# clock would stop with it. Real agents animate a progress line for exactly this
+# reason, so a working session here runs the `ticking` agent below rather than
+# the silent one -- the cheapest output that keeps the state alive.
 WORKING=0
+# Seconds between a `ticking` agent's progress lines. Well under the 10s
+# quiescence bound and well over the printing agents' rate, so a working session
+# costs the animation clock and almost no output.
+WORKING_TICK=4
 
 usage() {
     cat >&2 <<'EOF'
@@ -70,7 +82,8 @@ usage: perf-run.sh [options]
   -s COLSxROWS  terminal size (default 200x50)
   -r N        lines per second each printing agent emits (default 30)
   -u N        a URL every N printed lines (default 12; 0 = never)
-  -w N        mark N sessions `working`, so the animation clock runs (default 0)
+  -w N        mark N sessions `working`, so the animation clock runs (default 0);
+              a non-printing one animates a progress line, as a real agent does
   --idle      nothing prints — measures the settled floor
   --debug     measure the dev profile instead of release
   --no-perf-log  run without THURBOX_PERF_LOG (CPU only, no percentiles) --
@@ -148,7 +161,19 @@ cat > "$AGENT_DIR/quiet" <<'EOF'
 # A session that exists, is attached, and says nothing.
 while :; do sleep 3600; done
 EOF
-chmod +x "$AGENT_DIR/noisy" "$AGENT_DIR/quiet"
+cat > "$AGENT_DIR/ticking" <<EOF
+#!/bin/sh
+# A session that reports itself \`working\` and animates a progress line, which
+# is what every real agent does while a turn runs -- and what keeps thurbox's
+# output-quiescence fallback from folding the state back to idle.
+n=0
+while :; do
+    n=\$((n + 1))
+    printf '  (%ds - esc to interrupt)\n' "\$n"
+    sleep $WORKING_TICK
+done
+EOF
+chmod +x "$AGENT_DIR/noisy" "$AGENT_DIR/quiet" "$AGENT_DIR/ticking"
 
 mkdir -p "$XDG_CONFIG_HOME/thurbox-dev"
 cat > "$XDG_CONFIG_HOME/thurbox-dev/agents.toml" <<EOF
@@ -161,6 +186,10 @@ command = "$AGENT_DIR/quiet"
 [[agents]]
 name = "noisy"
 command = "$AGENT_DIR/noisy"
+
+[[agents]]
+name = "ticking"
+command = "$AGENT_DIR/ticking"
 EOF
 
 # A repository for the sessions to live in. Bare and local: worktree creation is
@@ -220,27 +249,37 @@ if [ -z "$PID" ]; then
     exit 1
 fi
 
-say "creating $SESSIONS sessions ($PRINTING printing)…"
+# The first $PRINTING print; of the rest, the ones that must report `working`
+# get the ticking agent so their state survives the quiescence fallback.
+say "creating $SESSIONS sessions ($PRINTING printing, $WORKING working)…"
+WORKING_IDS=""
 for i in $(seq 1 "$SESSIONS"); do
-    agent=quiet
-    [ "$i" -le "$PRINTING" ] && agent=noisy
-    thurbox-cli session create \
+    if [ "$i" -le "$PRINTING" ]; then
+        agent=noisy
+    elif [ "$i" -le "$WORKING" ]; then
+        agent=ticking
+    else
+        agent=quiet
+    fi
+    created="$(thurbox-cli session create \
         --name "perf-session-$i" \
         --repo-path "$REPO" \
-        --agent "$agent" >/dev/null
+        --agent "$agent" --json)"
+    if [ "$i" -le "$WORKING" ]; then
+        # Which session, not which row of a list: `session list` orders by
+        # display order, so taking its head marks whichever sessions happen to
+        # sort first rather than the ones given a printing agent above.
+        id="$(echo "$created" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
+        WORKING_IDS="$WORKING_IDS $id"
+    fi
 done
 
 # A status hook's write, without a hook. `session signal` takes its identity
 # from the injected `THURBOX_SESSION`, so setting it here is exactly what an
-# agent's own hook does from inside its pane.
-if [ "$WORKING" -gt 0 ]; then
-    say "marking $WORKING sessions working…"
-    thurbox-cli session list --json |
-        tr ',' '\n' | grep -o '"id":"[^"]*"' | cut -d'"' -f4 | head -n "$WORKING" |
-        while read -r id; do
-            THURBOX_SESSION="$id" thurbox-cli session signal --state working >/dev/null
-        done
-fi
+# agent's own hook does from inside its pane. The agents above keep it there.
+for id in $WORKING_IDS; do
+    THURBOX_SESSION="$id" thurbox-cli session signal --state working >/dev/null
+done
 
 # Settle: adopting a pane, taking the first snapshot and painting the first
 # frame are startup, not steady state. Measuring across them would report the

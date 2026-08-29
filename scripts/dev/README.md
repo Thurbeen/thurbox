@@ -53,7 +53,6 @@ scripts/dev/perf-run.sh                        # 8 sessions, 1 printing, 30s
 scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62   # a working machine's shape
 scripts/dev/perf-run.sh --idle                 # the settled floor
 scripts/dev/perf-run.sh -u 0                   # no URLs in the output (ADR-P20)
-scripts/dev/perf-run.sh -w 4                   # 4 sessions `working`: the spinner clock runs
 scripts/dev/perf-run.sh -w 4                   # 4 sessions `working`, so the spinner clock runs
 scripts/dev/perf-run.sh --no-perf-log --json   # CPU alone, machine-readable
 ```

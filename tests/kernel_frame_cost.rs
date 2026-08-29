@@ -939,7 +939,7 @@ fn render_at(host: &LuaHost, name: &str, elapsed: f64) -> String {
 #[test]
 fn the_animation_clock_does_not_re_render_a_pane_that_never_reads_it() {
     // The saving. Measured at +51% CPU under load before this held
-    // (docs/PERFORMANCE.md, ADR-P20's animation section): every pure pane —
+    // (docs/PERFORMANCE.md, ADR-P21): every pure pane —
     // the centre pane and all three closed floats included — re-ran eight
     // times a second to move a spinner none of them draws.
     let (_dir, host) = clock_panes();
@@ -1038,9 +1038,9 @@ fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
 #[test]
 fn the_bundled_centre_pane_is_not_re_rendered_by_the_clock() {
     // Against the real interface, because the saving is only real if the panes
-    // thurbox actually ships fall on the right side of it. The session list
-    // draws a spinner and must stay clock-keyed; the agent pane draws a surface
-    // and must not.
+    // thurbox actually ships fall on the right side of it — and both sides are
+    // asserted below. The session list draws a spinner and must stay
+    // clock-keyed; the agent pane draws a surface and must not.
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
     let host = LuaHost::new(dir);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -1067,5 +1067,16 @@ fn the_bundled_centre_pane_is_not_re_rendered_by_the_clock() {
         host.skipped_renders() - settled,
         1,
         "the agent pane paid for an animation tick it draws nothing for"
+    );
+
+    // And the other direction on the same tick, which is what makes the first
+    // half a saving rather than a freeze: the session list reads the clock for
+    // its status glyphs, so the same tick must reach it.
+    let settled = host.skipped_renders();
+    let _ = render_at(&host, "sessions", 1.0);
+    assert_eq!(
+        host.skipped_renders(),
+        settled,
+        "the session list was served a cached tree across the tick its spinner moves on"
     );
 }
