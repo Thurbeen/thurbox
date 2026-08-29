@@ -546,6 +546,9 @@ thurbox-cli session create \
   --base-branch main \
   --host devbox          # optional — run on a remote host from hosts.toml
 thurbox-cli session send <uuid> "run the test suite"
+thurbox-cli session send <uuid> "steer it here" --no-enter  # typed, not sent
+thurbox-cli session key <uuid> enter     # ...and now submit it
+thurbox-cli session key <uuid> escape    # interrupt the turn (or ctrl-c)
 thurbox-cli session capture <uuid> --lines 500
 thurbox-cli session capture <uuid> --ansi --json   # styled text + pane state
 thurbox-cli session restart <uuid>       # kill + re-spawn with --resume
@@ -560,6 +563,23 @@ worktree and tmux window on that remote host over SSH. `send` types text into
 the session's terminal followed by Enter; `capture` dumps the rendered pane
 (`--lines` defaults to 200, max 10000). `--ansi` keeps tmux's styling in that
 text instead of flattening it; plain text stays the default.
+
+`send --no-enter` types the text and stops, leaving it unsubmitted in the
+agent's composer — the half a type-then-verify-then-submit integration needs,
+since submitting on the way in fires every steer the instant it is typed. The
+text is delivered as one bracketed paste either way, so it arrives literally: no
+shell sees it, and a leading `-`, quotes and newlines survive intact (put `--`
+before the arguments when the text itself starts with a dash).
+
+`key` sends one named special key: `enter`, `escape`, `tab`, `backspace`,
+`space`, `up`, `down`, `left`, `right`, `home`, `end`, `page-up`, `page-down`,
+`delete`, or `ctrl-<letter>`. Spelling is forgiving — `ctrl-c`, `ctrl+c` and
+`C-c` are the same key, and case does not matter — but a name thurbox does not
+know is **refused** rather than passed on, because tmux types an unrecognized
+key name into the pane as text. `escape` and `ctrl-c` interrupt a turn, `ctrl-u`
+clears a composer line, `enter` submits what `send --no-enter` typed. `send` and
+`key` drive **this machine's** tmux server, so a session created with `--host`
+is refused by name: run `thurbox-cli` on that host instead.
 
 `capture --json` also reports the pane's *live* state, so an integrator reading
 a session's screen never has to drive `tmux` itself:

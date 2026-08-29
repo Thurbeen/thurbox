@@ -1376,9 +1376,28 @@ fn pane_is_dead(target: &str) -> bool {
 
 /// Send text immediately to a session pane (no scheduling), followed by Enter.
 ///
+/// The prompt-delivery shape every caller wants: [`send_text_now`] with the
+/// Enter kept, which is the behaviour this had before the CLI needed to leave
+/// text unsubmitted.
+pub fn send_prompt_now(session_name: &str, pane_id: &str, text: &str) -> Result<()> {
+    send_text_now(session_name, pane_id, text, true)
+}
+
+/// Type text into a session pane (no scheduling), submitting it or not.
+///
 /// Targets the session's pane via `agent_target` (pane id first, window name
-/// as the legacy fallback) and uses a "paste text → brief delay → press Enter"
-/// sequence so the target app has time to process the pasted input.
+/// as the legacy fallback). Submitting uses a "paste text → brief delay → press
+/// Enter" sequence so the target app has time to process the pasted input.
+///
+/// `submit = false` types the text and stops: it lands in the agent's composer
+/// unsent, which is what a "type it, check what the pane shows, then submit"
+/// protocol needs — submitting on the way in fires every steer the instant it
+/// is typed. [`send_key_now`] with `enter` is the other half.
+///
+/// The text goes out bracketed-paste-wrapped either way (see
+/// `paste_prompt_args`), so it arrives literally: no shell is involved, and
+/// the wrap is also what keeps a leading `-` from reading as a `send-keys`
+/// flag and a newline from submitting the line before it.
 ///
 /// Refuses a pane whose process has exited. Sessions run with
 /// `remain-on-exit=on` (`SESSION_OPTS`), so a dead agent leaves its window in
@@ -1386,7 +1405,7 @@ fn pane_is_dead(target: &str) -> bool {
 /// caller reads that success as "the agent got it" — which is how the mailbox
 /// wake came to report `woke: true` at a pane nothing was listening to — so the
 /// liveness check belongs here, once, rather than in each of them.
-pub fn send_prompt_now(session_name: &str, pane_id: &str, text: &str) -> Result<()> {
+pub fn send_text_now(session_name: &str, pane_id: &str, text: &str, submit: bool) -> Result<()> {
     let target = agent_target(session_name, pane_id);
     if pane_is_dead(&target) {
         bail!("session '{session_name}' has exited; its pane accepts no input");
@@ -1400,6 +1419,10 @@ pub fn send_prompt_now(session_name: &str, pane_id: &str, text: &str) -> Result<
         bail!("{DEFAULT_MUX} {} exited with status {status}", paste[0]);
     }
 
+    if !submit {
+        return Ok(());
+    }
+
     std::thread::sleep(SEND_KEYS_ENTER_DELAY);
 
     let status = local_mux_command(&["send-keys", "-t", &target, "Enter"])
@@ -1407,6 +1430,117 @@ pub fn send_prompt_now(session_name: &str, pane_id: &str, text: &str) -> Result<
         .context("Failed to send Enter to the session pane")?;
     if !status.success() {
         bail!("{DEFAULT_MUX} send-keys (Enter) exited with status {status}");
+    }
+    Ok(())
+}
+
+/// The special keys [`send_key_now`] can deliver, as
+/// `(canonical spelling, tmux key name)`.
+///
+/// A closed table because tmux does **not** validate a key name: an
+/// unrecognized one is typed into the pane as literal text, so a typo would
+/// silently inject `Escpe` into an agent's prompt rather than fail. `ctrl-a` …
+/// `ctrl-z` are resolved generically by [`resolve_key`] and deliberately not
+/// listed here.
+///
+/// `enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>` are also the set
+/// psmux implements (see [`crate::agent::control_mode::send_keys_commands`]);
+/// the rest are tmux-only, which is what a Windows host runs into.
+pub const NAMED_KEYS: &[(&str, &str)] = &[
+    ("enter", "Enter"),
+    ("escape", "Escape"),
+    ("tab", "Tab"),
+    ("backspace", "BSpace"),
+    ("space", "Space"),
+    ("up", "Up"),
+    ("down", "Down"),
+    ("left", "Left"),
+    ("right", "Right"),
+    ("home", "Home"),
+    ("end", "End"),
+    ("page-up", "PageUp"),
+    ("page-down", "PageDown"),
+    // `DC` is tmux's own (terminfo-derived) name for Delete. Current tmux also
+    // answers to `Delete` — both send `\x1b[3~` — but an older one that did not
+    // would type the *name* into the pane rather than refuse it, so the table
+    // names the conservative one.
+    ("delete", "DC"),
+];
+
+/// Alternate spellings accepted for a canonical name in [`NAMED_KEYS`].
+///
+/// Forgiving on purpose — an integrator writing `esc` or `pgup` should not have
+/// to look the table up — but every alias resolves to one canonical name, which
+/// is what the CLI echoes back, so there is a single spelling to depend on.
+const KEY_ALIASES: &[(&str, &str)] = &[
+    ("return", "enter"),
+    ("esc", "escape"),
+    ("bspace", "backspace"),
+    ("pageup", "page-up"),
+    ("pgup", "page-up"),
+    ("pagedown", "page-down"),
+    ("pgdn", "page-down"),
+    ("del", "delete"),
+];
+
+/// A key name resolved from what a caller spelled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedKey {
+    /// The canonical thurbox spelling (`ctrl-c`, `page-up`).
+    pub name: String,
+    /// The tmux key name to hand `send-keys` (`C-c`, `PageUp`).
+    pub tmux: String,
+}
+
+/// Resolve a caller's key spelling, or `None` for one thurbox does not know.
+///
+/// Case-insensitive, and `ctrl-c`, `ctrl+c`, `C-c` and `c+c` are all the same
+/// key — the separator and the `ctrl`/`c` prefix are the two things people
+/// actually spell differently, and half-supporting them would mean a typo lands
+/// as text in an agent's prompt.
+pub fn resolve_key(input: &str) -> Option<ResolvedKey> {
+    let lower = input.trim().to_ascii_lowercase();
+    let lower = KEY_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == lower)
+        .map_or(lower.as_str(), |(_, canonical)| *canonical);
+    if let Some((name, tmux)) = NAMED_KEYS.iter().find(|(name, _)| *name == lower) {
+        return Some(ResolvedKey {
+            name: (*name).to_string(),
+            tmux: (*tmux).to_string(),
+        });
+    }
+    let rest = ["ctrl-", "ctrl+", "c-", "c+"]
+        .iter()
+        .find_map(|prefix| lower.strip_prefix(prefix))?;
+    let mut chars = rest.chars();
+    let letter = chars.next().filter(char::is_ascii_lowercase)?;
+    if chars.next().is_some() {
+        return None;
+    }
+    Some(ResolvedKey {
+        name: format!("ctrl-{letter}"),
+        tmux: format!("C-{letter}"),
+    })
+}
+
+/// Send one named special key to a session pane — no text, no Enter.
+///
+/// `tmux_key` is a [`ResolvedKey::tmux`] name, never a caller's string: tmux
+/// types an unrecognized name into the pane instead of refusing it.
+///
+/// Refuses a dead pane for the same reason [`send_text_now`] does — `send-keys`
+/// exits 0 into a `remain-on-exit` corpse, so success would be a lie.
+pub fn send_key_now(session_name: &str, pane_id: &str, tmux_key: &str) -> Result<()> {
+    let target = agent_target(session_name, pane_id);
+    if pane_is_dead(&target) {
+        bail!("session '{session_name}' has exited; its pane accepts no input");
+    }
+    let status = local_mux_command(&["send-keys", "-t", &target, tmux_key])
+        .status()
+        .context("Failed to send a key to the session pane")?;
+    if !status.success() {
+        bail!("{DEFAULT_MUX} send-keys ({tmux_key}) exited with status {status}");
     }
     Ok(())
 }
@@ -2439,6 +2573,60 @@ mod tests {
             ]
         );
         assert!(!args.iter().any(|a| a.contains('\n') || a.contains('\x1b')));
+    }
+
+    // --- named keys ---
+
+    #[test]
+    fn resolve_key_maps_the_named_table_to_tmux_names() {
+        for (name, tmux) in NAMED_KEYS {
+            let resolved = resolve_key(name).expect("a listed key must resolve");
+            assert_eq!(resolved.name, *name);
+            assert_eq!(resolved.tmux, *tmux);
+        }
+    }
+
+    #[test]
+    fn resolve_key_accepts_the_spellings_people_write() {
+        // Separator, prefix and case are the three things spelled differently;
+        // all four forms are the one key, and the canonical name is what the
+        // caller gets back to depend on.
+        for spelling in ["ctrl-c", "ctrl+c", "C-c", "c+C", " CTRL-C "] {
+            let resolved = resolve_key(spelling).expect("{spelling} should resolve");
+            assert_eq!(resolved.name, "ctrl-c");
+            assert_eq!(resolved.tmux, "C-c");
+        }
+        // Aliases collapse onto one canonical spelling too.
+        assert_eq!(resolve_key("esc").unwrap().name, "escape");
+        assert_eq!(resolve_key("RETURN").unwrap().name, "enter");
+        assert_eq!(resolve_key("pgup").unwrap().tmux, "PageUp");
+    }
+
+    #[test]
+    fn resolve_key_refuses_what_tmux_would_type_as_text() {
+        // tmux does not validate key names — an unrecognized one is injected
+        // into the pane as literal text — so anything outside the table must
+        // fail here rather than land in an agent's prompt.
+        for bad in [
+            "",
+            "escpe",
+            "ctrl-",
+            "ctrl-cc",
+            "ctrl-1",
+            "Enter Enter",
+            "F1",
+            "c",
+        ] {
+            assert!(resolve_key(bad).is_none(), "{bad:?} should not resolve");
+        }
+    }
+
+    #[test]
+    fn resolve_key_covers_every_control_letter() {
+        for letter in 'a'..='z' {
+            let resolved = resolve_key(&format!("ctrl-{letter}")).expect("ctrl-<letter>");
+            assert_eq!(resolved.tmux, format!("C-{letter}"));
+        }
     }
 
     // --- psmux_window_command tests ---

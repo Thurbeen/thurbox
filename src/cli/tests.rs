@@ -156,13 +156,20 @@ fn parse_session_send_disambiguates_global_text_flag() {
     ])
     .unwrap();
     let Command::Session {
-        action: sessions::Action::Send { uuid, text },
+        action:
+            sessions::Action::Send {
+                uuid,
+                text,
+                no_enter,
+            },
     } = subcommand(cli)
     else {
         panic!("expected Session::Send");
     };
     assert_eq!(uuid, "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a");
     assert_eq!(text, "hello");
+    // The default is unchanged: text is submitted unless --no-enter says not to.
+    assert!(!no_enter);
 
     // The original collision-triggering invocation: global `--text` flag set.
     let cli = Cli::try_parse_from([
@@ -182,6 +189,80 @@ fn parse_session_send_disambiguates_global_text_flag() {
         panic!("expected Session::Send");
     };
     assert_eq!(text, "hello");
+}
+
+#[test]
+fn parse_session_send_no_enter_is_opt_in() {
+    let cli = Cli::try_parse_from([
+        "thurbox-cli",
+        "session",
+        "send",
+        "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a",
+        "hello",
+        "--no-enter",
+    ])
+    .unwrap();
+    let Command::Session {
+        action: sessions::Action::Send { no_enter, text, .. },
+    } = cli.command
+    else {
+        panic!("expected Session::Send");
+    };
+    assert!(no_enter);
+    assert_eq!(text, "hello");
+}
+
+#[test]
+fn parse_session_send_takes_text_starting_with_a_dash() {
+    // `--` ends option parsing, which is how a caller sends text clap would
+    // otherwise read as flags. The text must survive whole.
+    let cli = Cli::try_parse_from([
+        "thurbox-cli",
+        "session",
+        "send",
+        "--no-enter",
+        "--",
+        "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a",
+        "--not-a-flag \"quoted\"",
+    ])
+    .unwrap();
+    let Command::Session {
+        action: sessions::Action::Send { text, no_enter, .. },
+    } = cli.command
+    else {
+        panic!("expected Session::Send");
+    };
+    assert!(no_enter);
+    assert_eq!(text, "--not-a-flag \"quoted\"");
+}
+
+#[test]
+fn parse_session_key_takes_uuid_and_key() {
+    let cli = Cli::try_parse_from([
+        "thurbox-cli",
+        "session",
+        "key",
+        "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a",
+        "ctrl-c",
+    ])
+    .unwrap();
+    let Command::Session {
+        action: sessions::Action::Key { uuid, key },
+    } = cli.command
+    else {
+        panic!("expected Session::Key");
+    };
+    assert_eq!(uuid, "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a");
+    assert_eq!(key, "ctrl-c");
+
+    // Both positionals are required.
+    assert!(Cli::try_parse_from([
+        "thurbox-cli",
+        "session",
+        "key",
+        "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a"
+    ])
+    .is_err());
 }
 
 #[test]

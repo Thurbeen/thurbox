@@ -930,8 +930,8 @@ thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children onl
 ```
 
 Subcommands: `session` (create/list [`--deleted`]/get/delete/restore/restart
-[`--if-missing`]/send/capture/focus/signal/sync/register — the last two and the
-flags serve session sharing, ADR-24), `automation` (alias `auto`:
+[`--if-missing`]/send [`--no-enter`]/key/capture/focus/signal/sync/register —
+`sync`/`register` and the flags serve session sharing, ADR-24), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `message` (alias `msg`:
 send/inbox/prune — the inter-session mailbox queue; see below), `editor`
@@ -1010,6 +1010,25 @@ that the TOON rendering reads. A command that declares no `AgentView` still
 renders as TOON; declaring one is worth it on the commands agents run in a
 loop. `tests/toon_conformance.rs` pins the encoder against the reference
 implementation on the spec's own 179-case suite.
+
+**Typing into a session: `send` and `key`.** `session send <uuid> <text>` types
+text and presses Enter; **`--no-enter`** types it and stops, leaving it
+unsubmitted in the agent's composer — an integration that verifies what it typed
+before submitting cannot use the submitting form, because that fires every steer
+the instant it is typed. **`session key <uuid> <name>`** is the other half: one
+named special key (`enter`, `escape`, `tab`, `backspace`, `space`, the arrows,
+`home`/`end`, `page-up`/`page-down`, `delete`, or `ctrl-<letter>`), spelled
+case-insensitively with either separator (`ctrl-c` = `ctrl+c` = `C-c`) and
+resolved through the closed table in `agent::tmux::NAMED_KEYS`. The table is
+closed on purpose: tmux does **not** validate a key name — an unrecognized one
+is typed into the pane as literal text — so `session key` refuses what it does
+not know rather than injecting `Escpe` into somebody's prompt. Text goes out
+bracketed-paste-wrapped either way (`paste_prompt_args`), which is what makes it
+literal: no shell sees it, a leading `-` cannot read as a `send-keys` flag, and a
+newline cannot submit the line before it. Both are **local-only** — the one-shot
+helpers bypass the transport seam and drive this machine's tmux server — so a
+session on an `ssh:`/`wsl:` backend is refused by name (`require_local_pane`)
+instead of failing as a tmux status code against a window that was never there.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB row is marked
 deleted (the TUI tears down the tmux window/worktree on its next sync), and

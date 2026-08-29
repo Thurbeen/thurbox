@@ -1126,6 +1126,9 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
           <pre data-wrap><code class="language-bash">thurbox-cli session list
 thurbox-cli session create --name reviewer --repo-path /path/to/repo --agent codex
 thurbox-cli session send &lt;uuid&gt; "run the test suite"
+thurbox-cli session send &lt;uuid&gt; "steer it here" --no-enter   # typed, not submitted
+thurbox-cli session key &lt;uuid&gt; enter                         # ...and now submit it
+thurbox-cli session key &lt;uuid&gt; escape                        # interrupt the turn
 thurbox-cli session capture &lt;uuid&gt; --lines 500
 thurbox-cli session capture &lt;uuid&gt; --ansi --json
 thurbox-cli message send --to flow --kind questions --task 5 --body "scope?"
@@ -1145,7 +1148,41 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               <code>--base-branch</code>
               ),
               <code>send</code>
+              (append
+              <code>--no-enter</code>
+              to type the text and leave it unsubmitted &mdash; the text goes out as one
+              bracketed paste, so it arrives literally),
+              <code>key</code>
+              (one named special key:
+              <code>enter</code>
               ,
+              <code>escape</code>
+              ,
+              <code>tab</code>
+              ,
+              <code>backspace</code>
+              ,
+              <code>space</code>
+              , the arrows,
+              <code>home</code>
+              /
+              <code>end</code>
+              ,
+              <code>page-up</code>
+              /
+              <code>page-down</code>
+              ,
+              <code>delete</code>
+              , or
+              <code>ctrl-&lt;letter&gt;</code>
+              &mdash;
+              <code>ctrl-c</code>
+              ,
+              <code>ctrl+c</code>
+              and
+              <code>C-c</code>
+              are the same key, and a name thurbox does not know is refused rather than
+              typed into the pane),
               <code>capture</code>
               ,
               <code>restart</code>
@@ -1154,6 +1191,14 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               ,
               <code>restore</code>
               .
+              <code>send</code>
+              and
+              <code>key</code>
+              reach this machine's tmux server only, so a session created with
+              <code>--host</code>
+              is refused by name &mdash; run
+              <code>thurbox-cli</code>
+              on that host.
             </li>
             <li>
               <strong>session capture</strong>

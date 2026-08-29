@@ -116,11 +116,35 @@ pub enum Action {
         json_row: String,
     },
     /// Type text into a session's terminal, followed by Enter.
+    ///
+    /// The text is delivered as one bracketed paste, so it arrives literally —
+    /// no shell sees it, and a leading `-`, quotes or newlines survive intact.
+    /// Local sessions only: the pane lives on this machine's tmux server, so a
+    /// session on a `--host` runs `thurbox-cli` there instead.
     Send {
         /// Session UUID.
         uuid: String,
         /// Text to send.
         text: String,
+        /// Type the text but do not press Enter, leaving it unsubmitted in the
+        /// agent's composer. `session key <uuid> enter` submits it — which is
+        /// what a type-then-verify-then-submit protocol needs.
+        #[arg(long = "no-enter")]
+        no_enter: bool,
+    },
+    /// Send one named special key to a session's terminal.
+    ///
+    /// The companion to `session send --no-enter`: `escape` and `ctrl-c`
+    /// interrupt a turn, `ctrl-u` clears a composer line, `enter` submits what
+    /// is typed. Local sessions only, like `session send`.
+    Key {
+        /// Session UUID.
+        uuid: String,
+        /// Key name. One of: enter, escape, tab, backspace, space, up, down,
+        /// left, right, home, end, page-up, page-down, delete — or
+        /// `ctrl-<letter>` (e.g. ctrl-c, ctrl-u). Case-insensitive; `ctrl+c`
+        /// and `c-c` spell the same key.
+        key: String,
     },
     /// Capture rendered pane contents, plus the pane's live cursor and
     /// foreground-process state.
@@ -329,20 +353,50 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 human,
             ))
         }
-        Action::Send { uuid, text } => {
+        Action::Send {
+            uuid,
+            text,
+            no_enter,
+        } => {
             let session = resolve(db, &uuid)?;
             if text.trim().is_empty() {
                 return Err("text must not be empty".into());
             }
-            crate::agent::tmux::send_prompt_now(&session.name, &session.backend_id, &text)
-                .map_err(|e| format!("send_prompt_now: {e}"))?;
+            require_local_pane(&session)?;
+            let submit = !no_enter;
+            crate::agent::tmux::send_text_now(&session.name, &session.backend_id, &text, submit)
+                .map_err(|e| format!("send_text_now: {e}"))?;
+            let human = if submit {
+                format!("Sent to '{}'.", session.name)
+            } else {
+                format!("Typed into '{}' (not submitted).", session.name)
+            };
             Ok(CommandOutput::new(
                 json!({
                     "sent": true,
+                    "submitted": submit,
                     "session_id": session.id.to_string(),
                     "session_name": session.name,
                 }),
-                format!("Sent to '{}'.", session.name),
+                human,
+            ))
+        }
+        Action::Key { uuid, key } => {
+            let session = resolve(db, &uuid)?;
+            let resolved =
+                crate::agent::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
+            require_local_pane(&session)?;
+            crate::agent::tmux::send_key_now(&session.name, &session.backend_id, &resolved.tmux)
+                .map_err(|e| format!("send_key_now: {e}"))?;
+            Ok(CommandOutput::new(
+                json!({
+                    "sent": true,
+                    "key": resolved.name,
+                    "tmux_key": resolved.tmux,
+                    "session_id": session.id.to_string(),
+                    "session_name": session.name,
+                }),
+                format!("Sent {} to '{}'.", resolved.name, session.name),
             ))
         }
         Action::Capture { uuid, lines, ansi } => capture_pane(db, &uuid, lines, ansi),
@@ -659,6 +713,36 @@ fn resolve(db: &Database, uuid: &str) -> Result<SharedSession, String> {
     db.get_session_by_id(id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .ok_or_else(|| format!("Session not found: {uuid}"))
+}
+
+/// Refuse a session whose pane is not on this machine.
+///
+/// `session send` and `session key` are one-shots against the *local* tmux
+/// server (`agent::tmux`'s helpers bypass the transport seam), so an `ssh:`/
+/// `wsl:` session has no pane here to type into. Left to itself the local
+/// `send-keys` fails against a window that does not exist — a tmux status code
+/// blaming the wrong machine — so name the reason instead. Same exit code (1),
+/// a usable message.
+fn require_local_pane(session: &SharedSession) -> Result<(), String> {
+    if crate::session::is_remote_backend(&session.backend_type) {
+        return Err(format!(
+            "session '{}' runs on '{}'; `session send` and `session key` reach \
+             only this machine's tmux server — run thurbox-cli on that host",
+            session.name, session.backend_type
+        ));
+    }
+    Ok(())
+}
+
+/// What `session key` says about a spelling it does not know, listing the set
+/// so the answer is in the error rather than in `--help`.
+fn unknown_key(key: &str) -> String {
+    let names = crate::agent::tmux::NAMED_KEYS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Unknown key '{key}'. Known keys: {names}, or ctrl-<letter> (e.g. ctrl-c).")
 }
 
 /// [`shared_session_to_json`] plus the session's persisted hooks-driven state
@@ -1034,18 +1118,87 @@ mod tests {
             tombstone_at: None,
         };
         db.upsert_session(&shared).unwrap();
-        // Both empty and whitespace-only text are rejected (trimmed check).
+        // Both empty and whitespace-only text are rejected (trimmed check),
+        // whether or not the text would have been submitted.
         for text in ["", "   \t\n"] {
-            let err = run(
-                Action::Send {
-                    uuid: id.to_string(),
-                    text: text.to_string(),
-                },
-                &db,
-            )
-            .unwrap_err();
-            assert!(err.contains("text"), "got {err}");
+            for no_enter in [false, true] {
+                let err = run(
+                    Action::Send {
+                        uuid: id.to_string(),
+                        text: text.to_string(),
+                        no_enter,
+                    },
+                    &db,
+                )
+                .unwrap_err();
+                assert!(err.contains("text"), "got {err}");
+            }
         }
+    }
+
+    #[test]
+    fn send_and_key_refuse_a_session_on_another_host() {
+        // The one-shot helpers drive this machine's tmux server, so a remote
+        // session has no pane here. It must say so rather than fail as a tmux
+        // status code against a window that was never going to exist.
+        let db = db();
+        let mut shared = make_test_session("remote-demo");
+        shared.backend_type = "ssh:devbox".into();
+        let id = shared.id;
+        db.upsert_session(&shared).unwrap();
+
+        for action in [
+            Action::Send {
+                uuid: id.to_string(),
+                text: "hello".into(),
+                no_enter: true,
+            },
+            Action::Key {
+                uuid: id.to_string(),
+                key: "enter".into(),
+            },
+        ] {
+            let err = run(action, &db).unwrap_err();
+            assert!(err.contains("ssh:devbox"), "got {err}");
+            assert!(err.contains("this machine"), "got {err}");
+        }
+    }
+
+    #[test]
+    fn key_refuses_a_name_tmux_would_type_as_text() {
+        // Rejected before anything is sent: tmux injects an unrecognized key
+        // name into the pane as literal text, so a typo must not reach it.
+        let db = db();
+        let shared = make_test_session("demo");
+        let id = shared.id;
+        db.upsert_session(&shared).unwrap();
+
+        let err = run(
+            Action::Key {
+                uuid: id.to_string(),
+                key: "escpe".into(),
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("Unknown key 'escpe'"), "got {err}");
+        // The error carries the answer, so `--help` is not the only place it is.
+        assert!(err.contains("escape") && err.contains("ctrl-"), "got {err}");
+    }
+
+    #[test]
+    fn key_reports_a_missing_session_before_a_bad_key() {
+        // A malformed UUID is still the first thing wrong with the call.
+        let db = db();
+        let err = run(
+            Action::Key {
+                uuid: "not-a-uuid".into(),
+                key: "nonsense".into(),
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("Invalid session UUID"), "got {err}");
     }
 
     #[test]
