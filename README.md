@@ -559,9 +559,9 @@ the session's terminal followed by Enter; `capture` dumps the rendered pane
 (`--lines` defaults to 200, max 10000).
 
 **Deleting.** `session delete <uuid>` is a soft-delete: it only marks the
-database row. The tmux window, git worktrees and pending scheduled commands are
-left untouched — the running TUI cleans those up on its next sync, and
-`session restore <uuid>` brings it back.
+database row. A running TUI kills the tmux window once the 10-second undo
+window closes; the worktrees stay, which is what makes `session restore <uuid>`
+lossless.
 
 Pass `--force` to tear down the runtime resources in the same call, for headless
 cleanup with no TUI running. It kills the tmux window, removes the session's git
