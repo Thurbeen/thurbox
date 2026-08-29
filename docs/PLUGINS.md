@@ -1110,6 +1110,14 @@ pane reads `thurbox.*`, which is a contract that moves, so what a bare name fetc
 matches the binary asking for it. Bare names reach the *examples*; anything you
 actually depend on is better named by a URL, a path, or a repository you control.
 
+That tag is also why a bare name can stop resolving: the examples lived under
+`ui-plugins/` before they moved to `examples/panes/`, so a `plugins.lock` written
+by a binary from before the move records a tag whose tree has no `examples/panes/`
+and `plugin sync` reports the pane as not found. Re-run `thurbox-cli plugin install
+<name>` to re-lock it at the current tag, or name a URL or a path in
+`plugins.toml` instead — which is the same advice as the paragraph above, for the
+same reason.
+
 ### A plugin that carries more than Lua
 
 A pane that runs a program needs that program, and a pane with data needs the data.

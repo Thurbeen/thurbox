@@ -204,19 +204,7 @@ fn src_root() -> PathBuf {
 /// Recursively collect all `.rs` files under `dir`, panicking on I/O errors
 /// so a renamed or unreadable module can never pass vacuously.
 fn collect_rs_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let entries =
-        fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
-    for entry in entries {
-        let path = entry.expect("readable directory entry").path();
-        if path.is_dir() {
-            files.extend(collect_rs_files(&path));
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path);
-        }
-    }
-    files.sort();
-    files
+    collect_files_with_extension(dir, "rs")
 }
 
 /// The `.rs` files making up module `name` (`src/<name>/` or `src/<name>.rs`).
@@ -665,39 +653,69 @@ fn every_module_is_governed() {
 
 /// Every persisted proptest seed must still name a source file that exists.
 ///
-/// `proptest-regressions/` is proptest's own persisted failure-seed store, and
-/// its layout is a path contract rather than incidental: with the default
-/// `FileFailurePersistence::SourceParallel`, a proptest in `src/agent/
-/// backend.rs` persists to `proptest-regressions/agent/backend.txt`, and one in
-/// `tests/render_props.rs` to `proptest-regressions/render_props.txt`. proptest
-/// resolves that path at run time and **says nothing when it misses** — a
-/// renamed or moved source file silently stops re-running its saved cases, so
-/// the regression a seed was written for quietly stops being covered.
+/// Proptest's persisted failure-seed store has a layout that is a path contract
+/// rather than incidental, and the default `FileFailurePersistence::
+/// SourceParallel` writes to *two* places depending on the source file:
+///
+/// - It climbs the source file's ancestors for a directory holding `lib.rs` or
+///   `main.rs`. For anything under `src/` that directory is `src/` itself, so a
+///   proptest in `src/agent/backend.rs` persists to its sibling tree,
+///   `proptest-regressions/agent/backend.txt`.
+/// - An integration test under `tests/` has no such ancestor — there is no
+///   `tests/lib.rs`, and none above it — so the climb fails and proptest falls
+///   back to `WithSource`, writing a file *beside the source*: a proptest in
+///   `tests/render_props.rs` persists to
+///   `tests/render_props.proptest-regressions`.
+///
+/// Proptest resolves that path at run time and **says nothing when it misses** —
+/// a renamed or moved source file silently stops re-running its saved cases, so
+/// the regression a seed was written for quietly stops being covered. Both
+/// locations are swept here, since either kind of seed can be orphaned by a
+/// rename.
 ///
 /// This is the check that a wide rename needs and that nothing else provides.
 #[test]
 fn every_proptest_seed_still_names_a_live_source_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut orphans = Vec::new();
+
+    // SourceParallel: the tree is rooted at `src/`, so the seed's relative path
+    // names exactly one source file. `tests/` is deliberately not a candidate —
+    // seeds for an integration test never land here, and accepting one would
+    // let an unrelated `tests/foo.rs` mask a genuinely orphaned seed.
     let seeds_dir = root.join("proptest-regressions");
-    if !seeds_dir.exists() {
-        return;
+    if seeds_dir.exists() {
+        for seed in collect_files_with_extension(&seeds_dir, "txt") {
+            let rel = seed
+                .strip_prefix(&seeds_dir)
+                .expect("seed is under proptest-regressions/")
+                .with_extension("rs");
+            if !root.join("src").join(&rel).exists() {
+                orphans.push(format!(
+                    "  proptest-regressions/{} -> src/{} does not exist",
+                    rel.with_extension("txt").display(),
+                    rel.display()
+                ));
+            }
+        }
     }
 
-    let mut orphans = Vec::new();
-    for seed in collect_files_with_extension(&seeds_dir, "txt") {
-        let rel = seed
-            .strip_prefix(&seeds_dir)
-            .expect("seed is under proptest-regressions/")
-            .with_extension("rs");
-        // SourceParallel strips the `src/` or `tests/` root, so the seed alone
-        // cannot say which one it came from — either owning it is enough.
-        let candidates = [root.join("src").join(&rel), root.join("tests").join(&rel)];
-        if !candidates.iter().any(|c| c.exists()) {
+    // WithSource fallback: a seed beside its integration test.
+    let tests_dir = root.join("tests");
+    for seed in collect_files_with_extension(&tests_dir, "proptest-regressions") {
+        let source = seed.with_extension("rs");
+        if !source.exists() {
+            let rel = |p: &Path| {
+                p.strip_prefix(root)
+                    .unwrap_or(p)
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
+            };
             orphans.push(format!(
-                "  proptest-regressions/{} -> neither src/{} nor tests/{} exists",
-                rel.display(),
-                rel.display(),
-                rel.display()
+                "  {} -> {} does not exist",
+                rel(&seed),
+                rel(&source)
             ));
         }
     }
