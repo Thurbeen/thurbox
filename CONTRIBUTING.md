@@ -143,7 +143,8 @@ prek install
 - **commit-msg** — conventional-commit validation (`cog verify`)
 - **pre-commit** — fmt, clippy, check, nextest, architecture rules, cargo-deny,
   rustdoc, bats, shellcheck, rumdl, prettier, htmlhint, stylelint, eslint
-- **pre-push** — commit-history check (`cog check`)
+- **pre-push** — commit-history check
+  ([`scripts/ci/check-conventional-commits.sh`](scripts/ci/check-conventional-commits.sh))
 
 ## Commit conventions
 
@@ -163,6 +164,16 @@ cog commit fix "avoid panic on empty worktree" git
 
 Commit type drives releases: `feat` → minor bump, `fix` / `perf` → patch bump;
 `docs`, `chore`, `ci`, `style` and `test` produce no release.
+
+The history check that the `pre-push` hook and CI's `Conventional Commits` job
+run is [`scripts/ci/check-conventional-commits.sh`](scripts/ci/check-conventional-commits.sh)
+rather than `cog check` itself. It verifies each commit with `cog verify` — the
+same `cog.toml`, so the type and scope allowlists above still apply — and
+exempts exactly the subjects the no-mistakes gate hardcodes for the commits it
+authors (`no-mistakes: apply CI fixes` and `no-mistakes: apply agent fixes`).
+`.no-mistakes.yaml`'s `commit.fix_message` retemplates the gate's per-step
+auto-fix commits, but those two are not templatable, and `cog check` cannot
+exempt a commit — so the fix the gate pushed for this job used to fail it.
 
 ## Documentation
 

@@ -164,7 +164,10 @@ repos:
 
       - id: cocogitto-check
         name: Check commit history
-        entry: cog check
+        # Not `cog check`: it cannot exempt the no-mistakes gate's own fix
+        # commits, whose subject that binary hardcodes. The script is what CI
+        # runs, and holds every other commit to the same cog.toml.
+        entry: scripts/ci/check-conventional-commits.sh
         language: system
         pass_filenames: false
         always_run: true

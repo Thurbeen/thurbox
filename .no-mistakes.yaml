@@ -82,6 +82,11 @@ ci:
 # it. `chore` is scopeless (cog.toml enumerates its valid scopes and a gate fix
 # spans them), is omitted from the changelog, and drives no version bump - the
 # real feat/fix commit on the branch decides the release.
+#
+# It does not reach the subjects the binary hardcodes for the commits it
+# authors itself (`no-mistakes: apply CI fixes`, `no-mistakes: apply agent
+# fixes`), which are not templatable and not conventional either -
+# scripts/ci/check-conventional-commits.sh exempts exactly those two.
 commit:
   fix_message: "chore: no-mistakes {{.Step}} - {{.Summary}}"
 
