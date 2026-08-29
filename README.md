@@ -182,8 +182,8 @@ colours, so a pane you write looks right under all thirty-six.
 ### Also in the box
 
 - **Git worktree isolation** — spawn a session on a fresh worktree branch;
-  `Ctrl+S` syncs worktrees with their base branch and asks the agent to resolve
-  rebase conflicts.
+  `Ctrl+S` syncs worktrees with their base branch, and reports a conflict
+  without changing that worktree.
 - **Multi-repo sessions** — one session can span several repos, each in its own
   worktree on a shared branch, gathered into a symlink workspace the agent runs
   in.
@@ -275,8 +275,8 @@ its chords — is a file you can open in an editor.
 
 All of it lives under `~/.config/thurbox/`. Panes and the arrangement reload on
 `F10`; colours, chords and most settings apply live (the settings panel marks
-the restart-only ones `⟳`); a changed agent or host applies to the next session
-you create.
+the restart-only ones `⟳`); a changed agent applies to the next session you
+create; a new agent, and any change to `hosts.toml`, needs a restart.
 
 ### Writing a pane
 

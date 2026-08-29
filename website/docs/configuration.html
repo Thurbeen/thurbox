@@ -195,12 +195,9 @@ breadcrumb: 'Configuration'
             , needs a restart.
           </p>
           <p>
-            Config problems are
-            <strong>not silent</strong>
-            : parse errors and unknown fields surface as a status-bar toast on startup (and in the
-            log file). Unknown TOML keys are tolerated and
-            reported by name, while syntax/type errors fall back to built-ins (agents), zero hosts,
-            or defaults (settings). Check everything from the command line:
+            Config problems land in the log file. Unknown TOML keys are tolerated and reported by
+            name, while syntax/type errors fall back to built-ins (agents), zero hosts, or defaults
+            (settings). Check everything from the command line:
           </p>
           <pre><code class="language-bash">thurbox-cli config validate   # strict parse of every file; exit 1 on problems
 thurbox-cli config show       # effective config + where each value came from</code></pre>
