@@ -123,6 +123,65 @@ still-gated psmux provisioning), the session shows a `Hooks: degraded`
 row in the info panel instead of silently idling. See the
 *Remote SSH & WSL Sessions* section in `CLAUDE.md` for the full pipeline.
 
+#### Reading the state headlessly, and judging it
+
+`hook_state` is **latched**: whatever was written last, by an agent that
+may since have crashed, been interrupted, or never have been wired to
+report at all. In the TUI that is handled by derivation — output
+quiescence retires a stuck `working`, an attach failure reads as
+`Unreachable` — but both need a live pane and a render loop, so neither
+exists for a headless reader.
+
+`session get`/`list --json` therefore report the raw `hook_state`
+alongside everything it takes to judge it: `hook_state_at` and
+`hook_state_age_secs` (when, and how long ago), `hook_reported`
+(whether anything has *ever* reported — silence is not idle),
+`hook_coverage` / `hook_states_reportable` / `hook_delivery` (what this
+agent can report at all, so `aider`'s silence about `working` is known
+to mean nothing), and `hook_blocked_is_heuristic` (claude's and
+antigravity's `blocked` is a text match on a notification body, and so
+stops working silently if the agent rewords one).
+
+There is deliberately **no staleness timeout** on the headless path. A
+turn may legitimately run for an hour, so a guessed bound would report
+live work as finished; the age is published and the policy is the
+consumer's.
+
+The decisive check is the pane rather than the clock. `session get`
+resolves the pane's true foreground process (one multiplexer query plus
+one `ps`) and reports `hook_corroboration` — `agent`, `foreign-agent`,
+`shell`, `other`, `dead`, `unknown`, or `unavailable` — plus
+`hook_state_contradicted`, which is true when a `working` or `blocked`
+row sits over a pane holding a bare shell or nothing at all. It is
+**reported, never applied**: `hook_state` keeps exactly the value the
+agent wrote, because overwriting a report with an inference is how a
+state becomes unfalsifiable. `session list` skips the probe unless
+`--verify` is passed, since the cost is per session; a remote session is
+never probed (its pane is on its own host's multiplexer) and answers
+`unavailable`.
+
+**An agent thurbox did not launch is still seen.** A harness that owns
+the agent launch itself asks thurbox for a bare interactive shell and
+starts the agent inside that pane, so no hooks are wired and nothing
+ever signals. Such a session reports `state: "running"` with
+`state_source: "process"` and `hook_corroboration: "foreign-agent"` —
+coarser than a hook by design, since process inspection can say an agent
+is there but never what it is doing. The precise route for such a
+harness is `thurbox-cli session signal` itself: `THURBOX_SESSION` is in
+the pane's environment and every child inherits it, so the call needs no
+arguments (see *Inter-session messages* for the same identity contract).
+
+**`thurbox-cli session doctor [uuid]`** is the diagnostic, in the spirit
+of `notify --test`: is the hooks extension active, does this agent have
+coverage, is its payload really on disk where the agent reads it, could
+a hook command resolve `thurbox-cli` on `PATH` at all, what was last
+reported and when, and does the pane agree. Every shipped hook command
+ends in `|| true`, so a signal that never lands is otherwise
+indistinguishable from an agent that has not signalled — this is how to
+tell them apart. It exits non-zero when no state can reach thurbox from
+a session, and reads without ever repairing (`thurbox-cli extension
+reinstall hooks` is the repair).
+
 ### Smart ordering & repo groups
 
 The list is **grouped by repository** under subtle headers

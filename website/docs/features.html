@@ -1185,6 +1185,8 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               typed into the pane),
               <code>capture</code>
               ,
+              <code>doctor</code>
+              ,
               <code>restart</code>
               ,
               <code>delete</code>
@@ -1229,6 +1231,88 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               the local multiplexer only &mdash; a session created with
               <code>--host</code>
               is refused rather than reported empty.
+            </li>
+            <li>
+              <strong>agent state, and how far to trust it</strong>
+              &mdash; agents report
+              <code>working</code>
+              /
+              <code>blocked</code>
+              /
+              <code>done</code>
+              /
+              <code>idle</code>
+              through their lifecycle hooks, and that report is
+              <em>latched</em>
+              : whatever was written last, by an agent that may since have
+              crashed, been interrupted, or never have been wired at all. So
+              <code>session get</code>
+              /
+              <code>list --json</code>
+              carry the raw
+              <code>hook_state</code>
+              beside what it takes to judge it &mdash;
+              <code>hook_state_at</code>
+              /
+              <code>hook_state_age_secs</code>
+              (when, and how long ago),
+              <code>hook_reported</code>
+              (silence is not
+              <code>idle</code>
+              ),
+              <code>hook_coverage</code>
+              /
+              <code>hook_states_reportable</code>
+              (what this agent can report at all &mdash;
+              <code>aider</code>
+              can only ever say
+              <code>blocked</code>
+              ),
+              <code>hook_blocked_is_heuristic</code>
+              , and
+              <code>state</code>
+              /
+              <code>state_source</code>
+              . There is deliberately no staleness timeout: a turn may run for
+              an hour, so a guessed bound would report live work as finished.
+              The decisive check is the pane instead &mdash;
+              <code>session get</code>
+              resolves its foreground process and flags a
+              <code>working</code>
+              session sitting over a bare shell (
+              <code>hook_corroboration</code>
+              ,
+              <code>hook_state_contradicted</code>
+              ), reporting the contradiction rather than overwriting the agent's
+              own word.
+              <code>session list</code>
+              skips that probe unless you pass
+              <code>--verify</code>
+              , and a remote session answers
+              <code>unavailable</code>
+              . A pane whose foreground is an agent thurbox did not launch
+              reports
+              <code>state: "running"</code>
+              with
+              <code>state_source: "process"</code>
+              &mdash; coarser than a hook by design, but not silence.
+            </li>
+            <li>
+              <strong>session doctor</strong>
+              &mdash; answers &ldquo;are this session's hooks actually
+              working?&rdquo;: whether the built-in hooks extension is active,
+              what this agent's hooks can report, whether its payload is really
+              on disk where the agent reads it, whether a hook command could
+              resolve
+              <code>thurbox-cli</code>
+              on
+              <code>PATH</code>
+              at all, what was last reported and when, and whether the pane
+              agrees. Every shipped hook command ends in
+              <code>|| true</code>
+              , so a signal that never lands is otherwise indistinguishable from
+              an agent that has not signalled. Exits non-zero when no state can
+              reach thurbox from a session.
             </li>
             <li>
               <strong>automation</strong>

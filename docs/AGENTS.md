@@ -140,6 +140,21 @@ Each `requires_dir` guard makes the drop a no-op when that agent isn't installed
 so a fresh install with only claude present doesn't scatter files for agents you
 don't have.
 
+**This list has a machine-readable twin.** `session::hook_status::
+AGENT_HOOK_COVERAGE` carries the same per-agent facts — the states each payload
+signals, its delivery mechanism, the file it lands in, and whether its `blocked`
+is a text match on a notification body — and is what `session get`/`list` report
+as `hook_coverage` / `hook_states_reportable` / `hook_delivery` /
+`hook_blocked_is_heuristic`, so a consumer can tell "this agent is quiet" from
+"this agent cannot say that". The table is asserted against the embedded
+payloads by a test rather than maintained by hand beside them: **change a
+payload's events and that test fails until the table agrees.**
+
+`thurbox-cli session doctor [uuid]` is the runtime half — whether a given
+session's payload is actually installed where its agent reads it, whether a hook
+command could resolve `thurbox-cli` at all, and whether what was last reported
+is corroborated by the pane.
+
 **On a shared host** (`hosts.toml` `share_sessions = true`, the default — see
 ADR-24) none of the remote rewriting applies: the host's own `thurbox-cli`
 launches the agent with the host's own hooks extension, so each agent reports
@@ -181,9 +196,12 @@ automatically. Work the checklist top to bottom:
    shared config file thurbox must not clobber, `external_files` for a standalone
    drop into the agent's own config dir. Register any new embedded asset with an
    `include_str!` in
-   [`src/session_ops/builtin_hooks.rs`](../src/session_ops/builtin_hooks.rs).
-   Bump the hooks extension `version`. Skipping this step means the new agent
-   launches fine but **never shows working/blocked/done**.
+   [`src/session_ops/builtin_hooks.rs`](../src/session_ops/builtin_hooks.rs), and
+   add its row to `AGENT_HOOK_COVERAGE` in
+   [`src/session/hook_status.rs`](../src/session/hook_status.rs) (the drift test
+   fails until it matches the payload). Bump the hooks extension `version`.
+   Skipping this step means the new agent launches fine but **never shows
+   working/blocked/done**.
 
 3. **Docs — update every list of built-ins** (these are prose, not generated, so
    they drift):

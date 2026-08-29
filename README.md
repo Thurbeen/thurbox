@@ -551,6 +551,7 @@ thurbox-cli session key <uuid> enter     # ...and now submit it
 thurbox-cli session key <uuid> escape    # interrupt the turn (or ctrl-c)
 thurbox-cli session capture <uuid> --lines 500
 thurbox-cli session capture <uuid> --ansi --json   # styled text + pane state
+thurbox-cli session doctor [<uuid>]      # are this session's status hooks wired?
 thurbox-cli session restart <uuid>       # kill + re-spawn with --resume
 thurbox-cli session delete <uuid>        # soft-delete (see below)
 thurbox-cli session restore <uuid>       # undo a soft-delete
@@ -597,6 +598,51 @@ foreground process needs a `ps` that reports `tpgid`; without one
 `foreground_command` is `null`. `capture` reads the **local** multiplexer only,
 so a session created with `--host` — whose pane lives on that host's own tmux
 server — is refused by name rather than reported empty.
+
+**Agent state, and how far to trust it.** Agents report `working` / `blocked` /
+`done` / `idle` through their lifecycle hooks (`thurbox-cli session signal`).
+That report is **latched** — whatever was written last, by an agent that may
+since have crashed, been interrupted, or never have been wired at all — so
+`session get`/`list --json` carry the raw `hook_state` alongside everything it
+takes to judge it:
+
+| field | what it is |
+|---|---|
+| `hook_state_at` / `hook_state_age_secs` | when the report was made, and how long ago |
+| `hook_reported` | whether anything has *ever* reported — silence is not `idle` |
+| `hook_coverage` / `hook_states_reportable` | what this agent can report at all (`aider` can only ever say `blocked`) |
+| `hook_blocked_is_heuristic` | whether its `blocked` is a text match on a notification body |
+| `hook_corroboration` / `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
+| `state` / `state_source` | the best answer available, and whether it came from a hook or from the pane |
+
+There is deliberately **no staleness timeout**: a turn may run for an hour, so a
+guessed bound would report live work as finished. The age is published and the
+policy is yours. The decisive check is the pane — `session get` resolves its
+foreground process and flags a `working` session sitting over a bare shell,
+**reporting** the contradiction rather than overwriting the agent's own word.
+`session list` skips that probe unless you pass `--verify` (it costs a query and
+a `ps` per session), and a remote session answers `unavailable`.
+
+**An agent thurbox did not launch is still seen.** If your harness owns the
+agent launch — asking thurbox for a bare interactive shell and starting the
+agent inside that pane — no hooks are wired, but `THURBOX_SESSION` is in the
+pane's environment and every child inherits it, so anything in there can report
+state with no arguments:
+
+```bash
+thurbox-cli session signal --state working   # identity from $THURBOX_SESSION
+```
+
+Failing even that, a pane whose foreground is an agent the registry knows
+reports `state: "running"` with `state_source: "process"` — coarser than a hook
+by design, but not silence.
+
+**`session doctor`** answers "are this session's hooks actually working?" — the
+hooks extension, this agent's coverage, its payload on disk, whether a hook
+command can resolve `thurbox-cli` on `PATH` at all, the last signal and its age,
+and whether the pane agrees. Every shipped hook command ends in `|| true`, so a
+signal that never lands is otherwise invisible. It exits non-zero when no state
+can reach thurbox from a session.
 
 **Deleting.** `session delete <uuid>` is a soft-delete: it only marks the
 database row. A running TUI kills the tmux window once the 10-second undo

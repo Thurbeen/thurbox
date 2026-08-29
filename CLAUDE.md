@@ -934,7 +934,7 @@ thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children onl
 ```
 
 Subcommands: `session` (create/list [`--deleted`]/get/delete/restore/restart
-[`--if-missing`]/send [`--no-enter`]/key/capture/focus/signal/sync/register —
+[`--if-missing`]/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
 `sync`/`register` and the flags serve session sharing, ADR-24), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `message` (alias `msg`:
@@ -1524,6 +1524,34 @@ one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●
 (Done) vs hollow `○` (Idle) pair reads done-vs-seen at a glance;
 `SessionStatus::icon()` is the static glyph, for contexts with no clock.
 
+- **Reading it headlessly.** `session get`/`list --json` report the raw
+  `hook_state` **plus what it takes to judge it**: `hook_state_at` /
+  `hook_state_age_secs`, `hook_reported` (silence is not `idle`),
+  `hook_coverage` / `hook_states_reportable` / `hook_delivery` /
+  `hook_blocked_is_heuristic` (from `session::hook_status::
+  AGENT_HOOK_COVERAGE`, asserted against the shipped payloads by a test), and
+  `state` / `state_source`. There is deliberately **no staleness timeout**
+  here — a turn may run for an hour, so a guessed bound would report live work
+  as finished; the age is published and the policy is the consumer's. The
+  decisive check is the pane: `session get` resolves the foreground process
+  (`agent::tmux::pane_state`, one `display-message` plus one `ps`) and reports
+  `hook_corroboration` and `hook_state_contradicted`, **never** overwriting
+  `hook_state` with the inference. `session list` skips the probe unless
+  `--verify`; a remote session is never probed and answers `unavailable`.
+  `session doctor` is the same picture as a verdict plus the wiring checks
+  (extension active, payload on disk carrying the signal marker, `thurbox-cli`
+  resolvable on `PATH`), exiting non-zero when no state can reach thurbox at
+  all — the answer to "every hook ends in `|| true`, so how do I know it fired?"
+- **Agents thurbox did not launch.** A harness that owns the agent launch asks
+  for a bare interactive shell and starts the agent in that pane, so nothing is
+  wired and nothing signals. Two answers, both additive: `THURBOX_SESSION` is in
+  the pane env and inherited by every child, so anything in there can call
+  `thurbox-cli session signal --state <s>` with **no arguments** (documented as
+  a stable contract in `docs/CONFIG.md`); and failing that, a pane whose
+  foreground is an agent the registry knows reports `state: "running"` /
+  `state_source: "process"` / `hook_corroboration: "foreign-agent"` —
+  deliberately coarse, since process inspection cannot say what an agent is
+  *doing*.
 - **The callback.** Agents report transitions with
   `thurbox-cli session signal --state <working|blocked|done|idle>`
   (`cli::sessions::Action::Signal`). Identity is the injected

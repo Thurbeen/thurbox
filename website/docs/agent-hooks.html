@@ -523,6 +523,65 @@ breadcrumb: 'Agent hooks'
             </p>
           </div>
 
+          <h2 id="checking">
+            Check that it is actually firing
+            <a href="#checking" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Every hook command ends in
+            <code>|| true</code>
+            on purpose &mdash; a missing
+            <code>thurbox-cli</code>
+            , a locked database or a hook firing outside a Thurbox session must never break your
+            agent. The cost is that a signal which never lands looks exactly like an agent that
+            simply has not signalled yet. To tell them apart:
+          </p>
+          <pre><code class="language-bash">thurbox-cli session doctor              # every active session
+thurbox-cli session doctor &lt;uuid&gt;       # just one</code></pre>
+          <p>
+            It reports whether the extension is active, what this agent's hooks can report at all,
+            whether its payload is really on disk where the agent reads it, whether a hook command
+            could resolve
+            <code>thurbox-cli</code>
+            on
+            <code>PATH</code>
+            , what was last reported and how long ago, and whether the pane's foreground process
+            agrees with it. It exits non-zero when no state can reach Thurbox from a session, and it
+            only ever reads &mdash;
+            <code>thurbox-cli extension reinstall hooks</code>
+            is the repair.
+          </p>
+
+          <h2 id="own-agent">
+            Reporting state for an agent Thurbox did not launch
+            <a href="#own-agent" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Thurbox wires these hooks at launch, for an agent it knows from
+            <code>agents.toml</code>
+            . If your harness owns the agent launch itself &mdash; asking Thurbox for a bare
+            interactive shell and starting the agent inside that pane &mdash; no hooks are wired.
+            You can still report state, because
+            <code>THURBOX_SESSION</code>
+            is in the pane's environment and every child process inherits it:
+          </p>
+          <pre><code class="language-bash">thurbox-cli session signal --state working   # identity from $THURBOX_SESSION
+thurbox-cli session signal --state done
+
+thurbox-cli session signal --state blocked --session &lt;uuid&gt;   # from outside the pane</code></pre>
+          <p>
+            That is a supported integration point, not an internal detail: point your own agent's
+            lifecycle hooks at it and the session reports exactly like a built-in. Failing even
+            that, Thurbox reads the pane &mdash; a session that never signalled but whose foreground
+            process is an agent your
+            <code>agents.toml</code>
+            knows reports
+            <code>state: "running"</code>
+            with
+            <code>state_source: "process"</code>
+            , which is coarser than a hook by design but is not silence.
+          </p>
+
           <h2 id="optout">
             Opt out
             <a href="#optout" class="heading-anchor">#</a>

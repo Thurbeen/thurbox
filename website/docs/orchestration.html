@@ -283,31 +283,72 @@ thurbox-cli session list --parent "$LEAD" --json</code></pre>
 </p>
 
 <h2 id="constraints">
-  Two constraints
+  Three constraints
   <a href="#constraints" class="heading-anchor">#</a>
 </h2>
-<p>Both cost real time to rediscover.</p>
+<p>Each costs real time to rediscover.</p>
 
-<h3>There is no status field to poll</h3>
+<h3>The status field is not a completion signal</h3>
 <p>
-  <code>session get --json</code>
-  returns identity and layout &mdash; id, name, agent, backend, cwd, parent, worktrees. It exposes
-  <strong>no lifecycle state</strong>
-  . The
+  <code>session get</code>
+  /
+  <code>list --json</code>
+  <em>do</em>
+  carry the
   <code>working</code>
   /
+  <code>blocked</code>
+  /
   <code>done</code>
+  /
+  <code>idle</code>
   state that
   <a href="agent-hooks.html">agent hooks</a>
   report via
   <code>session signal</code>
-  is persisted for the TUI to render, not for the CLI to serve.
+  , in
+  <code>hook_state</code>
+  . What they cannot carry is any guarantee that it is
+  <em>current</em>
+  : the value is latched &mdash; whatever was written last, by an agent that may since have
+  crashed, been interrupted, or never have been wired to report at all. Polling it for completion
+  is how a lead waits forever on a worker that finished an hour ago.
 </p>
 <p>
-  So headless completion detection is the mailbox, or a printed sentinel the lead greps out of
+  So headless completion detection is still the mailbox, or a printed sentinel the lead greps out
+  of
   <code>session capture</code>
-  . There is no third option. This is the strongest argument for the mailbox: it is not merely
-  nicer than polling, it is the only thing that works.
+  . What the state fields are for is
+  <em>supervision</em>
+  &mdash; noticing that a worker is stuck, blocked or gone &mdash; and each arrives with what it
+  takes to judge it:
+  <code>hook_state_age_secs</code>
+  (how old the report is; there is deliberately no built-in staleness timeout, since a turn may
+  legitimately run for an hour),
+  <code>hook_reported</code>
+  (whether anything ever reported &mdash; silence is not
+  <code>idle</code>
+  ),
+  <code>hook_coverage</code>
+  (what this agent can report at all), and
+  <code>hook_corroboration</code>
+  /
+  <code>hook_state_contradicted</code>
+  (what actually holds the pane, and whether it agrees).
+  <code>thurbox-cli session doctor</code>
+  turns the same picture into a verdict and an exit code.
+</p>
+<p>
+  And a session whose agent Thurbox did not launch is no longer invisible: its pane is read, so a
+  known agent binary in the foreground reports
+  <code>state: "running"</code>
+  with
+  <code>state_source: "process"</code>
+  . Better still, have your harness call
+  <code>session signal</code>
+  itself &mdash;
+  <code>THURBOX_SESSION</code>
+  is already in the pane's environment, so the call needs no arguments.
 </p>
 
 <h3>Fast-forward the base branch first</h3>

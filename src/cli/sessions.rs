@@ -217,6 +217,13 @@ pub enum Action {
     /// done/idle) — works headless; the TUI picks it up via its data_version
     /// poll. Identity defaults to the calling session ($THURBOX_SESSION,
     /// injected at spawn), so an agent hook passes no id.
+    ///
+    /// This is a **supported integration point**, not an internal of the hooks
+    /// extension: $THURBOX_SESSION is set on the pane and inherited by every
+    /// process in it, so a driver that launches its own agent there — and that
+    /// agent's own hooks — can report state with no arguments at all. From
+    /// outside the pane, pass `--session <uuid>`. `session doctor` says whether
+    /// the reports are arriving.
     Signal {
         /// The reported state. `idle` = agent ready/at-rest (e.g. a fresh
         /// session boot); `done` = a turn just finished (shows until you look).

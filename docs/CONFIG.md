@@ -821,12 +821,35 @@ these to prove its own identity without scraping panes or names:
 
 | Variable | Set into agent process |
 |----------|------------------------|
-| `THURBOX_SESSION` | the stable thurbox `SessionId` (the registry key); read back by `thurbox-cli message`/`inbox` for self-identity |
+| `THURBOX_SESSION` | the stable thurbox `SessionId` (the registry key); read back by `thurbox-cli message`/`inbox` for self-identity, and by `session signal` — see below |
 | `THURBOX_SESSION_ID` | the agent's own conversation id (`agent_session_id`); consumed by the metrics statusline. Distinct from `THURBOX_SESSION` |
 | `THURBOX_TASK` | the originating task id; task-spawned sessions only (headless `task run`) |
 | `THURBOX_METRICS_DIR` | metrics output dir |
 | `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` | the resolved config/data dirs, so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a stale tmux-server env. Also honored if you set them yourself to relocate thurbox's state. |
 | `THURBOX_SOCKET` | the multiplexer socket that instance's sessions live on, so an in-session `thurbox-cli` reaches the same server instead of re-deriving one from the session's own environment |
+
+`THURBOX_SESSION` is a **stable integration contract**, not an internal
+detail of the hooks extension. It is set on the pane, so every process
+started inside it inherits it — including an agent a driver of your own
+launches there, and that agent's own hooks. Anything in the pane can
+therefore report state with
+
+```bash
+thurbox-cli session signal --state <working|blocked|done|idle>
+```
+
+and no arguments at all; from outside the pane, pass `--session <uuid>`.
+That is the supported way to give thurbox agent state for a session it
+did not wire — for instance one created with a bare interactive shell as
+its "agent" because a harness owns the real launch.
+
+Two caveats. A **remote** session's `thurbox-cli` writes the *host's*
+database: on a shared host (`share_sessions = true`, the default) that is
+correct and the observer mirrors it, but on a non-shared host the signal
+never reaches the local database — thurbox rewrites its own hooks to a
+tmux pane option there for exactly this reason. And every shipped hook
+command ends in `|| true`, so a failed signal is silent; `thurbox-cli
+session doctor` is how to check the wiring.
 
 Set **by** thurbox into every [lifecycle hook](#hookstoml) it runs
 (`session_ops::lifecycle_hooks`), beside `THURBOX_SESSION`,

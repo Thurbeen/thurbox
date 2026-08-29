@@ -178,30 +178,76 @@ system, and the whole point of the run log is that there is one.
 
 ## Constraints worth stating
 
-Two facts shape any headless orchestration built on thurbox. Both cost
-real time to rediscover.
+Three facts shape any headless orchestration built on thurbox. Each
+costs real time to rediscover.
 
-### There is no status field to poll
+### The status field is not a completion signal
 
-`session get --json` returns identity and layout — id, name, agent,
-backend, cwd, parent, worktrees. It exposes **no lifecycle state**. The
-`working`/`blocked`/`done`/`idle` state that agent hooks report via
-`session signal` is persisted for the TUI to render; it is deliberately
-never written by the session upsert path and never surfaced by the CLI.
+`session get`/`list --json` **do** carry the `working`/`blocked`/`done`/
+`idle` state that agent hooks report through `session signal`, in
+`hook_state`. What they cannot carry is any guarantee that it is
+*current*: `hook_state` is latched — whatever was written last, by an
+agent that may since have crashed, been interrupted, or never have been
+wired to report at all. Polling it for completion is how a lead waits
+forever on a worker that finished an hour ago, or declares one done
+because its agent was never instrumented in the first place.
 
-So headless completion detection is the **mailbox**, or a printed
-sentinel the lead greps out of `session capture`. There is no third
-option, and no amount of re-reading `session get --json` will produce
-one. This is the strongest practical argument for the mailbox: it isn't
-merely nicer than polling, it's the only thing that works.
+So headless completion detection is still the **mailbox**, or a printed
+sentinel the lead greps out of `session capture`. What the state fields
+are for is *supervision* — noticing that a worker is stuck, blocked, or
+gone — and each one comes with what it takes to judge it:
 
-What `session capture --json` *does* add is the pane's live state
-alongside its text — `cursor_row`/`cursor_col`, `foreground_process` and
-`foreground_command`, `foreground_cwd` — which is what a lead reading a
-worker's screen needs to tell "waiting at a prompt" from "still
-printing", and which agent CLI is actually in the foreground. It is
-still screen-reading, not a lifecycle field; it just means the reading
-does not have to go around thurbox to `tmux` to get it.
+| field | what it answers |
+|---|---|
+| `hook_state` | the raw last report, unchanged and unfiltered |
+| `hook_state_at`, `hook_state_age_secs` | when it was made, and how long ago |
+| `hook_reported` | whether anything has *ever* reported (silence ≠ idle) |
+| `hook_coverage`, `hook_states_reportable` | what this agent can report at all |
+| `hook_blocked_is_heuristic` | whether its `blocked` is a text match on a notification body |
+| `hook_corroboration`, `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
+| `state`, `state_source` | the best answer available, and where it came from |
+
+There is deliberately **no staleness timeout**. A turn may legitimately
+run for an hour, so any bound thurbox picked would report live work as
+finished; the age is published instead and the policy is yours.
+
+`session get` checks the pane by default (one multiplexer query plus one
+`ps`); `session list` does not unless you pass `--verify`, since that
+cost is per session. A remote session answers `unavailable` — its pane
+lives on its own host's multiplexer. `thurbox-cli session doctor` is the
+same information as a verdict, plus whether the wiring is installed at
+all; it exits non-zero when no state can reach thurbox from a session.
+
+`session capture --json` adds the pane's live state alongside its text —
+`cursor_row`/`cursor_col`, `foreground_process` and `foreground_command`,
+`foreground_cwd` — which is what a lead reading a worker's screen needs
+to tell "waiting at a prompt" from "still printing", and which agent CLI
+is actually in the foreground.
+
+### A driver that launches its own agent can still report state
+
+thurbox wires status hooks at launch, for an agent it knows from
+`agents.toml`. A harness that must own the agent launch itself — asking
+thurbox for a bare interactive shell and starting the agent inside that
+pane — therefore gets no hooks, and its sessions would read as never
+having reported anything.
+
+Two things close that, and both are **stable contract**:
+
+- **`THURBOX_SESSION` is in the pane's environment**, and every child
+  process inherits it. So anything running in the pane — the driver, the
+  agent, one of the agent's own hooks — can call
+  `thurbox-cli session signal --state <working|blocked|done|idle>` with
+  **no arguments**: identity resolves from the environment. From outside
+  the pane, pass `--session <uuid>`. This is the supported way to report
+  state for an agent thurbox did not launch.
+- **Failing that, the pane is read anyway.** A session that never
+  signalled but whose pane's foreground process is an agent the registry
+  knows reports `state: "running"` with `state_source: "process"` and
+  `hook_corroboration: "foreign-agent"`. It is coarser than a hook by
+  design — process inspection can say an agent is there, never what it
+  is doing — but it is the difference between a session that reads as
+  empty and one that reads as alive.
 
 ### Fast-forward the base branch before creating a worktree
 

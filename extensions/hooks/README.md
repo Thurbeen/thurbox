@@ -176,6 +176,44 @@ TUI start / heartbeat tick — so to keep a change, either deactivate the extens
 (`thurbox-cli extension deactivate hooks`) and wire the hook yourself, or edit
 the payload source under `extensions/hooks/` and reinstall.
 
+## Checking that it fires
+
+Every hook command ends in `|| true` on purpose — a missing `thurbox-cli`, a
+locked database, or a hook firing outside a thurbox session must never break the
+agent. The cost is that a signal which never lands looks exactly like an agent
+that simply has not signalled yet:
+
+```bash
+thurbox-cli session doctor          # every active session
+thurbox-cli session doctor <uuid>   # just one
+```
+
+It reports whether this extension is active, what the session's agent can report
+at all, whether its payload is really on disk where the agent reads it, whether
+a hook command could resolve `thurbox-cli` on `PATH`, what was last reported and
+how long ago, and whether the pane's foreground process agrees. It exits
+non-zero when no state can reach thurbox from a session, and only ever reads —
+`thurbox-cli extension reinstall hooks` is the repair.
+
+## Reporting state for an agent thurbox did not launch
+
+These hooks are wired at **launch**, for an agent thurbox knows from
+`agents.toml`. A harness that owns the agent launch itself — asking thurbox for
+a bare interactive shell and starting the agent inside that pane — gets none of
+them. It can still report state, because `THURBOX_SESSION` is set on the pane
+and inherited by every process in it:
+
+```bash
+thurbox-cli session signal --state working   # identity from $THURBOX_SESSION
+thurbox-cli session signal --state done
+```
+
+Point your own agent's lifecycle hooks at that and the session reports exactly
+like a built-in. Failing even that, thurbox reads the pane: a session that never
+signalled but whose foreground process is an agent your `agents.toml` knows
+reports `state: "running"` with `state_source: "process"` — coarser than a hook
+by design, but not silence.
+
 ## Mechanism
 
 This extension exercises two extension-manifest capabilities (see
