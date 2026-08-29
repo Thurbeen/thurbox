@@ -274,10 +274,10 @@ its chords — is a file you can open in an editor.
 | Core and plugin settings | `Ctrl+,`, or `settings.toml` |
 
 All of it lives under `~/.config/thurbox/`. Panes and the arrangement reload on
-`F10`; colours, chords and most settings apply live (the settings panel marks
-the restart-only ones `⟳`); a changed agent applies to the next session you
-create; a new agent, and any change to `hosts.toml` or `themes.toml`, needs a
-restart.
+`F10` or when you save; colours, chords and most settings apply live (the
+settings panel marks the restart-only ones `⟳`); a changed agent applies to the
+next session you create; a new agent, and any change to `hosts.toml` or
+`themes.toml`, needs a restart.
 
 ### Writing a pane
 
