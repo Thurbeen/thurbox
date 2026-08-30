@@ -168,7 +168,9 @@ end
 ---
 --- opts: width, height, title, title_style, title_align, border_style, square,
 ---       left (runs painted over the top border's left half),
----       right_column (runs, one per inner row), body (node)
+---       right_column (runs, one per inner row),
+---       right_column_role (identity for that column, so it can be clicked),
+---       body (node)
 function chrome.frame(opts)
   local width, height = opts.width or 0, opts.height or 0
   if width < 2 or height < 2 then
@@ -210,12 +212,18 @@ function chrome.frame(opts)
   end
 
   local edge = { text = set.v, style = border }
-  local function column(rows)
+  --- One border column, `inner_h` rows tall.
+  ---
+  --- `role` is what makes it a click target: identity is per node, and this is
+  --- one node for the whole column, so a press arrives with `y` already being
+  --- the row of the bar it landed on and `h` the length of the bar. A column
+  --- with no role is inert chrome, which is what the left edge is.
+  local function column(rows, role)
     local lines = {}
     for row = 1, inner_h do
       lines[row] = { (rows and rows[row]) or edge }
     end
-    return { type = "text", len = 1, text = lines }
+    return { type = "text", len = 1, role = role, text = lines }
   end
 
   return {
@@ -230,7 +238,7 @@ function chrome.frame(opts)
         children = {
           column(nil),
           opts.body,
-          column(opts.right_column),
+          column(opts.right_column, opts.right_column and opts.right_column_role),
         },
       },
       {

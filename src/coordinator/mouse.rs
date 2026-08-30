@@ -13,8 +13,15 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.on_click(mouse.column, mouse.row, mouse.modifiers)
             }
-            MouseEventKind::Drag(MouseButton::Left) => self.drag_selection(mouse.column, mouse.row),
+            // A held node comes first: while a scrollbar has the pointer, the
+            // movement is that pane's, not a selection over the text beside it.
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if !self.drag_held(mouse.column, mouse.row) {
+                    self.drag_selection(mouse.column, mouse.row);
+                }
+            }
             MouseEventKind::Up(MouseButton::Left) => {
+                self.pointer_grab = None;
                 if let Some(selection) = &mut self.selection {
                     selection.dragging = false;
                     // A press that never moved is a click, not a selection —
@@ -44,10 +51,13 @@ impl App {
     /// one, so you can spin the wheel over a list without leaving the pane you
     /// are working in.
     ///
-    /// A tick becomes an `up`/`down` keystroke rather than a scroll command of
-    /// its own: every scrollable pane already declares those, so the wheel and
-    /// the arrow keys cannot come to mean different things — the same reasoning
-    /// behind the `key:<chord>` click role.
+    /// The pane is asked first through [`LuaHost::on_scroll`], and only what it
+    /// declines becomes an `up`/`down` keystroke — so a pane that already
+    /// declares those keys keeps scrolling by them and the wheel cannot come to
+    /// mean something its arrow keys do not (the reasoning behind the
+    /// `key:<chord>` click role). The hook exists because the pane that most
+    /// needs the wheel is the one pane that cannot declare `up`: a terminal
+    /// pane hands every unclaimed key to the agent.
     ///
     /// One notch of a wheel is **not** one report, so every leg that steps a
     /// selection asks [`WheelNotch`] first — without it a single detent walked
@@ -87,6 +97,32 @@ impl App {
         }
 
         if let Some(target) = self.target_at(x, y) {
+            // The pane is offered the tick AS a tick before the keystroke
+            // below, because the pane that most needs the wheel is the one that
+            // cannot have those keys: a pane showing a live terminal hands
+            // every unclaimed key to the agent, so declaring `up` there would
+            // take the arrow keys from whatever is running in it. The wheel
+            // therefore did nothing at all over a terminal — unless the program
+            // inside had asked for the mouse, when `forward_wheel` above sends
+            // it the tick instead, which is why it looked like a fault only
+            // some people had.
+            //
+            // No notch: `on_scroll` is one report, exactly as a forwarded tick
+            // is, and the pane that wants a notch declines and takes the
+            // keystroke.
+            let scroll = Scroll {
+                up,
+                x: x.saturating_sub(target.rect.x),
+                y: y.saturating_sub(target.rect.y),
+            };
+            match self.host.on_scroll(target.plugin, &scroll) {
+                Ok(true) => {
+                    self.dirty = true;
+                    return;
+                }
+                Ok(false) => {}
+                Err(e) => self.errors.push(e),
+            }
             if self.wheel_notch.opens(Instant::now(), up) {
                 self.dispatch_key_to(target.plugin, &key);
                 self.dirty = true;
@@ -233,13 +269,18 @@ impl App {
             // this the only such panes you could click were the ones built from
             // `widgets.list`, which is exactly the half that worked.
             None => {
-                let click = Click {
-                    id: target.identity.id.clone(),
-                    classes: target.identity.classes.clone(),
-                    role: target.identity.role.clone(),
-                    x: x.saturating_sub(target.rect.x),
-                    y: y.saturating_sub(target.rect.y),
-                };
+                // A press on a drag handle takes hold of the pointer, so the
+                // moves that follow it reach this pane instead of painting a
+                // selection across the text the pane is about to scroll.
+                if target.identity.is_drag_handle() {
+                    self.selection = None;
+                    self.pointer_grab = Some(PointerGrab {
+                        plugin: target.plugin,
+                        rect: target.rect,
+                        identity: target.identity.clone(),
+                    });
+                }
+                let click = self.click_at(&target, x, y, false);
                 match self.host.on_click(target.plugin, &click) {
                     Ok(handled) => handled,
                     Err(e) => {
@@ -334,6 +375,47 @@ impl App {
             .find(|target| target.identity.is_empty() && target.rect.contains(position))
             .map(|target| target.rect)?;
         PaneBounds::content_at(pane, x, y).map(|bounds| bounds.rect())
+    }
+
+    /// A press or a move, resolved into the node's own coordinate space.
+    fn click_at(&self, target: &ClickTarget, x: u16, y: u16, dragging: bool) -> Click {
+        Click {
+            id: target.identity.id.clone(),
+            classes: target.identity.classes.clone(),
+            role: target.identity.role.clone(),
+            x: x.saturating_sub(target.rect.x),
+            y: y.saturating_sub(target.rect.y),
+            w: target.rect.width,
+            h: target.rect.height,
+            dragging,
+        }
+    }
+
+    /// Deliver a move to the node holding the pointer. `false` when none is.
+    ///
+    /// Clamped to the held node's rect rather than hit-tested afresh: a drag
+    /// that wanders off a scrollbar is still that scrollbar's, which is what
+    /// every scrollbar does and the reason the rect is remembered at press
+    /// time. It is delivered as a further click — the same handler, one place —
+    /// with `dragging` set so a pane that cares can tell the two apart.
+    pub(crate) fn drag_held(&mut self, x: u16, y: u16) -> bool {
+        let Some(grab) = self.pointer_grab.clone() else {
+            return false;
+        };
+        let target = ClickTarget {
+            plugin: grab.plugin,
+            rect: grab.rect,
+            identity: grab.identity,
+        };
+        let bounds = PaneBounds::from_rect(grab.rect);
+        let (x, y) = bounds.clamp(x, y);
+        let click = self.click_at(&target, x, y, true);
+        match self.host.on_click(grab.plugin, &click) {
+            Ok(_) => {}
+            Err(e) => self.errors.push(e),
+        }
+        self.dirty = true;
+        true
     }
 
     /// Arm a drag-to-select over the terminal surface under the point.

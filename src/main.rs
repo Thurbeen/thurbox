@@ -28,7 +28,7 @@ use thurbox::agent::input::key_to_bytes;
 use thurbox::kernel::bands::{self, Band, BandState, Level};
 use thurbox::kernel::command::CommandBus;
 use thurbox::kernel::diff::DiffStore;
-use thurbox::kernel::host::{Click, KeyPress, LuaHost, PluginError, RenderContext};
+use thurbox::kernel::host::{Click, KeyPress, LuaHost, PluginError, RenderContext, Scroll};
 use thurbox::kernel::layout::{resolve, SlotMode};
 use thurbox::kernel::metrics::{Metrics, Subject};
 use thurbox::kernel::modals::{ModalKind, Modals};
@@ -163,6 +163,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// recorded before the tree so anything inside it wins.
 #[derive(Debug, Clone)]
 struct ClickTarget {
+    plugin: usize,
+    rect: Rect,
+    identity: Identity,
+}
+
+/// A node that took hold of the pointer, and where it was when it did.
+///
+/// Held rather than re-resolved on every move: a drag that wanders off a
+/// scrollbar is still that scrollbar's, and hit-testing afresh would hand it to
+/// whatever it wandered onto. Released on the button coming up, so nothing
+/// survives the press that made it.
+#[derive(Debug, Clone)]
+struct PointerGrab {
     plugin: usize,
     rect: Rect,
     identity: Identity,
@@ -456,6 +469,8 @@ struct App {
     last_output_gen: u64,
     /// Plugin holding an exclusive key grab this frame, if any.
     grabbed: Option<usize>,
+    /// The node holding the pointer between a press and its release, if any.
+    pointer_grab: Option<PointerGrab>,
     /// Programs plugins asked to be run, and what they printed.
     runs: thurbox::kernel::runs::RunStore,
     /// Every file of the interface, as of the last painted frame.

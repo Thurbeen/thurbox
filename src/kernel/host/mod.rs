@@ -347,6 +347,40 @@ pub struct Click {
     /// side-by-side diff row, where which half you clicked is the answer.
     pub x: u16,
     pub y: u16,
+    /// The node's own size, so a coordinate can be resolved against the shape
+    /// it landed in without the pane storing geometry from its last render —
+    /// which a `pure` pane cannot do at all, since `render` may not write.
+    pub w: u16,
+    pub h: u16,
+    /// Whether this is the pointer moving under a press it already took, rather
+    /// than the press itself. Set only for a node that declared
+    /// [`super::node::Identity::is_drag_handle`].
+    pub dragging: bool,
+}
+
+/// A wheel tick resolved onto the pane under the pointer.
+///
+/// Its own hook rather than a synthesized `up`/`down` keystroke, because the
+/// one pane that most needs the wheel is the one that cannot have those keys: a
+/// pane showing a live terminal hands every unclaimed key to the agent, so
+/// declaring `up` there would take the arrow keys away from whatever is running
+/// in it. Every pane that *can* declare them still does, and the kernel falls
+/// back to the keystroke when this hook declines — so a list keeps scrolling by
+/// the same code path its arrow keys use.
+///
+/// One report, not one notch. A detent is several reports and each is one line,
+/// which is exactly what the tick means when it is forwarded to a pty instead
+/// ([`super::terminal::Terminals::forward_wheel`]); a pane that steps a
+/// *selection* wants the notch and takes the keystroke fallback, where the
+/// kernel already applies one.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Scroll {
+    /// Which way the wheel turned.
+    pub up: bool,
+    /// Column and row within the scrolled node's own rect, as [`Click`] carries
+    /// them — a pane with more than one scrollable region needs to know which.
+    pub x: u16,
+    pub y: u16,
 }
 
 /// A plugin that is floating this frame, and how much room it wants.
@@ -1640,6 +1674,49 @@ impl LuaHost {
             .map_err(|e| fail(e.to_string()))?;
         table.set("x", click.x).map_err(|e| fail(e.to_string()))?;
         table.set("y", click.y).map_err(|e| fail(e.to_string()))?;
+        table.set("w", click.w).map_err(|e| fail(e.to_string()))?;
+        table.set("h", click.h).map_err(|e| fail(e.to_string()))?;
+        table
+            .set("dragging", click.dragging)
+            .map_err(|e| fail(e.to_string()))?;
+
+        self.enter(plugin);
+        let guard = Budget::arm(&self.lua);
+        let handled: Result<bool, mlua::Error> = handler.call(table);
+        drop(guard);
+
+        handled.map_err(|e| fail(clean_error(&e)))
+    }
+
+    /// Offer a wheel tick to the plugin whose pane is under the pointer.
+    ///
+    /// Declining (`false`, or declaring no `on_scroll` at all) is what puts the
+    /// tick back on the keystroke path, so a pane that already scrolls by
+    /// `up`/`down` needs nothing here. See [`Scroll`].
+    pub fn on_scroll(&self, index: usize, scroll: &Scroll) -> Result<bool, PluginError> {
+        let Some(plugin) = self.plugins.get(index) else {
+            return Ok(false);
+        };
+        let fail = |message: String| PluginError {
+            plugin: plugin.name.clone(),
+            phase: Phase::Key,
+            message,
+        };
+
+        let handler: Value = plugin
+            .def
+            .get("on_scroll")
+            .map_err(|e| fail(e.to_string()))?;
+        let Value::Function(handler) = handler else {
+            return Ok(false);
+        };
+
+        let table = self.lua.create_table().map_err(|e| fail(e.to_string()))?;
+        table
+            .set("up", scroll.up)
+            .map_err(|e| fail(e.to_string()))?;
+        table.set("x", scroll.x).map_err(|e| fail(e.to_string()))?;
+        table.set("y", scroll.y).map_err(|e| fail(e.to_string()))?;
 
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);

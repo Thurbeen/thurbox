@@ -1030,3 +1030,175 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
 }
+
+// --- the wheel over a live terminal -----------------------------------------
+
+impl Tui {
+    /// `count` wheel reports at a 0-based cell, as the SGR reports the binary
+    /// asked the terminal for (xterm's wheel is buttons 64 up and 65 down).
+    ///
+    /// A notch is several reports and each is one line, so the count is the
+    /// number of lines a real wheel would have travelled.
+    fn wheel(&mut self, (x, y): (u16, u16), up: bool, count: u16) {
+        let (px, py) = (x + 1, y + 1);
+        let button = if up { 64 } else { 65 };
+        for _ in 0..count {
+            self.send(format!("\x1b[<{button};{px};{py}M").as_bytes());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Print `marker` into the focused terminal and then bury it: a hundred
+/// numbered lines, which is more than any pane on a 40-row screen can show.
+///
+/// The marker being off screen is the precondition every scroll assertion
+/// below rests on, so it is waited for rather than assumed.
+fn bury_a_marker(tui: &mut Tui, marker: &str) {
+    tui.send(format!("echo {marker}\r").as_bytes());
+    tui.wait_for(marker);
+    tui.send(b"i=1; while [ $i -le 100 ]; do echo tb-fill-$i; i=$((i+1)); done\r");
+    tui.wait_for("tb-fill-100");
+    tui.wait_gone(marker);
+}
+
+#[test]
+fn the_wheel_scrolls_the_agents_output_back() {
+    // The wheel over a terminal pane has to move that terminal's scrollback.
+    // It reached the pane as a synthesized `up`/`down` keystroke, and the pane
+    // that shows a live terminal is the one pane that cannot declare those —
+    // they belong to the agent — so the tick resolved to nothing and the wheel
+    // did nothing at all. An agent that turns on mouse tracking hid it (the
+    // tick is forwarded to the pty instead), which is why it looked like it
+    // only happened to some people.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    bury_a_marker(&mut tui, "tb-scroll-marker");
+
+    let at = tui.find("tb-fill-100");
+    tui.wheel(at, true, 90);
+    tui.wait_for("tb-scroll-marker");
+
+    // And back down again: the wheel is not a one-way trip, and the pane
+    // returns to the live bottom of the stream.
+    tui.wheel(at, false, 90);
+    tui.wait_for("tb-fill-100");
+    tui.wait_gone("tb-scroll-marker");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn the_wheel_scrolls_the_companion_shell_too() {
+    // The shell is a second surface over the same primitive, and it was the
+    // half that never honoured a scroll offset: the pane refused to hold one
+    // for it and the kernel never set it on the shell's parser, so the wheel
+    // over an open shell moved nothing.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    // Ctrl+T opens the companion shell in the same pane. The focus badge names
+    // the view, so it is what tells us the shell is the one on screen.
+    tui.send(b"\x14");
+    tui.wait_until("the shell tab to be the view", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Shell"))
+    });
+    // The pane paints before the shell inside it has drawn a prompt, and a
+    // keystroke sent in between is lost.
+    tui.wait_until_quiet();
+    bury_a_marker(&mut tui, "tb-shell-marker");
+
+    let at = tui.find("tb-fill-100");
+    tui.wheel(at, true, 90);
+    tui.wait_for("tb-shell-marker");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+// --- the scrollbar is a control, not a decoration ---------------------------
+
+impl Tui {
+    /// The character painted at a 0-based cell, in cells rather than bytes.
+    fn cell(&self, x: u16, y: u16) -> String {
+        self.row(y)
+            .chars()
+            .nth(usize::from(x))
+            .map(|c| c.to_string())
+            .unwrap_or_default()
+    }
+
+    /// The first and last row a scrollbar occupies in column `x` — its caps.
+    fn track_extent(&self, x: u16) -> (u16, u16) {
+        let rows = self.screen.lock().unwrap().screen().size().0;
+        let painted: Vec<u16> = (0..rows)
+            .filter(|y| matches!(self.cell(x, *y).as_str(), "▲" | "▼" | "║" | "█"))
+            .collect();
+        match (painted.first(), painted.last()) {
+            (Some(top), Some(bottom)) => (*top, *bottom),
+            _ => self.give_up(&format!("a scrollbar in column {x}")),
+        }
+    }
+
+    /// Press at a 0-based cell, drag straight down (or up) to `to_y`, release.
+    fn drag_down(&mut self, (x, y): (u16, u16), to_y: u16) {
+        let px = x + 1;
+        self.send(format!("\x1b[<0;{px};{}M", y + 1).as_bytes());
+        let (from, to) = (y.min(to_y), y.max(to_y));
+        for cy in from..=to {
+            self.send(format!("\x1b[<32;{px};{}M", cy + 1).as_bytes());
+        }
+        self.send(format!("\x1b[<0;{px};{}m", to_y + 1).as_bytes());
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+#[test]
+fn the_scrollbar_can_be_pressed_and_dragged() {
+    // The bar was drawn and could not be touched: the border column carried no
+    // identity, so a press on it armed a text selection, and a drag only ever
+    // meant "extend the selection" — there was no route from the pointer to the
+    // pane that owns the offset.
+    //
+    // Driven on the SHELL tab, which is where it was reported and the harder of
+    // the two: the shell is a second surface over the same primitive.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"\x14");
+    tui.wait_until("the shell tab to be the view", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Shell"))
+    });
+    tui.wait_until_quiet();
+    bury_a_marker(&mut tui, "tb-bar-marker");
+
+    // A wheel scroll is what gives the bar a depth to be scaled against, and
+    // leaves the thumb at the top of its track.
+    let at = tui.find("tb-fill-100");
+    tui.wheel(at, true, 90);
+    tui.wait_for("tb-bar-marker");
+    let (column, _) = tui.find("█");
+    let (top, bottom) = tui.track_extent(column);
+
+    // Drag the thumb down the track: that is a return to the live bottom of the
+    // stream, the same place the wheel would have brought us back to.
+    tui.drag_down((column, top + 1), bottom - 1);
+    tui.wait_for("tb-fill-100");
+    tui.wait_gone("tb-bar-marker");
+
+    // And a press on the track alone is a jump, with no drag behind it.
+    tui.drag_down((column, top + 1), top + 1);
+    tui.wait_for("tb-bar-marker");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}

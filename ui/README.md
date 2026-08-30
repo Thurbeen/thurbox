@@ -155,6 +155,20 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 | `files` | bounded reads the kernel performs for you |
 | `thurbox.platform` | `os` and `arch`, so a plugin shipping several builds can pick one |
 
+**Dragging**: a node with `role = "drag"` takes hold of the pointer — the press
+arms no text selection and every move until release arrives as a further
+`on_click` with `hit.dragging = true`, clamped to the rect it was pressed in.
+That is how the terminal pane's scrollbar is grabbable. `hit.w`/`hit.h` carry
+the node's size, so a `pure` pane can resolve the coordinate without stashing
+geometry in `render`.
+
+**The wheel**: `on_scroll(wheel)` is offered a tick over your pane — `wheel.up`,
+plus `wheel.x`/`wheel.y` inside your rect — before the kernel turns it into an
+`up`/`down` keystroke for you. Decline it and you keep the keystroke, which is
+what a pane that already declares those keys wants. It exists for the pane that
+cannot declare them: one taking `input = "session"` hands every unclaimed key to
+the agent.
+
 **Events**: declare `events = { "session.status", … }` and an `on_event(name,
 payload)` and the kernel calls you once per change, with the same environment a
 render has. `command("emit", { text = "x", … })` reaches every plugin subscribed

@@ -663,9 +663,10 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Shift+Down` | Focused terminal | Scroll down 1 line | |
 | `Shift+PageUp` / `Alt+PageUp` | Focused terminal | Scroll up half page | |
 | `Shift+PageDown` / `Alt+PageDown` | Focused terminal | Scroll down half page | |
-| Mouse wheel | Focused terminal | Scroll up/down 3 lines | |
+| Mouse wheel | Terminal under the pointer | Scroll its scrollback (agent or shell tab) | |
 | Click | Session/task/automation/file row | Select the row and focus its pane | |
 | Click | Any pane | Focus the pane under the cursor | |
+| Click / drag | Terminal scrollbar | Jump to, or drag to, a place in the scrollback | |
 | Click | Picker modal row | Select and confirm (Enter; repo picker: Space toggle) | |
 | Hover | Clickable rows | Underline the row a click would hit | |
 | All other keys | Focused terminal | Forwarded to PTY (snaps to bottom if scrolled) | |
@@ -2453,6 +2454,17 @@ recorded before their pane's whole-rect focus fallback.
 - **Hover**: the clickable row under the pointer is underlined
   (driven by mouse-move events; applied post-render from the same
   click registry).
+- **The pane is asked first**: a tick over a pane reaches it as a
+  tick (`on_scroll`), and only what it declines becomes a
+  synthesized `up`/`down` keystroke. The hook is there for the one
+  pane that cannot take the keystroke: the terminal pane hands every
+  unclaimed key to the agent, so declaring `up` would take the arrow
+  keys from whatever is running in it — and the wheel therefore did
+  nothing at all over a live terminal unless the program inside had
+  asked for the mouse, which is what made it look like a fault only
+  some people had. Both terminal tabs scroll, each keeping its own
+  place in its own scrollback, and any key forwarded to the pty
+  snaps the view back to the live bottom.
 - **One notch, one step**: a wheel *notch* is not one report. A
   terminal turns a detent into its line-scroll count — three, for
   ghostty, kitty and xterm — and under mouse reporting sends that
@@ -2460,10 +2472,18 @@ recorded before their pane's whole-rect focus fallback.
   the session list through three sessions and open each one on the
   way. Reports closer together than a person can turn a wheel
   (20 ms) are folded into the notch that started them, and a
-  direction change always steps. A tick **forwarded to a pty** is
+  direction change always steps. That folding is the *keystroke*
+  path's, so it applies to the panes that step a selection. A tick
+  **forwarded to a pty**, and one taken by `on_scroll`, are
   deliberately left whole: there the three reports are the three
-  lines the terminal means to scroll, and the program inside owns
-  what they do.
+  lines the terminal means to scroll.
+- **A program that asked for the mouse gets the tick**: a live
+  terminal whose program turned on mouse reporting is sent the wheel
+  (SGR, or xterm's original encoding for a program that asked for
+  no better one) rather than scrolled locally — it is almost
+  certainly on the alternate screen, which keeps no scrollback for
+  thurbox to move. Scrolling such a session is then the program's
+  own job; Claude Code, vim and htop are all in this class.
 - **Modal scrolling**: while a modal is open the wheel steps its
   selection (one row per notch, like `j`/`k`); overflowing picker
   lists window around the selection and draw a draggable scrollbar
@@ -2472,9 +2492,21 @@ recorded before their pane's whole-rect focus fallback.
   effects (e.g. theme live preview) match keyboard navigation. Pane
   scrollbars beneath an overlay are never grabbable.
 
-Dispatch order on click: modal (scrollbar grab → row act → swallow)
-→ `Ctrl+Click` URL → pane scrollbar grab → global-search swallow →
-click targets → text selection arming.
+Dispatch order on click: modal (swallowing what misses its rows) →
+chrome band button → float (swallowing what misses it) →
+`Ctrl+Click` URL → click targets → text selection arming.
+
+- **Dragging a control**: a node declaring `role = "drag"` takes hold
+  of the pointer for the length of the press — no text selection is
+  armed over it, and every move until release is delivered to it as a
+  further click carrying `dragging`, clamped to the rect it was
+  pressed in (a drag that wanders off a scrollbar is still that
+  scrollbar's). The kernel only routes; what the movement means is the
+  pane's, which is what lets a scrollbar exist at all given four node
+  kinds. The terminal pane's bar is the one in the bundled interface:
+  press the track to jump, drag the thumb to travel, and the thumb is
+  picked up where you grabbed it rather than jumping its own length
+  under the pointer.
 
 The whole subsystem is gated by `[features] mouse` in settings.toml
 (default `true`): when disabled, mouse capture is never enabled, so

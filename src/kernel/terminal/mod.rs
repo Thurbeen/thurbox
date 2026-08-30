@@ -146,6 +146,49 @@ const CONTENT_LINE_CAP: usize = 500;
 /// The suffix that addresses a session's companion shell as its own surface.
 const SHELL_SUFFIX: &str = "#shell";
 
+/// One wheel tick, in the encoding the program inside the pane asked for.
+///
+/// Xterm's wheel is buttons 64 (up) and 65 (down), reported as a press with no
+/// release. Two encodings are emitted, because a program that asks for the
+/// mouse at all and is handed nothing is a pane the wheel is dead in: the
+/// alternate screen it is almost certainly on keeps no scrollback, so there is
+/// no local fallback to leave it to.
+///
+/// * `Sgr` (`?1006`) — `CSI < Cb ; Cx ; Cy M`, and the only one with no size
+///   limit.
+/// * `Default` — xterm's original `CSI M` with each field offset by 32, which
+///   caps a coordinate at 223. Past that there is no legal report to send, so
+///   `None`: a truncated one would land the tick on the wrong cell.
+///
+/// `Utf8` (`?1005`) is deliberately not emitted. It is ambiguous by
+/// construction — a receiver cannot tell it from the default encoding without
+/// being told — and no agent asks for it.
+fn wheel_report(
+    encoding: vt100::MouseProtocolEncoding,
+    up: bool,
+    col: u32,
+    row: u32,
+) -> Option<Vec<u8>> {
+    let button = if up { 64 } else { 65 };
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => {
+            Some(format!("\x1b[<{button};{col};{row}M").into_bytes())
+        }
+        vt100::MouseProtocolEncoding::Default => {
+            let cell = |n: u32| u8::try_from(n + 32).ok();
+            Some(vec![
+                0x1b,
+                b'[',
+                b'M',
+                cell(button)?,
+                cell(col)?,
+                cell(row)?,
+            ])
+        }
+        _ => None,
+    }
+}
+
 /// A session we have attached to, plus the size we last told it about.
 struct Live {
     session: crate::agent::Session,
@@ -1115,20 +1158,17 @@ impl Terminals {
             return false;
         };
         let parser = live.visible_parser();
-        // Only the SGR encoding is emitted below, so a pane asking for one of
-        // the older ones is left to the local fallback rather than sent bytes it
-        // would misread.
-        let wants = match parser.lock() {
+        let encoding = match parser.lock() {
             Ok(parser) => {
                 let screen = parser.screen();
-                screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
-                    && screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr
+                (screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None)
+                    .then(|| screen.mouse_protocol_encoding())
             }
-            Err(_) => false,
+            Err(_) => None,
         };
-        if !wants {
+        let Some(encoding) = encoding else {
             return false;
-        }
+        };
 
         // The rect is the surface's own content area — the plugin's frame is
         // outside it — so the offset needs no border adjustment. PTY cells are
@@ -1136,9 +1176,9 @@ impl Terminals {
         let rect = live.rect.get();
         let col = u32::from(x - rect.x) + 1;
         let row = u32::from(y - rect.y) + 1;
-        // Xterm wheel buttons: 64 up, 65 down. SGR press is `CSI < Cb ; Cx ; Cy M`.
-        let button = if up { 64 } else { 65 };
-        let bytes = format!("\x1b[<{button};{col};{row}M").into_bytes();
+        let Some(bytes) = wheel_report(encoding, up, col, row) else {
+            return false;
+        };
         match live.send_visible_input(bytes) {
             Ok(()) => true,
             Err(e) => {
@@ -1548,9 +1588,15 @@ impl SurfaceProvider for Terminals {
                 live.size.set(wanted);
                 live.session.resize(area.height, area.width);
             }
-            let Ok(parser) = shell.parser.lock() else {
+            let Ok(mut parser) = shell.parser.lock() else {
                 return false;
             };
+            // The shell has a scrollback of its own — it is wired up by the same
+            // `wire_up` the agent pane is — so the offset is set here exactly as
+            // it is below. Left out, the pane could hold an offset for the shell
+            // and the wheel could move it, and the screen behind it never went
+            // anywhere.
+            parser.screen_mut().set_scrollback(usize::from(scroll));
             links::clear_uncovered(frame, area, parser.screen());
             frame.render_widget(
                 PseudoTerminal::new(parser.screen()).style(Style::default()),
@@ -1593,6 +1639,32 @@ impl SurfaceProvider for Terminals {
 mod tests {
     use super::*;
     use crate::kernel::snapshot::SessionRow;
+
+    #[test]
+    fn a_wheel_tick_is_encoded_the_way_the_pane_asked_for_it() {
+        use vt100::MouseProtocolEncoding as E;
+        assert_eq!(
+            wheel_report(E::Sgr, true, 12, 3).expect("sgr"),
+            b"\x1b[<64;12;3M".to_vec()
+        );
+        assert_eq!(
+            wheel_report(E::Sgr, false, 12, 3).expect("sgr"),
+            b"\x1b[<65;12;3M".to_vec()
+        );
+        // The original encoding offsets every field by 32. A program that asks
+        // for the mouse without asking for SGR used to be handed nothing, and
+        // its alternate screen leaves no scrollback to fall back on.
+        assert_eq!(
+            wheel_report(E::Default, true, 12, 3).expect("default"),
+            vec![0x1b, b'[', b'M', 96, 44, 35]
+        );
+        // Past 223 there is no legal report, and a truncated one would land the
+        // tick on the wrong cell.
+        assert_eq!(wheel_report(E::Default, true, 224, 3), None);
+        assert!(wheel_report(E::Default, true, 223, 223).is_some());
+        // Ambiguous by construction, and asked for by nothing.
+        assert_eq!(wheel_report(E::Utf8, true, 12, 3), None);
+    }
 
     fn row(id: &str, backend: &str, backend_id: Option<&str>) -> SessionRow {
         SessionRow {

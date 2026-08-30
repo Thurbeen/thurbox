@@ -460,6 +460,9 @@ fn clicking_a_session_row_selects_that_session() {
         role: Some("row".into()),
         x: 0,
         y: 0,
+        w: 40,
+        h: 1,
+        dragging: false,
     };
     assert!(host.on_click(index, &click).expect("click"), "handled");
 

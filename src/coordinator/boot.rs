@@ -247,6 +247,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         last_output_painted: std::collections::HashMap::new(),
         last_output_gen: 0,
         grabbed: None,
+        pointer_grab: None,
         runs: thurbox::kernel::runs::RunStore::new(),
         inventory: Vec::new(),
         respawned: std::collections::HashSet::new(),

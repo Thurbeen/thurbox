@@ -641,11 +641,16 @@ it:
 ```lua
 on_click = function(hit)
   -- hit.id, hit.class, hit.role, plus hit.x / hit.y inside the node's own rect
+  -- and hit.w / hit.h, its size
   if not hit.id then return false end
   state.cursor = index_of(hit.id)
   return true
 end,
 ```
+
+`hit.w` / `hit.h` are there so a coordinate can be resolved against the shape it
+landed in without the pane keeping geometry from its last render — which a
+`pure` pane cannot do at all, since `render` may not write.
 
 Return `false` and the press falls through, which is what lets the same click
 that focused a terminal also start a drag-selection over it. A pane needs no
@@ -662,6 +667,72 @@ map it necessarily already has. Cells have no per-line identity and do not need 
 thing that decided where every row went is the thing that receives the coordinate. That
 is what lets a side-by-side diff aim a click at the old or the new column with nothing
 added to the node catalog.
+
+### Dragging
+
+A node whose `role` is exactly `drag` takes **hold of the pointer**: the press
+arms no text selection, and every move until the button comes up is delivered to
+that node as a further click with `hit.dragging = true`. That is the whole of
+what a scrollbar, a slider or a splitter needs from four node kinds — the kernel
+only keeps routing the pointer; what the movement *means* stays the pane's.
+
+```lua
+-- the bundled terminal pane's scrollbar, in outline
+on_click = function(hit)
+  if hit.role ~= "drag" then return false end
+  if not hit.dragging then state.grabbed_at = hit.y - thumb_start() end
+  state.offset = offset_for(hit.y - state.grabbed_at, hit.h)
+  return true
+end,
+```
+
+Two things follow from where the grab is held:
+
+- **A drag that wanders off the node is still that node's**, clamped to the rect
+  it was pressed in. Hit-testing every move afresh would hand the gesture to
+  whatever it wandered onto, which is not what any scrollbar does.
+- **Take the grab offset at the press, not at every move.** Without it the thing
+  being dragged jumps so that the point you grabbed becomes its top — very
+  visible on a tall scrollbar thumb.
+
+It is deliberately not one of the click *verbs*: those name something the kernel
+does on the pane's behalf, and here the kernel does nothing but deliver. The
+bare role composes with the `id` a node already carries, so a pane with two
+draggables tells them apart the way it tells two rows apart.
+
+### The wheel
+
+A wheel tick over a pane is offered to that pane — the one under the pointer,
+not the focused one — before it becomes anything else:
+
+```lua
+on_scroll = function(wheel)
+  -- wheel.up, plus wheel.x / wheel.y inside the pane's own rect
+  state.offset = math.max(0, state.offset + (wheel.up and -1 or 1))
+  return true
+end,
+```
+
+Decline it (`false`, or declare no `on_scroll`) and the kernel synthesizes an
+`up`/`down` keystroke for the pane instead, so a pane that already declares
+those keys scrolls by the wheel with nothing added — and the wheel cannot come
+to mean something its arrow keys do not.
+
+The hook exists for the pane that cannot take that fallback: a pane declaring
+`input = "session"` hands every unclaimed key to the agent, so declaring `up`
+there would take the arrow keys away from whatever is running in it. Without a
+tick of its own the wheel did nothing at all over a live terminal.
+
+Two rules follow from where each half sits:
+
+- **`on_scroll` is one report; the keystroke fallback is one notch.** A detent
+  is several reports (three, for ghostty, kitty and xterm) and the fallback
+  folds them into one step, because a pane that moves a *selection* must not
+  walk three rows per flick. A pane that scrolls by lines wants all three, which
+  is also what a tick forwarded to a pty delivers.
+- **A live terminal that asked for the mouse is served before either.** The
+  kernel forwards the tick to the pty instead, since a program on the alternate
+  screen keeps no scrollback for anyone else to scroll.
 
 Everything here is inert when `[features] mouse` is off — the capture escape is
 never sent, so the terminal keeps its own selection and scrolling.

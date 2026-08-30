@@ -81,7 +81,25 @@ impl Identity {
     pub fn click_verb(&self) -> Option<ClickVerb> {
         ClickVerb::parse(self.role.as_deref())
     }
+
+    /// Does a press here take hold of the pointer?
+    ///
+    /// A node saying so is handed the drags that follow the press, and no text
+    /// selection is armed over it — which is what makes a scrollbar, a slider or
+    /// a splitter possible from four node kinds. It is not a [`ClickVerb`]: the
+    /// verbs name something the *kernel* does, and here the kernel only keeps
+    /// routing the pointer to the pane, which decides what the movement means.
+    ///
+    /// Spelled as the bare role rather than `drag:<something>` so it composes
+    /// with the `id` a node already carries: a pane with two draggables tells
+    /// them apart the way it tells two rows apart.
+    pub fn is_drag_handle(&self) -> bool {
+        self.role.as_deref() == Some(DRAG_ROLE)
+    }
 }
+
+/// The role a node carries to say a press on it grabs the pointer.
+pub const DRAG_ROLE: &str = "drag";
 
 /// What the kernel itself does when a painted node is clicked.
 ///

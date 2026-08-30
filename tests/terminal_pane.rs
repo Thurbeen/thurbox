@@ -11,8 +11,8 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 
-use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
-use thurbox::kernel::node::{ClickVerb, Node};
+use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext, Scroll};
+use thurbox::kernel::node::{ClickVerb, Node, SurfaceSource};
 use thurbox::kernel::paint::{render, render_recording, Hit, PlaceholderSurfaces};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
@@ -168,6 +168,28 @@ fn column_of(line: &str, needle: &str) -> u16 {
         .find(needle)
         .unwrap_or_else(|| panic!("{needle} is not on the border: {line}"));
     u16::try_from(line[..at].chars().count()).expect("a column")
+}
+
+/// How far back the session surface this pane placed is scrolled.
+fn surface_scroll(node: &Node) -> u16 {
+    fn walk(node: &Node) -> Option<u16> {
+        match node {
+            Node::Surface {
+                source: SurfaceSource::Session(_),
+                scroll,
+                ..
+            } => Some(*scroll),
+            Node::Box { children, .. } => children.iter().find_map(walk),
+            _ => None,
+        }
+    }
+    walk(node).expect("the pane places a session surface")
+}
+
+/// One wheel report over the middle of the pane.
+fn wheel(host: &LuaHost, up: bool) -> bool {
+    host.on_scroll(index_of(host, TERMINAL), &Scroll { up, x: 30, y: 5 })
+        .expect("the wheel")
 }
 
 fn session_surface(node: &Node) -> String {
@@ -480,4 +502,252 @@ fn a_chip_is_only_as_wide_as_its_own_label() {
         assert_eq!(hit.rect.y, 0, "the strip is the top border");
         assert!(hit.rect.height == 1 && hit.rect.width < 20, "{hit:?}");
     }
+}
+
+// ── the wheel ─────────────────────────────────────────────────────────────
+
+#[test]
+fn a_wheel_tick_scrolls_the_terminal_under_it() {
+    // The wheel reaches a pane as its own tick, not as a synthesized `up`. This
+    // pane is the reason the hook exists: it hands every unclaimed key to the
+    // agent, so it is the one pane that cannot declare the arrow keys the
+    // keystroke fallback needs — and the wheel therefore did nothing at all
+    // over the only surface with a scrollback worth moving.
+    let host = with_a_selection();
+    assert_eq!(
+        surface_scroll(&tree(&host, 60, 10)),
+        0,
+        "live, at the bottom"
+    );
+
+    assert!(wheel(&host, true), "the pane takes the tick");
+    assert_eq!(
+        surface_scroll(&tree(&host, 60, 10)),
+        1,
+        "one report is one line, as it is when the tick is forwarded to a pty"
+    );
+
+    assert!(wheel(&host, false), "and back down");
+    assert_eq!(surface_scroll(&tree(&host, 60, 10)), 0);
+    assert!(
+        !wheel(&host, false),
+        "at the bottom there is nothing to give, so the tick is declined"
+    );
+}
+
+#[test]
+fn the_wheel_scrolls_the_shell_tab_as_well() {
+    // Scrollback is the pane's policy, and it used to hold one for the agent
+    // view alone: the shell surface is a live terminal with a scrollback of its
+    // own, so refusing to hold an offset for it left the wheel dead there.
+    //
+    // The page keys still decline on this tab (see the test above): a pager or
+    // an editor running in the shell has its own idea of what a page is, and
+    // none of what a wheel means.
+    let host = with_a_selection();
+    let index = index_of(&host, TERMINAL);
+    host.on_action(index, "terminal.shell").expect("select");
+
+    assert!(wheel(&host, true), "the shell takes the tick");
+    let node = tree(&host, 100, 10);
+    assert!(
+        session_surface(&node).ends_with("#shell"),
+        "still the shell's own surface"
+    );
+    assert_eq!(surface_scroll(&node), 1);
+    assert!(
+        painted(&node, 100, 10)[0].contains("1↑"),
+        "and says so on its title: {:?}",
+        painted(&node, 100, 10)[0]
+    );
+}
+
+#[test]
+fn each_tab_keeps_its_own_place_in_its_own_scrollback() {
+    // Two live terminals taking turns in one rect, so one offset between them
+    // would put the shell where the agent was — and the kernel writes the
+    // offset into whichever parser it is drawing.
+    let host = with_a_selection();
+    let index = index_of(&host, TERMINAL);
+    assert!(wheel(&host, true));
+    assert!(wheel(&host, true));
+    assert_eq!(surface_scroll(&tree(&host, 60, 10)), 2);
+
+    host.on_action(index, "terminal.shell").expect("select");
+    assert_eq!(
+        surface_scroll(&tree(&host, 60, 10)),
+        0,
+        "the shell has its own, and has not been scrolled"
+    );
+
+    host.on_action(index, "terminal.agent").expect("back");
+    assert_eq!(
+        surface_scroll(&tree(&host, 60, 10)),
+        2,
+        "the agent kept its"
+    );
+}
+
+#[test]
+fn typing_snaps_the_view_back_to_the_bottom() {
+    // v1's rule: a key forwarded to the pty returns you to the live end of the
+    // stream. Without it a wheel tick leaves you typing into a screen you
+    // cannot see, which is a worse trap now that the wheel actually moves.
+    //
+    // The key is not consumed — the handler declines it — so it still reaches
+    // the agent.
+    let host = with_a_selection();
+    let index = index_of(&host, TERMINAL);
+    assert!(wheel(&host, true));
+    assert_eq!(surface_scroll(&tree(&host, 60, 10)), 1);
+
+    let key = KeyPress {
+        name: "a".into(),
+        ch: Some('a'),
+        ..KeyPress::default()
+    };
+    assert!(
+        !host.on_key(index, &key).expect("key"),
+        "the keystroke belongs to the agent"
+    );
+    assert_eq!(surface_scroll(&tree(&host, 60, 10)), 0);
+}
+
+// ── the scrollbar is a control ────────────────────────────────────────────
+
+/// The pane height every scrollbar case below is rendered at, and the scrollback
+/// they scroll. A 12-row pane leaves 10 inner rows: a cap, eight rows of track,
+/// a cap.
+const BAR_HEIGHT: u16 = 12;
+const BAR_TRACK_TOP: u16 = 1;
+const BAR_TRACK_BOTTOM: u16 = 8;
+const BAR_DEPTH: u16 = 20;
+
+/// The role the pane gives its scrollbar — the kernel's own spelling for "a
+/// press here takes hold of the pointer".
+const DRAG: &str = "drag";
+
+/// A press, or a move under one, on row `row` of the scrollbar column.
+fn bar_press(host: &LuaHost, row: u16, dragging: bool) -> bool {
+    host.on_click(
+        index_of(host, TERMINAL),
+        &Click {
+            id: None,
+            classes: Vec::new(),
+            role: Some(DRAG.into()),
+            x: 0,
+            y: row,
+            w: 1,
+            h: BAR_HEIGHT - 2,
+            dragging,
+        },
+    )
+    .expect("press")
+}
+
+/// A session scrolled back far enough to have a bar to grab.
+fn with_a_scrollback() -> LuaHost {
+    let host = with_a_selection();
+    for _ in 0..BAR_DEPTH {
+        assert!(wheel(&host, true), "scroll back");
+    }
+    assert_eq!(surface_scroll(&tree(&host, 60, BAR_HEIGHT)), BAR_DEPTH);
+    host
+}
+
+#[test]
+fn the_scrollbar_is_a_click_target_only_once_there_is_one() {
+    // The bar is painted into the right border column, which is one node for
+    // the whole column — so it is a target or it is not, and there is no row of
+    // it that can be pressed while the rest cannot.
+    let host = with_a_selection();
+    let roles = |host: &LuaHost| -> Vec<String> {
+        hits(&tree(host, 60, BAR_HEIGHT), 60, BAR_HEIGHT)
+            .iter()
+            .filter_map(|hit| hit.identity.role.clone())
+            .collect()
+    };
+    assert!(
+        !roles(&host).contains(&DRAG.to_string()),
+        "an unscrolled pane draws no bar, so there is nothing to grab"
+    );
+
+    let host = with_a_scrollback();
+    assert!(
+        roles(&host).contains(&DRAG.to_string()),
+        "the bar is grabbable as soon as it is drawn"
+    );
+}
+
+#[test]
+fn the_ends_of_the_track_are_the_ends_of_the_scrollback() {
+    // Both ends have to be reachable, and the bottom one is the one that was
+    // off by a line: the position a scrollbar can express is `0..=depth`, and
+    // counting `depth` of them left the end of the track one line above the
+    // live bottom — so the bar could be dragged all the way down and still
+    // leave you off the stream.
+    let host = with_a_scrollback();
+    assert!(bar_press(&host, BAR_TRACK_BOTTOM, false));
+    assert_eq!(
+        surface_scroll(&tree(&host, 60, BAR_HEIGHT)),
+        0,
+        "the end of the track is the live bottom"
+    );
+
+    assert!(bar_press(&host, BAR_TRACK_TOP, false));
+    assert_eq!(
+        surface_scroll(&tree(&host, 60, BAR_HEIGHT)),
+        BAR_DEPTH,
+        "and the start of it is as far back as we have been"
+    );
+}
+
+#[test]
+fn the_thumb_is_picked_up_where_it_was_grabbed() {
+    // A shallow scrollback makes a tall thumb, and pressing its lower half must
+    // not jerk it up by half its length. The offset within the thumb is taken at
+    // the press and held for the whole gesture, so the row under the pointer
+    // stays the row under the pointer.
+    let host = with_a_scrollback();
+    // Live bottom: the thumb sits at the end of the track, and its last row is
+    // the last row of the track.
+    assert!(bar_press(&host, BAR_TRACK_BOTTOM, false));
+    assert_eq!(surface_scroll(&tree(&host, 60, BAR_HEIGHT)), 0);
+
+    // Pressing that last row again is a grab, not a jump: nothing moves.
+    assert!(bar_press(&host, BAR_TRACK_BOTTOM, false));
+    assert_eq!(
+        surface_scroll(&tree(&host, 60, BAR_HEIGHT)),
+        0,
+        "grabbing the thumb where it already is moves nothing"
+    );
+
+    // And dragging it one row up moves by one row of the track, not by the
+    // whole distance from the track's start.
+    assert!(bar_press(&host, BAR_TRACK_BOTTOM - 1, true));
+    let one_row = surface_scroll(&tree(&host, 60, BAR_HEIGHT));
+    assert!(
+        one_row > 0 && one_row < BAR_DEPTH,
+        "one row of travel, not a jump to the top: {one_row}"
+    );
+}
+
+#[test]
+fn a_press_that_is_not_the_scrollbar_is_declined() {
+    // The pane's other affordances are chips the kernel resolves itself through
+    // a click verb; this handler must not swallow anything else that reaches it.
+    let host = with_a_scrollback();
+    assert!(
+        !host
+            .on_click(
+                index_of(&host, TERMINAL),
+                &Click {
+                    role: Some("row".into()),
+                    h: BAR_HEIGHT - 2,
+                    ..Click::default()
+                },
+            )
+            .expect("press"),
+        "declined, so the press falls through as it always did"
+    );
 }

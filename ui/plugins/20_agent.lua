@@ -95,45 +95,100 @@ local function set_tab(id, tab)
   state["tab:" .. id] = tab ~= AGENT_TAB and tab or nil
 end
 
---- How far back a session is scrolled, and the deepest it has ever been.
+--- The surface a tab addresses: the session itself, or its `#shell` sibling.
 ---
---- Keyed per session for the same reason the tab is: these are a property of the
---- screen you are looking at, not of the pane looking at it. Shared, selecting
---- another session carried your offset onto it -- and the kernel writes the offset
---- into whichever session's parser it is drawing, so the next session opened
---- scrolled back with no way to tell why.
-local function scroll_of(id)
+--- The same spelling the surface node carries and the kernel resolves, so
+--- anything keyed on it is keyed on the screen the user is actually reading.
+local function surface_of(id, tab)
   if not id then
+    return nil
+  end
+  return tab == SHELL_TAB and (id .. "#shell") or id
+end
+
+--- How far back a surface is scrolled, and the deepest it has ever been.
+---
+--- Keyed per SURFACE, which is both halves of the rule at once. Per session,
+--- because this is a property of the screen you are looking at rather than of
+--- the pane looking at it: shared, selecting another session carried your offset
+--- onto it, and — since the kernel writes the offset into whichever parser it is
+--- drawing — the next session opened scrolled back with no way to tell why. And
+--- per tab within that, because the agent and its companion shell are two live
+--- terminals taking turns in one rect with a scrollback each: one offset between
+--- them put the shell wherever the agent had been left.
+local function scroll_of(surface)
+  if not surface then
     return 0, 0
   end
-  return state["scroll:" .. id] or 0, state["scrollmax:" .. id] or 0
+  return state["scroll:" .. surface] or 0, state["scrollmax:" .. surface] or 0
 end
 
-local function set_scroll(id, scroll, scroll_max)
-  if not id then
+local function set_scroll(surface, scroll, scroll_max)
+  if not surface then
     return
   end
-  state["scroll:" .. id] = scroll ~= 0 and scroll or nil
-  state["scrollmax:" .. id] = scroll_max ~= 0 and scroll_max or nil
+  state["scroll:" .. surface] = scroll ~= 0 and scroll or nil
+  state["scrollmax:" .. surface] = scroll_max ~= 0 and scroll_max or nil
 end
 
---- Move the agent tab's scrollback by `lines`, or decline.
+--- Move a surface's scrollback by `lines`. `true` when it actually moved.
 ---
 --- Scrollback is this pane's policy rather than the kernel's, so a replacement
---- pane can choose differently. Declining on the shell tab is what leaves a page
---- key to the pty, where whatever is running (a pager, an editor) has its own
---- idea of what it means.
-local function scroll_by(id, lines)
-  if not id or tab_of(id) ~= AGENT_TAB then
+--- pane can choose differently. Declining when nothing moved is what lets the
+--- kernel put a wheel tick at the live bottom back on its keystroke fallback
+--- instead of swallowing it.
+local function scroll_surface(surface, lines)
+  if not surface then
     return false
   end
-  local scroll, scroll_max = scroll_of(id)
-  scroll = math.max(0, scroll + lines)
+  local scroll, scroll_max = scroll_of(surface)
+  local moved = math.max(0, scroll + lines)
+  if moved == scroll then
+    return false
+  end
   -- How far back the user has ever gone. The snapshot carries no total
   -- scrollback (v1 probes the vt100 screen for it), so this high-water mark is
   -- what the scrollbar is scaled against — see the report accompanying this
   -- port.
-  set_scroll(id, scroll, math.max(scroll_max, scroll))
+  set_scroll(surface, moved, math.max(scroll_max, moved))
+  return true
+end
+
+--- Move the AGENT tab's scrollback, or decline.
+---
+--- The page keys' half of the policy: declining on the shell tab is what leaves
+--- them to the pty, where whatever is running (a pager, an editor) has its own
+--- idea of what a page is. A wheel tick carries no such meaning, so it scrolls
+--- either tab -- see `on_scroll`.
+local function scroll_by(id, lines)
+  if not id or tab_of(id) ~= AGENT_TAB then
+    return false
+  end
+  scroll_surface(id, lines)
+  -- Claimed even when it did not move: the key is the agent view's, and
+  -- handing a PageDown at the live bottom back to the kernel would offer it to
+  -- the pty this action exists to keep it away from.
+  return true
+end
+
+--- Put the view back at the live bottom of the stream.
+---
+--- v1's rule for every key forwarded to the pty: you type at the end of what
+--- you are typing into. Without it a wheel tick leaves you typing into a screen
+--- you cannot see.
+local function snap_to_bottom(id)
+  local surface = surface_of(id, tab_of(id))
+  if not surface then
+    return false
+  end
+  local scroll, scroll_max = scroll_of(surface)
+  if scroll == 0 then
+    return false
+  end
+  -- The high-water mark stays: it is what the scrollbar is scaled against, and
+  -- the bar reading "you are at the bottom of a stream you have been up" is the
+  -- same thing it says when you scroll back down by hand.
+  set_scroll(surface, 0, scroll_max)
   return true
 end
 
@@ -223,13 +278,15 @@ local function rounding_divide(numerator, denominator)
   return math.floor((numerator + math.floor(denominator / 2)) / denominator)
 end
 
---- One run per row of a vertical scrollbar, mirroring ratatui's
---- `Scrollbar::part_lengths` arithmetic so the thumb lands where v1's does.
+--- Where the thumb sits in a track of `track_length` rows, and how long it is.
 ---
---- Returns nil when there is nothing to draw, and the caller falls back to a
---- plain border column — v1 skips the bar entirely when no scrollback exists.
-local function scrollbar_rows(height, content_len, viewport, position)
-  local track_length = height - 2
+--- Ratatui's `Scrollbar::part_lengths` arithmetic, so the thumb lands where v1's
+--- does. Split out from the drawing because a press on the bar has to answer the
+--- same question the paint does — and answering it twice, differently, is how a
+--- thumb comes to jump out from under the pointer that grabbed it.
+---
+--- `nil` when there is no bar: no content to scroll, or no room for a track.
+local function thumb_geometry(track_length, content_len, viewport, position)
   if content_len <= 0 or track_length <= 0 then
     return nil
   end
@@ -246,6 +303,39 @@ local function scrollbar_rows(height, content_len, viewport, position)
 
   local thumb_start = rounding_divide(start_position * track_length, max_viewport_position)
   thumb_start = math.max(0, math.min(thumb_start, track_length - thumb_length))
+  return thumb_start, thumb_length
+end
+
+--- The position a thumb dropped at `thumb_start` is asking for.
+---
+--- The inverse of `thumb_geometry`, pinned at both ends rather than derived from
+--- the same ratio: the forward map's rounding leaves the last row of travel
+--- short of `max_position`, so a bar dragged all the way down would stop a line
+--- or two above the live bottom and never quite arrive.
+local function position_of_thumb(track_length, content_len, viewport, thumb_start)
+  local max_position = math.max(0, content_len - 1)
+  local _, thumb_length = thumb_geometry(track_length, content_len, viewport, 0)
+  if not thumb_length then
+    return 0
+  end
+  local travel = track_length - thumb_length
+  if travel <= 0 then
+    return max_position
+  end
+  local at = math.max(0, math.min(thumb_start, travel))
+  return math.min(max_position, rounding_divide(at * max_position, travel))
+end
+
+--- One run per row of a vertical scrollbar.
+---
+--- Returns nil when there is nothing to draw, and the caller falls back to a
+--- plain border column — v1 skips the bar entirely when no scrollback exists.
+local function scrollbar_rows(height, content_len, viewport, position)
+  local track_length = height - 2
+  local thumb_start, thumb_length = thumb_geometry(track_length, content_len, viewport, position)
+  if not thumb_start then
+    return nil
+  end
 
   local track_end = track_length - (thumb_start + thumb_length)
 
@@ -266,6 +356,62 @@ local function scrollbar_rows(height, content_len, viewport, position)
   end
   rows[#rows + 1] = { text = SCROLLBAR.end_ }
   return rows
+end
+
+--- The bar's content length for a scrollback `depth` deep.
+---
+--- `depth + 1`, because the places you can be are `0..depth` inclusive and the
+--- live bottom is one of them. Passing `depth` clamps the end of the track to
+--- one line above the live end, so the bar could be dragged all the way down
+--- and still leave you off the bottom of the stream.
+local function bar_content_len(depth)
+  return depth + 1
+end
+
+--- The role the scrollbar column carries.
+---
+--- The kernel's own spelling for "a press here takes hold of the pointer", so
+--- the moves that follow reach this pane instead of painting a text selection
+--- across the terminal the bar is about to scroll. This pane has one draggable,
+--- so the bare role identifies it; a pane with two would tell them apart by `id`.
+local DRAG = "drag"
+
+--- A press or a drag on the scrollbar, mapped back to a scroll offset.
+---
+--- The bar is one node for the whole column, so `hit.y` is already the row of
+--- the bar under the pointer and `hit.h` its length — which is the only reason a
+--- `pure` pane can answer this at all, since `render` may not stash geometry.
+local function scrollbar_grab(id, hit)
+  local surface = surface_of(id, tab_of(id))
+  local scroll, depth = scroll_of(surface)
+  local height = hit.h or 0
+  local track = height - 2
+  local content_len = bar_content_len(depth)
+  local thumb_start, thumb_length = thumb_geometry(track, content_len, height, depth - scroll)
+  if not thumb_start then
+    return false
+  end
+
+  -- Row 0 and the last row are the caps, so the track starts one in. A press on
+  -- a cap clamps onto the end of the track it caps.
+  local row = math.max(0, math.min((hit.y or 0) - 1, track - 1))
+
+  -- Where INSIDE the thumb the press landed, so the thumb is picked up rather
+  -- than centred: grabbing its lower half must not jerk it up by half its
+  -- length, and the thumb here is tall whenever the scrollback is shallow. Held
+  -- for the whole gesture; a press on the bare track jumps the thumb there.
+  if not hit.dragging then
+    local inside = row - thumb_start
+    local held = (inside > 0 and inside < thumb_length) and inside or nil
+    state["grab:" .. surface] = held
+  end
+
+  local position =
+    position_of_thumb(track, content_len, height, row - (state["grab:" .. surface] or 0))
+  -- The bar is inverted, as in v1: the top of the track is the deepest offset
+  -- and the bottom is the live end of the stream.
+  set_scroll(surface, math.max(0, math.min(depth - position, depth)), depth)
+  return true
 end
 
 -- --- the border strip ------------------------------------------------------
@@ -729,11 +875,11 @@ return {
     -- the whole reason the views share one plugin.
     local tab = tab_of(session.id)
     local strip, reserved_left = border_strip(width, border, tab)
-    -- Scrollback belongs to the agent view: the shell surface has none to
-    -- offer (the kernel reads only the agent's parser back), so claiming an
-    -- offset there would put a `[N↑]` marker on a title that cannot move.
-    local session_scroll, session_scroll_max = scroll_of(session.id)
-    local scroll = tab == AGENT_TAB and session_scroll or 0
+    -- Both views are live terminals with a scrollback each, so the offset is
+    -- the one this SURFACE is holding — which is also the one the kernel will
+    -- set on the parser it draws.
+    local surface = surface_of(session.id, tab)
+    local scroll, depth = scroll_of(surface)
     local title = fit_right_title(
       terminal_title(session, { shell = tab == SHELL_TAB, scroll = scroll }),
       width,
@@ -764,11 +910,10 @@ return {
     -- full inner width — v1 draws it into the pane rect inset vertically only.
     -- Its extent is the inner rows exactly, hence `height - 2`.
     local rows = nil
-    local depth = tab == AGENT_TAB and session_scroll_max or 0
     if depth > 0 then
       rows = scrollbar_rows(
         math.max(0, height - 2),
-        depth,
+        bar_content_len(depth),
         math.max(0, height - 2),
         -- Inverted, as in v1: offset 0 (live, at the bottom) puts the thumb at
         -- the end of the track; the deepest offset puts it at the start.
@@ -785,11 +930,12 @@ return {
       border_style = border,
       left = strip,
       right_column = rows,
+      right_column_role = DRAG,
       -- The shell is a second surface over the same primitive, addressed as
       -- `<id>#shell` — no new node kind, and the kernel resolves the suffix.
       body = {
         type = "surface",
-        session = tab == SHELL_TAB and (session.id .. "#shell") or session.id,
+        session = surface,
         scroll = scroll,
         fill = 1,
       },
@@ -804,6 +950,41 @@ return {
     { action = SELECT_AGENT, desc = "show the agent tab" },
     { action = SELECT_SHELL, desc = "show the shell tab" },
   },
+
+  -- A wheel tick, which is NOT the page keys above.
+  --
+  -- This pane hands every unclaimed key to the agent, so it is the one pane
+  -- that cannot declare `up`/`down` -- and the kernel's keystroke fallback for
+  -- the wheel is exactly those. Without this hook the wheel did nothing at all
+  -- over a terminal unless the program inside had turned on mouse tracking, in
+  -- which case the kernel forwards the tick to the pty and the pane never sees
+  -- it: an agent that grabs the mouse and then ignores the wheel is what made
+  -- this look like it only happened to some people.
+  --
+  -- One report, one line. A detent is several reports, which is the count the
+  -- outer terminal means, and it is what a forwarded tick already delivers.
+  on_scroll = function(wheel)
+    local id = store.selected
+    return scroll_surface(surface_of(id, tab_of(id)), wheel.up and 1 or -1)
+  end,
+
+  -- Every key this pane does not claim goes on to the agent, and typing
+  -- belongs at the live end of the stream: the offset is dropped and the key
+  -- is DECLINED, so it still reaches the pty.
+  on_key = function()
+    snap_to_bottom(store.selected)
+    return false
+  end,
+
+  -- The scrollbar, which is the only thing this pane paints that is a control
+  -- rather than a report. Everything else on the border is a chip the kernel
+  -- resolves itself through a click verb.
+  on_click = function(hit)
+    if hit.role ~= DRAG then
+      return false
+    end
+    return scrollbar_grab(store.selected, hit)
+  end,
 
   on_action = function(action)
     local id = store.selected
