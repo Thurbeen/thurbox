@@ -521,7 +521,8 @@ Cmd chords; everything else works there.
 | Key | Action |
 |-----|--------|
 | `PageUp` / `PageDown` | Scroll the agent's output by 10 lines |
-| Mouse drag | Select text |
+| Mouse wheel | Scroll the pane under the pointer (agent or shell tab) |
+| Mouse drag | Select text, or drag the scrollbar to travel the scrollback |
 
 ## Headless CLI (`thurbox-cli`)
 
