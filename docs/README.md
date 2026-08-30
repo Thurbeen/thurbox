@@ -2,7 +2,8 @@
 
 This directory holds the **rationale** behind Thurbox's design decisions. For
 operational guidance (build commands, module layout, event loop), see
-[`CLAUDE.md`](../CLAUDE.md).
+[`CLAUDE.md`](../CLAUDE.md) and the skills it indexes under
+[`.claude/skills/`](../.claude/skills/).
 
 ## Documents
 
@@ -29,6 +30,7 @@ dev-environment guide.
 **Rule**: If a code change invalidates or extends a documented decision, update
 the relevant doc in the same PR.
 
-- Operational changes (new commands, module moves) go in `CLAUDE.md`
+- Operational changes (new commands, module moves) go in `CLAUDE.md` or the
+  per-subsystem skill under `.claude/skills/` that owns the subject
 - Decisional changes (why we chose X over Y) go in `docs/`
 - Don't duplicate content between the two

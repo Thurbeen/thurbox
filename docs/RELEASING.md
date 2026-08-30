@@ -1,7 +1,7 @@
 # Releasing
 
 Releases are automated (`cd.yml`, driven by cocogitto) and the mechanics are in
-`CLAUDE.md`. This file is for the part automation cannot check: **what a release
+the `thurbox-release` skill. This file is for the part automation cannot check: **what a release
 may and may not change about the artifacts**, because most users never read
 release notes — `[features] auto_update` defaults to `true`, so the TUI replaces
 its own binaries on startup.

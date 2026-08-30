@@ -58,9 +58,13 @@ canonical guidance doc — Claude Code reads it directly, and
 Claude-Code compatibility (which only applies when no `AGENTS.md` exists, so
 there is deliberately no `AGENTS.md` duplicating it).
 
-One skill is checked in, `ui-review`, under `.claude/skills/`. opencode
-auto-discovers that directory, so a single copy serves both agents — don't
-mirror it under `.opencode/skills/`, which would double-register it. Slash
+The skills are checked in under `.claude/skills/`: eleven per-subsystem
+working references (`thurbox-testing`, `thurbox-kernel`, `thurbox-remote-hosts`,
+… — `CLAUDE.md` indexes them) plus `ui-review`. They carry the detail that used
+to sit in `CLAUDE.md`, so it stays an index and an agent loads only the subject
+it is working on. opencode auto-discovers that directory, so a single copy
+serves both agents — don't mirror it under `.opencode/skills/`, which would
+double-register it. Slash
 commands are the one kind opencode does **not** auto-discover, so a new one goes
 in both `.claude/commands/` and `.opencode/commands/`, kept in sync by hand.
 A minimal [`opencode.json`](opencode.json) declares the `$schema` for editor
@@ -136,7 +140,8 @@ over the real `ui/`**: `tests/kernel_mvp.rs` for the kernel's contract and
 the new one to paste; there are no snapshot files and no tool to run. Crash
 invariants are properties in `tests/render_props.rs`, and `tests/tui_e2e.rs`
 drives the real binary on a real pty (`just smoke`). All of it runs in the one
-`cargo nextest run --all`; see the Testing section of [`CLAUDE.md`](CLAUDE.md).
+`cargo nextest run --all`; see the `thurbox-testing` skill under
+`.claude/skills/`.
 
 ## Linting and formatting
 

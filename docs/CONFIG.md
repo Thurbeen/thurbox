@@ -153,8 +153,7 @@ session (OMP has no way to pin a fork's target file to a thurbox UUID).
 Groups
 are emitted only when their driving value exists; precedence is
 fork > resume > new-session. See the seeded file's comments and
-CLAUDE.md's *Agent Definitions* section for the `resume_latest`
-semantics.
+the `thurbox-agents` skill for the `resume_latest` semantics.
 
 `hook_schema` is optional. Custom agents are agent-neutral, so the built-in
 **hooks** extension normally wires status hooks only for the built-ins it knows

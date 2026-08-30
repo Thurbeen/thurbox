@@ -121,7 +121,7 @@ degraded (host
 unreachable mid-provision, a user-owned file refused, or the
 still-gated psmux provisioning), the session shows a `Hooks: degraded`
 row in the info panel instead of silently idling. See the
-*Remote SSH & WSL Sessions* section in `CLAUDE.md` for the full pipeline.
+`thurbox-remote-hosts` skill for the full pipeline.
 
 #### Reading the state headlessly, and judging it
 

@@ -608,8 +608,9 @@ stalls. Worth the most manual testing.
 
 The control-mode protocol is byte-identical over either transport, but the
 **psmux** binary diverges from tmux in three places (all verified against psmux
-3.3.6, each branched on `TmuxTransport::uses_psmux()`). `CLAUDE.md` keeps a
-summary; this is the reference to read before touching that path.
+3.3.6, each branched on `TmuxTransport::uses_psmux()`). The
+`thurbox-remote-hosts` skill keeps a summary; this is the reference to read
+before touching that path.
 
 - **`send-keys -H`** is not implemented (it injects the hex digits as literal
   text). `send_keys_commands` rebuilds the same PTY byte stream from the
@@ -989,7 +990,7 @@ in sync with the binary that reads it.
 
 The capabilities that reach outside the extension home, the installer's
 resolution order, the `extension` CLI surface, versioning/staleness, and the
-self-heal pass. `CLAUDE.md` keeps a summary and points here.
+self-heal pass. The `thurbox-extensions` skill keeps a summary and points here.
 
 Three install-spec capabilities exist for reaching **outside** the extension
 home (added for the built-in hooks extension): `[[external_files]]` places

@@ -20,7 +20,8 @@ Related docs:
 - [FEATURES.md → Agent definitions](FEATURES.md#agent-definitions) — the
   agents-as-data design.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the `session::AgentDef` purity rule.
-- `../CLAUDE.md` → *Agent Definitions* — the in-repo working reference.
+- `../.claude/skills/thurbox-agents/` → *Agent Definitions* — the in-repo
+  working reference.
 
 ## Where the built-ins live
 
@@ -210,8 +211,9 @@ automatically. Work the checklist top to bottom:
      the "N built-ins" count.
    - [FEATURES.md → Agent definitions](FEATURES.md#agent-definitions) — the prose
      list and the pinned-id sentence.
-   - `../CLAUDE.md` → *Agent Definitions* and *Custom-agent status hooks* — the
-     built-in lists and the resume/fork caveats.
+   - `../.claude/skills/thurbox-agents/` → *Agent Definitions* and
+     *Custom-agent status hooks* — the built-in lists and the resume/fork
+     caveats.
 
 4. **Tests** — the seed TOML must still parse and produce the expected registry.
    Run the agent-config tests and update any fixture that enumerates the built-in
