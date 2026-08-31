@@ -1331,6 +1331,23 @@ mod tests {
     }
 
     #[test]
+    fn resume_is_refused_for_a_raw_command_session() {
+        // A raw command has no agent conversation to attach to, so `--resume`
+        // must be an explicit error rather than a silently ignored flag (a
+        // fresh process would start with no indication `--resume` did nothing).
+        let db = empty_db();
+        let mut r = req("cmd-sess");
+        r.command = Some("bash".into());
+        r.resume_session_id = Some("some-external-id".into());
+        let err = spawn_session_headless(&db, r).unwrap_err();
+        assert!(
+            err.contains("--resume") && err.contains("--command"),
+            "got {err}"
+        );
+    }
+
+
+    #[test]
     fn validate_parent_session_accepts_existing_and_none() {
         let db = empty_db();
         assert!(validate_parent_session(&db, None).is_ok());

@@ -74,9 +74,12 @@ It declares no `resume_args` or `fork_args`, and that absence is the statement:
 a shell has no conversation. `session restart` replays its recipe in the same
 directory (a shell barely notices — its history and cwd live on disk),
 `session fork` gives you a second shell beside it, and `session create --resume`
-is refused rather than silently starting fresh. Nothing wires status hooks for
-it either, so a `shell` session reports `hook_state: null` until something in it
-calls `thurbox-cli session signal` — which anything in the pane can, since
+silently starts fresh rather than attaching to anything (only a raw
+`--command` session refuses `--resume` outright; see
+[FEATURES.md](FEATURES.md#a-launch-recipe-is-not-a-conversation)). Nothing
+wires status hooks for it either, so a `shell` session reports `hook_state: null`
+until something in it calls `thurbox-cli session signal` — which anything in
+the pane can, since
 `THURBOX_SESSION` is in its environment.
 
 ### ID model: pinned vs. id-less

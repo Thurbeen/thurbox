@@ -435,6 +435,32 @@ mod tests {
     }
 
     #[test]
+    fn force_delete_clears_session_meta_but_soft_delete_does_not() {
+        // Regression: `clear_session_meta` is documented as being called on
+        // force-delete (the row is unrestorable, so its metadata is dead
+        // weight) but nothing wired the call in — a force-deleted session's
+        // meta rows outlived it forever.
+        let db = Database::open_in_memory().unwrap();
+
+        let soft = insert_session(&db, "soft-meta");
+        db.set_session_meta(soft, "fm.lease", "abc").unwrap();
+        delete_session_headless(&db, soft, false).unwrap();
+        assert_eq!(
+            db.get_session_meta(soft, "fm.lease").unwrap(),
+            Some("abc".to_string()),
+            "a soft delete is restorable, so its metadata must survive it"
+        );
+
+        let hard = insert_session(&db, "hard-meta");
+        db.set_session_meta(hard, "fm.lease", "xyz").unwrap();
+        delete_session_headless(&db, hard, true).unwrap();
+        assert!(
+            db.get_session_meta(hard, "fm.lease").unwrap().is_none(),
+            "a force delete is unrestorable, so its metadata must not outlive it"
+        );
+    }
+
+    #[test]
     fn force_delete_marks_force_deleted_but_soft_does_not() {
         let db = Database::open_in_memory().unwrap();
 

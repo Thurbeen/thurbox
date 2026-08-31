@@ -254,6 +254,89 @@ fn two_sessions_sharing_a_name_get_distinct_pane_ids() {
     );
 }
 
+/// Regression: a resume brings in an *existing* conversation id from outside
+/// thurbox — "the checkout comes in as a path, the conversation as this id"
+/// (`session_ops/mod.rs`). For an agent that pins a specific conversation id
+/// rather than "resume whatever's latest" (`resume_latest = false`, with
+/// `resume_args` to emit), the persisted `agent_session_id` must be that same
+/// id, not a freshly minted UUID — otherwise the very next `restart` looks for
+/// a transcript under the wrong id and silently starts a brand-new
+/// conversation instead of the one that arrived.
+#[test]
+#[cfg(not(windows))]
+fn resuming_an_id_pinned_agent_persists_the_resumed_id() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    thurbox::paths::set_test_dir(home.path());
+    let config = thurbox::paths::config_file()
+        .expect("config path")
+        .parent()
+        .expect("config dir")
+        .to_path_buf();
+    std::fs::create_dir_all(&config).expect("mkdir");
+    // Claude-like: it pins a conversation id via `{id}` rather than resuming
+    // "latest", which is what makes `resumes_latest()` false and puts it on
+    // the id-persisting path under test.
+    std::fs::write(
+        config.join("agents.toml"),
+        "default = \"resumable\"\n\n\
+         [[agents]]\n\
+         name = \"resumable\"\n\
+         command = \"sh\"\n\
+         args = []\n\
+         resume_args = [\"-c\", \"true {id}\"]\n\
+         resume_latest = false\n",
+    )
+    .expect("write agents.toml");
+
+    let external_conversation_id = "external-conv-1234";
+    let result = thurbox::session_ops::spawn::spawn_session_headless(
+        &db,
+        thurbox::session_ops::spawn::SpawnRequest {
+            name: "arrived".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some("resumable".into()),
+            resume_session_id: Some(external_conversation_id.into()),
+            ..Default::default()
+        },
+    );
+
+    let spawned = match result {
+        Ok(spawned) => spawned,
+        Err(e) => {
+            cleanup();
+            if e.contains("tmux") {
+                eprintln!("skipping: tmux would not spawn a window: {e}");
+                return;
+            }
+            panic!("creation failed: {e}");
+        }
+    };
+
+    assert_eq!(
+        spawned.agent_session_id, external_conversation_id,
+        "the reported agent_session_id must be the resumed conversation, not a fresh uuid"
+    );
+    let persisted = db
+        .get_session_by_id(spawned.session_id)
+        .expect("query")
+        .expect("session persisted")
+        .agent_session_id;
+    cleanup();
+    assert_eq!(
+        persisted.as_deref(),
+        Some(external_conversation_id),
+        "the persisted row must carry the resumed id, or a later restart can't find its transcript"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Session lifecycle hooks (`hooks.toml`), fired around the same pipeline.
 // ---------------------------------------------------------------------------

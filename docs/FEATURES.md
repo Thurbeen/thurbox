@@ -1892,7 +1892,12 @@ thurbox instances.
   tmux pane keeps running regardless of thurbox's lifecycle.
 - On every session spawn, Thurbox assigns an `agent_session_id`
   (UUID v4) via the agent CLI's `--session-id` flag. This tells
-  the agent to use a stable conversation ID from the start.
+  the agent to use a stable conversation ID from the start —
+  unless the session is resuming an id-pinned agent's existing
+  conversation (`create --resume <id>`), in which case the given
+  id is persisted as `agent_session_id` instead of a fresh one, so
+  a later restart resumes the right conversation (see
+  [Sessions That Arrive From Elsewhere](#sessions-that-arrive-from-elsewhere)).
 - On shutdown (`Ctrl+Q`), session metadata (including backend IDs)
   is written to the SQLite database at
   `$XDG_DATA_HOME/thurbox/thurbox.db`. Thurbox detaches from each

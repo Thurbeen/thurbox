@@ -247,8 +247,10 @@ instead of failing as a tmux status code against a window that was never there.
 deleted (the TUI tears down the tmux window/worktree on its next sync), and
 `session restore` revives it. `--force`
 (`session_ops::delete_session_headless`) also kills the tmux window, removes
-worktrees + the symlink workspace, and disables `send` automations targeting the
-session — for headless cleanup with no TUI running. Teardown is best-effort
+worktrees + the symlink workspace, disables `send` automations targeting the
+session, and clears its `session meta` key/value space (the row is
+unrestorable, so the meta would otherwise outlive it) — for headless cleanup
+with no TUI running. Teardown is best-effort
 (failures land in the JSON report); the row is always soft-deleted last. A
 `--force` delete stamps `sessions.force_deleted` (schema v37): the row still
 appears in the restore list **tagged `force-deleted`** and is restorable

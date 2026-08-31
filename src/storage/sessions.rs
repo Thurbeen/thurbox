@@ -902,6 +902,49 @@ mod tests {
     }
 
     #[test]
+    fn find_by_id_prefix_treats_an_empty_prefix_as_no_match() {
+        // Regression: an empty reference must never resolve to "every active
+        // session" — a caller passing on a blank id (e.g. an upstream bug)
+        // must get "not found", not a silent match against whatever exists.
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_session(&make_session("only-one")).unwrap();
+
+        let found = db.find_sessions_by_id_prefix("").unwrap();
+        assert!(
+            found.is_empty(),
+            "an empty prefix must not match every session, got {found:?}"
+        );
+    }
+
+    #[test]
+    fn find_by_id_prefix_treats_wildcard_characters_literally() {
+        // Regression: a prefix containing `%` or `_` must be matched as a
+        // literal string, not interpreted as a SQL LIKE wildcard.
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("wild");
+        db.upsert_session(&session).unwrap();
+        let id_str = session.id.to_string();
+        let real_prefix = &id_str[..8];
+
+        // Swap the prefix's last character for `_`, a single-character LIKE
+        // wildcard. Interpreted as a wildcard it still matches the real id
+        // (any character stands in for the one it replaced); interpreted
+        // literally — the fix — it can't, since a UUID has no underscore.
+        let mut wildcard_prefix = real_prefix[..7].to_string();
+        wildcard_prefix.push('_');
+        assert!(
+            db.find_sessions_by_id_prefix(&wildcard_prefix)
+                .unwrap()
+                .is_empty(),
+            "a literal '_' in the prefix must not act as a single-character wildcard"
+        );
+
+        let found = db.find_sessions_by_id_prefix(real_prefix).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, session.id);
+    }
+
+    #[test]
     fn get_session_by_id_binds_id_as_parameter() {
         // Regression: the id must be bound as a SQL parameter, not interpolated
         // into the WHERE clause. Round-trip a real session by id, and confirm a
