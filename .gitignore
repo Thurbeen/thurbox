@@ -64,3 +64,8 @@ ui/.bundled.json
 # (.github/workflows/pages.yml) and for local `npm run dev:website`. They are
 # tracked once, in media/ — never duplicated here.
 website/assets/*.mp4
+
+# Lavish review artifacts (`lavish-axi <file>`): HTML the agent generates for a
+# human to annotate in a browser. Working material for one review, not part of
+# the project — the same entry firstmate carries.
+.lavish/
