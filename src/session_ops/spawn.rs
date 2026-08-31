@@ -180,9 +180,7 @@ pub fn spawn_session_headless_with_progress(
     };
     report(SpawnPhase::Resolving);
     crate::paths::validate_safe_name(&req.name)?;
-    if req.resume_session_id.is_some()
-        && req.command.as_deref().is_some_and(|c| !c.is_empty())
-    {
+    if req.resume_session_id.is_some() && req.command.as_deref().is_some_and(|c| !c.is_empty()) {
         return Err(
             "--resume is not supported for --command sessions: a raw command has no agent \
              conversation to attach to; drop --resume, or use --agent instead of --command"
@@ -1345,7 +1343,6 @@ mod tests {
             "got {err}"
         );
     }
-
 
     #[test]
     fn validate_parent_session_accepts_existing_and_none() {
