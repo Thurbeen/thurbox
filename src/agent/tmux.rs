@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
@@ -42,27 +42,62 @@ pub(crate) const TMUX_SOCKET: &str = if cfg!(dev_build) {
 /// comes from `hosts.toml`).
 pub const SOCKET_OVERRIDE_ENV: &str = "THURBOX_SOCKET";
 
+/// Env var naming the **data directory** the injected [`SOCKET_OVERRIDE_ENV`]
+/// belongs to. Written beside it by `session_ops::thurbox_env_overrides`, and
+/// read here to tell an inherited socket from an operator's own.
+///
+/// Without the pairing, a socket is a bare string with no owner, and the
+/// override above wins unconditionally — including in the one case that must
+/// not: thurbox injects the socket into every pane it spawns, so a sandbox, a
+/// test harness or an agent that relocates itself with `THURBOX_DATA_DIR`
+/// *inside* such a pane inherits a name pointing at the operator's server. The
+/// database is then isolated and the tmux server is not, which is worse than no
+/// isolation at all because it looks contained. An override with no owner is
+/// still honoured outright: that is somebody typing it.
+pub const SOCKET_OWNER_ENV: &str = "THURBOX_SOCKET_FOR";
+
 /// The local multiplexer socket name — see [`socket_for`] for the precedence.
 fn local_socket() -> String {
     socket_for(
         std::env::var(SOCKET_OVERRIDE_ENV).ok(),
+        std::env::var_os(SOCKET_OWNER_ENV)
+            .map(PathBuf::from)
+            .as_deref(),
+        crate::paths::data_directory().as_deref(),
         crate::paths::relocated_data_dir().as_deref(),
     )
 }
 
-/// Resolve the socket name from the two things that can move it:
-/// [`SOCKET_OVERRIDE_ENV`] when set and non-empty, else a name derived from a
-/// relocated data dir, else the compile-time default. Pure, so the precedence
-/// is testable without touching the process environment.
+/// Resolve the socket name from the things that can move it:
+/// [`SOCKET_OVERRIDE_ENV`] when set, non-empty and **still this instance's**,
+/// else a name derived from a relocated data dir, else the compile-time
+/// default. Pure, so the precedence is testable without touching the process
+/// environment.
 ///
 /// The data dir is the anchor because it holds the database, and the database
 /// is the record of which sessions exist: an instance with its own record of
 /// them has no business creating their windows on someone else's server. A
 /// relocated **config** dir alone does not move the socket — it shares the
 /// default instance's sessions and must keep reaching them.
-fn socket_for(override_name: Option<String>, relocated_data_dir: Option<&Path>) -> String {
+///
+/// `socket_owner` is [`SOCKET_OWNER_ENV`]: the data dir the override was
+/// injected for. It is what separates "the operator named this server" (no
+/// owner — honoured) from "this came from the pane I am running in" (an owner
+/// that no longer matches `data_dir` — dropped, so the derivation below runs).
+fn socket_for(
+    override_name: Option<String>,
+    socket_owner: Option<&Path>,
+    data_dir: Option<&Path>,
+    relocated_data_dir: Option<&Path>,
+) -> String {
     if let Some(name) = override_name.filter(|s| !s.is_empty()) {
-        return name;
+        // An owner that still names this instance's data dir — or no owner at
+        // all, which is an operator typing the name — keeps the override.
+        let inherited_from_elsewhere =
+            matches!(socket_owner, Some(owner) if Some(owner) != data_dir);
+        if !inherited_from_elsewhere {
+            return name;
+        }
     }
     match relocated_data_dir {
         Some(dir) => derived_socket(dir),
@@ -1715,6 +1750,31 @@ fn ps_single_quote(s: &str) -> String {
 /// automations work with no other sessions. Idempotent — a no-op when the
 /// keeper already exists. `cli_path` is the absolute path to `thurbox-cli`.
 ///
+/// Whether the automation heartbeat keeper window is running right now.
+///
+/// The keeper is created implicitly by anything that arms an automation, is not
+/// a session, and so appears in no session listing. That made it the one thing
+/// thurbox puts on a tmux server that nothing could see or reclaim; this and
+/// [`stop_automation_heartbeat`] are what make it accountable.
+pub fn automation_heartbeat_running() -> bool {
+    list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW)
+}
+
+/// Stop the heartbeat keeper. Returns whether there was one to stop.
+///
+/// Automations stop firing headlessly until something arms it again — which any
+/// `automation` write does, so this is a pause rather than a removal.
+pub fn stop_automation_heartbeat() -> bool {
+    if !automation_heartbeat_running() {
+        return false;
+    }
+    let target = format!("{TMUX_SESSION}:{HEARTBEAT_WINDOW}");
+    local_mux_command(&["kill-window", "-t", &target])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
 pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
     TmuxBackend::local().ensure_session_configured()?;
     if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
@@ -2574,18 +2634,33 @@ mod tests {
         // existing instance moves, including one whose `THURBOX_DATA_DIR`
         // merely restates the default (which is what thurbox injects into
         // every session it spawns).
-        assert_eq!(socket_for(None, None), TMUX_SOCKET);
+        assert_eq!(socket_for(None, None, None, None), TMUX_SOCKET);
     }
 
     #[test]
     fn a_relocated_instance_gets_its_own_socket() {
-        let lab = socket_for(None, Some(Path::new("/tmp/lab/data")));
-        let other = socket_for(None, Some(Path::new("/tmp/other/data")));
+        let lab = socket_for(
+            None,
+            None,
+            Some(Path::new("/tmp/lab/data")),
+            Some(Path::new("/tmp/lab/data")),
+        );
+        let other = socket_for(
+            None,
+            None,
+            Some(Path::new("/tmp/other/data")),
+            Some(Path::new("/tmp/other/data")),
+        );
         assert_ne!(lab, TMUX_SOCKET, "a relocated instance leaves the default");
         assert_ne!(other, lab, "two of them do not share a server");
         assert_eq!(
             lab,
-            socket_for(None, Some(Path::new("/tmp/lab/data"))),
+            socket_for(
+                None,
+                None,
+                Some(Path::new("/tmp/lab/data")),
+                Some(Path::new("/tmp/lab/data"))
+            ),
             "and it finds the same server on the next run"
         );
         assert!(
@@ -2604,21 +2679,71 @@ mod tests {
         // One directory named two ways is one instance — otherwise a script
         // with a trailing slash would strand the sessions of one without it.
         assert_eq!(
-            socket_for(None, Some(Path::new("/tmp/lab/data"))),
-            socket_for(None, Some(Path::new("/tmp/lab/./data/"))),
+            socket_for(
+                None,
+                None,
+                Some(Path::new("/tmp/lab/data")),
+                Some(Path::new("/tmp/lab/data"))
+            ),
+            socket_for(
+                None,
+                None,
+                Some(Path::new("/tmp/lab/./data/")),
+                Some(Path::new("/tmp/lab/./data/"))
+            ),
         );
     }
 
     #[test]
     fn an_explicit_socket_wins_over_the_derivation() {
         assert_eq!(
-            socket_for(Some("thurbox-named".into()), Some(Path::new("/tmp/lab"))),
+            socket_for(
+                Some("thurbox-named".into()),
+                None,
+                Some(Path::new("/tmp/lab")),
+                Some(Path::new("/tmp/lab"))
+            ),
             "thurbox-named"
         );
         // Empty is unset, and then the relocation still applies.
         assert_eq!(
-            socket_for(Some(String::new()), Some(Path::new("/tmp/lab"))),
-            socket_for(None, Some(Path::new("/tmp/lab")))
+            socket_for(
+                Some(String::new()),
+                None,
+                Some(Path::new("/tmp/lab")),
+                Some(Path::new("/tmp/lab"))
+            ),
+            socket_for(
+                None,
+                None,
+                Some(Path::new("/tmp/lab")),
+                Some(Path::new("/tmp/lab"))
+            )
+        );
+    }
+
+    #[test]
+    fn an_inherited_socket_is_dropped_once_the_data_dir_moves() {
+        let lab = Path::new("/tmp/lab");
+        let home = Path::new("/home/me/.local/share/thurbox");
+        // What a pane carries: the spawning instance's socket, tagged with the
+        // data dir it belongs to. A child that stays put keeps it...
+        assert_eq!(
+            socket_for(Some("thurbox".into()), Some(home), Some(home), None),
+            "thurbox"
+        );
+        // ...and one that relocates itself does not: the tag no longer names
+        // where this instance's database is, so the name is somebody else's
+        // server and the derivation has to run instead.
+        assert_eq!(
+            socket_for(Some("thurbox".into()), Some(home), Some(lab), Some(lab)),
+            derived_socket(lab)
+        );
+        // An override with no tag at all is an operator naming a server
+        // outright, which still wins over everything.
+        assert_eq!(
+            socket_for(Some("thurbox-named".into()), None, Some(lab), Some(lab)),
+            "thurbox-named"
         );
     }
 

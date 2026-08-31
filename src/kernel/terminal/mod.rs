@@ -1226,6 +1226,11 @@ impl Terminals {
             .iter()
             .filter(|row| !self.live.contains_key(&row.id))
             .filter(|row| !self.attaching.contains_key(&row.id))
+            // A session parked by `session stop` has no pane *because that was
+            // asked for*. Everything below reads a missing pane as damage and
+            // repairs it, which here would mean the interface silently undoing
+            // the stop within a tick of it happening.
+            .filter(|row| !row.stopped)
             // A listing that predates the row cannot speak for it: a session
             // created after the last one is simply not in it, and relaunching on
             // that silence kills the agent the spawn just started. So everything
@@ -1685,6 +1690,7 @@ mod tests {
             display_order: None,
             worktree_count: 0,
             git: None,
+            stopped: false,
             hook_state: None,
             shell_backend_id: None,
             member_dirs: Vec::new(),

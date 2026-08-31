@@ -66,6 +66,7 @@ pub enum Action {
     /// List all automations.
     List,
     /// Show one automation by id.
+    #[command(alias = "get")]
     Show {
         /// Automation id.
         id: i64,
@@ -94,6 +95,7 @@ pub enum Action {
         disabled: bool,
     },
     /// Remove an automation.
+    #[command(alias = "delete")]
     Remove {
         /// Automation id.
         id: i64,

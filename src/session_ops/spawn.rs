@@ -1,6 +1,7 @@
 //! Headless session spawn — creates a local-tmux session without requiring
 //! the TUI event loop.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::session::{psmux_hook_rewrite_supported, ExtraRepo, HostDef, SessionConfig, SessionId};
@@ -32,7 +33,30 @@ pub struct SpawnRequest {
     /// Base branch to create the worktree from (default `main`).
     pub base_branch: Option<String>,
     /// Optional agent name — falls back to the registry default agent.
+    /// Ignored when [`command`](Self::command) is set: a raw command is its own
+    /// definition and names no registry entry.
     pub agent: Option<String>,
+    /// Launch this executable instead of an `agents.toml` entry.
+    ///
+    /// The session then carries its own [`crate::session::LaunchRecipe`] rather than a
+    /// reference into the registry, which is what lets anything at all be a
+    /// session — a shell, a REPL, a long-running script. It also has no
+    /// conversation address (no resume/fork arg groups), so such a session can
+    /// be restarted but never resumed or forked; see `docs/FEATURES.md`.
+    pub command: Option<String>,
+    /// Arguments for [`command`](Self::command), one token per element.
+    pub args: Vec<String>,
+    /// Extra environment for the launched process, on top of the `THURBOX_*`
+    /// identity vars. Applies to a registry agent as well as a raw command.
+    pub env: BTreeMap<String, String>,
+    /// Resume an existing agent conversation instead of starting a new one —
+    /// the id as the agent itself knows it.
+    ///
+    /// This is how a session that began somewhere else arrives: the checkout
+    /// comes in as a path, the conversation as this id. Drives the agent's
+    /// `resume_args`, so it needs an agent that declares them (fork still wins
+    /// over resume, per [`crate::session::AgentDef::build_args`]).
+    pub resume_session_id: Option<String>,
     /// Optional pre-generated agent session UUID. When unset one is generated
     /// so callers can return it to the user immediately.
     pub agent_session_id: Option<String>,
@@ -190,9 +214,15 @@ pub fn spawn_session_headless_with_progress(
         tracing::warn!("'{}': {note}", req.name);
     }
 
-    // Resolve the agent definition once; `agent_name` is derived from it so the
-    // persisted name always matches the def that's actually launched.
-    let mut agent_def = super::resolve_agent_def(req.agent.as_deref());
+    // Resolve what to launch once; `agent_name` is derived from it so the
+    // persisted name always matches what actually launched. A raw command is
+    // its own definition — see [`super::recipe_agent_def`] for why modelling it
+    // as an `AgentDef` rather than a second launch path is the whole trick.
+    let recipe = super::launch_recipe(&req);
+    let mut agent_def = match &recipe {
+        Some(r) => super::recipe_agent_def(r),
+        None => super::resolve_agent_def(req.agent.as_deref()),
+    };
     let agent_name = agent_def.name.clone();
 
     // Both ids are minted before anything happens, so the pre-create hook can
@@ -283,8 +313,18 @@ pub fn spawn_session_headless_with_progress(
         // What makes a fork a fork: the agent is told to resume the parent's
         // conversation into a new one.
         fork_session_id: req.fork_session_id.clone(),
+        // An adopted conversation: the id belongs to the agent's own store, not
+        // to thurbox. `build_args` puts fork ahead of resume, so a fork that
+        // also carries one is still a fork.
+        resume_session_id: req.resume_session_id.clone(),
         ..SessionConfig::default()
     };
+    // The caller's env goes on first so thurbox's own identity vars, injected
+    // next, always win: a session that could rename its own `THURBOX_SESSION`
+    // would report another session's state.
+    config
+        .env
+        .extend(req.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     super::inject_thurbox_env(&mut config, &agent_session_id, req.task_id);
 
     report(SpawnPhase::Backend);
@@ -356,6 +396,16 @@ pub fn spawn_session_headless_with_progress(
             );
         }
         return Err(format!("Failed to persist session: {e}"));
+    }
+
+    // A command session's recipe is the only record of how to start it again:
+    // there is no registry entry to re-resolve at restart, so the row carries
+    // it. Registry agents deliberately store nothing here and stay resolved by
+    // name, so editing `agents.toml` and restarting still takes effect.
+    if let Some(r) = &recipe {
+        if let Err(e) = db.set_launch_recipe(session_id, r) {
+            tracing::warn!("Failed to record launch recipe: {e}");
+        }
     }
 
     // Record the worktree's fork point so the code-review view can scope its

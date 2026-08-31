@@ -353,19 +353,13 @@ fn calling_task_id() -> Option<i64> {
     std::env::var("THURBOX_TASK").ok()?.parse().ok()
 }
 
-/// Resolve a session reference that may be either a UUID or a session name.
+/// Resolve a session reference — a UUID, a name or an id prefix.
+///
+/// This module had the only name-aware resolver in the CLI; it now shares the
+/// one every session verb uses ([`super::session_ref`]), which also refuses a
+/// name matching two sessions rather than picking one.
 fn resolve_uuid_or_name(db: &Database, reference: &str) -> Result<SharedSession, String> {
-    if let Ok(id) = reference.parse::<SessionId>() {
-        if let Some(session) = db
-            .get_session_by_id(id)
-            .map_err(|e| format!("get_session_by_id: {e}"))?
-        {
-            return Ok(session);
-        }
-    }
-    db.get_session_by_name(reference)
-        .map_err(|e| format!("get_session_by_name: {e}"))?
-        .ok_or_else(|| format!("Session not found: {reference}"))
+    super::session_ref::resolve(db, reference)
 }
 
 fn message_to_json(m: &SessionMessage) -> Value {

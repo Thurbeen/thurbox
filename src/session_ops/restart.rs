@@ -1,6 +1,10 @@
 //! Headless session restart — tears down the tmux window and re-launches
 //! the agent CLI, resuming the existing conversation when the agent supports
 //! it and a transcript exists, starting fresh otherwise.
+//!
+//! And its two halves on their own: [`stop_session_headless`] kills the window
+//! and leaves everything else standing, [`start_session_headless`] puts a
+//! window back. A restart is those two in a row, which is why they live here.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,6 +36,7 @@ pub(crate) fn build_restart_plan(
     session: &SharedSession,
     host: Option<&crate::session::HostDef>,
     hooks_enabled: bool,
+    recipe: Option<&crate::session::LaunchRecipe>,
 ) -> Result<RestartPlan, String> {
     let agent_session_id = session.agent_session_id.clone().ok_or_else(|| {
         format!(
@@ -51,8 +56,22 @@ pub(crate) fn build_restart_plan(
         backend: Some(session.backend_type.clone()),
         ..SessionConfig::default()
     };
+    // A command session's own env is part of what it *is*, so it goes on before
+    // thurbox's identity vars — which must still win — exactly as at spawn.
+    if let Some(r) = recipe {
+        config
+            .env
+            .extend(r.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
     super::inject_thurbox_env(&mut config, &agent_session_id, None);
-    let def = super::resolve_agent_def(Some(&config.agent));
+    // Where a restart gets what to run. A registry agent is resolved by name
+    // *now* rather than replayed, so an `agents.toml` edit takes effect on the
+    // next restart. A command session has no entry to resolve, so its persisted
+    // recipe is replayed verbatim — the reason the recipe is stored at all.
+    let def = match recipe {
+        Some(r) => super::recipe_agent_def(r),
+        None => super::resolve_agent_def(Some(&config.agent)),
+    };
     // The same adaptation a spawn does, so a restart lands the agent exactly
     // where the spawn did: `{home}` resolved against the machine it runs on
     // (omp's `--resume {home}/…` must reopen the same JSONL) and hook configs
@@ -86,6 +105,63 @@ pub(crate) fn build_restart_plan(
         cwd: config.cwd,
         env: config.env,
     })
+}
+
+/// Park a session: kill its pane, keep everything else.
+///
+/// The row, the checkout, the branch, the agent's own conversation on disk all
+/// survive — only the process and its window go. That is the difference from a
+/// delete, and it is the operation that was missing: until now the only way to
+/// reclaim a heavy agent's pane headlessly was to delete the session, which
+/// also removed its worktrees and cancelled its scheduled commands.
+///
+/// The mark is written **before** the kill. Three subsystems repair a session
+/// that has no pane (the interface's respawn of surveyed rows, a peer's
+/// `restart --if-missing`, extension self-heal), and the window between killing
+/// and recording is exactly when one of them would put it back.
+pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<bool, String> {
+    let session = db
+        .get_session_by_id(session_id)
+        .map_err(|e| format!("Failed to load session: {e}"))?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+
+    db.set_session_stopped(session_id, true)
+        .map_err(|e| format!("Failed to mark the session stopped: {e}"))?;
+
+    let killed = if crate::session::is_remote_backend(&session.backend_type) {
+        match super::resolve_host(&session.backend_type).flatten() {
+            Some(host) if !session.backend_id.is_empty() => {
+                crate::agent::tmux::kill_pane_remote(&host, &session.backend_id).is_ok()
+            }
+            // An unreachable host is not a reason to refuse: the mark is what
+            // makes the stop stick, and the pane is reclaimed by the next
+            // teardown that can reach it.
+            _ => false,
+        }
+    } else {
+        crate::agent::tmux::kill_window(&session.name, &session.backend_id).is_ok()
+    };
+
+    // A stopped session reports nothing, so a leftover `working` would sit on
+    // the status line for as long as it stayed parked — and the quiescence pass
+    // that would normally correct it has no terminal to measure.
+    let _ = db.clear_hook_state(session_id);
+    Ok(killed)
+}
+
+/// Un-park a session: put a window back, resuming the conversation the same way
+/// a restart does.
+///
+/// Clearing the mark first is what makes this work at all — the relaunch below
+/// refuses a stopped session on purpose, so that a peer's `restart --if-missing`
+/// cannot resurrect one. `start` is the one caller allowed to say otherwise.
+pub fn start_session_headless(
+    db: &Database,
+    session_id: SessionId,
+) -> Result<RestartReport, String> {
+    db.set_session_stopped(session_id, false)
+        .map_err(|e| format!("Failed to clear the stopped mark: {e}"))?;
+    restart_session_headless_with(db, session_id, true)
 }
 
 /// What a restart has to say beyond having happened.
@@ -162,6 +238,18 @@ pub fn restart_session_headless_with(
     }
 
     if if_missing {
+        // "Relaunch what is missing" is what a peer asks after a reboot, and a
+        // parked session is missing on purpose. Only `session start` clears the
+        // mark, so this is the one place that has to check it — refusing here
+        // is what makes `stop` outlive the next sync tick.
+        if db
+            .session_stopped_at(session_id)
+            .unwrap_or_default()
+            .is_some()
+        {
+            tracing::debug!("'{}' is stopped; not relaunching", session.name);
+            return Ok(RestartReport::default());
+        }
         let alive = crate::agent::tmux::agent_window_alive(host.as_ref(), &session.name)
             .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
         if alive {
@@ -171,7 +259,8 @@ pub fn restart_session_headless_with(
     }
 
     let hooks_enabled = super::hooks_enabled(db);
-    let plan = build_restart_plan(&session, host.as_ref(), hooks_enabled)?;
+    let recipe = db.load_launch_recipe(session_id).unwrap_or_default();
+    let plan = build_restart_plan(&session, host.as_ref(), hooks_enabled, recipe.as_ref())?;
 
     // The user's say, with the plan built and nothing yet killed: a refusal
     // leaves the running window running.
@@ -281,7 +370,7 @@ mod tests {
     fn restart_plan_requires_agent_session_id() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let err = build_restart_plan(&session(None, None), None, true).unwrap_err();
+        let err = build_restart_plan(&session(None, None), None, true, None).unwrap_err();
         assert!(err.contains("agent_session_id"), "got: {err}");
     }
 
@@ -290,7 +379,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let sess = session(Some("agent-conv-uuid"), Some(PathBuf::from("/tmp/repo")));
-        let plan = build_restart_plan(&sess, None, true).unwrap();
+        let plan = build_restart_plan(&sess, None, true, None).unwrap();
 
         // The thurbox session key and the agent conversation id are both present
         // and distinct, exactly as a fresh spawn would inject them.
@@ -307,8 +396,13 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let primary = temp.path().join("primary");
         std::fs::create_dir_all(&primary).unwrap();
-        let plan =
-            build_restart_plan(&session(Some("sid"), Some(primary.clone())), None, true).unwrap();
+        let plan = build_restart_plan(
+            &session(Some("sid"), Some(primary.clone())),
+            None,
+            true,
+            None,
+        )
+        .unwrap();
         assert_eq!(plan.cwd, Some(primary));
     }
 
@@ -324,7 +418,7 @@ mod tests {
         let mut sess = session(Some("sid-multi"), Some(primary.clone()));
         sess.additional_dirs = vec![extra];
 
-        let plan = build_restart_plan(&sess, None, true).unwrap();
+        let plan = build_restart_plan(&sess, None, true, None).unwrap();
         // ≥2 members → the symlink workspace, not the primary repo itself.
         assert_ne!(plan.cwd.as_deref(), Some(primary.as_path()));
         assert!(plan.cwd.is_some());
@@ -355,7 +449,7 @@ mod tests {
         let mut sess = session(Some("agent-conv-uuid"), Some(PathBuf::from("/srv/repo")));
         sess.backend_type = "ssh:devbox".into();
 
-        let plan = build_restart_plan(&sess, None, true).unwrap();
+        let plan = build_restart_plan(&sess, None, true, None).unwrap();
         assert_eq!(plan.env.get("THURBOX_SESSION"), Some(&sess.id.to_string()));
         assert!(!plan.env.contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
         assert!(!plan.env.contains_key("THURBOX_METRICS_DIR"));

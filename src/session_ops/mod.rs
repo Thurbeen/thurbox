@@ -137,6 +137,17 @@ pub(crate) fn thurbox_env_overrides() -> Vec<(String, String)> {
         crate::agent::tmux::SOCKET_OVERRIDE_ENV.into(),
         crate::agent::tmux::local_socket_name(),
     ));
+    // Which instance that socket belongs to. A pane's `thurbox-cli` inherits
+    // both, and they agree — but a child that relocates itself out of this
+    // instance (a sandbox, `tests/`, an agent exporting its own
+    // `THURBOX_DATA_DIR`) must not keep a socket naming *this* server. Pairing
+    // the two is what lets `agent::tmux::socket_for` tell them apart.
+    if let Some(dir) = crate::paths::data_directory() {
+        vars.push((
+            crate::agent::tmux::SOCKET_OWNER_ENV.into(),
+            dir.to_string_lossy().into(),
+        ));
+    }
     vars
 }
 
@@ -227,6 +238,173 @@ fn session_file_template(def: &crate::session::AgentDef) -> Option<String> {
 /// chain (requested name → registry default → built-in default), so spawn and
 /// restart agree on both the launched def *and* its `.name` without re-running
 /// the seed. `None`/empty falls straight through to the registry default.
+/// The launcher command for an off-local host — `ssh <opts> <dest>` or
+/// `wsl.exe -d <distro>`.
+///
+/// `session` is a pure-data leaf, so the `HostDef` → launcher conversion cannot
+/// live on the type; `git::command` carries the same one-liner for its own
+/// side of the boundary.
+pub fn host_launcher(host: &crate::session::HostDef) -> crate::shell::HostLauncher<'_> {
+    if host.is_wsl() {
+        crate::shell::HostLauncher::Wsl {
+            distro: host.distro_name(),
+        }
+    } else {
+        crate::shell::HostLauncher::Ssh {
+            destination: &host.destination,
+            ssh_opts: &host.ssh_opts,
+        }
+    }
+}
+
+/// Run a command in `cwd`, on `host` when the session lives off this machine.
+///
+/// The remote form is one `sh -c` because `cd` and the command have to share a
+/// shell, and every word is POSIX-quoted so the host's login shell re-splitting
+/// cannot reinterpret an argument containing a space. Lives here rather than in
+/// `cli` because knowing how to reach a host — and how to quote for one — is
+/// `session_ops`' job; `cli` may not reach into `shell` at all.
+pub fn exec_in_dir(
+    host: Option<&crate::session::HostDef>,
+    cwd: &std::path::Path,
+    program: &str,
+    args: &[String],
+) -> std::io::Result<std::process::Output> {
+    match host {
+        None => std::process::Command::new(program)
+            .args(args)
+            .current_dir(cwd)
+            .output(),
+        Some(host) => {
+            let script = format!(
+                "cd {} && exec {}",
+                crate::shell::posix_quote(&cwd.to_string_lossy()),
+                std::iter::once(program)
+                    .chain(args.iter().map(String::as_str))
+                    .map(crate::shell::posix_quote)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            host_launcher(host).shell_c(&script).output()
+        }
+    }
+}
+
+/// Fork a session: a new one beside it, on the same directory and branch, with
+/// the agent asked to continue the parent's conversation into a fresh one.
+///
+/// What makes it a fork rather than a second session in the same place is
+/// `fork_session_id`, which drives the agent's `fork_args`. An agent that
+/// declares none — or a command session, which has no conversation at all —
+/// still gets a working session here; it simply starts empty, and the caller is
+/// told so by the returned session's own `agent_session_id` differing with no
+/// parent conversation behind it.
+///
+/// Shared by the interface's fork command and `thurbox-cli session fork`.
+pub fn fork_session_headless(
+    db: &crate::storage::Database,
+    id: crate::session::SessionId,
+    name: &str,
+) -> Result<spawn::SpawnResult, String> {
+    let source = db
+        .get_session_by_id(id)
+        .map_err(|e| format!("get session: {e}"))?
+        .ok_or_else(|| format!("session not found: {id}"))?;
+
+    // The parent's *working directory* — its worktree for a worktree session —
+    // not the repository root. A cwd-scoped agent (`codex resume --last`,
+    // `opencode --continue`) resolves "the last session here" from it, so the
+    // repo root would find nothing to continue.
+    let repo_path = source
+        .cwd
+        .clone()
+        .or_else(|| {
+            source
+                .worktrees
+                .first()
+                .map(|worktree| worktree.worktree_path.clone())
+        })
+        .ok_or("the source session has no directory to fork in")?;
+
+    let name = if name.is_empty() {
+        format!("{}-fork", source.name)
+    } else {
+        name.to_string()
+    };
+
+    // A command session has no registry entry, so the fork has to carry the
+    // recipe rather than the agent name — otherwise it would look up an agent
+    // called `bash` and find nothing.
+    let recipe = db.load_launch_recipe(id).unwrap_or_default();
+
+    let request = spawn::SpawnRequest {
+        name,
+        repo_path,
+        // No new worktree (the defaults): a fork works beside its parent, on
+        // the same branch.
+        agent: recipe.is_none().then(|| source.agent.clone()),
+        command: recipe.as_ref().map(|r| r.command.clone()),
+        args: recipe.as_ref().map(|r| r.args.clone()).unwrap_or_default(),
+        env: recipe.map(|r| r.env).unwrap_or_default(),
+        // A fork of a remote session belongs on that session's host, or it would
+        // silently become a local session pointed at a path that is not here.
+        host: resolve_host(&source.backend_type)
+            .flatten()
+            .map(|host| host.name),
+        parent_session_id: Some(source.id),
+        // What actually makes it a fork: the agent resumes the parent's
+        // conversation into a new one (`fork_args`).
+        fork_session_id: source.agent_session_id.clone(),
+        // Shared, not created — so the fork shows its branch and can be synced.
+        inherit_worktrees: source.worktrees.clone(),
+        ..Default::default()
+    };
+    spawn::spawn_session_headless(db, request)
+}
+
+/// The [`LaunchRecipe`](crate::session::LaunchRecipe) a spawn request carries,
+/// or `None` when it names a registry agent instead.
+///
+/// One place decides "is this a command session", so the spawn path, the
+/// restart path and the persistence all agree on the same discriminant: a
+/// non-empty `command`.
+pub(crate) fn launch_recipe(req: &spawn::SpawnRequest) -> Option<crate::session::LaunchRecipe> {
+    let command = req.command.as_deref().filter(|c| !c.is_empty())?;
+    Some(crate::session::LaunchRecipe {
+        command: command.to_string(),
+        args: req.args.clone(),
+        env: req.env.clone(),
+    })
+}
+
+/// Present a raw command as an [`AgentDef`](crate::session::AgentDef), so every
+/// launch path downstream is the one that already exists.
+///
+/// Modelling a command session as a definition rather than a second kind of
+/// launch is what keeps this small: `build_agent_invocation`, the remote
+/// adaptation and the restart plan all take an `AgentDef` and none of them
+/// learns a new shape. The empty arg groups are the substance, not filler —
+/// they *are* the statement that this session has no conversation to resume or
+/// fork, which is why `session resume`/`fork` decline it rather than launching
+/// something that silently starts fresh.
+///
+/// The name is the command's file stem so the session reads as `bash` rather
+/// than as a path. It is not looked up anywhere: hook coverage keys on known
+/// agent names, and an unknown one correctly reports uncovered.
+pub(crate) fn recipe_agent_def(recipe: &crate::session::LaunchRecipe) -> crate::session::AgentDef {
+    let name = std::path::Path::new(&recipe.command)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| recipe.command.clone());
+    crate::session::AgentDef {
+        name,
+        command: recipe.command.clone(),
+        args: recipe.args.clone(),
+        ..crate::session::AgentDef::default()
+    }
+}
+
 pub(crate) fn resolve_agent_def(requested: Option<&str>) -> crate::session::AgentDef {
     let registry = crate::agent::agent_config::load_or_seed();
     requested

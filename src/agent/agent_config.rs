@@ -27,7 +27,7 @@ use crate::session::{AgentDef, AgentRegistry};
 /// without any resume group simply start fresh on restart. No model is passed —
 /// each agent uses its own default config. Bake extra flags (including a model)
 /// into `args` if you want them.
-pub const BUILTIN_AGENTS_TOML: &str = r#"# Thurbox coding-agent definitions.
+const BUILTIN_AGENTS_HEAD: &str = r#"# Thurbox coding-agent definitions.
 #
 # Each [[agents]] entry describes how to launch one coding-agent CLI. The
 # `*_args` groups are appended only when their value is present, with {id}
@@ -120,8 +120,56 @@ name = "omp"
 command = "omp"
 resume_args = ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
 new_session_args = ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
+"#;
 
-# ──────────────────────────────────────────────────────────────────────────
+/// The `shell` built-in, spelled for the platform's own interactive shell.
+///
+/// Split out of the seed document because it is the one entry whose `command`
+/// is not the same string everywhere: this repo supports native Windows, where
+/// the multiplexer is psmux and `bash` is not the shell.
+///
+/// `-i` is load-bearing on POSIX, not decoration. A plain `bash` in a pane
+/// executes what is sent to it but renders no prompt and no echo, which starves
+/// anything reading the screen to decide whether the session is ready — the
+/// pane looks blank and working at the same time.
+#[cfg(not(windows))]
+const SHELL_AGENT_TOML: &str = r#"
+# A plain interactive shell. The one built-in that is not a coding agent: it
+# exists so a session can be *anything* — you run whatever you like in it, and
+# an external driver can start its own tool with its own flags. It declares no
+# resume/fork groups because a shell has no conversation to resume: restarting
+# one replays this recipe in the same directory (its history and cwd live on
+# disk, so it barely notices), and `--resume` is refused rather than silently
+# starting fresh.
+[[agents]]
+name = "shell"
+command = "bash"
+args = ["-i"]
+"#;
+
+/// [`SHELL_AGENT_TOML`] for native Windows, where the multiplexer is psmux and
+/// the interactive shell is PowerShell. `-NoLogo` only drops the banner; the
+/// session is interactive because no `-Command` is passed.
+#[cfg(windows)]
+const SHELL_AGENT_TOML: &str = r#"
+# A plain interactive shell — see the POSIX note in agent_config.rs. Declares no
+# resume/fork groups: a shell has no conversation to resume.
+[[agents]]
+name = "shell"
+command = "powershell"
+args = ["-NoLogo"]
+"#;
+
+/// The seed document: the built-in agent definitions as they are written to a
+/// fresh `agents.toml`, and the source [`builtin_registry`] parses.
+///
+/// A function rather than a `const` because one entry (`shell`) differs by
+/// platform, and the seeded file has to say what will actually launch there.
+pub fn builtin_agents_toml() -> String {
+    format!("{BUILTIN_AGENTS_HEAD}{SHELL_AGENT_TOML}{BUILTIN_AGENTS_TAIL}")
+}
+
+const BUILTIN_AGENTS_TAIL: &str = r#"# ──────────────────────────────────────────────────────────────────────────
 # Add your own agent (uncomment and edit)
 # ──────────────────────────────────────────────────────────────────────────
 #
@@ -180,7 +228,7 @@ pub fn agents_config_path() -> Option<PathBuf> {
 /// Parse the built-in definitions. Infallible in practice (the const is a
 /// valid document); falls back to an empty registry if that ever changes.
 pub fn builtin_registry() -> AgentRegistry {
-    toml::from_str(BUILTIN_AGENTS_TOML).unwrap_or(AgentRegistry {
+    toml::from_str(&builtin_agents_toml()).unwrap_or(AgentRegistry {
         config_version: None,
         default: String::new(),
         agents: Vec::new(),
@@ -234,7 +282,7 @@ fn seed_agents_toml(path: &std::path::Path) -> (AgentRegistry, Vec<String>) {
             );
         }
     }
-    if let Err(e) = std::fs::write(path, BUILTIN_AGENTS_TOML) {
+    if let Err(e) = std::fs::write(path, builtin_agents_toml()) {
         return (
             builtin_registry(),
             vec![format!("Failed to seed agents.toml: {e}")],
@@ -470,7 +518,7 @@ mod tests {
 
     /// The seed must carry copy-pasteable examples (add-your-own-agent +
     /// pin-a-model) but keep them commented, so parsing still yields exactly
-    /// the eight built-ins — a fresh install boots on pure defaults.
+    /// the built-ins — a fresh install boots on pure defaults.
     #[test]
     fn seed_documents_examples_yet_stays_builtin_only() {
         for marker in [
@@ -480,17 +528,25 @@ mod tests {
             "[\"--model\", \"opus\"]",
         ] {
             assert!(
-                BUILTIN_AGENTS_TOML.contains(marker),
+                builtin_agents_toml().contains(marker),
                 "agents.toml seed must document example '{marker}'"
             );
         }
         // Examples are commented, so the seed parses to just the built-ins.
         let reg = builtin_registry();
         assert_eq!(reg.default, "claude");
-        assert_eq!(reg.agents.len(), 9, "examples must stay commented out");
+        assert_eq!(reg.agents.len(), 10, "examples must stay commented out");
         assert!(
             reg.get("claude-opus").is_none(),
             "example must not register"
+        );
+        // The platform's own shell, composed into the seed separately — a
+        // session must be able to be something other than a coding agent.
+        let shell = reg.get("shell").expect("the shell built-in is seeded");
+        assert!(!shell.command.is_empty(), "the shell names an executable");
+        assert!(
+            shell.resume_args.is_empty() && shell.fork_args.is_empty(),
+            "a shell has no conversation to resume or fork"
         );
     }
 

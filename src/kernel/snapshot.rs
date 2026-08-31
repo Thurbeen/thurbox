@@ -88,6 +88,15 @@ pub struct SessionRow {
     /// it, restarting forgets the shell you had open and leaves its window
     /// orphaned, and the next `shell` key spawns a second one beside it.
     pub shell_backend_id: Option<String>,
+    /// Whether this session was **parked on purpose** — its pane was killed by
+    /// `session stop`, and its row and checkout are intact.
+    ///
+    /// The interface relaunches a surveyed session that has no pane, because
+    /// normally that means its agent died. A stopped session looks identical
+    /// from the outside and is the opposite case: relaunching it would undo the
+    /// very thing the operator asked for. Nothing distinguishes the two but
+    /// this flag, which is why it is published rather than derived.
+    pub stopped: bool,
     /// The raw persisted hook state, before `derive_status` interprets it.
     ///
     /// Kept beside the derived `status` because the two answer different
@@ -829,6 +838,7 @@ impl SnapshotStore {
         };
         let hooks = database.load_hook_states().unwrap_or_default();
         let bases = database.load_base_branches().unwrap_or_default();
+        let stopped = database.load_stopped_sessions().unwrap_or_default();
 
         self.git.drain();
 
@@ -872,6 +882,7 @@ impl SnapshotStore {
                     worktree_count: session.worktrees.len(),
                     git: None,
                     shell_backend_id: session.shell_backend_id.clone(),
+                    stopped: stopped.contains(&session.id),
                     hook_state,
                     member_dirs,
                 }

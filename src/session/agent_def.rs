@@ -24,7 +24,7 @@ pub const ID_PLACEHOLDER: &str = "{id}";
 /// driving value is present (the session is being resumed/forked, etc.), with
 /// `{id}` substituted token-by-token. This avoids any "unresolved placeholder"
 /// heuristics: a group with no value is simply omitted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentDef {
     /// Display + lookup name (e.g. `"claude"`). Unique within a registry.
     pub name: String,

@@ -94,6 +94,7 @@ fn snapshot(sessions: usize) -> Snapshot {
                 id: format!("session-{nth:04}"),
                 name: format!("fix-the-thing-number-{nth}"),
                 agent: "claude".into(),
+                stopped: false,
                 status: ["idle", "working", "blocked", "done"][nth % 4].into(),
                 cwd: Some(format!("{repo}/worktrees/w{nth}").into()),
                 repo: Some(repo.into()),

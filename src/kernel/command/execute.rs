@@ -378,65 +378,12 @@ fn bookmark_add(
 }
 
 /// Fork a session: a new one on the same repository, recording its parent.
+///
+/// The work is [`crate::session_ops::fork_session_headless`], so the interface
+/// and `thurbox-cli session fork` produce the same session rather than two
+/// implementations that drift.
 fn fork(db: &Database, id: SessionId, name: &str) -> Result<(), String> {
-    let source = db
-        .get_session_by_id(id)
-        .map_err(|e| format!("get session: {e}"))?
-        .ok_or_else(|| format!("session not found: {id}"))?;
-
-    // The parent's *working directory* — its worktree for a worktree session —
-    // not the repository root. A cwd-scoped agent (`codex resume --last`,
-    // `opencode --continue`) resolves "the last session here" from it, so the
-    // repo root would find nothing to continue.
-    let repo_path = source
-        .cwd
-        .clone()
-        .or_else(|| {
-            source
-                .worktrees
-                .first()
-                .map(|worktree| worktree.worktree_path.clone())
-        })
-        .ok_or("the source session has no directory to fork in")?;
-
-    let name = if name.is_empty() {
-        format!("{}-fork", source.name)
-    } else {
-        name.to_string()
-    };
-
-    let request = crate::session_ops::spawn::SpawnRequest {
-        name,
-        repo_path,
-        // No new worktree (the defaults): a fork works beside its parent, on
-        // the same branch.
-        agent: Some(source.agent.clone()),
-        // A fork of a remote session belongs on that session's host, or it would
-        // silently become a local session pointed at a path that is not here.
-        host: host_name_for(&source.backend_type),
-        parent_session_id: Some(source.id),
-        // What actually makes it a fork: the agent resumes the parent's
-        // conversation into a new one (`fork_args`).
-        fork_session_id: source.agent_session_id.clone(),
-        // Shared, not created — so the fork shows its branch and can be synced.
-        inherit_worktrees: source.worktrees.clone(),
-        ..Default::default()
-    };
-    crate::session_ops::spawn::spawn_session_headless(db, request).map(|_| ())
-}
-
-/// Bring a session's worktree up to date with the branch it came from.
-///
-/// The bare host name behind a persisted backend (`ssh:devbox` → `devbox`), or
-/// `None` for a local session.
-///
-/// `SpawnRequest.host` names a host as `hosts.toml` does, while a session row
-/// stores the backend it runs on — the registry is what maps between them, and
-/// a name it does not know is treated as local rather than guessed at.
-fn host_name_for(backend_type: &str) -> Option<String> {
-    crate::session_ops::resolve_host(backend_type)
-        .flatten()
-        .map(|host| host.name)
+    crate::session_ops::fork_session_headless(db, id, name).map(|_| ())
 }
 
 /// Refuses rather than asking the user to be careful: a sync that discards

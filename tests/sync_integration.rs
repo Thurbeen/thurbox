@@ -293,3 +293,63 @@ fn db_multiple_sessions_created_and_deleted() {
     assert!(!remaining_ids.contains(&sid2));
     assert!(remaining_ids.contains(&sid3));
 }
+
+/// `thurbox-cli watch` streams changes instead of making its reader poll.
+///
+/// Driven through the real binary against a real database file, because the
+/// property under test is exactly the cross-process one: the writer is a
+/// different connection, and `PRAGMA data_version` is what tells the reader
+/// that. An in-process test would share a connection and never move it.
+#[test]
+fn watch_emits_a_line_when_another_process_changes_a_session() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).expect("mkdir");
+
+    // A relocated instance: its own database, and its own tmux socket name,
+    // so nothing here can reach the operator's server even by accident.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["watch", "--for-secs", "20"])
+        .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
+        .env("XDG_DATA_HOME", dir.path().join("xdg-data"))
+        .env("XDG_CONFIG_HOME", dir.path().join("xdg-config"))
+        .env("THURBOX_DATA_DIR", &data)
+        .env_remove("THURBOX_SOCKET")
+        .env_remove("THURBOX_SOCKET_FOR")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn watch");
+
+    // Give the watcher its baseline read before changing anything, so the write
+    // below is unambiguously a *change* rather than part of the initial state.
+    std::thread::sleep(std::time::Duration::from_millis(700));
+
+    let db = Database::open(&data.join("thurbox.db")).expect("open the same database");
+    let id = SessionId::default();
+    db.upsert_session(&make_session(id, "watched"))
+        .expect("write");
+
+    // Read one line, with the child killed either way so a failure cannot leave
+    // a process behind.
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Some(Ok(line)) = BufReader::new(stdout).lines().next() {
+            let _ = tx.send(line);
+        }
+    });
+    let line = rx.recv_timeout(std::time::Duration::from_secs(15));
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let line = line.expect("watch should emit a line when a session appears");
+    let event: serde_json::Value = serde_json::from_str(&line).expect("one JSON object per line");
+    assert_eq!(event["event"].as_str(), Some("created"));
+    assert_eq!(event["name"].as_str(), Some("watched"));
+    assert_eq!(event["session"].as_str(), Some(id.to_string().as_str()));
+}

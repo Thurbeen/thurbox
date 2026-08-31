@@ -132,3 +132,45 @@ fn an_explicit_socket_still_wins() {
         "THURBOX_SOCKET names the server outright, relocated or not"
     );
 }
+
+/// The socket thurbox injects into a pane belongs to the instance that spawned
+/// it. A child that *relocates itself* out of that instance must not keep it.
+///
+/// `session_ops::thurbox_env_overrides` puts `THURBOX_DATA_DIR` and
+/// `THURBOX_SOCKET` on every pane together, so they arrive consistent. The
+/// hazard is the next step: a sandbox, a test harness or an agent that exports
+/// a *different* `THURBOX_DATA_DIR` inside that pane inherits a socket naming
+/// the operator's server, and the derivation that exists to prevent exactly
+/// this never runs. Isolating the database while silently sharing the tmux
+/// server is worse than not isolating at all — it looks contained and is not.
+#[test]
+fn an_inherited_socket_loses_to_a_relocation() {
+    let env = Env::new();
+    let default_data = env.default_data_dir();
+    let default_socket = env.socket(&[]);
+    let lab = env.path("lab");
+
+    // Exactly what a pane carries: the pair, agreeing with each other.
+    let inherited: [(&str, &OsStr); 3] = [
+        ("THURBOX_DATA_DIR", lab.as_os_str()),
+        ("THURBOX_SOCKET", OsStr::new(default_socket.as_str())),
+        ("THURBOX_SOCKET_FOR", default_data.as_os_str()),
+    ];
+    assert_eq!(
+        env.socket(&inherited),
+        env.socket(&[("THURBOX_DATA_DIR", lab.as_os_str())]),
+        "a socket inherited from another instance does not survive a relocation"
+    );
+
+    // The same inherited pair, with the data dir left alone: nothing was
+    // relocated, so the injected socket is still the right answer.
+    assert_eq!(
+        env.socket(&[
+            ("THURBOX_DATA_DIR", default_data.as_os_str()),
+            ("THURBOX_SOCKET", OsStr::new(default_socket.as_str())),
+            ("THURBOX_SOCKET_FOR", default_data.as_os_str()),
+        ]),
+        default_socket,
+        "an agent's hook still finds the server its session lives on"
+    );
+}

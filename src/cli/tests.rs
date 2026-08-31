@@ -857,3 +857,87 @@ fn the_output_flags_are_global_and_parse_after_a_subcommand() {
     let cli = Cli::parse_from(["thurbox-cli", "session", "list", "--fields", "name,id"]);
     assert_eq!(cli.fields.as_deref(), Some("name,id"));
 }
+
+#[test]
+fn env_tokens_split_on_the_first_equals_only() {
+    // A value may itself contain `=` (`--env FLAGS=-Dx=1`), so only the first
+    // one separates. An empty value is a value: it sets the variable to the
+    // empty string, which is different from leaving it unset.
+    let env = sessions::parse_env(&[
+        "A=1".to_string(),
+        "FLAGS=-Dx=1 -Dy=2".to_string(),
+        "EMPTY=".to_string(),
+    ])
+    .expect("well-formed");
+    assert_eq!(env.get("A").map(String::as_str), Some("1"));
+    assert_eq!(env.get("FLAGS").map(String::as_str), Some("-Dx=1 -Dy=2"));
+    assert_eq!(env.get("EMPTY").map(String::as_str), Some(""));
+
+    // A token that is not an assignment is a usage error, named as one — the
+    // alternative is a variable silently not set.
+    assert!(sessions::parse_env(&["NOPE".to_string()]).is_err());
+    assert!(sessions::parse_env(&["=novalue".to_string()]).is_err());
+}
+
+#[test]
+fn one_vocabulary_reads_and_one_destroys_across_every_noun() {
+    // Four spellings of "read one" and three of "destroy" had grown across the
+    // nouns. The canonical pair is `get`/`delete`; every previous spelling is
+    // kept as an alias so nothing that worked stops working — this pins both
+    // halves, since an alias that silently stopped resolving would be a
+    // breaking change nobody would notice until a script failed.
+    let get = Cli::try_parse_from(["thurbox-cli", "session", "show", "some-ref"]);
+    assert!(get.is_ok(), "session show is an alias for get");
+
+    for (noun, verb) in [("task", "get"), ("automation", "get")] {
+        assert!(
+            Cli::try_parse_from(["thurbox-cli", noun, verb, "1"]).is_ok(),
+            "{noun} {verb} should resolve"
+        );
+    }
+    for (noun, verb) in [("task", "delete"), ("automation", "delete")] {
+        assert!(
+            Cli::try_parse_from(["thurbox-cli", noun, verb, "1"]).is_ok(),
+            "{noun} {verb} should resolve"
+        );
+    }
+    assert!(
+        Cli::try_parse_from(["thurbox-cli", "session", "remove", "some-ref"]).is_ok(),
+        "session remove is an alias for delete"
+    );
+}
+
+#[test]
+fn a_command_session_and_an_agent_session_are_mutually_exclusive() {
+    // `--command` says "this is its own definition"; `--agent` says "look it up
+    // in the registry". Accepting both would leave which one launched
+    // ambiguous, and the answer would only show up at restart.
+    let both = Cli::try_parse_from([
+        "thurbox-cli",
+        "session",
+        "create",
+        "--name",
+        "x",
+        "--repo-path",
+        "/tmp",
+        "--agent",
+        "claude",
+        "--command",
+        "bash",
+    ]);
+    assert!(both.is_err(), "--agent and --command must not combine");
+
+    // And `--arg` is meaningless without something to pass it to.
+    let orphan_arg = Cli::try_parse_from([
+        "thurbox-cli",
+        "session",
+        "create",
+        "--name",
+        "x",
+        "--repo-path",
+        "/tmp",
+        "--arg",
+        "-i",
+    ]);
+    assert!(orphan_arg.is_err(), "--arg requires --command");
+}

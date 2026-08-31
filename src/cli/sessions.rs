@@ -10,6 +10,14 @@ use crate::session::SessionId;
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
+// `Create` carries every spawn option and is far larger than `Stop`/`Key`/…,
+// which is what this lint measures. Boxing it is what the lint wants and what
+// clap cannot take (a `Subcommand` variant's fields are the argument
+// definitions), and the enum is constructed exactly once per process from
+// argv — so the size difference costs one short-lived stack value, not a hot
+// path. `cli/automations.rs` carries the same kind of targeted allow for the
+// same reason.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Action {
     /// List all active sessions.
@@ -34,7 +42,12 @@ pub enum Action {
         #[arg(long)]
         verify: bool,
     },
-    /// Get a session by UUID.
+    /// Get a session by name, UUID, or unique id prefix.
+    ///
+    /// `show` is an alias: the CLI reads one thing with `get` and lists with
+    /// `list` everywhere, and the other spellings other nouns grew are kept so
+    /// nothing that already worked stops working.
+    #[command(alias = "show")]
     ///
     /// Reports the session's agent state with the age of that report, the
     /// coverage of its agent's hooks, and — for a local session — what the
@@ -82,8 +95,42 @@ pub enum Action {
         /// worktree / branch). Makes a multi-repo session.
         #[arg(long = "add-dir")]
         add_dir: Vec<String>,
+        /// Launch this executable instead of an agent from `agents.toml`.
+        ///
+        /// Makes the session *anything* — a shell, a REPL, a build watcher, a
+        /// tool with flags thurbox has never heard of. The command is stored
+        /// with the session and replayed on restart, since there is no registry
+        /// entry to look up. It has no conversation, so `--resume` is refused
+        /// for it; `--agent shell` is the ready-made version of this.
+        #[arg(long, conflicts_with = "agent")]
+        command: Option<String>,
+        /// One argument for `--command` (repeatable, in order). Passed to the
+        /// process as-is — no shell sees it, so quoting is not your problem.
+        #[arg(long = "arg", requires = "command")]
+        arg: Vec<String>,
+        /// Extra environment as `KEY=VALUE` (repeatable). thurbox's own
+        /// `THURBOX_*` identity vars always win over these.
+        #[arg(long = "env")]
+        env: Vec<String>,
+        /// Resume an existing agent conversation instead of starting a new one.
+        ///
+        /// The id as the *agent* knows it, or `latest` for an agent that
+        /// resolves "the last conversation in this directory" itself. This is
+        /// how a session that began elsewhere arrives: its checkout comes in as
+        /// `--repo-path`, its conversation as this.
+        #[arg(long)]
+        resume: Option<String>,
+        /// Return the existing session instead of failing when one of this name
+        /// is already active. Makes create idempotent.
+        #[arg(long = "if-not-exists", conflicts_with = "replace")]
+        if_not_exists: bool,
+        /// Tear down an existing session of this name first (as
+        /// `delete --force` would), then create.
+        #[arg(long)]
+        replace: bool,
     },
-    /// Soft-delete a session.
+    /// Soft-delete a session. (`remove` is an alias.)
+    #[command(alias = "remove")]
     ///
     /// By default only the DB row is soft-deleted (the TUI cleans up the
     /// tmux window and worktree on next sync). Pass `--force` to also
@@ -219,6 +266,62 @@ pub enum Action {
         /// Session UUID; every active session when omitted.
         uuid: Option<String>,
     },
+    /// Park a session: kill its pane, keep the row, the checkout and the
+    /// conversation.
+    ///
+    /// The verb that was missing between "leave it running" and "delete it".
+    /// A stopped session costs no process and no terminal, and `session start`
+    /// puts it back where it was — nothing else reclaims its pane in the
+    /// meantime, which is what separates this from a window that merely died.
+    Stop {
+        /// Session name, UUID, or unique id prefix.
+        session: String,
+    },
+    /// Put a stopped session's pane back, resuming its conversation the way a
+    /// restart does. A session that is already running is left alone.
+    Start {
+        /// Session name, UUID, or unique id prefix.
+        session: String,
+    },
+    /// Fork a session: a new one beside it, continuing its conversation.
+    ///
+    /// The interface has had this since v1; this is the same operation without
+    /// it. For an agent that declares `fork_args` the new session continues the
+    /// parent's conversation; for one that does not, it is a second session in
+    /// the same directory and branch, which the output says plainly.
+    Fork {
+        /// Session to fork — name, UUID, or unique id prefix.
+        session: String,
+        /// Name for the new session (default: `<parent>-fork`).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Run a command in a session's directory, on the machine it lives on.
+    ///
+    /// Not typed into the pane — a separate process in the session's context,
+    /// with its output returned. What "check the state of that session's work"
+    /// needs, without a driver having to reconstruct the cwd and the host
+    /// itself.
+    Exec {
+        /// Session name, UUID, or unique id prefix.
+        session: String,
+        /// Exit with the command's own exit code instead of thurbox's.
+        ///
+        /// Off by default because thurbox's exit codes mean something specific
+        /// (0 ok, 1 failed, 2 usage) and overloading them silently would break
+        /// a caller that reads them; the command's code is always in the output
+        /// either way.
+        #[arg(long = "exit-passthrough")]
+        exit_passthrough: bool,
+        /// The command and its arguments, after `--`.
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Read/write a session's metadata — the driver's own key/value space.
+    Meta {
+        #[command(subcommand)]
+        action: MetaAction,
+    },
     /// Report an agent lifecycle transition (called from an agent hook).
     ///
     /// Records the session's state so the TUI can render it (working/blocked/
@@ -241,6 +344,38 @@ pub enum Action {
         /// then a lookup by the agent conversation id ($THURBOX_SESSION_ID).
         #[arg(long)]
         session: Option<String>,
+    },
+}
+
+/// `session meta` — per-session key/value, namespaced by convention.
+#[derive(Subcommand, Debug)]
+pub enum MetaAction {
+    /// Set a key. The value is read from stdin when not given as an argument,
+    /// so it can contain anything without quoting trouble.
+    Set {
+        /// Session name, UUID, or unique id prefix.
+        session: String,
+        /// Key, conventionally namespaced (`fm.task_id`, `gc.bead`).
+        key: String,
+        /// Value; read from stdin when omitted.
+        value: Option<String>,
+    },
+    /// Print one key's value, or nothing when it is unset.
+    Get {
+        /// Session name, UUID, or unique id prefix.
+        session: String,
+        key: String,
+    },
+    /// List every key set on a session.
+    List {
+        /// Session name, UUID, or unique id prefix.
+        session: String,
+    },
+    /// Remove one key.
+    Unset {
+        /// Session name, UUID, or unique id prefix.
+        session: String,
+        key: String,
     },
 }
 
@@ -290,7 +425,10 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             deleted: false,
             verify,
         } => {
-            let parent_id = parent.as_deref().map(parse_session_id).transpose()?;
+            let parent_id = parent
+                .as_deref()
+                .map(|reference| resolve(db, reference).map(|s| s.id))
+                .transpose()?;
             let sessions: Vec<SharedSession> = db
                 .list_active_sessions()
                 .map_err(|e| format!("list_active_sessions: {e}"))?
@@ -364,9 +502,34 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             parent,
             add_repo,
             add_dir,
+            command,
+            arg,
+            env,
+            resume,
+            if_not_exists,
+            replace,
         } => {
-            let parent_session_id = parent.as_deref().map(parse_session_id).transpose()?;
+            let parent_session_id = parent
+                .as_deref()
+                .map(|reference| resolve(db, reference).map(|s| s.id))
+                .transpose()?;
             let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
+            let env = parse_env(&env)?;
+            // Names are not unique, so "already exists" is a decision the
+            // caller makes rather than something thurbox assumes. Both answers
+            // are here because a driver reconciling desired state needs one of
+            // them and neither is safe to guess.
+            if let Some(existing) = db
+                .get_session_by_name(&name)
+                .map_err(|e| format!("get_session_by_name: {e}"))?
+            {
+                if if_not_exists {
+                    return Ok(existing_session_output(&existing));
+                }
+                if replace {
+                    crate::session_ops::delete::delete_session_headless(db, existing.id, true)?;
+                }
+            }
             let req = crate::session_ops::SpawnRequest {
                 name,
                 repo_path,
@@ -376,6 +539,10 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 host,
                 parent_session_id,
                 extra_repos,
+                command,
+                args: arg,
+                env,
+                resume_session_id: resume,
                 ..Default::default()
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
@@ -400,10 +567,17 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     "name": res.name,
                     "agent": res.agent,
                     "agent_session_id": res.agent_session_id,
+                    // The pane, the checkouts and the server: everything the
+                    // caller would otherwise have to come back for with a
+                    // second `session get`, and poll for until it appeared.
+                    "backend_id": res.backend_id,
+                    "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
+                    "tmux_socket": crate::agent::tmux::local_socket_name(),
                     "cwd": res.cwd.display().to_string(),
                     "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
                     "hook_failures": res.hook_failures,
                     "sharing": res.sharing,
+                    "created": true,
                 }),
                 human,
             ))
@@ -436,7 +610,14 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             if text.trim().is_empty() {
                 return Err("text must not be empty".into());
             }
-            require_local_pane(&session)?;
+            let id = session.id.to_string();
+            let mut args = vec!["session", "send", &id, &text];
+            if no_enter {
+                args.push("--no-enter");
+            }
+            if let Some(remote) = delegate_to_host(&session, &args)? {
+                return Ok(remote);
+            }
             let submit = !no_enter;
             crate::agent::tmux::send_text_now(&session.name, &session.backend_id, &text, submit)
                 .map_err(|e| format!("send_text_now: {e}"))?;
@@ -459,7 +640,12 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             let session = resolve(db, &uuid)?;
             let resolved =
                 crate::agent::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
-            require_local_pane(&session)?;
+            let id = session.id.to_string();
+            if let Some(remote) =
+                delegate_to_host(&session, &["session", "key", &id, &resolved.name])?
+            {
+                return Ok(remote);
+            }
             crate::agent::tmux::send_key_now(&session.name, &session.backend_id, &resolved.tmux)
                 .map_err(|e| format!("send_key_now: {e}"))?;
             Ok(CommandOutput::new(
@@ -510,6 +696,87 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             )?;
             register_running_session(db, row)
         }
+        Action::Stop { session } => {
+            let target = resolve(db, &session)?;
+            let killed = crate::session_ops::restart::stop_session_headless(db, target.id)?;
+            Ok(CommandOutput::new(
+                json!({
+                    "id": target.id.to_string(),
+                    "name": target.name,
+                    "stopped": true,
+                    "killed_window": killed,
+                }),
+                format!(
+                    "Stopped '{}' ({}). Its worktree and conversation are untouched.",
+                    target.name, target.id
+                ),
+            )
+            .help([
+                "thurbox-cli session start <ref>   put its pane back",
+                "thurbox-cli session delete <ref>   let it go for good",
+            ]))
+        }
+        Action::Start { session } => {
+            let target = resolve(db, &session)?;
+            let report = crate::session_ops::restart::start_session_headless(db, target.id)?;
+            let mut human = format!("Started '{}' ({})", target.name, target.id);
+            push_hook_failures(&mut human, &report.hook_failures);
+            Ok(CommandOutput::new(
+                json!({
+                    "id": target.id.to_string(),
+                    "name": target.name,
+                    "stopped": false,
+                    "hook_failures": report.hook_failures,
+                }),
+                human,
+            ))
+        }
+        Action::Fork { session, name } => {
+            let source = resolve(db, &session)?;
+            let res = crate::session_ops::fork_session_headless(
+                db,
+                source.id,
+                name.as_deref().unwrap_or_default(),
+            )?;
+            // Whether the conversation actually came along is the agent's
+            // answer, not thurbox's: an agent with no `fork_args` gets a fresh
+            // one, and saying so beats letting the caller assume continuity.
+            let registry = crate::agent::agent_config::load_or_seed();
+            let continues = registry
+                .get(&res.agent)
+                .map(|def| !def.fork_args.is_empty())
+                .unwrap_or(false);
+            let human = format!(
+                "Forked '{}' → '{}' ({})\n{}",
+                source.name,
+                res.name,
+                res.session_id,
+                if continues {
+                    "  continuing its conversation"
+                } else {
+                    "  starting a fresh conversation (this agent declares no fork_args)"
+                }
+            );
+            Ok(CommandOutput::new(
+                json!({
+                    "id": res.session_id.to_string(),
+                    "name": res.name,
+                    "agent": res.agent,
+                    "parent_session_id": source.id.to_string(),
+                    "backend_id": res.backend_id,
+                    "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
+                    "cwd": res.cwd.display().to_string(),
+                    "continues_conversation": continues,
+                }),
+                human,
+            ))
+        }
+        Action::Exec {
+            session,
+            exit_passthrough,
+            command,
+        } => exec_in_session(db, &session, &command, exit_passthrough),
+        Action::Meta { action } => run_meta(action, db),
         Action::Doctor { uuid } => super::session_doctor::run(db, uuid.as_deref()),
         Action::Signal { state, session } => {
             let target = resolve_signal_target(db, session.as_deref())?;
@@ -550,11 +817,14 @@ fn capture_pane(
     ansi: bool,
 ) -> Result<CommandOutput, String> {
     let session = resolve(db, uuid)?;
-    if crate::session::is_remote_backend(&session.backend_type) {
-        return Err(format!(
-            "Session '{}' runs on backend '{}'; capture reads the local multiplexer only",
-            session.name, session.backend_type
-        ));
+    let id = session.id.to_string();
+    let line_count = lines.to_string();
+    let mut args = vec!["session", "capture", &id, "--lines", &line_count];
+    if ansi {
+        args.push("--ansi");
+    }
+    if let Some(remote) = delegate_to_host(&session, &args)? {
+        return Ok(remote);
     }
     let output =
         crate::agent::tmux::capture_pane_text(&session.name, &session.backend_id, lines, ansi)
@@ -838,35 +1108,263 @@ fn coverage_line(hook: &crate::session::Assessment) -> String {
     line
 }
 
-fn parse_session_id(uuid: &str) -> Result<SessionId, String> {
-    uuid.parse()
-        .map_err(|_| format!("Invalid session UUID: {uuid}"))
-}
-
-pub(crate) fn resolve(db: &Database, uuid: &str) -> Result<SharedSession, String> {
-    let id = parse_session_id(uuid)?;
-    db.get_session_by_id(id)
-        .map_err(|e| format!("get_session_by_id: {e}"))?
-        .ok_or_else(|| format!("Session not found: {uuid}"))
-}
-
-/// Refuse a session whose pane is not on this machine.
+/// Run a command in a session's directory, on the machine the session lives on.
 ///
-/// `session send` and `session key` are one-shots against the *local* tmux
-/// server (`agent::tmux`'s helpers bypass the transport seam), so an `ssh:`/
-/// `wsl:` session has no pane here to type into. Left to itself the local
-/// `send-keys` fails against a window that does not exist — a tmux status code
-/// blaming the wrong machine — so name the reason instead. Same exit code (1),
-/// a usable message.
-fn require_local_pane(session: &SharedSession) -> Result<(), String> {
-    if crate::session::is_remote_backend(&session.backend_type) {
-        return Err(format!(
-            "session '{}' runs on '{}'; `session send` and `session key` reach \
-             only this machine's tmux server — run thurbox-cli on that host",
-            session.name, session.backend_type
-        ));
+/// Deliberately **not** typed into the pane: the pane belongs to the agent, and
+/// borrowing it would interleave with whatever it is doing and put the answer
+/// in its scrollback rather than in this process's stdout. A separate process
+/// in the same directory answers "what is the state of that session's work"
+/// without disturbing the session at all.
+///
+/// Host-transparent: a session created with `--host` runs this over that host's
+/// launcher rather than refusing, so `exec` means the same thing everywhere.
+fn exec_in_session(
+    db: &Database,
+    reference: &str,
+    command: &[String],
+    exit_passthrough: bool,
+) -> Result<CommandOutput, String> {
+    let session = resolve(db, reference)?;
+    let cwd = session
+        .cwd
+        .clone()
+        .or_else(|| session.worktrees.first().map(|w| w.worktree_path.clone()))
+        .ok_or_else(|| format!("session '{}' has no directory to run in", session.name))?;
+    let (program, rest) = command
+        .split_first()
+        .ok_or("nothing to run — pass the command after `--`")?;
+
+    let host = if crate::session::is_remote_backend(&session.backend_type) {
+        Some(
+            crate::session_ops::resolve_host(&session.backend_type)
+                .flatten()
+                .ok_or_else(|| {
+                    format!(
+                        "session '{}' runs on backend '{}', which is not in hosts.toml",
+                        session.name, session.backend_type
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+    let output = crate::session_ops::exec_in_dir(host.as_ref(), &cwd, program, rest)
+        .map_err(|e| format!("could not run '{program}' in {}: {e}", cwd.display()))?;
+
+    let code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let mut human = stdout.clone();
+    if !stderr.is_empty() {
+        human.push_str(&stderr);
     }
-    Ok(())
+    if human.is_empty() {
+        human = format!("(no output; exit {code})");
+    }
+
+    let payload = json!({
+        "id": session.id.to_string(),
+        "name": session.name,
+        "cwd": cwd.display().to_string(),
+        "exit_code": code,
+        "stdout": stdout,
+        "stderr": stderr,
+    });
+    // The command failing is not this command failing — unless asked. The exit
+    // code is in the document either way, so a caller never has to choose
+    // between reading the answer and knowing the result.
+    Ok(if exit_passthrough && code != 0 {
+        CommandOutput::failed(payload, human, format!("command exited {code}"))
+    } else {
+        CommandOutput::new(payload, human)
+    })
+}
+
+/// `session meta` — storage, and nothing more. Nothing here interprets a key.
+fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, String> {
+    match action {
+        MetaAction::Set {
+            session,
+            key,
+            value,
+        } => {
+            let target = resolve(db, &session)?;
+            // Stdin when no argument: a value can be long, multi-line, or start
+            // with a dash, none of which survive being an argv token reliably.
+            let value = match value {
+                Some(v) => v,
+                None => {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                        .map_err(|e| format!("read value from stdin: {e}"))?;
+                    buf.trim_end_matches('\n').to_string()
+                }
+            };
+            db.set_session_meta(target.id, &key, &value)
+                .map_err(|e| format!("set_session_meta: {e}"))?;
+            Ok(CommandOutput::new(
+                json!({ "id": target.id.to_string(), "key": key, "value": value }),
+                format!("{key} set on '{}'", target.name),
+            ))
+        }
+        MetaAction::Get { session, key } => {
+            let target = resolve(db, &session)?;
+            let value = db
+                .get_session_meta(target.id, &key)
+                .map_err(|e| format!("get_session_meta: {e}"))?;
+            Ok(CommandOutput::new(
+                json!({ "id": target.id.to_string(), "key": key, "value": value }),
+                // Bare value on stdout: this is the one command whose output is
+                // routinely captured into a shell variable.
+                value.unwrap_or_default(),
+            ))
+        }
+        MetaAction::List { session } => {
+            let target = resolve(db, &session)?;
+            let all = db
+                .list_session_meta(target.id)
+                .map_err(|e| format!("list_session_meta: {e}"))?;
+            let human = if all.is_empty() {
+                String::new()
+            } else {
+                output::table(
+                    &["KEY", "VALUE"],
+                    &all.iter()
+                        .map(|(k, v)| vec![k.clone(), v.clone()])
+                        .collect::<Vec<_>>(),
+                )
+            };
+            Ok(
+                CommandOutput::new(serde_json::to_value(&all).unwrap_or(Value::Null), human)
+                    .empty(format!("no metadata on '{}'", target.name)),
+            )
+        }
+        MetaAction::Unset { session, key } => {
+            let target = resolve(db, &session)?;
+            let removed = db
+                .unset_session_meta(target.id, &key)
+                .map_err(|e| format!("unset_session_meta: {e}"))?;
+            Ok(CommandOutput::new(
+                json!({ "id": target.id.to_string(), "key": key, "removed": removed }),
+                if removed {
+                    format!("{key} removed from '{}'", target.name)
+                } else {
+                    format!("{key} was not set on '{}'", target.name)
+                },
+            ))
+        }
+    }
+}
+
+/// Read repeatable `--env KEY=VALUE` tokens into a map.
+///
+/// Split on the **first** `=` so a value may contain more (`--env
+/// FLAGS=-Dx=1`). An empty value is allowed and meaningful: it sets the
+/// variable to the empty string rather than leaving it unset.
+pub(crate) fn parse_env(
+    tokens: &[String],
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut env = std::collections::BTreeMap::new();
+    for token in tokens {
+        let (key, value) = token
+            .split_once('=')
+            .ok_or_else(|| format!("--env expects KEY=VALUE, got '{token}'"))?;
+        if key.is_empty() {
+            return Err(format!("--env has an empty key: '{token}'"));
+        }
+        env.insert(key.to_string(), value.to_string());
+    }
+    Ok(env)
+}
+
+/// One worktree as the CLI renders it — the shape `session get` already
+/// publishes, so a caller parses one form wherever it meets a worktree.
+fn worktree_json(w: &crate::sync::SharedWorktree) -> Value {
+    json!({
+        "repo_path": w.repo_path.display().to_string(),
+        "worktree_path": w.worktree_path.display().to_string(),
+        "branch": w.branch,
+    })
+}
+
+/// What `create --if-not-exists` returns when the session was already there.
+///
+/// The same document shape a real creation produces, with `created: false` as
+/// the only difference — so a caller reads one shape and needs no branch for
+/// "did I make this or find it".
+fn existing_session_output(session: &SharedSession) -> CommandOutput {
+    CommandOutput::new(
+        json!({
+            "id": session.id.to_string(),
+            "name": session.name,
+            "agent": session.agent,
+            "agent_session_id": session.agent_session_id,
+            "backend_id": session.backend_id,
+            "worktrees": session.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
+            "tmux_socket": crate::agent::tmux::local_socket_name(),
+            "cwd": session.cwd.as_ref().map(|p| p.display().to_string()),
+            "parent_session_id": session.parent_session_id.map(|id| id.to_string()),
+            "hook_failures": Vec::<String>::new(),
+            "sharing": Value::Null,
+            "created": false,
+        }),
+        format!(
+            "Session '{}' already exists ({}) — left as it is.",
+            session.name, session.id
+        ),
+    )
+    .help(["thurbox-cli session get <id>   what it is doing now"])
+}
+
+/// Resolve the session a command was pointed at — a name, a UUID or an id
+/// prefix, all equally. See [`super::session_ref`] for why one resolver.
+pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, String> {
+    super::session_ref::resolve(db, reference)
+}
+
+/// Run a pane command on the machine the session actually lives on.
+///
+/// `agent::tmux`'s one-shot helpers talk to the *local* multiplexer, so a
+/// session created with `--host` has no pane here. That used to be a refusal,
+/// which made `--host` produce a shape no other verb accepted: creatable, and
+/// then undrivable. thurbox already knows how to run its own CLI on a host —
+/// the mirror pass does it on every tick — so a pane verb is delegated there
+/// instead, and means the same thing on every machine.
+///
+/// `Ok(None)` means "this is local, carry on". `Ok(Some(output))` is the host's
+/// own answer, already a document. The refusal survives only where delegation
+/// is genuinely impossible: a host with no `hosts.toml` entry, or one whose
+/// `thurbox-cli` could not be found or provisioned.
+fn delegate_to_host(
+    session: &SharedSession,
+    args: &[&str],
+) -> Result<Option<CommandOutput>, String> {
+    if !crate::session::is_remote_backend(&session.backend_type) {
+        return Ok(None);
+    }
+    let host = crate::session_ops::resolve_host(&session.backend_type)
+        .flatten()
+        .ok_or_else(|| {
+            format!(
+                "session '{}' runs on backend '{}', which is not in hosts.toml — \
+                 cannot reach the machine it lives on",
+                session.name, session.backend_type
+            )
+        })?;
+    let cli = crate::session_ops::host_cli::delegated(&host).ok_or_else(|| {
+        format!(
+            "session '{}' runs on '{}', and no thurbox-cli could be reached there — \
+             run this command on that host",
+            session.name, host.name
+        )
+    })?;
+    let answer = crate::session_ops::host_cli::run(&host, &cli, args)?;
+    let human = answer
+        .get("output")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| answer.to_string());
+    Ok(Some(CommandOutput::new(answer, human)))
 }
 
 /// What `session key` says about a spelling it does not know, listing the set
@@ -1118,6 +1616,136 @@ mod tests {
     }
 
     #[test]
+    fn meta_round_trips_and_says_when_a_key_was_not_there() {
+        // Storage, and nothing more: whatever a driver puts here comes back
+        // byte for byte, and thurbox never interprets a key or a value.
+        let db = db();
+        let session = make_test_session("worker");
+        db.upsert_session(&session).unwrap();
+
+        run(
+            Action::Meta {
+                action: MetaAction::Set {
+                    session: "worker".into(),
+                    key: "fm.task_id".into(),
+                    value: Some("T-1043".into()),
+                },
+            },
+            &db,
+        )
+        .unwrap();
+
+        let got = run(
+            Action::Meta {
+                action: MetaAction::Get {
+                    session: session.id.to_string(),
+                    key: "fm.task_id".into(),
+                },
+            },
+            &db,
+        )
+        .unwrap();
+        // Set by name, read back by id: one session, either spelling.
+        assert_eq!(got["value"].as_str(), Some("T-1043"));
+
+        let listed = run(
+            Action::Meta {
+                action: MetaAction::List {
+                    session: "worker".into(),
+                },
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(listed["fm.task_id"].as_str(), Some("T-1043"));
+
+        let removed = run(
+            Action::Meta {
+                action: MetaAction::Unset {
+                    session: "worker".into(),
+                    key: "fm.task_id".into(),
+                },
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(removed["removed"].as_bool(), Some(true));
+        // Removing what is not there is reported, not pretended.
+        let again = run(
+            Action::Meta {
+                action: MetaAction::Unset {
+                    session: "worker".into(),
+                    key: "fm.task_id".into(),
+                },
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(again["removed"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn exec_runs_in_the_sessions_directory_and_reports_the_commands_own_code() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = db();
+        let mut session = make_test_session("worker");
+        session.cwd = Some(dir.path().to_path_buf());
+        db.upsert_session(&session).unwrap();
+
+        let out = run(
+            Action::Exec {
+                session: "worker".into(),
+                exit_passthrough: false,
+                command: vec!["pwd".into()],
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(out["exit_code"].as_i64(), Some(0));
+        let printed = out["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        // Resolved through the same canonicalization the temp dir went through,
+        // so a symlinked /tmp does not make this a path-string comparison.
+        assert_eq!(
+            std::fs::canonicalize(printed).ok(),
+            std::fs::canonicalize(dir.path()).ok(),
+            "the command ran in the session's own directory"
+        );
+
+        // A failing command is reported, not raised: the caller asked to run
+        // something, and it ran. The exit code is in the document either way.
+        let failed = run(
+            Action::Exec {
+                session: "worker".into(),
+                exit_passthrough: false,
+                command: vec!["sh".into(), "-c".into(), "exit 3".into()],
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(failed["exit_code"].as_i64(), Some(3));
+
+        // Unless asked, in which case it also becomes this command's outcome.
+        let passthrough = run(
+            Action::Exec {
+                session: "worker".into(),
+                exit_passthrough: true,
+                command: vec!["sh".into(), "-c".into(), "exit 3".into()],
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(passthrough["exit_code"].as_i64(), Some(3));
+        assert!(
+            passthrough.failure.is_some(),
+            "--exit-passthrough makes the command's failure the invocation's"
+        );
+    }
+
+    #[test]
     fn render_session_list_tabulates_rows() {
         let s = SharedSession {
             id: SessionId::default(),
@@ -1252,21 +1880,26 @@ mod tests {
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["name"].as_str(), Some("worker"));
 
-        // Malformed --parent uuid errors.
+        // `--parent` names a session, so it resolves like any other reference
+        // — and one that matches nothing is an error rather than an empty list
+        // that looks like "this parent has no children".
         let err = run(
             Action::List {
-                parent: Some("not-a-uuid".into()),
+                parent: Some("no-such-parent".into()),
                 deleted: false,
                 verify: false,
             },
             &db,
         )
         .unwrap_err();
-        assert!(err.contains("Invalid session UUID"), "got {err}");
+        assert!(err.contains("Session not found"), "got {err}");
     }
 
     #[test]
-    fn get_unknown_uuid_errors() {
+    fn get_reports_a_reference_that_matches_nothing() {
+        // A reference is a name, a UUID or an id prefix, so an unknown one is
+        // "nothing matches" rather than a complaint about its spelling — and it
+        // says which spellings were tried.
         let db = db();
         let err = run(
             Action::Get {
@@ -1276,7 +1909,8 @@ mod tests {
             &db,
         )
         .unwrap_err();
-        assert!(err.contains("Invalid session UUID"), "got {err}");
+        assert!(err.contains("Session not found"), "got {err}");
+        assert!(err.contains("not-a-uuid"), "got {err}");
     }
 
     #[test]
@@ -1322,7 +1956,9 @@ mod tests {
     fn send_and_key_refuse_a_session_on_another_host() {
         // The one-shot helpers drive this machine's tmux server, so a remote
         // session has no pane here. It must say so rather than fail as a tmux
-        // status code against a window that was never going to exist.
+        // status code against a window that was never going to exist. With no
+        // hosts.toml entry there is nowhere to delegate to, which is the one
+        // case that is still a refusal rather than a round trip.
         let db = db();
         let mut shared = make_test_session("remote-demo");
         shared.backend_type = "ssh:devbox".into();
@@ -1342,7 +1978,9 @@ mod tests {
         ] {
             let err = run(action, &db).unwrap_err();
             assert!(err.contains("ssh:devbox"), "got {err}");
-            assert!(err.contains("this machine"), "got {err}");
+            // The obstacle is the missing host entry, not the verb: with one,
+            // the same call is delegated to that host's own `thurbox-cli`.
+            assert!(err.contains("hosts.toml"), "got {err}");
         }
     }
 
@@ -1370,7 +2008,10 @@ mod tests {
 
     #[test]
     fn key_reports_a_missing_session_before_a_bad_key() {
-        // A malformed UUID is still the first thing wrong with the call.
+        // Which session is still the first thing wrong with the call. The
+        // reference is no longer required to be a UUID — it may be a name or an
+        // id prefix — so the error is "nothing matches", and it says what it
+        // tried rather than complaining about the spelling.
         let db = db();
         let err = run(
             Action::Key {
@@ -1380,7 +2021,8 @@ mod tests {
             &db,
         )
         .unwrap_err();
-        assert!(err.contains("Invalid session UUID"), "got {err}");
+        assert!(err.contains("Session not found"), "got {err}");
+        assert!(err.contains("not-a-uuid"), "got {err}");
     }
 
     #[test]

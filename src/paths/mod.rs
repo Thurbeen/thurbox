@@ -361,6 +361,17 @@ pub fn worktrees_directory() -> Option<PathBuf> {
     resolve(PathKind::WorktreesDir)
 }
 
+/// The data directory this instance actually resolved — the override when one
+/// is set, the XDG default otherwise.
+///
+/// [`relocated_data_dir`] answers the narrower "was this instance *moved*";
+/// this answers "where is it", which is what a consumer comparing against
+/// somebody else's recorded data dir needs (`agent::tmux::socket_for`, deciding
+/// whether an inherited socket still belongs to this instance).
+pub fn data_directory() -> Option<PathBuf> {
+    data_app_dir()
+}
+
 /// Resolve the multi-repo workspaces directory path.
 ///
 /// Returns: `$XDG_DATA_HOME/thurbox/workspaces/` or

@@ -288,6 +288,7 @@ fn session_row() -> thurbox::kernel::snapshot::SessionRow {
             ahead: 2,
             behind: 0,
         }),
+        stopped: false,
         hook_state: None,
         shell_backend_id: None,
         member_dirs: Vec::new(),

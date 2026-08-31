@@ -18,6 +18,7 @@ pub mod repo_bookmarks;
 pub mod review;
 mod schema;
 pub use schema::SCHEMA_VERSION;
+mod session_meta;
 mod sessions;
 mod settings;
 pub use sessions::{DeletedSessionInfo, HookRow};

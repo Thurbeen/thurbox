@@ -113,6 +113,10 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
             worktree_branch: Some("feat/e2e".into()),
             base_branch: Some("main".into()),
             agent: Some("shell".into()),
+            command: None,
+            args: Vec::new(),
+            env: Default::default(),
+            resume_session_id: None,
             agent_session_id: None,
             host: None,
             parent_session_id: None,
@@ -652,4 +656,124 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
         .expect("query")
         .expect("still an active row");
     assert_eq!(row.name, "hooked");
+}
+
+/// The full arrival-and-parking story on a real tmux server: a session created
+/// from a **raw command** (no `agents.toml` entry at all), restarted so its
+/// persisted recipe has to be replayed, then stopped and started again.
+///
+/// These four verbs share one fixture deliberately — each is only meaningful
+/// against a session the previous one left behind, and a `--command` session is
+/// the shape that has no registry entry to fall back on at any step.
+#[test]
+#[cfg(not(windows))]
+fn a_command_session_survives_restart_and_can_be_parked() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    thurbox::paths::set_test_dir(home.path());
+
+    // No agents.toml is written: the point is that this session names no agent.
+    let result = thurbox::session_ops::spawn::spawn_session_headless(
+        &db,
+        thurbox::session_ops::spawn::SpawnRequest {
+            name: "recipe-probe".into(),
+            repo_path: repo.path().to_path_buf(),
+            worktree_branch: None,
+            base_branch: None,
+            agent: None,
+            command: Some("sh".into()),
+            args: vec!["-c".into(), "while :; do sleep 1; done".into()],
+            env: [("THURBOX_E2E_MARKER".to_string(), "kept".to_string())]
+                .into_iter()
+                .collect(),
+            resume_session_id: None,
+            agent_session_id: None,
+            host: None,
+            parent_session_id: None,
+            task_id: None,
+            extra_repos: Vec::new(),
+            fork_session_id: None,
+            inherit_worktrees: Vec::new(),
+        },
+    );
+    let spawned = match result {
+        Ok(spawned) => spawned,
+        Err(e) => {
+            cleanup();
+            if e.contains("tmux") {
+                eprintln!("skipping: tmux would not spawn a window: {e}");
+                return;
+            }
+            panic!("creation failed: {e}");
+        }
+    };
+    let id = spawned.session_id;
+
+    // The command's own name identifies it, and no registry lookup produced it.
+    assert_eq!(spawned.agent, "sh");
+
+    // The recipe is on the row — which is the only record of how to start this
+    // session again, since there is no `agents.toml` entry to re-resolve.
+    let recipe = db
+        .load_launch_recipe(id)
+        .expect("query")
+        .expect("a command session persists its recipe");
+    assert_eq!(recipe.command, "sh");
+    assert_eq!(
+        recipe.env.get("THURBOX_E2E_MARKER").map(String::as_str),
+        Some("kept")
+    );
+
+    // A registry agent stores none, so restart keeps resolving it by name and
+    // an `agents.toml` edit still takes effect.
+    assert!(
+        thurbox::session_ops::restart::restart_session_headless(&db, id).is_ok(),
+        "a command session restarts from its recipe"
+    );
+    assert_eq!(
+        db.load_launch_recipe(id).expect("query").map(|r| r.command),
+        Some("sh".to_string()),
+        "the recipe outlives the restart it drove"
+    );
+
+    // Park it: the pane goes, the row stays.
+    thurbox::session_ops::restart::stop_session_headless(&db, id).expect("stop");
+    assert!(
+        db.session_stopped_at(id).expect("query").is_some(),
+        "the stop is recorded, not merely performed"
+    );
+    assert!(
+        db.get_session_by_id(id).expect("query").is_some(),
+        "stopping is not deleting"
+    );
+
+    // And nothing puts it back on its own: a peer asking for "relaunch what is
+    // missing" must not undo a deliberate stop.
+    thurbox::session_ops::restart::restart_session_headless_with(&db, id, true)
+        .expect("relaunch is a no-op here");
+    assert!(
+        db.session_stopped_at(id).expect("query").is_some(),
+        "`restart --if-missing` left the stop alone"
+    );
+
+    // `start` is the one caller that may, and the identity survives it.
+    thurbox::session_ops::restart::start_session_headless(&db, id).expect("start");
+    assert!(
+        db.session_stopped_at(id).expect("query").is_none(),
+        "starting clears the mark"
+    );
+    assert_eq!(
+        db.get_session_by_id(id).expect("query").expect("row").id,
+        id,
+        "the session kept its identity across the whole cycle"
+    );
+
+    cleanup();
 }

@@ -804,3 +804,40 @@ pub(super) fn migrate_v40_bookmark_git_kind(conn: &Connection) -> rusqlite::Resu
     add_column_if_absent(conn, "repo_bookmarks", "is_git", "INTEGER")?;
     add_column_if_absent(conn, "repo_bookmarks", "parent_path", "TEXT")
 }
+
+/// v40 → v41: the columns that make a session drivable by something other than
+/// thurbox itself.
+///
+/// `launch_command`/`launch_args`/`launch_env` persist the **launch recipe** of
+/// a session created from a raw command rather than an `agents.toml` entry.
+/// They are the discriminant as well as the payload: `launch_command IS NULL`
+/// means "a registry agent", which stays resolved **by reference** at restart
+/// so fixing `agents.toml` and restarting still works. A command session has no
+/// entry to re-resolve, so without these a restart would have nothing to replay
+/// and its `--env` would evaporate on the first respawn.
+///
+/// `stopped_at` marks a session deliberately parked: the row and its checkout
+/// are intact, only the pane is gone. It is a column rather than an absence
+/// because "no window" is otherwise indistinguishable from damage, and three
+/// subsystems repair damage on sight (extension self-heal, the TUI's respawn of
+/// surveyed rows, `restart --if-missing`).
+///
+/// `session_meta` is per-session key/value for whoever is driving: a task id,
+/// a lease, a correlation key. Namespaced by convention (`fm.*`, `gc.*`) so two
+/// drivers against one database do not collide, and never interpreted here.
+pub(super) fn migrate_v41_joinable(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(conn, "sessions", "launch_command", "TEXT")?;
+    add_column_if_absent(conn, "sessions", "launch_args", "TEXT")?;
+    add_column_if_absent(conn, "sessions", "launch_env", "TEXT")?;
+    add_column_if_absent(conn, "sessions", "stopped_at", "INTEGER")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS session_meta (
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            key        TEXT NOT NULL,
+            value      TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (session_id, key)
+        );",
+    )?;
+    Ok(())
+}

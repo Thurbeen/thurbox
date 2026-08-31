@@ -22,9 +22,11 @@ use rusqlite::Connection;
 /// `repo_bookmarks` to a `host` (`''` = local), giving remote targets the
 /// same bookmark memory as local ones; v40 adds `is_git` (NULL = unknown,
 /// gates the worktree toggle) and `parent_path` (persisted children of a
-/// remote parent bookmark) to `repo_bookmarks`.
+/// remote parent bookmark) to `repo_bookmarks`. v41 adds the joinable columns:
+/// a session's persisted launch recipe, its `stopped_at` mark, and the
+/// `session_meta` key/value table.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 40;
+pub const SCHEMA_VERSION: u32 = 41;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -92,6 +94,10 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             seen_at           INTEGER,
             force_deleted     INTEGER NOT NULL DEFAULT 0,
             base_branch       TEXT,
+            launch_command    TEXT,
+            launch_args       TEXT,
+            launch_env        TEXT,
+            stopped_at        INTEGER,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -237,6 +243,14 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             ON session_messages(to_session_id) WHERE read_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_session_messages_created
             ON session_messages(created_at);
+
+        CREATE TABLE IF NOT EXISTS session_meta (
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            key        TEXT NOT NULL,
+            value      TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (session_id, key)
+        );
         ",
     )?;
 
@@ -306,6 +320,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (38, migrate_v38_code_review),
         (39, migrate_v39_bookmark_host),
         (40, migrate_v40_bookmark_git_kind),
+        (41, migrate_v41_joinable),
     ];
 
     for &(target, step) in steps {
@@ -444,6 +459,7 @@ mod tests {
         assert!(tables.contains(&"repo_bookmarks".to_string()));
         assert!(tables.contains(&"tasks".to_string()));
         assert!(tables.contains(&"session_messages".to_string()));
+        assert!(tables.contains(&"session_meta".to_string()));
         // The legacy one-shot table is replaced by `automations`.
         assert!(!tables.contains(&"scheduled_commands".to_string()));
         // Dropped Claude-config tables should NOT exist.

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use rusqlite::{params, OptionalExtension};
@@ -247,6 +247,107 @@ impl Database {
         Ok(sessions)
     }
 
+    /// Persist the launch recipe of a **command session** — one created from a
+    /// raw command rather than an `agents.toml` entry.
+    ///
+    /// Deliberately not part of [`upsert_session`](Self::upsert_session), for
+    /// the same reason `hook_state` and `base_branch` are not: a peer mirroring
+    /// this machine (ADR-24) round-trips sessions through that upsert, and a
+    /// peer on an older release sends JSON with no recipe in it. A column the
+    /// upsert wrote would be cleared on the next sync tick, so the ones only
+    /// this instance owns are written by name, here.
+    pub fn set_launch_recipe(
+        &self,
+        id: SessionId,
+        recipe: &crate::session::LaunchRecipe,
+    ) -> rusqlite::Result<()> {
+        let args = serde_json::to_string(&recipe.args).unwrap_or_else(|_| "[]".into());
+        let env = serde_json::to_string(&recipe.env).unwrap_or_else(|_| "{}".into());
+        self.conn.execute(
+            "UPDATE sessions SET launch_command = ?1, launch_args = ?2, launch_env = ?3 \
+             WHERE id = ?4",
+            params![recipe.command, args, env, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The persisted launch recipe, or `None` for a registry agent.
+    ///
+    /// `None` is the discriminant the restart path reads: no recipe means the
+    /// session names an agent, which is resolved from `agents.toml` afresh on
+    /// every launch so an edit there is picked up by a restart.
+    pub fn load_launch_recipe(
+        &self,
+        id: SessionId,
+    ) -> rusqlite::Result<Option<crate::session::LaunchRecipe>> {
+        let row: Option<(Option<String>, Option<String>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT launch_command, launch_args, launch_env FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((Some(command), args, env)) = row else {
+            return Ok(None);
+        };
+        if command.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(crate::session::LaunchRecipe {
+            command,
+            args: args
+                .and_then(|a| serde_json::from_str(&a).ok())
+                .unwrap_or_default(),
+            env: env
+                .and_then(|e| serde_json::from_str(&e).ok())
+                .unwrap_or_default(),
+        }))
+    }
+
+    /// Mark a session stopped (`true`) or running again (`false`).
+    ///
+    /// The mark is what separates "parked on purpose" from "its window died",
+    /// which several subsystems otherwise repair on sight.
+    pub fn set_session_stopped(&self, id: SessionId, stopped: bool) -> rusqlite::Result<()> {
+        let at = stopped.then(|| current_time_millis() as i64);
+        self.conn.execute(
+            "UPDATE sessions SET stopped_at = ?1, updated_at = ?2 WHERE id = ?3",
+            params![at, current_time_millis() as i64, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// When a session was stopped, or `None` if it is not stopped.
+    pub fn session_stopped_at(&self, id: SessionId) -> rusqlite::Result<Option<u64>> {
+        let at: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT stopped_at FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(at.flatten().map(|v| v as u64))
+    }
+
+    /// Every stopped session, as a set. Loaded in one query beside
+    /// [`load_hook_states`](Self::load_hook_states) by the passes that must not
+    /// resurrect a parked session.
+    pub fn load_stopped_sessions(&self) -> rusqlite::Result<HashSet<SessionId>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM sessions WHERE deleted_at IS NULL AND stopped_at IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut set = HashSet::new();
+        for row in rows {
+            if let Ok(id) = row?.parse::<SessionId>() {
+                set.insert(id);
+            }
+        }
+        Ok(set)
+    }
+
     /// Get the session counter value.
     pub fn get_session_counter(&self) -> rusqlite::Result<usize> {
         let val: String = self.conn.query_row(
@@ -287,9 +388,27 @@ impl Database {
     /// enforced unique; the first match (by display/creation order) is returned,
     /// consistent with [`get_session_by_id`](Self::get_session_by_id).
     pub fn get_session_by_name(&self, name: &str) -> rusqlite::Result<Option<SharedSession>> {
-        let sessions =
-            self.query_sessions("s.deleted_at IS NULL AND s.name = ?1", params![name])?;
-        Ok(sessions.into_iter().next())
+        Ok(self.find_sessions_by_name(name)?.into_iter().next())
+    }
+
+    /// Every active session with this exact name.
+    ///
+    /// Names are not unique — two sessions can carry one, and a mirrored host
+    /// legitimately contributes rows that collide with local ones. A caller
+    /// resolving a name a user typed needs to know that happened rather than
+    /// silently acting on whichever row sorted first, so this returns all of
+    /// them and lets the caller refuse.
+    pub fn find_sessions_by_name(&self, name: &str) -> rusqlite::Result<Vec<SharedSession>> {
+        self.query_sessions("s.deleted_at IS NULL AND s.name = ?1", params![name])
+    }
+
+    /// Active sessions whose id **starts with** `prefix`, for addressing a
+    /// session by the first few characters of its UUID.
+    pub fn find_sessions_by_id_prefix(&self, prefix: &str) -> rusqlite::Result<Vec<SharedSession>> {
+        self.query_sessions(
+            "s.deleted_at IS NULL AND s.id LIKE ?1 || '%'",
+            params![prefix],
+        )
     }
 
     /// Get just the name of an active session by its ID.

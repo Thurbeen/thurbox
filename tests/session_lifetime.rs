@@ -35,6 +35,7 @@ fn row(id: &str, name: &str, backend: &str, pane: Option<&str>) -> SessionRow {
         display_order: None,
         worktree_count: 0,
         git: None,
+        stopped: false,
         hook_state: None,
         shell_backend_id: None,
         member_dirs: Vec::new(),
@@ -437,5 +438,70 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
     assert!(
         back,
         "letting go must be followed by attaching to the new pane"
+    );
+}
+
+/// A session parked by `session stop` is *not* a session whose agent died, and
+/// the interface must not treat it as one.
+///
+/// `missing_agents` is what relaunches a surveyed row with no live pane — the
+/// mechanism that makes a session survive a reboot. A stopped session presents
+/// identically to it (a row, no pane) and is the exact opposite case: the pane
+/// is gone because that was asked for. Without the exemption the interface
+/// silently undoes every stop within a tick of it happening, which would make
+/// the verb useless precisely when someone is watching.
+#[test]
+fn a_stopped_session_is_never_relaunched_as_a_missing_agent() {
+    if std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(true)
+    {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    std::env::set_var(
+        thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
+        "thurbox-stopped-test",
+    );
+    let socket = ["-L", "thurbox-stopped-test"];
+    let _ = std::process::Command::new("tmux")
+        .args(socket)
+        .args(["new-session", "-d", "-s", "thurbox-dev", "-n", "bash", "sh"])
+        .output();
+
+    let mut terminals = Terminals::new();
+    let running = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
+    let mut stopped_row = row("aaa", "demo", "local-tmux", None);
+    stopped_row.stopped = true;
+    let parked = snapshot(vec![stopped_row]);
+
+    // Establish that this row *would* be relaunched: the exemption is only
+    // meaningful against a case that otherwise fires.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut would_relaunch = false;
+    while std::time::Instant::now() < deadline {
+        terminals.sync(&running, 24, 80);
+        if !terminals.missing_agents(&running).is_empty() {
+            would_relaunch = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // The same survey, the same absent pane, the flag the only difference.
+    let parked_missing = terminals.missing_agents(&parked);
+    let _ = std::process::Command::new("tmux")
+        .args(socket)
+        .arg("kill-server")
+        .output();
+
+    assert!(
+        would_relaunch,
+        "the fixture must be a row the interface would otherwise relaunch"
+    );
+    assert!(
+        parked_missing.is_empty(),
+        "a stopped session was queued for relaunch: {parked_missing:?}"
     );
 }

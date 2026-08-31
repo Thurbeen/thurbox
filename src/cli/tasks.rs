@@ -66,6 +66,7 @@ pub enum Action {
     /// List all active tasks.
     List,
     /// Show one task by id.
+    #[command(alias = "get")]
     Show {
         /// Task id.
         id: i64,
@@ -92,6 +93,7 @@ pub enum Action {
         external_url: Option<String>,
     },
     /// Remove a task (soft delete).
+    #[command(alias = "delete")]
     Remove {
         /// Task id.
         id: i64,

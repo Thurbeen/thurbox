@@ -149,6 +149,7 @@ fn one_session() -> Snapshot {
             display_order: None,
             worktree_count: 1,
             git: None,
+            stopped: false,
             hook_state: None,
             shell_backend_id: None,
             member_dirs: Vec::new(),

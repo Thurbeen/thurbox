@@ -223,13 +223,20 @@ fn capture_reports_the_panes_cursor_foreground_process_and_live_cwd() {
 }
 
 #[test]
-fn capture_refuses_a_session_that_has_no_pane_on_this_machine() {
+fn capture_of_a_remote_session_goes_to_its_host_or_says_why_it_cannot() {
     let db = Database::open_in_memory().expect("db");
     let row = session_row("remote-probe", "ssh:devbox");
     db.upsert_session(&row).expect("persist");
 
-    // A remote session's pane lives on its host's own tmux server, so there is
-    // nothing here to read. Refusing by name beats tmux's "can't find window".
+    // A remote session's pane lives on its host's own tmux server. `capture`
+    // used to refuse that outright, which made `--host` a shape thurbox could
+    // create and then not drive; it now delegates to the host's own CLI.
+    //
+    // This fixture has no `hosts.toml` entry for `devbox`, which is the one
+    // case where delegation is genuinely impossible — so a refusal is still
+    // right, and it now names the actual obstacle (the missing host) rather
+    // than an architectural limit that no longer exists. Delegation against a
+    // real host is covered by the harnesses in `scripts/dev/e2e`.
     let err = run(
         Action::Capture {
             uuid: row.id.to_string(),
@@ -238,9 +245,12 @@ fn capture_refuses_a_session_that_has_no_pane_on_this_machine() {
         },
         &db,
     )
-    .expect_err("a remote session has no local pane");
+    .expect_err("no hosts.toml entry means there is nowhere to delegate to");
     assert!(err.contains("ssh:devbox"), "got {err}");
-    assert!(err.contains("local"), "got {err}");
+    assert!(
+        err.contains("hosts.toml"),
+        "the refusal names what is missing: {err}"
+    );
 }
 
 #[test]

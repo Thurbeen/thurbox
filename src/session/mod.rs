@@ -45,7 +45,7 @@ pub use review::{
 pub use task::{Task, TaskStatus, SOURCE_LOCAL};
 pub use theme_config::{ThemePalette, ThemePreset};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -105,6 +105,44 @@ pub const HOOK_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
 /// (poller) and `session_ops` (rewrite/shipping) flip on the one switch.
 pub fn psmux_hook_rewrite_supported() -> bool {
     false
+}
+
+/// How to start a session's process when there is no `agents.toml` entry to
+/// look it up in — a session created from a raw command.
+///
+/// The registry is the normal source of a launch: an agent name is resolved to
+/// an [`AgentDef`] at every launch, so editing `agents.toml` and restarting
+/// picks the change up. A raw command has no entry to re-resolve, so the recipe
+/// travels with the session itself and is replayed verbatim on restart. That
+/// difference is the whole reason this type exists, and it is why the recipe is
+/// stored **only** for command sessions: persisting one for a registry agent
+/// would freeze it at creation time and quietly break that edit-and-restart
+/// loop.
+///
+/// A recipe is deliberately not a conversation: it says how to start a process,
+/// never how to resume one. Resuming and forking are the [`AgentDef`] arg
+/// groups' job, which is why a command session can be restarted but not
+/// resumed — see `docs/FEATURES.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct LaunchRecipe {
+    /// The executable, as given. Resolved on `PATH` by the multiplexer at
+    /// launch, exactly like an [`AgentDef`]'s `command`.
+    pub command: String,
+    /// Arguments passed after `command`, one token per element (never a shell
+    /// string — nothing here goes through a shell).
+    pub args: Vec<String>,
+    /// Extra environment for the process, on top of the `THURBOX_*` identity
+    /// vars every session gets. Sorted, so a restart's env is byte-identical to
+    /// the spawn's rather than hash-order-dependent.
+    pub env: BTreeMap<String, String>,
+}
+
+impl LaunchRecipe {
+    /// Whether this recipe says anything at all. An empty command is the same
+    /// as having no recipe — the caller wants a registry agent.
+    pub fn is_empty(&self) -> bool {
+        self.command.is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]
