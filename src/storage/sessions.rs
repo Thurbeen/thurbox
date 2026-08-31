@@ -405,9 +405,16 @@ impl Database {
     /// Active sessions whose id **starts with** `prefix`, for addressing a
     /// session by the first few characters of its UUID.
     pub fn find_sessions_by_id_prefix(&self, prefix: &str) -> rusqlite::Result<Vec<SharedSession>> {
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+        let escaped = prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         self.query_sessions(
-            "s.deleted_at IS NULL AND s.id LIKE ?1 || '%'",
-            params![prefix],
+            "s.deleted_at IS NULL AND s.id LIKE ?1 || '%' ESCAPE '\\'",
+            params![escaped],
         )
     }
 

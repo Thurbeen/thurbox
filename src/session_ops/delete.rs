@@ -78,6 +78,8 @@ pub fn delete_session_headless(
             if force {
                 db.mark_session_force_deleted(session_id)
                     .map_err(|e| format!("mark_session_force_deleted: {e}"))?;
+                db.clear_session_meta(session_id)
+                    .map_err(|e| format!("clear_session_meta: {e}"))?;
             }
             report.hook_failures =
                 super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
@@ -100,6 +102,8 @@ pub fn delete_session_headless(
     if force {
         db.mark_session_force_deleted(session_id)
             .map_err(|e| format!("mark_session_force_deleted: {e}"))?;
+        db.clear_session_meta(session_id)
+            .map_err(|e| format!("clear_session_meta: {e}"))?;
     }
 
     report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);

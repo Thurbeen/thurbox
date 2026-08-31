@@ -180,6 +180,15 @@ pub fn spawn_session_headless_with_progress(
     };
     report(SpawnPhase::Resolving);
     crate::paths::validate_safe_name(&req.name)?;
+    if req.resume_session_id.is_some()
+        && req.command.as_deref().is_some_and(|c| !c.is_empty())
+    {
+        return Err(
+            "--resume is not supported for --command sessions: a raw command has no agent \
+             conversation to attach to; drop --resume, or use --agent instead of --command"
+                .to_string(),
+        );
+    }
     validate_parent_session(db, req.parent_session_id)?;
 
     // Resolve the optional remote host. `backend_type` is `local-tmux` or
@@ -233,6 +242,11 @@ pub fn spawn_session_headless_with_progress(
     let agent_session_id = req
         .agent_session_id
         .clone()
+        .or_else(|| {
+            (!agent_def.resumes_latest())
+                .then(|| req.resume_session_id.clone())
+                .flatten()
+        })
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     // The user's say, before the first side effect: nothing below this line has
