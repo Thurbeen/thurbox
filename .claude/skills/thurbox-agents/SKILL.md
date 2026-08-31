@@ -15,7 +15,18 @@ description: The declarative coding-agent registry (agents.toml / AgentDef): the
 
 The set of launchable coding agents is declared **as data** in
 `~/.config/thurbox/agents.toml`, seeded with built-ins
-(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`, `omp`) on first run.
+(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`, `omp`)
+plus `shell` on first run.
+
+`shell` is the one seeded entry that is not a coding agent: the platform's own
+interactive shell (`bash -i`, or `powershell -NoLogo` on native Windows, where
+the multiplexer is psmux). It exists so a session can be *anything*, and it is
+the ready-made form of `session create --command`. Because it declares no
+`resume_args`/`fork_args`, it also documents the rule by example: those groups
+are the **conversation address**, and an entry without them can be restarted but
+never resumed. A raw `--command` session behaves identically — thurbox builds it
+a synthetic `AgentDef` with empty arg groups and persists the recipe on the
+session row, since there is no `agents.toml` entry to re-resolve at restart.
 Each `[[agents]]` entry is an `AgentDef`:
 
 ```toml

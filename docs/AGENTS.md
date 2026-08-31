@@ -40,7 +40,8 @@ reports state back*. Adding a built-in agent means touching **both**.
 
 ## The built-in agents
 
-Nine agents ship pre-seeded. `default = "claude"`.
+Ten entries ship pre-seeded — nine coding agents and a plain shell.
+`default = "claude"`.
 
 | Name | Command | Resume | Fork | ID model | Status hooks |
 |------|---------|--------|------|----------|--------------|
@@ -53,6 +54,30 @@ Nine agents ship pre-seeded. `default = "claude"`.
 | `vibe` | `vibe` | — (starts fresh) | — (none) | none | `external_files` → `~/.vibe/hooks.toml` |
 | `pi` | `pi` | `--session-id {id}` | `--fork {id}` | **pinned** (`--session-id {id}`) | `external_files` → `~/.pi/agent/extensions/` |
 | `omp` | `omp` | `--resume {home}/.omp/…/thurbox-{id}.jsonl` | — (none) | **path-pinned** (`--session <file>`) | `external_files` → `~/.omp/agent/extensions/` |
+| `shell` | `bash -i` (`powershell -NoLogo` on Windows) | — (none) | — (none) | none | none (see below) |
+
+### `shell` — the entry that is not a coding agent
+
+`shell` exists so a session can be something other than an agent: you run
+whatever you like in it, and an external driver can start its own tool with its
+own flags rather than asking thurbox to model them. It is the ready-made form of
+`session create --command`, and the only built-in whose `command` differs by
+platform, because a native-Windows host runs psmux and PowerShell rather than
+tmux and bash.
+
+`args = ["-i"]` on POSIX is load-bearing rather than decoration: a plain `bash`
+in a pane executes what is sent to it but renders **no prompt and no echo**, so
+anything reading the screen to decide whether the session is ready sees a blank
+pane that is nonetheless working.
+
+It declares no `resume_args` or `fork_args`, and that absence is the statement:
+a shell has no conversation. `session restart` replays its recipe in the same
+directory (a shell barely notices — its history and cwd live on disk),
+`session fork` gives you a second shell beside it, and `session create --resume`
+is refused rather than silently starting fresh. Nothing wires status hooks for
+it either, so a `shell` session reports `hook_state: null` until something in it
+calls `thurbox-cli session signal` — which anything in the pane can, since
+`THURBOX_SESSION` is in its environment.
 
 ### ID model: pinned vs. id-less
 

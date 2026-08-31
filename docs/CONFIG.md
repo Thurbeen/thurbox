@@ -169,7 +169,7 @@ The seeded file also ships two commented, copy-pasteable templates
 below the built-ins — **Add your own agent** (every field annotated)
 and **Pin a model** (a `claude-opus` variant baking `--model opus`
 into `args`). Both stay commented, so a fresh install still resolves
-to exactly the nine built-ins.
+to exactly the ten built-ins (nine coding agents plus `shell`).
 
 For **each built-in's** exact config and runtime behavior (resume/fork
 semantics, ID model, and which status-hook mechanism it uses), and the
@@ -826,6 +826,7 @@ these to prove its own identity without scraping panes or names:
 | `THURBOX_METRICS_DIR` | metrics output dir |
 | `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` | the resolved config/data dirs, so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a stale tmux-server env. Also honored if you set them yourself to relocate thurbox's state. |
 | `THURBOX_SOCKET` | the multiplexer socket that instance's sessions live on, so an in-session `thurbox-cli` reaches the same server instead of re-deriving one from the session's own environment |
+| `THURBOX_SOCKET_FOR` | the data dir that injected `THURBOX_SOCKET` belongs to. Read only to tell an inherited socket from one you exported: a child that points `THURBOX_DATA_DIR` somewhere else no longer matches, and derives its own socket instead of creating windows on the spawning instance's server |
 
 `THURBOX_SESSION` is a **stable integration contract**, not an internal
 detail of the hooks extension. It is set on the pane, so every process
@@ -893,7 +894,15 @@ Three rules keep the ordinary case ordinary:
 - **A relocated *config* dir alone changes nothing.** It shares the default
   instance's database, and therefore its sessions and their server.
 - **`THURBOX_SOCKET` wins over both**, so anything that needs the socket *by
-  name* (the dev sandbox, whose teardown kills it) keeps naming it.
+  name* (the dev sandbox, whose teardown kills it) keeps naming it — **unless it
+  was inherited from another instance.** thurbox injects the socket into every
+  pane it spawns, paired with `THURBOX_SOCKET_FOR`, the data dir it belongs to.
+  A `thurbox-cli` inside that pane which relocates *itself* — a sandbox, a test
+  harness, an agent exporting its own `THURBOX_DATA_DIR` — no longer matches
+  that pairing, so the inherited name is dropped and the derivation runs. An
+  override you export yourself carries no pairing and still wins outright.
+  Without this, isolating the database silently left the tmux server shared,
+  which looks contained and is not.
 
 Ask a build which server it is on rather than assuming: `thurbox-cli version
 --json` reports the socket in force as `tmux_socket`, and `thurbox-cli config

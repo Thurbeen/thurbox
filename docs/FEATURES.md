@@ -1823,6 +1823,63 @@ complete. The TUI remains fully interactive during sync.
 
 ---
 
+## Sessions That Arrive From Elsewhere
+
+Thurbox is normally the thing that *starts* work: it launches a coding agent in
+a worktree it made. But an increasing amount of work starts somewhere else — an
+orchestrator that owns the plan, a checkout tool that owns the pool, a session
+that already exists in another terminal manager. None of that should require
+thurbox to own it first.
+
+Three pieces make a session joinable, and each one is a **value handed in**
+rather than an interface anyone has to implement.
+
+### Any command can be a session (`--command`)
+
+`session create --agent <name>` looks the launch up in `agents.toml`;
+`session create --command <exe> --arg … --env K=V` *is* the definition. The
+distinction matters at restart, not at spawn:
+
+- A **registry agent** is resolved by name at every launch. That indirection is
+  a feature — fix `agents.toml`, restart, and the fix takes effect.
+- A **command session** has no entry to re-resolve, so its **launch recipe**
+  (command, args, env) is persisted on its row and replayed verbatim. Without
+  that it would restart into nothing and lose its `--env` on the first respawn.
+
+A ready-made form ships as the `shell` built-in, whose `command` is the
+platform's own interactive shell (see [AGENTS.md](AGENTS.md)).
+
+### A launch recipe is not a conversation
+
+Restart, resume and fork are three different relationships to an agent's
+conversation, and only two of them need one:
+
+| Verb | What it does | Needs a conversation address |
+|------|--------------|------------------------------|
+| `restart` | Same session, new pane, replays the recipe | no |
+| `create --resume <id>` | New session attached to an existing conversation | yes |
+| `fork` | New session branching from one | yes |
+
+The address is the `resume_args` / `fork_args` / `resume_latest` groups of an
+`[[agents]]` entry — thurbox never learns what a conversation *is*, only how to
+ask an agent for one. So a command session restarts (a shell barely notices; its
+history and cwd live on disk), and `--resume` is **refused** for it with the fix
+named, rather than silently starting fresh. Making anything resumable is
+therefore a TOML edit, never a thurbox code change.
+
+### Stopping is not deleting
+
+`session stop` kills the pane and keeps the row, the checkout and the branch;
+`session start` puts a pane back. Before this the only headless way to reclaim a
+heavy agent's pane was `delete --force`, which also removed its worktrees.
+
+A stopped session is **marked**, not merely pane-less, because a session with no
+pane normally means its agent died — and three subsystems repair that on sight:
+the interface's respawn of surveyed rows, a peer's `restart --if-missing` after
+a reboot, and extension self-heal. All three skip a marked row, and `start` is
+the only caller that clears the mark. Without the exemptions the interface would
+undo every stop within a tick of it happening.
+
 ## Session Persistence
 
 Sessions run inside a dedicated tmux server (`tmux -L thurbox`)
