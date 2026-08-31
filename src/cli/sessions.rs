@@ -1692,11 +1692,26 @@ mod tests {
         session.cwd = Some(dir.path().to_path_buf());
         db.upsert_session(&session).unwrap();
 
+        // `pwd`/`sh` are POSIX-only, and Git for Windows' `pwd.exe` prints an
+        // MSYS-style path (`/c/Users/...`) that Windows' own canonicalize()
+        // can't parse — so the print-cwd and nonzero-exit commands are spelled
+        // per platform through the native shell instead of a fixed program.
+        let print_cwd = if cfg!(windows) {
+            vec!["cmd".into(), "/C".into(), "cd".into()]
+        } else {
+            vec!["pwd".into()]
+        };
+        let exit_3 = if cfg!(windows) {
+            vec!["cmd".into(), "/C".into(), "exit 3".into()]
+        } else {
+            vec!["sh".into(), "-c".into(), "exit 3".into()]
+        };
+
         let out = run(
             Action::Exec {
                 session: "worker".into(),
                 exit_passthrough: false,
-                command: vec!["pwd".into()],
+                command: print_cwd,
             },
             &db,
         )
@@ -1721,7 +1736,7 @@ mod tests {
             Action::Exec {
                 session: "worker".into(),
                 exit_passthrough: false,
-                command: vec!["sh".into(), "-c".into(), "exit 3".into()],
+                command: exit_3.clone(),
             },
             &db,
         )
@@ -1733,7 +1748,7 @@ mod tests {
             Action::Exec {
                 session: "worker".into(),
                 exit_passthrough: true,
-                command: vec!["sh".into(), "-c".into(), "exit 3".into()],
+                command: exit_3,
             },
             &db,
         )
