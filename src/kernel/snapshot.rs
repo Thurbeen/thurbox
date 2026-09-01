@@ -34,12 +34,12 @@ pub struct GitState {
     pub dirty: bool,
     pub ahead: usize,
     pub behind: usize,
-    /// The open PR number for this worktree's current branch, when `gh` says
-    /// one exists and its state is `OPEN`. `None` when the check couldn't run
-    /// (missing `gh`, unauthenticated, no remote), when no PR is associated,
-    /// or when the PR is merged/closed. Best-effort: the delete confirmation
-    /// treats `None` as "no reason to ask".
-    pub open_pr: Option<u64>,
+    /// Whether HEAD is reachable from `origin/HEAD` — the branch has been
+    /// merged into origin's default. `Some(true)` = merged, `Some(false)` =
+    /// still ahead of the default, `None` when the check couldn't run (no
+    /// `origin/HEAD`, unresolved ref). Provider-agnostic — this is a pure
+    /// git question, so any forge (or no forge at all) is covered.
+    pub merged_into_default: Option<bool>,
 }
 
 /// One session, flattened to what a plugin needs to draw it.
@@ -304,10 +304,11 @@ impl GitStats {
                 dirty: s.dirty,
                 ahead: s.ahead,
                 behind: s.behind,
-                // Best-effort — shells out to `gh` and returns None on any
-                // failure. Runs on this same background thread so a slow
-                // network call cannot stall a refresh.
-                open_pr: crate::git::open_pr_number(&worktree),
+                // Pure-local check — `git merge-base --is-ancestor` never
+                // touches the network, so this is cheap. Runs on the same
+                // background thread as `worktree_stats` and cannot block the
+                // render loop.
+                merged_into_default: crate::git::branch_merged_into_default(&worktree),
             });
             let _ = tx.send((session, stats));
         });

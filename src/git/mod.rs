@@ -27,32 +27,33 @@ mod plugin;
 mod remote;
 mod worktree;
 
-/// Look up an open PR for the worktree's current branch via `gh pr view`.
+/// Whether the worktree's HEAD is already reachable from `origin/HEAD` — i.e.
+/// the branch has been merged into origin's default branch.
 ///
-/// Returns `Some(pr_number)` only when the PR is OPEN — merged and closed PRs
-/// report `None`, and any `gh` failure (missing binary, no auth, no remote, no
-/// PR) is a `None` too. Best-effort by design: the session-delete confirmation
-/// treats absence as "no reason to ask".
-pub fn open_pr_number(worktree_path: &Path) -> Option<u64> {
-    let output = Command::new("gh")
-        .args(["pr", "view", "--json", "state,number"])
+/// `Some(true)` = merged, `Some(false)` = ahead of / diverged from the default
+/// branch, `None` when we cannot tell (no `origin/HEAD`, unresolved ref, git
+/// failure). Best-effort by design: the session-delete confirmation treats
+/// `None` and `Some(false)` alike — a delete you cannot prove is a no-op is
+/// worth asking about.
+///
+/// Provider-agnostic on purpose: reads local refs only, so it works on GitHub,
+/// GitLab, Bitbucket, or a bare `git init` behind an SSH remote — no CLI
+/// beyond `git` itself.
+pub fn branch_merged_into_default(worktree_path: &Path) -> Option<bool> {
+    let status = Command::new("git")
+        .args(["merge-base", "--is-ancestor", "HEAD", "origin/HEAD"])
         .current_dir(worktree_path)
         .stderr(Stdio::null())
-        .output()
+        .stdout(Stdio::null())
+        .status()
         .ok()?;
 
-    if !output.status.success() {
-        return None;
+    let code = status.code()?;
+    match code {
+        0 => Some(true),
+        1 => Some(false),
+        _ => None,
     }
-
-    let body = std::str::from_utf8(&output.stdout).ok()?;
-    if !body.contains("\"state\":\"OPEN\"") {
-        return None;
-    }
-
-    let after = body.split("\"number\":").nth(1)?;
-    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
 }
 
 #[cfg(test)]

@@ -660,7 +660,7 @@ fn build_sessions(
             set(&stats, "dirty", git.dirty)?;
             set(&stats, "ahead", git.ahead)?;
             set(&stats, "behind", git.behind)?;
-            set(&stats, "open_pr", git.open_pr)?;
+            set(&stats, "merged_into_default", git.merged_into_default)?;
             set(&entry, "git", stats)?;
         }
         // Why this session's terminal is not live, when it is not.

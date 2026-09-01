@@ -340,7 +340,7 @@ fn clean() -> GitState {
         dirty: false,
         ahead: 0,
         behind: 0,
-        open_pr: None,
+        merged_into_default: Some(true),
     }
 }
 
@@ -453,15 +453,15 @@ fn a_clean_primary_does_not_speak_for_the_other_worktrees() {
 }
 
 #[test]
-fn force_deleting_a_session_with_an_open_pr_asks_and_names_the_number() {
-    // A clean worktree with an open PR still has work to walk away from —
-    // the reviewer's comments, the CI runs, the branch the PR is anchored
-    // to. The question names the number so it points at the same PR the
-    // user sees on GitHub, rather than a generic "there's a PR somewhere".
+fn force_deleting_an_unmerged_branch_asks_first() {
+    // A clean worktree whose HEAD is not yet reachable from origin's default
+    // still has work to walk away from — an in-flight PR, a stacked change, a
+    // review in progress. The check is a plain `git merge-base --is-ancestor`
+    // so it covers GitHub, GitLab, Bitbucket, or no forge at all.
     let host = host();
     let mut snapshot = snapshot();
     snapshot.sessions[0].git = Some(GitState {
-        open_pr: Some(4281),
+        merged_into_default: Some(false),
         ..clean()
     });
     snapshot.sessions[0].worktree_count = 1;
@@ -473,7 +473,10 @@ fn force_deleting_a_session_with_an_open_pr_asks_and_names_the_number() {
         "nothing is torn down until the question is answered"
     );
     let tree = confirm_tree(&host, &snapshot);
-    assert!(tree.contains("PR #4281 is still open"), "{tree}");
+    assert!(
+        tree.contains("branch is not yet merged into the default branch"),
+        "{tree}"
+    );
 }
 
 #[test]

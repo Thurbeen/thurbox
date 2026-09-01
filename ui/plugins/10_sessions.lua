@@ -409,13 +409,15 @@ local function at_risk(session)
   if (git.ahead or 0) > 0 then
     lines[#lines + 1] = git.ahead .. " commit(s) not pushed anywhere else"
   end
-  -- An open PR still awaiting a merge is work you'd walk away from silently:
-  -- the reviewer's comments, the CI runs, the branch the PR points at. The
-  -- check is best-effort (`gh` may be absent), so `nil` stays silent; a hit
-  -- names the number so the question can refer to the same PR the user sees
-  -- on GitHub.
-  if git.open_pr then
-    lines[#lines + 1] = "PR #" .. git.open_pr .. " is still open"
+  -- A branch not yet reachable from origin's default is work you'd walk
+  -- away from — an in-flight PR, a stacked change, a review-in-progress —
+  -- and the check is a plain `git merge-base --is-ancestor`, so it works
+  -- for GitHub, GitLab, Bitbucket, or a bare git remote alike. `nil` means
+  -- the check couldn't run (no `origin/HEAD`), which is silent because the
+  -- other reasons already cover the risky cases; only a confirmed "not
+  -- merged" adds a line of its own.
+  if git.merged_into_default == false then
+    lines[#lines + 1] = "branch is not yet merged into the default branch"
   end
 
   -- Everything above speaks for the session's *primary* directory, which is the
