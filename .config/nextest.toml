@@ -29,3 +29,19 @@ retries = 2
 fail-fast = true
 slow-timeout = { period = "30s" }
 
+# tests/tui_e2e.rs drives the real binary on a real pty/tmux session with
+# wall-clock waits. Run alongside the rest of the (much larger) suite at full
+# parallelism, they starve each other of CPU and blow their timeouts under
+# load even though each passes cleanly in isolation — serialize this one
+# binary so it never contends with itself or the rest of the run.
+[test-groups]
+e2e-pty = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary_id(thurbox::tui_e2e)'
+test-group = 'e2e-pty'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(thurbox::tui_e2e)'
+test-group = 'e2e-pty'
+
