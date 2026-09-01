@@ -188,7 +188,8 @@ cog commit fix "avoid panic on empty worktree" git
 ```
 
 Commit type drives releases: `feat` → minor bump, `fix` / `perf` → patch bump;
-`docs`, `chore`, `ci`, `style` and `test` produce no release.
+`docs`, `chore`, `ci`, `style` and `test` produce no release. On `main` the type
+that counts is the **pull request title's** — see below.
 
 The history check that the `pre-push` hook and CI's `Conventional Commits` job
 run is [`scripts/ci/check-conventional-commits.sh`](scripts/ci/check-conventional-commits.sh)
@@ -199,6 +200,37 @@ authors (`no-mistakes: apply CI fixes` and `no-mistakes: apply agent fixes`).
 `.no-mistakes.yaml`'s `commit.fix_message` retemplates the gate's per-step
 auto-fix commits, but those two are not templatable, and `cog check` cannot
 exempt a commit — so the fix the gate pushed for this job used to fail it.
+
+### The pull request title is the commit
+
+Pull requests land by **squash merge**, so the commit that reaches `main` is not
+any commit from your branch: GitHub builds it from the pull request title plus
+its own `(#N)` suffix.
+
+```text
+fix(core): keep the caret where the frame put it
+  ↓ squash merge
+fix(core): keep the caret where the frame put it (#1044)
+```
+
+That single string is what `cog bump --auto` reads for the release decision,
+what the changelog quotes, and what the history check above then holds `main`
+to. So the type and scope allowlists apply to the **title**, and it is the
+title's type that decides the release — a branch whose every commit is `fix`
+still ships nothing if its pull request is titled `docs:`. Keep a pull request
+to one purpose and title it after its most significant change.
+
+Declare a breaking change in the title (`feat(core)!: …`) or as a
+`BREAKING CHANGE:` footer in the pull request **body**. The squash commit's body
+comes from the body box, so a footer left behind in a branch commit is
+discarded.
+
+[`scripts/ci/check-pr-title.sh`](scripts/ci/check-pr-title.sh) enforces this as
+the required `PR Title` check. It validates the title in the exact form that
+lands, suffix included, and rejects one that already ends in a `(#N)` of its own
+— squash would append a second. It runs from its own workflow rather than from
+CI because `ci.yml` does not listen for `edited`, so a title changed after
+checks went green would otherwise never be revalidated.
 
 ## Documentation
 

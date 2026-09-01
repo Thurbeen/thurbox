@@ -287,6 +287,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y bats
       - name: Test the commit checker
         run: bats scripts/ci/check-conventional-commits.bats
+      # The PR-title checker's suite runs here rather than in pr-title.yml:
+      # bats and cog are already installed in this job, and that workflow
+      # re-runs on every edit of the title box, so it stays lean.
+      - name: Test the PR title checker
+        run: bats scripts/ci/check-pr-title.bats
       - name: Check conventional commits
         run: scripts/ci/check-conventional-commits.sh
 
