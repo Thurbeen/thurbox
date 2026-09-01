@@ -860,3 +860,113 @@ fn a_command_session_survives_restart_and_can_be_parked() {
 
     cleanup();
 }
+
+/// Forking a registry-agent session must carry over its recorded `--env`.
+///
+/// A registry agent has no [`LaunchRecipe`](thurbox::session::LaunchRecipe) —
+/// only a command session does — so a fork that read its env from the recipe
+/// would always find one and silently produce a fork with no env at all,
+/// unlike a command session's fork, which keeps its env via the recipe. Both
+/// now read the same `launch_env` column instead.
+#[test]
+#[cfg(not(windows))]
+fn a_forked_registry_agent_session_keeps_its_recorded_env() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    thurbox::paths::set_test_dir(home.path());
+    let config = thurbox::paths::config_file()
+        .expect("config path")
+        .parent()
+        .expect("config dir")
+        .to_path_buf();
+    std::fs::create_dir_all(&config).expect("mkdir");
+    std::fs::write(
+        config.join("agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("write agents.toml");
+
+    let result = thurbox::session_ops::spawn::spawn_session_headless(
+        &db,
+        thurbox::session_ops::spawn::SpawnRequest {
+            name: "env-probe".into(),
+            repo_path: repo.path().to_path_buf(),
+            worktree_branch: None,
+            base_branch: None,
+            agent: Some("shell".into()),
+            command: None,
+            args: Vec::new(),
+            env: [("FM_PROBE".to_string(), "1".to_string())]
+                .into_iter()
+                .collect(),
+            resume_session_id: None,
+            agent_session_id: None,
+            host: None,
+            parent_session_id: None,
+            task_id: None,
+            extra_repos: Vec::new(),
+            fork_session_id: None,
+            inherit_worktrees: Vec::new(),
+        },
+    );
+    let spawned = match result {
+        Ok(spawned) => spawned,
+        Err(e) => {
+            cleanup();
+            if e.contains("tmux") {
+                eprintln!("skipping: tmux would not spawn a window: {e}");
+                return;
+            }
+            panic!("creation failed: {e}");
+        }
+    };
+
+    // A registry agent carries no recipe — its `--env` lives only in the
+    // shared `launch_env` column.
+    assert!(db
+        .load_launch_recipe(spawned.session_id)
+        .expect("query")
+        .is_none());
+    assert_eq!(
+        db.load_launch_env(spawned.session_id)
+            .expect("query")
+            .get("FM_PROBE")
+            .map(String::as_str),
+        Some("1"),
+        "the spawn recorded its own --env"
+    );
+
+    let fork = match thurbox::session_ops::fork_session_headless(
+        &db,
+        spawned.session_id,
+        "env-probe-fork",
+    ) {
+        Ok(fork) => fork,
+        Err(e) => {
+            cleanup();
+            if e.contains("tmux") {
+                eprintln!("skipping: tmux would not spawn a window: {e}");
+                return;
+            }
+            panic!("fork failed: {e}");
+        }
+    };
+
+    assert_eq!(
+        db.load_launch_env(fork.session_id)
+            .expect("query")
+            .get("FM_PROBE")
+            .map(String::as_str),
+        Some("1"),
+        "a fork of a registry-agent session must keep the env its parent recorded"
+    );
+
+    cleanup();
+}

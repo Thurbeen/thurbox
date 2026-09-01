@@ -491,6 +491,10 @@ pub fn fork_session_headless(
     // recipe rather than the agent name — otherwise it would look up an agent
     // called `bash` and find nothing.
     let recipe = db.load_launch_recipe(id).unwrap_or_default();
+    // Read separately from the recipe: a registry-agent session has no
+    // recipe at all, but its `--env` is still recorded in the same column and
+    // there is nowhere else to re-resolve it from for the fork.
+    let env = db.load_launch_env(id).unwrap_or_default();
 
     let request = spawn::SpawnRequest {
         name,
@@ -500,7 +504,7 @@ pub fn fork_session_headless(
         agent: recipe.is_none().then(|| source.agent.clone()),
         command: recipe.as_ref().map(|r| r.command.clone()),
         args: recipe.as_ref().map(|r| r.args.clone()).unwrap_or_default(),
-        env: recipe.map(|r| r.env).unwrap_or_default(),
+        env,
         // A fork of a remote session belongs on that session's host, or it would
         // silently become a local session pointed at a path that is not here.
         host: resolve_host(&source.backend_type)
