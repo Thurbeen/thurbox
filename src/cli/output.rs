@@ -39,6 +39,15 @@ pub struct CommandOutput {
     /// When `Some`, the dispatcher prints the output normally, then returns this
     /// message as an error so the process exits non-zero.
     pub failure: Option<String>,
+    /// The process exit code this output asks for, when [`failure`](Self::failure)
+    /// is set. `None` means the generic "it ran and failed" code.
+    ///
+    /// Only one command sets it — `session exec --exit-passthrough`, whose whole
+    /// purpose is to make the in-session command's own code the invocation's.
+    /// It is opt-in precisely because thurbox's codes are a contract (0 ok,
+    /// 1 failed, 2 usage) and a command exiting 2 would otherwise be
+    /// indistinguishable from a usage error.
+    pub exit_code: Option<i32>,
     /// How to render [`Format::Toon`] — the agent-facing view.
     pub agent: AgentView,
 }
@@ -82,6 +91,7 @@ impl CommandOutput {
             json,
             human: human.into(),
             failure: None,
+            exit_code: None,
             agent: AgentView::default(),
         }
     }
@@ -148,8 +158,19 @@ impl CommandOutput {
             json,
             human: human.into(),
             failure: Some(msg.into()),
+            exit_code: None,
             agent: AgentView::default(),
         }
+    }
+
+    /// Ask for a specific exit code rather than the generic failure one.
+    ///
+    /// Only meaningful together with a failure: an output that succeeded exits
+    /// 0 whatever this says, because a command that did what was asked has not
+    /// failed no matter what it printed.
+    pub fn exiting_with(mut self, code: i32) -> Self {
+        self.exit_code = Some(code);
+        self
     }
 }
 

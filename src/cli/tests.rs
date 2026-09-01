@@ -941,3 +941,36 @@ fn a_command_session_and_an_agent_session_are_mutually_exclusive() {
     ]);
     assert!(orphan_arg.is_err(), "--arg requires --command");
 }
+
+#[test]
+fn command_arguments_may_start_with_a_dash() {
+    // The whole reason to pass an argument is usually to pass a *switch*, and
+    // `sh -c '<script>'` is how any orchestrator hands over a command line it
+    // was given as a string. Without this, `--command` cannot launch nearly
+    // anything — clap reads the value as an unknown flag of thurbox's own.
+    let cli = Cli::try_parse_from([
+        "thurbox-cli",
+        "session",
+        "create",
+        "--name",
+        "probe",
+        "--repo-path",
+        "/tmp",
+        "--command",
+        "/bin/sh",
+        "--arg",
+        "-c",
+        "--arg",
+        "while :; do sleep 1; done",
+    ])
+    .expect("a leading-dash argument is a value, not a flag");
+
+    let Command::Session {
+        action: sessions::Action::Create { command, arg, .. },
+    } = subcommand(cli)
+    else {
+        panic!("expected session create");
+    };
+    assert_eq!(command.as_deref(), Some("/bin/sh"));
+    assert_eq!(arg, vec!["-c", "while :; do sleep 1; done"]);
+}

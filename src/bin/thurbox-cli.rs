@@ -75,9 +75,13 @@ fn main() {
         Ok(cli::Outcome::Ok) => {}
         // The report is already on stdout and is the answer; only the verdict
         // is left to carry, and it carries as an exit code.
-        Ok(cli::Outcome::Failed(msg)) => {
-            eprintln!("{msg}");
-            std::process::exit(EXIT_ERROR);
+        Ok(cli::Outcome::Failed { message, code }) => {
+            eprintln!("{message}");
+            // A command that asked for a specific code meant it: `session exec
+            // --exit-passthrough` exists so an in-session command's own code
+            // reaches the caller intact, and collapsing it here would make the
+            // flag a lie. Everything else takes the generic failure code.
+            std::process::exit(code.unwrap_or(EXIT_ERROR));
         }
         // A runtime failure, not a bad invocation: clap already answered those
         // with its own wording and exit 2. Advising `--help` here misattributes

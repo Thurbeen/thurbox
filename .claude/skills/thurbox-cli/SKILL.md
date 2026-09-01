@@ -133,7 +133,14 @@ thurbox-cli session exec worker -- git status --porcelain
 A separate process in the session's directory, on the machine the session lives
 on — **not** typed into the pane, which belongs to the agent and would interleave
 with whatever it is doing. The command's exit code is always in the output;
-`--exit-passthrough` additionally makes it this invocation's own.
+`--exit-passthrough` additionally makes it this invocation's own — a command
+exiting 2 is *that command's* 2, not a usage error, which is the distinction
+Gas City's `proc.exec` capability is defined by. `exit_code` is `null` when the
+command was terminated by a signal rather than exiting; passthrough then takes
+the generic failure code, since there is no code to carry.
+
+Arguments to `--command` may start with a dash (`--arg -c`): passing a switch is
+the usual reason to pass an argument at all.
 
 ### `session meta` — the driver's key/value space
 

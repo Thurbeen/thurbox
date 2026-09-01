@@ -106,7 +106,13 @@ pub enum Action {
         command: Option<String>,
         /// One argument for `--command` (repeatable, in order). Passed to the
         /// process as-is — no shell sees it, so quoting is not your problem.
-        #[arg(long = "arg", requires = "command")]
+        ///
+        /// `allow_hyphen_values` because the usual reason to pass an argument
+        /// is to pass a *switch*: `--command /bin/sh --arg -c --arg '<script>'`
+        /// is how a driver hands over a command line it was itself given as a
+        /// string. Without it clap reads `-c` as an unknown flag of thurbox's
+        /// own and refuses the invocation.
+        #[arg(long = "arg", requires = "command", allow_hyphen_values = true)]
         arg: Vec<String>,
         /// Extra environment as `KEY=VALUE` (repeatable). thurbox's own
         /// `THURBOX_*` identity vars always win over these.
@@ -310,7 +316,10 @@ pub enum Action {
         /// Off by default because thurbox's exit codes mean something specific
         /// (0 ok, 1 failed, 2 usage) and overloading them silently would break
         /// a caller that reads them; the command's code is always in the output
-        /// either way.
+        /// either way. With the flag, a command exiting 2 is that command's 2,
+        /// not a usage error — which is exactly the distinction Gas City's
+        /// `proc.exec` capability is defined by. A command terminated by a
+        /// signal has no code to carry and takes the generic failure code.
         #[arg(long = "exit-passthrough")]
         exit_passthrough: bool,
         /// The command and its arguments, after `--`.
@@ -1151,7 +1160,11 @@ fn exec_in_session(
     let output = crate::session_ops::exec_in_dir(host.as_ref(), &cwd, program, rest)
         .map_err(|e| format!("could not run '{program}' in {}: {e}", cwd.display()))?;
 
-    let code = output.status.code().unwrap_or(-1);
+    // `None` when the process was terminated without exiting — killed by a
+    // signal. Reported as null rather than as a made-up number: no process
+    // exits `-1`, so a sentinel there would be indistinguishable from a real
+    // code to anything reading the field.
+    let code = output.status.code();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let mut human = stdout.clone();
@@ -1159,7 +1172,10 @@ fn exec_in_session(
         human.push_str(&stderr);
     }
     if human.is_empty() {
-        human = format!("(no output; exit {code})");
+        human = match code {
+            Some(code) => format!("(no output; exit {code})"),
+            None => "(no output; terminated by a signal)".to_string(),
+        };
     }
 
     let payload = json!({
@@ -1173,10 +1189,22 @@ fn exec_in_session(
     // The command failing is not this command failing — unless asked. The exit
     // code is in the document either way, so a caller never has to choose
     // between reading the answer and knowing the result.
-    Ok(if exit_passthrough && code != 0 {
-        CommandOutput::failed(payload, human, format!("command exited {code}"))
-    } else {
-        CommandOutput::new(payload, human)
+    //
+    // When asked, the command's code becomes this process's, which is the whole
+    // point of the flag: a caller reading only `$?` gets the real answer rather
+    // than "something went wrong". A command killed by a signal has no code to
+    // carry, so it takes the generic failure code instead of a fabricated one.
+    Ok(match (exit_passthrough, code) {
+        (true, Some(0)) | (false, _) => CommandOutput::new(payload, human),
+        (true, Some(code)) => {
+            CommandOutput::failed(payload, human, format!("command exited {code}"))
+                .exiting_with(code)
+        }
+        (true, None) => CommandOutput::failed(
+            payload,
+            human,
+            "command was terminated by a signal".to_string(),
+        ),
     })
 }
 

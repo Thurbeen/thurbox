@@ -243,7 +243,12 @@ pub enum Outcome {
     Ok,
     /// Rendered, and the command asks for a non-zero exit. Nothing more may go
     /// to stdout; the message is a diagnostic for stderr.
-    Failed(String),
+    ///
+    /// `code` is `None` for the ordinary "it ran and failed" case, and `Some`
+    /// only where the command's own exit code *is* the answer — `session exec
+    /// --exit-passthrough`. The entrypoint owns what `None` resolves to, so the
+    /// exit-code constants stay in one place.
+    Failed { message: String, code: Option<i32> },
 }
 
 /// Run a parsed CLI invocation against `db`, rendering the result in the
@@ -288,7 +293,10 @@ pub fn run(cli: Cli, db: &Database) -> Result<Outcome, String> {
     // Its report is the answer and is already on stdout, so the failure travels
     // as an outcome rather than an `Err` the caller would print again.
     Ok(match output.failure {
-        Some(msg) => Outcome::Failed(msg),
+        Some(message) => Outcome::Failed {
+            message,
+            code: output.exit_code,
+        },
         None => Outcome::Ok,
     })
 }

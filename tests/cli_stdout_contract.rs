@@ -84,6 +84,24 @@ fn sole_document(out: &Output) -> Value {
 /// refuses a session with no live window — and a window is exactly what this
 /// test must not create. `doctor` needs a *row*, not a pane; the pane check
 /// answers "no live pane" and is not what is under test here.
+/// [`seed_session`] with a working directory, for the verbs that run something
+/// in it rather than merely reporting on the row.
+fn seed_session_in(env: &Env, name: &str, cwd: Option<&std::path::Path>) -> String {
+    let id = seed_session(env, name, "claude");
+    if let Some(dir) = cwd {
+        let db = thurbox::storage::Database::open(&env.path("data").join("thurbox.db"))
+            .expect("open the instance database");
+        let parsed: SessionId = id.parse().expect("seeded id");
+        let mut row = db
+            .get_session_by_id(parsed)
+            .expect("query")
+            .expect("just seeded");
+        row.cwd = Some(dir.to_path_buf());
+        db.upsert_session(&row).expect("record the cwd");
+    }
+    id
+}
+
 fn seed_session(env: &Env, name: &str, agent: &str) -> String {
     let db = thurbox::storage::Database::open(&env.path("data").join("thurbox.db"))
         .expect("open the instance database");
@@ -200,4 +218,75 @@ fn a_runtime_failure_is_not_advised_as_a_usage_error() {
         "a bad invocation is the one that is sent to the usage page: {}",
         String::from_utf8_lossy(&usage.stdout)
     );
+}
+
+/// `session exec --exit-passthrough` exits with the command's own code.
+///
+/// The flag's whole purpose is Gas City's `proc.exec` capability: "the exec
+/// op's process exit code carries the in-box command's exit code, so an
+/// exec-op exit of 2 is read as the command's own exit 2 rather than the
+/// unknown-op sentinel". Collapsing every failure to 1 makes that unreadable —
+/// and a caller that trusted the flag's own help would mis-report every
+/// non-zero code as 1.
+///
+/// The single-document rule still applies: the report is on stdout either way,
+/// so a caller never has to choose between reading the answer and knowing the
+/// result.
+#[test]
+fn exec_exit_passthrough_carries_the_commands_own_code() {
+    let env = Env::new();
+    let dir = env.path("home");
+    let id = seed_session_in(&env, "worker", Some(&dir));
+
+    // Without the flag: the command failed, the invocation did not. Exit 0,
+    // because thurbox was asked to run something and ran it.
+    let plain = env.run(&["session", "exec", "worker", "--", "sh", "-c", "exit 7"]);
+    assert_eq!(
+        plain.status.code(),
+        Some(0),
+        "an unasked-for failure is data"
+    );
+
+    // With it: the command's code *is* the invocation's.
+    for code in [7, 3] {
+        let out = env.run(&[
+            "session",
+            "exec",
+            "--exit-passthrough",
+            "--json",
+            &id,
+            "--",
+            "sh",
+            "-c",
+            &format!("exit {code}"),
+        ]);
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "--exit-passthrough must carry {code}, not collapse it:\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // And the report is still exactly one document on stdout.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut stream = serde_json::Deserializer::from_slice(&out.stdout).into_iter::<Value>();
+        let first = stream
+            .next()
+            .unwrap_or_else(|| panic!("stdout carries a document: {stdout}"))
+            .expect("stdout is JSON");
+        assert!(stream.next().is_none(), "one document only:\n{stdout}");
+        assert_eq!(first["exit_code"].as_i64(), Some(i64::from(code)));
+    }
+
+    // A command that succeeds exits 0 with the flag, like any other success.
+    let ok = env.run(&[
+        "session",
+        "exec",
+        "--exit-passthrough",
+        "worker",
+        "--",
+        "sh",
+        "-c",
+        "exit 0",
+    ]);
+    assert_eq!(ok.status.code(), Some(0));
 }
