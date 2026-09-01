@@ -34,6 +34,12 @@ pub struct GitState {
     pub dirty: bool,
     pub ahead: usize,
     pub behind: usize,
+    /// The open PR number for this worktree's current branch, when `gh` says
+    /// one exists and its state is `OPEN`. `None` when the check couldn't run
+    /// (missing `gh`, unauthenticated, no remote), when no PR is associated,
+    /// or when the PR is merged/closed. Best-effort: the delete confirmation
+    /// treats `None` as "no reason to ask".
+    pub open_pr: Option<u64>,
 }
 
 /// One session, flattened to what a plugin needs to draw it.
@@ -298,6 +304,10 @@ impl GitStats {
                 dirty: s.dirty,
                 ahead: s.ahead,
                 behind: s.behind,
+                // Best-effort — shells out to `gh` and returns None on any
+                // failure. Runs on this same background thread so a slow
+                // network call cannot stall a refresh.
+                open_pr: crate::git::open_pr_number(&worktree),
             });
             let _ = tx.send((session, stats));
         });

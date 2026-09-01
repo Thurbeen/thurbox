@@ -287,6 +287,7 @@ fn session_row() -> thurbox::kernel::snapshot::SessionRow {
             dirty: true,
             ahead: 2,
             behind: 0,
+            open_pr: None,
         }),
         stopped: false,
         hook_state: None,

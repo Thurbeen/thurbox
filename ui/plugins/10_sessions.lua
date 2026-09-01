@@ -409,6 +409,14 @@ local function at_risk(session)
   if (git.ahead or 0) > 0 then
     lines[#lines + 1] = git.ahead .. " commit(s) not pushed anywhere else"
   end
+  -- An open PR still awaiting a merge is work you'd walk away from silently:
+  -- the reviewer's comments, the CI runs, the branch the PR points at. The
+  -- check is best-effort (`gh` may be absent), so `nil` stays silent; a hit
+  -- names the number so the question can refer to the same PR the user sees
+  -- on GitHub.
+  if git.open_pr then
+    lines[#lines + 1] = "PR #" .. git.open_pr .. " is still open"
+  end
 
   -- Everything above speaks for the session's *primary* directory, which is the
   -- only one the snapshot stats. v1 inspected every worktree it was about to

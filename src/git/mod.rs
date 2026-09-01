@@ -27,6 +27,34 @@ mod plugin;
 mod remote;
 mod worktree;
 
+/// Look up an open PR for the worktree's current branch via `gh pr view`.
+///
+/// Returns `Some(pr_number)` only when the PR is OPEN — merged and closed PRs
+/// report `None`, and any `gh` failure (missing binary, no auth, no remote, no
+/// PR) is a `None` too. Best-effort by design: the session-delete confirmation
+/// treats absence as "no reason to ask".
+pub fn open_pr_number(worktree_path: &Path) -> Option<u64> {
+    let output = Command::new("gh")
+        .args(["pr", "view", "--json", "state,number"])
+        .current_dir(worktree_path)
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let body = std::str::from_utf8(&output.stdout).ok()?;
+    if !body.contains("\"state\":\"OPEN\"") {
+        return None;
+    }
+
+    let after = body.split("\"number\":").nth(1)?;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
 #[cfg(test)]
 mod tests;
 

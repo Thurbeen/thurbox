@@ -340,6 +340,7 @@ fn clean() -> GitState {
         dirty: false,
         ahead: 0,
         behind: 0,
+        open_pr: None,
     }
 }
 
@@ -449,6 +450,30 @@ fn a_clean_primary_does_not_speak_for_the_other_worktrees() {
         tree.contains("its 2 worktree directories"),
         "and what goes is counted, not assumed singular: {tree}"
     );
+}
+
+#[test]
+fn force_deleting_a_session_with_an_open_pr_asks_and_names_the_number() {
+    // A clean worktree with an open PR still has work to walk away from —
+    // the reviewer's comments, the CI runs, the branch the PR is anchored
+    // to. The question names the number so it points at the same PR the
+    // user sees on GitHub, rather than a generic "there's a PR somewhere".
+    let host = host();
+    let mut snapshot = snapshot();
+    snapshot.sessions[0].git = Some(GitState {
+        open_pr: Some(4281),
+        ..clean()
+    });
+    snapshot.sessions[0].worktree_count = 1;
+    render_in(&host, &snapshot);
+    press_in(&host, &snapshot, "D");
+
+    assert!(
+        host.drain_commands().is_empty(),
+        "nothing is torn down until the question is answered"
+    );
+    let tree = confirm_tree(&host, &snapshot);
+    assert!(tree.contains("PR #4281 is still open"), "{tree}");
 }
 
 #[test]
