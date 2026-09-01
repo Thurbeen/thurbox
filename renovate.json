@@ -7,6 +7,11 @@
   ],
   "labels": ["dependencies"],
   "automerge": true,
+  // Pinned rather than left to the "auto" default, which infers semantic
+  // commits from history. The PR title is the commit squash merge lands and
+  // the required PR Title check rejects a non-conventional one, so a failed
+  // inference would block every Renovate PR.
+  "semanticCommits": "enabled",
   "semanticCommitType": "fix",
   "semanticCommitScope": "deps",
   "minimumReleaseAge": "7 days",

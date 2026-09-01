@@ -3,20 +3,13 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  # The merge queue re-runs the full suite against the temporary
-  # `gh-readonly-queue/*` branch (PR rebased onto main). Without this trigger the
-  # required "All Checks" gate never reports on a queued PR and it stalls until
-  # the queue's check timeout, so the queue *needs* this to merge anything.
-  merge_group:
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 # Cancel a superseded run when a new commit is pushed to the same PR, so rapid
-# re-pushes don't pile up parallel runs of the (heavy) Rust matrix. Each merge
-# queue entry gets a distinct `github.ref`, so queued runs never cancel each
-# other.
+# re-pushes don't pile up parallel runs of the (heavy) Rust matrix.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -31,25 +24,17 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
-      rust: ${{ steps.filter.outputs.rust || steps.all.outputs.all }}
-      shell: ${{ steps.filter.outputs.shell || steps.all.outputs.all }}
-      markdown: ${{ steps.filter.outputs.markdown || steps.all.outputs.all }}
-      lua: ${{ steps.filter.outputs.lua || steps.all.outputs.all }}
-      website: ${{ steps.filter.outputs.website || steps.all.outputs.all }}
-      install_sh: ${{ steps.filter.outputs.install_sh || steps.all.outputs.all }}
-      install_ps: ${{ steps.filter.outputs.install_ps || steps.all.outputs.all }}
+      rust: ${{ steps.filter.outputs.rust }}
+      shell: ${{ steps.filter.outputs.shell }}
+      markdown: ${{ steps.filter.outputs.markdown }}
+      lua: ${{ steps.filter.outputs.lua }}
+      website: ${{ steps.filter.outputs.website }}
+      install_sh: ${{ steps.filter.outputs.install_sh }}
+      install_ps: ${{ steps.filter.outputs.install_ps }}
     steps:
-      # A merge queue entry already contains exactly the PR's changes; validate
-      # the whole suite against it rather than diffing (paths-filter has no PR
-      # base on a `merge_group` event). Every filter output falls back to this.
-      - id: all
-        if: github.event_name == 'merge_group'
-        run: echo "all=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: github.event_name == 'pull_request'
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
-        if: github.event_name == 'pull_request'
         with:
           # Every filter includes `.github/workflows/ci.yml` so editing the
           # workflow re-runs all jobs — any job's definition may have changed.

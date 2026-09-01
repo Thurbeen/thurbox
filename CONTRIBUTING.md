@@ -207,6 +207,12 @@ Pull requests land by **squash merge**, so the commit that reaches `main` is not
 any commit from your branch: GitHub builds it from the pull request title plus
 its own `(#N)` suffix.
 
+There is no merge queue: at this repository's merge cadence it batched nothing
+and merged one pull request at a time behind a second full CI run. Reintroducing
+one would need a `merge_group:` trigger back in `ci.yml` — without it the
+required `All Checks` gate never reports on a queued pull request and the queue
+stalls until its own check timeout.
+
 ```text
 fix(core): keep the caret where the frame put it
   ↓ squash merge
