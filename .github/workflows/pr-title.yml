@@ -1,0 +1,43 @@
+# The pull request title is the commit squash merge lands on main, so it is
+# validated on its own trigger rather than inside CI.
+#
+# `ci.yml` declares no `types:` for its `pull_request` trigger, which means the
+# GitHub default `[opened, synchronize, reopened]` — `edited` is absent. A title
+# corrected (or broken) after checks went green would never be revalidated, and
+# the squash would use the edited one. Adding `edited` to `ci.yml` would re-run
+# the whole Rust matrix on every touch of the title box, so the check lives here
+# with a trigger of its own and is required alongside `All Checks`.
+name: PR Title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: PR Title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Provides the `cog` binary; the checker reads this repository's cog.toml
+      # for the commit-type and scope allowlists.
+      - name: Install cocogitto
+        uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          install-only: true
+      # The title reaches the script through the environment, never through
+      # `${{ }}` interpolation into the shell: it is attacker-controlled text on
+      # a public repository, and interpolation would run it.
+      - name: Check the PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: scripts/ci/check-pr-title.sh "$PR_TITLE" "$PR_NUMBER"
