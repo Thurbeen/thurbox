@@ -34,7 +34,7 @@ pub use restart::{restart_session_headless, RestartReport};
 pub use restore::{restore_session_headless, RestoreReport};
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::session::agent_def::ID_PLACEHOLDER;
 use crate::session::{AutomationRunStatus, SessionConfig};
@@ -257,37 +257,192 @@ pub fn host_launcher(host: &crate::session::HostDef) -> crate::shell::HostLaunch
     }
 }
 
-/// Run a command in `cwd`, on `host` when the session lives off this machine.
+/// Run a command in `cwd`, on `host` when the session lives off this machine,
+/// under `env`.
 ///
 /// The remote form is one `sh -c` because `cd` and the command have to share a
 /// shell, and every word is POSIX-quoted so the host's login shell re-splitting
 /// cannot reinterpret an argument containing a space. Lives here rather than in
 /// `cli` because knowing how to reach a host — and how to quote for one — is
 /// `session_ops`' job; `cli` may not reach into `shell` at all.
+///
+/// `env` is layered onto the inherited environment, and every inherited
+/// `THURBOX_*` variable is dropped first. That scrub is the substance, not
+/// hygiene: this runs *in a session's context*, and the caller invoking it is
+/// itself usually inside a different session, whose `THURBOX_SESSION` the child
+/// would otherwise inherit — so a `thurbox-cli session signal` run through here
+/// would record state against the caller, silently and with exit 0. Anything
+/// the target session should carry is in `env`, which is passed explicitly for
+/// exactly this reason. Nothing crosses an SSH connection, so the remote form
+/// has nothing to scrub and only has to set: `env` there is one `env K=V …`
+/// prefix, whose arguments carry names a shell assignment prefix could not.
 pub fn exec_in_dir(
     host: Option<&crate::session::HostDef>,
     cwd: &std::path::Path,
     program: &str,
     args: &[String],
+    env: &BTreeMap<String, String>,
 ) -> std::io::Result<std::process::Output> {
     match host {
-        None => std::process::Command::new(program)
-            .args(args)
-            .current_dir(cwd)
-            .output(),
+        None => {
+            let mut cmd = std::process::Command::new(program);
+            cmd.args(args).current_dir(cwd);
+            for key in std::env::vars_os()
+                .map(|(k, _)| k)
+                .filter(|k| k.to_string_lossy().starts_with(THURBOX_ENV_PREFIX))
+            {
+                cmd.env_remove(key);
+            }
+            cmd.envs(env).output()
+        }
         Some(host) => {
+            let assignments = env
+                .iter()
+                .map(|(k, v)| crate::shell::posix_quote(&format!("{k}={v}")));
             let script = format!(
-                "cd {} && exec {}",
+                "cd {} && exec env {}",
                 crate::shell::posix_quote(&cwd.to_string_lossy()),
-                std::iter::once(program)
-                    .chain(args.iter().map(String::as_str))
-                    .map(crate::shell::posix_quote)
+                assignments
+                    .chain(
+                        std::iter::once(program)
+                            .chain(args.iter().map(String::as_str))
+                            .map(crate::shell::posix_quote)
+                    )
                     .collect::<Vec<_>>()
                     .join(" ")
             );
             host_launcher(host).shell_c(&script).output()
         }
     }
+}
+
+/// The prefix every variable thurbox injects into a session's processes shares.
+const THURBOX_ENV_PREFIX: &str = "THURBOX_";
+
+/// How thurbox would launch a registered agent: the executable, its arguments,
+/// and the environment around them.
+///
+/// The point of reporting it is the arguments. An agent's status hooks are
+/// installed by *appending to its `args`* in `agents.toml` (claude's
+/// `--settings <hooks>.json`), so they only fire when thurbox builds the
+/// command line. A driver that launches the agent itself — the documented
+/// `--command` path, or typing into a shell session — got no hooks, and so an
+/// empty `state` and a `watch` stream that never mentioned that session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchPlan {
+    /// The registry name the plan was resolved from.
+    pub agent: String,
+    /// The executable, resolved on `PATH` at launch exactly as thurbox leaves
+    /// it to the multiplexer.
+    pub command: String,
+    pub args: Vec<String>,
+    /// The environment to launch under. Without a session this is only the
+    /// pointers to *this* thurbox instance (config dir, data dir, multiplexer
+    /// socket); with one it also carries that session's identity, which is what
+    /// makes the agent's `session signal` land on the right row.
+    pub env: BTreeMap<String, String>,
+    /// Why hooks-driven status will be degraded or absent on this host, when it
+    /// will be. `None` means nothing is known to be wrong.
+    pub degraded: Option<String>,
+    /// Whether the built-in `hooks` extension is active. It is what puts the
+    /// status wiring into an agent's `args` in the first place, so with it off
+    /// these args are simply the agent's own — and an empty `args` is then an
+    /// answer rather than a surprise.
+    pub hooks_enabled: bool,
+}
+
+/// Resolve the [`LaunchPlan`] for a registered agent, optionally in the context
+/// of an existing session.
+///
+/// With `session`, the plan is the one that session's *next fresh launch* would
+/// use: its `agent_session_id` pins the conversation, its host adapts the args,
+/// and its identity is in the environment. Resuming an existing conversation is
+/// `session start`/`restart`'s job and deliberately not offered here — a driver
+/// asking what to run is starting something, not continuing it.
+pub fn agent_launch_plan(
+    db: &crate::storage::Database,
+    agent: &str,
+    session: Option<&crate::sync::SharedSession>,
+) -> Result<LaunchPlan, String> {
+    let registry = crate::agent::agent_config::load_or_seed();
+    let def = registry.get(agent).cloned().ok_or_else(|| {
+        let known: Vec<&str> = registry.agents.iter().map(|a| a.name.as_str()).collect();
+        format!(
+            "no agent named '{agent}' in agents.toml; known agents: {}",
+            known.join(", ")
+        )
+    })?;
+    let host = match session {
+        Some(s) => resolve_host(&s.backend_type).ok_or_else(|| {
+            format!(
+                "session '{}' runs on backend '{}', which is not in hosts.toml",
+                s.name, s.backend_type
+            )
+        })?,
+        None => None,
+    };
+    let mut config = SessionConfig {
+        session_id: session.map(|s| s.id),
+        agent_session_id: session.and_then(|s| s.agent_session_id.clone()),
+        agent: def.name.clone(),
+        cwd: session.and_then(|s| s.cwd.clone()),
+        backend: session.map(|s| s.backend_type.clone()),
+        ..SessionConfig::default()
+    };
+    match session {
+        Some(s) => config.env.extend(session_process_env(db, s)),
+        // No session to take an identity from, but the instance is still
+        // knowable — and a child `thurbox-cli` that resolves a different data
+        // dir or socket would report into a database nothing here reads.
+        None => config.env.extend(thurbox_env_overrides()),
+    }
+    let hooks = hooks_enabled(db);
+    let (def, degraded) = spawn::adapt_def_for_launch(def, host.as_ref(), hooks);
+    let (command, args) = build_agent_invocation(&def, &config);
+    Ok(LaunchPlan {
+        agent: def.name,
+        command,
+        args,
+        env: config.env.into_iter().collect(),
+        degraded,
+        hooks_enabled: hooks,
+    })
+}
+
+/// The environment a process run **in a session's context** must carry: the
+/// session's own recorded `--env`, then the identity variables its pane has.
+///
+/// The order is the spawn's, and for the same reason: thurbox's identity wins,
+/// so a session cannot rename its own `THURBOX_SESSION` and report another
+/// session's state. Built from `inject_thurbox_env` rather than beside it, so
+/// what `session exec` hands a child and what the pane holds cannot drift —
+/// the surprise this exists to remove is precisely that the two disagreed.
+///
+/// A session with no `agent_session_id` gets no `THURBOX_SESSION_ID`: an empty
+/// one would read as a conversation id rather than as the absence of one.
+pub fn session_process_env(
+    db: &crate::storage::Database,
+    session: &crate::sync::SharedSession,
+) -> BTreeMap<String, String> {
+    let mut config = SessionConfig {
+        session_id: Some(session.id),
+        agent_session_id: session.agent_session_id.clone(),
+        agent: session.agent.clone(),
+        backend: Some(session.backend_type.clone()),
+        ..SessionConfig::default()
+    };
+    config
+        .env
+        .extend(db.load_launch_env(session.id).unwrap_or_default());
+    inject_thurbox_env(
+        &mut config,
+        session.agent_session_id.as_deref().unwrap_or_default(),
+        None,
+    );
+    if session.agent_session_id.is_none() {
+        config.env.remove("THURBOX_SESSION_ID");
+    }
+    config.env.into_iter().collect()
 }
 
 /// Fork a session: a new one beside it, on the same directory and branch, with
@@ -456,7 +611,7 @@ pub(crate) fn expand_home_in_def(def: &mut crate::session::AgentDef, home: &str)
 /// Centralised here so headless spawn and restart agree on the args, and so the
 /// `AgentDef` is resolved exactly once per operation (callers pass the def they
 /// already resolved rather than re-running [`resolve_agent_def`]).
-fn build_agent_invocation(
+pub(crate) fn build_agent_invocation(
     def: &crate::session::AgentDef,
     config: &SessionConfig,
 ) -> (String, Vec<String>) {

@@ -66,6 +66,7 @@ pub fn run(db: &Database, uuid: Option<&str>) -> Result<CommandOutput, String> {
             .map_err(|e| format!("list_active_sessions: {e}"))?,
     };
     let states = db.load_hook_states().unwrap_or_default();
+    let parked = db.load_stopped_sessions().unwrap_or_default();
     let registry = crate::agent::agent_config::load_or_seed();
     let hooks_active = crate::session_ops::builtin_hooks::hooks_enabled(db);
     // Resolved once: the same answer for every session, and each probe is a
@@ -74,7 +75,7 @@ pub fn run(db: &Database, uuid: Option<&str>) -> Result<CommandOutput, String> {
 
     let mut reports = Vec::new();
     for session in &sessions {
-        let hook = super::sessions::assess(&registry, session, &states, true);
+        let hook = super::sessions::assess(&registry, session, &states, &parked, true);
         reports.push(diagnose(
             session,
             &hook,
@@ -280,6 +281,14 @@ fn diagnose(
             level: Level::Ok,
             detail: format!("{state}, {} ago", output::duration_short(age)),
         },
+        // A parked session reports nothing because there is nothing running to
+        // report — `stop` clears the state for exactly that reason. Warning
+        // about the silence would be warning about the operator's own request.
+        _ if hook.stopped => Finding {
+            key: "last-signal",
+            level: Level::Ok,
+            detail: "stopped, so nothing is reporting".into(),
+        },
         _ => Finding {
             key: "last-signal",
             level: Level::Warn,
@@ -287,7 +296,18 @@ fn diagnose(
         },
     });
 
-    if let Some(corroboration) = hook.corroboration {
+    // A parked session has no pane on purpose, and nothing has signalled since
+    // `stop` cleared the state. Said plainly it is a clean report; left to the
+    // pane check below it would be one more "could not be checked" warning
+    // about the very thing the operator asked for.
+    if hook.stopped {
+        findings.push(Finding {
+            key: "pane",
+            level: Level::Ok,
+            detail: "this session is stopped (`session stop`), so it has no pane by design —                      `session start` puts one back"
+                .into(),
+        });
+    } else if let Some(corroboration) = hook.corroboration {
         let process = hook.foreground_process.as_deref().unwrap_or("nothing");
         findings.push(if hook.contradicted == Some(true) {
             Finding {

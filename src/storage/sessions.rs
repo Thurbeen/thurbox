@@ -271,6 +271,50 @@ impl Database {
         Ok(())
     }
 
+    /// Persist the extra environment a session was created with (`--env`),
+    /// whatever it launches.
+    ///
+    /// Separate from [`set_launch_recipe`](Self::set_launch_recipe) because the
+    /// two answer different questions. A recipe says *what to run* and is only
+    /// meaningful for a command session — persisting one for a registry agent
+    /// would freeze it at creation time. An environment says what the session's
+    /// processes live in, and that is equally true of both: `--env FOO=1` on an
+    /// `--agent` session used to be applied at spawn and then forgotten, so the
+    /// first restart silently dropped it and nothing could report it back.
+    pub fn set_launch_env(
+        &self,
+        id: SessionId,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> rusqlite::Result<()> {
+        let json = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
+        self.conn.execute(
+            "UPDATE sessions SET launch_env = ?1 WHERE id = ?2",
+            params![json, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The extra environment a session was created with — empty when it was
+    /// created with none, or when the row predates the column being written for
+    /// registry agents.
+    pub fn load_launch_env(
+        &self,
+        id: SessionId,
+    ) -> rusqlite::Result<std::collections::BTreeMap<String, String>> {
+        let stored: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT launch_env FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored
+            .flatten()
+            .and_then(|e| serde_json::from_str(&e).ok())
+            .unwrap_or_default())
+    }
+
     /// The persisted launch recipe, or `None` for a registry agent.
     ///
     /// `None` is the discriminant the restart path reads: no recipe means the

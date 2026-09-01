@@ -1846,6 +1846,12 @@ distinction matters at restart, not at spawn:
   (command, args, env) is persisted on its row and replayed verbatim. Without
   that it would restart into nothing and lose its `--env` on the first respawn.
 
+`--env` is the exception that belongs to both: it is the *caller's*, never the
+registry's, so there is nowhere to re-resolve it from either way. It is recorded
+on every session's row — command or registry agent — replayed on restart, and
+reproduced by `session exec`, which runs in the session's environment as well as
+its directory and on its machine.
+
 A ready-made form ships as the `shell` built-in, whose `command` is the
 platform's own interactive shell (see [AGENTS.md](AGENTS.md)).
 
@@ -1896,6 +1902,18 @@ the interface's respawn of surveyed rows, a peer's `restart --if-missing` after
 a reboot, and extension self-heal. All three skip a marked row, and `start` is
 the only caller that clears the mark. Without the exemptions the interface would
 undo every stop within a tick of it happening.
+
+The mark is also **readable**, which is the half that makes the verb usable
+headlessly. A parked session stays in `session list` and reports `stopped: true`
+and `state: "stopped"` on `get` and `list` alike — the same key and type `watch`
+publishes, so a driver polling the read verbs and one reading the stream learn
+the same fact. `state` is `stopped` rather than the agent's last word or one of
+the two silences: all three describe a session that is *running*, and this one
+has no process at all. Its `backend_id` still names the window it had, because
+that is what the row records and `session start` replaces it with the new pane's
+id. `send`, `key` and `capture` refuse a parked session by name rather than
+reporting whatever the multiplexer says about a window that is deliberately
+gone.
 
 ## Session Persistence
 

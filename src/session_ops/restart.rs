@@ -28,15 +28,16 @@ pub(crate) struct RestartPlan {
 }
 
 /// Build the [`RestartPlan`] for a persisted session: keep its identity stable,
-/// inject the standard `THURBOX_*` env, decide the resume trigger from the
-/// agent definition, and resolve the process cwd (the symlink workspace for a
-/// multi-repo session, else the primary repo — mirroring the TUI's
-/// `App::resolve_process_cwd`).
+/// replay the session's recorded `--env`, inject the standard `THURBOX_*` env,
+/// decide the resume trigger from the agent definition, and resolve the process
+/// cwd (the symlink workspace for a multi-repo session, else the primary repo —
+/// mirroring the TUI's `App::resolve_process_cwd`).
 pub(crate) fn build_restart_plan(
     session: &SharedSession,
     host: Option<&crate::session::HostDef>,
     hooks_enabled: bool,
     recipe: Option<&crate::session::LaunchRecipe>,
+    env: &std::collections::BTreeMap<String, String>,
 ) -> Result<RestartPlan, String> {
     let agent_session_id = session.agent_session_id.clone().ok_or_else(|| {
         format!(
@@ -56,13 +57,14 @@ pub(crate) fn build_restart_plan(
         backend: Some(session.backend_type.clone()),
         ..SessionConfig::default()
     };
-    // A command session's own env is part of what it *is*, so it goes on before
+    // The session's own env is part of what it *is*, so it goes on before
     // thurbox's identity vars — which must still win — exactly as at spawn.
-    if let Some(r) = recipe {
-        config
-            .env
-            .extend(r.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    }
+    // Recorded for a registry agent as much as for a command session: `--env`
+    // is the caller's, not the registry's, and there is nowhere else to
+    // re-resolve it from.
+    config
+        .env
+        .extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
     super::inject_thurbox_env(&mut config, &agent_session_id, None);
     // Where a restart gets what to run. A registry agent is resolved by name
     // *now* rather than replayed, so an `agents.toml` edit takes effect on the
@@ -260,7 +262,14 @@ pub fn restart_session_headless_with(
 
     let hooks_enabled = super::hooks_enabled(db);
     let recipe = db.load_launch_recipe(session_id).unwrap_or_default();
-    let plan = build_restart_plan(&session, host.as_ref(), hooks_enabled, recipe.as_ref())?;
+    let env = db.load_launch_env(session_id).unwrap_or_default();
+    let plan = build_restart_plan(
+        &session,
+        host.as_ref(),
+        hooks_enabled,
+        recipe.as_ref(),
+        &env,
+    )?;
 
     // The user's say, with the plan built and nothing yet killed: a refusal
     // leaves the running window running.
@@ -370,7 +379,8 @@ mod tests {
     fn restart_plan_requires_agent_session_id() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let err = build_restart_plan(&session(None, None), None, true, None).unwrap_err();
+        let err = build_restart_plan(&session(None, None), None, true, None, &Default::default())
+            .unwrap_err();
         assert!(err.contains("agent_session_id"), "got: {err}");
     }
 
@@ -379,7 +389,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let sess = session(Some("agent-conv-uuid"), Some(PathBuf::from("/tmp/repo")));
-        let plan = build_restart_plan(&sess, None, true, None).unwrap();
+        let plan = build_restart_plan(&sess, None, true, None, &Default::default()).unwrap();
 
         // The thurbox session key and the agent conversation id are both present
         // and distinct, exactly as a fresh spawn would inject them.
@@ -401,6 +411,7 @@ mod tests {
             None,
             true,
             None,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(plan.cwd, Some(primary));
@@ -418,7 +429,7 @@ mod tests {
         let mut sess = session(Some("sid-multi"), Some(primary.clone()));
         sess.additional_dirs = vec![extra];
 
-        let plan = build_restart_plan(&sess, None, true, None).unwrap();
+        let plan = build_restart_plan(&sess, None, true, None, &Default::default()).unwrap();
         // ≥2 members → the symlink workspace, not the primary repo itself.
         assert_ne!(plan.cwd.as_deref(), Some(primary.as_path()));
         assert!(plan.cwd.is_some());
@@ -449,7 +460,7 @@ mod tests {
         let mut sess = session(Some("agent-conv-uuid"), Some(PathBuf::from("/srv/repo")));
         sess.backend_type = "ssh:devbox".into();
 
-        let plan = build_restart_plan(&sess, None, true, None).unwrap();
+        let plan = build_restart_plan(&sess, None, true, None, &Default::default()).unwrap();
         assert_eq!(plan.env.get("THURBOX_SESSION"), Some(&sess.id.to_string()));
         assert!(!plan.env.contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
         assert!(!plan.env.contains_key("THURBOX_METRICS_DIR"));

@@ -178,7 +178,7 @@ system, and the whole point of the run log is that there is one.
 
 ## Constraints worth stating
 
-Three facts shape any headless orchestration built on thurbox. Each
+Five facts shape any headless orchestration built on thurbox. Each
 costs real time to rediscover.
 
 ### The status field is not a completion signal
@@ -206,11 +206,22 @@ gone — and each one comes with what it takes to judge it:
 | `hook_blocked_is_heuristic` | whether its `blocked` is a text match on a notification body |
 | `hook_corroboration`, `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
 | `state`, `state_source` | the best answer available, and where it came from |
+| `stopped` | whether the session is parked — `session stop`, no pane |
 
 `state` is always a word: `unreported` when nothing has reported for
-this session and `uncovered` when its agent is wired to report nothing.
-Neither is a state an agent can signal, and `state_source` is null for
-both. The piped (TOON) `session list` shows this column.
+this session, `uncovered` when its agent is wired to report nothing, and
+`stopped` when the session is parked. None of the three is a state an
+agent can signal, and `state_source` is null for all of them. The piped
+(TOON) `session list` shows this column.
+
+A **parked** session (`session stop`: pane killed, row and checkout
+kept) stays in `session list` and is told apart there — `stopped: true`
+and `state: "stopped"` on both read verbs, so a liveness check is the
+poll you were already doing rather than a pane probe or a one-second
+`watch --initial`. Its `backend_id` still names the window it had: that
+is what the row records, and `session start` replaces it with the new
+pane's id. `send`, `key` and `capture` refuse a parked session by name
+instead of reaching for the window that is gone.
 
 There is deliberately **no staleness timeout**. A turn may legitimately
 run for an hour, so any bound thurbox picked would report live work as
@@ -239,15 +250,26 @@ thurbox for a bare interactive shell and starting the agent inside that
 pane — therefore gets no hooks, and its sessions would read as never
 having reported anything.
 
-Two things close that, and both are **stable contract**:
+Three things close that, and all are **stable contract**:
 
+- **`thurbox-cli agent launch-args <name>` reports what to launch.**
+  The hooks are *arguments* — the `hooks` extension installs them by
+  appending to the agent's `args` in `agents.toml` (`--settings
+  <hooks>.json` for claude) — so an agent started any other way simply
+  has none. This prints the `command`, `args` and `env` thurbox itself
+  would use; pass the args through and the hooks are there. With
+  `--session <ref>` it resolves for that session: the conversation id is
+  pinned to the row's, the host adapts the args, and the environment
+  carries the `THURBOX_SESSION` its `session signal` will report under.
 - **`THURBOX_SESSION` is in the pane's environment**, and every child
   process inherits it. So anything running in the pane — the driver, the
   agent, one of the agent's own hooks — can call
   `thurbox-cli session signal --state <working|blocked|done|idle>` with
   **no arguments**: identity resolves from the environment. From outside
   the pane, pass `--session <uuid>`. This is the supported way to report
-  state for an agent thurbox did not launch.
+  state for an agent thurbox did not launch. `session exec` carries the
+  *target* session's identity, not the calling driver's, so a signal run
+  through it lands on the session it names.
 - **Failing that, the pane is read anyway.** A session that never
   signalled but whose pane's foreground process is an agent the registry
   knows reports `state: "running"` with `state_source: "process"` and
@@ -255,6 +277,43 @@ Two things close that, and both are **stable contract**:
   design — process inspection can say an agent is there, never what it
   is doing — but it is the difference between a session that reads as
   empty and one that reads as alive.
+
+### Read the exit status before parsing the output
+
+Errors are **structured documents on stdout**, not lines on stderr —
+AXI principle 6, because an agent reads one stream and a message on
+stderr is one it has to be told to capture. The exit code carries the
+verdict: `0` success, `1` the command ran and failed, `2` the invocation
+was wrong.
+
+The consequence is a trap worth naming. `thurbox-cli … --json | jq -r
+'.field'` exits **0 with empty output** when the command failed: `jq`
+parsed the error object perfectly well, found no such field, and the
+pipeline reports `jq`'s status rather than thurbox's. Capture first and
+branch on the status, or read `.error`:
+
+```bash
+out=$(thurbox-cli session get "$ref" --json) || {
+  printf 'thurbox: %s\n' "$(jq -r .error <<<"$out")" >&2
+  exit 1
+}
+id=$(jq -r .id <<<"$out")
+```
+
+`set -o pipefail` does not help here — the failing command exits 1 but
+`jq` succeeds, so the pipeline's status is `jq`'s either way.
+
+### The environment `session exec` runs under
+
+`session exec <ref> -- <cmd>` runs in the session's directory, on the
+machine it lives on, and under the session's own environment: whatever
+`session create --env` recorded for it, plus the `THURBOX_*` identity
+its pane carries. The calling process's own `THURBOX_*` variables are
+**scrubbed** — a driver running inside one session must not lend the
+child that session's identity, which is what made
+`session exec <worker> -- thurbox-cli session signal --state done`
+record for the *driver* and exit 0. The environment actually used is in
+the result's `env`.
 
 ### Fast-forward the base branch before creating a worktree
 

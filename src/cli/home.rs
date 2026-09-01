@@ -32,6 +32,7 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
         .list_active_sessions()
         .map_err(|e| format!("list_active_sessions: {e}"))?;
     let states = db.load_hook_states().unwrap_or_default();
+    let parked = db.load_stopped_sessions().unwrap_or_default();
     let registry = crate::agent::agent_config::load_or_seed();
 
     // The rows are trimmed to the four fields that let an agent decide what to
@@ -48,7 +49,7 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
     let rows: Vec<Value> = sessions
         .iter()
         .map(|s| {
-            let hook = crate::cli::sessions::assess(&registry, s, &states, false);
+            let hook = crate::cli::sessions::assess(&registry, s, &states, &parked, false);
             json!({
                 "name": s.name,
                 "agent": s.agent,
@@ -71,6 +72,7 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
         crate::session::STATE_RUNNING,
         crate::session::STATE_UNCOVERED,
         crate::session::STATE_UNREPORTED,
+        crate::session::STATE_STOPPED,
     ] {
         let n = rows.iter().filter(|r| r["state"] == json!(state)).count();
         if n > 0 {

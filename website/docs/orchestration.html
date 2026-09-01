@@ -348,8 +348,59 @@ thurbox-cli session list --parent "$LEAD" --json</code></pre>
   <code>session signal</code>
   itself &mdash;
   <code>THURBOX_SESSION</code>
-  is already in the pane's environment, so the call needs no arguments.
+  is already in the pane's environment, so the call needs no arguments. To get the real hooks
+  rather than the coarse pane reading, ask for the wiring:
+  <code>thurbox-cli agent launch-args &lt;name&gt;</code>
+  prints the
+  <code>command</code>
+  ,
+  <code>args</code>
+  and
+  <code>env</code>
+  Thurbox itself would launch with &mdash; the status hooks
+  <em>are</em>
+  arguments, so an agent started any other way has none.
 </p>
+<p>
+  A session parked with
+  <code>session stop</code>
+  is equally readable:
+  <code>stopped: true</code>
+  and
+  <code>state: "stopped"</code>
+  on
+  <code>session get</code>
+  and
+  <code>list</code>
+  alike, so a liveness check is the poll you were already doing.
+</p>
+<h3>Read the exit status before parsing</h3>
+<p>
+  Errors are structured documents on
+  <strong>stdout</strong>
+  , not lines on stderr &mdash; an agent reads one stream. The exit code carries the verdict (
+  <code>0</code>
+  ok,
+  <code>1</code>
+  ran and failed,
+  <code>2</code>
+  bad invocation), and the trap that follows is worth naming:
+  <code>thurbox-cli &hellip; --json | jq -r '.field'</code>
+  exits
+  <strong>0 with empty output</strong>
+  when the command failed, because
+  <code>jq</code>
+  parsed the error object and the pipeline carries
+  <code>jq</code>
+  's status.
+  <code>set -o pipefail</code>
+  does not help. Capture first, branch on the status, then parse.
+</p>
+<pre><code class="language-bash">out=$(thurbox-cli session get "$ref" --json) || {
+  printf 'thurbox: %s\n' "$(jq -r .error &lt;&lt;&lt;"$out")" &gt;&amp;2
+  exit 1
+}
+id=$(jq -r .id &lt;&lt;&lt;"$out")</code></pre>
 
 <h3>Fast-forward the base branch first</h3>
 <p>

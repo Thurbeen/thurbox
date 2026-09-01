@@ -82,6 +82,9 @@ pub struct AgentView {
     /// than every other answer of the session put together. `--json` is never
     /// capped: a script asking for the record wants the record.
     pub max_text: Option<usize>,
+    /// This answer **is** one value, so every non-JSON rendering is that value
+    /// and nothing else. See [`CommandOutput::scalar`].
+    pub scalar: bool,
 }
 
 impl CommandOutput {
@@ -137,6 +140,25 @@ impl CommandOutput {
     /// the escape hatch named in place. `--full` lifts it.
     pub fn truncate(mut self, chars: usize) -> Self {
         self.agent.max_text = Some(chars);
+        self
+    }
+
+    /// Declare that this answer is a **single value**, so the piped rendering
+    /// is that value alone rather than the record around it.
+    ///
+    /// The TOON default exists because the reader of a pipe is usually an
+    /// agent reading a *record*. A getter that returns one scalar has the
+    /// opposite reader: its output is routinely captured into a shell variable
+    /// (`v=$(thurbox-cli session meta get <ref> <key>)`), and capturing is
+    /// precisely what makes stdout not a terminal — so the format meant for a
+    /// pipe replaced the value with `id: …\nkey: …\nvalue: …` in exactly the
+    /// case the command exists for. A caller that wants the record asks for it
+    /// with `--json`, which is unchanged.
+    ///
+    /// The human rendering *is* the value, so `--text` and the piped form
+    /// agree, and an absent value renders as nothing at all.
+    pub fn scalar(mut self) -> Self {
+        self.agent.scalar = true;
         self
     }
 
@@ -268,6 +290,12 @@ impl Format {
 /// saves. The two are separated by a blank line so a reader can see where the
 /// document ends.
 fn render_toon(out: &CommandOutput) -> String {
+    // A single-value answer renders as that value in every format but JSON —
+    // see `CommandOutput::scalar`. Ahead of everything else here, because the
+    // whole point is that nothing is wrapped around it.
+    if out.agent.scalar {
+        return out.human.clone();
+    }
     let mut blocks: Vec<String> = Vec::new();
 
     let capped;

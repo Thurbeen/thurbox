@@ -27,7 +27,7 @@ pub use hook_def::{
 pub use hook_status::{
     age_secs, best_state, classify_foreground, contradicts, coverage_for, AgentHookCoverage,
     Assessment, Corroboration, Coverage, CoverageSource, HookDelivery, StateSource,
-    AGENT_HOOK_COVERAGE, STATE_RUNNING, STATE_UNCOVERED, STATE_UNREPORTED,
+    AGENT_HOOK_COVERAGE, STATE_RUNNING, STATE_STOPPED, STATE_UNCOVERED, STATE_UNREPORTED,
 };
 pub use host_def::{
     is_remote_backend, is_ssh_backend, is_wsl_backend, HostDef, HostKind, HostRegistry,

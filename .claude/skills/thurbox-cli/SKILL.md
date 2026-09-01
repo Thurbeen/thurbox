@@ -1,6 +1,6 @@
 ---
 name: thurbox-cli
-description: The thurbox-cli binary: every subcommand group (session, automation, task, message, editor, config, extension, version, update, notify, perf, plugin), soft vs force delete and restore, session lifecycle hooks (hooks.toml), parent lead/worker sessions, manual session ordering, the inter-session message mailbox, Exec automations and the heartbeat keeper, plus tasks/todos. Use when changing or driving thurbox headlessly, or working on any of those subsystems.
+description: The thurbox-cli binary: every subcommand group (agent, session, automation, task, message, editor, config, extension, version, update, notify, perf, plugin), soft vs force delete and restore, session lifecycle hooks (hooks.toml), parent lead/worker sessions, manual session ordering, the inter-session message mailbox, Exec automations and the heartbeat keeper, plus tasks/todos. Use when changing or driving thurbox headlessly, or working on any of those subsystems.
 ---
 
 # thurbox-cli, automations, tasks and messages
@@ -34,7 +34,7 @@ thurbox-cli session list --json | jq           # machine output for scripts
 thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children only
 ```
 
-Subcommands: `session` (create/list [`--deleted`]/get/delete/restore/restart
+Subcommands: `agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/restore/restart
 [`--if-missing`]/stop/start/fork/exec/meta/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
 `sync`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
 session changes as newline-delimited JSON), `runtime` (status/stop — what
@@ -144,6 +144,15 @@ session that has no pane on sight — the interface's respawn of surveyed rows, 
 peer's `restart --if-missing` after a reboot, and extension self-heal. All three
 skip a stopped row; `session start` is the only caller that clears the mark.
 
+The mark is **reported by the read verbs**, not only by `watch`: a parked
+session stays in `session list` and carries `stopped: true` with
+`state: "stopped"` on `get` and `list` — the same key and type the stream uses.
+`state` is `stopped` rather than the agent's latched last word or one of the two
+silences, because all three describe a session that is running. `backend_id`
+keeps naming the window it had (that is what the row records; `session start`
+replaces it), and `send`/`key`/`capture` refuse a parked session by name instead
+of reaching for the window that is gone.
+
 ### `session exec` — run something in a session's context
 
 ```bash
@@ -151,8 +160,13 @@ thurbox-cli session exec worker -- git status --porcelain
 ```
 
 A separate process in the session's directory, on the machine the session lives
-on — **not** typed into the pane, which belongs to the agent and would interleave
-with whatever it is doing. The command's exit code is always in the output;
+on, **under the session's own environment** — its recorded `--env` plus the
+`THURBOX_*` identity its pane carries, with the *caller's* `THURBOX_*` scrubbed
+so a driver running inside one session cannot lend the child that session's
+identity (a `session signal` through `exec` used to record for the caller, with
+exit 0). The environment used is in the result's `env`. Deliberately **not**
+typed into the pane, which belongs to the agent and would interleave with
+whatever it is doing. The command's exit code is always in the output;
 `--exit-passthrough` additionally makes it this invocation's own — a command
 exiting 2 is *that command's* 2, not a usage error, which is the distinction
 Gas City's `proc.exec` capability is defined by. `exit_code` is `null` when the
@@ -162,10 +176,36 @@ the generic failure code, since there is no code to carry.
 Arguments to `--command` may start with a dash (`--arg -c`): passing a switch is
 the usual reason to pass an argument at all.
 
+### `agent launch-args` — the hook wiring, for a driver that launches its own agent
+
+```bash
+thurbox-cli agent launch-args claude                      # command + args + env
+thurbox-cli agent launch-args claude --session <ref>      # …resolved for one session
+```
+
+Status hooks are **arguments**: the `hooks` extension installs them by appending
+to an agent's `args` in `agents.toml` (`--settings <hooks>.json` for claude), so
+they reach the process only when thurbox builds the command line. A driver that
+launches the agent itself — `session create --command`, or typing into a shell
+session — therefore got no hooks, so `state` never populated and `watch` never
+mentioned that session. This prints what thurbox would run; pass the args
+through and the hooks are there.
+
+`--session <ref>` resolves it for one session: the conversation id is pinned to
+that row's, the host adapts the args (a remote session's hook configs are
+shipped there), and the env carries the `THURBOX_SESSION` the agent's
+`session signal` will report under. Without it the env names only this instance
+(config dir, data dir, socket). Always a **fresh** launch — continuing a
+conversation is `session start`/`restart`.
+
 ### `session meta` — the driver's key/value space
 
 `set`/`get`/`list`/`unset`, namespaced by convention (`fm.*`, `gc.*`), never
-interpreted by thurbox. Without it a driver's identity ends up encoded in the
+interpreted by thurbox. `get` answers with the **bare value** in every format
+but JSON — being captured into a shell variable is what makes stdout a pipe, so
+the piped default would otherwise hand back the record in exactly the case the
+command exists for. An unset key produces nothing; `--json` returns the record,
+and is the only form that tells a `null` value from a key that was never set. Without it a driver's identity ends up encoded in the
 session *name*, which then has to be parsed and kept unique and inside the
 64-character limit. `set` reads the value from stdin when it is not an argument.
 
@@ -232,7 +272,11 @@ The shape that follows from that:
   quietly.
 - **Errors are structured on stdout, never stderr**, and the exit code says
   which kind: `0` success, `1` the command ran and failed, `2` the invocation
-  was wrong. Each carries a `suggestion` and a runnable `help[]` line. stdout
+  was wrong. The trap that follows is worth naming to integrators:
+  `thurbox-cli … --json | jq -r .field` exits **0 with empty output** on a
+  failure, because `jq` parsed the error object and the pipeline carries `jq`'s
+  status (`pipefail` does not help — `jq` succeeded). Capture, branch on the
+  status, then parse. Each carries a `suggestion` and a runnable `help[]` line. stdout
   carries **exactly one** document, so a command that renders its report and
   *then* asks for a non-zero exit (`session doctor` on a broken session,
   `config validate` on an invalid file) comes back as `cli::Outcome::Failed`:

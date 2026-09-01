@@ -211,7 +211,9 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     }
     let hooks_enabled = super::hooks_enabled(db);
     let recipe = db.load_launch_recipe(session.id).unwrap_or_default();
-    let plan = super::restart::build_restart_plan(&session, None, hooks_enabled, recipe.as_ref())?;
+    let env = db.load_launch_env(session.id).unwrap_or_default();
+    let plan =
+        super::restart::build_restart_plan(&session, None, hooks_enabled, recipe.as_ref(), &env)?;
     let pane = crate::agent::tmux::spawn_window(
         &plan.window_name,
         &plan.command,

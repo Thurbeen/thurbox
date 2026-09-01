@@ -453,6 +453,15 @@ pub const STATE_UNCOVERED: &str = "uncovered";
 /// The word for a session whose agent *can* report and has not yet.
 pub const STATE_UNREPORTED: &str = "unreported";
 
+/// The word for a session that was deliberately parked (`session stop`).
+///
+/// Outside [`HOOK_STATES`] like the three above, and for the sharpest version
+/// of the same reason: a parked session has no process at all, so *every* other
+/// word here would describe an agent that is not running. It is the one state
+/// thurbox knows first-hand rather than infers — the mark `session stop` wrote
+/// — which is why it outranks anything the hook columns still hold.
+pub const STATE_STOPPED: &str = "stopped";
+
 /// The best answer available for a session, and where it came from.
 ///
 /// The hook state wins whenever there is one — it is the agent's own report,
@@ -511,6 +520,10 @@ pub struct Assessment {
     /// The best answer available, and where it came from — see [`best_state`].
     pub state: Option<String>,
     pub state_source: Option<StateSource>,
+    /// Parked by `session stop`: the row and its checkout stand, the pane does
+    /// not. Set by [`Self::parked`], and the one fact here that is thurbox's
+    /// own rather than the agent's or the pane's.
+    pub stopped: bool,
 }
 
 impl Assessment {
@@ -522,12 +535,17 @@ impl Assessment {
     /// [`STATE_UNCOVERED`] (this agent is wired to report nothing, so silence
     /// means nothing) and [`STATE_UNREPORTED`] (it can report and has not).
     /// Neither is in [`crate::session::HOOK_STATES`], so neither can be read
-    /// as an agent's own report.
+    /// as an agent's own report. A session [`parked`](Self::parked) by `session
+    /// stop` answers [`STATE_STOPPED`] ahead of all three: it has no process,
+    /// so nothing the hook columns still hold describes it.
     ///
     /// Every rendering goes through here — the human table, the agent-facing
     /// TOON view and the home view — so no surface can invent a third answer
     /// for the same row.
     pub fn state_word(&self) -> &str {
+        if self.stopped {
+            return STATE_STOPPED;
+        }
         match self.state.as_deref() {
             Some(state) => state,
             None if self.coverage == Coverage::None => STATE_UNCOVERED,
@@ -585,6 +603,7 @@ impl Assessment {
             contradicted: None,
             state: state.as_ref().map(|(s, _)| s.clone()),
             state_source: state.map(|(_, source)| source),
+            stopped: false,
         }
     }
 
@@ -619,6 +638,21 @@ impl Assessment {
     /// leaving the corroboration unset, which means nobody tried.
     pub fn pane_unavailable(mut self) -> Self {
         self.corroboration = Some(Corroboration::Unavailable);
+        self
+    }
+
+    /// Record that the session is parked — `session stop` killed its pane and
+    /// kept everything else.
+    ///
+    /// [`Self::state`] and its source are dropped rather than kept: they are
+    /// "the best answer available" for a session that is *running*, and a
+    /// parked one is not. `hook_state` stays exactly as stored, because a
+    /// consumer reading that column reads the agent's last word verbatim and
+    /// nothing here may launder thurbox's own fact into it.
+    pub fn parked(mut self) -> Self {
+        self.stopped = true;
+        self.state = None;
+        self.state_source = None;
         self
     }
 }

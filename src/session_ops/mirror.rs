@@ -158,6 +158,11 @@ pub fn session_to_json_assessed(
     // null for both, which is what tells them from an agent's own report.
     put("state", json!(hook.state_word()));
     put("state_source", json!(hook.state_source.map(|s| s.as_str())));
+    // The parked mark, under the same name and type `thurbox-cli watch`
+    // already publishes it — so a driver polling `get`/`list` and one reading
+    // the stream learn the same fact from the same key. Without it the two
+    // verbs describe a parked session exactly as they describe a running one.
+    put("stopped", json!(hook.stopped));
     value
 }
 

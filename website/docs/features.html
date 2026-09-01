@@ -1140,6 +1140,7 @@ thurbox-cli session stop reviewer                            # park it: pane gon
 thurbox-cli session start reviewer                           # and put it back
 thurbox-cli session exec reviewer -- git status --porcelain  # run in its dir, not in its pane
 thurbox-cli session meta set reviewer fm.task_id T-1043      # your own key/value space
+thurbox-cli agent launch-args claude                         # what to run so its hooks report
 thurbox-cli watch --initial                                  # one JSON line per change
 thurbox-cli message send --to flow --kind questions --task 5 --body "scope?"
 thurbox-cli message inbox --for flow --claim</code></pre>
@@ -1268,13 +1269,64 @@ thurbox-cli message inbox --for flow --claim</code></pre>
             <li>
               <strong>session exec</strong>
               &mdash; runs a command in the session's directory, on the machine
-              it lives on. Deliberately
+              it lives on, and under the session's own environment (whatever
+              <code>session create --env</code>
+              recorded, plus the
+              <code>THURBOX_*</code>
+              identity its pane carries &mdash; the
+              <em>caller's</em>
+              <code>THURBOX_*</code>
+              is scrubbed, so a driver inside one session cannot lend the child
+              that session's identity). Deliberately
               <em>not</em>
               typed into the pane: the pane belongs to the agent, and borrowing
               it would interleave with whatever it is doing and leave the answer
               in its scrollback. The command's exit code is always in the output;
               <code>--exit-passthrough</code>
               additionally makes it this invocation's own.
+            </li>
+            <li>
+              <strong>agent launch-args</strong>
+              &mdash; prints the
+              <code>command</code>
+              ,
+              <code>args</code>
+              and
+              <code>env</code>
+              thurbox would launch a registered agent with. Status hooks are
+              <em>arguments</em>
+              &mdash; the hooks extension installs them by appending to the
+              agent's
+              <code>args</code>
+              in
+              <code>agents.toml</code>
+              &mdash; so an agent a driver launches itself has none, and its
+              session reports no state. Pass these through and the hooks are
+              there;
+              <code>--session &lt;ref&gt;</code>
+              resolves it for one session, pinning the conversation id and
+              carrying the identity its
+              <code>session signal</code>
+              will report under.
+            </li>
+            <li>
+              <strong>session stop / start</strong>
+              &mdash; park a session and put it back: the pane goes, the row,
+              the checkout and the conversation stay. A parked session stays in
+              <code>session list</code>
+              and is told apart there &mdash;
+              <code>stopped: true</code>
+              and
+              <code>state: "stopped"</code>
+              on both read verbs, the same key
+              <code>watch</code>
+              publishes &mdash; so a liveness check needs no pane probe.
+              <code>send</code>
+              ,
+              <code>key</code>
+              and
+              <code>capture</code>
+              refuse a parked session by name.
             </li>
             <li>
               <strong>watch</strong>
@@ -1376,6 +1428,8 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               <code>state</code>
               /
               <code>state_source</code>
+              , and
+              <code>stopped</code>
               . There is deliberately no staleness timeout: a turn may run for
               an hour, so a guessed bound would report live work as finished.
               The decisive check is the pane instead &mdash;

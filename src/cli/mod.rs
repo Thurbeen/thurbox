@@ -35,6 +35,7 @@ use crate::storage::Database;
 mod tests;
 
 pub mod action;
+pub mod agents;
 pub mod automations;
 pub mod config;
 pub mod editor;
@@ -123,6 +124,7 @@ Examples:
   thurbox-cli session list                     every session, with status and branch
   thurbox-cli session create --name fix-ci --repo-path . --worktree-branch fix/ci
   thurbox-cli session capture <id> --lines 50  what an agent's pane is showing
+  thurbox-cli agent launch-args claude          what to run so its hooks report
   thurbox-cli message send --to <id> --kind result --body 'done'
   thurbox-cli session list --json | jq         full records for a script
 
@@ -135,6 +137,11 @@ pub enum Command {
     Editor {
         #[command(subcommand)]
         action: editor::Action,
+    },
+    /// The agent registry: how thurbox would launch a registered agent.
+    Agent {
+        #[command(subcommand)]
+        action: agents::Action,
     },
     /// Manage sessions.
     Session {
@@ -322,6 +329,7 @@ fn parse_fields(spec: &str) -> Vec<String> {
 fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, String> {
     match command {
         Command::Editor { action } => editor::run(action, db),
+        Command::Agent { action } => agents::run(action, db),
         Command::Session { action } => sessions::run(action, db),
         Command::Automation { action } => automations::run(action, db),
         Command::Task { action } => tasks::run(action, db),

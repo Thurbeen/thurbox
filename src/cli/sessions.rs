@@ -25,8 +25,11 @@ pub enum Action {
     /// Each row carries the session's reported agent state plus how old that
     /// report is and what its agent is able to report at all (`hook_state`,
     /// `hook_state_age_secs`, `hook_coverage`, `hook_states_reportable`).
-    /// `state` is the one word to read: an agent's own report, or `unreported`
-    /// / `uncovered` when there is none.
+    /// `state` is the one word to read: an agent's own report, `unreported`
+    /// / `uncovered` when there is none, or `stopped` for a session parked by
+    /// `session stop`. A parked session stays in this list and carries
+    /// `stopped: true`, so a driver can tell one from a running session
+    /// without probing its pane.
     List {
         /// Only list children of this parent session UUID.
         #[arg(long)]
@@ -53,6 +56,11 @@ pub enum Action {
     /// coverage of its agent's hooks, and — for a local session — what the
     /// pane's foreground process says about it (`hook_corroboration`,
     /// `hook_state_contradicted`). Pass `--no-verify` to skip the pane probe.
+    ///
+    /// A session parked by `session stop` reports `stopped: true` and
+    /// `state: "stopped"`, and its pane is not probed — there is none.
+    /// `backend_id` still names the window it had: it is what the row records,
+    /// and `session start` replaces it with the new pane's id.
     Get {
         /// Session UUID.
         uuid: String,
@@ -274,6 +282,10 @@ pub enum Action {
     /// A stopped session costs no process and no terminal, and `session start`
     /// puts it back where it was — nothing else reclaims its pane in the
     /// meantime, which is what separates this from a window that merely died.
+    ///
+    /// It stays in `session list`, reporting `stopped: true` and
+    /// `state: "stopped"` on both read verbs, and `send`/`key`/`capture`
+    /// refuse it by name rather than reaching for the window that is gone.
     Stop {
         /// Session name, UUID, or unique id prefix.
         session: String,
@@ -303,6 +315,18 @@ pub enum Action {
     /// with its output returned. What "check the state of that session's work"
     /// needs, without a driver having to reconstruct the cwd and the host
     /// itself.
+    ///
+    /// "The session's context" is three things, and the third is the one worth
+    /// spelling out. The child runs in the session's **directory**, on the
+    /// **machine** the session lives on, and under the session's own
+    /// **environment**: whatever `session create --env` recorded, plus the
+    /// `THURBOX_*` identity variables the session's pane carries — so
+    /// `session exec <ref> -- thurbox-cli session signal --state done` reports
+    /// for `<ref>`. What is *not* carried is this invocation's own environment
+    /// in the `THURBOX_*` namespace: it is scrubbed, because a driver calling
+    /// from inside another session would otherwise lend the child that
+    /// session's identity. Everything else is inherited as usual. The
+    /// environment actually used is in the result's `env`.
     Exec {
         /// Session name, UUID, or unique id prefix.
         session: String,
@@ -338,7 +362,8 @@ pub enum Action {
     /// process in it, so a driver that launches its own agent there — and that
     /// agent's own hooks — can report state with no arguments at all. From
     /// outside the pane, pass `--session <uuid>`. `session doctor` says whether
-    /// the reports are arriving.
+    /// the reports are arriving, and `agent launch-args <name>` says what to
+    /// launch the agent with so that its hooks exist to do the reporting.
     Signal {
         /// The reported state. `idle` = agent ready/at-rest (e.g. a fresh
         /// session boot); `done` = a turn just finished (shows until you look).
@@ -400,6 +425,12 @@ pub enum MetaAction {
         value: Option<String>,
     },
     /// Print one key's value, or nothing when it is unset.
+    ///
+    /// The bare value, on a terminal and down a pipe alike — this is the getter
+    /// whose output is captured into a shell variable, and being captured is
+    /// what makes stdout a pipe. `--json` returns the whole record, which is
+    /// also the only form that tells a value of `null` from a key that was
+    /// never set.
     Get {
         /// Session name, UUID, or unique id prefix.
         session: String,
@@ -475,11 +506,12 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
                 .collect();
             let states = db.load_hook_states().unwrap_or_default();
+            let parked = db.load_stopped_sessions().unwrap_or_default();
             let bases = db.load_base_branches().unwrap_or_default();
             let registry = crate::agent::agent_config::load_or_seed();
             let assessments: Vec<crate::session::Assessment> = sessions
                 .iter()
-                .map(|s| assess(&registry, s, &states, verify))
+                .map(|s| assess(&registry, s, &states, &parked, verify))
                 .collect();
             let json = Value::Array(
                 sessions
@@ -519,9 +551,10 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         Action::Get { uuid, no_verify } => {
             let session = resolve(db, &uuid)?;
             let states = db.load_hook_states().unwrap_or_default();
+            let parked = db.load_stopped_sessions().unwrap_or_default();
             let bases = db.load_base_branches().unwrap_or_default();
             let registry = crate::agent::agent_config::load_or_seed();
-            let hook = assess(&registry, &session, &states, !no_verify);
+            let hook = assess(&registry, &session, &states, &parked, !no_verify);
             Ok(CommandOutput::new(
                 crate::session_ops::mirror::session_to_json_assessed(
                     &session,
@@ -638,6 +671,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             if text.trim().is_empty() {
                 return Err("text must not be empty".into());
             }
+            refuse_if_parked(db, &session)?;
             let id = session.id.to_string();
             let mut args = vec!["session", "send", &id, &text];
             if no_enter {
@@ -668,6 +702,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             let session = resolve(db, &uuid)?;
             let resolved =
                 crate::agent::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
+            refuse_if_parked(db, &session)?;
             let id = session.id.to_string();
             if let Some(remote) =
                 delegate_to_host(&session, &["session", "key", &id, &resolved.name])?
@@ -845,6 +880,7 @@ fn capture_pane(
     ansi: bool,
 ) -> Result<CommandOutput, String> {
     let session = resolve(db, uuid)?;
+    refuse_if_parked(db, &session)?;
     let id = session.id.to_string();
     let line_count = lines.to_string();
     let mut args = vec!["session", "capture", &id, "--lines", &line_count];
@@ -1146,6 +1182,15 @@ fn coverage_line(hook: &crate::session::Assessment) -> String {
 ///
 /// Host-transparent: a session created with `--host` runs this over that host's
 /// launcher rather than refusing, so `exec` means the same thing everywhere.
+///
+/// "In the session's context" is the directory, the machine **and** the
+/// environment: the child gets the session's own recorded `--env` and the
+/// identity variables its pane carries, and every `THURBOX_*` variable of this
+/// process is dropped before they go on
+/// ([`crate::session_ops::session_process_env`]). Without the scrub a driver
+/// reaching into a session from inside another one handed the child the
+/// *caller's* `THURBOX_SESSION`, so a `session signal` run through here
+/// recorded state for the wrong session and exited 0.
 fn exec_in_session(
     db: &Database,
     reference: &str,
@@ -1176,7 +1221,8 @@ fn exec_in_session(
     } else {
         None
     };
-    let output = crate::session_ops::exec_in_dir(host.as_ref(), &cwd, program, rest)
+    let env = crate::session_ops::session_process_env(db, &session);
+    let output = crate::session_ops::exec_in_dir(host.as_ref(), &cwd, program, rest, &env)
         .map_err(|e| format!("could not run '{program}' in {}: {e}", cwd.display()))?;
 
     // `None` when the process was terminated without exiting — killed by a
@@ -1201,6 +1247,9 @@ fn exec_in_session(
         "id": session.id.to_string(),
         "name": session.name,
         "cwd": cwd.display().to_string(),
+        // What the child actually ran under, so a caller debugging "why did my
+        // command not see FOO" reads the answer instead of guessing at it.
+        "env": env,
         "exit_code": code,
         "stdout": stdout,
         "stderr": stderr,
@@ -1262,9 +1311,14 @@ fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, String> 
             Ok(CommandOutput::new(
                 json!({ "id": target.id.to_string(), "key": key, "value": value }),
                 // Bare value on stdout: this is the one command whose output is
-                // routinely captured into a shell variable.
+                // routinely captured into a shell variable. `.scalar()` is what
+                // makes that survive the capture — being captured is what makes
+                // stdout a pipe, and the piped default would otherwise answer
+                // with the whole record. A key that is not set renders as
+                // nothing; `--json` still tells a null value from an unset key.
                 value.unwrap_or_default(),
-            ))
+            )
+            .scalar())
         }
         MetaAction::List { session } => {
             let target = resolve(db, &session)?;
@@ -1421,6 +1475,28 @@ fn existing_session_output(session: &SharedSession) -> CommandOutput {
     .help(["thurbox-cli session get <id>   what it is doing now"])
 }
 
+/// Refuse a pane verb pointed at a **parked** session, naming the fix.
+///
+/// `session stop` killed the window on purpose, so `send`, `key` and `capture`
+/// have nothing to reach. Without this they reach for it anyway and report
+/// whatever the multiplexer says about a window that is not there — `can't find
+/// window: tb-<name>`, which describes a crash rather than the deliberate state
+/// the caller itself asked for. One database read, on verbs that already do
+/// several.
+fn refuse_if_parked(db: &Database, session: &SharedSession) -> Result<(), String> {
+    let parked = db
+        .session_stopped_at(session.id)
+        .map_err(|e| format!("session_stopped_at: {e}"))?
+        .is_some();
+    if !parked {
+        return Ok(());
+    }
+    Err(format!(
+        "session '{}' is stopped: it has no pane. `thurbox-cli session start {}` puts one back",
+        session.name, session.name
+    ))
+}
+
 /// Resolve the session a command was pointed at — a name, a UUID or an id
 /// prefix, all equally. See [`super::session_ref`] for why one resolver.
 pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, String> {
@@ -1500,10 +1576,16 @@ fn unknown_key(key: &str) -> String {
 /// get` does it for one session and `session list` only on `--verify`. A
 /// **remote** session is never probed: its pane lives on its own host's
 /// multiplexer, so the answer is `unavailable` rather than a guess.
+///
+/// `parked` is the set `session stop` marked. It short-circuits everything
+/// else: a parked session has no pane to probe and no agent to have reported,
+/// so probing one would ask tmux about a window that was deliberately killed
+/// and read the answer as if it meant something.
 pub(crate) fn assess(
     registry: &crate::session::AgentRegistry,
     s: &SharedSession,
     states: &std::collections::HashMap<crate::session::SessionId, crate::storage::HookRow>,
+    parked: &std::collections::HashSet<crate::session::SessionId>,
     probe: bool,
 ) -> crate::session::Assessment {
     let row = states.get(&s.id);
@@ -1514,6 +1596,9 @@ pub(crate) fn assess(
         row.and_then(|r| r.state_at),
         crate::sync::current_time_millis() as i64,
     );
+    if parked.contains(&s.id) {
+        return hook.parked();
+    }
     if !probe {
         return hook;
     }

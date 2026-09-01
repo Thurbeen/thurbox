@@ -412,12 +412,18 @@ pub fn spawn_session_headless_with_progress(
 
     // A command session's recipe is the only record of how to start it again:
     // there is no registry entry to re-resolve at restart, so the row carries
-    // it. Registry agents deliberately store nothing here and stay resolved by
-    // name, so editing `agents.toml` and restarting still takes effect.
-    if let Some(r) = &recipe {
-        if let Err(e) = db.set_launch_recipe(session_id, r) {
-            tracing::warn!("Failed to record launch recipe: {e}");
-        }
+    // it. Registry agents deliberately store no *command* here and stay
+    // resolved by name, so editing `agents.toml` and restarting still takes
+    // effect — but their `--env` is recorded all the same. It is not a
+    // launch recipe, it is what the session's processes live in: a restart has
+    // to replay it, and `session exec` has to reproduce it.
+    let recorded = match &recipe {
+        Some(r) => db.set_launch_recipe(session_id, r),
+        None if !req.env.is_empty() => db.set_launch_env(session_id, &req.env),
+        None => Ok(()),
+    };
+    if let Err(e) = recorded {
+        tracing::warn!("Failed to record the session's launch environment: {e}");
     }
 
     // Record the worktree's fork point so the code-review view can scope its

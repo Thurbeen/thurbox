@@ -1504,11 +1504,11 @@ pub fn send_text_now(session_name: &str, pane_id: &str, text: &str, submit: bool
     }
     let paste = paste_prompt_args(&target, text, DEFAULT_MUX == "psmux");
     let paste_argv: Vec<&str> = paste.iter().map(String::as_str).collect();
-    let status = local_mux_command(&paste_argv)
-        .status()
+    let out = local_mux_command(&paste_argv)
+        .output()
         .context("Failed to paste prompt text into the session pane")?;
-    if !status.success() {
-        bail!("{DEFAULT_MUX} {} exited with status {status}", paste[0]);
+    if !out.status.success() {
+        bail!("{DEFAULT_MUX} {} {}", paste[0], mux_failure(&out));
     }
 
     if !submit {
@@ -1517,13 +1517,31 @@ pub fn send_text_now(session_name: &str, pane_id: &str, text: &str, submit: bool
 
     std::thread::sleep(SEND_KEYS_ENTER_DELAY);
 
-    let status = local_mux_command(&["send-keys", "-t", &target, "Enter"])
-        .status()
+    let out = local_mux_command(&["send-keys", "-t", &target, "Enter"])
+        .output()
         .context("Failed to send Enter to the session pane")?;
-    if !status.success() {
-        bail!("{DEFAULT_MUX} send-keys (Enter) exited with status {status}");
+    if !out.status.success() {
+        bail!("{DEFAULT_MUX} send-keys (Enter) {}", mux_failure(&out));
     }
     Ok(())
+}
+
+/// How a failed one-shot multiplexer command reads inside an error.
+///
+/// `output()` rather than `status()` at every call site above is the point: a
+/// `status()` child inherits this process's stderr, so tmux's own `can't find
+/// window: tb-<name>` lands there directly — a second, unstructured stream
+/// beside the error document the CLI puts on stdout (AXI principle 6, "an
+/// agent reads one stream"). Captured, the same sentence becomes part of the
+/// one answer. tmux says nothing at all for some failures, hence the fallback
+/// to the bare status.
+fn mux_failure(out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        return format!("exited with status {}", out.status);
+    }
+    detail.to_string()
 }
 
 /// The special keys [`send_key_now`] can deliver, as
@@ -1628,11 +1646,11 @@ pub fn send_key_now(session_name: &str, pane_id: &str, tmux_key: &str) -> Result
     if pane_is_dead(&target) {
         bail!("session '{session_name}' has exited; its pane accepts no input");
     }
-    let status = local_mux_command(&["send-keys", "-t", &target, tmux_key])
-        .status()
+    let out = local_mux_command(&["send-keys", "-t", &target, tmux_key])
+        .output()
         .context("Failed to send a key to the session pane")?;
-    if !status.success() {
-        bail!("{DEFAULT_MUX} send-keys ({tmux_key}) exited with status {status}");
+    if !out.status.success() {
+        bail!("{DEFAULT_MUX} send-keys ({tmux_key}) {}", mux_failure(&out));
     }
     Ok(())
 }
@@ -1687,11 +1705,11 @@ pub fn send_prompt_after_delay(
 ) -> Result<()> {
     let target = agent_target(session_name, pane_id);
     let script = deferred_prompt_script(&target, text);
-    let status = local_mux_command(&["run-shell", "-b", "-d", &delay_secs.to_string(), &script])
-        .status()
+    let out = local_mux_command(&["run-shell", "-b", "-d", &delay_secs.to_string(), &script])
+        .output()
         .context("Failed to schedule tmux run-shell for deferred prompt")?;
-    if !status.success() {
-        bail!("tmux run-shell (deferred prompt) exited with status {status}");
+    if !out.status.success() {
+        bail!("tmux run-shell (deferred prompt) {}", mux_failure(&out));
     }
     Ok(())
 }
@@ -1781,7 +1799,7 @@ pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
         return Ok(());
     }
     let loop_cmd = heartbeat_loop_command(cli_path);
-    let status = local_mux_command(&[
+    let out = local_mux_command(&[
         "new-window",
         "-d",
         "-t",
@@ -1790,10 +1808,10 @@ pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
         HEARTBEAT_WINDOW,
         &loop_cmd,
     ])
-    .status()
+    .output()
     .context("Failed to create automation heartbeat window")?;
-    if !status.success() {
-        bail!("tmux new-window (heartbeat) exited with status {status}");
+    if !out.status.success() {
+        bail!("tmux new-window (heartbeat) {}", mux_failure(&out));
     }
     debug!("Armed automation heartbeat keeper window");
     Ok(())
