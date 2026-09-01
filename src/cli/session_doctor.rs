@@ -304,7 +304,8 @@ fn diagnose(
         findings.push(Finding {
             key: "pane",
             level: Level::Ok,
-            detail: "this session is stopped (`session stop`), so it has no pane by design —                      `session start` puts one back"
+            detail: "stopped by `session stop`, so it has no pane by design — `session start` \
+                      puts one back"
                 .into(),
         });
     } else if let Some(corroboration) = hook.corroboration {
