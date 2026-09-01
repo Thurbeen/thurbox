@@ -265,10 +265,13 @@ is typed into the pane as literal text — so `session key` refuses what it does
 not know rather than injecting `Escpe` into somebody's prompt. Text goes out
 bracketed-paste-wrapped either way (`paste_prompt_args`), which is what makes it
 literal: no shell sees it, a leading `-` cannot read as a `send-keys` flag, and a
-newline cannot submit the line before it. Both are **local-only** — the one-shot
-helpers bypass the transport seam and drive this machine's tmux server — so a
-session on an `ssh:`/`wsl:` backend is refused by name (`require_local_pane`)
-instead of failing as a tmux status code against a window that was never there.
+newline cannot submit the line before it. The one-shot helpers themselves drive
+only this machine's tmux server, so `send`/`key`/`capture` on an `ssh:`/`wsl:`
+backend are delegated to that host's own `thurbox-cli` (`delegate_to_host` in
+`src/cli/sessions.rs`) instead of failing as a tmux status code against a
+window that was never there. The refusal survives only where delegation is
+genuinely impossible: a backend with no `hosts.toml` entry, or one whose
+`thurbox-cli` could not be reached.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB row is marked
 deleted (the TUI tears down the tmux window/worktree on its next sync), and

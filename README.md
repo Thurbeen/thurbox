@@ -588,8 +588,9 @@ Windows the local multiplexer is **psmux**, which is only known to implement
 `enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>` — the other names are
 unverified there, and the same "an unrecognized name arrives as text" caveat
 applies to whatever it does not implement. `send` and `key` drive **this
-machine's** tmux server, so a session created with `--host` is refused by name:
-run `thurbox-cli` on that host instead.
+machine's** tmux server directly, so a session created with `--host` is
+delegated to that host's own `thurbox-cli` instead — refused by name only if
+the host has no `hosts.toml` entry, or its `thurbox-cli` cannot be reached.
 
 `capture --json` also reports the pane's *live* state, so an integrator reading
 a session's screen never has to drive `tmux` itself:
@@ -604,9 +605,10 @@ a session's screen never has to drive `tmux` itself:
 Every one is `null` when it cannot be determined, never guessed. Resolving the
 foreground process needs a `ps` that reports `tpgid`; without one
 `foreground_process` falls back to tmux's command *name* and
-`foreground_command` is `null`. `capture` reads the **local** multiplexer only,
-so a session created with `--host` — whose pane lives on that host's own tmux
-server — is refused by name rather than reported empty.
+`foreground_command` is `null`. `capture` reads the **local** multiplexer
+directly, so a session created with `--host` — whose pane lives on that host's
+own tmux server — is delegated to that host's own `thurbox-cli` rather than
+reported empty.
 
 **Agent state, and how far to trust it.** Agents report `working` / `blocked` /
 `done` / `idle` through their lifecycle hooks (`thurbox-cli session signal`).
