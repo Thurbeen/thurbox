@@ -1133,8 +1133,24 @@ thurbox-cli session key &lt;uuid&gt; enter                         # ...and now 
 thurbox-cli session key &lt;uuid&gt; escape                        # interrupt the turn
 thurbox-cli session capture &lt;uuid&gt; --lines 500
 thurbox-cli session capture &lt;uuid&gt; --ansi --json
+thurbox-cli session get reviewer                             # a name works anywhere an id does
+thurbox-cli session create --name build --repo-path . \
+    --command npm --arg run --arg watch --env NODE_ENV=dev   # any command is a session
+thurbox-cli session stop reviewer                            # park it: pane gone, work kept
+thurbox-cli session start reviewer                           # and put it back
+thurbox-cli session exec reviewer -- git status --porcelain  # run in its dir, not in its pane
+thurbox-cli session meta set reviewer fm.task_id T-1043      # your own key/value space
+thurbox-cli watch --initial                                  # one JSON line per change
 thurbox-cli message send --to flow --kind questions --task 5 --body "scope?"
 thurbox-cli message inbox --for flow --claim</code></pre>
+          <p>
+            <strong>Every session verb takes a name, a UUID, or a unique id prefix.</strong>
+            They resolve in that order, and a reference matching
+            <em>several</em>
+            sessions is refused with every candidate named rather than resolved by
+            whichever sorted first &mdash; so a driver never has to keep its own
+            name-to-id map.
+          </p>
           <ul>
             <li>
               <strong>session</strong>
@@ -1194,15 +1210,99 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               <code>delete</code>
               ,
               <code>restore</code>
+              ,
+              <code>stop</code>
+              /
+              <code>start</code>
+              (park a session: the pane goes, the row, checkout and conversation
+              stay &mdash; the verb between "leave it running" and "delete it"),
+              <code>fork</code>
+              ,
+              <code>exec</code>
+              ,
+              <code>meta</code>
               .
               <code>send</code>
-              and
+              ,
               <code>key</code>
-              reach this machine's tmux server only, so a session created with
+              ,
+              <code>capture</code>
+              and
+              <code>exec</code>
+              work on a
               <code>--host</code>
-              is refused by name &mdash; run
+              session too: they delegate to that host's own
               <code>thurbox-cli</code>
-              on that host.
+              . A refusal is left only where delegation is genuinely impossible
+              &mdash; no
+              <code>hosts.toml</code>
+              entry, or no reachable CLI there &mdash; and it says which.
+            </li>
+            <li>
+              <strong>session create</strong>
+              &mdash; beyond
+              <code>--worktree-branch</code>
+              /
+              <code>--base-branch</code>
+              :
+              <code>--command</code>
+              /
+              <code>--arg</code>
+              /
+              <code>--env</code>
+              make
+              <em>any executable</em>
+              a session (its launch recipe is stored on the row, so a restart
+              replays it &mdash; there is no
+              <code>agents.toml</code>
+              entry to re-resolve);
+              <code>--resume &lt;id&gt;</code>
+              adopts a conversation that began elsewhere; and
+              <code>--on-existing &lt;allow|adopt|replace|fail&gt;</code>
+              answers "a session of this name already exists" &mdash;
+              <code>allow</code>
+              is the default because a database mirroring a shareable host
+              carries that host's rows beside its own, so Thurbox cannot make
+              names unique; uniqueness is something a caller asks for.
+            </li>
+            <li>
+              <strong>session exec</strong>
+              &mdash; runs a command in the session's directory, on the machine
+              it lives on. Deliberately
+              <em>not</em>
+              typed into the pane: the pane belongs to the agent, and borrowing
+              it would interleave with whatever it is doing and leave the answer
+              in its scrollback. The command's exit code is always in the output;
+              <code>--exit-passthrough</code>
+              additionally makes it this invocation's own.
+            </li>
+            <li>
+              <strong>watch</strong>
+              &mdash; streams one JSON object per change (
+              <code>created</code>
+              ,
+              <code>changed</code>
+              ,
+              <code>gone</code>
+              , plus
+              <code>present</code>
+              with
+              <code>--initial</code>
+              ), so nothing driving Thurbox has to poll. It works with no TUI
+              running, because everything worth waking on is already in the
+              database.
+            </li>
+            <li>
+              <strong>runtime</strong>
+              &mdash;
+              <code>status</code>
+              /
+              <code>stop</code>
+              for what Thurbox runs that is
+              <em>not</em>
+              a session: the automation heartbeat keeper, a detached window
+              created implicitly by anything that arms an automation, which no
+              session listing showed and no delete reclaimed.
             </li>
             <li>
               <strong>session capture</strong>
@@ -1229,10 +1329,11 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               <code>cwd</code>
               , which is where the session was launched). Each is
               <code>null</code>
-              when it cannot be determined, never guessed, and the command reads
-              the local multiplexer only &mdash; a session created with
+              when it cannot be determined, never guessed. A session created with
               <code>--host</code>
-              is refused rather than reported empty.
+              is captured through that host's own
+              <code>thurbox-cli</code>
+              rather than refused.
             </li>
             <li>
               <strong>agent state, and how far to trust it</strong>

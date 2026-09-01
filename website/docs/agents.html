@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Built-in agents — Thurbox Docs'
-description: 'Every built-in coding agent Thurbox ships (claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp) with its recommended agents.toml configuration, resume/fork behavior, and status-hook support.'
+description: 'Every built-in coding agent Thurbox ships (claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp) plus the shell entry, with recommended agents.toml configuration, resume/fork behavior, and status-hook support.'
 currentPage: 'agents'
 breadcrumb: 'Built-in agents'
 ---
@@ -15,7 +15,7 @@ breadcrumb: 'Built-in agents'
             <strong>data</strong>
             , declared in
             <a href="configuration.html#agents-toml"><code>~/.config/thurbox/agents.toml</code></a>
-            . The nine agents below are what Thurbox
+            . The ten entries below are what Thurbox
             <strong>seeds on first run</strong>
             ; each block is the recommended configuration, ready to copy.
           </p>
@@ -185,6 +185,14 @@ breadcrumb: 'Built-in agents'
                 <td>&mdash;</td>
                 <td>path-pinned</td>
                 <td>full</td>
+              </tr>
+              <tr>
+                <td><a href="#shell"><code>shell</code></a></td>
+                <td><code>bash -i</code></td>
+                <td>&mdash;</td>
+                <td>&mdash;</td>
+                <td>none</td>
+                <td>none</td>
               </tr>
             </tbody>
           </table>
@@ -420,6 +428,67 @@ name = "omp"
 command = "omp"
 resume_args = ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
 new_session_args = ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]</code></pre>
+
+          <h2 id="shell">
+            shell
+            <a href="#shell" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The one seeded entry that is not a coding agent: the platform's own interactive
+            shell. It exists so a session can be
+            <strong>anything</strong>
+            &mdash; you run whatever you like in it, and an external driver can start its own
+            tool with its own flags rather than asking Thurbox to model them. It is the
+            ready-made form of
+            <code>thurbox-cli session create --command</code>
+            , and the only built-in whose
+            <code>command</code>
+            differs by platform: native Windows runs psmux and PowerShell rather than tmux and
+            bash.
+          </p>
+          <p>
+            <code>args = ["-i"]</code>
+            is load-bearing rather than decoration. A plain
+            <code>bash</code>
+            in a pane executes what is sent to it but renders
+            <strong>no prompt and no echo</strong>
+            , so anything reading the screen to decide whether the session is ready sees a
+            blank pane that is nonetheless working.
+          </p>
+          <p>
+            It declares no
+            <code>resume_args</code>
+            or
+            <code>fork_args</code>
+            , and that absence is the statement: a shell has no conversation.
+            <code>session restart</code>
+            replays its recipe in the same directory (a shell barely notices &mdash; its
+            history and cwd live on disk),
+            <code>session fork</code>
+            gives you a second shell beside it, and
+            <code>session create --resume</code>
+            is refused rather than silently starting fresh. Nothing wires status hooks for it
+            either, so a
+            <code>shell</code>
+            session reports no state until something in it calls
+            <code>thurbox-cli session signal</code>
+            &mdash; which anything in the pane can, since
+            <code>THURBOX_SESSION</code>
+            is in its environment.
+          </p>
+          <p>
+            <span class="badge">Resume: &mdash;</span>
+            <span class="badge">Fork: &mdash;</span>
+            <span class="badge">Status: none</span>
+          </p>
+          <pre data-title="agents.toml"><code class="language-toml">[[agents]]
+name = "shell"
+command = "bash"
+args = ["-i"]
+
+# On native Windows the seed writes this instead:
+# command = "powershell"
+# args = ["-NoLogo"]</code></pre>
 
           <h2 id="adding">
             Adding your own
