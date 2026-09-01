@@ -201,13 +201,16 @@ conversation is `session start`/`restart`.
 ### `session meta` — the driver's key/value space
 
 `set`/`get`/`list`/`unset`, namespaced by convention (`fm.*`, `gc.*`), never
-interpreted by thurbox. `get` answers with the **bare value** in every format
-but JSON — being captured into a shell variable is what makes stdout a pipe, so
-the piped default would otherwise hand back the record in exactly the case the
-command exists for. An unset key produces nothing; `--json` returns the record,
-and is the only form that tells a `null` value from a key that was never set. Without it a driver's identity ends up encoded in the
+interpreted by thurbox. Without it a driver's identity ends up encoded in the
 session *name*, which then has to be parsed and kept unique and inside the
-64-character limit. `set` reads the value from stdin when it is not an argument.
+64-character limit. `set` reads the value from stdin when it is not an
+argument.
+
+`get` answers with the **bare value** in every format but JSON — being
+captured into a shell variable is what makes stdout a pipe, so the piped
+default would otherwise hand back the record in exactly the case the command
+exists for. An unset key produces nothing; `--json` returns the record, and is
+the only form that tells a `null` value from a key that was never set.
 
 ### `thurbox-cli watch` — nothing has to poll
 

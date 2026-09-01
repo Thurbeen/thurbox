@@ -708,3 +708,61 @@ fn the_pane_verbs_refuse_a_parked_session_by_name() {
         );
     }
 }
+
+/// `session doctor` on a parked session is a clean report, not a warning about
+/// silence it was told to cause.
+///
+/// `aider` only ever reports `blocked` (`Coverage::Partial`, and no
+/// `hook_file`), so its coverage and payload checks stay put across the stop —
+/// the only thing that moves is what the doctor makes of a session it knows was
+/// asked to go silent. Before `stop`, a session that has never signalled gets a
+/// `warn` on `last-signal` — the honest "nothing has ever signalled" case. Once
+/// `stop` parks it, the same absence of a signal is expected and reported
+/// `ok`, and the pane check — which would otherwise warn that nothing could be
+/// resolved — says plainly that there is no pane by design.
+#[test]
+fn a_parked_sessions_doctor_report_is_clean_not_a_warning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+    let _path = PathGuard::only(&dir.path().join("path"), true);
+    let db = Database::open_in_memory().expect("db");
+    let row = session_row("parked-doctor", "aider", "local-tmux");
+    db.upsert_session(&row).expect("persist");
+
+    let before = doctor(&db, row.id);
+    assert_eq!(
+        check(&before, "last-signal")["level"],
+        Value::String("warn".into()),
+        "{before}"
+    );
+
+    run(
+        Action::Stop {
+            session: row.id.to_string(),
+        },
+        &db,
+    )
+    .expect("session stop");
+
+    let after = doctor(&db, row.id);
+    let last_signal = check(&after, "last-signal");
+    assert_eq!(
+        last_signal["level"],
+        Value::String("ok".into()),
+        "{last_signal}"
+    );
+
+    let pane = check(&after, "pane");
+    assert_eq!(pane["level"], Value::String("ok".into()), "{pane}");
+    assert!(
+        pane["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("stopped") && d.contains("session start")),
+        "the report must say why there is no pane and how to get one back: {pane}"
+    );
+
+    assert!(
+        after.failure.is_none(),
+        "a parked session is not broken wiring: {after}"
+    );
+}
