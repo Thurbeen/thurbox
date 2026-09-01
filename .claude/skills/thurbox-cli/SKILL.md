@@ -119,11 +119,13 @@ thurbox-cli session create --name build --repo-path . \
     --command npm --arg run --arg watch --env NODE_ENV=development
 ```
 
-A `--command` session persists its **launch recipe** (command, args, env) on its
-row, because there is no registry entry to re-resolve; `session restart` replays
-it verbatim. A registry agent deliberately stores nothing, so it is resolved by
+A `--command` session persists its **launch recipe** (command, args) on its row,
+because there is no registry entry to re-resolve; `session restart` replays it
+verbatim. A registry agent deliberately stores no recipe, so it is resolved by
 name at every launch and editing `agents.toml` then restarting still takes
-effect.
+effect. `--env` is the exception both kinds store: it is the *caller's*, not
+the registry's, so a registry agent's row carries it too — replayed on restart
+and reproduced by `session exec`.
 
 What a command session does **not** have is a conversation. `resume_args` and
 `fork_args` are what address one, and only an agent definition declares them —

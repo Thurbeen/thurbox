@@ -625,13 +625,14 @@ takes to judge it:
 | `hook_blocked_is_heuristic` | whether its `blocked` is a text match on a notification body |
 | `hook_corroboration` / `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
 | `state` / `state_source` | the best answer available, and whether it came from a hook or from the pane |
+| `stopped` | whether the session is parked (`session stop`) — no process at all |
 
 `state` is always a word, never null: a session nothing has reported for reads
-`unreported`, and one whose agent is wired to report nothing at all reads
-`uncovered`. Neither is a state an agent can signal, so neither can be mistaken
-for one, and `state_source` is null for both. It is also the column the piped
-(TOON) `session list` shows, so an agent and a person reading the same call see
-the same word.
+`unreported`, one whose agent is wired to report nothing at all reads
+`uncovered`, and a parked session reads `stopped`. None of the three is a state
+an agent can signal, so none can be mistaken for one, and `state_source` is
+null for all of them. It is also the column the piped (TOON) `session list`
+shows, so an agent and a person reading the same call see the same word.
 
 There is deliberately **no staleness timeout**: a turn may run for an hour, so a
 guessed bound would report live work as finished. The age is published and the
@@ -664,7 +665,11 @@ signal that never lands is otherwise invisible. It exits non-zero when a
 session's wiring is broken — something that must work for state to reach thurbox
 does not. An agent thurbox ships no hooks for but which is signalling anyway
 (your driver calling `session signal`) is a *warning*, not a failure: state is
-demonstrably arriving.
+demonstrably arriving. A parked session reports its missing pane as by design
+rather than as a fault, and `send`/`key`/`capture` refuse a parked session by
+name rather than reaching for a window that is deliberately gone (see
+[FEATURES.md](docs/FEATURES.md#stopping-is-not-deleting) for the full
+contract).
 
 **Deleting.** `session delete <uuid>` is a soft-delete: it only marks the
 database row. A running TUI kills the tmux window once the 10-second undo
@@ -679,6 +684,19 @@ Teardown is best-effort: individual failures are recorded in the JSON report
 (`killed_window`, `removed_worktrees`, `worktree_errors`,
 `disabled_automations`) but never abort the delete, and the row is always
 soft-deleted last.
+
+### Agents
+
+```bash
+thurbox-cli agent launch-args claude                  # command + args + env
+thurbox-cli agent launch-args claude --session <uuid>  # ...resolved for one session
+```
+
+Status hooks are installed by appending to an agent's `args` in `agents.toml`,
+so a driver that launches the agent itself — `session create --command`, or
+typing into a shell session — gets none unless it passes these through.
+`--session` pins the conversation id to that session's and carries the
+`THURBOX_SESSION` its `session signal` will report under.
 
 ### Automations (alias `auto`)
 
