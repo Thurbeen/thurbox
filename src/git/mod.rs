@@ -51,7 +51,7 @@ pub fn open_pr_number(worktree_path: &Path) -> Option<u64> {
     }
 
     let after = body.split("\"number\":").nth(1)?;
-    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
 }
 
