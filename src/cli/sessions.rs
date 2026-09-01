@@ -126,14 +126,9 @@ pub enum Action {
         /// `--repo-path`, its conversation as this.
         #[arg(long)]
         resume: Option<String>,
-        /// Return the existing session instead of failing when one of this name
-        /// is already active. Makes create idempotent.
-        #[arg(long = "if-not-exists", conflicts_with = "replace")]
-        if_not_exists: bool,
-        /// Tear down an existing session of this name first (as
-        /// `delete --force` would), then create.
-        #[arg(long)]
-        replace: bool,
+        /// What to do when a session of this name is already active.
+        #[arg(long = "on-existing", value_enum, default_value_t = OnExisting::Allow)]
+        on_existing: OnExisting,
     },
     /// Soft-delete a session. (`remove` is an alias.)
     #[command(alias = "remove")]
@@ -356,6 +351,41 @@ pub enum Action {
     },
 }
 
+/// What `session create` should do when the name is already taken.
+///
+/// One question with four answers rather than a pile of booleans, because they
+/// are mutually exclusive by nature and `--help` should teach the whole
+/// question at once.
+///
+/// The default is [`Allow`](Self::Allow) — thurbox does not enforce name
+/// uniqueness, and cannot: a database mirroring a shareable host (ADR-24) holds
+/// that host's rows beside its own, and two machines may legitimately each have
+/// a session called `build`. Uniqueness is therefore something a caller *asks
+/// for* per creation, not a property of the namespace.
+///
+/// Every answer is decided before anything is spawned, so a refusal leaves no
+/// window, worktree or row behind. It is a check rather than a lock: two
+/// simultaneous creates can still both pass it, which is inherent to a spawn
+/// that must make a multiplexer window before it has a row to be unique in.
+/// What it does remove is the caller's own list-then-create window, which is
+/// far wider and which every integrator was otherwise writing themselves.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum OnExisting {
+    /// Create another session with the same name (the default, and what thurbox
+    /// has always done). The two are then addressable only by id, since a name
+    /// matching several sessions is refused rather than guessed.
+    Allow,
+    /// Return the existing session instead of creating one, with
+    /// `created: false`. Makes creation idempotent — what a driver reconciling
+    /// desired state wants.
+    Adopt,
+    /// Tear the existing session down first (as `delete --force` would), then
+    /// create. Its worktree goes with it.
+    Replace,
+    /// Refuse, naming the session in the way. Exit 1, nothing created.
+    Fail,
+}
+
 /// `session meta` — per-session key/value, namespaced by convention.
 #[derive(Subcommand, Debug)]
 pub enum MetaAction {
@@ -515,8 +545,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             arg,
             env,
             resume,
-            if_not_exists,
-            replace,
+            on_existing,
         } => {
             let parent_session_id = parent
                 .as_deref()
@@ -525,19 +554,9 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
             let env = parse_env(&env)?;
             // Names are not unique, so "already exists" is a decision the
-            // caller makes rather than something thurbox assumes. Both answers
-            // are here because a driver reconciling desired state needs one of
-            // them and neither is safe to guess.
-            if let Some(existing) = db
-                .get_session_by_name(&name)
-                .map_err(|e| format!("get_session_by_name: {e}"))?
-            {
-                if if_not_exists {
-                    return Ok(existing_session_output(&existing));
-                }
-                if replace {
-                    crate::session_ops::delete::delete_session_headless(db, existing.id, true)?;
-                }
+            // caller makes rather than something thurbox assumes.
+            if let Some(found) = resolve_existing(db, &name, on_existing)? {
+                return Ok(found);
             }
             let req = crate::session_ops::SpawnRequest {
                 name,
@@ -1315,7 +1334,65 @@ fn worktree_json(w: &crate::sync::SharedWorktree) -> Value {
     })
 }
 
-/// What `create --if-not-exists` returns when the session was already there.
+/// Apply the caller's [`OnExisting`] answer before anything is spawned.
+///
+/// `Ok(Some(output))` means the creation is already answered and must not
+/// proceed; `Ok(None)` means carry on and spawn. A refusal is an `Err`, which
+/// the entrypoint renders as a structured document on stdout and exits 1 —
+/// what Gas City's `RPP-LIFECYCLE-002` requires of a duplicate start, and what
+/// firstmate was hand-rolling a `session list` pre-check to achieve.
+///
+/// Ambiguity blocks `adopt` and `replace` but not `allow`: adopting one of two
+/// same-named sessions, or destroying one of them, is a guess about which was
+/// meant. It is the same rule [`super::session_ref`] follows, and it has to
+/// hold here because a database that mirrors a shareable host can legitimately
+/// already contain two.
+fn resolve_existing(
+    db: &Database,
+    name: &str,
+    mode: OnExisting,
+) -> Result<Option<CommandOutput>, String> {
+    if mode == OnExisting::Allow {
+        return Ok(None);
+    }
+    let found = db
+        .find_sessions_by_name(name)
+        .map_err(|e| format!("find_sessions_by_name: {e}"))?;
+    match (mode, found.len()) {
+        (OnExisting::Allow, _) | (_, 0) => Ok(None),
+        (OnExisting::Fail, _) => Err(format!(
+            "a session named '{name}' is already active ({}). Use \
+             `--on-existing adopt` to take it as it is, `--on-existing replace` \
+             to tear it down first, or pick another name",
+            found
+                .iter()
+                .map(|s| s.id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        (OnExisting::Adopt, 1) => Ok(Some(existing_session_output(&found[0]))),
+        (OnExisting::Replace, 1) => {
+            crate::session_ops::delete::delete_session_headless(db, found[0].id, true)?;
+            Ok(None)
+        }
+        (OnExisting::Adopt | OnExisting::Replace, n) => Err(format!(
+            "'{name}' matches {n} active sessions, so there is no single one to \
+             {}. Address them by id, or pick another name:\n{}",
+            if mode == OnExisting::Adopt {
+                "adopt"
+            } else {
+                "replace"
+            },
+            found
+                .iter()
+                .map(|s| format!("  {}  {}", s.id, s.agent))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )),
+    }
+}
+
+/// What `create --on-existing adopt` returns when the session was already there.
 ///
 /// The same document shape a real creation produces, with `created: false` as
 /// the only difference — so a caller reads one shape and needs no branch for

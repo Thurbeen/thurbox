@@ -81,10 +81,30 @@ does not enforce it, and a mirrored host contributes rows that legitimately
 collide), so a reference matching two sessions exits non-zero and names both
 ids. `--parent` resolves the same way.
 
-`session create` has two answers for a name that is already taken, because
-neither is safe to assume: `--if-not-exists` returns the existing session with
-`created: false` (idempotent, for a driver reconciling desired state), and
-`--replace` tears the old one down first.
+`session create --on-existing <allow|adopt|replace|fail>` answers "a session of
+this name already exists" — one question, four answers, because none of them is
+safe to assume:
+
+| Mode | Behaviour |
+|---|---|
+| `allow` (default) | create another one; both are then addressable only by id |
+| `adopt` | return the existing session with `created: false` — idempotent, what a driver reconciling desired state wants |
+| `replace` | tear the old one down (`delete --force`) first |
+| `fail` | refuse, naming the id in the way; exit 1 |
+
+`allow` is the default because thurbox **cannot** enforce uniqueness: a database
+mirroring a shareable host (ADR-24) holds that host's rows beside its own, and
+two machines may each legitimately have a session called `build`. Uniqueness is
+something a caller asks for per creation, not a property of the namespace — which
+is why `fail` exists at all, and why both firstmate and a Gas City provider were
+each hand-rolling it with their own list-then-create race.
+
+`adopt` and `replace` refuse an *ambiguous* name (one matching several
+sessions), for the same reason the reference resolver does: adopting one of two,
+or destroying one of two, is a guess. Every mode is decided before anything is
+spawned, so a refusal leaves no window, worktree or row behind. It is a check,
+not a lock — two simultaneous creates can still both pass, which is inherent to
+a spawn that must make a multiplexer window before it has a row.
 
 ### Any command can be a session
 

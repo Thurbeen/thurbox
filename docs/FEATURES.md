@@ -1867,6 +1867,23 @@ history and cwd live on disk), and `--resume` is **refused** for it with the fix
 named, rather than silently starting fresh. Making anything resumable is
 therefore a TOML edit, never a thurbox code change.
 
+### A name that is already taken
+
+`session create --on-existing <allow|adopt|replace|fail>` — one question with
+four answers. `allow` (the default) creates a second session with that name;
+`adopt` returns the existing one with `created: false`; `replace` tears it down
+first; `fail` refuses and exits 1, naming the session in the way.
+
+The default is `allow` because thurbox **cannot** make names unique: a database
+mirroring a shareable host (ADR-24) carries that host's rows beside its own, and
+two machines may each legitimately have a session called `build`. Uniqueness is
+therefore something a caller asks for per creation rather than a property of the
+namespace — and `fail` exists because, without it, every external driver wrote
+its own list-then-create check with its own race.
+
+`adopt` and `replace` refuse a name matching *several* sessions, on the same
+principle the reference resolver follows: picking one of two is a guess.
+
 ### Stopping is not deleting
 
 `session stop` kills the pane and keeps the row, the checkout and the branch;

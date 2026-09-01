@@ -290,3 +290,98 @@ fn exec_exit_passthrough_carries_the_commands_own_code() {
     ]);
     assert_eq!(ok.status.code(), Some(0));
 }
+
+/// `session create` answers the "a session of this name already exists"
+/// question four ways, and `fail` is the one that was missing.
+///
+/// Both orchestrators tested against this branch hand-rolled the same
+/// duplicate refusal, each with its own list-then-create race, because thurbox
+/// offered adopt and replace but no way to *refuse*. Gas City's
+/// `RPP-LIFECYCLE-002` mandates that a duplicate start exit non-zero, so the
+/// exit code is part of the contract, not decoration.
+///
+/// No multiplexer is involved: every arm here is decided before anything is
+/// spawned, which is also why it can refuse without leaving a window behind.
+#[test]
+fn create_answers_an_existing_name_four_ways() {
+    let env = Env::new();
+    let repo = env.path("home");
+    let existing = seed_session(&env, "worker", "claude");
+
+    let create = |mode: &str| {
+        env.run(&[
+            "session",
+            "create",
+            "--name",
+            "worker",
+            "--repo-path",
+            repo.to_str().expect("utf-8 path"),
+            "--on-existing",
+            mode,
+            "--json",
+        ])
+    };
+
+    // fail: exit 1, and the error names the session in the way — an integrator
+    // acts on the id, not on the word "exists".
+    let refused = create("fail");
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "a duplicate name must exit non-zero: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let doc = String::from_utf8_lossy(&refused.stdout);
+    assert!(
+        doc.contains(&existing),
+        "the refusal names the existing id: {doc}"
+    );
+
+    // adopt: exit 0, the existing session, and `created: false` so a caller
+    // reads one shape whether it made the session or found it.
+    let adopted = create("adopt");
+    assert_eq!(adopted.status.code(), Some(0));
+    let value: Value = serde_json::from_slice(&adopted.stdout).expect("one JSON document");
+    assert_eq!(value["id"].as_str(), Some(existing.as_str()));
+    assert_eq!(value["created"].as_bool(), Some(false));
+
+    // The row is still there: adopting is not a mutation.
+    let listed = env.run(&["session", "list", "--json"]);
+    let rows: Value = serde_json::from_slice(&listed.stdout).expect("JSON");
+    assert_eq!(rows.as_array().map(Vec::len), Some(1));
+}
+
+/// A name matching more than one session is refused for `adopt` and `replace`,
+/// because either would be a guess about which session was meant.
+///
+/// This is the same rule the reference resolver follows, and it has to hold
+/// here too: thurbox does not enforce uniqueness by default, so a database
+/// with two same-named rows is a state `create` can legitimately meet.
+#[test]
+fn an_ambiguous_name_is_never_adopted_or_replaced() {
+    let env = Env::new();
+    let repo = env.path("home");
+    seed_session(&env, "twin", "claude");
+    seed_session(&env, "twin", "codex");
+
+    for mode in ["adopt", "replace"] {
+        let out = env.run(&[
+            "session",
+            "create",
+            "--name",
+            "twin",
+            "--repo-path",
+            repo.to_str().expect("utf-8 path"),
+            "--on-existing",
+            mode,
+            "--json",
+        ]);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "--on-existing {mode} must refuse an ambiguous name"
+        );
+        let doc = String::from_utf8_lossy(&out.stdout);
+        assert!(doc.contains('2'), "the refusal counts the matches: {doc}");
+    }
+}
