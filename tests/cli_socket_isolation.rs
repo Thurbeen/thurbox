@@ -51,10 +51,19 @@ impl Env {
         cmd.env("APPDATA", self.path("config"));
         cmd.env("LOCALAPPDATA", self.path("data"));
         // Inherited from the developer's own session, and the subject of the
-        // test — never leave them to chance.
-        cmd.env_remove("THURBOX_CONFIG_DIR");
-        cmd.env_remove("THURBOX_DATA_DIR");
-        cmd.env_remove("THURBOX_SOCKET");
+        // test — never leave them to chance. Scrubbed as a namespace rather
+        // than a list: `cargo test` runs inside a live thurbox session on any
+        // developer machine, and a list has to be extended every time thurbox
+        // injects one more var. It was not. `THURBOX_SOCKET_FOR` — the tag that
+        // tells an inherited socket from an operator's own — leaked in and made
+        // `an_explicit_socket_still_wins` fail, because the ambient tag named a
+        // data dir that was not the test's and the override was correctly ruled
+        // inherited.
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("THURBOX_") {
+                cmd.env_remove(&key);
+            }
+        }
         for (key, value) in vars {
             cmd.env(key, value);
         }

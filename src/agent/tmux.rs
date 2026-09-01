@@ -2769,6 +2769,14 @@ mod tests {
     fn local_socket_honors_env_override() {
         // nextest runs one process per test, so env mutation can't race other
         // tests reading `local_socket()`.
+        //
+        // The owner tag has to go first. `cargo test` runs inside a live
+        // thurbox session on any developer machine, and that session injects
+        // the pair — so an inherited `THURBOX_SOCKET_FOR` naming the operator's
+        // data dir would make the override below read as inherited rather than
+        // typed, and `local_socket()` would derive a socket instead of
+        // honouring it.
+        std::env::remove_var(SOCKET_OWNER_ENV);
         std::env::set_var(SOCKET_OVERRIDE_ENV, "thurbox-lab-test");
         assert_eq!(local_socket(), "thurbox-lab-test");
         assert_eq!(TmuxBackend::local().socket, "thurbox-lab-test");
