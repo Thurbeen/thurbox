@@ -467,8 +467,11 @@ new_session_args = ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"
             <code>session fork</code>
             gives you a second shell beside it, and
             <code>session create --resume</code>
-            is refused rather than silently starting fresh. Nothing wires status hooks for it
-            either, so a
+            silently starts fresh rather than attaching to anything (only a raw
+            <code>--command</code>
+            session refuses
+            <code>--resume</code>
+            outright). Nothing wires status hooks for it either, so a
             <code>shell</code>
             session reports no state until something in it calls
             <code>thurbox-cli session signal</code>
