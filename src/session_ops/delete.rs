@@ -273,7 +273,23 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
 /// Conservatively owns nothing when the read fails: leaking a window costs a
 /// stale agent, killing the wrong one costs live work.
 pub fn owned_agent_pane(db: &Database, row: &DeletedSessionInfo) -> Option<String> {
-    let Ok(claims) = db.session_window_claims(row.id) else {
+    owned_agent_pane_for(db, row.id, &row.name, &row.backend_id)
+}
+
+/// [`owned_agent_pane`] for a window whose row is not a `DeletedSessionInfo`:
+/// the one a spawn leaked when its own upsert failed, which owns a name and a
+/// pane id but never became a row at all. Same decision, same reason — a
+/// teardown may only kill what nothing else answers to.
+///
+/// `session_id` is excluded from the claims, so a row that *is* this window's
+/// does not read as somebody else's claim on it.
+pub fn owned_agent_pane_for(
+    db: &Database,
+    session_id: SessionId,
+    name: &str,
+    backend_id: &str,
+) -> Option<String> {
+    let Ok(claims) = db.session_window_claims(session_id) else {
         return None;
     };
     let unclaimed = crate::agent::tmux::Unclaimed {
@@ -281,15 +297,15 @@ pub fn owned_agent_pane(db: &Database, row: &DeletedSessionInfo) -> Option<Strin
         // `owned_agent_pane` declines to resolve it regardless.
         pane_id: !claims
             .iter()
-            .any(|(_, pane)| !pane.is_empty() && *pane == row.backend_id),
+            .any(|(_, pane)| !pane.is_empty() && pane == backend_id),
         name: {
-            let own = crate::agent::tmux::agent_window_name(&row.name);
+            let own = crate::agent::tmux::agent_window_name(name);
             !claims
                 .iter()
-                .any(|(name, _)| crate::agent::tmux::agent_window_name(name) == own)
+                .any(|(claimed, _)| crate::agent::tmux::agent_window_name(claimed) == own)
         },
     };
-    crate::agent::tmux::owned_agent_pane(&row.name, &row.backend_id, unclaimed)
+    crate::agent::tmux::owned_agent_pane(name, backend_id, unclaimed)
         .ok()
         .flatten()
 }
