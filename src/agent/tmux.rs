@@ -2416,8 +2416,33 @@ pub fn kill_pane_remote(host: &crate::session::HostDef, backend_id: &str) -> Res
 /// one is usable (precise even when another session shares the name), by the
 /// `tb-<session_name>` window name otherwise.
 pub fn kill_window(session_name: &str, pane_id: &str) -> Result<()> {
-    let target = agent_target(session_name, pane_id);
-    let output = local_mux_command(&["kill-window", "-t", &target])
+    kill_window_target(&agent_target(session_name, pane_id))
+}
+
+/// Kill the session's window **only** while `pane_id` still resolves to that
+/// session's own `tb-<name>` window; otherwise kill nothing. Returns whether a
+/// window was killed.
+///
+/// The counterpart to [`kill_window`], for callers tearing down a row rather
+/// than acting on a live session. The name fallback that makes `kill_window`
+/// forgiving is unsound for them: a row whose pane id no longer resolves has no
+/// window of its own left, so `tb-<name>` can only match a *different* session's
+/// window. Names are not unique — two sessions may share one, and a soft-deleted
+/// row keeps its name until it is reaped — so the fallback silently destroys a
+/// live session (`kill-window` even exits 0 doing it, because tmux prefix- and
+/// substring-matches a window target).
+pub fn kill_window_strict(session_name: &str, pane_id: &str) -> Result<bool> {
+    if pane_id.is_empty() || !pane_matches_window(pane_id, &agent_window_name(session_name)) {
+        return Ok(false);
+    }
+    kill_window_target(pane_id).map(|()| true)
+}
+
+/// Run `kill-window` against an already-resolved target, tolerating a window
+/// that is already gone. Shared by [`kill_window`] and [`kill_window_strict`]
+/// so the two differ only in how the target is chosen.
+fn kill_window_target(target: &str) -> Result<()> {
+    let output = local_mux_command(&["kill-window", "-t", target])
         .output()
         .context("Failed to run tmux kill-window")?;
     if !output.status.success() {

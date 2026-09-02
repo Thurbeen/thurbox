@@ -1,0 +1,270 @@
+//! Reaping a soft-deleted session must not kill a live session's window.
+//!
+//! The reaper resolves its victim through `agent_target`, which falls back from
+//! a stale pane id to the `tb-<name>` window name. That fallback is right for a
+//! *live* session — you still want to reach its window after a tmux restart
+//! renumbered the panes — but for a reap it is unsound: if the deleted row's
+//! pane id no longer resolves, the row has no window of its own left, so the
+//! name can only ever match somebody else's.
+//!
+//! The sequence below is the one that bites in practice. A session freezes, the
+//! operator deletes the row and recreates it, and 30-60s later the reaper for
+//! the *deleted* row closes its undo window and kills the *replacement*. Each
+//! delete-and-recreate arms one more of these, so the session dies faster every
+//! time.
+//!
+//! Scoped to a throwaway socket and temporary directories, and skipped when
+//! tmux is absent, like the other end-to-end tests here.
+
+use std::path::Path;
+use std::process::Command;
+
+/// A throwaway tmux socket, so this never touches the real one.
+const SOCKET: &str = "thurbox-reap-e2e";
+
+fn have_tmux() -> bool {
+    Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn tmux(args: &[&str]) -> std::process::Output {
+    Command::new("tmux")
+        .args(["-L", SOCKET])
+        .args(args)
+        .output()
+        .expect("run tmux")
+}
+
+/// Every window currently on the throwaway server.
+fn windows() -> Vec<String> {
+    let out = tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether `pane_id` (`%N`) still exists.
+fn pane_alive(pane_id: &str) -> bool {
+    let out = tmux(&["list-panes", "-a", "-F", "#{pane_id}"]);
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l.trim() == pane_id)
+}
+
+/// The `GIT_*` location variables git exports to hook processes — the list
+/// `git::GIT_LOCATION_ENV` scrubs, which is crate-private. A suite running
+/// under this repository's own pre-commit hook inherits a `GIT_DIR` pointing
+/// at the real repository, so every git process here drops them.
+const GIT_LOCATION_ENV: [&str; 8] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+];
+
+fn git(dir: &Path, args: &[&str]) {
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(dir);
+    for var in GIT_LOCATION_ENV {
+        cmd.env_remove(var);
+    }
+    let ok = cmd.output().expect("run git").status.success();
+    assert!(ok, "git {args:?} failed");
+}
+
+/// A repository with one commit, which is the minimum a spawn needs.
+fn repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    git(dir.path(), &["config", "user.email", "t@example.com"]);
+    git(dir.path(), &["config", "user.name", "thurbox-test"]);
+    // Signing would make this depend on a key in the user's agent; the repo is
+    // throwaway, so it is disabled rather than required of the machine.
+    git(dir.path(), &["config", "commit.gpgsign", "false"]);
+    std::fs::write(dir.path().join("README.md"), "# probe\n").expect("write");
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "init"]);
+    dir
+}
+
+/// Point the spawn at a private socket in a private directory, so it can never
+/// see — or race — a real server. nextest runs one process per test, so env
+/// mutation is safe. Returns the tempdir so it outlives the test.
+fn isolate_tmux() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", dir.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    dir
+}
+
+/// A shell rather than a real agent: the reap path is what is under test, and
+/// launching a coding agent would want credentials and a network.
+fn isolate_paths(home: &Path) {
+    thurbox::paths::set_test_dir(home);
+    let config = thurbox::paths::config_file()
+        .expect("config path")
+        .parent()
+        .expect("config dir")
+        .to_path_buf();
+    std::fs::create_dir_all(&config).expect("mkdir");
+    std::fs::write(
+        config.join("agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("write agents.toml");
+}
+
+fn cleanup() {
+    let _ = tmux(&["kill-server"]);
+}
+
+fn spawn(
+    db: &thurbox::storage::Database,
+    repo: &Path,
+    name: &str,
+) -> Option<thurbox::session_ops::SpawnResult> {
+    let result = thurbox::session_ops::spawn_session_headless(
+        db,
+        thurbox::session_ops::SpawnRequest {
+            name: name.into(),
+            repo_path: repo.to_path_buf(),
+            // In place: a worktree is irrelevant to which window a reap targets.
+            worktree_branch: None,
+            base_branch: None,
+            agent: Some("shell".into()),
+            agent_session_id: None,
+            host: None,
+            parent_session_id: None,
+            task_id: None,
+            extra_repos: Vec::new(),
+            fork_session_id: None,
+            inherit_worktrees: Vec::new(),
+        },
+    );
+    match result {
+        Ok(spawned) => Some(spawned),
+        Err(e) => {
+            cleanup();
+            // A tmux server that will not start is an environment problem.
+            assert!(e.contains("tmux"), "spawn failed: {e}");
+            eprintln!("skipping: tmux would not spawn a window: {e}");
+            None
+        }
+    }
+}
+
+#[test]
+fn reaping_a_stale_row_spares_the_live_window_of_the_same_name() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    // 1. The session that will go stale.
+    let Some(stale) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+
+    // 2. Soft-deleted: the row is kept for undo, the window is left alone.
+    let report = thurbox::session_ops::delete_session_headless(&db, stale.session_id, false)
+        .expect("delete");
+    assert!(
+        !report.killed_window,
+        "a soft delete must leave the window for the undo window"
+    );
+
+    // 3. Its agent exits and the window goes away — the state every frozen
+    //    session ends up in, and what makes the row's pane id unresolvable.
+    let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
+    assert!(
+        !pane_alive(&stale.backend_id),
+        "the stale row's pane should be gone"
+    );
+
+    // 4. The operator recreates the session under the same name.
+    let Some(live) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+    assert!(
+        pane_alive(&live.backend_id),
+        "the replacement should be running"
+    );
+
+    // 5. The undo window closes and the reaper collects the stale row.
+    let reaped = thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap");
+
+    // The reap has nothing of its own left to kill, so it must not have reached
+    // for the name — the replacement is the only `tb-fleet` there is.
+    let survived = pane_alive(&live.backend_id);
+    let windows_after = windows();
+    cleanup();
+
+    assert!(
+        survived,
+        "reaping the stale 'fleet' row killed the live one's pane {} \
+         (reaped={reaped}); windows left: {windows_after:?}",
+        live.backend_id
+    );
+    assert!(
+        db.get_session_by_id(live.session_id)
+            .expect("query")
+            .is_some(),
+        "the live row must survive its namesake's reap"
+    );
+}
+
+/// The other half of the contract. Sparing a same-named window must not have
+/// been bought by making the reap a no-op: while the row's *own* pane still
+/// resolves, reaping it has to take the window down, or a soft-deleted session
+/// keeps its agent running and writing forever — the thing the reaper exists
+/// to prevent.
+#[test]
+fn reaping_still_kills_the_row_its_own_window() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(session) = spawn(&db, repo.path(), "solo") else {
+        return;
+    };
+    assert!(
+        pane_alive(&session.backend_id),
+        "the spawn should be running"
+    );
+
+    thurbox::session_ops::delete_session_headless(&db, session.session_id, false).expect("delete");
+
+    // The undo window closes with the pane still there: this row owns it, so it
+    // is exactly what the reap should collect.
+    let reaped = thurbox::session_ops::reap_soft_deleted(&db, session.session_id).expect("reap");
+    let still_there = pane_alive(&session.backend_id);
+    cleanup();
+
+    assert!(reaped, "a soft-deleted row with a live pane must be reaped");
+    assert!(
+        !still_there,
+        "the reap must kill the row's own window (pane {} survived)",
+        session.backend_id
+    );
+}

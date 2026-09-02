@@ -224,10 +224,25 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         return Ok(false);
     }
 
-    if let Err(e) = crate::agent::tmux::kill_window(&row.name, &row.backend_id) {
+    // Strict: kill this row's window only while its own pane id still resolves
+    // to it. A reap must never fall back to the `tb-<name>` target — by the time
+    // the pane is unresolvable there is nothing of this row's left to kill, and
+    // the name matches whatever session is called that *now*. That is how
+    // deleting a frozen session came to kill its replacement 30-60s later, and
+    // why each delete-and-recreate made the next one die sooner.
+    match crate::agent::tmux::kill_window_strict(&row.name, &row.backend_id) {
+        Ok(true) => {}
         // The window may already be gone — the agent exited, or a previous reap
-        // got there first. Not worth failing a cleanup over.
-        tracing::debug!("kill_window({}) during reap: {e}", row.name);
+        // got there first. Logged rather than silent: an unresolvable pane is
+        // also the shape a misdirected kill used to take.
+        Ok(false) => tracing::debug!(
+            "reap of '{}': pane {:?} no longer resolves to its own window; \
+             leaving any same-named window alone",
+            row.name,
+            row.backend_id
+        ),
+        // Not worth failing a cleanup over.
+        Err(e) => tracing::debug!("kill_window_strict({}) during reap: {e}", row.name),
     }
 
     // Derived per-session artifacts, both rebuilt on restore.
