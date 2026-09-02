@@ -136,10 +136,12 @@ fn every_kind_of_action_is_a_row() {
 
     // A key-bound action, with its chord beside it.
     let delete = find("sessions.delete").expect("a plugin's key is a row");
-    // Its alternates joined as help joins them: the pane-scoped `d` and the
-    // global `ctrl+d` are one action.
-    assert_eq!(delete.chords.as_deref(), Some("d / ctrl+d"));
+    assert_eq!(delete.chords.as_deref(), Some("ctrl+d"));
     assert_eq!(delete.plugin, "sessions");
+    // Alternates joined as help joins them: the pane-scoped keys and the global
+    // `ctrl+j` are one action.
+    let next = find("sessions.next").expect("a plugin's key is a row");
+    assert_eq!(next.chords.as_deref(), Some("j / down / ctrl+j"));
     // A chord-less command, with none.
     let export = find("mine.export").expect("a chord-less command is a row");
     assert_eq!(export.chords, None);

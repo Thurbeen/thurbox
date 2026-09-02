@@ -411,7 +411,7 @@ fn deleting_with_soft_delete_on_is_reversible_and_asks_nothing() {
     let host = host();
     let settings = with_soft_delete(true);
     publish_with(&host, &settings);
-    press(&host, "sessions", "d");
+    press(&host, "sessions", "ctrl+d");
 
     assert_eq!(
         host.drain_commands(),
@@ -429,7 +429,7 @@ fn deleting_with_soft_delete_off_confirms_and_itemises_the_loss() {
     let host = host();
     let settings = with_soft_delete(false);
     publish_with(&host, &settings);
-    press(&host, "sessions", "d");
+    press(&host, "sessions", "ctrl+d");
 
     assert!(
         host.drain_commands().is_empty(),
@@ -466,7 +466,7 @@ fn declining_the_confirmation_deletes_nothing() {
     let host = host();
     let settings = with_soft_delete(false);
     publish_with(&host, &settings);
-    press(&host, "sessions", "d");
+    press(&host, "sessions", "ctrl+d");
     assert!(confirmation(&host, &settings).is_some());
 
     press(&host, "confirm", "esc");

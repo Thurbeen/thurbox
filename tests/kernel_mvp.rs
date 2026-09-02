@@ -844,10 +844,20 @@ use thurbox::kernel::command::{Command, InFlight, Phase};
 /// Press a key and route it exactly as the binary does: registry first
 /// (declared actions), then raw `on_key`. Returns whatever commands it issued.
 fn press_key(host: &LuaHost, plugin: &str, ch: char) {
+    press_chord(host, plugin, ch, false);
+}
+
+/// The same, with Ctrl held.
+fn press_ctrl_key(host: &LuaHost, plugin: &str, ch: char) {
+    press_chord(host, plugin, ch, true);
+}
+
+fn press_chord(host: &LuaHost, plugin: &str, ch: char, ctrl: bool) {
     let registry = registry(host);
     let key = KeyPress {
         name: ch.to_lowercase().to_string(),
         ch: Some(ch),
+        ctrl,
         ..KeyPress::default()
     };
     if let Some(binding) = registry.resolve(&key, Some(plugin)) {
@@ -865,6 +875,11 @@ fn keys_to_commands(host: &LuaHost, plugin: &str, ch: char) -> Vec<Command> {
     host.drain_commands()
 }
 
+fn ctrl_keys_to_commands(host: &LuaHost, plugin: &str, ch: char) -> Vec<Command> {
+    press_ctrl_key(host, plugin, ch);
+    host.drain_commands()
+}
+
 #[test]
 fn deleting_from_the_session_list_issues_a_command() {
     let host = host();
@@ -872,7 +887,7 @@ fn deleting_from_the_session_list_issues_a_command() {
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
         .expect("render");
 
-    let issued = keys_to_commands(&host, "sessions", 'd');
+    let issued = ctrl_keys_to_commands(&host, "sessions", 'd');
     assert_eq!(issued.len(), 1, "{issued:?}");
     assert_eq!(issued[0].kind(), "delete");
     assert!(
