@@ -34,6 +34,10 @@ pub struct GitState {
     pub dirty: bool,
     pub ahead: usize,
     pub behind: usize,
+    /// Whether origin's default branch already holds this branch's work — see
+    /// [`crate::git::merged_into_default`]. `None` is "not known", which a
+    /// delete must not read as "safe to throw away".
+    pub merged: Option<bool>,
 }
 
 /// One session, flattened to what a plugin needs to draw it.
@@ -307,6 +311,7 @@ impl GitStats {
                 dirty: s.dirty,
                 ahead: s.ahead,
                 behind: s.behind,
+                merged: s.merged,
             });
             let _ = tx.send((session, stats));
         });

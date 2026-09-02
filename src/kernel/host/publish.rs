@@ -724,6 +724,9 @@ fn build_sessions(
             set(&stats, "dirty", git.dirty)?;
             set(&stats, "ahead", git.ahead)?;
             set(&stats, "behind", git.behind)?;
+            // Absent when unknown, so a plugin can tell "not merged" from
+            // "nobody could say".
+            set(&stats, "merged", git.merged)?;
             set(&entry, "git", stats)?;
         }
         // Why this session's terminal is not live, when it is not.

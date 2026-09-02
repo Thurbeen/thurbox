@@ -320,6 +320,87 @@ pub(super) fn parse_numstat(out: &str) -> (usize, usize, usize) {
     (files, ins, dels)
 }
 
+/// The ref a *delete* measures against: origin's default branch.
+///
+/// `origin/HEAD` when the remote advertised one, else the conventional
+/// `origin/main` / `origin/master`. Deliberately not [`resolve_base_ref`]'s
+/// chain, which prefers `@{upstream}` — the branch's own copy on the remote
+/// says whether it was pushed, never whether the work landed.
+fn remote_default_ref(cwd: &Path) -> Option<String> {
+    if let Some(out) = run_git_capture(
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        cwd,
+    ) {
+        let advertised = out.trim();
+        if !advertised.is_empty() {
+            return Some(advertised.to_string());
+        }
+    }
+    ["origin/main", "origin/master"]
+        .into_iter()
+        .find(|r| run_git_capture(&["rev-parse", "--verify", "--quiet", r], cwd).is_some())
+        .map(str::to_string)
+}
+
+/// Whether origin's default branch already contains this worktree's work.
+///
+/// `Some(true)` = merged, `Some(false)` = it holds commits the default branch
+/// does not, `None` when the question cannot be answered (no `origin`, no
+/// default ref, a git failure) — never assumed, because the caller uses this
+/// to decide whether a delete needs confirming.
+///
+/// Two questions, because a merge is not always a fast-forward:
+///
+/// ```text
+///   origin/main   A ── S ── U        S = the branch, squashed
+///   feature        \── B ── C ── D    D is an ancestor of nothing
+/// ```
+///
+/// `merge-base --is-ancestor` answers the merge-commit and fast-forward cases
+/// outright. A **squash** merge (this project's only merge mode, and the
+/// default on every forge) rewrites the branch into one new commit, so no
+/// commit of it is ever reachable from the default branch — the branch stays
+/// permanently "3 ahead". Comparing *patches* is what sees through that:
+/// square the branch off into a single throwaway commit on the merge base, and
+/// ask `git cherry` whether the default branch already carries that patch.
+/// `git cherry` prefixes `-` for a patch that is already upstream and `+` for
+/// one that is not.
+///
+/// Local refs only — no network, and no forge CLI — so GitHub, GitLab,
+/// Bitbucket and a bare repository behind an SSH remote all answer alike.
+pub fn merged_into_default(cwd: &Path) -> Option<bool> {
+    let default = remote_default_ref(cwd)?;
+
+    // Fast path: a merge commit or a fast-forward leaves HEAD reachable.
+    let ancestor = git_command(
+        None,
+        cwd,
+        &["merge-base", "--is-ancestor", "HEAD", &default],
+    )
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .ok()?;
+    match ancestor.code() {
+        Some(0) => return Some(true),
+        // 1 is "not an ancestor"; anything else is git failing to answer, and
+        // an unanswered question must not read as "unmerged".
+        Some(1) => {}
+        _ => return None,
+    }
+
+    // Squash path. `commit-tree` writes one dangling commit object, which git's
+    // own gc prunes; nothing references it and no ref moves.
+    let base = run_git_capture(&["merge-base", &default, "HEAD"], cwd)?;
+    let base = base.trim();
+    let squashed = run_git_capture(
+        &["commit-tree", "HEAD^{tree}", "-p", base, "-m", "squash"],
+        cwd,
+    )?;
+    let cherry = run_git_capture(&["cherry", &default, squashed.trim()], cwd)?;
+    Some(cherry.trim_start().starts_with('-'))
+}
+
 /// Commits the worktree's HEAD is `(ahead, behind)` relative to its base ref,
 /// resolved by `resolve_base_ref` (upstream → `origin/HEAD` → `origin/main` →
 /// `origin/master`) — the same chain [`sync_worktree`] rebases onto, so the
@@ -402,6 +483,10 @@ pub fn worktree_stats(cwd: &Path) -> Option<crate::session::GitStats> {
     // its ref gone) pays for [`ahead_behind`]'s resolution (`origin/HEAD` →
     // `origin/main` → `origin/master`), preserving the old answer there.
     let (ahead, behind) = status.ahead_behind.unwrap_or_else(|| ahead_behind(cwd));
+    // Only a branch that *is* ahead has commits whose fate is in question, and
+    // the check costs two to four `git` runs — so nothing ahead pays nothing,
+    // and reports `None` rather than an answer nobody asked for.
+    let merged = (ahead > 0).then(|| merged_into_default(cwd)).flatten();
     Some(crate::session::GitStats {
         files_changed,
         insertions,
@@ -410,5 +495,6 @@ pub fn worktree_stats(cwd: &Path) -> Option<crate::session::GitStats> {
         dirty: status.dirty,
         ahead,
         behind,
+        merged,
     })
 }

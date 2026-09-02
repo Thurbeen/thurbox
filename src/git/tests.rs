@@ -1411,3 +1411,143 @@ fn list_worktrees_reports_a_worktree_at_a_foreign_path() {
         foreign.canonicalize().unwrap()
     );
 }
+
+/// Build a repo whose `origin` has a default branch and a squash-merged
+/// feature branch, the shape every merged PR leaves behind here: the work is
+/// on `origin/main` as one new commit, and the branch's own commits are
+/// ancestors of nothing.
+///
+/// Returns the working repo, checked out on `feature`.
+fn squash_merged_repo(tmp: &Path) -> PathBuf {
+    let remote = tmp.join("remote.git");
+    let work = tmp.join("work");
+    let run = |dir: &Path, args: &[&str]| {
+        let out = git_program()
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let commit = |dir: &Path, file: &str, msg: &str| {
+        std::fs::write(dir.join(file), file).unwrap();
+        run(dir, &["add", "-A"]);
+        run(dir, &["commit", "-qm", msg]);
+    };
+
+    std::fs::create_dir_all(&remote).unwrap();
+    run(&remote, &["init", "-q", "--bare", "--initial-branch=main"]);
+
+    std::fs::create_dir_all(&work).unwrap();
+    run(&work, &["init", "-q", "--initial-branch=main"]);
+    run(&work, &["config", "user.email", "t@example.com"]);
+    run(&work, &["config", "user.name", "t"]);
+    run(&work, &["config", "commit.gpgsign", "false"]);
+    run(
+        &work,
+        &["remote", "add", "origin", &remote.display().to_string()],
+    );
+    commit(&work, "base.txt", "base");
+    run(&work, &["push", "-q", "-u", "origin", "main"]);
+
+    // Three commits on a branch, pushed with tracking, as a PR would be.
+    run(&work, &["checkout", "-q", "-b", "feature"]);
+    for file in ["one.txt", "two.txt", "three.txt"] {
+        commit(&work, file, file);
+    }
+    run(&work, &["push", "-q", "-u", "origin", "feature"]);
+
+    // The merge: one squashed commit on main, then an unrelated one so the
+    // default branch has moved on, then the branch is deleted on the remote —
+    // which is what strips the worktree's upstream and sends the ahead count
+    // back to counting against the default branch.
+    run(&work, &["checkout", "-q", "main"]);
+    run(&work, &["merge", "-q", "--squash", "feature"]);
+    run(&work, &["commit", "-qm", "feat: the squashed pull request"]);
+    commit(&work, "unrelated.txt", "another PR");
+    run(&work, &["push", "-q", "origin", "main"]);
+    run(&work, &["push", "-q", "origin", "--delete", "feature"]);
+    run(&work, &["checkout", "-q", "feature"]);
+    run(&work, &["fetch", "-q", "--prune", "origin"]);
+
+    work
+}
+
+#[test]
+fn a_squash_merged_branch_reports_itself_merged() {
+    // The case v1 got right and the delete confirmation must: every commit on
+    // this branch landed on `origin/main` as one squashed commit, so a delete
+    // walks away from nothing — even though not one of them is an ancestor of
+    // the default branch, which is why `merge-base --is-ancestor` alone is not
+    // an answer.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+
+    assert_eq!(merged_into_default(&work), Some(true));
+}
+
+#[test]
+fn an_unmerged_branch_reports_itself_unmerged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+    let run = |args: &[&str]| {
+        let out = git_program()
+            .args(args)
+            .current_dir(&work)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}");
+    };
+    run(&["checkout", "-q", "-b", "wip", "origin/main"]);
+    std::fs::write(work.join("wip.txt"), "wip").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-qm", "work in progress"]);
+
+    assert_eq!(merged_into_default(&work), Some(false));
+}
+
+#[test]
+fn a_branch_already_on_the_default_reports_itself_merged() {
+    // Nothing of its own: the fast path (`--is-ancestor`) answers before the
+    // patch-id comparison is ever paid for.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+    let out = git_program()
+        .args(["checkout", "-q", "-b", "spike", "origin/main"])
+        .current_dir(&work)
+        .output()
+        .expect("run git");
+    assert!(out.status.success());
+
+    assert_eq!(merged_into_default(&work), Some(true));
+}
+
+#[test]
+fn merged_into_default_is_unknown_without_a_remote_default() {
+    // No `origin` at all: the question cannot be answered, and `None` says so
+    // rather than claiming the work is safe to throw away.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("solo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let run = |args: &[&str]| {
+        let out = git_program()
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}");
+    };
+    run(&["init", "-q", "--initial-branch=main"]);
+    run(&["config", "user.email", "t@example.com"]);
+    run(&["config", "user.name", "t"]);
+    run(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(repo.join("file.txt"), "hi").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-qm", "init"]);
+
+    assert_eq!(merged_into_default(&repo), None);
+}
