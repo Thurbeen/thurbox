@@ -35,8 +35,10 @@ pub struct DeletedSessionInfo {
     /// a remote session re-spawns against its own host, not the local default.
     pub backend_type: String,
     /// The pane id (`%N`) the session held when it was deleted — what the reap
-    /// kills, so a live session sharing the name is never the one torn down.
-    /// Empty for rows persisted before local spawns recorded an id.
+    /// kills once [`session_window_claims`](Database::session_window_claims)
+    /// confirms no other row answers to it, so a live session sharing the name
+    /// is never the one torn down. Empty for rows persisted before local spawns
+    /// recorded an id.
     pub backend_id: String,
     pub deleted_at: u64,
     /// Whether this row was hard-deleted (tmux window + worktrees torn down). A
@@ -447,6 +449,30 @@ impl Database {
     /// them and lets the caller refuse.
     pub fn find_sessions_by_name(&self, name: &str) -> rusqlite::Result<Vec<SharedSession>> {
         self.query_sessions("s.deleted_at IS NULL AND s.name = ?1", params![name])
+    }
+
+    /// The `(name, backend_id)` of every session other than `exclude` that
+    /// could still own a live agent window — active rows *and* soft-deleted
+    /// rows, which keep their agent until the reaper lets them go.
+    ///
+    /// What a teardown resolves its target against: neither a stored pane id
+    /// nor a `tb-<name>` window proves ownership while another row answers to
+    /// it — names are not unique, and tmux restarts its pane-id counter, so a
+    /// row's remembered `%N` can be another window's pane after a reboot.
+    /// Force-deleted rows are excluded: their window went down with them, and
+    /// counting one would block a namesake's teardown forever (the row is
+    /// kept indefinitely, see schema v37).
+    pub fn session_window_claims(
+        &self,
+        exclude: SessionId,
+    ) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT name, backend_id FROM sessions WHERE force_deleted = 0 AND id != ?1",
+        )?;
+        let rows = stmt.query_map(params![exclude.to_string()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect()
     }
 
     /// Active sessions whose id **starts with** `prefix`, for addressing a
