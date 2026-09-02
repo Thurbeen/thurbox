@@ -40,8 +40,11 @@ pub struct DeletedSessionInfo {
     pub backend_id: String,
     pub deleted_at: u64,
     /// Whether this row was hard-deleted (tmux window + worktrees torn down). A
-    /// force-deleted session is shown in the restore list but cannot be restored
-    /// — its worktrees (and any uncommitted work) are gone. See schema v37.
+    /// force-deleted session is shown in the restore list and normally cannot be
+    /// restored — its worktrees, and any uncommitted work in them, are gone. See
+    /// schema v37. The exception is a session whose worktrees were all *opened*
+    /// rather than created (`created_by_thurbox`, schema v42): the teardown
+    /// skipped every one, so nothing was lost and the restore is not refused.
     pub force_deleted: bool,
     pub worktrees: Vec<SharedWorktree>,
 }
@@ -212,7 +215,7 @@ impl Database {
             "SELECT s.id, s.name, s.agent, s.backend_id, s.backend_type, \
              s.agent_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
              s.parent_session_id, s.display_order, \
-             w.repo_path, w.worktree_path, w.branch \
+             w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id AND w.deleted_at IS NULL \
              WHERE {condition} \
@@ -502,7 +505,7 @@ impl Database {
             "SELECT s.id, s.name, s.agent, s.agent_session_id, \
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
              s.force_deleted, s.backend_id, \
-             w.repo_path, w.worktree_path, w.branch \
+             w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
              WHERE {condition} \
@@ -523,8 +526,9 @@ impl Database {
             let wt_repo: Option<String> = row.get(10)?;
             let wt_path: Option<String> = row.get(11)?;
             let wt_branch: Option<String> = row.get(12)?;
+            let wt_mine: Option<bool> = row.get(13)?;
 
-            let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch);
+            let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch, wt_mine);
 
             Ok((
                 DeletedSessionInfo {
@@ -789,18 +793,25 @@ fn additional_dirs_from_db(raw: &str) -> Vec<PathBuf> {
     }
 }
 
-/// Build an optional [`SharedWorktree`] from the three nullable worktree
-/// columns of a joined row. Returns `None` unless all three are present.
+/// Build an optional [`SharedWorktree`] from the nullable worktree columns of a
+/// joined row. Returns `None` unless the three identifying columns are present.
+///
+/// `created_by_thurbox` is not one of them: it is `NOT NULL DEFAULT 1` in the
+/// schema, so a `None` here means the LEFT JOIN found no row at all, and the
+/// safe reading for a row that somehow lacks it is "thurbox made it" — the
+/// behavior every worktree had before the column existed.
 fn worktree_from_cols(
     repo: Option<String>,
     path: Option<String>,
     branch: Option<String>,
+    created_by_thurbox: Option<bool>,
 ) -> Option<SharedWorktree> {
     match (repo, path, branch) {
         (Some(repo), Some(path), Some(branch)) => Some(SharedWorktree {
             repo_path: PathBuf::from(repo),
             worktree_path: PathBuf::from(path),
             branch,
+            created_by_thurbox: created_by_thurbox.unwrap_or(true),
         }),
         _ => None,
     }
@@ -820,10 +831,11 @@ fn row_to_shared_session(
     let wt_repo: Option<String> = row.get(11)?;
     let wt_path: Option<String> = row.get(12)?;
     let wt_branch: Option<String> = row.get(13)?;
+    let wt_mine: Option<bool> = row.get(14)?;
 
     let additional_dirs = additional_dirs_from_db(&dirs_str);
 
-    let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch);
+    let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch, wt_mine);
 
     Ok((
         SharedSession {
@@ -1079,6 +1091,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         }];
 
         db.upsert_session(&session).unwrap();
@@ -1097,11 +1110,13 @@ mod tests {
                 repo_path: PathBuf::from("/repo1"),
                 worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
                 branch: "feat".to_string(),
+                created_by_thurbox: true,
             },
             SharedWorktree {
                 repo_path: PathBuf::from("/repo2"),
                 worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
                 branch: "feat".to_string(),
+                created_by_thurbox: true,
             },
         ];
 
@@ -1446,6 +1461,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         }];
         let sid = session.id;
         db.upsert_session(&session).unwrap();

@@ -91,22 +91,28 @@ local function footer(list)
   return modal.footer(hints, #list > 0 and "Restore" or nil, { cancel = "Close" })
 end
 
---- Ask before a best-effort restore, through the confirmation every other
---- irreversible-ish choice goes through.
+--- Ask before a restore the kernel would otherwise refuse, through the
+--- confirmation every other irreversible-ish choice goes through.
 ---
 --- v1 has a whole modal for this (`ConfirmRestore`) whose only content is the
---- two sentences below.
-local function confirm_partial(entry)
+--- sentences below.
+---
+--- The question is asked when `restore_refusal` is set, not when the row is
+--- tagged force-deleted: the two differ in both directions (a force-deleted
+--- row whose worktrees were only borrowed restores outright; a soft-deleted
+--- one whose borrowed checkout is gone cannot). The reason is the kernel's own
+--- sentence rather than one written here, so the pane cannot describe a
+--- refusal it does not decide.
+local function confirm_refusal(entry)
   store.confirm = {
-    question = "Restore force-deleted '" .. entry.name .. "'?",
+    question = "Restore '" .. entry.name .. "' anyway?",
     lines = {
-      "uncommitted and untracked changes were lost on delete",
-      "only committed work on its branch is reattached",
+      entry.restore_refusal,
+      entry.partial and "only committed work on its branch is reattached" or nil,
     },
     command = "restore",
     -- `force` is the wire name for the restore command's `best_effort`: the
-    -- kernel refuses a force-deleted row without it, precisely because the
-    -- recovery is partial.
+    -- kernel refuses without it, and this question is the caller saying yes.
     options = { session = entry.id, force = true },
   }
 end
@@ -236,8 +242,8 @@ return {
       -- `thurbox.deleted` a snapshot later, and a list left up meanwhile would
       -- invite a second Enter on a row that is already coming back.
       close()
-      if entry.partial then
-        confirm_partial(entry)
+      if entry.restore_refusal then
+        confirm_refusal(entry)
       else
         command("restore", { session = entry.id })
       end

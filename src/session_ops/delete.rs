@@ -12,6 +12,10 @@ pub struct ForceDeleteReport {
     pub killed_window: bool,
     pub removed_worktrees: Vec<String>,
     pub worktree_errors: Vec<String>,
+    /// Worktrees left on disk because thurbox did not create them. Reported so
+    /// the caller can say what it deliberately did *not* delete — silence here
+    /// would read as "nothing to clean up".
+    pub kept_worktrees: Vec<String>,
     pub disabled_automations: usize,
     /// Set when the session lived on a remote host (SSH/WSL) and its window
     /// could not be torn down there: the host is unreachable, has no
@@ -65,6 +69,7 @@ pub fn delete_session_headless(
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             report.removed_worktrees = string_list(&answer, "removed_worktrees");
+            report.kept_worktrees = string_list(&answer, "kept_worktrees");
             report.worktree_errors = string_list(&answer, "worktree_errors");
             report.remote_teardown_error = answer
                 .get("remote_teardown_error")
@@ -333,12 +338,24 @@ fn reap_pane_process(pid: u32) {
 /// Best-effort worktree removal on `host` (local when `None`), recording
 /// success/failure into `report`. Removes the worktree *directory* only — the
 /// git branch is deliberately left behind (local and remote alike), matching
-/// force-delete's contract.
+/// force-delete's contract. A worktree thurbox did not create is skipped
+/// outright and recorded in `report.kept_worktrees`.
 fn remove_worktree_into(
     host: Option<&crate::session::HostDef>,
     wt: &crate::sync::SharedWorktree,
     report: &mut ForceDeleteReport,
 ) {
+    // Only what thurbox checked out. `git worktree remove --force` deletes the
+    // directory along with any uncommitted work in it — fine for a worktree
+    // thurbox made for this session, never acceptable for one the user already
+    // had and merely opened.
+    if !wt.created_by_thurbox {
+        report
+            .kept_worktrees
+            .push(wt.worktree_path.display().to_string());
+        return;
+    }
+
     match crate::git::remove_worktree_on(host, &wt.repo_path, &wt.worktree_path) {
         Ok(()) => report
             .removed_worktrees
@@ -527,6 +544,84 @@ mod tests {
     }
 
     #[test]
+    fn teardown_leaves_a_worktree_thurbox_did_not_create_on_disk() {
+        // The whole point of opening an existing worktree is that the user (or
+        // their agent) made it outside thurbox. Force-deleting the session must
+        // not run `git worktree remove --force` on it: that deletes the
+        // directory and any uncommitted work in it. The path below does not
+        // exist, so a removal *attempt* would surface as a worktree_error —
+        // its absence is the proof that no attempt was made.
+        let session = SharedSession {
+            id: SessionId::default(),
+            name: "opened".into(),
+            agent: "dev".into(),
+            backend_id: "%4".into(),
+            backend_type: "tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: vec![crate::sync::SharedWorktree {
+                repo_path: "/nonexistent/repo".into(),
+                worktree_path: "/nonexistent/repo/.worktrees/mine".into(),
+                branch: "feat/x".into(),
+                created_by_thurbox: false,
+            }],
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+
+        let mut report = ForceDeleteReport::default();
+        teardown_runtime_resources(&session, &mut report);
+
+        assert!(
+            report.removed_worktrees.is_empty() && report.worktree_errors.is_empty(),
+            "no removal attempted for a worktree thurbox did not create"
+        );
+        assert_eq!(
+            report.kept_worktrees,
+            vec!["/nonexistent/repo/.worktrees/mine".to_string()],
+            "the skipped worktree is reported, not silently dropped"
+        );
+    }
+
+    #[test]
+    fn teardown_still_removes_a_worktree_thurbox_created() {
+        // The counterpart to the test above: provenance must gate the removal,
+        // not disable it. A thurbox-created worktree at a path that is gone
+        // still reaches `git worktree remove` and reports the failure.
+        let session = SharedSession {
+            id: SessionId::default(),
+            name: "created".into(),
+            agent: "dev".into(),
+            backend_id: "%5".into(),
+            backend_type: "tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: vec![crate::sync::SharedWorktree {
+                repo_path: "/nonexistent/repo".into(),
+                worktree_path: "/nonexistent/repo/wt".into(),
+                branch: "feat/x".into(),
+                created_by_thurbox: true,
+            }],
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+
+        let mut report = ForceDeleteReport::default();
+        teardown_runtime_resources(&session, &mut report);
+
+        assert!(report.kept_worktrees.is_empty());
+        assert_eq!(report.worktree_errors.len(), 1, "removal was attempted");
+    }
+
+    #[test]
     fn remote_teardown_with_unresolved_host_leaves_worktrees_untouched() {
         // A remote session whose host isn't configured: its worktree dirs live
         // on that (now unreachable) host, so they must be left alone — NOT
@@ -547,6 +642,7 @@ mod tests {
                 repo_path: "/nonexistent/repo".into(),
                 worktree_path: "/nonexistent/repo/wt".into(),
                 branch: "feat/x".into(),
+                created_by_thurbox: true,
             }],
             shell_backend_id: None,
             parent_session_id: None,

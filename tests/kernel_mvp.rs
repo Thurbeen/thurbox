@@ -1778,6 +1778,52 @@ fn a_creation_that_cannot_start_reports_why_and_leaves_nothing() {
     panic!("the failure never surfaced");
 }
 
+#[test]
+fn opening_a_worktree_that_is_not_there_reports_why_before_spawning() {
+    use thurbox::kernel::command::{Args, Command, CommandBus, Phase as CmdPhase};
+
+    // `repo` is validated up front so a bad path fails here rather than minutes
+    // later inside git. A `worktree_path` deserves the same: the picker only
+    // ever offers paths git itself reported, but `create` is reachable from
+    // `thurbox-cli` and any plugin, where a stale or mistyped path would
+    // otherwise become the cwd of a pane that cannot start in it.
+    let repo = tempfile::TempDir::new().expect("tempdir");
+
+    let mut bus = CommandBus::new();
+    bus.dispatch(
+        Command::parse(
+            "create",
+            Args {
+                repo: Some(repo.path().display().to_string()),
+                branch: Some("feat/x".into()),
+                worktree_path: Some("/definitely/not/a/worktree".into()),
+                ..Args::default()
+            },
+        )
+        .expect("parse"),
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        bus.poll();
+        if let Some(failed) = bus
+            .inflight()
+            .into_iter()
+            .find(|entry| entry.phase == CmdPhase::Failed)
+        {
+            assert_eq!(failed.kind, "create");
+            let error = failed.error.as_deref().unwrap_or("");
+            assert!(
+                error.contains("/definitely/not/a/worktree"),
+                "the error names the path that is missing: {error:?}"
+            );
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("the failure never surfaced");
+}
+
 // --- workflow panes --------------------------------------------------------
 
 #[test]
@@ -2065,6 +2111,7 @@ fn the_spawn_pipeline_reports_the_stage_it_reached() {
             repo_path: repo.path().to_path_buf(),
             worktree_branch: None,
             base_branch: None,
+            existing_worktree: None,
             agent: None,
             command: None,
             args: Vec::new(),

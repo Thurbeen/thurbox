@@ -33,12 +33,24 @@ pub(super) fn execute(
         repo,
         branch,
         base,
+        worktree_path,
         agent,
         host,
         extras,
     } = command
     {
-        return create(name, repo, branch, base, agent, host, extras, id, progress);
+        return create(
+            name,
+            repo,
+            branch,
+            base,
+            worktree_path.as_deref(),
+            agent,
+            host,
+            extras,
+            id,
+            progress,
+        );
     }
 
     // Repository memory names a path, not a session, so it too runs before the
@@ -161,6 +173,39 @@ pub(super) fn execute(
     }
 }
 
+/// The name an unnamed create gets.
+///
+/// Order: the **worktree directory's** own name when one is being opened, then
+/// the branch, then the repository directory. The worktree directory leads
+/// because that name is the one a person chose — an agent cutting a worktree
+/// from an issue writes `.worktrees/dynamic-tooltips` while the branch it puts
+/// there carries a disambiguating suffix
+/// (`feat/dynamic-tooltips-15307729713678226529`), and naming the session after
+/// the branch would put that suffix in the session list. Creating a worktree is
+/// unaffected: there is no directory yet, so the branch still names it, exactly
+/// as the CLI does.
+fn session_name(
+    given: &str,
+    branch: Option<&str>,
+    worktree_path: Option<&str>,
+    repo_path: &std::path::Path,
+) -> String {
+    if !given.is_empty() {
+        return given.to_string();
+    }
+    worktree_path
+        .map(std::path::Path::new)
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().to_string())
+        .or_else(|| branch.map(str::to_string))
+        .or_else(|| {
+            repo_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "session".to_string())
+}
+
 /// Create a session.
 ///
 /// The whole pipeline — repo resolution, worktree checkout, multi-repo
@@ -174,6 +219,7 @@ fn create(
     repo: &str,
     branch: &Option<String>,
     base: &Option<String>,
+    worktree_path: Option<&str>,
     agent: &Option<String>,
     host: &Option<String>,
     extras: &[ExtraMember],
@@ -193,26 +239,33 @@ fn create(
         return Err(format!("not a directory: {}", repo_path.display()));
     }
 
-    // An unnamed session takes the branch, else the repo directory — the same
-    // defaults the CLI applies, so a plugin need not invent one.
-    let name = if name.is_empty() {
-        branch
-            .clone()
-            .or_else(|| {
-                repo_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-            })
-            .unwrap_or_else(|| "session".to_string())
-    } else {
-        name.to_string()
-    };
+    // A worktree to open names the branch checked out there. The pair travels
+    // together from the flow, but `create` is reachable from any plugin, and
+    // half the pair would record a session whose branch is blank.
+    if worktree_path.is_some() && branch.is_none() {
+        return Err("opening a worktree needs the branch checked out in it".to_string());
+    }
+
+    // Same reasoning as `repo_path` above, and the same local-only caveat: an
+    // opened worktree becomes the session's cwd, so a path that isn't there
+    // yields a pane that cannot start rather than a stated error. The picker
+    // only offers paths `git worktree list` reported, but `thurbox-cli` and
+    // plugins can name any path at all.
+    let opened = worktree_path.map(crate::paths::expand_tilde);
+    if let Some(worktree) = &opened {
+        if host.is_none() && !worktree.is_dir() {
+            return Err(format!("not a worktree: {}", worktree.display()));
+        }
+    }
+
+    let name = session_name(name, branch.as_deref(), worktree_path, &repo_path);
 
     let request = crate::session_ops::spawn::SpawnRequest {
         name,
         repo_path,
         worktree_branch: branch.clone(),
         base_branch: base.clone(),
+        existing_worktree: opened,
         agent: agent.clone(),
         host: host.clone(),
         // Each extra either takes its own worktree on the shared branch — off
@@ -724,4 +777,45 @@ fn order(db: &Database, list: &[String]) -> Result<(), String> {
             .map_err(|e| format!("persist order: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_opened_worktree_is_named_after_its_directory() {
+        let name = session_name(
+            "",
+            Some("feat/dynamic-tooltips-15307729713678226529"),
+            Some("/repo/.worktrees/dynamic-tooltips"),
+            std::path::Path::new("/repo"),
+        );
+        assert_eq!(name, "dynamic-tooltips");
+    }
+
+    #[test]
+    fn a_created_worktree_is_still_named_after_its_branch() {
+        let name = session_name("", Some("fix-osc-52"), None, std::path::Path::new("/repo"));
+        assert_eq!(name, "fix-osc-52");
+    }
+
+    #[test]
+    fn a_plain_session_is_named_after_its_repository() {
+        assert_eq!(
+            session_name("", None, None, std::path::Path::new("/srv/thurbox")),
+            "thurbox"
+        );
+    }
+
+    #[test]
+    fn a_name_that_was_given_always_wins() {
+        let name = session_name(
+            "chosen",
+            Some("feat/x"),
+            Some("/repo/.worktrees/other"),
+            std::path::Path::new("/repo"),
+        );
+        assert_eq!(name, "chosen");
+    }
 }

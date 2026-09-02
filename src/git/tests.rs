@@ -1312,3 +1312,102 @@ mod stream_into_child {
         assert!(format!("{error:#}").contains("test-copy"), "{error:#}");
     }
 }
+
+// ── listing the worktrees a repo already has ───────────────────────────────
+
+#[test]
+fn parse_worktree_list_keeps_only_linked_named_branches() {
+    // The first `worktree` stanza is always the main checkout, which is the
+    // repo itself rather than something to open a session on.
+    let porcelain = "\
+worktree /repo
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+
+worktree /repo/.worktrees/tooltips
+HEAD 2222222222222222222222222222222222222222
+branch refs/heads/feat/dynamic-tooltips
+
+worktree /elsewhere/detached
+HEAD 3333333333333333333333333333333333333333
+detached
+
+worktree /repo/.worktrees/stale
+HEAD 4444444444444444444444444444444444444444
+branch refs/heads/gone
+prunable gitdir file points to non-existent location
+
+worktree /repo/bare
+bare
+";
+    let found = parse_worktree_list(porcelain);
+    assert_eq!(
+        found,
+        vec![ExistingWorktree {
+            path: PathBuf::from("/repo/.worktrees/tooltips"),
+            branch: "feat/dynamic-tooltips".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn parse_worktree_list_handles_empty_and_trailing_output() {
+    assert!(parse_worktree_list("").is_empty());
+    // No trailing blank line after the last stanza.
+    let one = "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\nworktree /wt\nHEAD 2\nbranch refs/heads/x";
+    assert_eq!(parse_worktree_list(one).len(), 1);
+    assert_eq!(parse_worktree_list(one)[0].branch, "x");
+}
+
+#[test]
+fn parse_worktree_list_keeps_a_path_that_contains_spaces() {
+    // Only the FIRST space separates the key from its value, so a checkout
+    // under a directory with a space in it is not truncated.
+    let porcelain = "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\n\
+worktree /My Projects/repo/.worktrees/a b\nHEAD 2\nbranch refs/heads/x\n";
+    let found = parse_worktree_list(porcelain);
+    assert_eq!(
+        found[0].path,
+        PathBuf::from("/My Projects/repo/.worktrees/a b")
+    );
+}
+
+#[test]
+fn parse_worktree_list_keeps_a_locked_worktree() {
+    // Locked is not prunable: the checkout is on disk and openable.
+    let porcelain = "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\n\
+worktree /wt\nHEAD 2\nbranch refs/heads/x\nlocked in use\n";
+    assert_eq!(parse_worktree_list(porcelain).len(), 1);
+}
+
+#[test]
+fn list_worktrees_reports_a_worktree_at_a_foreign_path() {
+    // The point of the feature: a worktree the user (or their agent) made at
+    // an arbitrary location is found, not just ones under thurbox's own dir.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    seed_repo(&repo, "file.txt", "hi");
+
+    assert!(list_worktrees(&repo).unwrap().is_empty());
+
+    let foreign = repo.join(".worktrees").join("tooltips");
+    run_git(
+        {
+            let mut c = git_program();
+            c.args(["worktree", "add", "-b", "feat/tooltips"])
+                .arg(&foreign)
+                .current_dir(&repo);
+            c
+        },
+        "git worktree add",
+    )
+    .expect("add worktree");
+
+    let found = list_worktrees(&repo).unwrap();
+    assert_eq!(found.len(), 1, "expected exactly one linked worktree");
+    assert_eq!(found[0].branch, "feat/tooltips");
+    assert_eq!(
+        found[0].path.canonicalize().unwrap(),
+        foreign.canonicalize().unwrap()
+    );
+}

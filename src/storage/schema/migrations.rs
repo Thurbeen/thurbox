@@ -841,3 +841,17 @@ pub(super) fn migrate_v41_joinable(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     Ok(())
 }
+
+/// v41 → v42: record whether thurbox created each worktree
+///
+/// Defaults to 1: every worktree that predates the column was checked out by
+/// thurbox itself (opening an existing one is what this column was added for),
+/// so backfilling "mine" preserves force-delete's behavior for them exactly.
+pub(super) fn migrate_v42_worktree_provenance(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(
+        conn,
+        "worktrees",
+        "created_by_thurbox",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+}

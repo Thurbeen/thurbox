@@ -26,6 +26,12 @@ fn host() -> LuaHost {
 }
 
 fn deleted(id: &str, name: &str, partial: bool) -> DeletedRow {
+    refused(id, name, partial, None)
+}
+
+/// A row plus the kernel's own answer to "would this restore be refused?" —
+/// the two are independent, which is the whole point of publishing both.
+fn refused(id: &str, name: &str, partial: bool, refusal: Option<&str>) -> DeletedRow {
     DeletedRow {
         id: id.into(),
         name: name.into(),
@@ -35,6 +41,15 @@ fn deleted(id: &str, name: &str, partial: bool) -> DeletedRow {
         deleted_at: 3_600_000,
         worktrees: 1,
         partial,
+        restore_refusal: refusal.map(str::to_string),
+    }
+}
+
+fn one(row: DeletedRow) -> Snapshot {
+    Snapshot {
+        deleted: vec![row],
+        taken_at_ms: 7_200_000,
+        ..Snapshot::default()
     }
 }
 
@@ -234,11 +249,12 @@ fn a_force_deleted_row_is_tagged_and_asks_before_a_best_effort_restore() {
     // the row as well as in the question — the difference has to be readable
     // before the choice, not only in the confirmation after it.
     let host = host();
-    let snapshot = Snapshot {
-        deleted: vec![deleted("ccc", "gone", true)],
-        taken_at_ms: 7_200_000,
-        ..Snapshot::default()
-    };
+    let snapshot = one(refused(
+        "ccc",
+        "gone",
+        true,
+        Some("uncommitted and untracked changes were lost on delete"),
+    ));
     press_in(&host, &snapshot, PLUGIN, "ctrl+u");
     let (_, tree) = rendered(&host, &snapshot, PLUGIN);
     assert!(tree.contains("force-deleted"), "{tree}");
@@ -250,10 +266,7 @@ fn a_force_deleted_row_is_tagged_and_asks_before_a_best_effort_restore() {
     );
     let (floated, question) = rendered(&host, &snapshot, "confirm");
     assert!(floated, "the shared confirmation is what asks");
-    assert!(
-        question.contains("Restore force-deleted 'gone'?"),
-        "{question}"
-    );
+    assert!(question.contains("Restore 'gone' anyway?"), "{question}");
     assert!(
         question.contains("uncommitted and untracked changes were lost on delete"),
         "{question}"
@@ -266,6 +279,64 @@ fn a_force_deleted_row_is_tagged_and_asks_before_a_best_effort_restore() {
         host.drain_commands(),
         vec![Command::Restore {
             session: "ccc".into(),
+            best_effort: true,
+        }]
+    );
+}
+
+#[test]
+fn a_force_deleted_row_the_kernel_would_not_refuse_restores_without_a_question() {
+    // Every worktree was borrowed and every one is still on disk, so the
+    // teardown removed nothing: the tag is still true (it says how the row was
+    // deleted) but there is nothing to warn about, and asking would talk the
+    // user out of a restore that costs them nothing. `partial` alone cannot
+    // tell these apart, which is why the refusal is published.
+    let host = host();
+    let snapshot = one(refused("ddd", "borrowed", true, None));
+    press_in(&host, &snapshot, PLUGIN, "ctrl+u");
+    let (_, tree) = rendered(&host, &snapshot, PLUGIN);
+    assert!(tree.contains("force-deleted"), "{tree}");
+
+    press_in(&host, &snapshot, PLUGIN, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Restore {
+            session: "ddd".into(),
+            best_effort: false,
+        }]
+    );
+    assert!(!rendered(&host, &snapshot, "confirm").0, "nothing to ask");
+}
+
+#[test]
+fn a_row_that_is_not_force_deleted_still_asks_when_the_kernel_would_refuse() {
+    // Soft-deleted, so nothing was destroyed and the row carries no tag — but
+    // the user removed the borrowed checkout themselves afterwards, so the
+    // restore cannot deliver the directory it would anchor the session at. The
+    // question has to be the kernel's own sentence: "uncommitted work was lost"
+    // would be a lie here.
+    let host = host();
+    let reason = "'vanished' opened the worktree at /gone/checkout, and it is                   no longer on disk";
+    let snapshot = one(refused("eee", "vanished", false, Some(reason)));
+    press_in(&host, &snapshot, PLUGIN, "ctrl+u");
+    let (_, tree) = rendered(&host, &snapshot, PLUGIN);
+    assert!(!tree.contains("force-deleted"), "{tree}");
+
+    press_in(&host, &snapshot, PLUGIN, "enter");
+    assert!(
+        host.drain_commands().is_empty(),
+        "nothing is restored until the question is answered"
+    );
+    let (floated, question) = rendered(&host, &snapshot, "confirm");
+    assert!(floated, "the shared confirmation is what asks");
+    assert!(question.contains("/gone/checkout"), "{question}");
+    assert!(!question.contains("uncommitted"), "{question}");
+
+    press_in(&host, &snapshot, "confirm", "y");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Restore {
+            session: "eee".into(),
             best_effort: true,
         }]
     );

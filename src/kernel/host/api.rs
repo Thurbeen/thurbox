@@ -246,6 +246,7 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
             repo: get_string("repo"),
             branch: get_string("branch"),
             base: get_string("base"),
+            worktree_path: get_string("worktree_path"),
             agent: get_string("agent"),
             host: get_string("host"),
             status: get_string("status"),

@@ -247,6 +247,92 @@ pub fn branch_exists_on(host: Option<&HostDef>, repo_path: &Path, branch: &str) 
         .unwrap_or(false)
 }
 
+/// A worktree the repository already has, as git reports it.
+///
+/// Distinct from thurbox's own derived layout: `path` is wherever the checkout
+/// actually is (`.worktrees/…`, a sibling directory, anywhere), which is the
+/// whole point — a worktree made outside thurbox is invisible to the derived
+/// `<repo-hash>/<branch>` layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingWorktree {
+    /// Absolute path of the checkout, exactly as git reports it.
+    pub path: PathBuf,
+    /// Short branch name (`refs/heads/` stripped), e.g. `feat/tooltips`.
+    pub branch: String,
+}
+
+/// Every linked worktree of `repo_path` that a session could be opened on.
+pub fn list_worktrees(repo_path: &Path) -> Result<Vec<ExistingWorktree>> {
+    list_worktrees_on(None, repo_path)
+}
+
+/// [`list_worktrees`], optionally on a remote `host` (via `ssh <dest> git …`).
+pub fn list_worktrees_on(
+    host: Option<&HostDef>,
+    repo_path: &Path,
+) -> Result<Vec<ExistingWorktree>> {
+    let output = git_command(host, repo_path, &["worktree", "list", "--porcelain"])
+        .output()
+        .context("failed to run git worktree list")?;
+
+    if !output.status.success() {
+        let stderr = reportable_stderr(&output.stderr);
+        anyhow::bail!("git worktree list failed: {stderr}");
+    }
+
+    Ok(parse_worktree_list(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// Parse `git worktree list --porcelain` into the worktrees worth offering.
+///
+/// Stanzas are blank-line separated and each opens with `worktree <path>`. Four
+/// kinds are dropped, all for the same reason — a session cannot be started on
+/// them:
+/// - the **first** stanza, which git always reports as the main checkout (that
+///   is the repo itself, already offered by the picker),
+/// - `bare` repositories, which have no working tree,
+/// - `detached` heads, which have no branch to name a session after,
+/// - `prunable` entries, whose directory is gone but whose registration lingers.
+///
+/// `locked` is deliberately *kept*: the checkout is on disk and openable.
+pub(super) fn parse_worktree_list(stdout: &str) -> Vec<ExistingWorktree> {
+    let mut found = Vec::new();
+    let mut path: Option<PathBuf> = None;
+    let mut branch: Option<String> = None;
+    let mut usable = true;
+    // Git always reports the main checkout first; every later stanza is linked.
+    let mut stanza = 0usize;
+
+    // A trailing empty element flushes the last stanza when the output does not
+    // end in a blank line.
+    for line in stdout.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if let Some(p) = path.take() {
+                if usable && stanza > 0 {
+                    if let Some(b) = branch.take() {
+                        found.push(ExistingWorktree { path: p, branch: b });
+                    }
+                }
+                stanza += 1;
+            }
+            branch = None;
+            usable = true;
+            continue;
+        }
+        let (key, rest) = line.split_once(' ').unwrap_or((line, ""));
+        match key {
+            "worktree" => path = Some(PathBuf::from(rest)),
+            "branch" => branch = Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string()),
+            "bare" | "detached" | "prunable" => usable = false,
+            _ => {}
+        }
+    }
+
+    found
+}
+
 /// Deterministic worktree directory path for a repo + branch.
 ///
 /// Worktrees are placed under the XDG data directory to avoid being inside

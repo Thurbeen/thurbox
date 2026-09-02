@@ -93,6 +93,16 @@ pub struct SharedWorktree {
     pub worktree_path: PathBuf,
 
     pub branch: String,
+
+    /// Whether thurbox checked this worktree out itself.
+    ///
+    /// False when the session merely *opened* a worktree the user already had.
+    /// Force-delete removes only what thurbox created: `git worktree remove
+    /// --force` deletes the directory and any uncommitted work in it, which is
+    /// thurbox's to discard for a worktree it made and never for one it
+    /// borrowed. Persisted (schema v42) because the decision outlives the
+    /// process that made it.
+    pub created_by_thurbox: bool,
 }
 
 impl From<crate::session::WorktreeInfo> for SharedWorktree {
@@ -101,6 +111,7 @@ impl From<crate::session::WorktreeInfo> for SharedWorktree {
             repo_path: wt.repo_path,
             worktree_path: wt.worktree_path,
             branch: wt.branch,
+            created_by_thurbox: wt.created_by_thurbox,
         }
     }
 }
@@ -111,6 +122,7 @@ impl From<SharedWorktree> for crate::session::WorktreeInfo {
             repo_path: wt.repo_path,
             worktree_path: wt.worktree_path,
             branch: wt.branch,
+            created_by_thurbox: wt.created_by_thurbox,
         }
     }
 }
@@ -147,6 +159,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         };
 
         let shared: SharedWorktree = wt.into();
@@ -161,6 +174,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         };
 
         let wt: crate::session::WorktreeInfo = shared.into();

@@ -374,6 +374,19 @@ breadcrumb: 'Features'
             </li>
             <li>Thurbox creates the worktree and launches the agent inside it</li>
             <li>
+              Worktrees the repo
+              <em>already</em>
+              has appear as
+              <code>&#8629;</code>
+              child rows under it, each showing its branch.
+              <code>Enter</code>
+              on one
+              <strong>opens</strong>
+              it &mdash; no
+              <code>git worktree add</code>
+              runs, so it works even for a branch already checked out
+            </li>
+            <li>
               Press
               <code>Ctrl+S</code>
               to sync all worktree sessions with
@@ -382,7 +395,11 @@ breadcrumb: 'Features'
             <li>
               On rebase conflicts, Thurbox automatically sends a resolution prompt to the agent
             </li>
-            <li>Closing a session automatically removes the worktree</li>
+            <li>
+              Closing a session removes the worktrees Thurbox created. One it merely opened is
+              left exactly where it was, since removing it would take any uncommitted work in it
+              along too
+            </li>
             <li>Worktree sessions show the branch name in the terminal title and session list</li>
           </ul>
 

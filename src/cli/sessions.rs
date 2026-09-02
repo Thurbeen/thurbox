@@ -943,6 +943,7 @@ fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutpu
             "forced": force,
             "killed_window": report.killed_window,
             "removed_worktrees": report.removed_worktrees,
+            "kept_worktrees": report.kept_worktrees,
             "worktree_errors": report.worktree_errors,
             "disabled_automations": report.disabled_automations,
             "remote_teardown_error": report.remote_teardown_error,
@@ -968,6 +969,11 @@ fn force_delete_detail(
             report.disabled_automations.to_string(),
         ),
     ];
+    // Only when there are any: a teardown that removed everything it found
+    // should not grow a "kept worktrees: " line saying nothing.
+    if !report.kept_worktrees.is_empty() {
+        detail.push(("kept worktrees", report.kept_worktrees.join("; ")));
+    }
     if !report.worktree_errors.is_empty() {
         detail.push(("worktree errors", report.worktree_errors.join("; ")));
     }
@@ -980,23 +986,30 @@ fn force_delete_detail(
 /// Restore a deleted session: the row, its worktrees and its agent — the same
 /// pipeline the interface's undo runs, so the two cannot disagree about what
 /// restoring means (it used to clear the flag alone, handing back a session
-/// with no worktree and no window). A force-deleted row is refused without
-/// `--best-effort`, since only committed work can return.
+/// with no worktree and no window). Whatever [`crate::session_ops::restore_refusal`]
+/// objects to is refused without `--best-effort`.
 fn restore_deleted(db: &Database, uuid: &str, best_effort: bool) -> Result<CommandOutput, String> {
     let id: SessionId = uuid
         .parse()
         .map_err(|_| format!("Invalid session UUID: {uuid}"))?;
-    // The pipeline refuses this too, but its message is interface-neutral; the
-    // command line is where `--best-effort` is the way to say yes.
+    // The pipeline refuses this too, and on exactly the same terms — asking it
+    // rather than re-deciding is what keeps the two from disagreeing about what
+    // is restorable (`force_deleted` alone says yes to a borrowed worktree that
+    // is gone and no to one that is not). The command line only adds the
+    // sentence the pipeline cannot: `--best-effort` is how you say yes here.
     let deleted = db
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
         .ok_or_else(|| format!("Deleted session not found: {uuid}"))?;
-    if deleted.force_deleted && !best_effort {
-        return Err(format!(
-            "Session '{}' was force-deleted; pass --best-effort to recover committed work (uncommitted/untracked changes are gone)",
-            deleted.name
-        ));
+    if !best_effort {
+        if let Some(reason) = crate::session_ops::restore_refusal(
+            &deleted.name,
+            deleted.force_deleted,
+            &deleted.backend_type,
+            &deleted.worktrees,
+        ) {
+            return Err(format!("{reason} — pass --best-effort to restore anyway"));
+        }
     }
     let report = crate::session_ops::restore_session_headless(db, id, best_effort)?;
     let mut human = match report.best_effort {
@@ -2333,5 +2346,83 @@ mod tests {
         assert_eq!(restored["restored"], true);
         assert_eq!(restored["best_effort"], true);
         assert!(db.get_session_by_id(id).unwrap().is_some());
+    }
+
+    #[test]
+    fn restore_of_a_force_deleted_session_that_only_borrowed_worktrees_needs_no_flag() {
+        // The teardown skipped every worktree, so nothing was destroyed and the
+        // directories are still there. The pipeline has allowed this since
+        // `restore_refusal`; the command line used to refuse it anyway on
+        // `force_deleted` alone, which is the two interfaces disagreeing.
+        let db = db();
+        let dir = tempfile::tempdir().unwrap();
+        let mut shared = make_test_session("borrowed");
+        shared.worktrees = vec![crate::sync::SharedWorktree {
+            repo_path: dir.path().to_path_buf(),
+            worktree_path: dir.path().to_path_buf(),
+            branch: "feat/borrowed".into(),
+            created_by_thurbox: false,
+        }];
+        let id = shared.id;
+        db.upsert_session(&shared).unwrap();
+        run(
+            Action::Delete {
+                uuid: id.to_string(),
+                force: true,
+            },
+            &db,
+        )
+        .unwrap();
+
+        let restored = run(
+            Action::Restore {
+                uuid: id.to_string(),
+                best_effort: false,
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(restored["restored"], true);
+        assert!(db.get_session_by_id(id).unwrap().is_some());
+    }
+
+    #[test]
+    fn restore_names_the_missing_borrowed_worktree_instead_of_uncommitted_work() {
+        // Soft delete, then the user removes their own checkout. Nothing was
+        // lost, so the old message would be false — but the restore still
+        // cannot deliver, since the session's cwd would not exist.
+        let db = db();
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("checkout");
+        let mut shared = make_test_session("vanished");
+        shared.worktrees = vec![crate::sync::SharedWorktree {
+            repo_path: dir.path().to_path_buf(),
+            worktree_path: gone.clone(),
+            branch: "feat/borrowed".into(),
+            created_by_thurbox: false,
+        }];
+        let id = shared.id;
+        db.upsert_session(&shared).unwrap();
+        run(
+            Action::Delete {
+                uuid: id.to_string(),
+                force: false,
+            },
+            &db,
+        )
+        .unwrap();
+
+        let err = run(
+            Action::Restore {
+                uuid: id.to_string(),
+                best_effort: false,
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains(&gone.display().to_string()), "{err}");
+        assert!(!err.contains("uncommitted"), "{err}");
+        assert!(err.contains("--best-effort"), "{err}");
+        assert!(db.get_deleted_session_by_id(id).unwrap().is_some());
     }
 }

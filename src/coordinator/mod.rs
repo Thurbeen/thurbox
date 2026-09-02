@@ -323,7 +323,7 @@ impl App {
         // The creation flow's reads. It asks by leaving a key in `store`,
         // which is written the moment its handler runs, so a request made
         // on a keystroke is served on the very next iteration. Requesting
-        // is idempotent, so asking every iteration costs three lookups.
+        // is idempotent, so asking every iteration costs four lookups.
         let wants = self.repo_wants();
         self.repos.serve(&wants);
         if self.repos.poll() {

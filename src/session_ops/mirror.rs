@@ -104,6 +104,7 @@ pub fn session_to_json(
             "repo_path": w.repo_path.display().to_string(),
             "worktree_path": w.worktree_path.display().to_string(),
             "branch": w.branch,
+            "created_by_thurbox": w.created_by_thurbox,
         })).collect::<Vec<_>>(),
     })
 }
@@ -187,6 +188,13 @@ pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, S
                         repo_path: PathBuf::from(w.get("repo_path")?.as_str()?),
                         worktree_path: PathBuf::from(w.get("worktree_path")?.as_str()?),
                         branch: w.get("branch")?.as_str()?.to_string(),
+                        // Absent from a peer running a build that predates the
+                        // field. Those peers only ever created their worktrees,
+                        // so "ours" is the accurate reading, not a guess.
+                        created_by_thurbox: w
+                            .get("created_by_thurbox")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true),
                     })
                 })
                 .collect()
@@ -567,6 +575,33 @@ mod tests {
             row.session.additional_dirs,
             vec![PathBuf::from("/srv/other")]
         );
+    }
+
+    #[test]
+    fn a_borrowed_worktree_stays_borrowed_across_the_wire() {
+        // The peer that tears a mirrored session down reads this flag off the
+        // JSON, not off its own database. `created_by_thurbox` is absent-means-
+        // true for older hosts, so a writer that stopped emitting the key would
+        // turn every borrowed worktree back into one force-delete may
+        // `git worktree remove --force` — taking the user's uncommitted work
+        // with it — while `the_json_shape_round_trips` stayed green, since its
+        // fixture never sets the flag false.
+        let id = SessionId::default();
+        let mut row = host_row(id, "borrowed");
+        row.session.worktrees[0].created_by_thurbox = false;
+
+        let again = session_from_json(
+            &session_to_json(
+                &row.session,
+                row.hook_state.as_deref(),
+                row.base_branch.as_deref(),
+            ),
+            BACKEND,
+        )
+        .unwrap();
+
+        assert!(!again.session.worktrees[0].created_by_thurbox);
+        assert_eq!(again, row);
     }
 
     #[test]

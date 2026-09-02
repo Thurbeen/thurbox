@@ -76,6 +76,13 @@ pub enum Command {
         repo: String,
         branch: Option<String>,
         base: Option<String>,
+        /// A worktree that already exists, to **open** instead of creating one.
+        ///
+        /// Set together with `branch` (the branch checked out there) and
+        /// without `base`: there is nothing to branch off. The path is git's
+        /// own, so a checkout anywhere — `.worktrees/`, a sibling directory —
+        /// is openable, not just one at thurbox's derived location.
+        worktree_path: Option<String>,
         agent: Option<String>,
         host: Option<String>,
         /// Further repositories this session spans, each either taking its own
@@ -444,6 +451,7 @@ impl Command {
             repo,
             branch,
             base,
+            worktree_path,
             agent,
             host,
             status,
@@ -547,6 +555,7 @@ impl Command {
                 repo,
                 branch: branch.filter(|b| !b.is_empty()),
                 base: base.filter(|b| !b.is_empty()),
+                worktree_path: worktree_path.filter(|p| !p.is_empty()),
                 agent: agent.filter(|a| !a.is_empty()),
                 host: host.filter(|h| !h.is_empty()),
                 extras,
@@ -692,6 +701,8 @@ pub struct Args {
     pub repo: Option<String>,
     pub branch: Option<String>,
     pub base: Option<String>,
+    /// An existing worktree's path, for a create that opens rather than makes one.
+    pub worktree_path: Option<String>,
     pub agent: Option<String>,
     pub host: Option<String>,
     /// A task status name, for the task command.
@@ -719,6 +730,48 @@ pub struct Args {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_create_can_name_a_worktree_to_open() {
+        let args = Args {
+            repo: Some("/srv/repo".into()),
+            branch: Some("feat/tooltips".into()),
+            worktree_path: Some("/srv/repo/.worktrees/tooltips".into()),
+            ..Default::default()
+        };
+        let Command::Create {
+            worktree_path,
+            branch,
+            base,
+            name,
+            ..
+        } = Command::parse("create", args).expect("parse")
+        else {
+            panic!("expected a create");
+        };
+        assert_eq!(
+            worktree_path.as_deref(),
+            Some("/srv/repo/.worktrees/tooltips")
+        );
+        assert_eq!(branch.as_deref(), Some("feat/tooltips"));
+        // Opening one needs no base: nothing is branched off anything.
+        assert_eq!(base, None);
+        assert_eq!(name, "");
+    }
+
+    #[test]
+    fn an_empty_worktree_path_is_no_worktree_at_all() {
+        let args = Args {
+            repo: Some("/srv/repo".into()),
+            worktree_path: Some(String::new()),
+            ..Default::default()
+        };
+        let Command::Create { worktree_path, .. } = Command::parse("create", args).expect("parse")
+        else {
+            panic!("expected a create");
+        };
+        assert_eq!(worktree_path, None);
+    }
+
     use super::execute::sync;
     use super::*;
     use crate::session::SessionId;
@@ -1046,6 +1099,7 @@ mod tests {
                 repo_path: std::path::PathBuf::from("/srv/repo"),
                 worktree_path: std::path::PathBuf::from("/srv/worktree"),
                 branch: "feat/x".into(),
+                created_by_thurbox: true,
             }],
             shell_backend_id: None,
             parent_session_id: None,

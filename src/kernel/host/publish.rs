@@ -364,10 +364,10 @@ impl LuaHost {
         Ok(())
     }
 
-    /// Publish the creation flow's three parameterised reads.
+    /// Publish the creation flow's four parameterised reads.
     ///
     /// Only what was asked for this frame: a flow that is closed asks nothing,
-    /// so all three are empty tables. Each carries its own request back
+    /// so all four are empty tables. Each carries its own request back
     /// (`host`, `dir`, `repo`) so a plugin can tell an answer to its current
     /// question from one still in flight for the previous.
     fn publish_repo_reads(
@@ -420,6 +420,20 @@ impl LuaHost {
             self.build_branches(store, wants).map(Value::Table)
         })?;
         set(table, "branches", branches_value)?;
+
+        let worktrees_key = fnv64([
+            &b"worktrees"[..],
+            wants
+                .worktrees
+                .as_ref()
+                .map(|(host, repo)| format!("{host}\0{repo}"))
+                .unwrap_or_else(|| "\x01none".to_string())
+                .as_bytes(),
+        ]);
+        let worktrees_value = self.group("worktrees", [epoch.data, worktrees_key, 0, 0], || {
+            self.build_worktrees(store, wants).map(Value::Table)
+        })?;
+        set(table, "worktrees", worktrees_value)?;
 
         Ok(())
     }
@@ -557,6 +571,56 @@ impl LuaHost {
             branches.set("list", list).map_err(|e| e.to_string())?;
         }
         Ok(branches)
+    }
+
+    /// Publish the worktrees a repository already has, for the repo picker.
+    ///
+    /// Shaped like [`build_branches`](Self::build_branches) — same
+    /// `host`/`repo`/`loading`/`error`/`list` contract — so a plugin reads both
+    /// the same way; the rows carry `path` and `branch` rather than a bare name
+    /// because opening one needs the path git reported, not a derived one.
+    fn build_worktrees(
+        &self,
+        store: &crate::kernel::repos::RepoStore,
+        wants: &crate::kernel::repos::Wants,
+    ) -> Result<Table, String> {
+        use crate::kernel::repos::Worktrees;
+
+        let worktrees = self.lua.create_table().map_err(|e| e.to_string())?;
+        if let Some((host, repo)) = &wants.worktrees {
+            worktrees
+                .set("host", host.clone())
+                .map_err(|e| e.to_string())?;
+            worktrees
+                .set("repo", repo.clone())
+                .map_err(|e| e.to_string())?;
+            let known = store.worktrees(host, repo);
+            worktrees
+                .set("loading", matches!(known, None | Some(Worktrees::Pending)))
+                .map_err(|e| e.to_string())?;
+            worktrees
+                .set(
+                    "error",
+                    match known {
+                        Some(Worktrees::Failed(message)) => to_lua_string(&self.lua, message)?,
+                        _ => Value::Nil,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            let list = self.lua.create_table().map_err(|e| e.to_string())?;
+            if let Some(Worktrees::Ready(found)) = known {
+                for (index, entry) in found.iter().enumerate() {
+                    let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                    item.set("path", entry.path.display().to_string())
+                        .map_err(|e| e.to_string())?;
+                    item.set("branch", entry.branch.clone())
+                        .map_err(|e| e.to_string())?;
+                    list.set(index + 1, item).map_err(|e| e.to_string())?;
+                }
+            }
+            worktrees.set("list", list).map_err(|e| e.to_string())?;
+        }
+        Ok(worktrees)
     }
 }
 
@@ -720,6 +784,9 @@ fn build_deleted(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
         set(&item, "worktrees", row.worktrees)?;
         // Restoring this one recovers committed work only.
         set(&item, "partial", row.partial)?;
+        // Nil when the restore would simply run — the pane asks if and only if
+        // this is a string, and shows it as the reason.
+        set(&item, "restore_refusal", row.restore_refusal.clone())?;
         deleted
             .raw_set(index + 1, item)
             .map_err(|e| e.to_string())?;

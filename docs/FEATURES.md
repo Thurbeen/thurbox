@@ -300,6 +300,23 @@ not applicable.
    v40) so it's learned once. The first selected repo becomes the
    session's `cwd`; the rest may be exposed to the agent depending
    on the agent's own flags.
+
+   **Worktrees the repo already has** appear as `↳` child rows under
+   whichever repo the cursor is resting on, each showing its directory
+   name and the branch checked out there. They come from
+   `git worktree list --porcelain` on that repo — so a worktree made
+   *outside* thurbox is found wherever it lives (`.worktrees/`, a
+   sibling directory, anywhere), not just at thurbox's own derived
+   `<repo-hash>/<branch>` path. One git call per highlighted row, cached
+   with the same TTL as the branch list; the main checkout, bare repos,
+   detached heads and prunable registrations are dropped, since no
+   session can be started on them. `Enter` on one **opens** it: no
+   `git worktree add` runs, and steps 3–5 below are skipped entirely
+   (the branch is the one already checked out there, and the session is
+   named after the worktree *directory* — an agent that cuts
+   `.worktrees/dynamic-tooltips` on branch
+   `feat/dynamic-tooltips-15307729713678226529` gives you a session
+   called `dynamic-tooltips`, not the suffix).
 3. **Base branch selector** — worktree mode only.
 4. **Session name** — free text identifier shown in the sidebar.
 5. **New branch name** — worktree mode only.
@@ -1983,9 +2000,26 @@ branch name) is saved in the database and reconstructed on restore.
   delete** — the full teardown with no `Ctrl+Z` undo, so it is gated
   behind a confirmation modal (`Modal::ConfirmDeleteSession`) instead.
   The flag never affects `thurbox-cli session delete`, which stays soft
-  unless `--force`. Either way the row **leaves the list on the
-  keystroke** rather than sitting there tagged while the teardown runs:
-  the session list drops any session whose `delete` is in flight
+  unless `--force`. A teardown only removes worktrees **thurbox created**
+  (`created_by_thurbox`, schema v42): a session that *opened* a worktree the
+  user already had leaves that directory exactly where it was and reports it
+  as kept, because `git worktree remove --force` would take any uncommitted
+  work in it along with it. Such a session is also **restorable** where a
+  force-deleted one normally is not: the refusal exists because the teardown
+  destroyed uncommitted work, and a teardown that removed nothing destroyed
+  nothing. A session with no worktrees at all stays refused — that is every
+  row predating the column, and the conservative reading is the one that
+  cannot lose work by being wrong. A borrowed worktree the user has since
+  removed themselves is refused too, and says so in those words: nothing was
+  lost, but the restore cannot deliver either, since the row's `cwd` is
+  reinstated untouched and the agent would be respawned at a path that is not
+  there. That second check is asked only of a local session — a remote one's
+  checkout is on its host, and the host's own `session restore` is where the
+  path can actually be looked for.
+  `session_ops::restore::restore_refusal` decides both, so the TUI and
+  `thurbox-cli session restore` cannot disagree about what is restorable.
+  Either way the row **leaves the list on the keystroke** rather than sitting
+  there tagged while the teardown runs: the session list drops any session whose `delete` is in flight
   (`live_sessions()` in `ui/plugins/10_sessions.lua`), so the cursor lands on
   the next session and a repo group whose last session went takes its
   header with it. A delete that *failed* keeps its row — the failure is

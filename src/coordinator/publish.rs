@@ -301,11 +301,14 @@ impl App {
     /// host rather than an absent one: a closed flow must cost nothing, and
     /// asking about local has to be expressible (`kernel::repos::Wants`).
     pub(crate) fn repo_wants(&self) -> thurbox::kernel::repos::Wants {
-        use thurbox::kernel::repos::{Wants, WANT_BOOKMARKS, WANT_BRANCHES, WANT_BROWSE};
+        use thurbox::kernel::repos::{
+            Wants, WANT_BOOKMARKS, WANT_BRANCHES, WANT_BROWSE, WANT_WORKTREES,
+        };
         Wants::new(
             self.host.shared_string(WANT_BOOKMARKS),
             self.host.shared_string(WANT_BROWSE),
             self.host.shared_string(WANT_BRANCHES),
+            self.host.shared_string(WANT_WORKTREES),
         )
     }
 

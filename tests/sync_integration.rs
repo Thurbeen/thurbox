@@ -148,6 +148,7 @@ fn db_worktree_persisted_with_session() {
         repo_path: PathBuf::from("/repo"),
         worktree_path: PathBuf::from("/repo/.git/wt/feat"),
         branch: "feat".to_string(),
+        created_by_thurbox: true,
     }];
     db.upsert_session(&session).unwrap();
 
@@ -167,11 +168,13 @@ fn db_multi_worktree_persisted_and_loaded_via_sessions() {
             repo_path: PathBuf::from("/repo1"),
             worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         },
         SharedWorktree {
             repo_path: PathBuf::from("/repo2"),
             worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         },
     ];
     db.upsert_session(&session).unwrap();
@@ -198,11 +201,13 @@ fn db_multi_worktree_propagates_across_instances() {
             repo_path: PathBuf::from("/repo1"),
             worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         },
         SharedWorktree {
             repo_path: PathBuf::from("/repo2"),
             worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         },
     ];
     db_a.upsert_session(&session).unwrap();

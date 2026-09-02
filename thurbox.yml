@@ -288,17 +288,19 @@ globals:
   # What a bare launch would use, so a flow preselects it.
   thurbox.agent_default:
     property: read-only
-  # The creation flow's three parameterised reads, each published only while it
-  # is being asked for (`store.want_*`).
   # The settings in force: every feature switch, plus the scalars a pane or the
   # arrangement needs.
   thurbox.settings:
     property: read-only
+  # The creation flow's four parameterised reads, each published only while it
+  # is being asked for (`store.want_*`).
   thurbox.bookmarks:
     property: read-only
   thurbox.browse:
     property: read-only
   thurbox.branches:
+    property: read-only
+  thurbox.worktrees:
     property: read-only
   thurbox.hosts:
     property: read-only

@@ -31,7 +31,7 @@ pub use extensions::{
 };
 pub use lifecycle_hooks::{fire_post, fire_pre};
 pub use restart::{restart_session_headless, RestartReport};
-pub use restore::{restore_session_headless, RestoreReport};
+pub use restore::{restore_refusal, restore_session_headless, RestoreReport};
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 
 use std::collections::{BTreeMap, HashMap};

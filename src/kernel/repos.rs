@@ -95,6 +95,20 @@ pub enum Branches {
     Failed(String),
 }
 
+/// What is known about the worktrees a repository already has.
+///
+/// Separate from [`Branches`] rather than folded into it: the picker needs this
+/// while the cursor moves over repo rows, long before the branch step exists,
+/// and a branch list is about what you could *create* while this is about what
+/// is already checked out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Worktrees {
+    Pending,
+    /// In the order git reported them, main checkout already dropped.
+    Ready(Vec<crate::git::ExistingWorktree>),
+    Failed(String),
+}
+
 /// A host key as the flow spells it: `""` for local, else a backend name
 /// (`ssh:<name>` / `wsl:<name>`) — the same key `repo_bookmarks.host` uses.
 pub type HostKey = String;
@@ -103,6 +117,7 @@ pub type HostKey = String;
 pub const WANT_BOOKMARKS: &str = "want_bookmarks";
 pub const WANT_BROWSE: &str = "want_browse";
 pub const WANT_BRANCHES: &str = "want_branches";
+pub const WANT_WORKTREES: &str = "want_worktrees";
 
 /// What the flow is asking about right now.
 ///
@@ -119,6 +134,7 @@ pub struct Wants {
     pub bookmarks: Option<HostKey>,
     pub browse: Option<(HostKey, String)>,
     pub branches: Option<(HostKey, String)>,
+    pub worktrees: Option<(HostKey, String)>,
 }
 
 impl Wants {
@@ -128,11 +144,13 @@ impl Wants {
         bookmarks: Option<String>,
         browse: Option<String>,
         branches: Option<String>,
+        worktrees: Option<String>,
     ) -> Self {
         Self {
             bookmarks,
             browse: browse.as_deref().and_then(split_want),
             branches: branches.as_deref().and_then(split_want),
+            worktrees: worktrees.as_deref().and_then(split_want),
         }
     }
 }
@@ -219,6 +237,22 @@ impl Fetched {
     }
 }
 
+/// A worktree list and when it arrived.
+struct Checked {
+    at: std::time::Instant,
+    worktrees: Worktrees,
+}
+
+impl Checked {
+    fn stale(&self) -> bool {
+        match self.worktrees {
+            Worktrees::Pending => false,
+            Worktrees::Failed(_) => self.at.elapsed() >= BRANCHES_RETRY,
+            Worktrees::Ready(_) => self.at.elapsed() >= BRANCHES_TTL,
+        }
+    }
+}
+
 enum Done {
     Bookmarks {
         host: HostKey,
@@ -232,9 +266,13 @@ enum Done {
         key: PathKey,
         branches: Branches,
     },
+    Worktrees {
+        key: PathKey,
+        worktrees: Worktrees,
+    },
 }
 
-/// Serves the creation flow's three reads, caching each under its request.
+/// Serves the creation flow's four reads, caching each under its request.
 pub struct RepoStore {
     hosts: HostRegistry,
     bookmarks: HashMap<HostKey, Remembered>,
@@ -243,6 +281,7 @@ pub struct RepoStore {
     bookmarks_inflight: std::collections::HashSet<HostKey>,
     listings: HashMap<PathKey, Listed>,
     branches: HashMap<PathKey, Fetched>,
+    worktrees: HashMap<PathKey, Checked>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
 }
@@ -264,6 +303,7 @@ impl RepoStore {
             bookmarks_inflight: std::collections::HashSet::new(),
             listings: HashMap::new(),
             branches: HashMap::new(),
+            worktrees: HashMap::new(),
             tx,
             rx,
         }
@@ -378,6 +418,38 @@ impl RepoStore {
         });
     }
 
+    /// What is known about `repo`'s existing worktrees on `host`.
+    pub fn worktrees(&self, host: &str, repo: &str) -> Option<&Worktrees> {
+        self.worktrees
+            .get(&(host.to_string(), repo.to_string()))
+            .map(|held| &held.worktrees)
+    }
+
+    /// Ask for the worktrees `repo` already has on `host`, unless known or in
+    /// flight.
+    ///
+    /// No `git fetch` here, unlike [`request_branches`](Self::request_branches):
+    /// a worktree is local state, and the picker asks about whichever repo the
+    /// cursor is on, so this has to stay cheap enough to run on a keypress.
+    pub fn request_worktrees(&mut self, host: &str, repo: &str) {
+        let key = (host.to_string(), repo.to_string());
+        if self.worktrees.get(&key).is_some_and(|held| !held.stale()) {
+            return;
+        }
+        self.remember_worktrees(key.clone(), Worktrees::Pending);
+
+        let remote = self.host_for(host).cloned();
+        let repo_path = crate::paths::expand_tilde(repo);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let worktrees = match crate::git::list_worktrees_on(remote.as_ref(), &repo_path) {
+                Ok(found) => Worktrees::Ready(found),
+                Err(e) => Worktrees::Failed(format!("Failed to list worktrees: {e:#}")),
+            };
+            let _ = tx.send(Done::Worktrees { key, worktrees });
+        });
+    }
+
     /// Ask for `repo`'s branches on `host`, unless known or in flight.
     ///
     /// The fetch is part of the request rather than a separate step: a branch
@@ -421,6 +493,17 @@ impl RepoStore {
         );
     }
 
+    /// Hold a worktree list, stamped so [`Checked::stale`] can retire it.
+    fn remember_worktrees(&mut self, key: PathKey, worktrees: Worktrees) {
+        self.worktrees.insert(
+            key,
+            Checked {
+                at: std::time::Instant::now(),
+                worktrees,
+            },
+        );
+    }
+
     /// Fold finished work in. True when anything arrived, so the loop repaints.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
@@ -441,6 +524,9 @@ impl RepoStore {
                 }
                 Done::Branches { key, branches } => {
                     self.remember_branches(key, branches);
+                }
+                Done::Worktrees { key, worktrees } => {
+                    self.remember_worktrees(key, worktrees);
                 }
             }
             changed = true;
@@ -464,6 +550,9 @@ impl RepoStore {
         }
         if let Some((host, repo)) = wants.branches {
             self.request_branches(&host, &repo);
+        }
+        if let Some((host, repo)) = wants.worktrees {
+            self.request_worktrees(&host, &repo);
         }
     }
 
@@ -490,6 +579,13 @@ impl RepoStore {
     #[doc(hidden)]
     pub fn set_branches_for_test(&mut self, host: &str, repo: &str, branches: Branches) {
         self.remember_branches((host.to_string(), repo.to_string()), branches);
+    }
+
+    /// Seed a worktree list directly, so a test can render the picker without
+    /// a repository to have worktrees in.
+    #[doc(hidden)]
+    pub fn set_worktrees_for_test(&mut self, host: &str, repo: &str, worktrees: Worktrees) {
+        self.remember_worktrees((host.to_string(), repo.to_string()), worktrees);
     }
 }
 
@@ -1063,6 +1159,7 @@ mod tests {
             Some(String::new()),
             Some("\0/srv/repos".into()),
             Some("ssh:box\0/srv/thing".into()),
+            None,
         );
         // The local machine is an empty host, which is not the same as no
         // request at all.
@@ -1078,10 +1175,48 @@ mod tests {
     fn a_malformed_or_empty_want_asks_for_nothing() {
         // No separator at all, and a separator with nothing after it — the
         // second is what a flow leaves while its input is still empty.
-        let wants = Wants::new(None, Some("/srv/repos".into()), Some("ssh:box\0".into()));
+        let wants = Wants::new(
+            None,
+            Some("/srv/repos".into()),
+            Some("ssh:box\0".into()),
+            None,
+        );
         assert_eq!(wants.bookmarks, None);
         assert_eq!(wants.browse, None);
         assert_eq!(wants.branches, None);
+    }
+
+    #[test]
+    fn a_want_carries_the_repo_whose_worktrees_are_wanted() {
+        let wants = Wants::new(None, None, None, Some("\0/srv/thing".into()));
+        assert_eq!(wants.worktrees, Some((String::new(), "/srv/thing".into())));
+    }
+
+    #[test]
+    fn nothing_is_known_about_worktrees_before_they_are_asked_for() {
+        let store = RepoStore::with_hosts(HostRegistry::default());
+        assert!(store.worktrees("", "/tmp").is_none());
+    }
+
+    #[test]
+    fn requesting_worktrees_returns_at_once_and_reads_pending() {
+        // Same property the listing request has: the cursor moving over a repo
+        // row must not block the render on a git call.
+        let mut store = RepoStore::with_hosts(HostRegistry::default());
+        let started = std::time::Instant::now();
+        store.request_worktrees("", "/definitely/not/here");
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+        assert_eq!(
+            store.worktrees("", "/definitely/not/here"),
+            Some(&Worktrees::Pending)
+        );
+    }
+
+    #[test]
+    fn serving_a_worktree_want_asks_for_it() {
+        let mut store = RepoStore::with_hosts(HostRegistry::default());
+        store.serve(&Wants::new(None, None, None, Some("\0/nope".into())));
+        assert_eq!(store.worktrees("", "/nope"), Some(&Worktrees::Pending));
     }
 
     #[test]

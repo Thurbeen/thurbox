@@ -452,6 +452,7 @@ mod tests {
                 repo_path: "/srv/repo".into(),
                 worktree_path: "/srv/wt".into(),
                 branch: "feat/x".into(),
+                created_by_thurbox: true,
             }],
             shell_backend_id: None,
             parent_session_id: None,

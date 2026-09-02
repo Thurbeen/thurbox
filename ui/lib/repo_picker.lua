@@ -79,6 +79,44 @@ function repo_picker.rows(published, query, collapsed)
   return out
 end
 
+--- Insert a repo's existing worktrees as child rows directly under it.
+---
+--- `expanded` is the repo path whose worktrees are showing (the one the cursor
+--- last rested on), and `published` is `thurbox.worktrees` — used only when it
+--- answers for that same repo, so a stale answer for the previous one never
+--- draws under the current.
+---
+--- The children are synthetic rows rather than bookmarks: they carry `branch`
+--- and a `worktree` marker, and `path` is git's own path for the checkout,
+--- because opening one needs exactly that path.
+function repo_picker.with_worktrees(entries, expanded, published)
+  published = published or {}
+  if not expanded or published.repo ~= expanded or #(published.list or {}) == 0 then
+    return entries
+  end
+  local out = {}
+  for _, entry in ipairs(entries) do
+    out[#out + 1] = entry
+    if entry.row.path == expanded and not entry.row.is_parent then
+      for _, wt in ipairs(published.list) do
+        out[#out + 1] = {
+          matched = {},
+          row = {
+            path = wt.path,
+            name = (wt.path:gsub("/+$", ""):match("[^/]+$")) or wt.path,
+            branch = wt.branch,
+            parent = expanded,
+            is_parent = false,
+            is_worktree = true,
+            offered = false,
+          },
+        }
+      end
+    end
+  end
+  return out
+end
+
 --- The most recently used remembered repository — where a path just added lands.
 ---
 --- Memory is published most-recent-first, so this is "the first row" — but only

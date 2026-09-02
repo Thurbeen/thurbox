@@ -41,6 +41,70 @@ pub struct RestoreReport {
 /// of them; the agent last, and its failure does not fail the restore — a
 /// session whose window did not come up is still restored, and `restart` will
 /// try again.
+/// Whether a force-delete of these worktrees could have destroyed work.
+///
+/// The refusal below exists because `git worktree remove --force` takes the
+/// directory and any uncommitted work in it. A session that only *opened*
+/// worktrees it did not create had none of them removed, so there is nothing
+/// to warn about and the refusal would scare the caller off a restore that
+/// costs them nothing.
+///
+/// No worktrees at all still counts as lossy: that is every session predating
+/// `created_by_thurbox`, and the conservative reading is the one that cannot
+/// lose someone's work by being wrong.
+fn force_delete_was_lossy(worktrees: &[SharedWorktree]) -> bool {
+    worktrees.is_empty() || worktrees.iter().any(|w| w.created_by_thurbox)
+}
+
+/// Why this restore should stop and ask first, if it should — `None` when it
+/// can simply run.
+///
+/// Two different promises can be broken, and saying the wrong one is worse
+/// than saying nothing. A **lossy force-delete** destroyed uncommitted work, so
+/// only committed work returns. A **borrowed worktree that is no longer on
+/// disk** destroyed nothing — but the restore cannot deliver the session it
+/// hands back: `restore_session` leaves the stored `cwd` alone and `respawn`
+/// anchors on it, so the pane opens at a path that is not there. The skip in
+/// [`recreate_worktrees`] keeps the *count* honest; only this keeps the restore
+/// honest.
+///
+/// The disk check is not conditioned on `force_deleted`: a soft-deleted session
+/// whose borrowed checkout the user removed afterwards lands in exactly the
+/// same place. `--best-effort` (the interface's confirm) remains the way to say
+/// yes to either.
+///
+/// It *is* conditioned on the backend being local, for the same reason the
+/// `create` command only validates a worktree path when no host is named: a
+/// remote session's checkout lives on its host, so stat'ing the path here
+/// answers about the wrong filesystem and reads every borrowed remote worktree
+/// as gone. The host's own `session restore` asks this question again against
+/// the filesystem the path belongs to — [`restore_session_headless`] delegates
+/// before it gets as far as recreating anything.
+pub fn restore_refusal(
+    name: &str,
+    force_deleted: bool,
+    backend_type: &str,
+    worktrees: &[SharedWorktree],
+) -> Option<String> {
+    if force_deleted && force_delete_was_lossy(worktrees) {
+        return Some(format!(
+            "'{name}' was force-deleted; recovering it brings back committed work only \
+             (uncommitted and untracked changes are gone)"
+        ));
+    }
+    if crate::session::is_remote_backend(backend_type) {
+        return None;
+    }
+    let gone = worktrees
+        .iter()
+        .find(|w| !w.created_by_thurbox && !w.worktree_path.is_dir())?;
+    Some(format!(
+        "'{name}' opened the worktree at {}, and it is no longer on disk; \
+         restoring cannot bring back a directory thurbox never created",
+        gone.worktree_path.display()
+    ))
+}
+
 pub fn restore_session_headless(
     db: &Database,
     id: SessionId,
@@ -51,15 +115,20 @@ pub fn restore_session_headless(
         .map_err(|e| format!("get deleted session: {e}"))?
         .ok_or_else(|| format!("deleted session not found: {id}"))?;
 
-    // Lossy recovery is a decision, not a discovery: the caller has to have been
-    // told before it happens. v1's confirm modal and the CLI's `--best-effort`
-    // are the two places that ask.
-    if deleted.force_deleted && !best_effort {
-        return Err(format!(
-            "'{}' was force-deleted; recovering it brings back committed work only \
-             (uncommitted and untracked changes are gone)",
-            deleted.name
-        ));
+    // Recovery the caller would not want is a decision, not a discovery: they
+    // have to have been told before it happens. v1's confirm modal and the
+    // CLI's `--best-effort` are the two places that ask — but only when there
+    // is something to warn about, which `force_deleted` alone no longer
+    // answers.
+    if !best_effort {
+        if let Some(reason) = restore_refusal(
+            &deleted.name,
+            deleted.force_deleted,
+            &deleted.backend_type,
+            &deleted.worktrees,
+        ) {
+            return Err(reason);
+        }
     }
 
     // A session on a shareable host is restored by the host's CLI — the
@@ -162,12 +231,41 @@ pub fn restore_session_headless(
 
 /// Re-attach each worktree whose branch still exists.
 ///
-/// A branch that is gone is skipped rather than failing the restore: the other
-/// worktrees are still worth having, and the report says how many came back. v1's
-/// `App::recreate_worktrees`, lifted here so both interfaces share it.
+/// A worktree that cannot come back — its branch gone, or, for one thurbox only
+/// borrowed, its directory gone — is skipped rather than failing the restore:
+/// the others are still worth having, and the report says how many came back.
+/// v1's `App::recreate_worktrees`, lifted here so both interfaces share it.
 pub fn recreate_worktrees(worktrees: &[SharedWorktree]) -> Vec<WorktreeInfo> {
     let mut recovered = Vec::new();
     for worktree in worktrees {
+        // Never thurbox's to re-create: the directory was the user's all along
+        // and force-delete left it in place, so it is still checked out and
+        // still registered with git. `add_existing_worktree` would only fail on
+        // it and drop it from the restored session.
+        if !worktree.created_by_thurbox {
+            // The user's directory, so its continued existence is theirs to
+            // decide: if they removed it, there is nothing to re-attach and
+            // counting it as recovered would be a lie. Symmetric with the
+            // `branch_exists` guard below — each arm checks the thing its own
+            // restore depends on. This is the *report* only; what stops a
+            // session being handed a cwd that is not there is
+            // [`restore_refusal`], since nothing here is written back to the
+            // row.
+            if !worktree.worktree_path.is_dir() {
+                tracing::warn!(
+                    "not restoring {}: the worktree is gone",
+                    worktree.worktree_path.display()
+                );
+                continue;
+            }
+            recovered.push(WorktreeInfo {
+                repo_path: worktree.repo_path.clone(),
+                worktree_path: worktree.worktree_path.clone(),
+                branch: worktree.branch.clone(),
+                created_by_thurbox: false,
+            });
+            continue;
+        }
         if !crate::git::branch_exists(&worktree.repo_path, &worktree.branch) {
             tracing::warn!(
                 "not restoring {}: its branch is gone",
@@ -180,6 +278,7 @@ pub fn recreate_worktrees(worktrees: &[SharedWorktree]) -> Vec<WorktreeInfo> {
                 repo_path: worktree.repo_path.clone(),
                 worktree_path: path,
                 branch: worktree.branch.clone(),
+                created_by_thurbox: true,
             }),
             Err(e) => tracing::warn!("could not recreate worktree {}: {e}", worktree.branch),
         }
@@ -248,7 +347,127 @@ mod tests {
             repo_path: std::path::PathBuf::from("/definitely/not/a/repo"),
             worktree_path: std::path::PathBuf::from("/definitely/not/a/worktree"),
             branch: "feat/gone".into(),
+            created_by_thurbox: true,
         }];
         assert!(recreate_worktrees(&worktrees).is_empty());
+    }
+
+    #[test]
+    fn a_borrowed_worktree_whose_directory_is_gone_is_skipped_too() {
+        // The user deleted their own checkout between the force-delete and the
+        // restore. Handing the row back regardless gives the session a cwd that
+        // is not there, which the thurbox arm already refuses to do via
+        // `branch_exists`.
+        let worktrees = vec![SharedWorktree {
+            repo_path: std::path::PathBuf::from("/definitely/not/a/repo"),
+            worktree_path: std::path::PathBuf::from("/definitely/not/a/worktree"),
+            branch: "feat/borrowed".into(),
+            created_by_thurbox: false,
+        }];
+        assert!(recreate_worktrees(&worktrees).is_empty());
+    }
+
+    #[test]
+    fn a_borrowed_worktree_still_on_disk_comes_back_as_it_is() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let worktrees = vec![SharedWorktree {
+            repo_path: dir.path().to_path_buf(),
+            worktree_path: dir.path().to_path_buf(),
+            branch: "feat/borrowed".into(),
+            created_by_thurbox: false,
+        }];
+        let recovered = recreate_worktrees(&worktrees);
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].worktree_path, dir.path());
+        assert!(!recovered[0].created_by_thurbox);
+    }
+
+    /// The backend a session on this machine carries.
+    const LOCAL: &str = "local-tmux";
+
+    fn worktree(created_by_thurbox: bool) -> SharedWorktree {
+        SharedWorktree {
+            repo_path: std::path::PathBuf::from("/repo"),
+            worktree_path: std::path::PathBuf::from("/repo/.worktrees/mine"),
+            branch: "feat/x".into(),
+            created_by_thurbox,
+        }
+    }
+
+    #[test]
+    fn a_force_delete_that_removed_nothing_is_not_lossy() {
+        // The session only opened worktrees it did not create, so the teardown
+        // skipped every one of them and the directories are still on disk with
+        // their uncommitted work. Warning here talks the caller out of a
+        // restore that costs them nothing.
+        assert!(!force_delete_was_lossy(&[worktree(false)]));
+        assert!(!force_delete_was_lossy(&[worktree(false), worktree(false)]));
+    }
+
+    #[test]
+    fn one_worktree_thurbox_created_makes_the_whole_restore_lossy() {
+        // `git worktree remove --force` ran on that one, so something was
+        // destroyed even though its neighbours survived.
+        assert!(force_delete_was_lossy(&[worktree(false), worktree(true)]));
+        assert!(force_delete_was_lossy(&[worktree(true)]));
+    }
+
+    #[test]
+    fn a_borrowed_worktree_missing_from_disk_is_refused_with_its_own_reason() {
+        // The restore cannot deliver what it promises: the directory the
+        // session would be anchored at is not there, and nothing downstream
+        // notices — `restore_session` leaves `cwd` alone and `respawn` opens a
+        // pane at it regardless. The message has to name that, not uncommitted
+        // work that was never touched.
+        let reason = restore_refusal("borrowed", false, LOCAL, &[worktree(false)])
+            .expect("a missing borrowed worktree is a refusal");
+        assert!(reason.contains("/repo/.worktrees/mine"), "{reason}");
+        assert!(!reason.contains("uncommitted"), "{reason}");
+    }
+
+    #[test]
+    fn a_borrowed_worktree_still_on_disk_is_not_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let present = SharedWorktree {
+            repo_path: dir.path().to_path_buf(),
+            worktree_path: dir.path().to_path_buf(),
+            branch: "feat/borrowed".into(),
+            created_by_thurbox: false,
+        };
+        assert_eq!(restore_refusal("borrowed", true, LOCAL, &[present]), None);
+    }
+
+    #[test]
+    fn a_remote_session_is_not_refused_over_a_path_on_the_other_machine() {
+        // The borrowed worktree is on the host, so the path never existed
+        // locally and `is_dir` here is answering about the wrong filesystem.
+        // Refusing on it would make every remote session that opened a
+        // worktree unrestorable without `--best-effort`, over a directory that
+        // is in fact still there. The host's own `session restore` asks again,
+        // against the filesystem the path belongs to.
+        assert_eq!(
+            restore_refusal("borrowed", false, "ssh:builder", &[worktree(false)]),
+            None
+        );
+        // The lossy case is not a disk question, so it still refuses.
+        let reason = restore_refusal("mine", true, "ssh:builder", &[worktree(true)])
+            .expect("a lossy force-delete is a refusal wherever it ran");
+        assert!(reason.contains("uncommitted"), "{reason}");
+    }
+
+    #[test]
+    fn a_lossy_force_delete_keeps_the_uncommitted_work_message() {
+        // Thurbox made this one, so `git worktree remove --force` took the
+        // directory: the older refusal is the accurate one and wins.
+        let reason = restore_refusal("mine", true, LOCAL, &[worktree(true)])
+            .expect("a lossy force-delete is a refusal");
+        assert!(reason.contains("uncommitted"), "{reason}");
+    }
+
+    #[test]
+    fn a_session_with_no_worktrees_stays_lossy() {
+        // Every row predating `created_by_thurbox` looks like this, and the
+        // conservative reading is the one that cannot lose work by being wrong.
+        assert!(force_delete_was_lossy(&[]));
     }
 }

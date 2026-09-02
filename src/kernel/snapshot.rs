@@ -124,6 +124,15 @@ pub struct DeletedRow {
     /// recovers committed work only. The distinction has to be visible *before*
     /// the choice, not after.
     pub partial: bool,
+    /// Why restoring this row will be refused without `best_effort`, if it will
+    /// be — [`crate::session_ops::restore_refusal`]'s own sentence, carried so
+    /// the restore surface asks exactly when the kernel would object, and asks
+    /// about the right thing. Deriving the question from `partial` instead gets
+    /// it wrong in both directions: a force-deleted row whose worktrees were
+    /// only borrowed is restorable outright, and a row that is not
+    /// force-deleted at all still cannot come back if the borrowed directory
+    /// has since been removed.
+    pub restore_refusal: Option<String>,
 }
 
 /// A task, flattened for rendering.
@@ -896,6 +905,16 @@ impl SnapshotStore {
                 list.into_iter()
                     .map(|row| DeletedRow {
                         id: row.id.to_string(),
+                        // Stats each borrowed worktree, so it is deliberately
+                        // here rather than in a render path: this refresh only
+                        // runs when `data_version` moved, and the deleted list
+                        // is short.
+                        restore_refusal: crate::session_ops::restore_refusal(
+                            &row.name,
+                            row.force_deleted,
+                            &row.backend_type,
+                            &row.worktrees,
+                        ),
                         name: row.name,
                         agent: row.agent,
                         deleted_at: row.deleted_at,
@@ -1360,6 +1379,7 @@ mod tests {
             repo_path: PathBuf::from("/src/thurbox"),
             worktree_path: PathBuf::from("/worktrees/fix-osc52"),
             branch: "fix/osc52".into(),
+            created_by_thurbox: true,
         }];
         let members = session_members(Some(std::path::Path::new("/src/thurbox")), &worktrees, &[]);
         assert_eq!(
@@ -1378,11 +1398,13 @@ mod tests {
                 repo_path: PathBuf::from("/src/a"),
                 worktree_path: PathBuf::from("/worktrees/a"),
                 branch: "feat/x".into(),
+                created_by_thurbox: true,
             },
             crate::sync::state::SharedWorktree {
                 repo_path: PathBuf::from("/src/b"),
                 worktree_path: PathBuf::from("/worktrees/b"),
                 branch: "feat/x".into(),
+                created_by_thurbox: true,
             },
         ];
         // An attached directory that is already a worktree must not appear twice.

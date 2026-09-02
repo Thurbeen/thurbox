@@ -74,6 +74,108 @@ fn cleanup() {
         .output();
 }
 
+/// How many worktrees git has registered for `repo` — the main checkout plus
+/// each linked one.
+///
+/// Gated with its only caller: the Windows `clippy -D warnings` job counts an
+/// unused helper as dead code and fails the build.
+#[cfg(unix)]
+fn registered_worktrees(repo: &Path) -> usize {
+    let out = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .expect("git");
+    String::from_utf8_lossy(&out.stdout)
+        .matches("worktree ")
+        .count()
+}
+
+#[test]
+#[cfg(unix)]
+fn opening_an_existing_worktree_reuses_it_and_names_the_session_after_it() {
+    use thurbox::kernel::command::{Command, CommandBus, Phase};
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let repo = repo();
+    let _tmux_dir = isolate_tmux();
+    let (_home, _config) = isolated_config();
+    drop(on_disk_db());
+
+    // A worktree the way an agent makes one: the directory named short, the
+    // branch carrying a long disambiguating suffix.
+    let branch = "feat/dynamic-tooltips-15307729713678226529";
+    let foreign = repo.path().join(".worktrees").join("dynamic-tooltips");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            &foreign.display().to_string(),
+        ],
+    );
+    let registered_before = registered_worktrees(repo.path());
+
+    // Exactly what the flow issues for an existing worktree: no name, no base.
+    let mut bus = CommandBus::new();
+    bus.dispatch(Command::Create {
+        name: String::new(),
+        repo: repo.path().display().to_string(),
+        branch: Some(branch.into()),
+        base: None,
+        worktree_path: Some(foreign.display().to_string()),
+        agent: Some("shell".into()),
+        host: None,
+        extras: Vec::new(),
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut row = None;
+    while std::time::Instant::now() < deadline {
+        bus.poll();
+        if let Some(failed) = bus
+            .inflight()
+            .into_iter()
+            .find(|entry| entry.phase == Phase::Failed)
+        {
+            cleanup();
+            let error = failed.error.unwrap_or_default();
+            if error.contains("tmux") {
+                eprintln!("skipping: tmux would not spawn a window: {error}");
+                return;
+            }
+            panic!("creation failed: {error}");
+        }
+        // Named after the worktree DIRECTORY, not the branch's long form — so
+        // looking it up by that name is itself the assertion.
+        if let Ok(Some(found)) = on_disk_db().get_session_by_name("dynamic-tooltips") {
+            row = Some(found);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    cleanup();
+    let row = row.expect("a session named after the worktree directory");
+
+    assert_eq!(row.cwd.as_deref(), Some(foreign.as_path()));
+    let worktree = row.worktrees.first().expect("the opened worktree");
+    assert_eq!(worktree.worktree_path, foreign);
+    assert_eq!(worktree.branch, branch);
+    assert_eq!(worktree.repo_path, repo.path());
+    assert_eq!(
+        registered_worktrees(repo.path()),
+        registered_before,
+        "opening must not register another worktree"
+    );
+}
+
 #[test]
 fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
     if !have_tmux() {
@@ -111,6 +213,7 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
             name: "e2e-probe".into(),
             repo_path: repo.path().to_path_buf(),
             worktree_branch: Some("feat/e2e".into()),
+            existing_worktree: None,
             base_branch: Some("main".into()),
             agent: Some("shell".into()),
             command: None,
@@ -554,6 +657,7 @@ fn a_vetoed_creation_reports_through_the_command_bus() {
         repo: repo.path().display().to_string(),
         branch: None,
         base: None,
+        worktree_path: None,
         agent: Some("shell".into()),
         host: None,
         extras: Vec::new(),
@@ -770,6 +874,7 @@ fn a_command_session_survives_restart_and_can_be_parked() {
             repo_path: repo.path().to_path_buf(),
             worktree_branch: None,
             base_branch: None,
+            existing_worktree: None,
             agent: None,
             command: Some("sh".into()),
             args: vec!["-c".into(), "while :; do sleep 1; done".into()],
@@ -900,6 +1005,7 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
             repo_path: repo.path().to_path_buf(),
             worktree_branch: None,
             base_branch: None,
+            existing_worktree: None,
             agent: Some("shell".into()),
             command: None,
             args: Vec::new(),

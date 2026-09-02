@@ -150,6 +150,11 @@ pub struct WorktreeInfo {
     pub repo_path: PathBuf,
     pub worktree_path: PathBuf,
     pub branch: String,
+    /// Whether thurbox checked this worktree out itself — see
+    /// [`crate::sync::SharedWorktree::created_by_thurbox`]. Carried here so the
+    /// `SharedWorktree` → `WorktreeInfo` → `SharedWorktree` round trip that
+    /// restore performs cannot quietly turn a borrowed worktree into ours.
+    pub created_by_thurbox: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -535,6 +540,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/thurbox-worktrees/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         };
         assert_eq!(wt.repo_path, PathBuf::from("/repo"));
         assert_eq!(wt.branch, "feat");

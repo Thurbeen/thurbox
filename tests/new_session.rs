@@ -15,10 +15,13 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
+use thurbox::git::ExistingWorktree;
 use thurbox::kernel::command::{BookmarkEdit, Command};
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
-use thurbox::kernel::repos::{BookmarkRow, Branches, BrowseEntry, Listing, RepoStore, Wants};
+use thurbox::kernel::repos::{
+    BookmarkRow, Branches, BrowseEntry, Listing, RepoStore, Wants, Worktrees,
+};
 use thurbox::kernel::snapshot::{AgentRow, HostRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 
@@ -896,6 +899,7 @@ fn a_plain_selection_names_the_session_then_the_agent() {
             repo: "/src/thurbox".into(),
             branch: None,
             base: None,
+            worktree_path: None,
             agent: Some("claude".into()),
             host: None,
             extras: Vec::new(),
@@ -935,6 +939,7 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
             repo: "/src/thurbox".into(),
             branch: None,
             base: None,
+            worktree_path: None,
             agent: Some("claude".into()),
             host: None,
             extras: Vec::new(),
@@ -961,6 +966,76 @@ fn a_name_is_still_refused_when_there_is_nothing_to_name_it_after() {
         "the step stays open: {screen}"
     );
     assert!(host.drain_commands().is_empty());
+}
+
+#[test]
+fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() {
+    // The whole feature in one flow: the repo the cursor is on has a worktree
+    // an agent cut earlier, it shows as a child row, and choosing it asks for
+    // neither a base branch, nor a session name, nor a branch name.
+    let host = host();
+    let mut world = World::default();
+    world.repos.set_worktrees_for_test(
+        "",
+        "/src/thurbox",
+        Worktrees::Ready(vec![ExistingWorktree {
+            path: "/src/thurbox/.worktrees/dynamic-tooltips".into(),
+            branch: "feat/dynamic-tooltips-15307729713678226529".into(),
+        }]),
+    );
+    open(&host, &world);
+
+    // The flow asks about whichever repo the cursor is on.
+    assert_eq!(
+        host.shared_string("want_worktrees").as_deref(),
+        Some("\0/src/thurbox")
+    );
+    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
+
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("dynamic-tooltips"),
+        "the existing worktree is listed under its repo: {screen}"
+    );
+
+    // Down onto the child row, then choose it.
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter"); // agent step, default preselected
+
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Create {
+            // Empty: the kernel names it after the worktree directory.
+            name: String::new(),
+            repo: "/src/thurbox".into(),
+            branch: Some("feat/dynamic-tooltips-15307729713678226529".into()),
+            // Nothing is branched off anything.
+            base: None,
+            worktree_path: Some("/src/thurbox/.worktrees/dynamic-tooltips".into()),
+            agent: Some("claude".into()),
+            host: None,
+            extras: Vec::new(),
+        }]
+    );
+}
+
+#[test]
+fn a_repo_with_no_existing_worktrees_is_unchanged() {
+    // No child rows, and the create flow still asks its usual questions.
+    let host = host();
+    let mut world = World::default();
+    world
+        .repos
+        .set_worktrees_for_test("", "/src/thurbox", Worktrees::Ready(Vec::new()));
+    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
+    open(&host, &world);
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("Session Name"),
+        "the plain flow is untouched: {screen}"
+    );
 }
 
 #[test]
@@ -1010,6 +1085,7 @@ fn a_worktree_selection_asks_for_a_base_branch_and_a_branch_name() {
             repo: "/src/thurbox".into(),
             branch: Some("fix-osc-52".into()),
             base: Some("origin/main".into()),
+            worktree_path: None,
             agent: Some("claude".into()),
             host: None,
             extras: Vec::new(),
@@ -1214,6 +1290,7 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
         host.shared_string("want_bookmarks"),
         host.shared_string("want_browse"),
         host.shared_string("want_branches"),
+        host.shared_string("want_worktrees"),
     );
     assert_eq!(wants.bookmarks.as_deref(), Some("ssh:devbox"));
     assert_eq!(wants.browse, Some(("ssh:devbox".into(), "/srv".into())));

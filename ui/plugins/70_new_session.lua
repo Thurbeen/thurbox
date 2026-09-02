@@ -49,6 +49,10 @@ local function branches()
   return (thurbox and thurbox.branches) or {}
 end
 
+local function worktrees_read()
+  return (thurbox and thurbox.worktrees) or {}
+end
+
 local function hosts()
   return (thurbox and thurbox.hosts) or {}
 end
@@ -84,7 +88,16 @@ local function load()
   return state.flow
 end
 
+--- Assigned once the repo step's row model exists below. Declared here because
+--- `save` is the one choke point every flow mutation passes through, which makes
+--- it the only place "which repo is the cursor on" can be answered without each
+--- of the eight cursor-moving sites remembering to ask.
+local track_worktrees
+
 local function save(flow)
+  if track_worktrees then
+    track_worktrees(flow)
+  end
   state.flow = flow
 end
 
@@ -107,6 +120,10 @@ local function fresh()
     select_newest = false,
     base = nil,
     branch_index = 1,
+    -- The repo whose existing worktrees are showing as child rows, and the one
+    -- chosen to open (`{ path, branch }`) once one has been.
+    wt_repo = nil,
+    open_worktree = nil,
     name = textinput.new(""),
     branch = textinput.new(""),
     agent_index = 1,
@@ -123,6 +140,7 @@ local function ask(flow)
     store.want_bookmarks = nil
     store.want_browse = nil
     store.want_branches = nil
+    store.want_worktrees = nil
     return
   end
   store.want_bookmarks = flow.host or ""
@@ -151,6 +169,14 @@ local function ask(flow)
   else
     store.want_branches = nil
   end
+
+  -- Only ever the repo the cursor is resting on: one `git worktree list` per
+  -- highlighted row, not one per remembered repository.
+  if flow.step == "repo" and flow.wt_repo then
+    store.want_worktrees = (flow.host or "") .. "\0" .. flow.wt_repo
+  else
+    store.want_worktrees = nil
+  end
 end
 
 -- ── The repo step's row model ──────────────────────────────────────────────
@@ -164,12 +190,30 @@ end
 
 local function rows_for(flow)
   local query = flow.search and (flow.search.value or "") or ""
-  return repo_picker.rows(bookmarks().rows or {}, query, flow.collapsed)
+  local entries = repo_picker.rows(bookmarks().rows or {}, query, flow.collapsed)
+  return repo_picker.with_worktrees(entries, flow.wt_repo, worktrees_read())
 end
 
 --- The row the cursor is on, or nil when the list is empty.
 local function current_row(flow)
   return repo_picker.current(rows_for(flow), flow.cursor)
+end
+
+--- Follow the cursor with the "whose worktrees are showing" anchor.
+---
+--- Deliberately reads the rows built from the *previous* anchor: those are the
+--- rows that were on screen when the key was pressed, so the row the cursor is
+--- on is the row the reader was looking at. A worktree child leaves the anchor
+--- alone — stepping onto one must not collapse the list under the cursor.
+track_worktrees = function(flow)
+  if not flow or flow.step ~= "repo" then
+    return
+  end
+  local entry = repo_picker.current(rows_for(flow), flow.cursor)
+  local row = entry and entry.row
+  if row and not row.is_parent and not row.is_worktree then
+    flow.wt_repo = row.path
+  end
 end
 
 local function chosen(flow)
@@ -304,6 +348,20 @@ local function repo_row(entry, selected, flow, is_cursor)
     return {
       { text = (flow.collapsed[row.path] and "▸ " or "▾ ") .. row.path, style = style },
       { text = " (parent)", style = { fg = theme.muted } },
+    }
+  end
+
+  -- An existing worktree: not a thing to tick, a thing to open. So no checkbox,
+  -- and the branch is what identifies it — the directory name is usually a
+  -- shortened form of the branch, and the branch is what the work is on.
+  if row.is_worktree then
+    return {
+      { text = "  ↳ ", style = { fg = theme.muted } },
+      { text = row.name, style = style },
+      {
+        text = "  " .. widgets.middle_truncate(row.branch or "", math.max(8, ROW_COLS - 30)),
+        style = { fg = theme.muted },
+      },
     }
   end
 
@@ -723,11 +781,16 @@ local function commit(flow)
   end
   local picked = agents()[flow.agent_index]
   local agent = picked and picked.name or nil
+  -- Opening an existing worktree: the branch is the one already checked out
+  -- there, there is no base to branch off, and the name is left to the kernel,
+  -- which takes it from the worktree directory.
+  local open = flow.open_worktree
   command("create", {
-    text = flow.name.value,
+    text = (open and "") or flow.name.value,
     repo = flow.primary,
-    branch = flow.base and flow.branch.value or nil,
-    base = flow.base,
+    branch = (open and open.branch) or (flow.base and flow.branch.value) or nil,
+    base = (not open) and flow.base or nil,
+    worktree_path = open and open.path or nil,
     agent = agent,
     host = (flow.host ~= "" and flow.host) or nil,
     extras = flow.extras or {},
@@ -1281,6 +1344,18 @@ return {
       save(flow)
       return true
     elseif name == "enter" then
+      -- An existing worktree is not a selection to gather: it names its own
+      -- repo, branch and directory, so there is nothing left to ask.
+      local entry = current_row(flow)
+      local row = entry and entry.row
+      if row and row.is_worktree then
+        flow.primary = row.parent
+        flow.extras = {}
+        flow.open_worktree = { path = row.path, branch = row.branch }
+        save(after_name(flow))
+        ask(load())
+        return true
+      end
       save(after_repos(flow))
       ask(load())
       return true

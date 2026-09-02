@@ -315,7 +315,7 @@ that throws costs its own pane and nothing else.
 | `store` | Shared by every plugin — the bus between them. Same lifetime as `state` |
 | `files.list/read` | Directory entries and file text, rooted at a session's directory |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
-| `thurbox.bookmarks/browse/branches` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list — each served only while `store.want_bookmarks`/`want_browse`/`want_branches` asks for it |
+| `thurbox.bookmarks/browse/branches/worktrees` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list, the worktrees a repo already has — each served only while `store.want_bookmarks`/`want_browse`/`want_branches`/`want_worktrees` asks for it |
 | `require` | Loads **any** `.lua` under the interface directory, and nothing outside it |
 
 That is worth stating on its own, because it is easy to read `require` as "the

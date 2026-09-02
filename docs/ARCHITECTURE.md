@@ -90,6 +90,11 @@ when `tick()` polls `try_recv()`:
   (`git` diff/status shell-outs). The `sysinfo::System` is *moved into*
   the worker and returned with the result so CPU deltas persist across
   refreshes; a single in-flight guard prevents overlap.
+- **Existing-worktree discovery** — `git::list_worktrees_on`
+  (`git worktree list --porcelain`) for the repo the picker's cursor is
+  on, served by `RepoStore::request_worktrees` on its own thread and
+  published as `thurbox.worktrees`. No `git fetch`, unlike the branch
+  list: a worktree is local state and the read happens on a keypress.
 - **Interactive spawn** — `git worktree add` (`spawn_worktree_session`)
   and `Session::spawn` (PTY/tmux window creation, 500 ms+) for the
   new-session wizard run on blocking tasks, with the follow-up

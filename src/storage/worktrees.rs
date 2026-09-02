@@ -25,14 +25,15 @@ impl Database {
 
         for wt in worktrees {
             self.conn.execute(
-                "INSERT INTO worktrees (session_id, repo_path, worktree_path, branch, created_at, deleted_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+                "INSERT INTO worktrees (session_id, repo_path, worktree_path, branch, created_at, deleted_at, created_by_thurbox) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
                 params![
                     sid,
                     wt.repo_path.display().to_string(),
                     wt.worktree_path.display().to_string(),
                     wt.branch,
                     now,
+                    wt.created_by_thurbox,
                 ],
             )?;
         }
@@ -89,7 +90,7 @@ impl Database {
 
         // Cached: read on the refresh schedule, like the session queries.
         let mut stmt = self.conn.prepare_cached(
-            "SELECT repo_path, worktree_path, branch FROM worktrees \
+            "SELECT repo_path, worktree_path, branch, created_by_thurbox FROM worktrees \
              WHERE session_id = ?1 AND deleted_at IS NULL \
              ORDER BY created_at",
         )?;
@@ -102,6 +103,7 @@ impl Database {
                 repo_path: std::path::PathBuf::from(repo),
                 worktree_path: std::path::PathBuf::from(wt_path),
                 branch,
+                created_by_thurbox: row.get(3)?,
             })
         })?;
 
@@ -148,6 +150,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         };
 
         db.upsert_worktrees(sid, &[wt]).unwrap();
@@ -159,6 +162,28 @@ mod tests {
     }
 
     #[test]
+    fn provenance_survives_the_round_trip() {
+        // Force-delete decides whether to run `git worktree remove` from this
+        // flag, and it decides that after a restart — so a worktree thurbox
+        // merely opened must still read as "not mine" when it comes back off
+        // disk. A flag that defaulted to true on read would delete the user's
+        // directory on the very restart it was meant to survive.
+        let (db, sid) = setup_db_with_session();
+        let opened = SharedWorktree {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.worktrees/mine"),
+            branch: "feat/mine".to_string(),
+            created_by_thurbox: false,
+        };
+
+        db.upsert_worktrees(sid, &[opened]).unwrap();
+
+        let result = db.get_worktrees(sid).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].created_by_thurbox);
+    }
+
+    #[test]
     fn upsert_multiple_worktrees() {
         let (db, sid) = setup_db_with_session();
         let wts = vec![
@@ -166,11 +191,13 @@ mod tests {
                 repo_path: PathBuf::from("/repo1"),
                 worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
                 branch: "feat".to_string(),
+                created_by_thurbox: true,
             },
             SharedWorktree {
                 repo_path: PathBuf::from("/repo2"),
                 worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
                 branch: "feat".to_string(),
+                created_by_thurbox: true,
             },
         ];
 
@@ -189,6 +216,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         };
 
         db.upsert_worktrees(sid, &[wt]).unwrap();
@@ -204,6 +232,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
             branch: "feat".to_string(),
+            created_by_thurbox: true,
         };
 
         db.upsert_worktrees(sid, &[wt]).unwrap();
@@ -233,6 +262,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/old"),
             branch: "old".to_string(),
+            created_by_thurbox: true,
         };
         db.upsert_worktrees(sid, &[wt1]).unwrap();
 
@@ -240,6 +270,7 @@ mod tests {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/new"),
             branch: "new".to_string(),
+            created_by_thurbox: true,
         };
         db.upsert_worktrees(sid, &[wt2]).unwrap();
 

@@ -24,9 +24,12 @@ use rusqlite::Connection;
 /// gates the worktree toggle) and `parent_path` (persisted children of a
 /// remote parent bookmark) to `repo_bookmarks`. v41 adds the joinable columns:
 /// a session's persisted launch recipe, its `stopped_at` mark, and the
-/// `session_meta` key/value table.
+/// `session_meta` key/value table. v42 adds `created_by_thurbox` to
+/// `worktrees`: a session can now *open* a worktree it did not create,
+/// and provenance is what tells a teardown to leave that directory alone and a
+/// restore not to warn about work no delete could have destroyed.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 41;
+pub const SCHEMA_VERSION: u32 = 42;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -134,6 +137,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             branch        TEXT NOT NULL,
             created_at    INTEGER NOT NULL,
             deleted_at    INTEGER,
+            created_by_thurbox INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (session_id, repo_path)
         );
 
@@ -321,6 +325,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (39, migrate_v39_bookmark_host),
         (40, migrate_v40_bookmark_git_kind),
         (41, migrate_v41_joinable),
+        (42, migrate_v42_worktree_provenance),
     ];
 
     for &(target, step) in steps {
@@ -741,6 +746,54 @@ mod tests {
             .unwrap();
         assert_eq!(is_git, None);
         assert_eq!(parent_path, None);
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v41_backfills_worktree_provenance_as_thurbox_made() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v41 state: the worktrees table without created_by_thurbox.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '41');
+             CREATE TABLE worktrees (
+                session_id    TEXT NOT NULL,
+                repo_path     TEXT NOT NULL,
+                worktree_path TEXT NOT NULL,
+                branch        TEXT NOT NULL,
+                created_at    INTEGER NOT NULL,
+                deleted_at    INTEGER,
+                PRIMARY KEY (session_id, repo_path)
+             );
+             INSERT INTO worktrees (session_id, repo_path, worktree_path, branch, created_at)
+             VALUES ('s1', '/repo/a', '/repo/a/wt', 'feat/x', 1);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        // Re-run is a no-op (guarded ALTER).
+        migrate(&conn).unwrap();
+
+        // The value, not merely the column: opening a worktree is what the
+        // column was added for, so every row predating it was one thurbox
+        // checked out itself. Backfilling 0 would make force-delete skip a
+        // worktree it owns and leave the directory behind forever.
+        let mine: bool = conn
+            .query_row(
+                "SELECT created_by_thurbox FROM worktrees WHERE session_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(mine, "a worktree predating the column was made by thurbox");
 
         let version: String = conn
             .query_row(

@@ -85,8 +85,8 @@ already follow.
   over ssh/`wsl.exe`, the PowerShell encoding, and decoding what came back —
   ADR-13's psmux divergences), `discovery` (listings, path classification,
   child-repo scans, each a POSIX/PowerShell script pair over one line protocol),
-  `diff` (diffs, branches, commits, worktree stats) and `worktree` (create, sync,
-  remove — and the stale-lock/stash/transient-error retries). `git::*` is still
+  `diff` (diffs, branches, commits, worktree stats) and `worktree` (create, list,
+  sync, remove — and the stale-lock/stash/transient-error retries). `git::*` is still
   one flat surface; no caller names a submodule.
 - **`coordinator/`** — `main`'s own body. `App` and its state stay in
   `main.rs`; its behaviour is here, grouped by what it is for: the loop and its

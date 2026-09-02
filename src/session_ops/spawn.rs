@@ -32,6 +32,15 @@ pub struct SpawnRequest {
     pub worktree_branch: Option<String>,
     /// Base branch to create the worktree from (default `main`).
     pub base_branch: Option<String>,
+    /// A worktree that already exists, to **open** rather than create.
+    ///
+    /// When set (with `worktree_branch` naming the branch checked out there)
+    /// no `git worktree add` runs at all: the path becomes the cwd and is
+    /// recorded as the session's worktree as-is. This is how a checkout made
+    /// outside thurbox — under the repo's own `.worktrees/`, beside it,
+    /// anywhere — is opened, since its location is not thurbox's derived
+    /// `<repo-hash>/<branch>` path and its branch is already claimed.
+    pub existing_worktree: Option<PathBuf>,
     /// Optional agent name — falls back to the registry default agent.
     /// Ignored when [`command`](Self::command) is set: a raw command is its own
     /// definition and names no registry entry.
@@ -654,7 +663,10 @@ fn resolve_dirs(
     let shared_branch = req.worktree_branch.as_deref();
     let primary_base = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
     let mut plans: Vec<WorktreePlan<'_>> = Vec::new();
-    if shared_branch.is_some() {
+    // An existing worktree is opened, never planned: it is already checked out,
+    // so `git worktree add` would refuse the branch outright.
+    let opening = req.existing_worktree.is_some();
+    if shared_branch.is_some() && !opening {
         plans.push(Ok((req.repo_path.as_path(), primary_base)));
     }
     for extra in &req.extra_repos {
@@ -687,15 +699,36 @@ fn resolve_dirs(
                 repo_path: repo.to_path_buf(),
                 worktree_path,
                 branch: branch.to_string(),
+                created_by_thurbox: true,
             }
         })
         .collect();
 
-    // Primary repo: its worktree when a branch is set (plan 0, so worktree 0),
-    // otherwise the repo root.
-    let primary_cwd = match shared_branch {
-        Some(_) => worktrees[0].worktree_path.clone(),
-        None => req.repo_path.clone(),
+    // The opened worktree leads, holding the place plan 0 would have taken, so
+    // "the primary is worktree 0" stays true for every caller downstream. It is
+    // flagged as not ours: the user made this directory, so force-delete leaves
+    // it (and restore re-attaches to it) rather than removing it.
+    if let Some(path) = &req.existing_worktree {
+        worktrees.insert(
+            0,
+            SharedWorktree {
+                repo_path: req.repo_path.clone(),
+                worktree_path: path.clone(),
+                branch: branch.to_string(),
+                created_by_thurbox: false,
+            },
+        );
+    }
+
+    // Primary repo: worktree 0 whenever there is one — the plan's, or the
+    // opened one inserted above. Keyed on both, not on the branch alone: an
+    // opened worktree is the cwd whether or not its branch was named, and
+    // reading only `shared_branch` here put the session in the repo root while
+    // its recorded worktree pointed somewhere else.
+    let primary_cwd = if opening || shared_branch.is_some() {
+        worktrees[0].worktree_path.clone()
+    } else {
+        req.repo_path.clone()
     };
 
     // Shared, not created: a fork's worktree already exists and belongs to its
@@ -1793,7 +1826,114 @@ mod tests {
             "every worktree was actually checked out: {worktrees:?}"
         );
         assert!(worktrees.iter().all(|w| w.branch == "feat/x"));
+        assert!(
+            worktrees.iter().all(|w| w.created_by_thurbox),
+            "thurbox checked these out, so force-delete owns their removal"
+        );
         assert!(additional.is_empty());
+    }
+
+    #[test]
+    fn resolve_dirs_opens_an_existing_worktree_without_creating_one() {
+        // The feature: a worktree the user already has, at a path of their own
+        // choosing, becomes the cwd with no `git worktree add` at all — so it
+        // works even for a branch that is already checked out (which `-b`, and
+        // even a plain `worktree add`, would refuse).
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let primary = repo_with_main(temp.path(), "primary");
+        let foreign = primary.join(".worktrees").join("tooltips");
+        git_in(
+            &primary,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feat/tooltips",
+                &foreign.display().to_string(),
+            ],
+        );
+        let before = crate::git::list_worktrees(&primary).unwrap();
+
+        let mut r = req("s");
+        r.repo_path = primary.clone();
+        r.worktree_branch = Some("feat/tooltips".into());
+        r.existing_worktree = Some(foreign.clone());
+
+        let (cwd, worktrees, additional) = resolve_dirs(&r, None).unwrap();
+        assert_eq!(cwd, foreign, "the cwd is the worktree git already had");
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].repo_path, primary);
+        assert_eq!(worktrees[0].worktree_path, foreign);
+        assert_eq!(worktrees[0].branch, "feat/tooltips");
+        assert!(
+            !worktrees[0].created_by_thurbox,
+            "an opened worktree is the user's; force-delete must not remove it"
+        );
+        assert!(additional.is_empty());
+        assert_eq!(
+            crate::git::list_worktrees(&primary).unwrap(),
+            before,
+            "opening must not register a new worktree"
+        );
+    }
+
+    #[test]
+    fn an_opened_worktree_is_the_cwd_even_with_no_branch_named() {
+        // The cwd must follow the worktree that was opened, not the presence of
+        // a branch name: a caller that sets one without the other would
+        // otherwise get a session whose cwd is the repo root while its recorded
+        // worktree points somewhere else entirely.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let primary = repo_with_main(temp.path(), "primary");
+        let foreign = primary.join(".worktrees").join("tooltips");
+
+        let mut r = req("s");
+        r.repo_path = primary.clone();
+        r.existing_worktree = Some(foreign.clone());
+
+        let (cwd, worktrees, _) = resolve_dirs(&r, None).unwrap();
+        assert_eq!(cwd, foreign);
+        assert_eq!(worktrees[0].worktree_path, foreign);
+    }
+
+    #[test]
+    fn an_opened_worktree_still_leads_its_extra_repos() {
+        // The extras are planned and created first, so the opened worktree has
+        // to be inserted ahead of them for "the primary is worktree 0" to hold.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let primary = repo_with_main(temp.path(), "primary");
+        let extra = repo_with_main(temp.path(), "extra");
+        let foreign = primary.join(".worktrees").join("tooltips");
+        git_in(
+            &primary,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feat/tooltips",
+                &foreign.display().to_string(),
+            ],
+        );
+
+        let mut r = req("s");
+        r.repo_path = primary.clone();
+        r.worktree_branch = Some("feat/tooltips".into());
+        r.existing_worktree = Some(foreign.clone());
+        r.extra_repos = vec![ExtraRepo {
+            repo_path: extra.clone(),
+            worktree: true,
+            base_branch: Some("main".into()),
+        }];
+
+        let (cwd, worktrees, _) = resolve_dirs(&r, None).unwrap();
+        assert_eq!(cwd, foreign);
+        assert_eq!(worktrees.len(), 2);
+        assert_eq!(worktrees[0].worktree_path, foreign, "the opened one leads");
+        assert_eq!(worktrees[1].repo_path, extra);
+        assert!(worktrees[1].worktree_path.is_dir(), "the extra was created");
     }
 
     #[test]
