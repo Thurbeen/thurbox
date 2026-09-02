@@ -196,9 +196,11 @@ pub fn teardown_runtime_resources(
 ///
 /// Worktrees are deliberately untouched: they are what makes the undo lossless.
 ///
-/// Returns whether anything was reaped — `false` when the row came back (the
-/// user undid it) or was force-deleted (already torn down), both of which are
-/// ordinary races rather than failures.
+/// Returns whether the row was processed — `false` when it came back (the user
+/// undid it) or was force-deleted (already torn down), both of which are
+/// ordinary races rather than failures. It is not a claim that a window came
+/// down: a row that owns none (see [`owned_agent_pane`]) still releases its
+/// derived artifacts and reports `true`.
 pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
     let Some(row) = db
         .get_deleted_session_by_id(id)

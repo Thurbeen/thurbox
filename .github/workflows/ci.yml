@@ -146,10 +146,11 @@ jobs:
         with:
           tool: cargo-nextest
       # A real multiplexer, so the tests that drive one run here rather than
-      # skip: `tests/create_e2e.rs`, `tests/attach_by_name.rs`, and the
-      # live-session scenario of `tests/tui_e2e.rs` — the real binary on a pty,
-      # attached to a pane with a shell in it. Every one of them lands on a
-      # private socket under a private `TMUX_TMPDIR`.
+      # skip: `tests/create_e2e.rs`, `tests/attach_by_name.rs`,
+      # `tests/reap_e2e.rs`, and the live-session scenario of
+      # `tests/tui_e2e.rs` — the real binary on a pty, attached to a pane with
+      # a shell in it. Every one of them lands on a private socket under a
+      # private `TMUX_TMPDIR`.
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       - run: cargo nextest run --all --profile ci
