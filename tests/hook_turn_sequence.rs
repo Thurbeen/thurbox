@@ -43,21 +43,54 @@ fn payload_json(file: &str) -> serde_json::Value {
 
 /// A `thurbox-cli` that records `--state <s>` instead of writing a database,
 /// first on `PATH` so the hook commands resolve to it.
+///
+/// Hook commands run two different ways depending on the payload: the JSON
+/// payloads' commands go through `sh -c` ([`fire`]), while pi/omp's
+/// TypeScript calls Node's `child_process.exec`, which on Windows is `cmd.exe`
+/// rather than a POSIX shell. A `#!/bin/sh` script satisfies the former on
+/// every OS (MSYS's `sh` understands a shebang), but `cmd.exe` cannot run one
+/// at all — it needs a real `.cmd` batch file — so on Windows this stub is a
+/// batch file instead, which both `cmd.exe` and MSYS's `sh` (which shells out
+/// to `cmd.exe` for a `.bat`/`.cmd` target) can run.
 fn stub_cli(dir: &Path) -> PathBuf {
     let log = dir.join("states");
+    if cfg!(windows) {
+        let bin = dir.join("thurbox-cli.cmd");
+        // `session signal --state <s>`: the state is the fourth argument.
+        // Batch doesn't treat `\` as an escape character, so the path needs
+        // no more than the quoting any Windows path with spaces would.
+        std::fs::write(&bin, format!("@echo %4>>\"{}\"\r\n", log.display())).expect("write stub");
+        return log;
+    }
     let bin = dir.join("thurbox-cli");
     std::fs::write(
         &bin,
-        // `session signal --state <s>`: the state is the fourth argument.
-        format!("#!/bin/sh\nprintf '%s\\n' \"$4\" >> {}\n", log.display()),
+        // The log path is quoted so an unquoted Windows `C:\...` redirect
+        // target doesn't have its backslashes eaten as POSIX shell escapes.
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$4\" >> \"{}\"\n",
+            log.display()
+        ),
     )
     .expect("write stub");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // Owner-only: this stub is a `sh -c` implementation detail of the
+        // test process, not something any other user on the machine needs
+        // to run.
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     }
     log
+}
+
+/// The current `PATH`, with `dir` prepended, using this OS's search-path
+/// separator — a hardcoded `:` leaves Windows's own entries (joined with
+/// `;`, and each containing a drive-letter `:`) unparseable.
+fn path_with(dir: &Path) -> std::ffi::OsString {
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&existing));
+    std::env::join_paths(dirs).expect("join PATH")
 }
 
 /// Every shell command an event's hooks carry, whichever schema the agent
@@ -81,11 +114,7 @@ fn commands_for(value: &serde_json::Value) -> Vec<String> {
 /// Run every hook the payload registers for `event`, feeding it `body` on
 /// stdin exactly as the agent does.
 fn fire(payload: &serde_json::Value, dir: &Path, event: &str, body: &str) {
-    let path = format!(
-        "{}:{}",
-        dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = path_with(dir);
     let Some(hooks) = payload["hooks"].get(event) else {
         return;
     };
@@ -328,11 +357,7 @@ for (const step of events) {
 fn run_node_driver(dir: &Path, driver: &str, module: &str, events_json: &str, log: &Path) {
     let driver_path = dir.join("driver.mjs");
     std::fs::write(&driver_path, driver).expect("write driver");
-    let path = format!(
-        "{}:{}",
-        dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = path_with(dir);
     let output = Command::new("node")
         .arg(&driver_path)
         .arg(payload_path(module))
