@@ -2419,30 +2419,57 @@ pub fn kill_window(session_name: &str, pane_id: &str) -> Result<()> {
     kill_window_at(&agent_target(session_name, pane_id))
 }
 
-/// Kill the session's window **only** while `pane_id` still resolves to that
-/// session's own `tb-<name>` window; otherwise kill nothing. Returns whether a
-/// window was killed.
+/// The pane a torn-down row still owns, if any — the target a teardown may
+/// safely kill, and the answer to whether it has anything left to kill at all.
 ///
-/// The counterpart to [`kill_window`], for callers tearing down a row rather
-/// than acting on a live session. The name fallback that makes `kill_window`
-/// forgiving is unsound for them: a row whose pane id no longer resolves has no
-/// window of its own left, so `tb-<name>` can only match a *different* session's
-/// window. Names are not unique — two sessions may share one, and a soft-deleted
-/// row keeps its name until it is reaped — so the fallback silently destroys a
-/// live session (`kill-window` even exits 0 doing it, because tmux prefix- and
-/// substring-matches a window target).
-pub fn kill_window_strict(session_name: &str, pane_id: &str) -> Result<bool> {
-    if pane_id.is_empty() || !pane_matches_window(pane_id, &agent_window_name(session_name)) {
-        return Ok(false);
+/// The counterpart to [`agent_target`], for callers tearing down a row rather
+/// than acting on a live session. `agent_target`'s unconditional fallback to
+/// the `tb-<name>` window is unsound for them: names are not unique — two
+/// sessions may share one, and a soft-deleted row keeps its name until it is
+/// reaped — so a row whose own pane no longer resolves would resolve to
+/// whatever session is called that *now* and silently destroy it. A same-named
+/// window matches exactly, so `kill-window` succeeds against the wrong one.
+///
+/// `name_unclaimed` is the caller's assurance that no live session carries the
+/// name, which is the one case where it is still safe to resolve: the sole
+/// window named `tb-<name>` can then only be this row's. Without it the
+/// teardown would leak a window whenever the pane id is unusable — a row
+/// persisted before local spawns recorded an id, one renumbered by a tmux
+/// restart, or any session on psmux, where [`spawn_window`] records no pane id
+/// at all.
+pub fn owned_agent_pane(
+    session_name: &str,
+    pane_id: &str,
+    name_unclaimed: bool,
+) -> Result<Option<String>> {
+    if !pane_id.is_empty() && pane_matches_window(pane_id, &agent_window_name(session_name)) {
+        return Ok(Some(pane_id.to_string()));
     }
-    kill_window_at(pane_id).map(|()| true)
+    if !name_unclaimed {
+        return Ok(None);
+    }
+    agent_window_pane(None, session_name)
+}
+
+/// Kill the window a torn-down row still owns, killing nothing when it owns
+/// none. Returns whether a window was killed. See [`owned_agent_pane`] for what
+/// ownership means and why [`kill_window`]'s forgiving target is wrong here.
+pub fn kill_window_strict(
+    session_name: &str,
+    pane_id: &str,
+    name_unclaimed: bool,
+) -> Result<bool> {
+    match owned_agent_pane(session_name, pane_id, name_unclaimed)? {
+        Some(target) => kill_window_at(&target).map(|()| true),
+        None => Ok(false),
+    }
 }
 
 /// Which parts of a torn-down row's identity no *other* session row answers
 /// to — the half of ownership this module cannot establish, since it may not
 /// read the database (see `tests/architecture_rules.rs`). Settled once by
-/// `session_ops::delete::owned_agent_pane`, which is the only intended caller
-/// of [`owned_agent_pane`].
+/// `session_ops::delete::owned_agent_pane_for`, which is the only intended
+/// caller of [`owned_agent_pane_claimed`].
 #[derive(Clone, Copy, Debug)]
 pub struct Unclaimed {
     /// No other row remembers this pane id. A tmux server restarts its pane-id
@@ -2477,7 +2504,12 @@ pub struct Unclaimed {
 /// would leak a window whenever the pane id is unusable — a row persisted
 /// before local spawns recorded an id, one renumbered by a tmux restart, or any
 /// session on psmux, where [`spawn_window`] records no pane id at all.
-pub fn owned_agent_pane(
+///
+/// The claims-table counterpart to [`owned_agent_pane`], kept only for
+/// [`owned_agent_pane_for`](crate::session_ops::delete::owned_agent_pane_for)'s
+/// caller (the spawn rollback), which is not yet on the simpler
+/// `name_unclaimed` check the reap itself now uses.
+pub fn owned_agent_pane_claimed(
     session_name: &str,
     pane_id: &str,
     unclaimed: Unclaimed,

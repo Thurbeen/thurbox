@@ -1,11 +1,11 @@
 //! Reaping a soft-deleted session must not kill a live session's window.
 //!
-//! The reaper resolves its victim through `agent_target`, which falls back from
-//! a stale pane id to the `tb-<name>` window name. That fallback is right for a
-//! *live* session — you still want to reach its window after a tmux restart
-//! renumbered the panes — but for a reap it is unsound: if the deleted row's
-//! pane id no longer resolves, the row has no window of its own left, so the
-//! name can only ever match somebody else's.
+//! The reaper resolved its victim through `agent_target`, which falls back from
+//! a stale pane id to the `tb-<name>` window name unconditionally. That fallback
+//! is right for a *live* session — you still want to reach its window after a
+//! tmux restart renumbered the panes — but a reap must first know that nobody
+//! else answers to the name: once the deleted row's pane no longer resolves, a
+//! `tb-<name>` window is its own only while no live session shares the name.
 //!
 //! The sequence below is the one that bites in practice. A session freezes, the
 //! operator deletes the row and recreates it, and 30-60s later the reaper for
@@ -270,6 +270,51 @@ fn reaping_still_kills_the_row_its_own_window() {
     assert!(
         !still_there,
         "the reap must kill the row's own window (pane {} survived)",
+        session.backend_id
+    );
+}
+
+/// The pane id is not always there to be strict about. A row persisted before
+/// local spawns recorded one, a pane renumbered by a tmux server restart, and
+/// every session on psmux (where `spawn_window` records no id at all) all reach
+/// the reap with an id that resolves to nothing. Strictness must not turn those
+/// into a permanent no-op: while no live session answers to the name, the sole
+/// `tb-<name>` window can only be this row's, and leaving it up means the
+/// soft-deleted agent keeps running and writing forever.
+#[test]
+fn reaping_collects_its_window_when_the_pane_id_resolves_to_nothing() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(session) = spawn(&db, repo.path(), "orphan") else {
+        return;
+    };
+    // The psmux shape: the window is up, the row remembers no pane for it.
+    assert!(
+        db.set_backend_id(session.session_id, "")
+            .expect("clear the pane id"),
+        "the spawned row should be there to update"
+    );
+    thurbox::session_ops::delete_session_headless(&db, session.session_id, false).expect("delete");
+
+    let reaped = thurbox::session_ops::reap_soft_deleted(&db, session.session_id).expect("reap");
+    let still_there = pane_alive(&session.backend_id);
+    let windows_after = windows();
+    cleanup();
+
+    assert!(reaped, "a soft-deleted row with a live window must be reaped");
+    assert!(
+        !still_there,
+        "the reap must collect the row's own window with no pane id to go on \
+         (pane {} survived); windows left: {windows_after:?}",
         session.backend_id
     );
 }
