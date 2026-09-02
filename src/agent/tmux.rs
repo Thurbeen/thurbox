@@ -2419,6 +2419,25 @@ pub fn kill_window(session_name: &str, pane_id: &str) -> Result<()> {
     kill_window_at(&agent_target(session_name, pane_id))
 }
 
+/// Kill the session's window **only** while `pane_id` still resolves to that
+/// session's own `tb-<name>` window; otherwise kill nothing. Returns whether a
+/// window was killed.
+///
+/// The counterpart to [`kill_window`], for callers tearing down a row rather
+/// than acting on a live session. The name fallback that makes `kill_window`
+/// forgiving is unsound for them: a row whose pane id no longer resolves has no
+/// window of its own left, so `tb-<name>` can only match a *different* session's
+/// window. Names are not unique — two sessions may share one, and a soft-deleted
+/// row keeps its name until it is reaped — so the fallback silently destroys a
+/// live session (`kill-window` even exits 0 doing it, because tmux prefix- and
+/// substring-matches a window target).
+pub fn kill_window_strict(session_name: &str, pane_id: &str) -> Result<bool> {
+    if pane_id.is_empty() || !pane_matches_window(pane_id, &agent_window_name(session_name)) {
+        return Ok(false);
+    }
+    kill_window_at(pane_id).map(|()| true)
+}
+
 /// Which parts of a torn-down row's identity no *other* session row answers
 /// to — the half of ownership this module cannot establish, since it may not
 /// read the database (see `tests/architecture_rules.rs`). Settled once by
@@ -2476,9 +2495,9 @@ pub fn owned_agent_pane(
 }
 
 /// Run `kill-window` against an already-resolved target, tolerating a window
-/// that is already gone. Shared by [`kill_window`] and the teardown path, which
-/// resolves its own target through [`owned_agent_pane`] — the two differ only
-/// in how the target is chosen.
+/// that is already gone. Shared by [`kill_window`], [`kill_window_strict`] and
+/// the teardown path, which resolves its own target through
+/// [`owned_agent_pane`] — they differ only in how the target is chosen.
 pub fn kill_window_at(target: &str) -> Result<()> {
     let output = local_mux_command(&["kill-window", "-t", target])
         .output()
