@@ -420,7 +420,17 @@ jobs:
   sonarqube:
     name: SonarQube
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    # Skipped for a pull request from a fork. GitHub never hands a repository
+    # secret to a `pull_request` run whose head is another repository, so
+    # `SONAR_TOKEN` arrives empty, the scan step fails, and it takes
+    # `all-checks` down with it — the required gate would refuse every outside
+    # contribution on a credential the contributor cannot be given. A skipped
+    # job's result is `skipped`, not `failure`, so `all-checks` passes without
+    # it. The trade is real and deliberate: a fork's code is not analysed
+    # before it lands, since this workflow only ever runs on `pull_request`.
+    if: >-
+      needs.changes.outputs.rust == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
