@@ -444,3 +444,56 @@ fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
         undoable.backend_id
     );
 }
+
+/// The name a reap resolves is not the session's name but the *window's*, and
+/// `sanitize_window_name` maps every character outside `[A-Za-z0-9_-]` to `_`.
+/// So two legal, distinct session names — 'fleet 1' and 'fleet_1' — share one
+/// `tb-fleet_1`, and an ownership test settled on the raw names would call the
+/// stale row's name unclaimed and hand it its namesake's live window.
+#[test]
+fn reaping_spares_a_live_window_whose_name_only_collides_once_sanitized() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(stale) = spawn(&db, repo.path(), "fleet 1") else {
+        return;
+    };
+    thurbox::session_ops::delete_session_headless(&db, stale.session_id, false).expect("delete");
+    // Its agent exits, so the row's pane id resolves to nothing and only the
+    // name is left to go on.
+    let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
+    assert!(
+        !pane_alive(&stale.backend_id),
+        "the stale row's pane should be gone"
+    );
+
+    // A different name, the same window: `tb-fleet_1`.
+    let Some(live) = spawn(&db, repo.path(), "fleet_1") else {
+        return;
+    };
+    assert_ne!(stale.session_id, live.session_id);
+    assert!(
+        pane_alive(&live.backend_id),
+        "the replacement should be running"
+    );
+
+    let reaped = thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap");
+    let survived = pane_alive(&live.backend_id);
+    let windows_after = windows();
+    cleanup();
+
+    assert!(
+        survived,
+        "reaping 'fleet 1' killed the live 'fleet_1' pane {} through the window \
+         name the two share (reaped={reaped}); windows left: {windows_after:?}",
+        live.backend_id
+    );
+}

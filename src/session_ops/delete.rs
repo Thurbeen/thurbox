@@ -282,7 +282,12 @@ pub fn owned_agent_pane(db: &Database, row: &DeletedSessionInfo) -> Option<Strin
         pane_id: !claims
             .iter()
             .any(|(_, pane)| !pane.is_empty() && *pane == row.backend_id),
-        name: !claims.iter().any(|(name, _)| *name == row.name),
+        name: {
+            let own = crate::agent::tmux::agent_window_name(&row.name);
+            !claims
+                .iter()
+                .any(|(name, _)| crate::agent::tmux::agent_window_name(name) == own)
+        },
     };
     crate::agent::tmux::owned_agent_pane(&row.name, &row.backend_id, unclaimed)
         .ok()

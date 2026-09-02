@@ -848,6 +848,55 @@ mod tests {
         assert!(reap_overdue_soft_deletes(&db).is_empty());
     }
 
+    /// The sweep's ownership gate. Its old test was `agent_window_alive`, so an
+    /// overdue row whose pane had long gone was re-reported as reaped on every
+    /// tick on the strength of a live namesake's window. A row whose pane id
+    /// *and* window name another live row answers to owns nothing, so the
+    /// sweep must leave it alone — and no tmux is consulted to find that out.
+    #[test]
+    fn the_overdue_reap_skips_a_row_a_live_namesake_answers_for() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let stale = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "fleet".into(),
+            agent: "claude".into(),
+            backend_id: "%1".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&stale).unwrap();
+        db.soft_delete_session(stale.id).unwrap();
+        // Past the undo window, so only the gate can hold the sweep back.
+        db.conn_ref()
+            .execute(
+                "UPDATE sessions SET deleted_at = 0 WHERE id = ?1",
+                [stale.id.to_string()],
+            )
+            .unwrap();
+        let mut live = stale.clone();
+        live.id = SessionId::default();
+        db.upsert_session(&live).unwrap();
+
+        assert!(
+            reap_overdue_soft_deletes(&db).is_empty(),
+            "an overdue row whose pane and name a live namesake claims owns              nothing to release"
+        );
+        assert!(
+            db.get_deleted_session_by_id(stale.id).unwrap().is_some(),
+            "and is left soft-deleted rather than reported collected"
+        );
+    }
+
     #[test]
     fn render_tick_counts_fired_skipped_and_healed() {
         let v = json!({

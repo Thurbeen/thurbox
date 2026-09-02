@@ -462,6 +462,10 @@ impl Database {
     /// Force-deleted rows are excluded: their window went down with them, and
     /// counting one would block a namesake's teardown forever (the row is
     /// kept indefinitely, see schema v37).
+    ///
+    /// The name returned is the **raw** session name. A caller comparing it
+    /// against a `tb-<name>` target has to sanitize it first — two distinct
+    /// names collapse onto one window name.
     pub fn session_window_claims(
         &self,
         exclude: SessionId,
@@ -928,6 +932,45 @@ mod tests {
         assert!(
             !bases.contains_key(&without.id),
             "a session with no base must be absent, not empty: {bases:?}"
+        );
+    }
+
+    /// The two exclusions the teardown ownership rule leans on. A soft-deleted
+    /// namesake still claims its window — it keeps its agent until the reaper
+    /// lets it go — while a force-deleted one went down with its window, and
+    /// counting one would block every namesake's teardown forever, since the
+    /// row is never removed (schema v37).
+    #[test]
+    fn window_claims_count_soft_deleted_rows_but_not_force_deleted_ones() {
+        let db = Database::open_in_memory().unwrap();
+        let subject = make_session("fleet");
+        let active = make_session("active-namesake");
+        let soft = make_session("soft-namesake");
+        let forced = make_session("forced-namesake");
+        for session in [&subject, &active, &soft, &forced] {
+            db.upsert_session(session).unwrap();
+        }
+        db.soft_delete_session(soft.id).unwrap();
+        db.soft_delete_session(forced.id).unwrap();
+        db.mark_session_force_deleted(forced.id).unwrap();
+
+        let claims = db.session_window_claims(subject.id).unwrap();
+        let names: Vec<&str> = claims.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(
+            names.contains(&"active-namesake"),
+            "an active row claims its window: {names:?}"
+        );
+        assert!(
+            names.contains(&"soft-namesake"),
+            "a soft-deleted row still owns its agent, so it claims too: {names:?}"
+        );
+        assert!(
+            !names.contains(&"forced-namesake"),
+            "a force-deleted row's window is gone; counting it would deadlock              every namesake's teardown: {names:?}"
+        );
+        assert!(
+            !names.contains(&"fleet"),
+            "the excluded row must not claim against itself: {names:?}"
         );
     }
 

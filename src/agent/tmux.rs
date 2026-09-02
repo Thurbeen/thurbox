@@ -2431,8 +2431,12 @@ pub struct Unclaimed {
     /// afterwards — and when that other window is a namesake's, the window
     /// name confirms nothing.
     pub pane_id: bool,
-    /// No other row still answers to the name — neither an active session nor
-    /// a soft-deleted one whose agent has not been reaped yet.
+    /// No other row still answers to the *window* name `tb-<name>` — neither
+    /// an active session nor a soft-deleted one whose agent has not been
+    /// reaped yet. The window name rather than the session name, because that
+    /// is the namespace the fallback resolves in: [`sanitize_window_name`]
+    /// maps every character outside `[A-Za-z0-9_-]` to `_`, so `fleet 1` and
+    /// `fleet_1` are two rows sharing one `tb-fleet_1`.
     pub name: bool,
 }
 
