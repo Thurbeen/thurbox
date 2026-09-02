@@ -224,19 +224,21 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         return Ok(false);
     }
 
-    // Strict: kill this row's window only while its own pane id still resolves
-    // to it. A reap must never fall back to the `tb-<name>` target — by the time
-    // the pane is unresolvable there is nothing of this row's left to kill, and
-    // the name matches whatever session is called that *now*. That is how
-    // deleting a frozen session came to kill its replacement 30-60s later, and
-    // why each delete-and-recreate made the next one die sooner.
-    match crate::agent::tmux::kill_window_strict(&row.name, &row.backend_id) {
+    // Strict: kill only the window this row still owns. A reap must not fall
+    // back to the `tb-<name>` target while a live session answers to the name —
+    // that is how deleting a frozen session came to kill its replacement 30-60s
+    // later, and why each delete-and-recreate made the next one die sooner.
+    match crate::agent::tmux::kill_window_strict(
+        &row.name,
+        &row.backend_id,
+        name_unclaimed(db, &row.name),
+    ) {
         Ok(true) => {}
         // The window may already be gone — the agent exited, or a previous reap
         // got there first. Logged rather than silent: an unresolvable pane is
         // also the shape a misdirected kill used to take.
         Ok(false) => tracing::debug!(
-            "reap of '{}': pane {:?} no longer resolves to its own window; \
+            "reap of '{}': pane {:?} owns no window it may kill; \
              leaving any same-named window alone",
             row.name,
             row.backend_id
@@ -255,6 +257,15 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         }
     }
     Ok(true)
+}
+
+/// Whether no live session answers to `name`, so a `tb-<name>` window can only
+/// belong to the row being torn down — the assurance
+/// [`tmux::owned_agent_pane`](crate::agent::tmux::owned_agent_pane) needs before
+/// it will resolve a name. Conservatively `false` if the read fails: leaking a
+/// window costs a stale agent, killing the wrong one costs live work.
+pub fn name_unclaimed(db: &Database, name: &str) -> bool {
+    matches!(db.find_sessions_by_name(name), Ok(rows) if rows.is_empty())
 }
 
 /// Kill the session's window on the local tmux server, reaping the pane's child

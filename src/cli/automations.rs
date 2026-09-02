@@ -554,9 +554,11 @@ fn poll_local_pane_states(db: &Database) -> usize {
 }
 
 /// Let go of the agents of local sessions soft-deleted longer ago than the
-/// interface's undo window, when their window is still up. Returns the ids
-/// reaped. Only rows with a live window are touched, so a row reaped once
-/// costs nothing on every later tick.
+/// interface's undo window, when the row still owns its window. Returns the ids
+/// reaped. Only rows with a window of their *own* are touched, so a row reaped
+/// once costs nothing on every later tick — and a stale row is never reported as
+/// reaped on the strength of a live namesake's window, which is the same unsound
+/// name resolution the reap itself refuses.
 fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
     let Ok(rows) = db.list_deleted_sessions() else {
         return Vec::new();
@@ -571,8 +573,9 @@ fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
         {
             continue;
         }
-        match crate::agent::tmux::agent_window_alive(None, &row.name) {
-            Ok(true) => {}
+        let unclaimed = crate::session_ops::delete::name_unclaimed(db, &row.name);
+        match crate::agent::tmux::owned_agent_pane(&row.name, &row.backend_id, unclaimed) {
+            Ok(Some(_)) => {}
             _ => continue,
         }
         match crate::session_ops::reap_soft_deleted(db, row.id) {
