@@ -239,9 +239,11 @@ impl Snapshot {
     }
 }
 
-/// What a git-stat worker reports back: the session, and its state when the
-/// path turned out to be a repository.
-type StatResult = (String, Option<GitState>);
+/// What a git-stat worker reports back: the session, its state when the path
+/// turned out to be a repository, and the commit a `merged: Some(true)` in
+/// that state was computed for (`None` for any other answer — see
+/// [`Stat::merged_head`]).
+type StatResult = (String, Option<GitState>, Option<String>);
 
 /// How long a git stat is trusted before it is computed again.
 ///
@@ -261,6 +263,15 @@ struct Stat {
     /// worktree being on another machine entirely.
     state: Option<GitState>,
     at: Instant,
+    /// The commit `state.merged == Some(true)` was computed for, so the next
+    /// run can skip the check while HEAD stands still.
+    ///
+    /// Keyed on the commit rather than the session because that is what the
+    /// answer is about: a session that keeps working after its PR landed is
+    /// unmerged again on its next commit, and a per-session key would latch
+    /// the stale `true` forever. Only `true` is remembered — a stale `false`
+    /// costs one needless question, a stale `true` hides work.
+    merged_head: Option<String>,
 }
 
 /// Git stats computed off the render path.
@@ -299,19 +310,24 @@ impl GitStats {
         {
             return;
         }
-        // `merged` is monotonic — once true, always true — so a session already
-        // known merged skips re-deriving it every TTL. See `worktree_stats`'s
-        // `known_merged` parameter.
-        let known_merged = self
+        // The commit a `true` was last computed for, if any: `worktree_stats`
+        // reuses that answer only while HEAD is still that commit.
+        let merged_head = self
             .known
             .get(session)
-            .and_then(|stat| stat.state)
-            .is_some_and(|state| state.merged == Some(true));
+            .and_then(|stat| stat.merged_head.clone());
         self.inflight.insert(session.to_string());
         let tx = self.ensure_channel();
         let session = session.to_string();
         std::thread::spawn(move || {
-            let stats = crate::git::worktree_stats(&worktree, known_merged).map(|s| GitState {
+            let stats = crate::git::worktree_stats(&worktree, merged_head.as_deref());
+            // Remember the commit only when the answer that belongs to it is
+            // the cacheable one.
+            let merged_head = stats
+                .as_ref()
+                .filter(|s| s.merged == Some(true))
+                .and_then(|s| s.head.clone());
+            let state = stats.map(|s| GitState {
                 files_changed: s.files_changed,
                 insertions: s.insertions,
                 deletions: s.deletions,
@@ -321,13 +337,13 @@ impl GitStats {
                 behind: s.behind,
                 merged: s.merged,
             });
-            let _ = tx.send((session, stats));
+            let _ = tx.send((session, state, merged_head));
         });
     }
 
     fn drain(&mut self) {
         let Some((_, rx)) = &self.channel else { return };
-        while let Ok((session, stats)) = rx.try_recv() {
+        while let Ok((session, stats, merged_head)) = rx.try_recv() {
             self.inflight.remove(&session);
             // A miss is an answer too — see `Stat::state`.
             self.known.insert(
@@ -335,6 +351,7 @@ impl GitStats {
                 Stat {
                     state: stats,
                     at: Instant::now(),
+                    merged_head,
                 },
             );
         }

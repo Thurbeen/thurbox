@@ -1551,3 +1551,101 @@ fn merged_into_default_is_unknown_without_a_remote_default() {
 
     assert_eq!(merged_into_default(&repo), None);
 }
+
+#[test]
+fn parse_status_v2_reads_the_head_oid() {
+    // `# branch.oid` is the commit every other number in the same run
+    // describes, and it arrives free — no `rev-parse` of its own.
+    let status = parse_status_v2(
+        "# branch.oid cf2c3b773317d32908f7ec947f2adca2afdded09\n\
+         # branch.head feature\n\
+         # branch.upstream origin/feature\n\
+         # branch.ab +2 -0\n",
+    );
+    assert_eq!(
+        status.head.as_deref(),
+        Some("cf2c3b773317d32908f7ec947f2adca2afdded09")
+    );
+}
+
+#[test]
+fn parse_status_v2_without_a_head_oid_reports_none() {
+    // An unborn branch has no commit yet, and `# branch.oid (initial)` is what
+    // git prints for it — not a sha, so not an answer.
+    let status = parse_status_v2("# branch.oid (initial)\n# branch.head main\n");
+    assert_eq!(status.head, None);
+}
+
+#[test]
+fn a_merged_answer_is_reused_only_for_the_commit_it_was_computed_for() {
+    // The regression. `merged` is a fact about HEAD, not about the worktree:
+    // it flips back to false the moment the session commits again on top of a
+    // branch that had landed. Keyed on the session instead of the commit, the
+    // first `Some(true)` latches — `worktree_stats` returns it, the caller
+    // stores it, and it feeds itself the same answer forever, so `at_risk`
+    // stops warning about commits that exist nowhere else and the session is
+    // torn down with no question asked.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+    let run = |args: &[&str]| {
+        let out = git_program()
+            .args(args)
+            .current_dir(&work)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}");
+    };
+
+    let landed = worktree_stats(&work, None).expect("stats");
+    assert_eq!(landed.merged, Some(true), "the branch was squash-merged");
+    let landed_head = landed.head.clone().expect("a committed branch has a head");
+
+    // The session keeps working: one more commit, on nothing but this branch.
+    std::fs::write(work.join("followup.txt"), "follow-up").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-qm", "follow-up work, merged nowhere"]);
+
+    let after = worktree_stats(&work, Some(&landed_head)).expect("stats");
+    assert_ne!(
+        after.head, landed.head,
+        "the commit the cached answer belonged to is gone"
+    );
+    assert_eq!(
+        after.merged,
+        Some(false),
+        "a stale key must force the recheck, not hand back the landed answer"
+    );
+}
+
+#[test]
+fn a_merged_answer_is_reused_when_head_has_not_moved() {
+    // The other half: a settled worktree is the whole point of the cache, and
+    // it must actually skip the check. Proven by handing the key to a worktree
+    // the check would call *unmerged* — only the short-circuit can answer
+    // `true` here.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+    let run = |args: &[&str]| {
+        let out = git_program()
+            .args(args)
+            .current_dir(&work)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}");
+    };
+    run(&["checkout", "-q", "-b", "wip", "origin/main"]);
+    std::fs::write(work.join("wip.txt"), "wip").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-qm", "work in progress"]);
+
+    let fresh = worktree_stats(&work, None).expect("stats");
+    assert_eq!(fresh.merged, Some(false), "genuinely unmerged");
+
+    let head = fresh.head.clone().expect("head");
+    let cached = worktree_stats(&work, Some(&head)).expect("stats");
+    assert_eq!(
+        cached.merged,
+        Some(true),
+        "the key matches HEAD, so the stored answer is taken without re-asking"
+    );
+}

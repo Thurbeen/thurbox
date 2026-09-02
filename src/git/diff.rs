@@ -437,6 +437,10 @@ pub(super) struct StatusV2 {
     /// is configured (or the upstream ref is gone), in which case the caller
     /// falls back to [`ahead_behind`]'s base-ref resolution.
     pub ahead_behind: Option<(usize, usize)>,
+    /// The commit from the `# branch.oid` header — what every other field in
+    /// the same run describes. Absent on an unborn branch, where git prints
+    /// `(initial)` rather than a sha.
+    pub head: Option<String>,
 }
 
 /// Parse `git status --porcelain=v2 --branch` output. Pure, so the header and
@@ -444,7 +448,13 @@ pub(super) struct StatusV2 {
 pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
     let mut status = StatusV2::default();
     for line in out.lines() {
-        if let Some(ab) = line.strip_prefix("# branch.ab ") {
+        if let Some(oid) = line.strip_prefix("# branch.oid ") {
+            let oid = oid.trim();
+            // `(initial)` on an unborn branch: a placeholder, not a commit.
+            if !oid.is_empty() && oid != "(initial)" {
+                status.head = Some(oid.to_string());
+            }
+        } else if let Some(ab) = line.strip_prefix("# branch.ab ") {
             // "+<ahead> -<behind>".
             let mut parts = ab.split_whitespace();
             let ahead = parts
@@ -471,13 +481,24 @@ pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
 /// Compute combined git stats (uncommitted diff + dirty + ahead/behind) for a
 /// worktree. Returns `None` when the path is not a usable git worktree.
 ///
-/// `known_merged` short-circuits the merge check: once a caller has already
-/// seen `Some(true)` for this worktree, that answer is monotonic (a landed
-/// squash never un-lands), so re-running `merged_into_default`'s two to four
-/// `git` subprocesses — one of which writes a fresh dangling commit — on
-/// every call is pure waste. Pass `true` once the caller's own cache holds
-/// `Some(true)`.
-pub fn worktree_stats(cwd: &Path, known_merged: bool) -> Option<crate::session::GitStats> {
+/// `merged_head` short-circuits the merge check: pass the commit a caller has
+/// already seen [`merged_into_default`] answer `Some(true)` for, and if HEAD is
+/// still that commit the answer is reused instead of re-running two to four
+/// `git` subprocesses — one of which writes a fresh dangling commit — every
+/// time a settled worktree is restatted.
+///
+/// The key is the **commit**, not the worktree, and that is the whole of its
+/// correctness. A landed squash never un-lands, but `merged` is a fact about
+/// HEAD, and HEAD moves: a session that keeps working after its PR merged is
+/// unmerged again on its next commit. Keyed on the worktree the first
+/// `Some(true)` would latch — fed back in, handed back out, forever — and
+/// `at_risk` would stop warning about commits that exist nowhere else.
+///
+/// Only `Some(true)` is ever cached, because only one direction of staleness
+/// is safe. A stale `true` hides work; a stale `false` merely asks a question
+/// it needn't, which is the bug this check exists to fix — so an unmerged
+/// answer is always recomputed.
+pub fn worktree_stats(cwd: &Path, merged_head: Option<&str>) -> Option<crate::session::GitStats> {
     // One status call carries dirty, the untracked count AND — via the
     // `# branch.ab` header — ahead/behind, and doubles as the "is this a work
     // tree" probe: outside one it fails, exactly as a `rev-parse` would.
@@ -493,8 +514,10 @@ pub fn worktree_stats(cwd: &Path, known_merged: bool) -> Option<crate::session::
     // Only a branch that *is* ahead has commits whose fate is in question, and
     // the check costs two to four `git` runs — so nothing ahead pays nothing,
     // and reports `None` rather than an answer nobody asked for. A worktree
-    // already known merged skips the recheck entirely: see `known_merged`.
-    let merged = if known_merged {
+    // still sitting on the commit a `true` was computed for skips it too: see
+    // `merged_head`.
+    let settled = merged_head.is_some() && merged_head == status.head.as_deref();
+    let merged = if settled {
         Some(true)
     } else {
         (ahead > 0).then(|| merged_into_default(cwd)).flatten()
@@ -508,5 +531,6 @@ pub fn worktree_stats(cwd: &Path, known_merged: bool) -> Option<crate::session::
         ahead,
         behind,
         merged,
+        head: status.head,
     })
 }
