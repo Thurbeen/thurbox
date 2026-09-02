@@ -399,7 +399,13 @@ fn the_script_payloads_report_working_when_the_block_clears() {
         {"kind": "event", "type": "session.idle"},
     ])
     .to_string();
-    run_node_driver(dir.path(), OPENCODE_DRIVER, "opencode-status.js", &events, &log);
+    run_node_driver(
+        dir.path(),
+        OPENCODE_DRIVER,
+        "opencode-status.js",
+        &events,
+        &log,
+    );
     assert_eq!(
         std::fs::read_to_string(&log)
             .unwrap_or_default()
