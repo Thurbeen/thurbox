@@ -18,8 +18,13 @@
 //! body the agent would pipe in on stdin — claude's `case "$(cat)"` matcher
 //! included, since whether a body reads as a permission prompt is half the
 //! behaviour. The `thurbox-cli` they call is a stub that records the state
-//! word. The script payloads (opencode, pi, omp) need their agent's own
-//! runtime to run, so those are read instead.
+//! word. The script payloads (opencode, pi, omp) are run too, under Node's
+//! own (type-stripped for the two TypeScript ones) ESM loader: each is
+//! imported for real and driven through its actual `pi.on`/`ThurboxStatus`
+//! registration, with only the one thing outside the module's own control —
+//! `pi`'s injected API, or opencode's shell tag — stood in for. The `pi`/`omp`
+//! stand-in still runs `report()`'s real `exec()` against the same stub
+//! `thurbox-cli`, on `PATH`, that the JSON turns use.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -219,31 +224,188 @@ fn the_idle_nudge_is_not_a_block() {
     }
 }
 
-/// The same edge in the payloads that are code: each subscribes to the event
-/// that ends its block and reports `working` from it. They need their agent's
-/// runtime to run, so the pairing is read — the handler body immediately
-/// following the event name, which is where the state word lives in all three.
+fn have_node() -> bool {
+    Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// Drives a `pi.on`-shaped module (pi, omp) through a real turn: registers a
+/// stand-in `pi` that just records handlers, imports the module for real, and
+/// calls each handler in turn. `report()`'s `exec()` is not intercepted — it
+/// runs for real against the stub `thurbox-cli` on `PATH` — so this proves
+/// what the shipped code actually signals, not an assumption about it.
+const PI_DRIVER: &str = r#"
+import { existsSync, readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const [, , modulePath, logPath, eventsJson] = process.argv;
+const events = JSON.parse(eventsJson);
+
+function lineCount() {
+  if (!existsSync(logPath)) return 0;
+  return readFileSync(logPath, "utf8").split("\n").filter(Boolean).length;
+}
+
+async function waitForSignal(before) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (lineCount() > before) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("timed out waiting for a thurbox-cli signal");
+}
+
+const handlers = {};
+const pi = {
+  on(event, handler) {
+    handlers[event] = handler;
+  },
+};
+
+const mod = await import(pathToFileURL(modulePath).href);
+mod.default(pi);
+
+for (const { event, toolName } of events) {
+  const handler = handlers[event];
+  if (!handler) throw new Error(`no handler registered for ${event}`);
+  const before = lineCount();
+  toolName === null ? handler() : handler({ toolName });
+  await waitForSignal(before);
+}
+"#;
+
+/// Same idea for opencode's `ThurboxStatus({ $ })`: `$` is opencode's own
+/// shell tag, so the stand-in builds the same command string a real one would
+/// and actually runs it, against the same stub `thurbox-cli`.
+const OPENCODE_DRIVER: &str = r#"
+import { exec } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const [, , modulePath, logPath, eventsJson] = process.argv;
+const events = JSON.parse(eventsJson);
+
+function lineCount() {
+  if (!existsSync(logPath)) return 0;
+  return readFileSync(logPath, "utf8").split("\n").filter(Boolean).length;
+}
+
+async function waitForSignal(before) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (lineCount() > before) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("timed out waiting for a thurbox-cli signal");
+}
+
+function $(strings, ...values) {
+  let command = strings[0];
+  for (let i = 0; i < values.length; i++) command += String(values[i]) + strings[i + 1];
+  const promise = new Promise((resolve) => exec(command, () => resolve()));
+  promise.quiet = () => promise;
+  promise.nothrow = () => promise;
+  return promise;
+}
+
+const mod = await import(pathToFileURL(modulePath).href);
+const handlers = await mod.ThurboxStatus({ $ });
+
+for (const step of events) {
+  const before = lineCount();
+  if (step.kind === "chat.message") {
+    await handlers["chat.message"]();
+  } else {
+    await handlers.event({ event: { type: step.type } });
+  }
+  await waitForSignal(before);
+}
+"#;
+
+fn run_node_driver(dir: &Path, driver: &str, module: &str, events_json: &str, log: &Path) {
+    let driver_path = dir.join("driver.mjs");
+    std::fs::write(&driver_path, driver).expect("write driver");
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new("node")
+        .arg(&driver_path)
+        .arg(payload_path(module))
+        .arg(log)
+        .arg(events_json)
+        .env("PATH", path)
+        .output()
+        .expect("run node driver");
+    assert!(
+        output.status.success(),
+        "{module} driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The same edge as `granting_a_permission_puts_the_session_back_to_working`,
+/// for the payloads that are code rather than declarative hook commands: each
+/// is imported and driven through session start, a tool call, the question
+/// tool that blocks the turn, that tool completing (the fix), and the turn
+/// ending.
 #[test]
 fn the_script_payloads_report_working_when_the_block_clears() {
-    // (payload, the event that resolves a block, why it resolves one)
-    let cases = [
-        // opencode alone has a real permission-reply event.
-        ("opencode-status.js", "\"permission.replied\""),
-        // pi and omp block on a question *tool*, so the answer arriving is
-        // that tool completing.
-        ("pi-status.ts", "\"tool_execution_end\""),
-        ("omp-status.ts", "\"tool_execution_end\""),
-    ];
-    for (file, event) in cases {
-        let text = std::fs::read_to_string(payload_path(file)).expect("read payload");
-        let at = text
-            .find(event)
-            .unwrap_or_else(|| panic!("{file} never subscribes to {event}"));
-        let handler = &text[at + event.len()..];
-        let end = handler.find('\n').unwrap_or(handler.len());
-        assert!(
-            handler[..end].contains("\"working\""),
-            "{file}: {event} does not report working"
+    if !have_node() {
+        eprintln!("skipping: node is not installed");
+        return;
+    }
+
+    // pi and omp block on their own structured question tool; the tool
+    // completing is the user's answer arriving. omp additionally recognizes
+    // pi's tool name, but "ask" is the one it documents as its own.
+    for (module, blocking_tool) in [
+        ("pi-status.ts", "ask_user_question"),
+        ("omp-status.ts", "ask"),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = stub_cli(dir.path());
+        let events = serde_json::json!([
+            {"event": "session_start", "toolName": null},
+            {"event": "agent_start", "toolName": null},
+            {"event": "tool_execution_start", "toolName": blocking_tool},
+            {"event": "tool_execution_end", "toolName": null},
+            {"event": "agent_end", "toolName": null},
+        ])
+        .to_string();
+        run_node_driver(dir.path(), PI_DRIVER, module, &events, &log);
+        assert_eq!(
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .collect::<Vec<_>>(),
+            vec!["idle", "working", "blocked", "working", "done"],
+            "{module}: the turn's signalled states"
         );
     }
+
+    // opencode alone has a real permission-reply event.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = stub_cli(dir.path());
+    let events = serde_json::json!([
+        {"kind": "event", "type": "session.created"},
+        {"kind": "chat.message"},
+        {"kind": "event", "type": "permission.asked"},
+        {"kind": "event", "type": "permission.replied"},
+        {"kind": "event", "type": "session.idle"},
+    ])
+    .to_string();
+    run_node_driver(dir.path(), OPENCODE_DRIVER, "opencode-status.js", &events, &log);
+    assert_eq!(
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["idle", "working", "blocked", "working", "done"],
+        "opencode-status.js: the turn's signalled states"
+    );
 }
