@@ -559,8 +559,9 @@ fn poll_local_pane_states(db: &Database) -> usize {
 /// interface's undo window, when the row still owns its window. Returns the ids
 /// reaped. Only rows with a window of their *own* are touched, so a row reaped
 /// once costs nothing on every later tick — and a stale row is never reported as
-/// reaped on the strength of a live namesake's window, which is the same unsound
-/// name resolution the reap itself refuses.
+/// reaped on the strength of a live namesake's window. The gate is
+/// `session_ops::delete::owned_agent_pane`, the same and only ownership test the
+/// reap itself applies.
 ///
 /// Window ownership is the whole gate, so a row that owns none is skipped
 /// entirely and its metrics file and symlink workspace are left in place —
@@ -583,10 +584,8 @@ fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
         {
             continue;
         }
-        let unclaimed = crate::session_ops::delete::name_unclaimed(db, &row.name);
-        match crate::agent::tmux::owned_agent_pane(&row.name, &row.backend_id, unclaimed) {
-            Ok(Some(_)) => {}
-            _ => continue,
+        if crate::session_ops::delete::owned_agent_pane(db, &row).is_none() {
+            continue;
         }
         match crate::session_ops::reap_soft_deleted(db, row.id) {
             Ok(true) => reaped.push(row.id.to_string()),

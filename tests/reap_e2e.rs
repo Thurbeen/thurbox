@@ -310,12 +310,139 @@ fn reaping_collects_its_window_when_the_pane_id_resolves_to_nothing() {
     let windows_after = windows();
     cleanup();
 
-    assert!(reaped, "a soft-deleted row with a live window must be reaped");
+    assert!(
+        reaped,
+        "a soft-deleted row with a live window must be reaped"
+    );
     assert!(
         !still_there,
         "the reap must collect the row's own window with no pane id to go on \
          (pane {} survived); windows left: {windows_after:?}",
         session.backend_id
+    );
+}
+
+/// A remembered pane id is not proof of ownership either. tmux restarts its
+/// pane-id counter with the server, so after a reboot the id a soft-deleted row
+/// still remembers can be the pane of a *replacement* window — and the window
+/// name, the check that normally catches a reused id, confirms nothing when the
+/// two sessions share a name. A test cannot make a server restart renumber a
+/// pane onto a chosen `%N`, so the row state a restart leaves behind is written
+/// through the storage API instead: a soft-deleted row remembering the pane id
+/// its live namesake now holds.
+#[test]
+fn reaping_spares_a_namesakes_pane_the_stale_row_remembers() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(stale) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+    thurbox::session_ops::delete_session_headless(&db, stale.session_id, false).expect("delete");
+    let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
+
+    let Some(live) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+
+    // Post-restart: the stale row's remembered pane id is now the live
+    // namesake's pane, in a window that carries the very name it expects.
+    // `set_backend_id` only touches live rows, so the row is revived for the
+    // write and deleted again — the persisted state, not the route to it, is
+    // what the reap sees.
+    db.restore_session(stale.session_id).expect("revive");
+    assert!(
+        db.set_backend_id(stale.session_id, &live.backend_id)
+            .expect("renumber the stale row's pane"),
+        "the stale row should be there to update"
+    );
+    db.soft_delete_session(stale.session_id)
+        .expect("soft-delete again");
+
+    let reaped = thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap");
+    let survived = pane_alive(&live.backend_id);
+    let windows_after = windows();
+    cleanup();
+
+    assert!(
+        survived,
+        "reaping the stale 'fleet' row killed the live one's pane {} through a \
+         renumbered id (reaped={reaped}); windows left: {windows_after:?}",
+        live.backend_id
+    );
+}
+
+/// A name is claimed by soft-deleted rows too, not just live ones. A row keeps
+/// its agent until the reaper lets it go — that is what makes an undo restore a
+/// session rather than respawn it — so while one soft-deleted 'fleet' is inside
+/// its undo window, an *older* 'fleet' row's reap must not resolve `tb-fleet`
+/// and destroy the work the undo would have brought back. The older row's reap
+/// still has to collect its own window, which the second half asserts.
+#[test]
+fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(stale) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+    thurbox::session_ops::delete_session_headless(&db, stale.session_id, false).expect("delete");
+    let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
+
+    // The undoable one: soft-deleted, its agent and window still up, so no
+    // *active* session answers to 'fleet' any more.
+    let Some(undoable) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+    thurbox::session_ops::delete_session_headless(&db, undoable.session_id, false).expect("delete");
+    assert!(
+        pane_alive(&undoable.backend_id),
+        "a soft delete must leave the window for the undo window"
+    );
+
+    let stale_reaped =
+        thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap stale");
+    let survived = pane_alive(&undoable.backend_id);
+
+    // And the strictness is not a leak: the undoable row's own reap, when its
+    // turn comes, takes its window down.
+    let own_reaped =
+        thurbox::session_ops::reap_soft_deleted(&db, undoable.session_id).expect("reap own");
+    let released = !pane_alive(&undoable.backend_id);
+    let windows_after = windows();
+    cleanup();
+
+    assert!(
+        survived,
+        "reaping the stale 'fleet' row killed the pane {} of a namesake still \
+         inside its undo window (reaped={stale_reaped}); windows left: \
+         {windows_after:?}",
+        undoable.backend_id
+    );
+    assert!(
+        own_reaped,
+        "a soft-deleted row with a live pane must be reaped"
+    );
+    assert!(
+        released,
+        "the undoable row's own reap must collect its window (pane {} survived)",
+        undoable.backend_id
     );
 }
 
