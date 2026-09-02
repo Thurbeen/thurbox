@@ -143,20 +143,48 @@ mod tests {
     use super::*;
     use crate::paths::TestPathGuard;
 
-    fn temp_base() -> PathBuf {
-        // Unique-ish per test via the thread name; avoids Date/rand (forbidden).
-        let mut p = std::env::temp_dir();
-        let t = std::thread::current();
-        let name = t.name().unwrap_or("ws").replace("::", "-");
-        p.push(format!("thurbox-ws-test-{name}"));
-        let _ = std::fs::remove_dir_all(&p);
-        p
+    /// A fresh base directory for one test, removed when the returned
+    /// [`tempfile::TempDir`] drops. It used to be a thread-named `PathBuf`
+    /// cleared at the *start* of a test, which only ever wiped the previous
+    /// run's directory and always left its own behind.
+    fn temp_base() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("thurbox-ws-test-")
+            .tempdir()
+            .expect("temp base for a workspace test")
+    }
+
+    /// The workspace tests' base must not outlive the process that made it.
+    /// Run in a child process by
+    /// `paths::tests::no_unit_test_temp_dir_outlives_the_test_process`, which
+    /// checks the reported directory is gone once the child has exited.
+    #[test]
+    fn the_workspace_test_base_holds_a_workspace() {
+        let tmp = temp_base();
+        let base = tmp.path();
+        let _g = TestPathGuard::new(base);
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let ws = ensure_workspace("leak-probe", &[("repo".to_string(), repo)]).unwrap();
+        assert!(
+            ws.starts_with(base),
+            "workspace escaped the test base: {}",
+            ws.display()
+        );
+        assert!(
+            base.starts_with(std::env::temp_dir()),
+            "test base is not under the temp dir: {}",
+            base.display()
+        );
+        println!("TEMP_SANDBOX={}", base.display());
     }
 
     #[test]
     fn ensure_creates_one_symlink_per_member() {
-        let base = temp_base();
-        let _g = TestPathGuard::new(&base);
+        let tmp = temp_base();
+        let base = tmp.path();
+        let _g = TestPathGuard::new(base);
         let repo_a = base.join("src-a");
         let repo_b = base.join("src-b");
         std::fs::create_dir_all(&repo_a).unwrap();
@@ -178,8 +206,9 @@ mod tests {
 
     #[test]
     fn ensure_is_idempotent_and_reflects_new_members() {
-        let base = temp_base();
-        let _g = TestPathGuard::new(&base);
+        let tmp = temp_base();
+        let base = tmp.path();
+        let _g = TestPathGuard::new(base);
         let a = base.join("a");
         let b = base.join("b");
         std::fs::create_dir_all(&a).unwrap();
@@ -195,8 +224,9 @@ mod tests {
 
     #[test]
     fn colliding_names_are_disambiguated() {
-        let base = temp_base();
-        let _g = TestPathGuard::new(&base);
+        let tmp = temp_base();
+        let base = tmp.path();
+        let _g = TestPathGuard::new(base);
         let a = base.join("one");
         let b = base.join("two");
         std::fs::create_dir_all(&a).unwrap();
@@ -214,8 +244,9 @@ mod tests {
 
     #[test]
     fn remove_deletes_links_not_targets() {
-        let base = temp_base();
-        let _g = TestPathGuard::new(&base);
+        let tmp = temp_base();
+        let base = tmp.path();
+        let _g = TestPathGuard::new(base);
         let repo = base.join("keepme");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join("file.txt"), b"data").unwrap();
@@ -230,8 +261,9 @@ mod tests {
 
     #[test]
     fn remove_missing_workspace_is_ok() {
-        let base = temp_base();
-        let _g = TestPathGuard::new(&base);
+        let tmp = temp_base();
+        let base = tmp.path();
+        let _g = TestPathGuard::new(base);
         assert!(remove_workspace("never-made").is_ok());
     }
 }

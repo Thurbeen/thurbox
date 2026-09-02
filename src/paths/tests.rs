@@ -622,3 +622,79 @@ fn unique_link_name_dedups_with_dash_two_suffix() {
     assert_eq!(unique_link_name("", &mut used), "repo");
     assert_eq!(unique_link_name("", &mut used), "repo-2");
 }
+
+/// Config written by a test must land in the `cfg(test)` sandbox rather than
+/// the developer's real config dir, and that sandbox must not outlive the
+/// process that made it. Run in a child process by
+/// [`no_unit_test_temp_dir_outlives_the_test_process`], which checks the
+/// reported directory is gone once the child has exited.
+#[test]
+fn the_unit_test_sandbox_holds_written_config() {
+    let cfg = config_file().expect("a config path in the test sandbox");
+    std::fs::create_dir_all(cfg.parent().expect("config dir")).expect("mkdir");
+    std::fs::write(&cfg, "# written by a unit test\n").expect("write");
+
+    let base = test_sandbox_base();
+    assert!(
+        cfg.starts_with(&base),
+        "config escaped the sandbox: {}",
+        cfg.display()
+    );
+    assert!(
+        base.starts_with(std::env::temp_dir()),
+        "sandbox is not under the temp dir: {}",
+        base.display()
+    );
+    println!("TEMP_SANDBOX={}", base.display());
+}
+
+/// The unit-test suite must leave nothing behind in the system temp dir.
+///
+/// Both temp sandboxes — `paths`' `cfg(test)` config/data sandbox and
+/// `workspace`'s test base — are only observably cleaned up once the process
+/// that created them is gone, so this re-runs the two tests that create them
+/// in a child copy of this very test binary and asserts the paths they
+/// reported no longer exist. The system temp dir is tmpfs on many machines, so
+/// a per-run leak here is a per-run leak of RAM until reboot.
+#[test]
+fn no_unit_test_temp_dir_outlives_the_test_process() {
+    // Named rather than discovered; a rename trips the "reported both dirs"
+    // assertion below instead of passing vacuously.
+    const HELPERS: [&str; 2] = [
+        "paths::tests::the_unit_test_sandbox_holds_written_config",
+        "workspace::tests::the_workspace_test_base_holds_a_workspace",
+    ];
+
+    let exe = std::env::current_exe().expect("this test binary");
+    let out = std::process::Command::new(&exe)
+        .args(["--exact", "--nocapture"])
+        .args(HELPERS)
+        .output()
+        .expect("run a child copy of the test binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "child test run failed: {stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let mut reported = 0;
+    for line in stdout.lines() {
+        let Some(path) = line.strip_prefix("TEMP_SANDBOX=") else {
+            continue;
+        };
+        let path = Path::new(path.trim_end());
+        assert!(
+            !path.exists(),
+            "a temp dir outlived the test process that made it: {}",
+            path.display()
+        );
+        reported += 1;
+    }
+    assert_eq!(
+        reported,
+        HELPERS.len(),
+        "child reported {reported} temp dirs, expected {}: {stdout}",
+        HELPERS.len()
+    );
+}

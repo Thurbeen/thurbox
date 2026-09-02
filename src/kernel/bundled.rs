@@ -1417,12 +1417,23 @@ mod tests {
         assert_eq!(sources["plugins/50_mine.lua"], Source::User);
     }
 
+    /// Removes a directory when it drops. [`fallback_dir`] hands back a plain
+    /// path — the recovery interface has to outlive the call — so a test that
+    /// asks for one owns its removal, including when an assertion panics
+    /// first.
+    struct RemoveOnDrop(PathBuf);
+
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn the_fallback_directory_holds_a_loadable_interface() {
-        let dir = fallback_dir().expect("fallback");
-        assert!(dir.join("plugins").is_dir());
-        assert!(dir.join("layout.lua").exists());
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = RemoveOnDrop(fallback_dir().expect("fallback"));
+        assert!(dir.0.join("plugins").is_dir());
+        assert!(dir.0.join("layout.lua").exists());
     }
 
     #[test]
@@ -1442,18 +1453,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&planted);
         std::fs::create_dir_all(planted.join("plugins")).expect("plant");
         std::fs::write(planted.join("plugins/99_evil.lua"), "return {}").expect("plant");
+        let planted = RemoveOnDrop(planted);
 
-        let dir = fallback_dir().expect("fallback");
-        assert_ne!(dir, planted, "adopted a pre-existing directory");
+        let dir = RemoveOnDrop(fallback_dir().expect("fallback"));
+        assert_ne!(dir.0, planted.0, "adopted a pre-existing directory");
         assert!(
-            !dir.join("plugins/99_evil.lua").exists(),
+            !dir.0.join("plugins/99_evil.lua").exists(),
             "the planted file came along: {}",
-            dir.display()
+            dir.0.display()
         );
-        assert!(dir.join("layout.lua").exists(), "still a whole interface");
-
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&planted);
+        assert!(dir.0.join("layout.lua").exists(), "still a whole interface");
     }
 
     /// Every key the interface stores — trust, disabled, rebindings — is

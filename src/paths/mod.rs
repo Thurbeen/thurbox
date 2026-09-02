@@ -116,12 +116,48 @@ fn data_base() -> Option<PathBuf> {
 /// — or falling through to the real `$HOME/.config/thurbox` — let any unguarded
 /// test that writes config (settings save, hooks install, keybindings) clobber
 /// the user's live settings. So in test builds the XDG fallback ignores the
-/// override env entirely and resolves under a `<pid>`-scoped temp dir instead;
+/// override env entirely and resolves under a temp sandbox instead;
 /// `TestPathGuard`/`set_test_dir` (the `Override` strategy) still wins where a
 /// test wants a specific base.
+///
+/// The sandbox is one directory per process, shared by every thread, and it is
+/// removed when that process exits. It has to be process-wide: a test that
+/// fans work out to threads keeps its `Override` to itself (`PATH_STRATEGY` is
+/// thread-local), so its workers land here, and a sandbox scoped any tighter
+/// than the process would take their output with it while the test still
+/// wants it.
+///
+/// That rules out letting a `Drop` do the cleanup — nothing owned by a
+/// `static` is ever dropped — which is why the removal hangs off `atexit`
+/// instead. It used to hang off nothing at all: the sandbox was a `<pid>`
+/// path with no owner, so every run left a directory behind for good, and
+/// nextest — one process per test — left one per test. The system temp dir is
+/// tmpfs on many machines, where that is a slow leak of RAM.
 #[cfg(test)]
 fn test_sandbox_base() -> PathBuf {
-    std::env::temp_dir().join(format!("thurbox-unittest-{}", std::process::id()))
+    /// The `atexit` handler: `SANDBOX` is initialized by the time the process
+    /// can reach an exit, and reading a `OnceLock` needs no lock.
+    extern "C" fn remove_sandbox() {
+        if let Some(dir) = SANDBOX.get() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    static SANDBOX: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+    SANDBOX
+        .get_or_init(|| {
+            let dir = tempfile::Builder::new()
+                .prefix("thurbox-unittest-")
+                .tempdir()
+                .expect("temp sandbox for the unit-test config/data dirs");
+            // SAFETY: registered once, from inside `get_or_init`, with a
+            // plain function pointer that outlives the process. `keep()`
+            // disarms `TempDir`'s own `Drop` so the two never race.
+            unsafe { libc::atexit(remove_sandbox) };
+            dir.keep()
+        })
+        .clone()
 }
 
 /// Resolved thurbox config app dir. A `THURBOX_CONFIG_DIR` env override (the
@@ -178,10 +214,10 @@ pub fn relocated_data_dir() -> Option<PathBuf> {
     relocated_from(over.as_deref(), default.as_deref())
 }
 
-/// Test build: never relocated. The data dir is a per-process temp sandbox
-/// (see [`test_sandbox_base`]), so deriving from it would make every unit
-/// test's socket a function of the pid; [`relocated_from`] carries the
-/// behaviour under test.
+/// Test build: never relocated. The data dir is a temp sandbox (see
+/// [`test_sandbox_base`]), so deriving from it would make every unit test's
+/// socket a function of where that sandbox landed; [`relocated_from`] carries
+/// the behaviour under test.
 #[cfg(test)]
 pub fn relocated_data_dir() -> Option<PathBuf> {
     None

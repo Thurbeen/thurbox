@@ -69,6 +69,19 @@ under this project's own pre-commit `cargo nextest` inherits a `GIT_DIR` pointin
 the real repository. `tests/repo_memory.rs` and `tests/create_e2e.rs` show the
 shape.
 
+A test that creates a directory **owns its removal**: make it with
+`tempfile::TempDir` (a dev-dependency) and hold the handle for as long as the test
+needs it — never a bare path under `std::env::temp_dir()`. That temp dir is tmpfs on
+many machines, so anything left there is leaked RAM until reboot, and nextest's
+process-per-test multiplies one leak by the size of the suite. `paths`' `cfg(test)`
+config/data sandbox is the sole exception, because it cannot be owned: a test's
+`TestPathGuard` is thread-local, so work the test fans out to threads resolves paths
+through the sandbox instead, which therefore has to outlive every thread in the
+process. A `static` holds it and `atexit` removes it.
+`paths::tests::no_unit_test_temp_dir_outlives_the_test_process` guards the rule for
+both by re-running the tests that create them in a child process and checking what
+survived it.
+
 > v1's in-process acceptance harness, its `insta` snapshots, its invariant monkey
 > test and `tests/v1_recordings.rs` were deleted with `src/app`. They are in the
 > history if a behaviour needs archaeology.

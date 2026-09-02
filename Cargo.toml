@@ -162,9 +162,10 @@ tempfile = "3"
 # the normal `cargo nextest --all`.
 proptest = "1"
 
-# The PTY e2e (tests/tui_e2e.rs) drives the real `thurbox` binary on a pseudo
-# terminal: `openpty`, `setsid`, `TIOCSCTTY` and `TIOCSWINSZ` are the whole of
-# what it needs, and `libc` is already in the tree — no PTY crate. Unix-only:
-# the Windows ConPTY path is the windows-vm e2e harness's.
-[target.'cfg(unix)'.dev-dependencies]
+# Two test-only uses, both of the C runtime rather than a wrapper crate:
+# `atexit`, which is what removes `paths`' unit-test sandbox when a test process
+# ends (a `static` is never dropped, so nothing else runs there); and the PTY
+# e2e (tests/tui_e2e.rs, `#![cfg(unix)]`), which drives the real `thurbox`
+# binary on a pseudo-terminal and needs only `openpty`, `setsid`, `TIOCSCTTY`
+# and `TIOCSWINSZ` — no PTY crate. `libc` is already in the tree either way.
 libc = "0.2"
