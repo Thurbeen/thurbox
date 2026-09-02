@@ -493,7 +493,7 @@ cannot drift from what is running.
 | `Enter` | Open the session | `10_sessions.lua` |
 | `Shift+J` / `Shift+K` | Move it down / up | `10_sessions.lua` |
 | `Shift+S` | Sort by name within each repo group | `10_sessions.lua` |
-| `d` / `Ctrl+D` | Delete (reversible) | `10_sessions.lua` |
+| `Ctrl+D` | Delete (reversible) | `10_sessions.lua` |
 | `Shift+D` | Delete it *and* its worktree, confirming if work is at risk | `10_sessions.lua` |
 | `Ctrl+Z` | Undo the last delete | `10_sessions.lua` |
 | `Ctrl+U` | Restore a deleted session | `80_restore.lua` |

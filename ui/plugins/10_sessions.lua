@@ -534,7 +534,9 @@ return {
     -- v1's `Enter` on a session row: go to what you selected. The row is already
     -- selected by the time this fires, so opening is only a focus change.
     { key = "enter", action = "sessions.open", desc = "open the session", group = "Navigation" },
-    { key = "d", action = "sessions.delete", desc = "delete session", group = "Sessions" },
+    -- Delete has no unmodified chord on purpose: `d` sits next to `j`/`k`, and
+    -- a stray keystroke on a focused list should not tear a session down.
+    -- `ctrl+d` below is the way in; `D` takes the worktree with it.
     {
       key = "D",
       action = "sessions.force_delete",

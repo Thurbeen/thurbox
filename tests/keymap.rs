@@ -542,3 +542,47 @@ fn the_agent_panes_page_keys_are_declared_rather_than_hidden_in_on_key() {
         );
     }
 }
+
+#[test]
+fn a_bare_d_deletes_nothing_in_the_session_list() {
+    // Deleting is the one destructive thing a focused list can do, and `d` is a
+    // single unmodified keystroke away from `j`/`k`. `Ctrl+D` (and `Shift+D` for
+    // the worktree with it) are the only ways in.
+    let host = host();
+    let snapshot = Snapshot {
+        sessions: vec![row("fix-osc52")],
+        ..Snapshot::default()
+    };
+    publish(&host, &snapshot);
+    host.render(
+        index_of(&host, "sessions"),
+        RenderContext {
+            width: 40,
+            height: 12,
+            focused: true,
+            elapsed: 1.0,
+            frame: 1,
+        },
+    )
+    .expect("render the list");
+    host.drain_commands();
+
+    assert!(
+        registry(&host)
+            .resolve(&press("d"), Some("sessions"))
+            .is_none(),
+        "`d` must not be bound with the session list focused"
+    );
+    host.on_key(index_of(&host, "sessions"), &press("d"))
+        .expect("key");
+    assert!(
+        host.drain_commands().is_empty(),
+        "and the pane must not delete on it either"
+    );
+
+    // The chord that does still deletes.
+    fire(&host, "ctrl+d");
+    let issued = host.drain_commands();
+    assert_eq!(issued.len(), 1, "{issued:?}");
+    assert_eq!(issued[0].kind(), "delete");
+}
