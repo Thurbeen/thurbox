@@ -142,28 +142,34 @@ embedded hook assets live in
   - `codex`: merged into `~/.codex/hooks.json` (SessionStart→idle,
     UserPromptSubmit/PreToolUse→working, Stop→done; **no blocked**). *Experimental.*
   - `antigravity` (`agy`): merged into the shared `~/.gemini/settings.json` (agy
-    adopted claude's hook schema — PreToolUse→working, Notification→blocked,
-    Stop→done; no UserPromptSubmit, so working fires at the first tool call).
+    adopted claude's hook schema — PreToolUse/PostToolUse→working,
+    Notification→blocked, Stop→done; no UserPromptSubmit, so working fires at the
+    first tool call). PostToolUse is the edge out of blocked: no agent here has a
+    "permission granted" event, so the tool completing is the first thing said
+    once the prompt is answered.
 - **`external_files` (drop a standalone managed file into the agent's config
   dir)** — refused if a non-managed file already exists there (the agent goes
   *unreported*, never *broken*).
   - `opencode`: a plugin at `~/.config/opencode/plugin/thurbox-status.js`
-    (idle/working/blocked/done).
+    (idle/working/blocked/done). The only agent with a real permission-*reply*
+    event, so `permission.replied`→working clears the block exactly when it
+    ends rather than at the next tool boundary.
   - `copilot`: `~/.copilot/hooks/thurbox-status.json`
-    (sessionStart→idle, userPromptSubmitted/preToolUse→working, agentStop→done,
-    notification matched to `permission_prompt`→blocked). Ships both `bash` and
-    `powershell` commands.
+    (sessionStart→idle, userPromptSubmitted/preToolUse/postToolUse→working,
+    agentStop→done, notification matched to `permission_prompt`→blocked). Ships
+    both `bash` and `powershell` commands.
     *Experimental.*
   - `vibe`: a managed `~/.vibe/hooks.toml` (pre_tool→working, post_agent→done;
     **no blocked** — vibe has no permission/notification hook). Verified against
     vibe 2.21.0.
   - `pi`: a TypeScript extension at `~/.pi/agent/extensions/thurbox-status.ts`
-    (session_start→idle, agent_start/tool_execution_start→working, agent_end→done;
-    **blocked inferred only** from an `ask_user_question` tool call). *Experimental.*
+    (session_start→idle, agent_start/tool_execution_start/tool_execution_end→
+    working, agent_end→done; **blocked inferred only** from an
+    `ask_user_question` tool call, cleared when that tool ends). *Experimental.*
   - `omp`: a TypeScript extension at `~/.omp/agent/extensions/thurbox-status.ts`,
     mirroring pi's but mapping OMP's structured user-question tool — named `ask`
-    — to blocked (it recognizes both `ask` and pi's `ask_user_question`). Verified
-    against OMP 17.0.6. *Experimental.*
+    — to blocked (it recognizes both `ask` and pi's `ask_user_question`), cleared
+    by tool_execution_end. Verified against OMP 17.0.6. *Experimental.*
 
 Each `requires_dir` guard makes the drop a no-op when that agent isn't installed,
 so a fresh install with only claude present doesn't scatter files for agents you

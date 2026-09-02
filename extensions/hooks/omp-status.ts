@@ -8,7 +8,8 @@
 // (TypeScript), auto-discovered from ~/.omp/agent/extensions/*.ts by the omp
 // CLI. It subscribes to OMP's lifecycle events and reports them to thurbox's
 // status reporter:
-//   session_start → idle, agent_start + tool_execution_start → working
+//   session_start → idle, agent_start + tool_execution_start +
+//   tool_execution_end → working
 //   (a structured user-question tool call → blocked), agent_end → done.
 //
 // OMP is Pi-compatible, but its structured user-question tool is named `ask`
@@ -41,5 +42,9 @@ export default function (pi: ExtensionAPI): void {
     // any other tool call means the agent is actively working.
     report(BLOCKING_TOOLS.has(event?.toolName ?? "") ? "blocked" : "working");
   });
+  // The blocking tool finishing is the user's answer arriving: there is no
+  // separate "answered" event, so without this the dot stays red until the
+  // next tool call, or to the end of a turn that asked nothing more.
+  pi.on("tool_execution_end", () => report("working"));
   pi.on("agent_end", () => report("done"));
 }

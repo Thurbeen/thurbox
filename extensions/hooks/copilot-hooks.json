@@ -25,6 +25,14 @@
         "timeoutSec": 10
       }
     ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "thurbox-cli session signal --state working || true",
+        "powershell": "thurbox-cli session signal --state working 2>$null; exit 0",
+        "timeoutSec": 10
+      }
+    ],
     "notification": [
       {
         "type": "command",

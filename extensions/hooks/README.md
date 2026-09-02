@@ -36,16 +36,22 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   `--settings` (an `[[agent_patches]]` that appends the flag to the built-in
   `claude` agent, reversibly). claude merges it with your own settings, so your
   hooks are preserved. Events: `SessionStart` → idle (so a just-booted, idle
-  session isn't shown as working), `UserPromptSubmit`/`PreToolUse` → working,
-  `Stop` → done. `Notification` → blocked **only for permission/approval
-  prompts** — claude also fires `Notification` for its "waiting for your input"
-  idle nudge, which the hook ignores (parses the payload) so an idle session
-  doesn't flip to red.
+  session isn't shown as working), `UserPromptSubmit`/`PreToolUse`/`PostToolUse`
+  → working, `Stop` → done. `Notification` → blocked **only for
+  permission/approval prompts** — claude also fires `Notification` for its
+  "waiting for your input" idle nudge, which the hook ignores (parses the
+  payload) so an idle session doesn't flip to red. `PostToolUse` is what clears
+  that block: claude has no "permission granted" event, so the tool finishing is
+  the first thing it reports after the prompt is answered — without it an
+  approved session stayed red until the *next* tool call, or until `Stop` if the
+  turn had no more.
 - **aider** — `--notifications-command` reports the only edge aider exposes:
   blocked (waiting for input).
 - **opencode** — a plugin dropped into `~/.config/opencode/plugin/` (only when
   opencode is installed). Events: `session.created` → idle, `chat.message` →
-  working, `permission.asked` → blocked, `session.idle` → done.
+  working, `permission.asked` → blocked, `permission.replied` → working
+  (allowed or denied, the turn is opencode's again — it is the only agent here
+  with a real permission-reply event), `session.idle` → done.
 - **codex** *(experimental)* — codex's `hooks.json` is claude-shaped, loaded
   from `~/.codex/hooks.json`. We **JSON-merge** our entries in (a
   `[[config_merges]]`, guarded by `requires_dir`) so your own hooks are
@@ -73,9 +79,13 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   hooks from its own dir, `~/.copilot/hooks/*.json`. We drop a managed standalone
   file in (an `[[external_files]]`, guarded by `requires_dir`, only when copilot is
   installed), so your other hook files are never touched. Events (copilot's own
-  schema): `sessionStart` → idle, `userPromptSubmitted`/`preToolUse` → working,
-  `agentStop` → done, and `notification` matched to `permission_prompt` → blocked
-  (so an `agent_idle`/`shell_completed` notification doesn't flip the dot red).
+  schema): `sessionStart` → idle,
+  `userPromptSubmitted`/`preToolUse`/`postToolUse` → working, `agentStop` → done,
+  and `notification` matched to `permission_prompt` → blocked (so an
+  `agent_idle`/`shell_completed` notification doesn't flip the dot red).
+  `postToolUse` is what clears that block — copilot has no "permission granted"
+  event, so the tool completing is the first thing it reports once the prompt is
+  answered.
   Both `bash` and `powershell` commands are shipped, so status works on Windows
   too. **Caveat:** if a future `copilot` changes the hook schema, edit
   `copilot-hooks.json` (no code change).
@@ -84,9 +94,10 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   entries in (a `[[config_merges]]`, guarded by `requires_dir`) without clobbering
   your settings; uninstall prunes exactly ours back out. `agy` adopted Claude
   Code's hook schema (verified against agy 1.0.9), so the mapping mirrors claude:
-  `SessionStart` → idle, `PreToolUse` → working, `Stop` → done, and `Notification`
-  → blocked **only for permission/approval prompts** (the payload is parsed, same
-  as claude, so an idle `Notification` doesn't flip the dot red). It has no
+  `SessionStart` → idle, `PreToolUse`/`PostToolUse` → working, `Stop` → done, and
+  `Notification` → blocked **only for permission/approval prompts** (the payload
+  is parsed, same as claude, so an idle `Notification` doesn't flip the dot red);
+  `PostToolUse` clears the block, for claude's reason. It has no
   `UserPromptSubmit`, so working is signaled at the first tool call rather than on
   prompt submit. **Caveat:** if agy sanitizes the hook environment,
   `$THURBOX_SESSION` may not reach the hook, in which case the signal is a
@@ -95,9 +106,11 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
 - **pi** *(experimental)* — the pi.dev CLI auto-discovers TypeScript extensions
   from `~/.pi/agent/extensions/*.ts`, so we drop a managed extension in (an
   `[[external_files]]`, guarded by `requires_dir`, only when pi is installed). It
-  subscribes to pi's lifecycle events: `session_start` → idle, `agent_start` and
-  `tool_execution_start` → working, `agent_end` → done, and a tool call to
-  `ask_user_question` → blocked. **Caveats:** pi has no claude-style
+  subscribes to pi's lifecycle events: `session_start` → idle, `agent_start`,
+  `tool_execution_start` and `tool_execution_end` → working, `agent_end` → done,
+  and a tool call to `ask_user_question` → blocked. There is no "answered"
+  event, so `tool_execution_end` is what clears that block: the question tool
+  finishing *is* the answer arriving. **Caveats:** pi has no claude-style
   `Stop`/permission hook, so `blocked` is inferred only from a structured
   `ask_user_question` tool call — a turn that ends by asking something in prose
   signals `done`, not `blocked`. If you already maintain your own file at that
@@ -113,8 +126,9 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   but maps OMP's structured user-question tool — named `ask` — to `blocked`;
   it recognizes **both** `ask` and pi's `ask_user_question`, so reusing pi's
   file unchanged would leave OMP stuck `working` while it waits. Events:
-  `session_start` → idle, `agent_start`/`tool_execution_start` → working
-  (`ask`/`ask_user_question` → blocked), `agent_end` → done. Same caveats as pi
+  `session_start` → idle, `agent_start`/`tool_execution_start`/
+  `tool_execution_end` → working (`ask`/`ask_user_question` → blocked, cleared
+  by that tool ending), `agent_end` → done. Same caveats as pi
   (managed-marker refusal, remote provisioning, psmux `Hooks: degraded`).
   Verified against OMP 17.0.6; if a future `omp` renames its events, edit
   `omp-status.ts` (no code change).

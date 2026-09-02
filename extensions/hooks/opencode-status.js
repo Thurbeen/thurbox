@@ -20,6 +20,10 @@ export const ThurboxStatus = async ({ $ }) => {
       if (!event || !event.type) return;
       if (event.type === "session.created") await signal("idle");
       else if (event.type === "permission.asked") await signal("blocked");
+      // Allowed or denied, the turn is opencode's again — without this the
+      // dot stays red for the whole tool run, and to the end of a turn whose
+      // last permission was the last thing it asked for.
+      else if (event.type === "permission.replied") await signal("working");
       else if (event.type === "session.idle") await signal("done");
     },
   };

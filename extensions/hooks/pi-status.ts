@@ -7,7 +7,8 @@
 // This is a pi extension (TypeScript), auto-discovered from
 // ~/.pi/agent/extensions/*.ts by the pi.dev CLI. It subscribes to pi's
 // lifecycle events and reports them to thurbox's status reporter:
-//   session_start → idle, agent_start + tool_execution_start → working
+//   session_start → idle, agent_start + tool_execution_start +
+//   tool_execution_end → working
 //   (a tool call to ask_user_question → blocked), agent_end → done.
 import { exec } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -33,5 +34,9 @@ export default function (pi: ExtensionAPI): void {
     // any other tool call means the agent is actively working.
     report(event?.toolName === "ask_user_question" ? "blocked" : "working");
   });
+  // The blocking tool finishing is the user's answer arriving: there is no
+  // separate "answered" event, so without this the dot stays red until the
+  // next tool call, or to the end of a turn that asked nothing more.
+  pi.on("tool_execution_end", () => report("working"));
   pi.on("agent_end", () => report("done"));
 }
