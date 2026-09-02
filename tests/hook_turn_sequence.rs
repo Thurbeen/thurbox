@@ -47,21 +47,19 @@ fn payload_json(file: &str) -> serde_json::Value {
 /// Hook commands run two different ways depending on the payload: the JSON
 /// payloads' commands go through `sh -c` ([`fire`]), while pi/omp's
 /// TypeScript calls Node's `child_process.exec`, which on Windows is `cmd.exe`
-/// rather than a POSIX shell. A `#!/bin/sh` script satisfies the former on
-/// every OS (MSYS's `sh` understands a shebang), but `cmd.exe` cannot run one
-/// at all — it needs a real `.cmd` batch file — so on Windows this stub is a
-/// batch file instead, which both `cmd.exe` and MSYS's `sh` (which shells out
-/// to `cmd.exe` for a `.bat`/`.cmd` target) can run.
+/// rather than a POSIX shell. A `#!/bin/sh` script (no extension) satisfies
+/// the former on every OS — MSYS's `sh` reads the shebang directly, an exact
+/// filename match that never involves an extension search. `cmd.exe` cannot
+/// run that script at all, so on Windows it additionally gets a `.cmd` batch
+/// file — but *not* in the same directory: `cmd.exe`'s PATH search resolves a
+/// bare `thurbox-cli` by trying an exact match before appending `PATHEXT`
+/// extensions, so an extension-less `thurbox-cli` sitting next to
+/// `thurbox-cli.cmd` would make it fail that exact-match attempt (the
+/// shebang script isn't a real executable) and never fall through to the
+/// batch file. Putting the batch file in its own directory keeps each
+/// interpreter's search finding only the stub it can actually run.
 fn stub_cli(dir: &Path) -> PathBuf {
     let log = dir.join("states");
-    if cfg!(windows) {
-        let bin = dir.join("thurbox-cli.cmd");
-        // `session signal --state <s>`: the state is the fourth argument.
-        // Batch doesn't treat `\` as an escape character, so the path needs
-        // no more than the quoting any Windows path with spaces would.
-        std::fs::write(&bin, format!("@echo %4>>\"{}\"\r\n", log.display())).expect("write stub");
-        return log;
-    }
     let bin = dir.join("thurbox-cli");
     std::fs::write(
         &bin,
@@ -81,15 +79,35 @@ fn stub_cli(dir: &Path) -> PathBuf {
         // to run.
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     }
+    if cfg!(windows) {
+        let cmd_dir = cmd_stub_dir(dir);
+        std::fs::create_dir(&cmd_dir).expect("mkdir cmd stub dir");
+        let cmd_bin = cmd_dir.join("thurbox-cli.cmd");
+        // `session signal --state <s>`: the state is the fourth argument.
+        // Batch doesn't treat `\` as an escape character, so the path needs
+        // no more than the quoting any Windows path with spaces would.
+        std::fs::write(&cmd_bin, format!("@echo %4>>\"{}\"\r\n", log.display()))
+            .expect("write cmd stub");
+    }
     log
 }
 
-/// The current `PATH`, with `dir` prepended, using this OS's search-path
-/// separator — a hardcoded `:` leaves Windows's own entries (joined with
-/// `;`, and each containing a drive-letter `:`) unparseable.
+/// Where [`stub_cli`] puts the batch-file stub, kept separate from the
+/// shebang script so `cmd.exe` and `sh` each only ever see the one they can
+/// run — see [`stub_cli`].
+fn cmd_stub_dir(dir: &Path) -> PathBuf {
+    dir.join("cmd-stub")
+}
+
+/// The current `PATH`, with `dir` (and, on Windows, its `.cmd`-stub
+/// subdirectory) prepended, using this OS's search-path separator — a
+/// hardcoded `:` leaves Windows's own entries (joined with `;`, and each
+/// containing a drive-letter `:`) unparseable.
 fn path_with(dir: &Path) -> std::ffi::OsString {
     let existing = std::env::var_os("PATH").unwrap_or_default();
-    let dirs = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&existing));
+    let dirs = [dir.to_path_buf(), cmd_stub_dir(dir)]
+        .into_iter()
+        .chain(std::env::split_paths(&existing));
     std::env::join_paths(dirs).expect("join PATH")
 }
 
