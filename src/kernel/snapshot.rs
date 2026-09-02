@@ -299,11 +299,19 @@ impl GitStats {
         {
             return;
         }
+        // `merged` is monotonic — once true, always true — so a session already
+        // known merged skips re-deriving it every TTL. See `worktree_stats`'s
+        // `known_merged` parameter.
+        let known_merged = self
+            .known
+            .get(session)
+            .and_then(|stat| stat.state)
+            .is_some_and(|state| state.merged == Some(true));
         self.inflight.insert(session.to_string());
         let tx = self.ensure_channel();
         let session = session.to_string();
         std::thread::spawn(move || {
-            let stats = crate::git::worktree_stats(&worktree).map(|s| GitState {
+            let stats = crate::git::worktree_stats(&worktree, known_merged).map(|s| GitState {
                 files_changed: s.files_changed,
                 insertions: s.insertions,
                 deletions: s.deletions,

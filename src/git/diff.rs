@@ -470,7 +470,14 @@ pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
 
 /// Compute combined git stats (uncommitted diff + dirty + ahead/behind) for a
 /// worktree. Returns `None` when the path is not a usable git worktree.
-pub fn worktree_stats(cwd: &Path) -> Option<crate::session::GitStats> {
+///
+/// `known_merged` short-circuits the merge check: once a caller has already
+/// seen `Some(true)` for this worktree, that answer is monotonic (a landed
+/// squash never un-lands), so re-running `merged_into_default`'s two to four
+/// `git` subprocesses — one of which writes a fresh dangling commit — on
+/// every call is pure waste. Pass `true` once the caller's own cache holds
+/// `Some(true)`.
+pub fn worktree_stats(cwd: &Path, known_merged: bool) -> Option<crate::session::GitStats> {
     // One status call carries dirty, the untracked count AND — via the
     // `# branch.ab` header — ahead/behind, and doubles as the "is this a work
     // tree" probe: outside one it fails, exactly as a `rev-parse` would.
@@ -485,8 +492,13 @@ pub fn worktree_stats(cwd: &Path) -> Option<crate::session::GitStats> {
     let (ahead, behind) = status.ahead_behind.unwrap_or_else(|| ahead_behind(cwd));
     // Only a branch that *is* ahead has commits whose fate is in question, and
     // the check costs two to four `git` runs — so nothing ahead pays nothing,
-    // and reports `None` rather than an answer nobody asked for.
-    let merged = (ahead > 0).then(|| merged_into_default(cwd)).flatten();
+    // and reports `None` rather than an answer nobody asked for. A worktree
+    // already known merged skips the recheck entirely: see `known_merged`.
+    let merged = if known_merged {
+        Some(true)
+    } else {
+        (ahead > 0).then(|| merged_into_default(cwd)).flatten()
+    };
     Some(crate::session::GitStats {
         files_changed,
         insertions,
