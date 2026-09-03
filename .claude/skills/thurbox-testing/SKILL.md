@@ -64,7 +64,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   smoke script, which could not see the byte stream and duplicated this harness.
 - **`tests/reap_e2e.rs`** — the reap of a soft-deleted row against a *real* tmux
   on a throwaway socket (skipped when tmux is absent), because the bug it pins
-  only exists in how tmux resolves a target. Six tests, both directions of the
+  only exists in how tmux resolves a target. Eight tests, both directions of the
   same contract: a stale row's reap spares a live namesake's window, a namesake's
   pane the stale row still remembers, a live window whose name only collides
   after `sanitize_window_name` ('fleet 1' and 'fleet_1' share one `tb-fleet_1`),
@@ -72,6 +72,12 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   own pane resolves, and one whose pane id resolves to nothing but whose name
   nobody else answers to, still lose their window. Sparing must not be bought by
   making the reap a no-op.
+  The last two cover the *other* caller of that ownership gate, a spawn's
+  cleanup of the window it leaked when its own upsert failed: they call
+  `session_ops::delete::owned_agent_pane_for` directly — the decision the
+  cleanup delegates — because the upsert cannot be made to fail through the
+  public API, so a test of the spawn path itself would be testing something
+  else.
 
 Tests that shell out to `git` **must scrub the `GIT_*` location variables**
 (`git::GIT_LOCATION_ENV`): git exports them to hook processes, so the suite running
