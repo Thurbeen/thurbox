@@ -633,7 +633,8 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             // decision about *this* backend, since a mirrored host's rows share
             // the namespace.
             let backend = crate::session_ops::spawn::backend_type_for(host.as_deref())?;
-            let existing = resolve_existing(db, &name, on_existing, &backend)?;
+            let existing =
+                resolve_existing(db, &name, on_existing, &backend, reports_as.as_deref())?;
             if let Existing::Answered(output) = existing {
                 return Ok(*output);
             }
@@ -660,8 +661,15 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                 Err(e) => return Err(rollback_replace(db, &existing, e).into()),
             };
             if let Some(declared) = &reports_as {
-                db.set_reports_as(res.session_id, Some(declared))
-                    .map_err(|e| format!("set_reports_as: {e}"))?;
+                if let Err(e) = db.set_reports_as(res.session_id, Some(declared)) {
+                    return Err(format!(
+                        "session '{}' ({}) was created, but declaring it as '{declared}' \
+                         failed: set_reports_as: {e}. Retry with `thurbox-cli session \
+                         reports-as {} {declared}`",
+                        res.name, res.session_id, res.session_id
+                    )
+                    .into());
+                }
             }
             // Nothing has signalled yet, so this is `uncovered` or `unreported`
             // — read against whatever will actually report.
@@ -1566,11 +1574,16 @@ enum Existing {
 /// same-named sessions, or destroying one of them, is a guess about which was
 /// meant. It is the same rule [`super::session_ref`] follows, and it still
 /// applies within one backend — thurbox enforces no uniqueness there either.
+///
+/// `reports_as` is only consulted on the `adopt` arm: `replace` and `None`
+/// both flow back into the normal creation path, which already applies it to
+/// the freshly spawned session.
 fn resolve_existing(
     db: &Database,
     name: &str,
     mode: OnExisting,
     backend: &str,
+    reports_as: Option<&str>,
 ) -> Result<Existing, CommandError> {
     if mode == OnExisting::Allow {
         return Ok(Existing::None);
@@ -1594,9 +1607,15 @@ fn resolve_existing(
                 .join(", ")
         )
         .into()),
-        (OnExisting::Adopt, 1) => Ok(Existing::Answered(Box::new(existing_session_output(
-            db, &found[0],
-        )))),
+        (OnExisting::Adopt, 1) => {
+            if let Some(declared) = reports_as {
+                db.set_reports_as(found[0].id, Some(declared))
+                    .map_err(|e| format!("set_reports_as: {e}"))?;
+            }
+            Ok(Existing::Answered(Box::new(existing_session_output(
+                db, &found[0],
+            ))))
+        }
         (OnExisting::Replace, 1) => {
             crate::session_ops::delete::delete_session_headless(db, found[0].id, true)?;
             Ok(Existing::Replaced(found[0].id))
@@ -2126,7 +2145,7 @@ mod tests {
         for mode in [OnExisting::Fail, OnExisting::Adopt, OnExisting::Replace] {
             assert!(
                 matches!(
-                    resolve_existing(&db, "build", mode, "local-tmux"),
+                    resolve_existing(&db, "build", mode, "local-tmux", None),
                     Ok(Existing::None)
                 ),
                 "{mode:?} must not act on a row belonging to another host"
@@ -2136,7 +2155,7 @@ mod tests {
         assert!(db.get_session_by_id(remote.id).unwrap().is_some());
 
         // A create *for that host* does see it, on the same terms.
-        assert!(resolve_existing(&db, "build", OnExisting::Fail, "ssh:devbox").is_err());
+        assert!(resolve_existing(&db, "build", OnExisting::Fail, "ssh:devbox", None).is_err());
     }
 
     /// Ambiguity here is the same failure the reference resolver reports, so it
@@ -2147,7 +2166,8 @@ mod tests {
         let db = db();
         db.upsert_session(&make_test_session("twin")).unwrap();
         db.upsert_session(&make_test_session("twin")).unwrap();
-        let err = resolve_existing(&db, "twin", OnExisting::Adopt, "local-tmux").unwrap_err();
+        let err =
+            resolve_existing(&db, "twin", OnExisting::Adopt, "local-tmux", None).unwrap_err();
         assert_eq!(err.exit_code, super::super::EXIT_AMBIGUOUS);
         assert!(err.contains("matches 2"), "got {err}");
     }

@@ -599,6 +599,46 @@ fn create_answers_an_existing_name_four_ways() {
     assert_eq!(rows.as_array().map(Vec::len), Some(1));
 }
 
+/// `--on-existing adopt --reports-as <agent>` must apply the declaration to
+/// the row it hands back, not silently drop it: `resolve_existing` used to
+/// return the adopted session before the create path's `reports_as` handling
+/// ever ran, so a driver adopting an existing `--command` session and
+/// declaring what actually runs in it got exit 0 with the declaration
+/// discarded.
+#[test]
+fn adopt_applies_reports_as_to_the_session_it_hands_back() {
+    let env = Env::new();
+    let repo = env.path("home");
+    let id = seed_command_session(&env, "worker");
+
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "worker",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--on-existing",
+        "adopt",
+        "--reports-as",
+        "claude",
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(doc["id"], Value::String(id.clone()));
+    assert_eq!(doc["created"], Value::Bool(false));
+    assert_eq!(doc["reports_as"], Value::String("claude".into()), "{doc}");
+
+    let db = open_db(&env);
+    let declared = db
+        .load_reports_as()
+        .expect("query")
+        .get(&id.parse().expect("seeded id"))
+        .cloned();
+    assert_eq!(declared, Some("claude".into()));
+}
+
 /// A name matching more than one session is refused for `adopt` and `replace`,
 /// because either would be a guess about which session was meant.
 ///
