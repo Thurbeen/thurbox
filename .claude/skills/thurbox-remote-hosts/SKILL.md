@@ -210,19 +210,61 @@ session), never on the loop, ADR-P12).
 - **Remote teardown** (WSL inherits the SSH path): `session delete --force`
   teardown is **backend-aware** — `teardown_runtime_resources` resolves the
   session's `HostDef` from its `backend_type` and, for a remote session, kills
-  the pane via `kill_pane_remote(host, session_id, name, backend_id)` and removes
-  each worktree via `git::remove_worktree_on(Some(host), …)` (local sessions keep
-  the `kill_window`/`remove_worktree` + Windows pane-reap path). Both kills are
-  resolved from the window's own `@thurbox_session` stamp, not the row's pane id
-  or its name (ADR-25) — the host's tmux server reissues pane ids when it
-  restarts, so a remembered `%N` there can be a live namesake's pane; the
-  `backend_id` argument is the psmux fallback only. Best-effort: an
+  its windows via `kill_remote_windows(host, session_id, name, SessionPanes)` and
+  removes each worktree via `git::remove_worktree_on(Some(host), …)` (local
+  sessions keep the `kill_window`/`remove_worktree` + Windows pane-reap path).
+  Every kill is resolved from the window's own `@thurbox_session` stamp, not the
+  row's pane id or its name (ADR-25) — the host's tmux server reissues pane ids
+  when it restarts, so a remembered `%N` there can be a live namesake's pane; the
+  `SessionPanes` argument is the psmux fallback only. Best-effort: an
   unreachable host or a missing `hosts.toml` entry is recorded in
   `ForceDeleteReport.remote_teardown_error` (surfaced in the CLI JSON) and the
   row is still soft-/force-deleted. Like local force-delete it removes the
   worktree *directory* only, leaving the branch. `wsl.exe`'s exact arg-passing
   isn't verified in CI (no WSL runner); the construction is unit-tested
   (`transport::tests::wsl_*`, `git_command_wsl_*`).
+- **A session owns two windows**, and every teardown takes both: the agent
+  (`tb-`) and the companion shell (`tbs-`). The shell is found by its stamp
+  (`@thurbox_role = shell`) rather than by `sessions.shell_backend_id`, which is
+  written only once the interface has actually opened one — so the column is
+  NULL for nearly every remote row, and a teardown keyed on it left a live
+  `tbs-` window behind for good. `stop` and `restart` take it down too; the
+  interface reopens one on demand.
+- **A remote teardown never starts a server.** `ensure_ready` creates the
+  multiplexer server *and* the thurbox session as a side effect, so a one-shot
+  `thurbox-cli` tearing a session down used to leave an empty server on the
+  host. `kill_remote_windows` / `remote_window_index` / `agent_window` read one
+  `list-windows` (guarded by `has-session`) and kill with a one-shot
+  `kill-pane`. And they only act on a socket the host has vouched for:
+  `known_host_socket` takes `hosts.toml`'s `socket`, else what the host's own
+  CLI reported (`learn_host_socket`), else — for a host with `share_sessions =
+  false`, where nothing but this thurbox writes there — this build's default.
+  A **shareable** host that has reported nothing is refused with "socket
+  unknown for host '…'", because this build's default is a guess about someone
+  else's machine (a dev build aims at `thurbox-dev`; a relocated data dir
+  derives its own name).
+- **A remote soft delete is reaped on the host.** `reap_soft_deleted` no longer
+  gives up on a remote row: it asks a shareable host to collect it
+  (`thurbox-cli session reap <ref>` there, which owns the host's own row), and
+  otherwise kills the windows itself through the stamp. Driven by the TUI's
+  `kernel::reaper` and, with no interface open, by `reap_overdue_soft_deletes`
+  on the heartbeat — which gates a remote row on the *host's* window listing,
+  exactly as it gates a local one on this machine's. Without it every soft
+  delete of a remote session (the TUI's default) leaked its `tb-`/`tbs-` pair
+  forever, and re-creating the name put a second agent beside the first.
+- **A local tombstone beats a host-active row** unless the host wrote the row
+  *after* the delete. `session list` carries `updated_at` for exactly this;
+  `mirror::apply` compares it with the local `deleted_at`, reports the losers in
+  `MirrorReport.tombstoned`, and `mirror_host` pushes each as a `session delete`
+  to the host — the symmetric counterpart of `register_unknown`. Before that, a
+  delete taken while the host's CLI was in backoff was undone on the next mirror
+  pass, forever.
+- **A delegated delete the host does not know falls through** to the local
+  teardown instead of erroring: a fork minted here, a pre-ADR-24 row, or one a
+  peer already deleted there all make the host answer "Session not found", and
+  aborting left the local row active and attached. The fall-through is recorded
+  in `ForceDeleteReport.host_unknown`. Any *other* host error still aborts — the
+  session may still be running there.
 - **Local e2e**: `scripts/dev/e2e/linux-container.sh up` spins a throwaway Podman
   container (sshd + tmux + git) and `… test` asserts a session lands on the
   `ssh:podman` backend (state under `target/`, never touches your real

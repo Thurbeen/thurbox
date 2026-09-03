@@ -1318,6 +1318,40 @@ legacy path and is registered on the host by `session sync --adopt`, as is
 any session created before this change. `session register` is the one place
 a row is made for a window that already runs, and it refuses to launch.
 
+Reconciliation has a direction, and delegation has a fallback. Three rules
+follow from the host owning the record, none of which the first cut had:
+
+- **A local tombstone is a decision, not a gap.** The mirror read "the host
+  lists it as active" as "restore it", so a delete taken while the host's CLI
+  was in backoff — or while sharing was off — was undone on the next pass, and
+  on every pass after. The listing carries `updated_at` for the ordering the
+  two sides otherwise lack: the host's row wins only when the host wrote it
+  *after* the local `deleted_at` (a peer restored it there). Otherwise the
+  tombstone stands and the delete is pushed to the host as `session delete`,
+  the symmetric counterpart of `session sync --adopt`'s `register_unknown` —
+  and unconditional where that one is opt-in, since a delete the host never
+  hears is a window running there forever. The two timestamps come from two
+  clocks, which is tolerable here and nowhere near a lock: the comparison only
+  decides which of two *user* actions minutes or hours apart came first, and
+  its failure mode under skew is a delete pushed again rather than a session
+  destroyed.
+- **"The host does not know this row" is not a failure to delete.** The host
+  resolves the id against its *active* rows, so a fork minted here, a
+  pre-ADR-24 row, and one a peer already deleted all answer "Session not
+  found". Aborting on it left the local row active and attached. It falls
+  through to the local teardown instead, recorded in the report's
+  `host_unknown`; any other host error still aborts, because the session may
+  still be running there.
+- **A soft delete is reaped on the host.** Nothing reaps a soft-deleted row
+  but an interface's `kernel::reaper` or the heartbeat's sweep, and a host
+  running only `thurbox-cli` has neither — so the undo window never closed
+  there and every remote soft delete leaked its windows. `session reap <ref>`
+  is that operation as a verb, and a peer calls it once the undo window is up
+  (a non-shareable host's windows are killed directly instead). A remote
+  teardown also never calls `ensure_ready`, which would *create* the server
+  and the thurbox session on the host as a side effect of tearing one down,
+  and acts only on a socket the host has vouched for (`known_host_socket`).
+
 ---
 
 ## ADR-25: A window's identity is a stamp on the window, not its name
@@ -1378,4 +1412,9 @@ while it is the only one with that name, and it is stamped on adoption
 (`restore`'s adopt, `session register`), so a pre-ADR-25 window converts on
 first use. psmux (ADR-13) has no usable window options, so every window there
 reads as unstamped and the name fallback stands — the one place it still
-does, matching the shape of the other psmux carve-outs.
+does, matching the shape of the other psmux carve-outs. And because the stamp
+answers for a *role*, the companion shell became reachable: a session owns a
+`tb-` and a `tbs-` window, `sessions.shell_backend_id` is written only once
+the interface has opened one, and every teardown — force delete, reap, `stop`,
+`restart`, `--on-existing replace` — now takes both down through the stamp
+rather than through a column that is usually NULL.

@@ -86,7 +86,7 @@ fn the_json_a_host_prints_is_the_json_a_peer_reads() {
     let id = SessionId::default();
     let mut s = row(id, "shape", "local-tmux");
     s.additional_dirs = vec![PathBuf::from("/srv/extra")];
-    let printed = mirror::session_to_json(&s, Some("done"), Some("main"));
+    let printed = mirror::session_to_json(&s, Some("done"), Some("main"), Some(1));
     let read = mirror::session_from_json(&printed, BACKEND).unwrap();
     assert_eq!(read.session.id, id);
     assert_eq!(
@@ -105,7 +105,7 @@ fn register_records_only_a_window_that_is_running() {
     // launches, and it will not invent a row for a window that is not there.
     let db = Database::open_in_memory().unwrap();
     let id = SessionId::default();
-    let body = mirror::session_to_json(&row(id, "elsewhere", "local-tmux"), None, None);
+    let body = mirror::session_to_json(&row(id, "elsewhere", "local-tmux"), None, None, None);
     let err = run(
         Action::Register {
             json_row: body.to_string(),
@@ -131,7 +131,7 @@ fn register_refuses_an_id_or_a_name_already_here() {
     let db = Database::open_in_memory().unwrap();
     let id = SessionId::default();
     db.upsert_session(&row(id, "taken", "local-tmux")).unwrap();
-    let same_id = mirror::session_to_json(&row(id, "other", "local-tmux"), None, None);
+    let same_id = mirror::session_to_json(&row(id, "other", "local-tmux"), None, None, None);
     let err = run(
         Action::Register {
             json_row: same_id.to_string(),
@@ -142,6 +142,7 @@ fn register_refuses_an_id_or_a_name_already_here() {
     assert!(err.contains("already registered"), "{err}");
     let same_name = mirror::session_to_json(
         &row(SessionId::default(), "taken", "local-tmux"),
+        None,
         None,
         None,
     );
@@ -176,8 +177,16 @@ fn sync_with_no_shareable_host_configured_is_an_empty_report() {
 fn the_mirror_reconciles_a_real_database_both_ways() {
     let db = Database::open_in_memory().unwrap();
     let theirs = SessionId::default();
+    // `updated_at` later than any tombstone this test takes: the restore leg
+    // below is the host having written the row *after* the local delete, which
+    // is the only reading that outranks a local tombstone.
     let host_rows = vec![mirror::session_from_json(
-        &mirror::session_to_json(&row(theirs, "theirs", "local-tmux"), Some("working"), None),
+        &mirror::session_to_json(
+            &row(theirs, "theirs", "local-tmux"),
+            Some("working"),
+            None,
+            Some(u64::MAX),
+        ),
         BACKEND,
     )
     .unwrap()];

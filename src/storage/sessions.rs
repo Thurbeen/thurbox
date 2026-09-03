@@ -64,6 +64,11 @@ pub struct DeletedSessionInfo {
     /// window's own `@thurbox_session` stamp instead (ADR-25). Empty for rows
     /// persisted before local spawns recorded an id.
     pub backend_id: String,
+    /// The companion shell's pane id (`%N`), when the interface ever opened
+    /// one. Read for the same reason as [`Self::backend_id`] and with the same
+    /// caveat: a teardown resolves the shell window by its stamp, and this is
+    /// only the tiebreaker for a multiplexer that carries no stamps (psmux).
+    pub shell_backend_id: Option<String>,
     pub deleted_at: u64,
     /// Whether this row was hard-deleted (tmux window + worktrees torn down). A
     /// force-deleted session is shown in the restore list and normally cannot be
@@ -770,7 +775,7 @@ impl Database {
         let sql = format!(
             "SELECT s.id, s.name, s.agent, s.agent_session_id, \
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
-             s.force_deleted, s.backend_id, \
+             s.force_deleted, s.backend_id, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
@@ -789,10 +794,11 @@ impl Database {
             let backend_type: String = row.get(7)?;
             let force_deleted: i64 = row.get(8)?;
             let backend_id: String = row.get(9)?;
-            let wt_repo: Option<String> = row.get(10)?;
-            let wt_path: Option<String> = row.get(11)?;
-            let wt_branch: Option<String> = row.get(12)?;
-            let wt_mine: Option<bool> = row.get(13)?;
+            let shell_backend_id: Option<String> = row.get(10)?;
+            let wt_repo: Option<String> = row.get(11)?;
+            let wt_path: Option<String> = row.get(12)?;
+            let wt_branch: Option<String> = row.get(13)?;
+            let wt_mine: Option<bool> = row.get(14)?;
 
             let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch, wt_mine);
 
@@ -806,6 +812,7 @@ impl Database {
                     parent_session_id: parent_str.and_then(|s| s.parse().ok()),
                     backend_type,
                     backend_id,
+                    shell_backend_id,
                     deleted_at: deleted_at as u64,
                     force_deleted: force_deleted != 0,
                     worktrees: Vec::new(),
@@ -1094,6 +1101,33 @@ impl Database {
     /// does not carry it cannot describe what it diffed. Rows with no base are
     /// omitted rather than mapped to an empty string — "never recorded" is a
     /// real answer, and the caller shows uncommitted changes instead.
+    /// When each active session's row was last written (millis since epoch).
+    ///
+    /// The ordering a peer needs to read a `session list` answer against its own
+    /// tombstones: a host row touched *after* a local delete is a restore that
+    /// happened there, while an untouched one is a delete that has not reached
+    /// the host yet. Loaded in one statement beside the other per-row facts the
+    /// listing carries.
+    pub fn load_updated_at(&self) -> rusqlite::Result<HashMap<SessionId, u64>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT id, updated_at FROM sessions WHERE deleted_at IS NULL")?;
+        let rows = stmt.query_map([], |row| {
+            let id_str: String = row.get(0)?;
+            let at: i64 = row.get(1)?;
+            Ok((id_str, at))
+        })?;
+
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id_str, at) = row?;
+            if let Ok(id) = id_str.parse::<SessionId>() {
+                map.insert(id, at as u64);
+            }
+        }
+        Ok(map)
+    }
+
     pub fn load_base_branches(&self) -> rusqlite::Result<HashMap<SessionId, String>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, base_branch FROM sessions \

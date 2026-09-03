@@ -23,6 +23,13 @@ pub struct ForceDeleteReport {
     /// unreachable host is expected (that's often *why* someone force-deletes),
     /// so this is recorded rather than aborting the delete.
     pub remote_teardown_error: Option<String>,
+    /// Set when the host was asked to delete the session and answered that it
+    /// has no such row — a fork minted here, a row from before ADR-24, or one
+    /// a peer already deleted there. The delete is then taken from here
+    /// instead of failing, and this says so: the alternative was an error that
+    /// left the local row active and attached, which reads as "delete does
+    /// nothing".
+    pub host_unknown: Option<String>,
     /// `session.post_delete` hooks that failed. The delete stands regardless.
     pub hook_failures: Vec<String>,
 }
@@ -63,7 +70,22 @@ pub fn delete_session_headless(
             if force {
                 args.push("--force");
             }
-            let answer = super::host_cli::run(&host, &cli, &args)?;
+            let answer = match super::host_cli::run(&host, &cli, &args) {
+                Ok(answer) => answer,
+                // The host does not know this row, so there is nothing there to
+                // delegate to — but the row here is real and the caller asked
+                // for it to go. Take the delete from here instead: the teardown
+                // is addressed by uuid, so it still reaches exactly this
+                // session's windows on that host if they are there at all.
+                Err(e) if is_unknown_session(&e) => {
+                    report.host_unknown = Some(format!(
+                        "'{}' does not know this session ({e}); deleted from here",
+                        host.name
+                    ));
+                    return finish_locally(db, &session, force, report, &hook_ctx);
+                }
+                Err(e) => return Err(e),
+            };
             report.killed_window = answer
                 .get("killed_window")
                 .and_then(serde_json::Value::as_bool)
@@ -85,18 +107,40 @@ pub fn delete_session_headless(
         }
     }
 
+    finish_locally(db, &session, force, report, &hook_ctx)
+}
+
+/// The delete taken from here: tear down what `force` asks for, mark the row,
+/// fire the post hooks. Shared by the plain path and by a delegated delete the
+/// host could not take (see [`is_unknown_session`]).
+fn finish_locally(
+    db: &Database,
+    session: &crate::sync::SharedSession,
+    force: bool,
+    mut report: ForceDeleteReport,
+    hook_ctx: &crate::session::HookContext,
+) -> Result<ForceDeleteReport, String> {
     if force {
-        teardown_runtime_resources(&session, &mut report);
+        teardown_runtime_resources(session, &mut report);
         report.disabled_automations = db
-            .disable_send_automations_for_session(session_id)
+            .disable_send_automations_for_session(session.id)
             .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
     }
 
-    delete_row(db, session_id, force)?;
+    delete_row(db, session.id, force)?;
 
-    report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
+    report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, hook_ctx);
 
     Ok(report)
+}
+
+/// Whether a host CLI's refusal means "no such session here".
+///
+/// The host resolves the id against its *active* rows, so it answers this for
+/// a session it never knew and for one it has already deleted alike — both of
+/// which are cases where the local row still has to go.
+fn is_unknown_session(error: &str) -> bool {
+    error.contains("Session not found")
 }
 
 /// Mark the row gone. A force delete says so in the same statement rather than
@@ -195,10 +239,14 @@ pub fn teardown_runtime_resources(
 ///
 /// Worktrees are deliberately untouched: they are what makes the undo lossless.
 ///
+/// A session on a remote host is reaped *there* rather than left running: a
+/// host has no interface of its own to collect it, so "left alone" meant
+/// forever.
+///
 /// Returns whether the row was processed — `false` when it came back (the user
 /// undid it) or was force-deleted (already torn down), both of which are
 /// ordinary races rather than failures. It is not a claim that a window came
-/// down: a row that owns none (see [`owned_agent_pane`]) still releases its
+/// down: a row that owns none (see [`owned_windows_in`]) still releases its
 /// derived artifacts and reports `true`.
 pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
     let Some(row) = db
@@ -213,38 +261,36 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         return Ok(false);
     }
 
-    // A remote session's window lives on its host, and a best-effort reap is
-    // not the place to be resolving hosts and dialing ssh. Left running and
-    // reported rather than half-killed.
+    // A remote session's windows live on its host, so the reap goes there.
+    // Leaving them was the old answer, and it meant every soft delete of a
+    // remote session leaked a `tb-`/`tbs-` pair forever — recreating the name
+    // then put a second agent beside the first.
     if crate::session::is_remote_backend(&row.backend_type) {
-        tracing::warn!(
-            "'{}' was soft-deleted on {}; its remote window is left running",
-            row.name,
-            row.backend_type
-        );
-        return Ok(false);
-    }
-
-    // Strict: kill only the window this row still owns. A reap must not resolve
-    // a pane id or a `tb-<name>` target another row answers to — that is how
-    // deleting a frozen session came to kill its replacement 30-60s later, and
-    // why each delete-and-recreate made the next one die sooner.
-    match owned_agent_pane(&row) {
-        // Not worth failing a cleanup over if the window went away underneath.
-        Some(target) => {
+        reap_remote(&row);
+    } else {
+        // Strict: kill only the windows this row still owns. A reap must not
+        // resolve a pane id or a `tb-<name>` target another row answers to —
+        // that is how deleting a frozen session came to kill its replacement
+        // 30-60s later, and why each delete-and-recreate made the next one die
+        // sooner.
+        let owned = owned_windows(&row);
+        if owned.is_empty() {
+            // The windows may already be gone — the agent exited, or a previous
+            // reap got there first. Logged rather than silent: owning nothing is
+            // also the shape a misdirected kill used to take.
+            tracing::debug!(
+                "reap of '{}': pane {:?} owns no window it may kill; \
+                 leaving any same-named window alone",
+                row.name,
+                row.backend_id
+            );
+        }
+        for target in owned {
+            // Not worth failing a cleanup over if the window went away underneath.
             if let Err(e) = crate::agent::tmux::kill_window_at(&target) {
                 tracing::debug!("kill_window_at({target}) during reap: {e}");
             }
         }
-        // The window may already be gone — the agent exited, or a previous reap
-        // got there first. Logged rather than silent: owning nothing is also
-        // the shape a misdirected kill used to take.
-        None => tracing::debug!(
-            "reap of '{}': pane {:?} owns no window it may kill; \
-             leaving any same-named window alone",
-            row.name,
-            row.backend_id
-        ),
     }
 
     // Derived per-session artifacts, both rebuilt on restore.
@@ -259,30 +305,91 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
     Ok(true)
 }
 
-/// The window a soft-deleted row still owns, if any — the sole target its reap
-/// may kill, and the answer to whether it has anything left to release.
+/// The windows a soft-deleted row still owns — its agent and its companion
+/// shell — the only targets its reap may kill, and the answer to whether it has
+/// anything left to release.
 ///
 /// The one place ownership is decided, so the reap and the headless sweep that
 /// gates on it cannot drift apart. It is the window's own stamp that settles
 /// it (ADR-25): the row's remembered pane id proves nothing after a tmux
 /// server has reissued it, and the `tb-<name>` a namesake shares proves less.
+/// The shell is included for the same reason it is included in every other
+/// teardown — `shell_backend_id` is written only once the interface has opened
+/// one, so the column is no guide to whether the window is there.
 ///
 /// Conservatively owns nothing when the listing fails or cannot tell: leaking a
 /// window costs a stale agent, killing the wrong one costs live work.
-pub fn owned_agent_pane(row: &DeletedSessionInfo) -> Option<String> {
-    owned_agent_pane_in(&crate::agent::tmux::local_window_index().ok()?, row)
+fn owned_windows(row: &DeletedSessionInfo) -> Vec<String> {
+    match crate::agent::tmux::local_window_index() {
+        Ok(index) => owned_windows_in(&index, row),
+        Err(_) => Vec::new(),
+    }
 }
 
-/// [`owned_agent_pane`] against a listing the caller already holds, so a sweep
-/// over several rows pays for one `list-windows` instead of one each.
+/// The windows a soft-deleted row owns, against a listing the caller already
+/// holds — so a sweep over several rows pays for one `list-windows` instead of
+/// one each.
 ///
 /// A window whose pane has already exited still counts: `remain-on-exit` keeps
 /// it on the server, and leaving it there is the leak the reap exists to stop.
-pub fn owned_agent_pane_in(
+pub fn owned_windows_in(
     index: &crate::agent::tmux::WindowIndex,
     row: &DeletedSessionInfo,
-) -> Option<String> {
-    index.agent_window(&row.id.to_string(), &row.name).pane()
+) -> Vec<String> {
+    let id = row.id.to_string();
+    [
+        index.agent_window(&id, &row.name),
+        index.shell_window(&id, &row.name),
+    ]
+    .into_iter()
+    .filter_map(crate::agent::tmux::Located::pane)
+    .collect()
+}
+
+/// Let go of a soft-deleted remote session's windows on the host they run on.
+///
+/// A host that runs a thurbox of its own is asked to reap the row itself
+/// (`session reap`): its database holds the same row, and only the host can
+/// mark it there. Otherwise the windows are killed from here, resolved by the
+/// stamp exactly as the local branch does.
+///
+/// Best-effort and silent about the ordinary cases: an unreachable host is
+/// often *why* the session was deleted, and the reap runs on a timer.
+fn reap_remote(row: &DeletedSessionInfo) {
+    let Some(Some(host)) = super::resolve_host(&row.backend_type) else {
+        tracing::warn!(
+            "'{}' was soft-deleted on {}, which is not in hosts.toml; \
+             its windows are left running there",
+            row.name,
+            row.backend_type
+        );
+        return;
+    };
+    if let Some(cli) = super::host_cli::delegated(&host) {
+        let id = row.id.to_string();
+        match super::host_cli::run(&host, &cli, &["session", "reap", &id]) {
+            Ok(_) => return,
+            // The host has no row to reap — the delete was taken here while it
+            // was unreachable, and the mirror has not pushed it yet. Its
+            // windows are still there, so they come down from here.
+            Err(e) if e.contains("not found") => {
+                tracing::debug!("'{}' is unknown on '{}': {e}", row.name, host.name);
+            }
+            Err(e) => {
+                tracing::warn!("reap of '{}' on '{}': {e}", row.name, host.name);
+                return;
+            }
+        }
+    }
+    let panes = crate::agent::tmux::SessionPanes {
+        agent: &row.backend_id,
+        shell: row.shell_backend_id.as_deref().unwrap_or_default(),
+    };
+    if let Err(e) =
+        crate::agent::tmux::kill_remote_windows(&host, &row.id.to_string(), &row.name, panes)
+    {
+        tracing::warn!("reap of '{}' on '{}': {e}", row.name, host.name);
+    }
 }
 
 /// Kill the session's window on the local tmux server, reaping the pane's child
@@ -302,6 +409,13 @@ fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDel
         Err(e) => tracing::warn!("kill_window({}) failed: {e}", session.name),
     }
 
+    // The companion shell is the session's second window and nothing else ever
+    // takes it down — leaving it is how a force-deleted session kept a live
+    // `tbs-` window on the server for good.
+    if let Err(e) = crate::agent::tmux::kill_shell_window(&session.id.to_string(), &session.name) {
+        tracing::warn!("kill_shell_window({}) failed: {e}", session.name);
+    }
+
     // `kill-window` returns before the OS reaps the pane's child process; wait
     // for it (force-terminating as a backstop) before the rmdir steps below.
     // NOTE: this only handles a handle held by the *pane child*. psmux ALSO holds
@@ -316,17 +430,29 @@ fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDel
     }
 }
 
-/// Kill the session's pane on a remote host by its persisted pane id (`%N`) —
-/// the addressable unit remotely (there's no cheap "window by thurbox name"
-/// lookup over the wire). Best-effort: a blank pane id or an unreachable host
-/// is recorded in `report.remote_teardown_error`, never aborts.
+/// Kill the session's windows — agent and companion shell — on a remote host,
+/// resolved by the stamp each carries. Best-effort: an unreachable host, or one
+/// whose socket is not known, is recorded in `report.remote_teardown_error` and
+/// never aborts the delete.
 fn kill_remote_window(
     host: &crate::session::HostDef,
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
-    let pane = session.backend_id.trim();
-    match crate::agent::tmux::kill_pane_remote(host, &session.id.to_string(), &session.name, pane) {
+    let panes = crate::agent::tmux::SessionPanes {
+        agent: session.backend_id.trim(),
+        shell: session
+            .shell_backend_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default(),
+    };
+    match crate::agent::tmux::kill_remote_windows(
+        host,
+        &session.id.to_string(),
+        &session.name,
+        panes,
+    ) {
         Ok(true) => report.killed_window = true,
         // Nothing there the row could claim: already gone, or a window the
         // host's listing attributes to somebody else. Not an error, and not a
@@ -546,8 +672,8 @@ mod tests {
 
     // The resolved-remote-host kill/worktree path (a configured, reachable
     // host) is not unit-tested here: it needs a live SSH/WSL host and
-    // `kill_pane_remote` would issue a real connection. The routing is thin —
-    // `remove_worktree_on` / `kill_pane_remote` are exercised where they live —
+    // `kill_remote_windows` would issue a real connection. The routing is thin —
+    // `remove_worktree_on` / `kill_remote_windows` are exercised where they live —
     // so these tests cover the two host-resolution failure modes instead.
     // (cfg(test) sandboxes the config dir, so `load_all` sees an empty
     // `hosts.toml` and never touches the real network.)
@@ -574,6 +700,46 @@ mod tests {
                 .unwrap()
                 .force_deleted
         );
+    }
+
+    #[test]
+    fn force_delete_on_a_host_whose_socket_is_unknown_records_the_refusal() {
+        // The teardown used to build a backend on this build's own socket name
+        // and `ensure_ready` it, which *creates* the server and the thurbox
+        // session on the host — a teardown leaving an empty server behind on
+        // somebody else's machine, while the host's own thurbox ran on another
+        // socket entirely. It refuses instead, and says so.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let path = crate::agent::host_config::hosts_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[[hosts]]\nname = \"devbox\"\ndestination = \"me@devbox\"\n",
+        )
+        .unwrap();
+
+        // Not delegated — no reachable CLI there — so the teardown is the
+        // local one, aimed at the host's tmux server. Forced rather than
+        // probed so the test never dials.
+        crate::session_ops::host_cli::fake::force_usable(crate::session_ops::host_cli::Usable::No(
+            "no cli".into(),
+        ));
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+
+        let report = delete_session_headless(&db, id, true).unwrap();
+        crate::session_ops::host_cli::fake::clear();
+
+        assert!(!report.killed_window);
+        let err = report
+            .remote_teardown_error
+            .expect("remote teardown error recorded");
+        assert!(
+            err.contains("socket unknown for host 'devbox'"),
+            "got {err}"
+        );
+        assert!(db.get_session_by_id(id).unwrap().is_none());
     }
 
     #[test]

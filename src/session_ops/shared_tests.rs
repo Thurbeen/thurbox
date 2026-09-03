@@ -100,17 +100,27 @@ fn rig() -> Rig {
             ["session", "list"] => Ok(Value::Array(
                 host.active
                     .iter()
-                    .map(|s| mirror::session_to_json(s, Some("working"), None))
+                    .map(|s| mirror::session_to_json(s, Some("working"), None, Some(1)))
                     .collect(),
             )),
             ["session", "delete", id, rest @ ..] => {
                 let id: SessionId = id.parse().unwrap();
+                if !host.active.iter().any(|s| s.id == id) {
+                    // Word for word what the host's own resolver answers for a
+                    // row it does not hold — see `cli::session_ref::resolve`.
+                    return Err(format!("Session not found: {id}"));
+                }
                 host.active.retain(|s| s.id != id);
                 let force = rest.contains(&"--force");
                 host.deleted.push((id, force));
                 Ok(
                     json!({ "deleted": true, "killed_window": true, "removed_worktrees": ["/srv/wt"] }),
                 )
+            }
+            ["session", "reap", id] => {
+                let id: SessionId = id.parse().unwrap();
+                let known = host.deleted.iter().any(|(gone, _)| *gone == id);
+                Ok(json!({ "reaped": known, "id": id.to_string() }))
             }
             ["session", "restart", _id, ..] => Ok(json!({ "restarted": true })),
             ["session", "restore", id, ..] => {
@@ -368,4 +378,120 @@ fn a_host_with_sharing_off_is_used_the_old_way() {
     assert_eq!(host_cli::delegated(host), None);
     let reports = mirror::sync(&rig.db, None, false).unwrap();
     assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn a_delete_the_host_does_not_know_is_taken_here_rather_than_failing() {
+    // A fork minted locally on a shareable host, a row from before ADR-24, or
+    // one a peer already deleted there: the host answers "Session not found",
+    // and the delete used to abort on it — leaving the local row active and
+    // attached, which reads as "delete does nothing".
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "unknown-there");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+
+    let report = super::delete_session_headless(&rig.db, id, true).unwrap();
+
+    assert_eq!(
+        fake::calls()[0],
+        vec!["session", "delete", &id.to_string(), "--force"]
+    );
+    let note = report.host_unknown.expect("the fall-through is reported");
+    assert!(note.contains(HOST), "{note}");
+    assert!(
+        rig.db.get_session_by_id(id).unwrap().is_none(),
+        "the local row must go regardless"
+    );
+    assert!(
+        rig.db
+            .get_deleted_session_by_id(id)
+            .unwrap()
+            .unwrap()
+            .force_deleted
+    );
+}
+
+#[test]
+fn any_other_refusal_from_the_host_still_aborts_the_delete() {
+    // The counterpart: only "not found" falls through. A host that failed for
+    // some other reason may still be holding the session, and deleting the
+    // local row would strand it there.
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "wedged");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    fake::install_runner(Box::new(|_, _| Err("worktree is locked".into())));
+
+    let err = super::delete_session_headless(&rig.db, id, true).unwrap_err();
+    assert_eq!(err, "worktree is locked");
+    assert!(rig.db.get_session_by_id(id).unwrap().is_some());
+}
+
+#[test]
+fn a_soft_deleted_row_on_a_shareable_host_is_reaped_there() {
+    // The host's row is soft-deleted too, and a host running only `thurbox-cli`
+    // has no interface to collect it once the undo window closes. Nothing here
+    // asked it to, so every remote soft delete leaked its windows for good.
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "doomed");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.host
+        .borrow_mut()
+        .active
+        .push(host_session(id, "doomed"));
+
+    super::delete_session_headless(&rig.db, id, false).unwrap();
+    let reaped = super::reap_soft_deleted(&rig.db, id).unwrap();
+
+    assert!(reaped, "the row was processed");
+    let reap = fake::calls()
+        .into_iter()
+        .find(|c| c.get(1).map(String::as_str) == Some("reap"))
+        .expect("the host was asked to reap it");
+    assert_eq!(reap, vec!["session", "reap", &id.to_string()]);
+}
+
+#[test]
+fn a_delete_taken_while_the_host_was_unusable_is_pushed_on_the_next_pass() {
+    // The delete lands locally (the host's CLI is in backoff), so the host
+    // still lists the row as active. The mirror used to read that as "restore
+    // me" and undo the delete within one interval, forever.
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "deleted-here");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.host
+        .borrow_mut()
+        .active
+        .push(host_session(id, "deleted-here"));
+
+    fake::force_usable(Usable::No("ssh timed out".into()));
+    super::delete_session_headless(&rig.db, id, false).unwrap();
+    assert!(rig.db.get_session_by_id(id).unwrap().is_none());
+
+    fake::force_usable(Usable::Yes(fake::cli()));
+    let reports = mirror::sync(&rig.db, Some(HOST), false).unwrap();
+
+    assert_eq!(reports[0].tombstoned, vec![id]);
+    assert!(reports[0].restored.is_empty(), "the tombstone stands");
+    assert!(
+        rig.db.get_session_by_id(id).unwrap().is_none(),
+        "the row must not come back"
+    );
+    // And the host is told, so the two sides converge instead of disagreeing
+    // for as long as the row exists.
+    assert!(
+        fake::calls()
+            .iter()
+            .any(|c| c.as_slice() == ["session", "delete", &id.to_string()]),
+        "the delete was pushed to the host: {:?}",
+        fake::calls()
+    );
+    assert!(rig.host.borrow().active.is_empty());
 }

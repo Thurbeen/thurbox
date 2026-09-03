@@ -595,8 +595,19 @@ has the rationale; the shape:
 - **Undo and restore.** `Ctrl+Z` inside the undo window leaves no
   trace. Once the host records a deletion every mirror shows it;
   a restore from any side runs on the host and every mirror shows it
-  back. A soft delete asked for headlessly is reaped by the host's tick
-  once the undo window has passed.
+  back. Once the undo window has passed the session's windows come down
+  on the host — asked for with `thurbox-cli session reap <ref>` there,
+  since a host running only the CLI has no interface of its own to
+  collect them.
+- **A delete sticks.** A tombstone here outranks a row the host still
+  lists as active, unless the host wrote that row *after* the delete
+  (which is a restore taken there): the listing carries `updated_at`
+  for exactly that comparison. A delete the host has not heard —
+  taken while its CLI was unreachable, or while sharing was off — is
+  pushed to it on the next mirror pass, so the two converge instead of
+  undoing each other. And a delete the host answers "no such session"
+  to is taken from here rather than failing: a fork, a row from before
+  sharing, or one a peer already deleted there.
 - **Windows hosts** share through the same path: the probe, the
   provisioning (the release zip) and every delegated command go
   through the PowerShell path the probes already use.

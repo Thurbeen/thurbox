@@ -4,6 +4,8 @@
 //! loop is what actually fires them. `run` just marks an automation due so the
 //! TUI picks it up on its next tick.
 
+use std::collections::HashMap;
+
 use clap::Subcommand;
 use serde_json::{json, Value};
 
@@ -555,17 +557,20 @@ fn poll_local_pane_states(db: &Database) -> usize {
     written
 }
 
-/// Let go of the agents of local sessions soft-deleted longer ago than the
-/// interface's undo window, when the row still owns its window. Returns the ids
-/// reaped. Only rows with a window of their *own* are touched, so a row reaped
+/// Let go of the agents of sessions soft-deleted longer ago than the
+/// interface's undo window, when the row still owns a window. Returns the ids
+/// reaped. Only rows with windows of their *own* are touched, so a row reaped
 /// once costs nothing on every later tick — and a stale row is never reported as
 /// reaped on the strength of a live namesake's window. The gate is
-/// `session_ops::delete::owned_agent_pane_in`, the same and only ownership test
+/// `session_ops::delete::owned_windows_in`, the same and only ownership test
 /// the reap itself applies.
 ///
-/// The listing is taken once and only when a row has actually come due: a
-/// sweep that finds nothing overdue — which is nearly every one — costs no tmux
-/// round trip at all.
+/// A remote row is gated the same way, against its host's own listing rather
+/// than this machine's: a session soft-deleted on a host has no interface there
+/// to collect it, and leaving it was how every headless delete of a remote
+/// session leaked its `tb-`/`tbs-` pair for good. That costs one
+/// `list-windows` per host, and only for a host with a row actually overdue —
+/// the same shape as the remote status poll two steps above.
 ///
 /// Window ownership is the whole gate, so a row that owns none is skipped
 /// entirely and its metrics file and symlink workspace are left in place —
@@ -581,17 +586,15 @@ fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
     let now = current_time_millis();
     let window = crate::kernel::reaper::UNDO_WINDOW.as_millis() as u64;
     let mut reaped = Vec::new();
-    let mut windows: Option<crate::agent::tmux::WindowIndex> = None;
+    let mut windows: HashMap<String, crate::agent::tmux::WindowIndex> = HashMap::new();
     for row in rows {
-        if row.force_deleted
-            || crate::session::is_remote_backend(&row.backend_type)
-            || now.saturating_sub(row.deleted_at) < window
-        {
+        if row.force_deleted || now.saturating_sub(row.deleted_at) < window {
             continue;
         }
         let index = windows
-            .get_or_insert_with(|| crate::agent::tmux::local_window_index().unwrap_or_default());
-        if crate::session_ops::delete::owned_agent_pane_in(index, &row).is_none() {
+            .entry(row.backend_type.clone())
+            .or_insert_with(|| window_index_on(&row.backend_type));
+        if crate::session_ops::delete::owned_windows_in(index, &row).is_empty() {
             continue;
         }
         match crate::session_ops::reap_soft_deleted(db, row.id) {
@@ -601,6 +604,22 @@ fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
         }
     }
     reaped
+}
+
+/// Every thurbox window on the server `backend_type` names. An empty index for
+/// a host that is unconfigured or unreachable, which reads as "owns nothing" —
+/// the conservative answer a teardown gate wants.
+fn window_index_on(backend_type: &str) -> crate::agent::tmux::WindowIndex {
+    if !crate::session::is_remote_backend(backend_type) {
+        return crate::agent::tmux::local_window_index().unwrap_or_default();
+    }
+    match crate::session_ops::resolve_host(backend_type).flatten() {
+        Some(host) => crate::agent::tmux::remote_window_index(&host).unwrap_or_else(|e| {
+            tracing::debug!("could not list the windows of '{}': {e:#}", host.name);
+            crate::agent::tmux::WindowIndex::default()
+        }),
+        None => crate::agent::tmux::WindowIndex::default(),
+    }
 }
 
 /// Execute one automation's action without a TUI, returning the run outcome.

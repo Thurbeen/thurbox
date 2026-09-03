@@ -52,6 +52,41 @@ fn windows() -> Vec<String> {
         .collect()
 }
 
+/// Open a session's companion shell window, stamped the way the interface
+/// stamps the one it spawns. Raw tmux because nothing headless opens a shell:
+/// it is created lazily by `Session::ensure_shell_pane` when the user asks for
+/// it, which is exactly why so many rows have no `shell_backend_id` and the
+/// window has to be found by its stamp.
+fn open_shell_window(session_id: &str, name: &str) -> String {
+    let sessions = tmux(&["list-sessions", "-F", "#{session_name}"]);
+    let target = String::from_utf8_lossy(&sessions.stdout)
+        .lines()
+        .next()
+        .expect("a thurbox tmux session")
+        .to_string();
+    let out = tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        &target,
+        "-n",
+        &format!("tbs-{name}"),
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sh",
+    ]);
+    let pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(pane.starts_with('%'), "new-window said {pane:?}");
+    for (option, value) in [
+        (thurbox::agent::tmux::WINDOW_SESSION_OPTION, session_id),
+        (thurbox::agent::tmux::WINDOW_ROLE_OPTION, "shell"),
+    ] {
+        tmux(&["set-option", "-w", "-t", &pane, option, value]);
+    }
+    pane
+}
+
 /// Whether `pane_id` (`%N`) still exists.
 fn pane_alive(pane_id: &str) -> bool {
     let out = tmux(&["list-panes", "-a", "-F", "#{pane_id}"]);
@@ -685,4 +720,127 @@ fn restoring_a_session_never_adopts_a_live_namesakes_window() {
          its own agent; windows left: {windows_after:?}",
         live.backend_id
     );
+}
+
+/// The companion shell (`tbs-`) is the second window a session owns, and until
+/// now no teardown path read it: `Session::kill_shell_pane` has no headless
+/// caller, and `shell_backend_id` is written only once the interface opens one,
+/// so even a kill by pane id would have missed most of them. The result was a
+/// `tbs-` window per force-deleted or reaped session, alive for as long as the
+/// server was — the orphans seen on the operator's own machine and on the
+/// remote host.
+///
+/// Both teardowns are walked here, each on its own session, because the second
+/// would be vacuous if the first had already taken the window down.
+#[test]
+fn force_delete_and_reap_both_collect_the_companion_shell() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(forced) = spawn(&db, repo.path(), "forced") else {
+        return;
+    };
+    let forced_shell = open_shell_window(&forced.session_id.to_string(), "forced");
+    let Some(reaped) = spawn(&db, repo.path(), "reaped") else {
+        return;
+    };
+    let reaped_shell = open_shell_window(&reaped.session_id.to_string(), "reaped");
+
+    thurbox::session_ops::delete_session_headless(&db, forced.session_id, true).expect("delete");
+    let forced_shell_alive = pane_alive(&forced_shell);
+
+    thurbox::session_ops::delete_session_headless(&db, reaped.session_id, false).expect("delete");
+    thurbox::session_ops::reap_soft_deleted(&db, reaped.session_id).expect("reap");
+    let reaped_shell_alive = pane_alive(&reaped_shell);
+    let windows_after = windows();
+    cleanup();
+
+    assert!(
+        !forced_shell_alive,
+        "force delete left the shell pane {forced_shell} running; windows: {windows_after:?}"
+    );
+    assert!(
+        !reaped_shell_alive,
+        "the reap left the shell pane {reaped_shell} running; windows: {windows_after:?}"
+    );
+}
+
+/// And the shell is held to the same ownership rule as the agent: `tbs-<name>`
+/// is no more unique than `tb-<name>`, so a teardown that reached for the name
+/// would take a live namesake's shell down with it.
+#[test]
+fn a_teardown_spares_a_live_namesakes_companion_shell() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(stale) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+    // Its own windows go: the row is left owning nothing, which is when a
+    // teardown used to fall through to the name.
+    let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
+
+    let Some(live) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+    let live_shell = open_shell_window(&live.session_id.to_string(), "fleet");
+
+    thurbox::session_ops::delete_session_headless(&db, stale.session_id, true).expect("delete");
+    let survived = pane_alive(&live_shell);
+    let windows_after = windows();
+    cleanup();
+
+    assert!(
+        survived,
+        "force-deleting the stale 'fleet' row killed the live one's shell pane \
+         {live_shell}; windows left: {windows_after:?}"
+    );
+}
+
+/// A teardown asks the server what it holds; it must not bring one into being.
+///
+/// The remote path used to call `ensure_ready` first, which starts the server
+/// *and* creates the thurbox session on the host — so a one-shot `thurbox-cli`
+/// tearing a session down left an empty server on somebody else's machine,
+/// often on a socket the host's own thurbox does not even use. Both paths read
+/// the same one-shot listing now, and this pins the property where it can be
+/// observed: on a socket with nothing running.
+#[test]
+fn a_teardown_never_brings_a_tmux_server_into_being() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+    // Nothing was spawned, so there is no server on this socket.
+    assert!(!tmux(&["has-session"]).status.success());
+
+    let id = thurbox::session::SessionId::default();
+    let _ = thurbox::agent::tmux::kill_window(&id.to_string(), "ghost");
+    let _ = thurbox::agent::tmux::kill_shell_window(&id.to_string(), "ghost");
+    let _ = thurbox::session_ops::reap_soft_deleted(&db, id);
+
+    let started = tmux(&["has-session"]).status.success();
+    cleanup();
+    assert!(!started, "a teardown started a tmux server on the socket");
 }
