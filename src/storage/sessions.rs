@@ -70,6 +70,13 @@ pub struct DeletedSessionInfo {
     /// only the tiebreaker for a multiplexer that carries no stamps (psmux).
     pub shell_backend_id: Option<String>,
     pub deleted_at: u64,
+    /// The host's own last-reported `updated_at` for this row as of the last
+    /// mirror pass before it was deleted here, or `None` if it was never
+    /// mirrored from a host. Ordering a tombstone against a host's row is a
+    /// same-clock comparison against this value (schema v45); `deleted_at`
+    /// above is stamped on this machine's clock and cannot be compared to a
+    /// host's `updated_at` directly.
+    pub host_updated_at: Option<u64>,
     /// Whether this row was hard-deleted (tmux window + worktrees torn down). A
     /// force-deleted session is shown in the restore list and normally cannot be
     /// restored — its worktrees, and any uncommitted work in them, are gone. See
@@ -776,7 +783,8 @@ impl Database {
             "SELECT s.id, s.name, s.agent, s.agent_session_id, \
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
              s.force_deleted, s.backend_id, s.shell_backend_id, \
-             w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox \
+             w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox, \
+             s.host_updated_at \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
              WHERE {condition} \
@@ -799,6 +807,7 @@ impl Database {
             let wt_path: Option<String> = row.get(12)?;
             let wt_branch: Option<String> = row.get(13)?;
             let wt_mine: Option<bool> = row.get(14)?;
+            let host_updated_at: Option<i64> = row.get(15)?;
 
             let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch, wt_mine);
 
@@ -814,6 +823,7 @@ impl Database {
                     backend_id,
                     shell_backend_id,
                     deleted_at: deleted_at as u64,
+                    host_updated_at: host_updated_at.map(|at| at as u64),
                     force_deleted: force_deleted != 0,
                     worktrees: Vec::new(),
                 },
@@ -922,6 +932,24 @@ impl Database {
         self.conn.execute(
             "UPDATE sessions SET base_branch = ?1 WHERE id = ?2",
             params![base, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Snapshot a host's self-reported `updated_at` for a row a mirror pass
+    /// just adopted or updated from it (schema v45).
+    ///
+    /// Read back by [`Self::list_deleted_sessions`]/[`Self::get_deleted_session_by_id`]
+    /// once the row is later tombstoned, so ordering that tombstone against a
+    /// fresh report from the same host compares two readings of the host's own
+    /// clock instead of this machine's `deleted_at` against the host's
+    /// `updated_at` — two different clocks that can be skewed against each
+    /// other. Left untouched by `deleted_at`/`restore`, so it survives a
+    /// soft-delete unharmed.
+    pub fn set_host_updated_at(&self, id: SessionId, host_updated_at: u64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET host_updated_at = ?1 WHERE id = ?2",
+            params![host_updated_at as i64, id.to_string()],
         )?;
         Ok(())
     }

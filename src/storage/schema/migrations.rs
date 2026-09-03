@@ -905,3 +905,13 @@ pub(super) fn migrate_v43_session_events(conn: &Connection) -> rusqlite::Result<
 pub(super) fn migrate_v44_reports_as(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_absent(conn, "sessions", "reports_as", "TEXT")
 }
+
+/// See [`super::SCHEMA_VERSION`] v45: the host's own last-reported
+/// `updated_at`, snapshotted on this row whenever a mirror pass adopts or
+/// updates it. Deliberately not part of `upsert_session` for the same reason
+/// `reports_as` is not: a peer mirroring this machine round-trips rows
+/// through that upsert, and one on an older release would clear the column on
+/// every tick.
+pub(super) fn migrate_v45_host_updated_at(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(conn, "sessions", "host_updated_at", "INTEGER")
+}

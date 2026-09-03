@@ -841,12 +841,13 @@ impl Terminals {
                 .insert(done.backend.clone(), std::time::Instant::now() + interval);
             match done.report {
                 Ok(report) if report.changed() => tracing::info!(
-                    "mirrored {}: {} adopted, {} updated, {} deleted, {} restored",
+                    "mirrored {}: {} adopted, {} updated, {} deleted, {} restored, {} tombstoned",
                     done.backend,
                     report.adopted.len(),
                     report.updated.len(),
                     report.deleted.len(),
-                    report.restored.len()
+                    report.restored.len(),
+                    report.tombstoned.len()
                 ),
                 Ok(_) => {}
                 Err(e) => tracing::debug!("mirror of {} skipped: {e}", done.backend),

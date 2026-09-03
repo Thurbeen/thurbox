@@ -1326,15 +1326,20 @@ follow from the host owning the record, none of which the first cut had:
   was in backoff — or while sharing was off — was undone on the next pass, and
   on every pass after. The listing carries `updated_at` for the ordering the
   two sides otherwise lack: the host's row wins only when the host wrote it
-  *after* the local `deleted_at` (a peer restored it there). Otherwise the
-  tombstone stands and the delete is pushed to the host as `session delete`,
-  the symmetric counterpart of `session sync --adopt`'s `register_unknown` —
-  and unconditional where that one is opt-in, since a delete the host never
-  hears is a window running there forever. The two timestamps come from two
-  clocks, which is tolerable here and nowhere near a lock: the comparison only
-  decides which of two *user* actions minutes or hours apart came first, and
-  its failure mode under skew is a delete pushed again rather than a session
-  destroyed.
+  *after* this database's own last-known reading of that same host's clock for
+  that row (schema v45's `host_updated_at`, snapshotted on every mirrored
+  write). Otherwise the tombstone stands and the delete is pushed to the host
+  as `session delete`, the symmetric counterpart of `session sync --adopt`'s
+  `register_unknown` — and unconditional where that one is opt-in, since a
+  delete the host never hears is a window running there forever. Ordering
+  against a prior reading of the *same* clock, rather than the host's
+  `updated_at` against this machine's `deleted_at`, is what keeps the two
+  sides' independent clocks out of the comparison: a slower or faster host
+  clock changes nothing, since both readings came from it. The one row for
+  which there is no prior reading — a session deleted before this database
+  ever mirrored it from that host — still falls back to comparing against
+  local `deleted_at`, the same approximation the comparison used everywhere
+  before v45.
 - **"The host does not know this row" is not a failure to delete.** The host
   resolves the id against its *active* rows, so a fork minted here, a
   pre-ADR-24 row, and one a peer already deleted all answer "Session not

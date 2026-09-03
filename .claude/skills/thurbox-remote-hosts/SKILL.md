@@ -253,8 +253,13 @@ session), never on the loop, ADR-P12).
   delete of a remote session (the TUI's default) leaked its `tb-`/`tbs-` pair
   forever, and re-creating the name put a second agent beside the first.
 - **A local tombstone beats a host-active row** unless the host wrote the row
-  *after* the delete. `session list` carries `updated_at` for exactly this;
-  `mirror::apply` compares it with the local `deleted_at`, reports the losers in
+  *after* this database's own last-known reading of that host's clock for the
+  row. `session list` carries `updated_at` for exactly this; `mirror::apply`
+  compares it with the snapshot `sessions.host_updated_at` was last given
+  (schema v45), not with the local `deleted_at` — the host's `updated_at` and
+  this machine's `deleted_at` are two different clocks, and comparing them
+  directly let a host whose clock merely ran behind this one look
+  not-yet-restored and get re-deleted. Reports the losers in
   `MirrorReport.tombstoned`, and `mirror_host` pushes each as a `session delete`
   to the host — the symmetric counterpart of `register_unknown`. Before that, a
   delete taken while the host's CLI was in backoff was undone on the next mirror

@@ -2038,12 +2038,13 @@ fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String 
     match &r.error {
         Some(error) => format!("{}: not mirrored — {error}", r.host),
         None => format!(
-            "{}: {} adopted, {} updated, {} deleted, {} restored{}{}",
+            "{}: {} adopted, {} updated, {} deleted, {} restored, {} tombstoned{}{}",
             r.host,
             r.adopted.len(),
             r.updated.len(),
             r.deleted.len(),
             r.restored.len(),
+            r.tombstoned.len(),
             match r.unknown_local.len() {
                 0 => String::new(),
                 n => format!(", {n} local session(s) the host does not know (use --adopt)"),
