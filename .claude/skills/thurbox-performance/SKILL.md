@@ -67,7 +67,12 @@ was treated as surveyed since, and a session's diff held its first computation
 for the life of the process. Each is now a TTL, an in-flight marker, or a
 generation counter — if you add a cache here, give it one (ADR-P13/P18; the one
 exemption, the repo-name cache, keys on an origin URL that cannot move within a
-process). The same rule holds one level up for anything issued **on a timer
+process). When the age is a **generation key** rather than a clock, which key you
+pick is the whole of the correctness: `GitStats::known` caches `merged` against
+the **commit** it was computed for, because keyed on the session it latched — a
+landed branch that keeps working is unmerged again on its next commit, and the
+TTL re-ran the worker without re-opening the question, so the delete confirmation
+stopped warning about commits that existed nowhere else. The same rule holds one level up for anything issued **on a timer
 against a host**: window discovery is throttled per backend, at 500 ms locally
 but `REMOTE_DISCOVERY_INTERVAL` over ssh, and a survey or a mirror pass that
 failed backs off further still (ADR-P19). Sharing made remote rows discoverable

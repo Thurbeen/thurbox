@@ -406,7 +406,13 @@ local function at_risk(session)
     -- zero (a mode change, a submodule). Still work, still unrecoverable.
     lines[#lines + 1] = "uncommitted changes"
   end
-  if (git.ahead or 0) > 0 then
+  -- Commits are only at risk while they exist nowhere but here. A merged
+  -- branch keeps its ahead count forever — a squash merge rewrites the work
+  -- into one new commit, so none of these are ancestors of the default branch
+  -- and the count never falls back to zero once the remote branch is gone.
+  -- `merged` compares patches, so it sees the work on origin's default and
+  -- says so; anything short of a confirmed `true` keeps the question.
+  if (git.ahead or 0) > 0 and git.merged ~= true then
     lines[#lines + 1] = git.ahead .. " commit(s) not pushed anywhere else"
   end
 

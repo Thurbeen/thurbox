@@ -340,6 +340,7 @@ fn clean() -> GitState {
         dirty: false,
         ahead: 0,
         behind: 0,
+        merged: None,
     }
 }
 
@@ -467,4 +468,62 @@ fn a_state_that_could_not_be_read_asks_rather_than_assume_clean() {
         confirm_tree(&host, &snapshot).contains("its state could not be read"),
         "and it says why it is asking"
     );
+}
+
+#[test]
+fn force_deleting_a_merged_branch_does_not_ask() {
+    // The regression this fixes. A squash-merged branch keeps its commits
+    // forever — they are not ancestors of the default branch, so the ahead
+    // count never falls back to zero once the remote branch is gone. Counting
+    // them as "not pushed anywhere else" asks about work that is already on
+    // `origin/main`, which is every finished session, which is how the answer
+    // to the question stops being a decision.
+    let host = host();
+    let mut snapshot = snapshot();
+    snapshot.sessions[0].git = Some(GitState {
+        ahead: 3,
+        merged: Some(true),
+        ..clean()
+    });
+    snapshot.sessions[0].worktree_count = 1;
+    render_in(&host, &snapshot);
+    press_in(&host, &snapshot, "D");
+
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Delete {
+            session: "aaa".into(),
+            force: true,
+        }],
+        "the work is on the default branch: there is nothing to lose"
+    );
+}
+
+#[test]
+fn force_deleting_an_unmerged_branch_still_asks() {
+    // The other half: `merged` only ever silences the question, never asks one
+    // of its own, and an unproven branch (`false`, or a check that could not
+    // run) keeps the commits it is ahead by.
+    for merged in [Some(false), None] {
+        let host = host();
+        let mut snapshot = snapshot();
+        snapshot.sessions[0].git = Some(GitState {
+            ahead: 3,
+            merged,
+            ..clean()
+        });
+        snapshot.sessions[0].worktree_count = 1;
+        render_in(&host, &snapshot);
+        press_in(&host, &snapshot, "D");
+
+        assert!(
+            host.drain_commands().is_empty(),
+            "merged={merged:?} must not delete unasked"
+        );
+        let tree = confirm_tree(&host, &snapshot);
+        assert!(
+            tree.contains("3 commit(s) not pushed anywhere else"),
+            "merged={merged:?}: {tree}"
+        );
+    }
 }

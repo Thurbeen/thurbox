@@ -338,6 +338,15 @@ pub struct GitStats {
     pub ahead: usize,
     /// Commits behind the upstream/base branch.
     pub behind: usize,
+    /// Whether origin's default branch already holds this worktree's work,
+    /// patches compared rather than commits so a squash merge counts (see
+    /// `git::merged_into_default`). `None` when the question was not asked
+    /// (nothing ahead) or could not be answered.
+    pub merged: Option<bool>,
+    /// The commit these stats describe. It is what `merged` is an answer
+    /// *about*, so a caller caching that answer keys it on this rather than on
+    /// the worktree — see `git::worktree_stats`. `None` on an unborn branch.
+    pub head: Option<String>,
 }
 
 /// One account-level rate-limit window (e.g. Claude's 5-hour or weekly), as
