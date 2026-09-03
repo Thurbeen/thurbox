@@ -476,12 +476,16 @@ the session has work at risk** — uncommitted/untracked files, unpushed commits
 multi-worktree session whose other checkouts the snapshot does not stat, or a
 state that can't be read at all (remote host / git error → confirm to be safe) —
 itemizing what would be lost; a known-clean session is deleted with no prompt.
-"Unpushed" is `ahead > 0` **and** `git.merged ~= true`: a squash-merged branch
-stays permanently ahead of the default branch (its commits are ancestors of
-nothing), so `git::merged_into_default` compares *patches* — `merge-base
---is-ancestor` first, then `git cherry` against the branch squared off onto its
-merge base — against `origin/HEAD` (→ `origin/main`/`origin/master`). Local refs
-only, so it is forge-agnostic; `nil` means unknown and keeps the question.
+"Unpushed" is `ahead > 0` **and** `git.merged ~= true`: a branch the forge
+rewrote on merge stays permanently ahead of the default branch (its commits are
+ancestors of nothing), so `git::merged_into_default` asks four questions of
+`origin/HEAD` (→ `origin/main`/`origin/master`) in ascending cost, first `true`
+winning — `merge-base --is-ancestor` (merge commit, fast-forward), `diff
+--quiet` against the default (an identical tree, whichever route the content
+took), `git cherry <default> HEAD <base>` with every line `-` (rebase-and-merge,
+GitLab semi-linear merge), and `git cherry` against the branch squared off onto
+its merge base by `commit-tree` (squash). Local refs only, so it is
+forge-agnostic; `nil` means unknown and keeps the question.
 The answer is cached against the **commit** it was computed for (`branch.oid`,
 already free from the same `status --porcelain=v2 --branch` run), never against
 the session: `merged` is a fact about HEAD, and a session that keeps working

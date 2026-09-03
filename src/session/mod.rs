@@ -339,9 +339,9 @@ pub struct GitStats {
     /// Commits behind the upstream/base branch.
     pub behind: usize,
     /// Whether origin's default branch already holds this worktree's work,
-    /// patches compared rather than commits so a squash merge counts (see
-    /// `git::merged_into_default`). `None` when the question was not asked
-    /// (nothing ahead) or could not be answered.
+    /// however the forge landed it (see `git::merged_into_default`). `None`
+    /// when the question was not asked (nothing ahead) or could not be
+    /// answered.
     pub merged: Option<bool>,
     /// The commit these stats describe. It is what `merged` is an answer
     /// *about*, so a caller caching that answer keys it on this rather than on

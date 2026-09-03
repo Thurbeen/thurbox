@@ -407,11 +407,12 @@ local function at_risk(session)
     lines[#lines + 1] = "uncommitted changes"
   end
   -- Commits are only at risk while they exist nowhere but here. A merged
-  -- branch keeps its ahead count forever — a squash merge rewrites the work
-  -- into one new commit, so none of these are ancestors of the default branch
-  -- and the count never falls back to zero once the remote branch is gone.
-  -- `merged` compares patches, so it sees the work on origin's default and
-  -- says so; anything short of a confirmed `true` keeps the question.
+  -- branch keeps its ahead count forever — a squash or a rebase-and-merge
+  -- rewrites the work into new commits, so none of these are ancestors of the
+  -- default branch and the count never falls back to zero once the remote
+  -- branch is gone. `merged` compares trees and patches, so it sees the work on
+  -- origin's default whichever way the forge landed it; anything short of a
+  -- confirmed `true` keeps the question.
   if (git.ahead or 0) > 0 and git.merged ~= true then
     lines[#lines + 1] = git.ahead .. " commit(s) not pushed anywhere else"
   end
