@@ -1,10 +1,12 @@
-//! Headless session restart — tears down the tmux window and re-launches
-//! the agent CLI, resuming the existing conversation when the agent supports
-//! it and a transcript exists, starting fresh otherwise.
+//! Headless session restart — tears down the tmux windows (agent + companion
+//! shell) and re-launches the agent CLI, resuming the existing conversation
+//! when the agent supports it and a transcript exists, starting fresh
+//! otherwise.
 //!
-//! And its two halves on their own: [`stop_session_headless`] kills the window
-//! and leaves everything else standing, [`start_session_headless`] puts a
-//! window back. A restart is those two in a row, which is why they live here.
+//! And its two halves on their own: [`stop_session_headless`] kills the
+//! windows and leaves everything else standing, [`start_session_headless`]
+//! puts the agent's window back. A restart is those two in a row, which is
+//! why they live here.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -189,8 +191,8 @@ pub struct RestartReport {
     pub hook_failures: Vec<String>,
 }
 
-/// Restart an existing session in-place — kills its tmux window and
-/// re-spawns the agent CLI.
+/// Restart an existing session in-place — kills its tmux windows (agent +
+/// companion shell) and re-spawns the agent CLI.
 ///
 /// For the `claude` agent, uses its resume group when a transcript for the
 /// session id exists on disk, otherwise pins the same id for a fresh start.

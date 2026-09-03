@@ -64,7 +64,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   smoke script, which could not see the byte stream and duplicated this harness.
 - **`tests/reap_e2e.rs`** — window-teardown ownership against a *real* tmux on a
   throwaway socket (skipped when tmux is absent), because the bug it pins only
-  exists in how tmux resolves a target. Ten tests. Six pin the reap itself: a
+  exists in how tmux resolves a target. 13 tests. Six pin the reap itself: a
   stale row's reap spares a live namesake's window, a namesake's pane the stale
   row still remembers, a live window whose name only collides after
   `sanitize_window_name` ('fleet 1' and 'fleet_1' share one `tb-fleet_1`), and a
@@ -75,10 +75,15 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   Force delete, `stop` and `restart` share the reap's ownership gate (ADR-25,
   `agent::tmux::WindowIndex`) rather than each resolving `tb-<name>` on their
   own, so one test walks all three against their own live namesake, plus one
-  asserting force delete still kills the row's own window. The last two cover
+  asserting force delete still kills the row's own window. Two more cover
   the stamp itself: a row with no pane id at all (the psmux shape) still
   resolves its own window, and restore refuses to adopt a live namesake's
-  window rather than putting two rows on one pane.
+  window rather than putting two rows on one pane. The last three cover the
+  companion shell and the no-server guarantee (ADR-24/25's remote teardown):
+  force delete and reap both collect the companion shell alongside the agent's
+  window, a teardown spares a live namesake's companion shell, and a teardown
+  never brings a tmux server into being (the `ensure_ready` side effect this
+  path must not trigger).
 - **`tests/session_state_agreement.rs`** — one row, four independent readers
   (`session get`, `session list`, `watch --initial` via the real binary, and
   `SnapshotStore` in-process): all four must answer the same `SessionState`.

@@ -2136,6 +2136,20 @@ mod tests {
     }
 
     #[test]
+    fn mirror_report_mentions_a_pushed_tombstone() {
+        let report = crate::session_ops::mirror::MirrorReport {
+            host: "debian-hp".to_string(),
+            tombstoned: vec![SessionId::default()],
+            ..Default::default()
+        };
+        let rendered = render_mirror_report(&report);
+        assert!(
+            rendered.contains("1 tombstoned"),
+            "a sync pass that only pushed a delete must say so: {rendered:?}"
+        );
+    }
+
+    #[test]
     fn list_empty_returns_array() {
         let db = db();
         let v = run(

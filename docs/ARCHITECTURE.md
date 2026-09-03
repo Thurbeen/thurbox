@@ -1327,8 +1327,9 @@ follow from the host owning the record, none of which the first cut had:
   on every pass after. The listing carries `updated_at` for the ordering the
   two sides otherwise lack: the host's row wins only when the host wrote it
   *after* this database's own last-known reading of that same host's clock for
-  that row (schema v45's `host_updated_at`, snapshotted on every mirrored
-  write). Otherwise the tombstone stands and the delete is pushed to the host
+  that row (schema v45's `host_updated_at`, snapshotted whenever this database
+  adopts, restores, or applies a change to the row from the host's listing).
+  Otherwise the tombstone stands and the delete is pushed to the host
   as `session delete`, the symmetric counterpart of `session sync --adopt`'s
   `register_unknown` — and unconditional where that one is opt-in, since a
   delete the host never hears is a window running there forever. Ordering

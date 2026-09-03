@@ -1,5 +1,5 @@
 //! Headless session deletion — soft-delete by default, `force` also tears
-//! down the tmux window, worktrees, and pending scheduled commands so the
+//! down the tmux windows, worktrees, and pending scheduled commands so the
 //! filesystem and tmux server don't leak orphans when the TUI isn't
 //! running to observe the deletion.
 
@@ -35,7 +35,7 @@ pub struct ForceDeleteReport {
 }
 
 /// Soft-delete a session and (when `force`) also tear down its runtime
-/// resources: the tmux window, on-disk worktrees, and any pending
+/// resources: the tmux windows, on-disk worktrees, and any pending
 /// scheduled commands queued against it.
 ///
 /// Worktree and tmux cleanup are best-effort — individual failures are
@@ -172,17 +172,18 @@ fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Tear down a session's slow runtime resources: kill the tmux window, remove
-/// worktrees + the symlink workspace. Touches no SQLite — safe to call from a
-/// background thread after the row has been soft-deleted on the UI thread, so
-/// the TUI's hard-delete confirmation can close without blocking on a remote
-/// `kill-window` or a `git worktree remove`. Best-effort: failures are logged
-/// into `report` (or `tracing::warn`), never abort.
+/// Tear down a session's slow runtime resources: kill the tmux windows (agent
+/// + companion shell), remove worktrees + the symlink workspace. Touches no
+/// SQLite — safe to call from a background thread after the row has been
+/// soft-deleted on the UI thread, so the TUI's hard-delete confirmation can
+/// close without blocking on a remote `kill-window` or a `git worktree
+/// remove`. Best-effort: failures are logged into `report` (or
+/// `tracing::warn`), never abort.
 ///
-/// **Backend-aware.** The window kill and each worktree removal run on the
+/// **Backend-aware.** The window kills and each worktree removal run on the
 /// server the session actually lives on, resolved from `session.backend_type`:
 /// a local backend uses the local tmux socket + local `git`; an `ssh:`/`wsl:`
-/// backend kills the pane and removes the worktrees over that host's launcher.
+/// backend kills the panes and removes the worktrees over that host's launcher.
 /// The symlink workspace is always local (a spawn-time process-cwd detail under
 /// the local data dir), so it is torn down regardless of backend.
 pub fn teardown_runtime_resources(
@@ -228,12 +229,12 @@ pub fn teardown_runtime_resources(
 }
 
 /// Release what a *soft*-deleted session is still holding: its agent, its
-/// metrics file and its symlink workspace.
+/// companion shell, its metrics file and its symlink workspace.
 ///
 /// Deleting softly is meant to be undoable, so the row is kept and the worktrees
 /// stay on disk — but the agent process is not part of what an undo restores, and
 /// leaving it running means a deleted session keeps working, keeps writing, and
-/// keeps its tmux window forever. v1 killed it once the undo window closed;
+/// keeps its tmux windows forever. v1 killed the agent's once the undo window closed;
 /// this is that, callable without a TUI. The TUI side is now
 /// `kernel::reaper::Reaper`, which watches the undo windows close.
 ///
