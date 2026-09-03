@@ -210,9 +210,13 @@ fn refuse_if_deleted(db: &Database, session: &crate::sync::SharedSession) -> Res
 /// the full write revived a row deleted between the session being loaded and
 /// the new window being recorded, so a delete inside its own undo window came
 /// back attached to a freshly spawned agent. The targeted write refuses a
-/// deleted row instead, and the window is not orphaned by that — it carries the
-/// session's stamp, so [`reap_overdue_soft_deletes`](crate::session_ops::reap_overdue_soft_deletes)
-/// collects it like any other window the row owns.
+/// deleted row instead — but a *force*-deleted row is never reaped (both
+/// [`reap_overdue_soft_deletes`](crate::session_ops::reap_overdue_soft_deletes)
+/// and [`reap_soft_deleted`](crate::session_ops::reap_soft_deleted) skip
+/// `force_deleted` rows unconditionally), so this failing is not on its own
+/// proof the window will ever be collected. The caller kills the window it
+/// just spawned when this returns `Err`, rather than leaning on a sweep that
+/// only covers the soft-delete case.
 fn record_pane(
     db: &Database,
     session: &crate::sync::SharedSession,
@@ -225,7 +229,7 @@ fn record_pane(
         return Ok(());
     }
     Err(format!(
-        "'{}' was deleted while it was restarting; its new window will be reaped",
+        "'{}' was deleted while it was restarting; its new window is being killed",
         session.name
     ))
 }
@@ -400,7 +404,21 @@ pub fn restart_session_headless_with(
             // interface at a pane that no longer exists. (Empty on psmux, where
             // the spawn can't report an id; the interface then resolves by
             // window name as before.)
-            record_pane(db, &session, &pane)?;
+            if let Err(e) = record_pane(db, &session, &pane) {
+                // The row lost the race (deleted between the load above and
+                // here), so nothing will ever attach to this window — a
+                // force-deleted row is never reaped. Kill what was just
+                // spawned rather than leave it running forever.
+                if let Err(kill_err) =
+                    crate::agent::tmux::kill_window(&session.id.to_string(), &plan.window_name)
+                {
+                    tracing::warn!(
+                        "could not kill orphaned restart window for '{}': {kill_err:#}",
+                        session.name
+                    );
+                }
+                return Err(e);
+            }
         }
         Some(host) => {
             // Before anything is killed or spawned: acting on a socket the host
@@ -438,7 +456,24 @@ pub fn restart_session_headless_with(
             // The new pane is a different one, and the id is how every later
             // read finds it — leaving the old one persisted would point the
             // interface at a pane that no longer exists.
-            record_pane(db, &session, &pane)?;
+            if let Err(e) = record_pane(db, &session, &pane) {
+                // Same race as the local branch: a force-deleted row is never
+                // reaped, so the window this just spawned on the host has to
+                // be killed here or it runs forever.
+                if let Err(kill_err) = crate::agent::tmux::kill_remote_windows(
+                    host,
+                    &session.id.to_string(),
+                    &plan.window_name,
+                    crate::agent::tmux::SessionPanes::agent(&pane),
+                ) {
+                    tracing::warn!(
+                        "could not kill orphaned restart window for '{}' on '{}': {kill_err:#}",
+                        session.name,
+                        host.name
+                    );
+                }
+                return Err(e);
+            }
         }
     }
 
