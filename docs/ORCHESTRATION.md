@@ -335,7 +335,7 @@ Errors are **structured documents on stdout**, not lines on stderr —
 AXI principle 6, because an agent reads one stream and a message on
 stderr is one it has to be told to capture. The exit code carries the
 verdict: `0` success, `1` the command ran and failed, `2` the invocation
-was wrong.
+was wrong, `3` a session reference matched more than one session.
 
 The consequence is a trap worth naming. `thurbox-cli … --json | jq -r
 '.field'` exits **0 with empty output** when the command failed: `jq`
