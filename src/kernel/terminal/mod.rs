@@ -80,12 +80,13 @@ struct Discovered {
     panes: Option<WindowPanes>,
 }
 
-/// The panes behind each window name on one backend.
+/// One backend's thurbox windows, indexed by the identity each one carries.
 ///
-/// A `Vec` because a name is not unique: two sessions can be given the same one,
-/// and sanitising collapses others together. Keeping every match is what lets the
+/// A window name is not unique — two sessions can be given the same one, and
+/// sanitising collapses others together — so the index keys on the session id
+/// stamped on the window (ADR-25) and keeps every namesake, which is what lets
 /// ambiguity be *reported* rather than resolved by whichever tmux listed last.
-type WindowPanes = HashMap<String, Vec<String>>;
+type WindowPanes = crate::agent::tmux::WindowIndex;
 
 /// How often a *local* backend's panes may be looked up by window name.
 ///
@@ -456,7 +457,7 @@ impl Terminals {
             // good.
             let (candidate, via_name) = match row.backend_id.clone() {
                 Some(id) if !self.pane_is_stale(row, &id) => (Some(id), false),
-                _ => (self.pane_by_name(&row.backend, &row.name), true),
+                _ => (self.pane_by_name(row), true),
             };
             // The same attempt would fail the same way; a different one is worth
             // making.
@@ -506,9 +507,9 @@ impl Terminals {
     /// tempting it looks: it says so itself, through [`Terminals::forget`].
     ///
     /// Also let go when the row's pane id has *moved*: the interface is holding a
-    /// pane the session no longer claims. That covers a remote restart, which
-    /// records the new pane id; a local one has none to record and forgets
-    /// instead.
+    /// pane the session no longer claims. That covers a restart on either
+    /// transport — both record the pane they spawned — and a row whose window
+    /// was re-adopted somewhere else.
     fn drop_lost_panes(&mut self, snapshot: &Snapshot) {
         let lost: Vec<(String, Option<String>, bool)> = snapshot
             .sessions
@@ -519,13 +520,12 @@ impl Terminals {
                 let moved = row.backend_id.as_deref().is_some_and(|id| {
                     !id.is_empty()
                         && id != live.session.backend_id()
-                        // Locally the only way a row's id can differ from the pane
-                        // being held is that the id is a phantom: a local restart
-                        // records no id at all, it forgets instead. So a local id
-                        // may evict a live pane only when a listing actually places
-                        // it in this session's window — otherwise an id left over
-                        // from a previous tmux server drops the pane just resolved
-                        // by name, on every frame, forever.
+                        // A local id may evict a live pane only when a listing
+                        // actually places it in this session's own window —
+                        // otherwise an id left over from a previous tmux server
+                        // drops the pane just resolved by name, on every frame,
+                        // forever. Remote rows are never surveyed, so there is no
+                        // listing to ask and the row's own id has to stand.
                         && (remote || self.pane_placed(row, id))
                 });
                 (live.session.has_exited() || moved)
@@ -633,6 +633,18 @@ impl Terminals {
                 )
                 .map_err(|e| e.to_string())
             });
+            // Adopted by name, so the window carries no stamp — this is the one
+            // moment its owner is known for certain (the name resolved to
+            // exactly one window). Stamping it here is what stops the row
+            // depending on a name a later namesake could take; the pane id is
+            // persisted for the same reason, by `drain_adopted_panes`.
+            if via_name && result.is_ok() {
+                if let Err(e) =
+                    backend.stamp_window(&pane, &session, crate::agent::tmux::WindowRole::Agent)
+                {
+                    tracing::debug!(session = %session, "could not stamp the adopted window: {e:#}");
+                }
+            }
             let _ = tx.send(Attached {
                 session,
                 pane,
@@ -870,34 +882,30 @@ impl Terminals {
         surveys > seen_at
     }
 
-    /// Whether the latest listing puts `pane` in the window this session's name
-    /// produces.
+    /// Whether the latest listing puts `pane` in this session's own window.
     ///
     /// The *positive* reading, deliberately without the freshness gate: "a listing
     /// says this pane is yours" is an assertion, where "no listing mentions it" is
     /// only an absence — and absence is the half that has to know how old the
     /// listing is.
     fn pane_placed(&self, row: &super::snapshot::SessionRow, pane: &str) -> bool {
-        let window = crate::agent::tmux::agent_window_name(&row.name);
         self.discovered
             .get(&row.backend)
-            .and_then(|windows| windows.get(&window))
-            .is_some_and(|panes| panes.iter().any(|known| known == pane))
+            .is_some_and(|windows| windows.places_agent(&row.id, &row.name, pane))
     }
 
-    /// The pane of the window a session's name would have produced.
+    /// The pane of this session's own agent window, as the listing places it.
     ///
-    /// `None` when there is no such window — the session's agent has not been
-    /// launched yet, or has been killed — and also when the name is ambiguous,
-    /// because keystrokes going to the wrong agent is worse than a pane that
-    /// says why it is not attached.
-    fn pane_by_name(&self, backend: &str, session_name: &str) -> Option<String> {
-        let window = crate::agent::tmux::agent_window_name(session_name);
-        let panes = self.discovered.get(backend)?.get(&window)?;
-        match panes.len() {
-            1 => panes.first().cloned(),
-            _ => None,
-        }
+    /// `None` when there is no such window — the agent has not been launched
+    /// yet, or has been killed — when the only window of that name is stamped
+    /// for a different session, and when the name is ambiguous: keystrokes
+    /// going to the wrong agent are worse than a pane that says why it is not
+    /// attached.
+    fn pane_by_name(&self, row: &super::snapshot::SessionRow) -> Option<String> {
+        self.discovered
+            .get(&row.backend)?
+            .agent_window(&row.id, &row.name)
+            .pane()
     }
 
     /// Forward keystrokes to a session's pane.
@@ -1238,7 +1246,7 @@ impl Terminals {
             .filter(|row| self.surveyed_since(row))
             // A row that names a live pane is not missing its agent — it is failing
             // to attach to one, which is a different problem with a different fix.
-            // A row naming a pane the listing does not place in its window *is*
+            // A row naming a pane the listing does not place in its own window *is*
             // missing it: that is the phantom id a restarted tmux server left
             // behind, and nothing else will clear it.
             .filter(
@@ -1247,7 +1255,15 @@ impl Terminals {
                     Some(pane) => !self.pane_placed(row, pane),
                 },
             )
-            .filter(|row| self.pane_by_name(&row.backend, &row.name).is_none())
+            // Only a listing that positively says the window is *absent* may
+            // relaunch. An ambiguous name — several windows, none of them
+            // stamped — resolves to nothing, and respawning on that is how a
+            // third agent appears beside the two that already collide.
+            .filter(|row| {
+                self.discovered
+                    .get(&row.backend)
+                    .is_some_and(|windows| windows.agent_window(&row.id, &row.name).is_absent())
+            })
             .map(|row| row.id.clone())
             .collect()
     }
@@ -1471,16 +1487,7 @@ fn discover_windows(
         }
     }
     let panes = match backend.discover() {
-        Ok(found) => {
-            let mut by_name: WindowPanes = HashMap::new();
-            for window in found {
-                by_name
-                    .entry(window.name)
-                    .or_default()
-                    .push(window.backend_id);
-            }
-            Some(by_name)
-        }
+        Ok(found) => Some(WindowPanes::from_listing(found)),
         Err(e) => {
             tracing::warn!("could not list windows on {name}: {e:#}");
             None
@@ -1730,21 +1737,26 @@ mod tests {
         );
     }
 
-    /// Seed a completed survey of `backend`: one listing, having found `windows`.
+    /// Seed a completed survey of `backend`: one listing, having found `windows`
+    /// — each an unstamped window, the shape every window had before ADR-25 and
+    /// the one these tests are about (a stamped window is unambiguous by
+    /// construction).
     fn surveyed(terminals: &mut Terminals, backend: &str, windows: &[(&str, &[&str])]) {
         terminals.surveys.insert(backend.to_string(), 1);
-        terminals.discovered.insert(
-            backend.to_string(),
-            windows
+        let listing = windows.iter().flat_map(|(window, panes)| {
+            panes
                 .iter()
-                .map(|(window, panes)| {
-                    (
-                        (*window).to_string(),
-                        panes.iter().map(|p| (*p).to_string()).collect(),
-                    )
+                .map(|pane| crate::agent::backend::DiscoveredSession {
+                    backend_id: (*pane).to_string(),
+                    name: (*window).to_string(),
+                    is_alive: true,
+                    session: String::new(),
+                    role: crate::agent::tmux::WindowRole::Agent,
                 })
-                .collect(),
-        );
+        });
+        terminals
+            .discovered
+            .insert(backend.to_string(), WindowPanes::from_listing(listing));
     }
 
     /// A rebooted machine leaves every persisted pane id naming a pane that no
@@ -1816,6 +1828,55 @@ mod tests {
         surveyed(&mut terminals, "ssh:devbox", &[("tb-other", &["%9"])]);
         terminals.waiting_since.insert("a".to_string(), 1);
         assert!(!terminals.pane_is_stale(&row, "%1"));
+    }
+
+    /// Ambiguity is not absence. Two `tb-demo` windows with no stamp between
+    /// them cannot be told apart, and relaunching on that silence is how a
+    /// *third* agent appears beside the two that already collide.
+    #[test]
+    fn ambiguous_namesakes_are_never_relaunched() {
+        let mut terminals = Terminals::new();
+        let row = row("a", "local-tmux", None);
+        terminals.waiting_since.insert("a".to_string(), 0);
+        surveyed(&mut terminals, "local-tmux", &[("tb-demo", &["%1", "%2"])]);
+
+        assert_eq!(
+            terminals.pane_by_name(&row),
+            None,
+            "and none is attached to"
+        );
+        assert!(
+            terminals.missing_agents(&snapshot(vec![row])).is_empty(),
+            "a name nobody can resolve must not be read as a missing agent"
+        );
+    }
+
+    /// A window stamped for a namesake is not this session's to attach to, let
+    /// alone to relaunch over — it is somebody else's live agent.
+    #[test]
+    fn a_namesakes_stamped_window_is_neither_attached_to_nor_relaunched_over() {
+        let mut terminals = Terminals::new();
+        let row = row("a", "local-tmux", None);
+        terminals.waiting_since.insert("a".to_string(), 0);
+        terminals.surveys.insert("local-tmux".to_string(), 1);
+        terminals.discovered.insert(
+            "local-tmux".to_string(),
+            WindowPanes::from_listing([crate::agent::backend::DiscoveredSession {
+                backend_id: "%1".into(),
+                name: "tb-demo".into(),
+                is_alive: true,
+                session: "b".into(),
+                role: crate::agent::tmux::WindowRole::Agent,
+            }]),
+        );
+
+        assert_eq!(terminals.pane_by_name(&row), None);
+        assert_eq!(
+            terminals.missing_agents(&snapshot(vec![row])),
+            vec!["a".to_string()],
+            "this row's own agent really is gone, so it is relaunched — beside \
+             the namesake's, not over it"
+        );
     }
 
     #[test]
@@ -1933,7 +1994,7 @@ mod tests {
             .send(Discovered {
                 backend: "ssh:devbox".to_string(),
                 readied: true,
-                panes: Some(WindowPanes::new()),
+                panes: Some(WindowPanes::default()),
             })
             .unwrap();
         terminals.collect_discovered();

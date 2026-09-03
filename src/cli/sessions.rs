@@ -766,8 +766,13 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                 return Ok(remote);
             }
             let submit = !no_enter;
-            crate::agent::tmux::send_text_now(&session.name, &session.backend_id, &text, submit)
-                .map_err(|e| format!("send_text_now: {e}"))?;
+            crate::agent::tmux::send_text_now(
+                &session.id.to_string(),
+                &session.name,
+                &text,
+                submit,
+            )
+            .map_err(|e| format!("send_text_now: {e}"))?;
             let human = if submit {
                 format!("Sent to '{}'.", session.name)
             } else {
@@ -794,8 +799,12 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             {
                 return Ok(remote);
             }
-            crate::agent::tmux::send_key_now(&session.name, &session.backend_id, &resolved.tmux)
-                .map_err(|e| format!("send_key_now: {e}"))?;
+            crate::agent::tmux::send_key_now(
+                &session.id.to_string(),
+                &session.name,
+                &resolved.tmux,
+            )
+            .map_err(|e| format!("send_key_now: {e}"))?;
             Ok(CommandOutput::new(
                 json!({
                     "sent": true,
@@ -990,12 +999,12 @@ fn capture_pane(
         return Ok(remote);
     }
     let output =
-        crate::agent::tmux::capture_pane_text(&session.name, &session.backend_id, lines, ansi)
+        crate::agent::tmux::capture_pane_text(&session.id.to_string(), &session.name, lines, ansi)
             .map_err(|e| format!("capture_pane_text: {e}"))?;
     // Read after the capture, so a pane that is simply not there fails as it
     // always has rather than reporting a screenful of nothing with null state.
     // Same target resolution, so the state describes the pane just captured.
-    let state = crate::agent::tmux::pane_state(&session.name, &session.backend_id);
+    let state = crate::agent::tmux::pane_state(&session.id.to_string(), &session.name);
     let human = output.clone();
     Ok(CommandOutput::new(
         json!({
@@ -1934,7 +1943,7 @@ impl SessionFacts {
             .map(|d| d.command.clone())
             .unwrap_or_else(|| agent.to_string());
         let known: Vec<String> = registry.agents.iter().map(|a| a.command.clone()).collect();
-        let pane = crate::agent::tmux::pane_state(&s.name, &s.backend_id);
+        let pane = crate::agent::tmux::pane_state(&s.id.to_string(), &s.name);
         hook.with_pane(
             &command,
             &known,
@@ -2014,15 +2023,26 @@ fn register_running_session(
         )
         .into());
     }
-    let pane = crate::agent::tmux::agent_window_pane(None, &session.name)
+    // No id yet on this machine: the row is being adopted, so the window can
+    // only be found by name — and only while it is the sole one with that name.
+    let pane = crate::agent::tmux::agent_window(None, "", &session.name)
         .map_err(|e| format!("could not list windows: {e:#}"))?
+        .pane()
         .ok_or_else(|| {
             format!(
-                "no live window for '{}' on this machine's tmux server; register records a \
-                 running session, it does not launch one",
+                "no live window for '{}' on this machine's tmux server that is \
+                 unambiguously its own; register records a running session, it \
+                 does not launch one",
                 session.name
             )
         })?;
+    // Adopted, so stamp it: the row now owns that window by id rather than by
+    // a name a later namesake could take.
+    crate::agent::tmux::stamp_local_window(
+        &pane,
+        &session.id.to_string(),
+        crate::agent::tmux::WindowRole::Agent,
+    );
     session.backend_id = pane;
     db.upsert_session_as(&session, crate::storage::EventReason::Registered)
         .map_err(|e| format!("upsert_session: {e}"))?;

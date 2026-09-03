@@ -132,16 +132,20 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
 
     let killed = if crate::session::is_remote_backend(&session.backend_type) {
         match super::resolve_host(&session.backend_type).flatten() {
-            Some(host) if !session.backend_id.is_empty() => {
-                crate::agent::tmux::kill_pane_remote(&host, &session.backend_id).is_ok()
-            }
+            Some(host) => crate::agent::tmux::kill_pane_remote(
+                &host,
+                &session.id.to_string(),
+                &session.name,
+                &session.backend_id,
+            )
+            .unwrap_or(false),
             // An unreachable host is not a reason to refuse: the mark is what
             // makes the stop stick, and the pane is reclaimed by the next
             // teardown that can reach it.
             _ => false,
         }
     } else {
-        crate::agent::tmux::kill_window(&session.name, &session.backend_id).is_ok()
+        crate::agent::tmux::kill_window(&session.id.to_string(), &session.name).is_ok()
     };
 
     Ok(killed)
@@ -248,8 +252,15 @@ pub fn restart_session_headless_with(
             tracing::debug!("'{}' is stopped; not relaunching", session.name);
             return Ok(RestartReport::default());
         }
-        let alive = crate::agent::tmux::agent_window_alive(host.as_ref(), &session.name)
-            .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
+        // Only a listing that positively says the window is *gone* relaunches.
+        // An ambiguous name — several windows, none stamped — reads as running
+        // here on purpose: launching another agent is the expensive mistake.
+        let alive = crate::agent::tmux::agent_window_alive(
+            host.as_ref(),
+            &session.id.to_string(),
+            &session.name,
+        )
+        .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
         if alive {
             tracing::debug!("'{}' is running; nothing to relaunch", session.name);
             return Ok(RestartReport::default());
@@ -279,14 +290,16 @@ pub fn restart_session_headless_with(
             // path: a session whose tmux server died is restarted by asking for
             // exactly this, and refusing because there was nothing to kill would
             // make the one case that needs it the one case that fails.
-            // Killed by the persisted pane id when one is usable: the window
-            // *name* is not unique, and killing by name with a duplicate around
-            // tears down an arbitrary one of them.
-            if let Err(e) = crate::agent::tmux::kill_window(&plan.window_name, &session.backend_id)
+            // Killed by the window's own stamp: the window *name* is not
+            // unique, and killing by name with a duplicate around tears down an
+            // arbitrary one of them.
+            if let Err(e) =
+                crate::agent::tmux::kill_window(&session.id.to_string(), &plan.window_name)
             {
                 tracing::debug!("no window to kill for '{}': {e:#}", plan.window_name);
             }
             let pane = crate::agent::tmux::spawn_window(
+                &session.id.to_string(),
                 &plan.window_name,
                 &plan.command,
                 &plan.args,
@@ -310,13 +323,20 @@ pub fn restart_session_headless_with(
             // whatever else runs there, and a name is not ours to claim. A pane
             // that is already gone is not an error — the restart is what the
             // caller wanted, and it can still happen.
-            if !session.backend_id.is_empty() {
-                if let Err(e) = crate::agent::tmux::kill_pane_remote(host, &session.backend_id) {
-                    tracing::warn!("could not kill remote pane {}: {e:#}", session.backend_id);
-                }
+            if let Err(e) = crate::agent::tmux::kill_pane_remote(
+                host,
+                &session.id.to_string(),
+                &session.name,
+                &session.backend_id,
+            ) {
+                tracing::warn!(
+                    "could not kill the remote window of '{}': {e:#}",
+                    session.name
+                );
             }
             let pane = crate::agent::tmux::spawn_window_remote(
                 host,
+                &session.id.to_string(),
                 &plan.window_name,
                 &plan.command,
                 &plan.args,

@@ -19,6 +19,12 @@ use thurbox::sync::SharedSession;
 /// A throwaway tmux socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-send-keys-e2e";
 
+/// The tmux session thurbox groups its windows under, which is where every
+/// resolver looks. Mirrors `agent::tmux::TMUX_SESSION`, which is private — and
+/// is `thurbox-dev` here, because a test build carries the same `dev_build`
+/// marker a dev binary does.
+const THURBOX_TMUX_SESSION: &str = "thurbox-dev";
+
 /// The pane runs `cat`: with no shell in the way, the tty echoes what is typed
 /// and `cat` writes the line back only once it is *submitted*. So "appears
 /// once" and "appears twice" is the difference between typed and sent, read off
@@ -66,7 +72,7 @@ fn live_session(db: &Database) -> Option<SharedSession> {
         "new-session",
         "-d",
         "-s",
-        "probe",
+        THURBOX_TMUX_SESSION,
         "-n",
         "tb-probe",
         "-x",

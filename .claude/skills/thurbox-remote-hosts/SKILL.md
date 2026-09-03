@@ -210,9 +210,13 @@ session), never on the loop, ADR-P12).
 - **Remote teardown** (WSL inherits the SSH path): `session delete --force`
   teardown is **backend-aware** — `teardown_runtime_resources` resolves the
   session's `HostDef` from its `backend_type` and, for a remote session, kills
-  the pane via `kill_pane_remote(host, backend_id)` and removes each worktree
-  via `git::remove_worktree_on(Some(host), …)` (local sessions keep the
-  `kill_window`/`remove_worktree` + Windows pane-reap path). Best-effort: an
+  the pane via `kill_pane_remote(host, session_id, name, backend_id)` and removes
+  each worktree via `git::remove_worktree_on(Some(host), …)` (local sessions keep
+  the `kill_window`/`remove_worktree` + Windows pane-reap path). Both kills are
+  resolved from the window's own `@thurbox_session` stamp, not the row's pane id
+  or its name (ADR-25) — the host's tmux server reissues pane ids when it
+  restarts, so a remembered `%N` there can be a live namesake's pane; the
+  `backend_id` argument is the psmux fallback only. Best-effort: an
   unreachable host or a missing `hosts.toml` entry is recorded in
   `ForceDeleteReport.remote_teardown_error` (surfaced in the CLI JSON) and the
   row is still soft-/force-deleted. Like local force-delete it removes the
