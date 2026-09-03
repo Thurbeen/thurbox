@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::session::SessionId;
+use crate::session::{derive_state, with_output_quiescence, SessionId, SessionState};
 use crate::storage::Database;
 
 /// How often the snapshot is rebuilt. A read never waits on this; it only
@@ -49,8 +49,10 @@ pub struct SessionRow {
     pub id: String,
     pub name: String,
     pub agent: String,
-    /// `working` / `blocked` / `done` / `idle` — derived below, not raw.
-    pub status: String,
+    /// What to draw, derived from the hook columns and the terminal by
+    /// [`crate::session::SessionState`]'s read-time folds — never the raw
+    /// column, which is [`Self::hook_state`].
+    pub status: SessionState,
     pub cwd: Option<PathBuf>,
     pub repo: Option<String>,
     /// Every repository the session spans, in member order — one entry for a
@@ -101,7 +103,7 @@ pub struct SessionRow {
     /// very thing the operator asked for. Nothing distinguishes the two but
     /// this flag, which is why it is published rather than derived.
     pub stopped: bool,
-    /// The raw persisted hook state, before `derive_status` interprets it.
+    /// The raw persisted hook state, before [`derive_state`] interprets it.
     ///
     /// Kept beside the derived `status` because the two answer different
     /// questions: `status` is what to draw, this is what the agent last
@@ -579,8 +581,8 @@ impl SnapshotStore {
     ///
     /// Called when focus *leaves* a session — looking at a finished turn and then
     /// moving on is what "seen" means, and it is the only thing that retires a
-    /// `done`. Without it the blue dot is permanent, since `derive_status` reads
-    /// a mark nobody writes.
+    /// `done`. Without it the blue dot is permanent, since [`derive_state`]
+    /// reads a mark nobody writes.
     ///
     /// The derived status is corrected in place as well: this write does not move
     /// `PRAGMA data_version` (it is our own connection), so a refresh would
@@ -611,7 +613,7 @@ impl SnapshotStore {
             .iter_mut()
             .find(|row| row.id == session)
         {
-            row.status = "idle".to_string();
+            row.status = SessionState::Idle;
             self.mark_changed();
         }
     }
@@ -688,7 +690,7 @@ impl SnapshotStore {
             // Corrected in place for the same reason `acknowledge` does it: this
             // is our own connection, so `PRAGMA data_version` will not move and a
             // refresh would re-derive from the row we just wrote.
-            row.status = derive_status(Some(&event.state), Some(now_ms()), None);
+            row.status = derive_state(Some(&event.state), Some(now_ms()), None);
             row.hook_state = Some(event.state);
             applied += 1;
         }
@@ -720,7 +722,7 @@ impl SnapshotStore {
             if row.hook_state.as_deref() != Some("working") {
                 continue;
             }
-            let derived = with_output_quiescence("working", quiet_for(&row.id));
+            let derived = with_output_quiescence(SessionState::Working, quiet_for(&row.id));
             if row.status != derived {
                 row.status = derived;
                 changed += 1;
@@ -885,7 +887,7 @@ impl SnapshotStore {
             .into_iter()
             .map(|session| {
                 let hook = hooks.get(&session.id);
-                let status = derive_status(
+                let status = derive_state(
                     hook.and_then(|h| h.state.as_deref()),
                     hook.and_then(|h| h.state_at),
                     hook.and_then(|h| h.seen_at),
@@ -1085,83 +1087,6 @@ fn read_hosts() -> Vec<HostRow> {
         .collect()
 }
 
-/// Map the persisted hook state onto a status name.
-///
-/// The stuck-`working` fallback is deliberately **not** here: it is a question
-/// about the terminal, not the row, so it belongs to the per-frame fold in
-/// [`with_output_quiescence`]. The stored row is never touched — every rule in
-/// this file is a read-time decision, exactly as v1 does it.
-pub fn derive_status(state: Option<&str>, state_at: Option<i64>, seen_at: Option<i64>) -> String {
-    match state {
-        Some("working") => "working".to_string(),
-        Some("blocked") => "blocked".to_string(),
-        Some("done") => {
-            // Acknowledged once the user moved off it, which v1 records by
-            // stamping seen_at at or after the state change.
-            let acknowledged = match (seen_at, state_at) {
-                (Some(seen), Some(at)) => seen >= at,
-                _ => false,
-            };
-            if acknowledged {
-                "idle".to_string()
-            } else {
-                "done".to_string()
-            }
-        }
-        _ => "idle".to_string(),
-    }
-}
-
-/// How long a `working` session may produce **no terminal output** before it is
-/// reported as idle. v1 uses the same 10s bound.
-///
-/// The signal is output, not the age of the hook state, and the difference is
-/// the whole point: a turn that runs for a minute is still `working` the whole
-/// minute, because the agent is printing throughout. Keying on the hook's
-/// timestamp instead ends every turn after ten seconds and starts it again at
-/// the next hook — a spinner that stops early and restarts, which is precisely
-/// what the fallback exists to avoid.
-const WORKING_QUIET_MS: u64 = 10_000;
-
-/// Fold terminal quiescence into a `working` session's status.
-///
-/// Agents fire no hook when a turn is **interrupted** (Esc / Ctrl+C) and none
-/// when they return to the idle prompt, so a `working` state can stand forever
-/// with nothing running behind it. TUI agents animate their in-progress line
-/// while a turn runs (Claude's `(Xs · esc to interrupt)` ticks every second), so
-/// a genuinely live turn is never quiet for `WORKING_QUIET_MS` and only the
-/// stuck state falls through.
-///
-/// `quiet_for_ms` is `None` when the session has no live pane — nothing can be
-/// producing output, so that reads as quiet too. This is where v1's `exited →
-/// Idle` branch lands: a pane whose stream ended is dropped from the live set.
-/// Only `working` is time-gated; `blocked` is a standing request for input and
-/// says nothing about output.
-pub fn with_output_quiescence(status: &str, quiet_for_ms: Option<u64>) -> String {
-    if status == "working" && quiet_for_ms.unwrap_or(u64::MAX) > WORKING_QUIET_MS {
-        return "idle".to_string();
-    }
-    status.to_string()
-}
-
-/// Fold what the terminal store knows into a session's status.
-///
-/// The hook state says what the *agent* is doing; it cannot say that the machine
-/// the agent runs on has gone away, because a host that is down reports nothing
-/// at all — it just leaves the last state standing. So a remote session with no
-/// live pane reads `unreachable` rather than the stale `idle` its row still
-/// carries, which is v1's placeholder row by another name.
-///
-/// Local sessions are never unreachable: this *is* their machine, and a missing
-/// pane there means the agent has not been launched, not that it cannot be
-/// reached.
-pub fn with_reachability(status: &str, backend: &str, attach_error: Option<&str>) -> String {
-    if attach_error.is_some() && crate::session::is_remote_backend(backend) {
-        return "unreachable".to_string();
-    }
-    status.to_string()
-}
-
 /// A remote session's bare host name, read off its backend name.
 fn remote_host_of(backend: &str) -> Option<String> {
     backend
@@ -1254,80 +1179,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_unreported_session_is_idle() {
-        assert_eq!(derive_status(None, None, None), "idle");
-        assert_eq!(derive_status(Some("unknown"), None, None), "idle");
-    }
-
-    #[test]
-    fn a_fresh_working_state_is_working() {
-        let now = now_ms();
-        assert_eq!(derive_status(Some("working"), Some(now), None), "working");
-    }
-
-    #[test]
-    fn a_long_turn_stays_working_however_old_its_hook_is() {
-        // The regression this guards: keyed on the hook's own timestamp, every
-        // turn reported itself finished ten seconds in and started again at the
-        // next hook — a spinner that stopped early and restarted. How long ago
-        // the agent said "working" says nothing about whether it still is.
-        let long_ago = now_ms() - 600_000;
-        assert_eq!(
-            derive_status(Some("working"), Some(long_ago), None),
-            "working"
-        );
-    }
-
-    #[test]
-    fn a_quiet_working_session_falls_back_to_idle() {
-        // Agents fire no hook on interrupt, so without this a cancelled turn
-        // would spin forever. v1 guards the same way, on the same signal.
-        assert_eq!(
-            with_output_quiescence("working", Some(WORKING_QUIET_MS + 1)),
-            "idle"
-        );
-    }
-
-    #[test]
-    fn a_printing_working_session_stays_working() {
-        assert_eq!(with_output_quiescence("working", Some(0)), "working");
-        assert_eq!(
-            with_output_quiescence("working", Some(WORKING_QUIET_MS)),
-            "working"
-        );
-    }
-
-    #[test]
-    fn a_working_session_with_no_live_pane_is_idle() {
-        // Nothing can be producing output, which is where v1's exited → Idle
-        // branch lands: a pane whose stream ended leaves the live set.
-        assert_eq!(with_output_quiescence("working", None), "idle");
-    }
-
-    #[test]
-    fn blocked_is_never_time_gated() {
-        let long_ago = now_ms() - 600_000;
-        assert_eq!(
-            derive_status(Some("blocked"), Some(long_ago), None),
-            "blocked"
-        );
-        // A session waiting on you produces no output while it waits.
-        assert_eq!(with_output_quiescence("blocked", None), "blocked");
-        assert_eq!(
-            with_output_quiescence("done", Some(WORKING_QUIET_MS * 10)),
-            "done"
-        );
-    }
-
-    #[test]
-    fn done_stays_done_until_acknowledged() {
-        let at = now_ms();
-        assert_eq!(derive_status(Some("done"), Some(at), None), "done");
-        assert_eq!(derive_status(Some("done"), Some(at), Some(at - 1)), "done");
-        assert_eq!(derive_status(Some("done"), Some(at), Some(at)), "idle");
-    }
-
-    #[test]
     fn a_remote_backend_yields_its_host_name() {
         assert_eq!(remote_host_of("ssh:devbox").as_deref(), Some("devbox"));
         assert_eq!(remote_host_of("wsl:Ubuntu").as_deref(), Some("Ubuntu"));
@@ -1361,35 +1212,6 @@ mod tests {
         for _ in 0..1000 {
             assert!(store.current().sessions.is_empty());
         }
-    }
-
-    #[test]
-    fn a_reachable_session_keeps_the_status_its_hooks_reported() {
-        assert_eq!(with_reachability("working", "ssh:devbox", None), "working");
-        assert_eq!(with_reachability("done", "local-tmux", None), "done");
-    }
-
-    #[test]
-    fn a_remote_session_with_no_pane_is_unreachable() {
-        assert_eq!(
-            with_reachability("idle", "ssh:devbox", Some("host unreachable")),
-            "unreachable"
-        );
-        assert_eq!(
-            with_reachability("working", "wsl:ubuntu", Some("connect timed out")),
-            "unreachable"
-        );
-    }
-
-    #[test]
-    fn a_local_session_without_a_pane_is_not_unreachable() {
-        // This is the machine it runs on: no pane means the agent has not been
-        // launched, which the pane itself says. Calling it unreachable would
-        // claim a host problem that does not exist.
-        assert_eq!(
-            with_reachability("idle", "local-tmux", Some("session has no pane yet")),
-            "idle"
-        );
     }
 
     #[test]

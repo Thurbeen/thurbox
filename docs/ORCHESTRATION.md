@@ -242,11 +242,23 @@ gone — and each one comes with what it takes to judge it:
 | `stopped` | whether the session is parked — `session stop`, no pane |
 | `reports_as` | the agent the hook fields were read against, when a driver declared one |
 
-`state` is always a word: `unreported` when nothing has reported for
-this session, `uncovered` when its agent is wired to report nothing, and
-`stopped` when the session is parked. None of the three is a state an
-agent can signal, and `state_source` is null for all of them. The piped
-(TOON) `session list` shows this column.
+`state` is always a word, and one of `SessionState`'s — the single
+vocabulary `session get`, `session list`, `thurbox-cli watch` and the
+interface all derive through, so no two of them answer differently for
+one row. Besides the four an agent can signal it can read `unreported`
+(nothing has reported for this session), `uncovered` (its agent is wired
+to report nothing), `stopped` (the session is parked) or `running` (an
+agent holds the pane and has not signalled — `session get`'s probe only).
+None of those four is a state an agent can signal, and `state_source` is
+null for the first three. The piped (TOON) `session list` shows this
+column.
+
+A finished turn reads `done` until somebody looks at it and `idle`
+after: the interface stamps `seen_at` when focus moves off, and every
+read verb folds that in. It is a stored fact, not a guessed timeout —
+the two folds that *are* timing (a `working` session gone quiet, an
+unreachable host) need a live terminal, so headless answers never
+invent them.
 
 A **parked** session (`session stop`: pane killed, row and checkout
 kept) stays in `session list` and is told apart there — `stopped: true`

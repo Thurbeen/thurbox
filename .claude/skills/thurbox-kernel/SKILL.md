@@ -74,7 +74,9 @@ already follow.
   `Session` wraps a `SessionBackend`; `TmuxBackend` runs tmux over a
   `TmuxTransport` (`Local` / `Ssh` / `Wsl`). Output is read into
   `Arc<Mutex<vt100::Parser>>`, input written over an mpsc channel.
-- **`session/`** — plain data: `SessionId`, `SessionStatus`, `SessionInfo`,
+- **`session/`** — plain data: `SessionId`, `SessionInfo`, `SessionState` and
+  the read-time status folds (`hook_status`, the one module the kernel *and*
+  the CLI derive a session's state through),
   `SessionConfig`, `AgentDef`/`AgentRegistry`, `HostDef`/`HostRegistry`,
   `PluginSpec`/`PluginLock`/`PackageManifest` (`plugin_spec`, so the kernel and the
   CLI share one definition), plus the logic the kernel needs and cannot import

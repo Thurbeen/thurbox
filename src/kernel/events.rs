@@ -245,7 +245,7 @@ struct Facts {
     agent: String,
     repo: Option<String>,
     repos: Vec<String>,
-    status: String,
+    status: crate::session::SessionState,
     branch: Option<String>,
     parent: Option<String>,
 }
@@ -257,7 +257,7 @@ impl Facts {
             agent: row.agent.clone(),
             repo: row.repo.clone(),
             repos: row.repos.clone(),
-            status: row.status.clone(),
+            status: row.status,
             branch: row.branch.clone(),
             parent: row.parent_id.clone(),
         }
@@ -382,14 +382,15 @@ impl Deriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionState;
     use std::path::PathBuf;
 
-    fn row(id: &str, status: &str) -> SessionRow {
+    fn row(id: &str, status: SessionState) -> SessionRow {
         SessionRow {
             id: id.to_string(),
             name: format!("name-{id}"),
             agent: "claude".into(),
-            status: status.into(),
+            status,
             cwd: Some(PathBuf::from("/src/thurbox")),
             repo: Some("thurbox".into()),
             repos: vec!["thurbox".into()],
@@ -420,25 +421,37 @@ mod tests {
     #[test]
     fn the_first_snapshot_seeds_silently() {
         let mut deriver = Deriver::new();
-        let events = deriver.observe(&snapshot(vec![row("a", "idle"), row("b", "working")]), 1);
+        let events = deriver.observe(
+            &snapshot(vec![
+                row("a", SessionState::Idle),
+                row("b", SessionState::Working),
+            ]),
+            1,
+        );
         assert!(events.is_empty(), "{events:?}");
     }
 
     #[test]
     fn an_unchanged_version_costs_nothing_and_says_nothing() {
         let mut deriver = Deriver::new();
-        deriver.observe(&snapshot(vec![row("a", "idle")]), 1);
+        deriver.observe(&snapshot(vec![row("a", SessionState::Idle)]), 1);
         assert!(deriver.observe(&snapshot(vec![]), 1).is_empty());
     }
 
     #[test]
     fn arrivals_departures_and_changes_each_fire_once_in_order() {
         let mut deriver = Deriver::new();
-        deriver.observe(&snapshot(vec![row("a", "idle"), row("b", "working")]), 1);
-        let mut renamed = row("a", "blocked");
+        deriver.observe(
+            &snapshot(vec![
+                row("a", SessionState::Idle),
+                row("b", SessionState::Working),
+            ]),
+            1,
+        );
+        let mut renamed = row("a", SessionState::Blocked);
         renamed.name = "renamed".into();
         renamed.branch = Some("other".into());
-        let events = deriver.observe(&snapshot(vec![renamed, row("c", "idle")]), 2);
+        let events = deriver.observe(&snapshot(vec![renamed, row("c", SessionState::Idle)]), 2);
         let names: Vec<&str> = events.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
@@ -469,10 +482,10 @@ mod tests {
     #[test]
     fn a_reset_makes_the_next_snapshot_seed_again() {
         let mut deriver = Deriver::new();
-        deriver.observe(&snapshot(vec![row("a", "idle")]), 1);
+        deriver.observe(&snapshot(vec![row("a", SessionState::Idle)]), 1);
         deriver.reset();
         assert!(deriver
-            .observe(&snapshot(vec![row("b", "idle")]), 2)
+            .observe(&snapshot(vec![row("b", SessionState::Idle)]), 2)
             .is_empty());
     }
 

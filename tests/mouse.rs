@@ -20,6 +20,7 @@ use thurbox::kernel::paint::{render_recording, Hit, PlaceholderSurfaces};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 fn host() -> LuaHost {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
@@ -33,7 +34,7 @@ fn row(name: &str, repo: &str) -> SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),
         name: name.into(),
         agent: "claude".into(),
-        status: "idle".into(),
+        status: SessionState::Idle,
         cwd: Some(std::path::PathBuf::from(format!("/src/{repo}"))),
         repo: Some(repo.into()),
         repos: Vec::new(),

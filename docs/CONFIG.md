@@ -492,9 +492,10 @@ that needs your attention**. The trigger is the hooks-driven
 the terminal bell / output): the notification fires when a session crosses
 into `Blocked` (the agent needs input or approval) and, with
 `also_on_waiting = true`, also when it finishes a turn (`Working → Done`).
-The edge is observed once per tick in `refresh_session_statuses` — the
-same place the session-list status icon is computed, so the banner can
-never drift from the list — then deduped per session (`min_interval_secs`)
+The edge is detected once per tick in `kernel::notify`, reading the same
+`SessionState` the session-list status icon draws, so the banner can
+never drift from the list (see `docs/FEATURES.md` → *Why the transition is
+observed in one place*) — then deduped per session (`min_interval_secs`)
 and skipped for the session you're currently viewing (`suppress_for_active`).
 The notification body is the agent's last OSC 9 / OSC 777 message when
 present (truncated to 200 chars), otherwise `Waiting for input` — the OSC
@@ -540,7 +541,7 @@ you), and with `also_on_waiting = true` also on `Working → Done`.
 
 ## Session status
 
-Each session's state (Blocked / Working / Done / Idle / Error) is driven by
+Each session's state (Blocked / Working / Done / Idle) is driven by
 **agent hooks** that call `thurbox-cli session signal --state
 <working|blocked|done|idle>`. The state is persisted on the `sessions` row
 (`hook_state`, `hook_state_at`, `seen_at` — schema v34) and survives the TUI
@@ -552,8 +553,9 @@ no id. A finished turn shows `Done` (blue) — for the session you're watching t
 The hooks are wired up automatically by the built-in **hooks** extension
 (auto-activated on first run). Opt out with `thurbox-cli extension deactivate
 hooks`. The status colours are tunable theme keys (`status_working` /
-`status_blocked` / `status_done` / `status_idle` / `status_error` /
-`status_unreachable` — see `themes.toml`).
+`status_blocked` / `status_done` / `status_idle` / `status_unreachable` — see
+`themes.toml`). `status_error` is a separate role, for a failed *command* in
+the list, not a session state.
 
 The wiring is applied **only to agents thurbox launches** — it never edits your
 own global agent config (e.g. your personal `~/.claude/settings.json`). thurbox's

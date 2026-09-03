@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use crate::cli::output::Format;
 use crate::cli::CommandError;
 use crate::session::{Assessment, SessionId};
-use crate::storage::{Database, SessionEventRow, SessionFacts};
+use crate::storage::{Database, HookRow, SessionEventRow, SessionFacts};
 
 /// How often the change gate is checked. A `PRAGMA data_version` on an open
 /// connection is a memory read, not a query — this is a latency choice, not a
@@ -118,12 +118,11 @@ pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), Command
             let Some(facts) = facts.get(&session.id) else {
                 continue;
             };
-            let row = states.get(&session.id);
+            let row = states.get(&session.id).cloned().unwrap_or_default();
             let hook = assess(
                 &registry,
                 facts,
-                row.and_then(|r| r.state.as_deref()),
-                row.and_then(|r| r.state_at),
+                &row,
                 facts.stopped,
                 args.verify,
                 &session.backend_type,
@@ -255,6 +254,12 @@ fn drain(
 /// re-reading the row would report the later one twice. `stopped` is likewise
 /// the mark as of *this* event ([`drain`]'s `stopped_state`), not the row's
 /// current one.
+///
+/// `seen_at` is the exception, and deliberately the row's: the acknowledgment
+/// is a fact about *now* ("somebody has looked at this since"), so a replayed
+/// `done` an operator has since read reports `idle` — the same answer `session
+/// get` gives for that row in that second. `to_state` still carries the event's
+/// own word verbatim, so nothing about the transition is lost.
 fn line(
     db: &Database,
     registry: &crate::session::AgentRegistry,
@@ -268,6 +273,7 @@ fn line(
         agent: String::new(),
         backend_id: String::new(),
         stopped: false,
+        seen_at: None,
     };
     let facts = facts.get(&event.session_id).unwrap_or(&unknown);
     // Only the pane probe needs the backend, and only a live row has a pane to
@@ -281,8 +287,11 @@ fn line(
     let hook = assess(
         registry,
         facts,
-        event.to_state.as_deref(),
-        Some(event.at_ms),
+        &HookRow {
+            state: event.to_state.clone(),
+            state_at: Some(event.at_ms),
+            seen_at: facts.seen_at,
+        },
         stopped,
         probe,
         &backend_type,
@@ -344,8 +353,7 @@ fn base(id: SessionId, facts: &SessionFacts, hook: &Assessment) -> Value {
 fn assess(
     registry: &crate::session::AgentRegistry,
     facts: &SessionFacts,
-    state: Option<&str>,
-    state_at: Option<i64>,
+    columns: &HookRow,
     stopped: bool,
     verify: bool,
     backend_type: &str,
@@ -353,8 +361,9 @@ fn assess(
     let hook = Assessment::from_hooks(
         registry,
         &facts.agent,
-        state,
-        state_at,
+        columns.state.as_deref(),
+        columns.state_at,
+        columns.seen_at,
         crate::sync::current_time_millis() as i64,
     );
     if stopped {

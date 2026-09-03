@@ -20,12 +20,7 @@ use std::time::{Duration, Instant};
 
 use super::snapshot::{SessionRow, Snapshot};
 use crate::session::settings::NotificationSettings;
-
-/// Status that means the agent is waiting on the user.
-const BLOCKED: &str = "blocked";
-/// Status that means a turn just finished — the other edge worth notifying on,
-/// and the one that is off by default.
-const DONE: &str = "done";
+use crate::session::SessionState;
 
 /// Watches for sessions becoming blocked and raises one notification each time.
 pub struct Notifier {
@@ -33,7 +28,7 @@ pub struct Notifier {
     /// in which case nothing is ever attempted — not even a resolve.
     sender: Option<crate::notifications::NotificationSender>,
     /// Last status seen per session, so a transition can be told from a state.
-    previous: HashMap<String, String>,
+    previous: HashMap<String, SessionState>,
     /// When each session last had a notification raised for it, for the
     /// per-session floor.
     last_raised: HashMap<String, Instant>,
@@ -85,12 +80,12 @@ impl Notifier {
         let floor = Duration::from_secs(self.settings.min_interval_secs);
 
         for row in &snapshot.sessions {
-            let was = self.previous.insert(row.id.clone(), row.status.clone());
+            let was = self.previous.insert(row.id.clone(), row.status);
 
             // The *edge*, not the state: a session that is already blocked when
             // the interface starts has not just asked for anything.
             let Some(previous) = was else { continue };
-            if previous == row.status || !self.worth_raising(&previous, row, active) {
+            if previous == row.status || !self.worth_raising(previous, row, active) {
                 continue;
             }
             // The floor is per session: an agent flipping between states must not
@@ -121,9 +116,16 @@ impl Notifier {
     /// Blocked always notifies; finishing does so only when asked for. A
     /// notification for the session you are already looking at is noise, so it is
     /// suppressed when configured.
-    fn worth_raising(&self, previous: &str, row: &SessionRow, active: Option<&str>) -> bool {
-        let wanted = row.status == BLOCKED
-            || (row.status == DONE && self.settings.also_on_waiting && previous != BLOCKED);
+    fn worth_raising(
+        &self,
+        previous: SessionState,
+        row: &SessionRow,
+        active: Option<&str>,
+    ) -> bool {
+        let wanted = row.status == SessionState::Blocked
+            || (row.status == SessionState::Done
+                && self.settings.also_on_waiting
+                && previous != SessionState::Blocked);
         if !wanted {
             return false;
         }
@@ -139,7 +141,7 @@ impl Notifier {
         else {
             return;
         };
-        let blocked = row.status == BLOCKED;
+        let blocked = row.status == SessionState::Blocked;
         let (title, body) = match blocked {
             true => (
                 format!("{} needs you", row.name),
@@ -164,12 +166,12 @@ mod tests {
     use super::*;
     use crate::kernel::snapshot::SessionRow;
 
-    fn row(id: &str, status: &str) -> SessionRow {
+    fn row(id: &str, status: SessionState) -> SessionRow {
         SessionRow {
             id: id.into(),
             name: "demo".into(),
             agent: "claude".into(),
-            status: status.into(),
+            status,
             cwd: None,
             repo: None,
             repos: Vec::new(),
@@ -221,25 +223,25 @@ mod tests {
         // First sight of a blocked session is not a transition: it may have
         // been blocked long before the interface opened.
         assert!(notifier
-            .observe(&snap(vec![row("a", "blocked")]), None)
+            .observe(&snap(vec![row("a", SessionState::Blocked)]), None)
             .is_empty());
         // Still blocked: nothing new.
         assert!(notifier
-            .observe(&snap(vec![row("a", "blocked")]), None)
+            .observe(&snap(vec![row("a", SessionState::Blocked)]), None)
             .is_empty());
     }
 
     #[test]
     fn becoming_blocked_raises_exactly_one() {
         let mut notifier = quiet(false);
-        notifier.observe(&snap(vec![row("a", "working")]), None);
+        notifier.observe(&snap(vec![row("a", SessionState::Working)]), None);
         assert_eq!(
-            notifier.observe(&snap(vec![row("a", "blocked")]), None),
+            notifier.observe(&snap(vec![row("a", SessionState::Blocked)]), None),
             vec!["a".to_string()]
         );
         // And not again while it stays blocked.
         assert!(notifier
-            .observe(&snap(vec![row("a", "blocked")]), None)
+            .observe(&snap(vec![row("a", SessionState::Blocked)]), None)
             .is_empty());
     }
 
@@ -249,12 +251,12 @@ mod tests {
         // is about the edge.
         let mut notifier = quiet(false);
         let start = Instant::now();
-        notifier.observe_at(&snap(vec![row("a", "working")]), None, start);
-        notifier.observe_at(&snap(vec![row("a", "blocked")]), None, start);
-        notifier.observe_at(&snap(vec![row("a", "working")]), None, start);
+        notifier.observe_at(&snap(vec![row("a", SessionState::Working)]), None, start);
+        notifier.observe_at(&snap(vec![row("a", SessionState::Blocked)]), None, start);
+        notifier.observe_at(&snap(vec![row("a", SessionState::Working)]), None, start);
         let later = start + Duration::from_secs(60);
         assert_eq!(
-            notifier.observe_at(&snap(vec![row("a", "blocked")]), None, later),
+            notifier.observe_at(&snap(vec![row("a", SessionState::Blocked)]), None, later),
             vec!["a".to_string()]
         );
     }
@@ -268,24 +270,24 @@ mod tests {
             ..NotificationSettings::default()
         });
         let start = Instant::now();
-        notifier.observe_at(&snap(vec![row("a", "working")]), None, start);
+        notifier.observe_at(&snap(vec![row("a", SessionState::Working)]), None, start);
         assert_eq!(
-            notifier.observe_at(&snap(vec![row("a", "blocked")]), None, start),
+            notifier.observe_at(&snap(vec![row("a", SessionState::Blocked)]), None, start),
             vec!["a".to_string()]
         );
-        notifier.observe_at(&snap(vec![row("a", "working")]), None, start);
+        notifier.observe_at(&snap(vec![row("a", SessionState::Working)]), None, start);
         assert!(notifier
             .observe_at(
-                &snap(vec![row("a", "blocked")]),
+                &snap(vec![row("a", SessionState::Blocked)]),
                 None,
                 start + Duration::from_secs(29)
             )
             .is_empty());
         // And delivered again once the floor has passed.
-        notifier.observe_at(&snap(vec![row("a", "working")]), None, start);
+        notifier.observe_at(&snap(vec![row("a", SessionState::Working)]), None, start);
         assert_eq!(
             notifier.observe_at(
-                &snap(vec![row("a", "blocked")]),
+                &snap(vec![row("a", SessionState::Blocked)]),
                 None,
                 start + Duration::from_secs(31)
             ),
@@ -302,13 +304,19 @@ mod tests {
         });
         let start = Instant::now();
         notifier.observe_at(
-            &snap(vec![row("a", "working"), row("b", "working")]),
+            &snap(vec![
+                row("a", SessionState::Working),
+                row("b", SessionState::Working),
+            ]),
             None,
             start,
         );
         assert_eq!(
             notifier.observe_at(
-                &snap(vec![row("a", "blocked"), row("b", "working")]),
+                &snap(vec![
+                    row("a", SessionState::Blocked),
+                    row("b", SessionState::Working)
+                ]),
                 None,
                 start
             ),
@@ -316,7 +324,10 @@ mod tests {
         );
         assert_eq!(
             notifier.observe_at(
-                &snap(vec![row("a", "blocked"), row("b", "blocked")]),
+                &snap(vec![
+                    row("a", SessionState::Blocked),
+                    row("b", SessionState::Blocked)
+                ]),
                 None,
                 start
             ),
@@ -327,9 +338,10 @@ mod tests {
     #[test]
     fn finishing_notifies_only_when_it_is_asked_for() {
         let mut off = quiet(false);
-        off.observe(&snap(vec![row("a", "working")]), None);
+        off.observe(&snap(vec![row("a", SessionState::Working)]), None);
         assert!(
-            off.observe(&snap(vec![row("a", "done")]), None).is_empty(),
+            off.observe(&snap(vec![row("a", SessionState::Done)]), None)
+                .is_empty(),
             "the finish edge is off by default"
         );
 
@@ -337,9 +349,9 @@ mod tests {
             also_on_waiting: true,
             ..NotificationSettings::default()
         });
-        on.observe(&snap(vec![row("a", "working")]), None);
+        on.observe(&snap(vec![row("a", SessionState::Working)]), None);
         assert_eq!(
-            on.observe(&snap(vec![row("a", "done")]), None),
+            on.observe(&snap(vec![row("a", SessionState::Done)]), None),
             vec!["a".to_string()]
         );
     }
@@ -352,9 +364,9 @@ mod tests {
             also_on_waiting: true,
             ..NotificationSettings::default()
         });
-        notifier.observe(&snap(vec![row("a", "blocked")]), None);
+        notifier.observe(&snap(vec![row("a", SessionState::Blocked)]), None);
         assert!(notifier
-            .observe(&snap(vec![row("a", "done")]), None)
+            .observe(&snap(vec![row("a", SessionState::Done)]), None)
             .is_empty());
     }
 
@@ -372,16 +384,16 @@ mod tests {
     #[test]
     fn the_session_in_view_is_suppressed_when_configured() {
         let mut notifier = quiet(true);
-        notifier.observe(&snap(vec![row("a", "working")]), Some("a"));
+        notifier.observe(&snap(vec![row("a", SessionState::Working)]), Some("a"));
         assert!(notifier
-            .observe(&snap(vec![row("a", "blocked")]), Some("a"))
+            .observe(&snap(vec![row("a", SessionState::Blocked)]), Some("a"))
             .is_empty());
 
         // And not suppressed when it is some other session in view.
         let mut notifier = quiet(true);
-        notifier.observe(&snap(vec![row("a", "working")]), Some("b"));
+        notifier.observe(&snap(vec![row("a", SessionState::Working)]), Some("b"));
         assert_eq!(
-            notifier.observe(&snap(vec![row("a", "blocked")]), Some("b")),
+            notifier.observe(&snap(vec![row("a", SessionState::Blocked)]), Some("b")),
             vec!["a".to_string()]
         );
     }
@@ -395,13 +407,13 @@ mod tests {
     #[test]
     fn a_vanished_session_stops_being_tracked() {
         let mut notifier = quiet(false);
-        notifier.observe(&snap(vec![row("a", "working")]), None);
+        notifier.observe(&snap(vec![row("a", SessionState::Working)]), None);
         notifier.observe(&snap(Vec::new()), None);
         assert!(notifier.previous.is_empty());
 
         // So a recreated id is a first sighting again, not a transition.
         assert!(notifier
-            .observe(&snap(vec![row("a", "blocked")]), None)
+            .observe(&snap(vec![row("a", SessionState::Blocked)]), None)
             .is_empty());
     }
 }

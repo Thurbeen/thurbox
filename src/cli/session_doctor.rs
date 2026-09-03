@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn an_agent_with_no_wiring_fails_and_says_how_to_wire_it() {
-        let hook = Assessment::from_hooks(&registry(), "mine", None, None, 0);
+        let hook = Assessment::from_hooks(&registry(), "mine", None, None, None, 0);
         let report = diagnose_agent(&row("s", "mine", "local-tmux"), &hook, true, Some("/bin/x"));
         assert_eq!(report.verdict, Level::Fail);
         assert_eq!(level_of(&report, "coverage"), Level::Fail);
@@ -568,7 +568,8 @@ mod tests {
         // wired nothing) and reports state itself through the documented
         // `session signal`. State is demonstrably arriving, so a `fail` verdict
         // — and the non-zero exit with it — would be false for this row.
-        let hook = Assessment::from_hooks(&registry(), "shell", Some("working"), Some(0), 5_000);
+        let hook =
+            Assessment::from_hooks(&registry(), "shell", Some("working"), Some(0), None, 5_000);
         let report = diagnose_agent(
             &row("s", "shell", "local-tmux"),
             &hook,
@@ -592,7 +593,7 @@ mod tests {
         // Every hook command is `… || true`, so a `thurbox-cli` that is not on
         // PATH looks exactly like an agent that has not signalled. This is the
         // whole reason the subcommand exists.
-        let hook = Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), 0);
+        let hook = Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), None, 0);
         let report = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, true, None);
         assert_eq!(level_of(&report, "cli"), Level::Fail);
         assert_eq!(report.verdict, Level::Fail);
@@ -600,7 +601,7 @@ mod tests {
 
     #[test]
     fn a_deactivated_extension_is_a_failure_not_a_silence() {
-        let hook = Assessment::from_hooks(&registry(), "claude", None, None, 0);
+        let hook = Assessment::from_hooks(&registry(), "claude", None, None, None, 0);
         let report = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, false, Some("/x"));
         assert_eq!(level_of(&report, "extension"), Level::Fail);
     }
@@ -609,7 +610,7 @@ mod tests {
     fn a_partial_agent_warns_without_failing() {
         // aider can only ever report `blocked`; that is a fact to know, not
         // breakage to fix, so it must not exit non-zero forever.
-        let hook = Assessment::from_hooks(&registry(), "aider", None, None, 0);
+        let hook = Assessment::from_hooks(&registry(), "aider", None, None, None, 0);
         let report = diagnose_agent(&row("s", "aider", "local-tmux"), &hook, true, Some("/x"));
         assert_eq!(level_of(&report, "coverage"), Level::Warn);
         assert_ne!(report.verdict, Level::Fail);
@@ -620,8 +621,9 @@ mod tests {
     #[test]
     fn a_pane_that_disagrees_is_called_out() {
         let known = vec!["claude".to_string()];
-        let hook = Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), 1_000)
-            .with_pane("claude", &known, Some("bash"), Some("bash"), Some(false));
+        let hook =
+            Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), None, 1_000)
+                .with_pane("claude", &known, Some("bash"), Some("bash"), Some(false));
         let report = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, true, Some("/x"));
         assert_eq!(level_of(&report, "pane"), Level::Warn);
         let detail = &report
@@ -638,8 +640,9 @@ mod tests {
         // Its payload lives on the host — either the host's own hooks
         // extension's business or shipped at spawn — and neither is readable
         // here. Reporting a local file as missing would be a false failure.
-        let hook = Assessment::from_hooks(&registry(), "claude", Some("done"), Some(0), 1_000)
-            .pane_unavailable();
+        let hook =
+            Assessment::from_hooks(&registry(), "claude", Some("done"), Some(0), None, 1_000)
+                .pane_unavailable();
         let report = diagnose_agent(&row("s", "claude", "ssh:devbox"), &hook, true, Some("/x"));
         assert_eq!(level_of(&report, "payload"), Level::Warn);
         assert_eq!(level_of(&report, "cli"), Level::Warn);
@@ -653,7 +656,7 @@ mod tests {
         // named after the command's file stem. There is no wiring here to be
         // broken, and failing it made bare `doctor` — which diagnoses every
         // active session — fail the whole machine because one shell existed.
-        let hook = Assessment::from_hooks(&registry(), "bash", None, None, 0);
+        let hook = Assessment::from_hooks(&registry(), "bash", None, None, None, 0);
         let report = diagnose(
             &row("task-7", "bash", "local-tmux"),
             false,
@@ -678,7 +681,7 @@ mod tests {
         // so. Judging the wiring against `bash` reported coverage `none` for a
         // fully instrumented pane — and, worse, `blocked_is_heuristic: false`
         // about claude's text match on a notification body.
-        let hook = Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), 0);
+        let hook = Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), None, 0);
         let report = diagnose(
             &row("task-7", "bash", "local-tmux"),
             true,
@@ -702,7 +705,8 @@ mod tests {
         // to this one already answers `stopped` first; this one did not, and
         // printed the dead agent's last word as the current state.
         let hook =
-            Assessment::from_hooks(&registry(), "claude", Some("blocked"), Some(0), 1_000).parked();
+            Assessment::from_hooks(&registry(), "claude", Some("blocked"), Some(0), None, 1_000)
+                .parked();
         let report = diagnose_agent(
             &row("parked", "claude", "local-tmux"),
             &hook,
@@ -726,7 +730,7 @@ mod tests {
         // command session runs the binary, so its absence cannot be what stops
         // state arriving — it is still worth saying, because a driver calling
         // `session signal` from the pane needs it.
-        let hook = Assessment::from_hooks(&registry(), "bash", None, None, 0);
+        let hook = Assessment::from_hooks(&registry(), "bash", None, None, None, 0);
         let report = diagnose(&row("s", "bash", "local-tmux"), false, &hook, true, None);
         assert_eq!(level_of(&report, "cli"), Level::Warn);
         assert_ne!(report.verdict, Level::Fail);
@@ -734,7 +738,8 @@ mod tests {
         // A registry agent thurbox ships no hooks for is the other way round:
         // its driver's `session signal` is the only route state can take, so a
         // binary that is not on PATH really is what breaks it.
-        let owned = Assessment::from_hooks(&registry(), "shell", Some("working"), Some(0), 5_000);
+        let owned =
+            Assessment::from_hooks(&registry(), "shell", Some("working"), Some(0), None, 5_000);
         let report = diagnose_agent(&row("s", "shell", "local-tmux"), &owned, true, None);
         assert_eq!(level_of(&report, "cli"), Level::Fail);
     }
@@ -745,8 +750,9 @@ mod tests {
         // provisioned one under the data dir), nothing named `thurbox-cli` is
         // on PATH. That says nothing about a session whose hooks fire on
         // another host, so it must not turn into a failure.
-        let hook = Assessment::from_hooks(&registry(), "claude", Some("done"), Some(0), 1_000)
-            .pane_unavailable();
+        let hook =
+            Assessment::from_hooks(&registry(), "claude", Some("done"), Some(0), None, 1_000)
+                .pane_unavailable();
         let report = diagnose_agent(&row("s", "claude", "ssh:devbox"), &hook, true, None);
         assert_eq!(level_of(&report, "cli"), Level::Warn);
         assert_ne!(report.verdict, Level::Fail);

@@ -69,7 +69,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             agent: "claude".into(),
-            status: "idle".into(),
+            status: crate::session::SessionState::Idle,
             cwd: None,
             repo: None,
             repos: Vec::new(),

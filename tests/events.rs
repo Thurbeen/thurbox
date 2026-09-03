@@ -15,6 +15,7 @@ use thurbox::kernel::host::{LuaHost, Phase, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 /// An interface directory holding the given plugins, each `(file, source)`.
 fn interface(plugins: &[(&str, &str)]) -> tempfile::TempDir {
@@ -39,7 +40,7 @@ fn row(name: &str, status: &str) -> SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),
         name: name.to_string(),
         agent: "claude".to_string(),
-        status: status.to_string(),
+        status: SessionState::from_hook_state(status).expect("a hook state"),
         cwd: Some(PathBuf::from("/src/thurbox")),
         repo: Some("thurbox".to_string()),
         repos: vec!["thurbox".to_string()],

@@ -23,6 +23,7 @@ use thurbox::kernel::node::Identity;
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::Snapshot;
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 fn host() -> LuaHost {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
@@ -135,7 +136,7 @@ fn one_session() -> Snapshot {
             id: "s1-0000-0000-0000-000000000000".into(),
             name: "fix-osc52".into(),
             agent: "claude".into(),
-            status: "idle".into(),
+            status: SessionState::Idle,
             cwd: None,
             repo: Some("thurbox".into()),
             repos: vec!["thurbox".into()],

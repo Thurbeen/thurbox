@@ -17,6 +17,7 @@ use thurbox::kernel::paint::{render, render_recording, Hit, PlaceholderSurfaces}
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 /// The plugin under test. It keeps its `agent` name: the name is what
 /// `command("focus", …)`, the footer's focus label and the tests below spell,
@@ -35,7 +36,7 @@ fn row(name: &str) -> SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),
         name: name.into(),
         agent: "claude".into(),
-        status: "idle".into(),
+        status: SessionState::Idle,
         cwd: None,
         repo: Some("thurbox".into()),
         repos: vec!["thurbox".into()],

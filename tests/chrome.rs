@@ -17,6 +17,7 @@ use thurbox::kernel::node::ClickVerb;
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{AutomationRow, SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 fn host() -> LuaHost {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
@@ -30,7 +31,7 @@ fn session(name: &str, branch: &str) -> SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),
         name: name.into(),
         agent: "claude".into(),
-        status: "idle".into(),
+        status: SessionState::Idle,
         cwd: Some(std::path::PathBuf::from("/src/repo")),
         repo: Some("repo".into()),
         repos: vec!["repo".into()],

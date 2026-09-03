@@ -12,6 +12,7 @@
 
 use thurbox::kernel::config::{Config, Reloaded};
 use thurbox::session::settings::Settings;
+use thurbox::session::SessionState;
 
 /// Isolate config and data into a tempdir, process-wide so a worker sees it too.
 fn isolate() -> tempfile::TempDir {
@@ -266,7 +267,7 @@ fn session_row() -> thurbox::kernel::snapshot::SessionRow {
         id: "11111111-1111-1111-1111-111111111111".into(),
         name: "fix-osc52".into(),
         agent: "claude".into(),
-        status: "idle".into(),
+        status: SessionState::Idle,
         cwd: Some(std::path::PathBuf::from("/src/thurbox")),
         repo: Some("thurbox".into()),
         repos: vec!["thurbox".into()],

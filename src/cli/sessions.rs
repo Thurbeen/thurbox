@@ -31,6 +31,17 @@ pub enum Action {
     /// `session stop`. A parked session stays in this list and carries
     /// `stopped: true`, so a driver can tell one from a running session
     /// without probing its pane.
+    ///
+    /// **Unprobed fields are null, and null means "not checked".** Without
+    /// `--verify` the pane is never looked at, so `hook_corroboration`,
+    /// `hook_state_contradicted` and `foreground_process`/`foreground_command`
+    /// are all `null` — *unchecked*, which is a different answer from
+    /// `false`/"nothing found" (a remote session, which has no pane to look at
+    /// from here, says `hook_corroboration: "unavailable"` instead). For the
+    /// same reason a session nothing has ever signalled for reads `unreported`
+    /// / `uncovered` here where `session get` reads `running`: only the probe
+    /// can see an agent thurbox never launched. `--verify` gives this listing
+    /// `get`'s answer at `get`'s cost, per session.
     List {
         /// Only list children of this parent session UUID.
         #[arg(long)]
@@ -42,7 +53,9 @@ pub enum Action {
         /// Also check each session's pane against its reported state.
         ///
         /// Off by default because it costs a multiplexer query and a `ps` **per
-        /// session**; `session get` does it for one session without asking.
+        /// session**; `session get` does it for one session without asking, and
+        /// a mirroring peer lists a whole host every pass. The fields it fills
+        /// are `null` without it — see the command's own help.
         #[arg(long)]
         verify: bool,
     },
@@ -678,10 +691,10 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                 reports_as.as_deref().unwrap_or(&res.agent),
                 None,
                 None,
+                None,
                 0,
             )
-            .state_word()
-            .to_string();
+            .state_word();
             // A host driven from afar has no interface of its own to arm the
             // heartbeat: this creation is the moment its sessions start needing
             // the tick (status polls, extension self-heal, reaping).
@@ -1925,6 +1938,7 @@ impl SessionFacts {
             agent,
             row.and_then(|r| r.state.as_deref()),
             row.and_then(|r| r.state_at),
+            row.and_then(|r| r.seen_at),
             crate::sync::current_time_millis() as i64,
         );
         if self.parked.contains(&s.id) {

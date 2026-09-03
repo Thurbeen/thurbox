@@ -236,7 +236,7 @@ impl App {
             .current()
             .sessions
             .iter()
-            .any(|row| row.status == "working")
+            .any(|row| row.status == thurbox::session::SessionState::Working)
             || self.commands.has_inflight()
             // The creation flow spins over the repo store's reads too, and it
             // is a pure pane: without the clock its "listing…"/"fetching…"

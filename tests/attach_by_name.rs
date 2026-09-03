@@ -16,6 +16,7 @@ use std::process::Command;
 
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::terminal::Terminals;
+use thurbox::session::SessionState;
 
 /// A socket of this test's own, so it can never see — or kill — a real session.
 const SOCKET: &str = "thurbox-attach-test";
@@ -47,7 +48,7 @@ fn row(name: &str) -> SessionRow {
         id: "11111111-1111-1111-1111-111111111111".into(),
         name: name.into(),
         agent: "claude".into(),
-        status: "idle".into(),
+        status: SessionState::Idle,
         cwd: None,
         repo: None,
         repos: Vec::new(),

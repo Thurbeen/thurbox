@@ -1,10 +1,22 @@
-//! What a session's hooks-driven state is *worth* — its age, the coverage of
-//! the agent that reports it, and whether the pane agrees.
+//! What a session's hooks-driven state *is*, and what it is *worth* — the one
+//! vocabulary ([`SessionState`]), the read-time rules that derive it, and the
+//! age, coverage and pane agreement that say how much to trust it.
 //!
-//! [`crate::session::HOOK_STATES`] is the vocabulary; this module is the
-//! honesty around it. `hook_state` is latched: it is whatever was written last,
-//! by an agent that may since have crashed, been interrupted, or never have
-//! been wired to report at all. A consumer reading the bare word cannot tell
+//! It lives in `session` rather than in either consumer because both the
+//! interface and `thurbox-cli` have to answer "what state is this session in",
+//! and while they each derived it themselves they answered different words for
+//! one row — an acknowledged turn was `idle` on screen and `done` on `session
+//! get` for the rest of the session's life. `session` is the pure module both
+//! may import (`tests/architecture_rules.rs`), so the rules live here and each
+//! caller applies the folds whose inputs it can actually observe:
+//! [`derive_state`] everywhere (its inputs are all stored columns),
+//! [`with_output_quiescence`] and [`with_reachability`] only where there is a
+//! live terminal to ask.
+//!
+//! [`crate::session::HOOK_STATES`] is the agent's half of that vocabulary, and
+//! the rest of this module is the honesty around it. `hook_state` is latched:
+//! it is whatever was written last, by an agent that may since have crashed,
+//! been interrupted, or never have been wired to report at all. A consumer reading the bare word cannot tell
 //! `idle` ("the agent says it is at rest") from `idle` ("this agent has no hook
 //! coverage and never said anything"), nor `working` ("a turn is running") from
 //! `working` ("a turn was running an hour ago and the agent is gone").
@@ -14,9 +26,9 @@
 //! - **Age** — [`age_secs`]. A stamp plus a duration lets a consumer apply its
 //!   own policy instead of trusting a bare word. Deliberately *not* a built-in
 //!   timeout: a turn may legitimately run for an hour, and a guessed bound
-//!   would report it finished. The TUI has a better signal (terminal
-//!   quiescence, `kernel::snapshot::with_output_quiescence`) which needs a live
-//!   pane and so does not exist headless.
+//!   would report it finished. An interface has a better signal
+//!   ([`with_output_quiescence`]) which needs a live pane and so cannot be
+//!   asked headless.
 //! - **Coverage** — [`coverage_for`]. Which states an agent's wiring *can*
 //!   produce, from the built-in `hooks` extension's payloads. `aider` reports
 //!   only `blocked`; a user's own agent reports nothing. Absence of `working`
@@ -26,7 +38,8 @@
 //!   can contradict a latched state, and the only way to see an agent thurbox
 //!   never launched.
 //!
-//! Pure data and decisions: no process is run here, no file is read. The
+//! Pure data and decisions: no process is run here, no file is read, and
+//! nothing overwrites the stored state — every rule is read-time. The
 //! callers gather the facts (`agent::tmux::pane_state`, the agent registry, the
 //! hook columns) and ask this module what they mean.
 
@@ -435,49 +448,218 @@ impl StateSource {
     }
 }
 
-/// The state word a process observation alone can justify.
+/// The one word every surface answers with, and the whole vocabulary of them.
 ///
-/// Deliberately outside [`HOOK_STATES`]: an agent holding the pane is running,
-/// and no amount of process inspection distinguishes a turn in flight from a
-/// prompt waiting for input. Spelling it `working` would launder an
-/// observation into a claim the observation cannot support.
-pub const STATE_RUNNING: &str = "running";
-
-/// The word for a session whose agent is wired to report nothing at all.
+/// Four of these are [`HOOK_STATES`] — the agent's own report, verbatim. The
+/// rest are thurbox's own, and each is spelled apart from `idle` deliberately:
+/// collapsing "nothing here is wired to report" or "the host is gone" into
+/// "the agent says it is at rest" is the conflation this whole module exists
+/// to prevent.
 ///
-/// Outside [`HOOK_STATES`] for the same reason [`STATE_RUNNING`] is: it is an
-/// observation about the *wiring*, and spelling it `idle` would launder "we
-/// cannot know" into "the agent says it is at rest".
-pub const STATE_UNCOVERED: &str = "uncovered";
+/// Every surface derives through this enum — `session get`, `session list`,
+/// `thurbox-cli watch`, `thurbox-cli` bare and the interface's own session
+/// list — so a driver reconciling two of them never has to reconcile two
+/// vocabularies. The read-time rules that produce it are [`derive_state`],
+/// [`with_output_quiescence`] and [`with_reachability`]; a caller applies the
+/// ones whose inputs it can actually observe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SessionState {
+    /// A turn is running (hook).
+    Working,
+    /// The agent is waiting on input or approval (hook).
+    Blocked,
+    /// A turn finished and nobody has looked at it yet (hook).
+    Done,
+    /// At rest: acknowledged, never active, or a stored word nothing knows.
+    Idle,
+    /// Parked by `session stop`: the row and its checkout stand, the pane does
+    /// not.
+    ///
+    /// It outranks everything else here for the sharpest version of the reason
+    /// the two silences below exist: a parked session has no process at all, so
+    /// *every* other word would describe an agent that is not running. It is
+    /// also the one state thurbox knows first-hand rather than infers.
+    Stopped,
+    /// A remote session whose host cannot be reached. The row stands; the
+    /// machine behind it does not, and the hook columns just hold its last
+    /// word.
+    Unreachable,
+    /// An agent holds the pane and nothing has signalled.
+    ///
+    /// Outside [`HOOK_STATES`] on purpose: no amount of process inspection
+    /// distinguishes a turn in flight from a prompt waiting for input, and
+    /// spelling it `working` would launder an observation into a claim the
+    /// observation cannot support.
+    Running,
+    /// This session's agent is wired to report nothing, so its silence means
+    /// nothing. Spelling it `idle` would launder "we cannot know" into "the
+    /// agent says it is at rest".
+    Uncovered,
+    /// The agent *can* report and has not yet.
+    Unreported,
+}
 
-/// The word for a session whose agent *can* report and has not yet.
-pub const STATE_UNREPORTED: &str = "unreported";
+impl SessionState {
+    /// Every word, in the order a reader scans them — so a surface that counts
+    /// or documents the vocabulary enumerates it rather than restating it.
+    pub const ALL: &'static [SessionState] = &[
+        SessionState::Working,
+        SessionState::Blocked,
+        SessionState::Done,
+        SessionState::Idle,
+        SessionState::Stopped,
+        SessionState::Unreachable,
+        SessionState::Running,
+        SessionState::Uncovered,
+        SessionState::Unreported,
+    ];
 
-/// The word for a session that was deliberately parked (`session stop`).
+    /// The stable lowercase word every surface prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionState::Working => "working",
+            SessionState::Blocked => "blocked",
+            SessionState::Done => "done",
+            SessionState::Idle => "idle",
+            SessionState::Stopped => "stopped",
+            SessionState::Unreachable => "unreachable",
+            SessionState::Running => "running",
+            SessionState::Uncovered => "uncovered",
+            SessionState::Unreported => "unreported",
+        }
+    }
+
+    /// The state a hook's own word names — `None` for anything outside
+    /// [`HOOK_STATES`], which is how a stored word nothing recognises stops
+    /// short of being reported as an agent's report.
+    pub fn from_hook_state(word: &str) -> Option<Self> {
+        match word {
+            "working" => Some(SessionState::Working),
+            "blocked" => Some(SessionState::Blocked),
+            "done" => Some(SessionState::Done),
+            "idle" => Some(SessionState::Idle),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for SessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Whether a finished turn has been acknowledged: the interface stamps
+/// `seen_at` when the user moves focus off a `done` session.
 ///
-/// Outside [`HOOK_STATES`] like the three above, and for the sharpest version
-/// of the same reason: a parked session has no process at all, so *every* other
-/// word here would describe an agent that is not running. It is the one state
-/// thurbox knows first-hand rather than infers — the mark `session stop` wrote
-/// — which is why it outranks anything the hook columns still hold.
-pub const STATE_STOPPED: &str = "stopped";
+/// A **stored fact**, not a timeout — which is why every surface can apply it.
+/// The CLI has no terminal to ask about quiescence and refuses to guess a
+/// staleness bound, but this column is simply there to be read, and until it
+/// was a turn the interface had already acknowledged stayed `done` on every
+/// headless surface for the rest of the session's life.
+fn acknowledged(state_at: Option<i64>, seen_at: Option<i64>) -> bool {
+    matches!((seen_at, state_at), (Some(seen), Some(at)) if seen >= at)
+}
+
+/// Map the persisted hook columns onto the state a reader should see.
+///
+/// The stuck-`working` fallback is deliberately **not** here: it is a question
+/// about the terminal, not the row, so it belongs to [`with_output_quiescence`].
+/// The stored row is never touched — every rule in this module is a read-time
+/// decision.
+pub fn derive_state(
+    hook_state: Option<&str>,
+    state_at: Option<i64>,
+    seen_at: Option<i64>,
+) -> SessionState {
+    match hook_state.and_then(SessionState::from_hook_state) {
+        Some(SessionState::Done) if acknowledged(state_at, seen_at) => SessionState::Idle,
+        Some(state) => state,
+        None => SessionState::Idle,
+    }
+}
+
+/// How long a `working` session may produce **no terminal output** before it is
+/// reported as idle. v1 uses the same 10s bound.
+///
+/// The signal is output, not the age of the hook state, and the difference is
+/// the whole point: a turn that runs for a minute is still `working` the whole
+/// minute, because the agent is printing throughout. Keying on the hook's
+/// timestamp instead ends every turn after ten seconds and starts it again at
+/// the next hook — a spinner that stops early and restarts, which is precisely
+/// what the fallback exists to avoid.
+pub const WORKING_QUIET_MS: u64 = 10_000;
+
+/// Fold terminal quiescence into a `working` session's state.
+///
+/// Agents fire no hook when a turn is **interrupted** (Esc / Ctrl+C) and none
+/// when they return to the idle prompt, so a `working` state can stand forever
+/// with nothing running behind it. TUI agents animate their in-progress line
+/// while a turn runs (Claude's `(Xs · esc to interrupt)` ticks every second), so
+/// a genuinely live turn is never quiet for [`WORKING_QUIET_MS`] and only the
+/// stuck state falls through.
+///
+/// `quiet_for_ms` is `None` when the session has no live pane — nothing can be
+/// producing output, so that reads as quiet too. This is where v1's `exited →
+/// Idle` branch lands: a pane whose stream ended is dropped from the live set.
+/// Only `working` is time-gated; `blocked` is a standing request for input and
+/// says nothing about output.
+///
+/// Only a caller with a live terminal can answer this, which is why it is a
+/// fold a surface opts into rather than part of [`derive_state`]: headless,
+/// there is nothing to ask, and guessing a bound would report a running turn
+/// as finished.
+pub fn with_output_quiescence(state: SessionState, quiet_for_ms: Option<u64>) -> SessionState {
+    if state == SessionState::Working && quiet_for_ms.unwrap_or(u64::MAX) > WORKING_QUIET_MS {
+        return SessionState::Idle;
+    }
+    state
+}
+
+/// Fold what the terminal store knows about the host into a session's state.
+///
+/// The hook state says what the *agent* is doing; it cannot say that the machine
+/// the agent runs on has gone away, because a host that is down reports nothing
+/// at all — it just leaves the last state standing. So a remote session with no
+/// live pane reads `unreachable` rather than the stale `idle` its row still
+/// carries, which is v1's placeholder row by another name.
+///
+/// Local sessions are never unreachable: this *is* their machine, and a missing
+/// pane there means the agent has not been launched, not that it cannot be
+/// reached.
+pub fn with_reachability(
+    state: SessionState,
+    backend: &str,
+    attach_error: Option<&str>,
+) -> SessionState {
+    if attach_error.is_some() && super::is_remote_backend(backend) {
+        return SessionState::Unreachable;
+    }
+    state
+}
 
 /// The best answer available for a session, and where it came from.
 ///
-/// The hook state wins whenever there is one — it is the agent's own report,
-/// and richer than anything observable. Only when nothing ever signalled does
-/// the pane get a say, and then only to the extent of [`STATE_RUNNING`].
-/// `None` is the honest third outcome: no hook, no agent in the pane.
+/// The hook columns win whenever they hold anything — they are the agent's own
+/// report, read through [`derive_state`], and richer than anything observable.
+/// Only when nothing ever signalled does the pane get a say, and then only to
+/// the extent of [`SessionState::Running`]. `None` is the honest third outcome:
+/// no hook, no agent in the pane.
 pub fn best_state(
     hook_state: Option<&str>,
+    state_at: Option<i64>,
+    seen_at: Option<i64>,
     corroboration: Option<Corroboration>,
-) -> Option<(String, StateSource)> {
-    if let Some(state) = hook_state {
-        return Some((state.to_string(), StateSource::Hook));
+) -> Option<(SessionState, StateSource)> {
+    if hook_state.is_some() {
+        return Some((
+            derive_state(hook_state, state_at, seen_at),
+            StateSource::Hook,
+        ));
     }
     match corroboration {
         Some(Corroboration::Agent | Corroboration::ForeignAgent) => {
-            Some((STATE_RUNNING.to_string(), StateSource::Process))
+            Some((SessionState::Running, StateSource::Process))
         }
         _ => None,
     }
@@ -498,6 +680,9 @@ pub struct Assessment {
     pub hook_state: Option<String>,
     /// Epoch ms it was stored.
     pub state_at: Option<i64>,
+    /// Epoch ms the interface stamped when the user moved focus off a finished
+    /// turn — the `done → idle` acknowledgment, folded in by [`derive_state`].
+    pub seen_at: Option<i64>,
     pub age_secs: Option<u64>,
     /// Whether any hook has *ever* reported for this session. The distinction
     /// the brief's "explicit uninstrumented state" turns on: a session that has
@@ -518,7 +703,7 @@ pub struct Assessment {
     /// `None` = not checked; `Some(false)` = checked and consistent.
     pub contradicted: Option<bool>,
     /// The best answer available, and where it came from — see [`best_state`].
-    pub state: Option<String>,
+    pub state: Option<SessionState>,
     pub state_source: Option<StateSource>,
     /// Parked by `session stop`: the row and its checkout stand, the pane does
     /// not. Set by [`Self::parked`], and the one fact here that is thurbox's
@@ -534,30 +719,33 @@ pub struct Assessment {
 }
 
 impl Assessment {
-    /// The one word every surface shows for this session, never absent.
+    /// The one state every surface shows for this session, never absent.
     ///
     /// [`Self::state`] is `None` when nothing signalled and nothing observable
     /// holds the pane, and a bare null leaves a reader unable to tell the two
     /// silences apart. They are different facts and get different words:
-    /// [`STATE_UNCOVERED`] (this agent is wired to report nothing, so silence
-    /// means nothing) and [`STATE_UNREPORTED`] (it can report and has not).
-    /// Neither is in [`crate::session::HOOK_STATES`], so neither can be read
-    /// as an agent's own report. A session [`parked`](Self::parked) by `session
-    /// stop` answers [`STATE_STOPPED`] ahead of all three: it has no process,
-    /// so nothing the hook columns still hold describes it.
+    /// [`SessionState::Uncovered`] (this agent is wired to report nothing, so
+    /// silence means nothing) and [`SessionState::Unreported`] (it can report
+    /// and has not). A session [`parked`](Self::parked) by `session stop`
+    /// answers [`SessionState::Stopped`] ahead of both.
     ///
     /// Every rendering goes through here — the human table, the agent-facing
-    /// TOON view and the home view — so no surface can invent a third answer
-    /// for the same row.
-    pub fn state_word(&self) -> &str {
+    /// TOON view, the home view and the event stream — so no surface can invent
+    /// a third answer for the same row.
+    pub fn state(&self) -> SessionState {
         if self.stopped {
-            return STATE_STOPPED;
+            return SessionState::Stopped;
         }
-        match self.state.as_deref() {
+        match self.state {
             Some(state) => state,
-            None if self.coverage == Coverage::None => STATE_UNCOVERED,
-            None => STATE_UNREPORTED,
+            None if self.coverage == Coverage::None => SessionState::Uncovered,
+            None => SessionState::Unreported,
         }
+    }
+
+    /// [`Self::state`](Self::state) as the word a document carries.
+    pub fn state_word(&self) -> &'static str {
+        self.state().as_str()
     }
 
     /// Every state this session's agent can report — empty when it is wired to
@@ -592,13 +780,15 @@ impl Assessment {
         agent: &str,
         hook_state: Option<&str>,
         state_at: Option<i64>,
+        seen_at: Option<i64>,
         now: i64,
     ) -> Self {
         let found = coverage_for(registry, agent);
-        let state = best_state(hook_state, None);
+        let state = best_state(hook_state, state_at, seen_at, None);
         Self {
             hook_state: hook_state.map(str::to_string),
             state_at,
+            seen_at,
             age_secs: age_secs(state_at, now),
             reported: hook_state.is_some(),
             coverage: Coverage::of(found.map(|(c, _)| c)),
@@ -608,7 +798,7 @@ impl Assessment {
             foreground_process: None,
             foreground_command: None,
             contradicted: None,
-            state: state.as_ref().map(|(s, _)| s.clone()),
+            state: state.map(|(state, _)| state),
             state_source: state.map(|(_, source)| source),
             stopped: false,
             agent: agent.to_string(),
@@ -634,7 +824,12 @@ impl Assessment {
         self.foreground_process = process.filter(|p| !p.is_empty()).map(str::to_string);
         self.foreground_command = command_line.filter(|c| !c.is_empty()).map(str::to_string);
         self.corroboration = Some(corroboration);
-        if let Some((state, source)) = best_state(self.hook_state.as_deref(), Some(corroboration)) {
+        if let Some((state, source)) = best_state(
+            self.hook_state.as_deref(),
+            self.state_at,
+            self.seen_at,
+            Some(corroboration),
+        ) {
             self.state = Some(state);
             self.state_source = Some(source);
         }
@@ -689,6 +884,158 @@ mod tests {
             resume_latest: false,
             hook_schema: hook_schema.map(str::to_string),
         }
+    }
+
+    /// A fixed instant, so nothing here depends on a clock.
+    const NOW: i64 = 1_700_000_000_000;
+
+    #[test]
+    fn an_unreported_session_is_idle() {
+        assert_eq!(derive_state(None, None, None), SessionState::Idle);
+        // A stored word nothing recognises is not an agent's report.
+        assert_eq!(
+            derive_state(Some("unknown"), None, None),
+            SessionState::Idle
+        );
+    }
+
+    #[test]
+    fn a_long_turn_stays_working_however_old_its_hook_is() {
+        // The regression this guards: keyed on the hook's own timestamp, every
+        // turn reported itself finished ten seconds in and started again at the
+        // next hook — a spinner that stopped early and restarted. How long ago
+        // the agent said "working" says nothing about whether it still is.
+        assert_eq!(
+            derive_state(Some("working"), Some(NOW), None),
+            SessionState::Working
+        );
+        assert_eq!(
+            derive_state(Some("working"), Some(NOW - 600_000), None),
+            SessionState::Working
+        );
+    }
+
+    #[test]
+    fn done_stays_done_until_acknowledged() {
+        assert_eq!(
+            derive_state(Some("done"), Some(NOW), None),
+            SessionState::Done
+        );
+        assert_eq!(
+            derive_state(Some("done"), Some(NOW), Some(NOW - 1)),
+            SessionState::Done
+        );
+        assert_eq!(
+            derive_state(Some("done"), Some(NOW), Some(NOW)),
+            SessionState::Idle
+        );
+    }
+
+    #[test]
+    fn a_quiet_working_session_falls_back_to_idle() {
+        // Agents fire no hook on interrupt, so without this a cancelled turn
+        // would spin forever. v1 guards the same way, on the same signal.
+        assert_eq!(
+            with_output_quiescence(SessionState::Working, Some(WORKING_QUIET_MS + 1)),
+            SessionState::Idle
+        );
+    }
+
+    #[test]
+    fn a_printing_working_session_stays_working() {
+        assert_eq!(
+            with_output_quiescence(SessionState::Working, Some(0)),
+            SessionState::Working
+        );
+        assert_eq!(
+            with_output_quiescence(SessionState::Working, Some(WORKING_QUIET_MS)),
+            SessionState::Working
+        );
+    }
+
+    #[test]
+    fn a_working_session_with_no_live_pane_is_idle() {
+        // Nothing can be producing output, which is where v1's exited → Idle
+        // branch lands: a pane whose stream ended leaves the live set.
+        assert_eq!(
+            with_output_quiescence(SessionState::Working, None),
+            SessionState::Idle
+        );
+    }
+
+    #[test]
+    fn blocked_is_never_time_gated() {
+        assert_eq!(
+            derive_state(Some("blocked"), Some(NOW - 600_000), None),
+            SessionState::Blocked
+        );
+        // A session waiting on you produces no output while it waits.
+        assert_eq!(
+            with_output_quiescence(SessionState::Blocked, None),
+            SessionState::Blocked
+        );
+        assert_eq!(
+            with_output_quiescence(SessionState::Done, Some(WORKING_QUIET_MS * 10)),
+            SessionState::Done
+        );
+    }
+
+    #[test]
+    fn a_reachable_session_keeps_the_state_its_hooks_reported() {
+        assert_eq!(
+            with_reachability(SessionState::Working, "ssh:devbox", None),
+            SessionState::Working
+        );
+        assert_eq!(
+            with_reachability(SessionState::Done, "local-tmux", None),
+            SessionState::Done
+        );
+    }
+
+    #[test]
+    fn a_remote_session_with_no_pane_is_unreachable() {
+        assert_eq!(
+            with_reachability(SessionState::Idle, "ssh:devbox", Some("host unreachable")),
+            SessionState::Unreachable
+        );
+        assert_eq!(
+            with_reachability(
+                SessionState::Working,
+                "wsl:ubuntu",
+                Some("connect timed out")
+            ),
+            SessionState::Unreachable
+        );
+    }
+
+    #[test]
+    fn a_local_session_without_a_pane_is_not_unreachable() {
+        // This is the machine it runs on: no pane means the agent has not been
+        // launched, which the pane itself says. Calling it unreachable would
+        // claim a host problem that does not exist.
+        assert_eq!(
+            with_reachability(
+                SessionState::Idle,
+                "local-tmux",
+                Some("session has no pane yet")
+            ),
+            SessionState::Idle
+        );
+    }
+
+    /// The acknowledgment is a stored fact, so it applies headlessly too — the
+    /// divergence that let `session get` report `done` for the rest of a
+    /// session's life after the interface had already shown `idle`.
+    #[test]
+    fn an_assessment_folds_the_acknowledgment_the_snapshot_writes() {
+        let reg = registry(vec![agent("claude", "claude", None)]);
+        let unseen = Assessment::from_hooks(&reg, "claude", Some("done"), Some(NOW), None, NOW);
+        assert_eq!(unseen.state(), SessionState::Done);
+
+        let seen = Assessment::from_hooks(&reg, "claude", Some("done"), Some(NOW), Some(NOW), NOW);
+        assert_eq!(seen.state(), SessionState::Idle);
+        // The column a consumer applying its own policy reads stays verbatim.
+        assert_eq!(seen.hook_state.as_deref(), Some("done"));
     }
 
     #[test]
@@ -848,8 +1195,8 @@ mod tests {
         assert_eq!(seen, Corroboration::ForeignAgent);
         assert_eq!(seen.agent_present(), Some(true));
         assert_eq!(
-            best_state(None, Some(seen)),
-            Some((STATE_RUNNING.to_string(), StateSource::Process))
+            best_state(None, None, None, Some(seen)),
+            Some((SessionState::Running, StateSource::Process))
         );
 
         // And the shell that pane was asked for is still just a shell — even
@@ -857,7 +1204,7 @@ mod tests {
         // as an agent running is the failure this branch exists to avoid.
         let idle = classify_foreground("bash", &known, Some("bash"), Some("bash -i"), Some(false));
         assert_eq!(idle, Corroboration::Shell);
-        assert_eq!(best_state(None, Some(idle)), None);
+        assert_eq!(best_state(None, None, None, Some(idle)), None);
     }
 
     #[test]
@@ -865,12 +1212,12 @@ mod tests {
         // The agent's own report is richer than anything observable, so the
         // pane never overwrites it — it only ever adds the contradiction flag.
         assert_eq!(
-            best_state(Some("blocked"), Some(Corroboration::Shell)),
-            Some(("blocked".to_string(), StateSource::Hook))
+            best_state(Some("blocked"), None, None, Some(Corroboration::Shell)),
+            Some((SessionState::Blocked, StateSource::Hook))
         );
         assert_eq!(
-            best_state(Some("idle"), Some(Corroboration::Agent)),
-            Some(("idle".to_string(), StateSource::Hook))
+            best_state(Some("idle"), None, None, Some(Corroboration::Agent)),
+            Some((SessionState::Idle, StateSource::Hook))
         );
     }
 
@@ -884,7 +1231,7 @@ mod tests {
             assert_eq!(state, Corroboration::Unknown);
             assert_eq!(state.agent_present(), None);
             assert!(!contradicts(Some("working"), state));
-            assert_eq!(best_state(None, Some(state)), None);
+            assert_eq!(best_state(None, None, None, Some(state)), None);
         }
         // A remote pane is not unknown but unreadable, and says so.
         assert_eq!(Corroboration::Unavailable.agent_present(), None);

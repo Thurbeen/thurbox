@@ -273,11 +273,30 @@ deletes, and only one of them is restorable. `hook_state_contradicted` is
 `null` — *not checked* — unless you pass `--verify`, which costs a multiplexer
 query and a `ps` per event, the same trade `session list --verify` makes.
 
+`state` is the same `SessionState` word every other surface answers with, and
+it is derived from the event's **own** `to_state` so two transitions inside one
+wake-up stay two events. The `done → idle` acknowledgment is the exception and
+deliberately reads the row's current `seen_at`: "somebody has looked at this
+since" is a fact about now, so a replayed `done` an operator has already read
+reports `idle`, matching what `session get` says for that row in that second.
+`to_state` still carries the event's own word verbatim, so the transition
+itself is never lost.
+
 `--session` narrows it to one (the log is filtered, not the output),
 `--for-secs` bounds it, `--initial` emits the current state as `present` rows
 first, and `--since <seq>` resumes from the last event a driver handled — the
 gap a stream otherwise has across a restart. The stream exits as soon as its
 reader closes the pipe rather than sitting out its `--for-secs`.
+
+**One vocabulary.** `state` on `get`, `list`, `watch`, the bare `thurbox-cli`
+home view and the interface's own session list are all `SessionState`
+(`src/session/hook_status.rs`), derived by the same read-time folds, so a
+driver reconciling two surfaces never reconciles two vocabularies. The folds a
+surface can apply are the ones whose inputs it can observe: everyone reads the
+stored columns (including `seen_at`, so an acknowledged turn is `idle`
+headlessly too), while terminal quiescence and host reachability need a live
+interface and are never guessed. The one remaining difference between `get` and
+`list` is the pane probe — see `session list --help`.
 
 **A parked session takes no hook state at all.** `session stop` killed the
 pane, so a heartbeat's pane-option poll or a mirror pass carrying a host's last

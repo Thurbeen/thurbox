@@ -26,7 +26,7 @@ fn row(name: &str, repo: &str) -> SessionRow {
         id: format!("{name}-0000"),
         name: name.into(),
         agent: "claude".into(),
-        status: "idle".into(),
+        status: thurbox::session::SessionState::Idle,
         cwd: None,
         repo: Some(repo.into()),
         repos: vec![repo.into()],

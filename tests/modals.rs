@@ -21,6 +21,7 @@ use thurbox::kernel::modals::{self, ModalKind, Modals, World};
 use thurbox::kernel::registry::{binding_from, Registry, Setting, Value};
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 use thurbox::storage::Database;
 
 const WIDTH: u16 = 150;
@@ -48,7 +49,7 @@ fn row(name: &str) -> SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),
         name: name.into(),
         agent: "claude".into(),
-        status: "idle".into(),
+        status: SessionState::Idle,
         cwd: Some(std::path::PathBuf::from("/src/thurbox")),
         repo: Some("thurbox".into()),
         repos: vec!["thurbox".into()],
