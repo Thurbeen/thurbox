@@ -144,10 +144,6 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
         crate::agent::tmux::kill_window(&session.name, &session.backend_id).is_ok()
     };
 
-    // A stopped session reports nothing, so a leftover `working` would sit on
-    // the status line for as long as it stayed parked — and the quiescence pass
-    // that would normally correct it has no terminal to measure.
-    let _ = db.clear_hook_state(session_id);
     Ok(killed)
 }
 

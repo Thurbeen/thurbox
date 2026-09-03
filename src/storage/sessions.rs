@@ -7,6 +7,7 @@ use crate::session::SessionId;
 use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
 
 use super::audit::{AuditAction, EntityType};
+use super::session_events::{EventReason, SessionEventKind};
 use super::Database;
 
 /// The hooks-driven status columns of a session, read in one batch by the TUI
@@ -20,6 +21,21 @@ pub struct HookRow {
     pub state_at: Option<i64>,
     /// Epoch ms the user last "saw" a `done` state (drives Done → Idle).
     pub seen_at: Option<i64>,
+}
+
+/// The identifying facts an event carries about the session it names.
+///
+/// Read for **every** row, deleted ones included: a `gone` event names a
+/// session that is no longer in any active listing, and a stream that could
+/// only say its UUID would make its reader go and look the name up.
+#[derive(Debug, Clone)]
+pub struct SessionFacts {
+    pub name: String,
+    /// Which agent — what the hook-coverage assessment is decided from.
+    pub agent: String,
+    pub backend_id: String,
+    /// Parked by `session stop`.
+    pub stopped: bool,
 }
 
 /// Information about a soft-deleted session, including its worktrees.
@@ -62,25 +78,51 @@ impl Database {
     /// NULL`). The pre-write existence check decides only the audit label and
     /// can't make the write race — the UPSERT handles both cases regardless.
     ///
-    /// The whole write — row, audits, worktree replacement — is one transaction:
-    /// each statement in autocommit was its own WAL commit, so a single upsert
-    /// cost N+5 `data_version` bumps and re-triggered every peer process's
-    /// refresh that many times. (`unchecked_transaction` because `Database`
-    /// methods take `&self`; the connection is not shared across threads.)
+    /// The whole write — row, audits, worktree replacement, the watch event —
+    /// is one transaction: each statement in autocommit was its own WAL commit,
+    /// so a single upsert cost N+5 `data_version` bumps and re-triggered every
+    /// peer process's refresh that many times. (`unchecked_transaction` because
+    /// `Database` methods take `&self`; the connection is not shared across
+    /// threads.)
     pub fn upsert_session(&self, session: &SharedSession) -> rusqlite::Result<()> {
+        self.upsert_session_as(session, EventReason::Spawned)
+    }
+
+    /// [`upsert_session`](Self::upsert_session), saying why a *new* row appeared.
+    ///
+    /// The row is identical either way; only the `created` event `thurbox-cli
+    /// watch` streams differs, and the difference matters to whoever reads it —
+    /// a session thurbox launched is not one that was already running and got
+    /// adopted (`session register`, a mirror pass taking on a shared host's
+    /// row). `created_as` is ignored when the row already existed.
+    pub fn upsert_session_as(
+        &self,
+        session: &SharedSession,
+        created_as: EventReason,
+    ) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
 
-        let existed = self
+        // The row as it stands, if at all: whether it existed decides the audit
+        // label, and *how* it existed decides the watch event — the UPSERT below
+        // clears `deleted_at`, so a conflict on a soft-deleted row is a session
+        // coming back rather than one being updated.
+        let before = self
             .conn
             .query_row(
-                "SELECT 1 FROM sessions WHERE id = ?1",
+                "SELECT deleted_at, name, backend_id FROM sessions WHERE id = ?1",
                 params![id_str],
-                |_| Ok(()),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<i64>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )
-            .optional()?
-            .is_some();
+            .optional()?;
+        let existed = before.is_some();
 
         self.conn.execute(
             "INSERT INTO sessions (id, name, agent, backend_id, backend_type, \
@@ -140,17 +182,68 @@ impl Database {
             self.upsert_worktrees(session.id, &session.worktrees)?;
         }
 
+        match before {
+            None => self.record_session_event(
+                session.id,
+                SessionEventKind::Created,
+                created_as,
+                None,
+                None,
+            )?,
+            // A conflict on a soft-deleted row revives it: the session is back
+            // in every listing, so a watcher that saw it go must see it return.
+            Some((Some(_), _, _)) => self.record_session_event(
+                session.id,
+                SessionEventKind::Created,
+                EventReason::Restored,
+                None,
+                None,
+            )?,
+            // Only the facts a watcher reports are an event; a write that
+            // changes nothing it can see is not one.
+            Some((None, name, backend_id)) => {
+                if name != session.name || backend_id != session.backend_id {
+                    self.record_session_event(
+                        session.id,
+                        SessionEventKind::Changed,
+                        EventReason::Updated,
+                        None,
+                        None,
+                    )?;
+                }
+            }
+        }
+
         tx.commit()
     }
 
-    /// Soft-delete a session.
+    /// Soft-delete a session: the row is hidden, everything it owns stands, and
+    /// a restore brings it back.
     pub fn soft_delete_session(&self, id: SessionId) -> rusqlite::Result<()> {
+        self.delete_session(id, EventReason::SoftDeleted)
+    }
+
+    /// Delete a session **and** mark it force-deleted in one transaction: its
+    /// tmux window and worktrees were torn down, so it can't be restored
+    /// (schema v37).
+    ///
+    /// One call rather than a soft delete followed by
+    /// [`mark_session_force_deleted`](Self::mark_session_force_deleted) because
+    /// the pair emitted two `gone` events, and the first of them told a watcher
+    /// the session was restorable when it never was.
+    pub fn force_delete_session(&self, id: SessionId) -> rusqlite::Result<()> {
+        self.delete_session(id, EventReason::ForceDeleted)
+    }
+
+    fn delete_session(&self, id: SessionId, reason: EventReason) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
-        self.conn.execute(
-            "UPDATE sessions SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
-            params![now, id_str],
+        let deleted = self.conn.execute(
+            "UPDATE sessions SET deleted_at = ?1, updated_at = ?1, force_deleted = ?3 \
+             WHERE id = ?2 AND deleted_at IS NULL",
+            params![now, id_str, i64::from(reason == EventReason::ForceDeleted)],
         )?;
 
         self.log_audit(
@@ -162,28 +255,51 @@ impl Database {
             None,
         )?;
 
-        Ok(())
+        // A second delete of an already-deleted row changes nothing, so it is
+        // not a second `gone`.
+        if deleted > 0 {
+            self.record_session_event(id, SessionEventKind::Gone, reason, None, None)?;
+        }
+
+        tx.commit()
     }
 
-    /// Mark a soft-deleted session as force-deleted: its tmux window + worktrees
-    /// were torn down, so it can't be restored (schema v37). Safe to call after
-    /// [`soft_delete_session`](Self::soft_delete_session); idempotent.
+    /// Upgrade an **already-deleted** row to force-deleted: its window and
+    /// worktrees turned out to be gone after all (a mirror pass learning what
+    /// the owning host did). A row that is not deleted, or already marked, is
+    /// left alone — so the `gone` event this emits is the news that the session
+    /// stopped being restorable, never a repeat.
+    ///
+    /// Deleting *and* marking in one go is
+    /// [`force_delete_session`](Self::force_delete_session).
     pub fn mark_session_force_deleted(&self, id: SessionId) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET force_deleted = 1 WHERE id = ?1",
+        let tx = self.conn.unchecked_transaction()?;
+        let marked = self.conn.execute(
+            "UPDATE sessions SET force_deleted = 1 \
+             WHERE id = ?1 AND deleted_at IS NOT NULL AND force_deleted = 0",
             params![id.to_string()],
         )?;
-        Ok(())
+        if marked > 0 {
+            self.record_session_event(
+                id,
+                SessionEventKind::Gone,
+                EventReason::ForceDeleted,
+                None,
+                None,
+            )?;
+        }
+        tx.commit()
     }
 
     /// Restore a soft-deleted session.
     pub fn restore_session(&self, id: SessionId) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
         // Clear `force_deleted` defensively — the app layer blocks restoring a
         // force-deleted row, so this only matters if a future caller revives one.
-        self.conn.execute(
+        let restored = self.conn.execute(
             "UPDATE sessions SET deleted_at = NULL, force_deleted = 0, updated_at = ?1 WHERE id = ?2 AND deleted_at IS NOT NULL",
             params![now, id_str],
         )?;
@@ -197,7 +313,17 @@ impl Database {
             None,
         )?;
 
-        Ok(())
+        if restored > 0 {
+            self.record_session_event(
+                id,
+                SessionEventKind::Created,
+                EventReason::Restored,
+                None,
+                None,
+            )?;
+        }
+
+        tx.commit()
     }
 
     /// List all active (non-deleted) sessions.
@@ -358,13 +484,59 @@ impl Database {
     ///
     /// The mark is what separates "parked on purpose" from "its window died",
     /// which several subsystems otherwise repair on sight.
+    ///
+    /// Parking also **clears the hook columns**, in the same transaction: a
+    /// parked session has no process, so the last thing its agent said no
+    /// longer describes it, and the quiescence pass that would normally correct
+    /// a stale `working` has no terminal left to measure. Doing it here rather
+    /// than in the caller is what makes it true of every park — and it is the
+    /// same rule [`set_hook_state`](Self::set_hook_state) enforces from the
+    /// other side.
     pub fn set_session_stopped(&self, id: SessionId, stopped: bool) -> rusqlite::Result<()> {
-        let at = stopped.then(|| current_time_millis() as i64);
+        let tx = self.conn.unchecked_transaction()?;
+        let now = current_time_millis() as i64;
+        let id_str = id.to_string();
+
+        let before: Option<(Option<i64>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT stopped_at, hook_state FROM sessions WHERE id = ?1",
+                params![id_str],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((stopped_at, hook_state)) = before else {
+            return Ok(());
+        };
+
+        let at = stopped.then_some(now);
         self.conn.execute(
             "UPDATE sessions SET stopped_at = ?1, updated_at = ?2 WHERE id = ?3",
-            params![at, current_time_millis() as i64, id.to_string()],
+            params![at, now, id_str],
         )?;
-        Ok(())
+        if stopped {
+            self.conn.execute(
+                "UPDATE sessions SET hook_state = NULL, hook_state_at = NULL, seen_at = NULL \
+                 WHERE id = ?1",
+                params![id_str],
+            )?;
+        }
+
+        if stopped_at.is_some() != stopped {
+            self.record_session_event(
+                id,
+                SessionEventKind::Changed,
+                if stopped {
+                    EventReason::Stopped
+                } else {
+                    EventReason::Started
+                },
+                hook_state.as_deref(),
+                None,
+            )?;
+        }
+
+        tx.commit()
     }
 
     /// When a session was stopped, or `None` if it is not stopped.
@@ -395,6 +567,35 @@ impl Database {
             }
         }
         Ok(set)
+    }
+
+    /// Every session row's identifying facts, keyed by id — deleted rows
+    /// included. One lean scan with no worktree join: `thurbox-cli watch` reads
+    /// it once per wake to name the sessions its events are about.
+    pub fn load_session_facts(&self) -> rusqlite::Result<HashMap<SessionId, SessionFacts>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT id, name, agent, backend_id, stopped_at FROM sessions")?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            Ok((
+                id,
+                SessionFacts {
+                    name: row.get(1)?,
+                    agent: row.get(2)?,
+                    backend_id: row.get(3)?,
+                    stopped: row.get::<_, Option<i64>>(4)?.is_some(),
+                },
+            ))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id, facts) = row?;
+            if let Ok(id) = id.parse::<SessionId>() {
+                map.insert(id, facts);
+            }
+        }
+        Ok(map)
     }
 
     /// Get the session counter value.
@@ -634,18 +835,57 @@ impl Database {
     /// Record an agent-reported lifecycle state (`working`/`blocked`/`done`) for
     /// a session, stamping `hook_state_at` to now. Written by
     /// `thurbox-cli session signal` (and at spawn, defaulting to `working`).
+    /// Returns whether a row took it.
     ///
     /// Deliberately a targeted UPDATE that touches only the hook columns —
     /// [`upsert_session`](Self::upsert_session) must never list them, so the
     /// TUI's full-row write-back can't clobber a state a headless hook just set.
-    pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<()> {
+    ///
+    /// A **parked** session takes nothing (`stopped_at IS NOT NULL`), and that
+    /// is the point rather than a side effect: `session stop` killed the pane,
+    /// so anything still reporting into it — a heartbeat's pane-option poll, a
+    /// mirror pass carrying a host's last word — would be writing a state onto
+    /// a session that has no process to be in it, and every watcher of that row
+    /// would see a transition that did not happen.
+    pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
         let now = current_time_millis() as i64;
+        let id_str = id.to_string();
+
+        let before: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT hook_state FROM sessions \
+                 WHERE id = ?1 AND deleted_at IS NULL AND stopped_at IS NULL",
+                params![id_str],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(previous) = before else {
+            return Ok(false);
+        };
+
         self.conn.execute(
             "UPDATE sessions SET hook_state = ?1, hook_state_at = ?2 \
-             WHERE id = ?3 AND deleted_at IS NULL",
-            params![state, now, id.to_string()],
+             WHERE id = ?3 AND deleted_at IS NULL AND stopped_at IS NULL",
+            params![state, now, id_str],
         )?;
-        Ok(())
+
+        // The stamp is refreshed whatever happens — a re-report is news about
+        // the agent's liveness — but only a different word is a *transition*,
+        // and the event log carries transitions.
+        if previous.as_deref() != Some(state) {
+            self.record_session_event(
+                id,
+                SessionEventKind::Changed,
+                EventReason::State,
+                previous.as_deref(),
+                Some(state),
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Record the base branch a session's worktree was forked from. A targeted
@@ -682,11 +922,34 @@ impl Database {
     /// ordinary spawns persist theirs through
     /// [`upsert_session`](Self::upsert_session). Returns whether a row matched.
     pub fn set_backend_id(&self, id: SessionId, pane: &str) -> rusqlite::Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let id_str = id.to_string();
+        let before: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT backend_id FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![id_str],
+                |row| row.get(0),
+            )
+            .optional()?;
         let mut stmt = self.conn.prepare_cached(
             "UPDATE sessions SET backend_id = ?1 \
              WHERE id = ?2 AND deleted_at IS NULL",
         )?;
-        let updated = stmt.execute(params![pane, id.to_string()])?;
+        let updated = stmt.execute(params![pane, id_str])?;
+        drop(stmt);
+        // The pane a row points at is one of the facts `watch` reports, so a
+        // real move is an event; re-writing the id it already had is not.
+        if before.as_deref().is_some_and(|had| had != pane) {
+            self.record_session_event(
+                id,
+                SessionEventKind::Changed,
+                EventReason::Updated,
+                None,
+                None,
+            )?;
+        }
+        tx.commit()?;
         Ok(updated > 0)
     }
 
@@ -721,13 +984,36 @@ impl Database {
     /// it to the never-reported `Idle` default. Called on **restart**: the agent
     /// is re-spawned fresh, so a stale `Blocked`/`Working`/`Done` must not linger
     /// until the agent's hooks re-report (which a resumed agent may not do).
+    ///
+    /// Parking clears the same columns inside
+    /// [`set_session_stopped`](Self::set_session_stopped), which reports the
+    /// park rather than a bare state change; this is the restart edge alone.
     pub fn clear_hook_state(&self, id: SessionId) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let id_str = id.to_string();
+        let previous: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT hook_state FROM sessions WHERE id = ?1",
+                params![id_str],
+                |row| row.get(0),
+            )
+            .optional()?;
         self.conn.execute(
             "UPDATE sessions SET hook_state = NULL, hook_state_at = NULL, seen_at = NULL \
              WHERE id = ?1",
-            params![id.to_string()],
+            params![id_str],
         )?;
-        Ok(())
+        if let Some(Some(previous)) = previous {
+            self.record_session_event(
+                id,
+                SessionEventKind::Changed,
+                EventReason::State,
+                Some(&previous),
+                None,
+            )?;
+        }
+        tx.commit()
     }
 
     /// Load the hook-status columns for every active session in one indexed

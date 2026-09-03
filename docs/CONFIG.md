@@ -329,7 +329,7 @@ all commented so defaults still apply out of the box.
 | `scrollback_lines` | `1000` | terminal scrollback kept per session |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
-| `audit_retention_days` | `90` | audit-log history kept (pruned on startup) |
+| `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
 
 A complete `settings.toml` showing every knob at its default — copy
 this, uncomment what you want to change, and restart:
@@ -341,7 +341,7 @@ config_version = 1
 scrollback_lines      = 1000   # terminal scrollback kept per session
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
-audit_retention_days  = 90     # audit-log history kept (pruned on startup)
+audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
 
 [features]
 shell_pane    = true

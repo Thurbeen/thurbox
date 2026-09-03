@@ -32,7 +32,7 @@ config_version = 1
 # Kept so an existing settings.toml still loads.
 # three_panel_min_cols = 120
 
-# Days of audit-log history kept (pruned on startup).
+# Days of audit-log and session-event history kept (pruned on startup).
 # audit_retention_days = 90
 
 # Feature flags: turn whole TUI features off. All default to true.

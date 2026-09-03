@@ -37,7 +37,7 @@ thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children onl
 Subcommands: `agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/restore/restart
 [`--if-missing`]/stop/start/fork/exec/meta/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
 `sync`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
-session changes as newline-delimited JSON), `runtime` (status/stop — what
+the session event log, one event per line), `runtime` (status/stop — what
 thurbox runs that is not a session), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `message` (alias `msg`:
@@ -189,8 +189,8 @@ Status hooks are **arguments**: the `hooks` extension installs them by appending
 to an agent's `args` in `agents.toml` (`--settings <hooks>.json` for claude), so
 they reach the process only when thurbox builds the command line. A driver that
 launches the agent itself — `session create --command`, or typing into a shell
-session — therefore got no hooks, so `state` never populated and `watch` never
-mentioned that session. This prints what thurbox would run; pass the args
+session — therefore got no hooks, so `state` never populated and `watch` reports
+no state transition for that session. This prints what thurbox would run; pass the args
 through and the hooks are there.
 
 `--session <ref>` resolves it for one session: the conversation id is pinned to
@@ -217,16 +217,58 @@ the only form that tells a `null` value from a key that was never set.
 ### `thurbox-cli watch` — nothing has to poll
 
 ```bash
-thurbox-cli watch --initial | while read -r line; do …; done
+thurbox-cli watch --json --initial | while read -r line; do …; done
 ```
 
-One JSON object per line as sessions appear, change state, or go —
-`{"event":"changed","session":"…","name":"…","state":"working",…}`. The
-mechanism is the `PRAGMA data_version` gate the sync worker already uses, so it
-works with no interface running and costs a pragma per tick rather than a query.
-`--session` narrows it to one, `--for-secs` bounds it, `--initial` emits the
-current state first so a starting driver gets its baseline and every change
-after it in one stream.
+One event per line as sessions appear, change state, or go —
+`{"seq":41,"event":"changed","reason":"state","session":"…","name":"…",
+"from_state":"working","to_state":"blocked","state":"blocked",…}`. It works
+with no interface running, because everything worth waking on is already in the
+database.
+
+**It streams a log, not a diff.** Every writer that changes what a watcher
+reports appends a row to `session_events` (schema v43) in the same transaction
+as the change — `set_hook_state`, the park/un-park mark, the delete and restore
+verbs, the spawn upsert, both pane-option polls and the mirror pass. `watch`
+tails that table by `seq`, still waking on the `PRAGMA data_version` gate the
+sync worker uses, so it costs a pragma per tick rather than a query. The
+previous implementation sampled every session every 250 ms and diffed the
+samples, which collapsed any two transitions inside one sample: `working →
+blocked → working` around an auto-answered permission arrived as *nothing at
+all*, and the driver never learned the permission had been asked. A log written
+by the writer cannot lose a transition.
+
+Each line carries:
+
+| field | what it says |
+|---|---|
+| `seq` | monotonic, never reused — what `--since` resumes from |
+| `event` | `present` (baseline) / `created` / `changed` / `gone` |
+| `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated` · `soft_deleted`, `force_deleted` |
+| `from_state`, `to_state` | the transition itself, for a `changed`/`state` event |
+| `state`, `hook_state`, `state_source`, `hook_coverage`, `hook_blocked_is_heuristic`, `hook_state_contradicted` | the same gating fields `session get` publishes, so reacting to a `blocked` needs no follow-up call |
+
+`reason` is what a bare event name could not say: a `gone` used to mean both
+deletes, and only one of them is restorable. `hook_state_contradicted` is
+`null` — *not checked* — unless you pass `--verify`, which costs a multiplexer
+query and a `ps` per event, the same trade `session list --verify` makes.
+
+`--session` narrows it to one (the log is filtered, not the output),
+`--for-secs` bounds it, `--initial` emits the current state as `present` rows
+first, and `--since <seq>` resumes from the last event a driver handled — the
+gap a stream otherwise has across a restart. The stream exits as soon as its
+reader closes the pipe rather than sitting out its `--for-secs`.
+
+**A parked session takes no hook state at all.** `session stop` killed the
+pane, so a heartbeat's pane-option poll or a mirror pass carrying a host's last
+word would otherwise write a turn onto a session with no process to be in one —
+and every watcher would see a transition that did not happen. `session signal`
+against a parked session fails, saying to `session start` it first.
+
+The format follows the CLI-wide rule: human in a terminal, TOON down a pipe
+(one `events{…}:` header, then a row per event — a stream has no length for the
+header to declare), `--json` for one JSON object per line. `--pretty` is
+`--json` here: a stream's frame is the line.
 
 ### Remote sessions are driven, not refused
 

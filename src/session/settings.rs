@@ -31,7 +31,8 @@ pub struct Settings {
     /// tasks / file viewer) becomes available.
     #[serde(default = "default_three_panel_min_cols")]
     pub three_panel_min_cols: u16,
-    /// Days of audit-log history kept (pruned on startup).
+    /// Days of audit-log and session-event history kept (both pruned on
+    /// startup).
     #[serde(default = "default_audit_retention_days")]
     pub audit_retention_days: u64,
     /// Per-feature on/off switches (`[features]` table). Absent table = all

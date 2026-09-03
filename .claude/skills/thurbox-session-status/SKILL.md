@@ -113,6 +113,19 @@ one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●
   fresh spawn seeds **nothing** — a never-reported session is `Idle`, and the
   agent's hooks drive it from there (so an idle, just-booted agent doesn't look
   stuck working).
+- **A parked session takes no state.** `set_hook_state` returns `false` for a
+  row with `stopped_at` set, and `set_session_stopped(true)` clears the hook
+  columns in the same transaction as the mark. `session stop` killed the pane,
+  so a heartbeat's pane-option poll or a mirror pass carrying a host's last word
+  would be writing a turn onto a session with no process to be in one — and
+  `thurbox-cli watch` would publish a transition that did not happen. The
+  callers treat `Ok(false)` as "not written", never as a failure; `session
+  signal` reports it, saying to `session start` first.
+- **Transitions are logged.** Each write that moves the state appends to
+  `session_events` (schema **v43**) inside the same transaction, carrying
+  `from_state` → `to_state`. That log is what `thurbox-cli watch` streams —
+  see the `thurbox-cli` skill — and it exists because sampling the columns
+  collapses two transitions that land between two samples.
 - **Derivation.** The snapshot carries each session's `hook_state` and folds
   attach state into the published status — a *remote* session with no live pane
   → `Unreachable` (`with_reachability`); a `working` one gone quiet → `Idle`

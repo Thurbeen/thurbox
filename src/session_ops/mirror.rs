@@ -321,7 +321,11 @@ pub fn apply(
             }
             report.restored.push(id);
         } else {
-            if let Err(e) = db.upsert_session(&row.session) {
+            // Adopted, not spawned: the host launched it and this database is
+            // taking it on, which is what a watcher's `registered` reason says.
+            if let Err(e) =
+                db.upsert_session_as(&row.session, crate::storage::EventReason::Registered)
+            {
                 tracing::warn!("mirror: could not adopt {id}: {e}");
                 continue;
             }
@@ -350,12 +354,14 @@ pub fn apply(
     for gone in deleted {
         let id = gone.id;
         if local_active.contains_key(&id) {
-            if let Err(e) = db.soft_delete_session(id) {
+            let deleted = if gone.force_deleted {
+                db.force_delete_session(id)
+            } else {
+                db.soft_delete_session(id)
+            };
+            if let Err(e) = deleted {
                 tracing::warn!("mirror: could not delete {id}: {e}");
                 continue;
-            }
-            if gone.force_deleted {
-                let _ = db.mark_session_force_deleted(id);
             }
             report.deleted.push(id);
         } else if let Some(false) = local_deleted.get(&id) {

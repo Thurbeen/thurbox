@@ -855,3 +855,35 @@ pub(super) fn migrate_v42_worktree_provenance(conn: &Connection) -> rusqlite::Re
         "INTEGER NOT NULL DEFAULT 1",
     )
 }
+
+/// v42 → v43: `session_events`, the append-only log `thurbox-cli watch`
+/// streams.
+///
+/// `watch` used to sample the whole session table every 250 ms and diff it,
+/// which collapsed any two transitions that landed inside one sample — a
+/// `working → blocked → working` around an auto-answered permission arrived as
+/// nothing at all, and the driver never learned the permission had been asked.
+/// Every writer that changes what a watcher reports now appends a row here in
+/// the same transaction as the change, so the stream is what happened rather
+/// than what a sample could still see.
+///
+/// `AUTOINCREMENT` rather than a bare rowid on purpose: `watch --since <seq>`
+/// resumes from the last seq it saw, and SQLite reuses a plain rowid after the
+/// highest row is pruned — which would replay old events as new ones.
+pub(super) fn migrate_v43_session_events(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS session_events (
+            seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            event      TEXT NOT NULL,
+            reason     TEXT NOT NULL,
+            from_state TEXT,
+            to_state   TEXT,
+            at_ms      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_events_at
+            ON session_events(at_ms);
+        CREATE INDEX IF NOT EXISTS idx_session_events_session
+            ON session_events(session_id, seq);",
+    )
+}

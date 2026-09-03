@@ -28,8 +28,12 @@ use rusqlite::Connection;
 /// `worktrees`: a session can now *open* a worktree it did not create,
 /// and provenance is what tells a teardown to leave that directory alone and a
 /// restore not to warn about work no delete could have destroyed.
+/// v43 adds `session_events`, the append-only log `thurbox-cli watch`
+/// streams: every writer that changes what a watcher reports appends a row in
+/// its own transaction, so two writes in the same instant are two events
+/// rather than one sampled diff.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 42;
+pub const SCHEMA_VERSION: u32 = 43;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -255,6 +259,20 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (session_id, key)
         );
+
+        CREATE TABLE IF NOT EXISTS session_events (
+            seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            event      TEXT NOT NULL,
+            reason     TEXT NOT NULL,
+            from_state TEXT,
+            to_state   TEXT,
+            at_ms      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_events_at
+            ON session_events(at_ms);
+        CREATE INDEX IF NOT EXISTS idx_session_events_session
+            ON session_events(session_id, seq);
         ",
     )?;
 
@@ -326,6 +344,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (40, migrate_v40_bookmark_git_kind),
         (41, migrate_v41_joinable),
         (42, migrate_v42_worktree_provenance),
+        (43, migrate_v43_session_events),
     ];
 
     for &(target, step) in steps {
