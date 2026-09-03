@@ -32,9 +32,9 @@ pub struct ForceDeleteReport {
 /// scheduled commands queued against it.
 ///
 /// Worktree and tmux cleanup are best-effort — individual failures are
-/// captured in the report but do not abort the delete. The DB row is
-/// always soft-deleted last so `Ctrl+U` / `restore_session` can still
-/// revive the metadata (the TUI will re-spawn a fresh window on restore).
+/// captured in the report but do not abort the delete. The DB row is always
+/// marked deleted last, in one write (`delete_row`) so a watcher never sees
+/// an intermediate state where a force-delete reads as restorable.
 pub fn delete_session_headless(
     db: &Database,
     session_id: SessionId,

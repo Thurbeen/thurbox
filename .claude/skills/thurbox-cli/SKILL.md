@@ -372,8 +372,11 @@ the worktrees **thurbox created** + the symlink workspace, disables `send`
 automations targeting the session, and clears its `session meta` key/value space
 (the row is unrestorable, so the meta would otherwise outlive it) — for headless
 cleanup with no TUI running. Teardown is best-effort
-(failures land in the JSON report); the row is always soft-deleted last. A
-worktree the session merely **opened** (`created_by_thurbox = 0`, schema v42) is
+(failures land in the JSON report); the row is always marked deleted last, in
+one write — a force delete stamps `deleted_at` and `force_deleted` together
+rather than soft-deleting first, so a watcher of `session_events` never sees an
+intermediate state that reads as restorable. A worktree the session merely
+**opened** (`created_by_thurbox = 0`, schema v42) is
 left on disk and listed in the report's `kept_worktrees`: `git worktree remove
 --force` would take the uncommitted work in it too, which is thurbox's to discard
 only for a directory it made.

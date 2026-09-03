@@ -683,7 +683,7 @@ workspace if any, and disables `send` automations targeting the session.
 Teardown is best-effort: individual failures are recorded in the JSON report
 (`killed_window`, `removed_worktrees`, `worktree_errors`,
 `disabled_automations`) but never abort the delete, and the row is always
-soft-deleted last.
+marked deleted last, in one write.
 
 ### Agents
 

@@ -457,6 +457,126 @@ fn toon_declares_its_columns_once() {
     }
 }
 
+/// A `state` transition and a park landing in the same drained batch must each
+/// report their own point-in-time `stopped`, not the batch's final row.
+///
+/// This is the same class of loss the event log exists to prevent, reintroduced
+/// for the derived `state`/`stopped` fields: reading the row once per batch
+/// would make an earlier event in the batch inherit a park that happened after
+/// it, mislabeling a live transition as a park.
+#[test]
+fn a_state_event_sharing_a_batch_with_a_park_reports_its_own_state() {
+    let env = Env::new();
+    let db = env.db();
+    let id = seed(&db, "worker");
+    db.set_hook_state(id, "working").expect("working");
+
+    let watch = env.watch(&["--json", "--for-secs", "30"]);
+    settle();
+
+    // Both inside a single gate window, so `drain` reads them as one batch.
+    db.set_hook_state(id, "blocked").expect("blocked");
+    std::thread::sleep(Duration::from_millis(10));
+    db.set_session_stopped(id, true).expect("park");
+
+    let transition = watch.event("the state transition");
+    let park = watch.event("the park");
+
+    assert_eq!(event_of(&transition), ("changed", "state"));
+    assert_eq!(transition["to_state"], Value::String("blocked".into()));
+    assert_eq!(
+        transition["stopped"],
+        Value::Bool(false),
+        "the transition happened before the park: {transition}"
+    );
+    assert_eq!(
+        transition["state"],
+        Value::String("blocked".into()),
+        "a later park in the same batch must not relabel this event: {transition}"
+    );
+
+    assert_eq!(event_of(&park), ("changed", "stopped"));
+    assert_eq!(park["stopped"], Value::Bool(true));
+    assert_eq!(park["state"], Value::String("stopped".into()));
+}
+
+/// A minimal §7.1-aware split, just enough to prove a quoted TOON row decodes
+/// back to the fields the header promises rather than shifting on an embedded
+/// delimiter.
+fn split_toon_row(row: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut chars = row.chars().peekable();
+    loop {
+        let mut field = String::new();
+        if chars.peek() == Some(&'"') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => {
+                        if let Some(next) = chars.next() {
+                            field.push(match next {
+                                'n' => '\n',
+                                'r' => '\r',
+                                't' => '\t',
+                                other => other,
+                            });
+                        }
+                    }
+                    c => field.push(c),
+                }
+            }
+        } else {
+            while let Some(&c) = chars.peek() {
+                if c == ',' {
+                    break;
+                }
+                field.push(c);
+                chars.next();
+            }
+        }
+        fields.push(field);
+        match chars.next() {
+            Some(',') => continue,
+            _ => break,
+        }
+    }
+    fields
+}
+
+/// A session name that itself contains the row delimiter and a colon must not
+/// shift every column after it — the TOON row is quoted and escaped per §7.2
+/// by the shared encoder, not hand-joined.
+#[test]
+fn toon_row_escapes_a_name_that_contains_the_delimiter() {
+    let env = Env::new();
+    let db = env.db();
+    let id = seed(&db, "fix: foo, bar");
+
+    let watch = env.watch(&["--toon", "--for-secs", "30"]);
+    settle();
+    db.set_hook_state(id, "blocked").expect("blocked");
+
+    let _header = watch.line("the TOON header");
+    let row = watch.line("the event row");
+    let fields = split_toon_row(row.trim_start());
+
+    assert_eq!(
+        fields.len(),
+        8,
+        "the comma and colon inside the session name must not add a column: {row}"
+    );
+    assert_eq!(
+        fields[3], "fix: foo, bar",
+        "the name must decode back exactly: {row}"
+    );
+    assert_eq!(
+        fields[7],
+        id.to_string(),
+        "the session column must still be the id, not a shifted fragment: {row}"
+    );
+}
+
 /// `--session` narrows the stream to one session, and the log is filtered
 /// rather than the output.
 #[test]

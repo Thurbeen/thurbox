@@ -1714,6 +1714,6 @@ thurbox-cli message inbox --for flow --claim</code></pre>
             <code>worktree_errors</code>
             ,
             <code>disabled_automations</code>
-            ) but never abort the delete. The DB row is always soft-deleted last, so even a forced
+            ) but never abort the delete. The DB row is always marked deleted last, in one write, so even a forced
             delete stays restorable &mdash; it just re-spawns from a clean slate.
           </p>
