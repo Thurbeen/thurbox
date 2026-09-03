@@ -2023,9 +2023,11 @@ fn register_running_session(
         )
         .into());
     }
-    // No id yet on this machine: the row is being adopted, so the window can
-    // only be found by name — and only while it is the sole one with that name.
-    let pane = crate::agent::tmux::agent_window(None, "", &session.name)
+    // The row is being adopted onto this machine, so no window can be stamped
+    // for its id yet; passing the real id (rather than "") still lets the
+    // by-name fallback require the sole match to be unstamped, refusing to
+    // steal a window already stamped for a different, live session.
+    let pane = crate::agent::tmux::agent_window(None, &session.id.to_string(), &session.name)
         .map_err(|e| format!("could not list windows: {e:#}"))?
         .pane()
         .ok_or_else(|| {

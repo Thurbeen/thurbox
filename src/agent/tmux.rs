@@ -2332,9 +2332,9 @@ const PANE_STATE_UTF8_FLAG: &str = "-u";
 ///
 /// Best-effort by construction — see [`PaneState`]. One `display-message` for
 /// everything tmux knows, plus at most one `ps` to turn the cheap command
-/// *name* into the foreground process's argv. `pane_id` is the session's
-/// persisted `backend_id`, resolved the same way [`capture_pane_text`] resolves
-/// it, so the state describes the pane the capture came from.
+/// *name* into the foreground process's argv. `session_id`/`session_name`
+/// resolve the window the same way [`capture_pane_text`] does, so the state
+/// describes the pane the capture came from.
 pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
     let Some(target) = agent_target(session_id, session_name) else {
         return PaneState::default();
