@@ -172,13 +172,13 @@ fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Tear down a session's slow runtime resources: kill the tmux windows (agent
-/// + companion shell), remove worktrees + the symlink workspace. Touches no
-/// SQLite — safe to call from a background thread after the row has been
-/// soft-deleted on the UI thread, so the TUI's hard-delete confirmation can
-/// close without blocking on a remote `kill-window` or a `git worktree
-/// remove`. Best-effort: failures are logged into `report` (or
-/// `tracing::warn`), never abort.
+/// Tear down a session's slow runtime resources: kill the tmux windows
+/// (agent and companion shell), remove worktrees and the symlink workspace.
+/// Touches no SQLite — safe to call from a background thread after the row
+/// has been soft-deleted on the UI thread, so the TUI's hard-delete
+/// confirmation can close without blocking on a remote `kill-window` or a
+/// `git worktree remove`. Best-effort: failures are logged into `report`
+/// (or `tracing::warn`), never abort.
 ///
 /// **Backend-aware.** The window kills and each worktree removal run on the
 /// server the session actually lives on, resolved from `session.backend_type`:
