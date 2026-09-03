@@ -62,22 +62,23 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   — and, where tmux exists, a headlessly created session attached, painted and
   typed into (`sh` as the agent). Also `just smoke`. It replaced the bash tmux
   smoke script, which could not see the byte stream and duplicated this harness.
-- **`tests/reap_e2e.rs`** — the reap of a soft-deleted row against a *real* tmux
-  on a throwaway socket (skipped when tmux is absent), because the bug it pins
-  only exists in how tmux resolves a target. Eight tests, both directions of the
-  same contract: a stale row's reap spares a live namesake's window, a namesake's
-  pane the stale row still remembers, a live window whose name only collides
-  after `sanitize_window_name` ('fleet 1' and 'fleet_1' share one `tb-fleet_1`),
-  and a soft-deleted namesake still inside its undo window — while a row whose
-  own pane resolves, and one whose pane id resolves to nothing but whose name
+- **`tests/reap_e2e.rs`** — window-teardown ownership against a *real* tmux on a
+  throwaway socket (skipped when tmux is absent), because the bug it pins only
+  exists in how tmux resolves a target. Ten tests. Six pin the reap itself: a
+  stale row's reap spares a live namesake's window, a namesake's pane the stale
+  row still remembers, a live window whose name only collides after
+  `sanitize_window_name` ('fleet 1' and 'fleet_1' share one `tb-fleet_1`), and a
+  soft-deleted namesake still inside its undo window — while a row whose own
+  pane resolves, and one whose pane id resolves to nothing but whose stamp
   nobody else answers to, still lose their window. Sparing must not be bought by
   making the reap a no-op.
-  The last two cover the *other* caller of that ownership gate, a spawn's
-  cleanup of the window it leaked when its own upsert failed: they call
-  `session_ops::delete::owned_agent_pane_for` directly — the decision the
-  cleanup delegates — because the upsert cannot be made to fail through the
-  public API, so a test of the spawn path itself would be testing something
-  else.
+  Force delete, `stop` and `restart` share the reap's ownership gate (ADR-25,
+  `agent::tmux::WindowIndex`) rather than each resolving `tb-<name>` on their
+  own, so one test walks all three against their own live namesake, plus one
+  asserting force delete still kills the row's own window. The last two cover
+  the stamp itself: a row with no pane id at all (the psmux shape) still
+  resolves its own window, and restore refuses to adopt a live namesake's
+  window rather than putting two rows on one pane.
 
 Tests that shell out to `git` **must scrub the `GIT_*` location variables**
 (`git::GIT_LOCATION_ENV`): git exports them to hook processes, so the suite running
