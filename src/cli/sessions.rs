@@ -6,6 +6,7 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::cli::output::{self, CommandOutput};
+use crate::cli::CommandError;
 use crate::session::SessionId;
 use crate::storage::Database;
 use crate::sync::SharedSession;
@@ -134,9 +135,19 @@ pub enum Action {
         /// `--repo-path`, its conversation as this.
         #[arg(long)]
         resume: Option<String>,
-        /// What to do when a session of this name is already active.
+        /// What to do when a session of this name is already active on this
+        /// backend.
         #[arg(long = "on-existing", value_enum, default_value_t = OnExisting::Allow)]
         on_existing: OnExisting,
+        /// The agent this session's pane will actually run, when that is not
+        /// what thurbox launches.
+        ///
+        /// The `--command` companion: a driver that opens a shell and starts
+        /// its own agent in it says so here, and thurbox reads hook coverage
+        /// against that agent instead of against the command's file stem. Same
+        /// declaration `session reports-as` makes, at creation time.
+        #[arg(long = "reports-as")]
+        reports_as: Option<String>,
     },
     /// Soft-delete a session. (`remove` is an alias.)
     #[command(alias = "remove")]
@@ -156,8 +167,10 @@ pub enum Action {
     },
     /// Restore a soft-deleted session.
     Restore {
-        /// Session UUID.
-        uuid: String,
+        /// Session name, UUID, or unique id prefix — resolved against the
+        /// deleted rows, since that is where the session now is.
+        #[arg(value_name = "SESSION")]
+        session: String,
         /// Recover a force-deleted session best-effort: only committed branch
         /// state comes back (uncommitted/untracked work was lost on delete).
         #[arg(long)]
@@ -345,6 +358,29 @@ pub enum Action {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
+    /// Declare which agent a session's pane actually runs.
+    ///
+    /// A `--command` session is named after the command it launches, so a
+    /// driver that opens a shell and starts `claude` in it leaves thurbox
+    /// reading hook coverage against `bash`: coverage `none`, no reportable
+    /// states, and `hook_blocked_is_heuristic: false` — asserting the block
+    /// signal is structured when it is claude's text match on a notification
+    /// body. This is how the driver says what is in there. It changes nothing
+    /// about the launch; `session restart` still replays the recorded command.
+    #[command(name = "reports-as")]
+    ReportsAs {
+        /// Session name, UUID, or unique id prefix.
+        #[arg(value_name = "SESSION")]
+        session: String,
+        /// The agent whose hooks the pane speaks — a name from `agents.toml`
+        /// or a `hook_schema` family thurbox ships hooks for.
+        #[arg(required_unless_present = "clear")]
+        agent: Option<String>,
+        /// Forget the declaration: read coverage against the row's own agent
+        /// again.
+        #[arg(long, conflicts_with = "agent")]
+        clear: bool,
+    },
     /// Read/write a session's metadata — the driver's own key/value space.
     Meta {
         #[command(subcommand)]
@@ -449,7 +485,7 @@ pub enum MetaAction {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError> {
     match action {
         Action::List {
             deleted: true,
@@ -486,8 +522,8 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 )
                 .empty("0 deleted sessions to restore")
                 .help([
-                    "thurbox-cli session restore <id>   bring one back",
-                    "thurbox-cli session restore <id> --best-effort   for a force-deleted row",
+                    "thurbox-cli session restore <name|id>   bring one back",
+                    "thurbox-cli session restore <name|id> --best-effort   for a force-deleted row",
                 ]))
         }
         Action::List {
@@ -505,13 +541,12 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 .into_iter()
                 .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
                 .collect();
-            let states = db.load_hook_states().unwrap_or_default();
-            let parked = db.load_stopped_sessions().unwrap_or_default();
+            let facts = SessionFacts::load(db);
             let bases = db.load_base_branches().unwrap_or_default();
             let registry = crate::agent::agent_config::load_or_seed();
             let assessments: Vec<crate::session::Assessment> = sessions
                 .iter()
-                .map(|s| assess(&registry, s, &states, &parked, verify))
+                .map(|s| facts.assess(&registry, s, verify))
                 .collect();
             let json = Value::Array(
                 sessions
@@ -550,11 +585,10 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         }
         Action::Get { uuid, no_verify } => {
             let session = resolve(db, &uuid)?;
-            let states = db.load_hook_states().unwrap_or_default();
-            let parked = db.load_stopped_sessions().unwrap_or_default();
+            let facts = SessionFacts::load(db);
             let bases = db.load_base_branches().unwrap_or_default();
             let registry = crate::agent::agent_config::load_or_seed();
-            let hook = assess(&registry, &session, &states, &parked, !no_verify);
+            let hook = facts.assess(&registry, &session, !no_verify);
             Ok(CommandOutput::new(
                 crate::session_ops::mirror::session_to_json_assessed(
                     &session,
@@ -579,6 +613,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             env,
             resume,
             on_existing,
+            reports_as,
         } => {
             let parent_session_id = parent
                 .as_deref()
@@ -586,10 +621,21 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 .transpose()?;
             let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
             let env = parse_env(&env)?;
+            let registry = crate::agent::agent_config::load_or_seed();
+            // Checked before anything is spawned: a typo here is silent
+            // otherwise, and the session it would have described is already
+            // running by the time the caller could notice.
+            if let Some(declared) = &reports_as {
+                check_reports_as(&registry, declared)?;
+            }
             // Names are not unique, so "already exists" is a decision the
-            // caller makes rather than something thurbox assumes.
-            if let Some(found) = resolve_existing(db, &name, on_existing)? {
-                return Ok(found);
+            // caller makes rather than something thurbox assumes — and it is a
+            // decision about *this* backend, since a mirrored host's rows share
+            // the namespace.
+            let backend = crate::session_ops::spawn::backend_type_for(host.as_deref())?;
+            let existing = resolve_existing(db, &name, on_existing, &backend)?;
+            if let Existing::Answered(output) = existing {
+                return Ok(*output);
             }
             let req = crate::session_ops::SpawnRequest {
                 name,
@@ -606,7 +652,28 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 resume_session_id: resume,
                 ..Default::default()
             };
-            let res = crate::session_ops::spawn_session_headless(db, req)?;
+            let res = match crate::session_ops::spawn_session_headless(db, req) {
+                Ok(res) => res,
+                // `replace` tore the old session down first, so a spawn that
+                // fails here would otherwise leave the caller with neither
+                // session. Put back what can be put back before reporting.
+                Err(e) => return Err(rollback_replace(db, &existing, e).into()),
+            };
+            if let Some(declared) = &reports_as {
+                db.set_reports_as(res.session_id, Some(declared))
+                    .map_err(|e| format!("set_reports_as: {e}"))?;
+            }
+            // Nothing has signalled yet, so this is `uncovered` or `unreported`
+            // — read against whatever will actually report.
+            let state = crate::session::Assessment::from_hooks(
+                &registry,
+                reports_as.as_deref().unwrap_or(&res.agent),
+                None,
+                None,
+                0,
+            )
+            .state_word()
+            .to_string();
             // A host driven from afar has no interface of its own to arm the
             // heartbeat: this creation is the moment its sessions start needing
             // the tick (status polls, extension self-heal, reaping).
@@ -638,13 +705,23 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
                     "hook_failures": res.hook_failures,
                     "sharing": res.sharing,
+                    "reports_as": reports_as,
+                    // Present here only so `--on-existing adopt` can answer in
+                    // the same shape: a session that was just spawned is
+                    // running by construction and has said nothing yet, while
+                    // one that was already there may be parked.
+                    "stopped": false,
+                    "state": state,
                     "created": true,
                 }),
                 human,
             ))
         }
         Action::Delete { uuid, force } => delete_session(db, &uuid, force),
-        Action::Restore { uuid, best_effort } => restore_deleted(db, &uuid, best_effort),
+        Action::Restore {
+            session,
+            best_effort,
+        } => restore_deleted(db, &session, best_effort),
         Action::Restart { uuid, if_missing } => {
             let session = resolve(db, &uuid)?;
             let report = crate::session_ops::restart::restart_session_headless_with(
@@ -839,6 +916,11 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             exit_passthrough,
             command,
         } => exec_in_session(db, &session, &command, exit_passthrough),
+        Action::ReportsAs {
+            session,
+            agent,
+            clear,
+        } => set_reports_as(db, &session, agent.as_deref(), clear),
         Action::Meta { action } => run_meta(action, db),
         Action::Doctor { uuid } => super::session_doctor::run(db, uuid.as_deref()),
         Action::Signal { state, session } => {
@@ -851,7 +933,8 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     "'{}' is parked, so it has no turn to report; \
                      thurbox-cli session start {} first",
                     target.name, target.id
-                ));
+                )
+                .into());
             }
             // The same state on the pane, for a peer's live subscription:
             // best-effort, and nothing at all outside tmux.
@@ -886,7 +969,7 @@ fn capture_pane(
     uuid: &str,
     lines: u32,
     ansi: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, uuid)?;
     refuse_if_parked(db, &session)?;
     let id = session.id.to_string();
@@ -933,7 +1016,7 @@ fn capture_pane(
 }
 
 /// Delete a session, reporting what `--force` teardown actually managed.
-fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutput, String> {
+fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, uuid)?;
     let report = crate::session_ops::delete_session_headless(db, session.id, force)?;
     let mut human = format!("Deleted session '{}' ({})", session.name, session.id);
@@ -996,19 +1079,18 @@ fn force_delete_detail(
 /// restoring means (it used to clear the flag alone, handing back a session
 /// with no worktree and no window). Whatever [`crate::session_ops::restore_refusal`]
 /// objects to is refused without `--best-effort`.
-fn restore_deleted(db: &Database, uuid: &str, best_effort: bool) -> Result<CommandOutput, String> {
-    let id: SessionId = uuid
-        .parse()
-        .map_err(|_| format!("Invalid session UUID: {uuid}"))?;
+fn restore_deleted(
+    db: &Database,
+    reference: &str,
+    best_effort: bool,
+) -> Result<CommandOutput, CommandError> {
     // The pipeline refuses this too, and on exactly the same terms — asking it
     // rather than re-deciding is what keeps the two from disagreeing about what
     // is restorable (`force_deleted` alone says yes to a borrowed worktree that
     // is gone and no to one that is not). The command line only adds the
     // sentence the pipeline cannot: `--best-effort` is how you say yes here.
-    let deleted = db
-        .get_deleted_session_by_id(id)
-        .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
-        .ok_or_else(|| format!("Deleted session not found: {uuid}"))?;
+    let deleted = super::session_ref::resolve_deleted(db, reference)?;
+    let id = deleted.id;
     if !best_effort {
         if let Some(reason) = crate::session_ops::restore_refusal(
             &deleted.name,
@@ -1016,7 +1098,7 @@ fn restore_deleted(db: &Database, uuid: &str, best_effort: bool) -> Result<Comma
             &deleted.backend_type,
             &deleted.worktrees,
         ) {
-            return Err(format!("{reason} — pass --best-effort to restore anyway"));
+            return Err(format!("{reason} — pass --best-effort to restore anyway").into());
         }
     }
     let report = crate::session_ops::restore_session_headless(db, id, best_effort)?;
@@ -1052,6 +1134,47 @@ fn restore_deleted(db: &Database, uuid: &str, best_effort: bool) -> Result<Comma
     ))
 }
 
+/// `session reports-as` — record (or forget) the agent a pane actually runs.
+///
+/// The agent is checked against the hook table rather than merely stored: the
+/// whole point of the declaration is the coverage it unlocks, and a typo that
+/// silently unlocked nothing would leave the driver believing the opposite of
+/// what thurbox now reports.
+fn set_reports_as(
+    db: &Database,
+    reference: &str,
+    agent: Option<&str>,
+    clear: bool,
+) -> Result<CommandOutput, CommandError> {
+    let session = resolve(db, reference)?;
+    let declared = agent.filter(|_| !clear);
+    if let Some(agent) = declared {
+        check_reports_as(&crate::agent::agent_config::load_or_seed(), agent)?;
+    }
+    db.set_reports_as(session.id, declared)
+        .map_err(|e| format!("set_reports_as: {e}"))?;
+    let human = match declared {
+        Some(agent) => format!(
+            "'{}' reports as '{agent}' — coverage is read against its hooks.",
+            session.name
+        ),
+        None => format!(
+            "'{}' reports as '{}' again — the agent it was created with.",
+            session.name, session.agent
+        ),
+    };
+    Ok(CommandOutput::new(
+        json!({
+            "session_id": session.id.to_string(),
+            "session_name": session.name,
+            "agent": session.agent,
+            "reports_as": declared,
+        }),
+        human,
+    )
+    .help(["thurbox-cli session doctor <id>   what its wiring can now report"]))
+}
+
 /// The human half of a post-hook failure list: one indented line each. The
 /// operation succeeded; these are what the user's own hooks had to say.
 fn push_hook_failures(human: &mut String, failures: &[String]) {
@@ -1064,7 +1187,10 @@ fn push_hook_failures(human: &mut String, failures: &[String]) {
 /// the calling session from `$THURBOX_SESSION`, else a lookup by the agent
 /// conversation id from `$THURBOX_SESSION_ID` (the env fallback for agents whose
 /// hooks don't inherit `$THURBOX_SESSION`). Errors when none resolves.
-fn resolve_signal_target(db: &Database, session: Option<&str>) -> Result<SharedSession, String> {
+fn resolve_signal_target(
+    db: &Database,
+    session: Option<&str>,
+) -> Result<SharedSession, CommandError> {
     if let Some(uuid) = session {
         return resolve(db, uuid);
     }
@@ -1217,7 +1343,7 @@ fn exec_in_session(
     reference: &str,
     command: &[String],
     exit_passthrough: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, reference)?;
     let cwd = session
         .cwd
@@ -1298,7 +1424,7 @@ fn exec_in_session(
 }
 
 /// `session meta` — storage, and nothing more. Nothing here interprets a key.
-fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, String> {
+fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, CommandError> {
     match action {
         MetaAction::Set {
             session,
@@ -1409,34 +1535,56 @@ fn worktree_json(w: &crate::sync::SharedWorktree) -> Value {
     })
 }
 
+/// What [`resolve_existing`] decided, and what the creation still owes it.
+#[derive(Debug)]
+enum Existing {
+    /// Nothing of that name on this backend — spawn.
+    None,
+    /// The answer is already a document (`adopt`); the creation must not run.
+    Answered(Box<CommandOutput>),
+    /// `replace` tore this session down. A spawn that now fails has to put it
+    /// back, or the caller is left with neither.
+    Replaced(SessionId),
+}
+
 /// Apply the caller's [`OnExisting`] answer before anything is spawned.
 ///
-/// `Ok(Some(output))` means the creation is already answered and must not
-/// proceed; `Ok(None)` means carry on and spawn. A refusal is an `Err`, which
-/// the entrypoint renders as a structured document on stdout and exits 1 —
-/// what Gas City's `RPP-LIFECYCLE-002` requires of a duplicate start, and what
-/// firstmate was hand-rolling a `session list` pre-check to achieve.
+/// A refusal is an `Err`, which the entrypoint renders as a structured document
+/// on stdout and exits non-zero — what Gas City's `RPP-LIFECYCLE-002` requires
+/// of a duplicate start, and what firstmate was hand-rolling a `session list`
+/// pre-check to achieve.
+///
+/// `backend` scopes the match to the machine the new session will land on. The
+/// name namespace is *not* per-machine: a database mirroring a shareable host
+/// (ADR-24) holds that host's rows beside its own, and two machines may
+/// legitimately each have a session called `build`. Matching across all of them
+/// made `replace` force-delete a session on another host, `fail` refuse a local
+/// create because of a remote namesake, and `adopt` hand back an id whose pane
+/// is not on this machine.
 ///
 /// Ambiguity blocks `adopt` and `replace` but not `allow`: adopting one of two
 /// same-named sessions, or destroying one of them, is a guess about which was
-/// meant. It is the same rule [`super::session_ref`] follows, and it has to
-/// hold here because a database that mirrors a shareable host can legitimately
-/// already contain two.
+/// meant. It is the same rule [`super::session_ref`] follows, and it still
+/// applies within one backend — thurbox enforces no uniqueness there either.
 fn resolve_existing(
     db: &Database,
     name: &str,
     mode: OnExisting,
-) -> Result<Option<CommandOutput>, String> {
+    backend: &str,
+) -> Result<Existing, CommandError> {
     if mode == OnExisting::Allow {
-        return Ok(None);
+        return Ok(Existing::None);
     }
-    let found = db
+    let found: Vec<SharedSession> = db
         .find_sessions_by_name(name)
-        .map_err(|e| format!("find_sessions_by_name: {e}"))?;
+        .map_err(|e| format!("find_sessions_by_name: {e}"))?
+        .into_iter()
+        .filter(|s| s.backend_type == backend)
+        .collect();
     match (mode, found.len()) {
-        (OnExisting::Allow, _) | (_, 0) => Ok(None),
+        (OnExisting::Allow, _) | (_, 0) => Ok(Existing::None),
         (OnExisting::Fail, _) => Err(format!(
-            "a session named '{name}' is already active ({}). Use \
+            "a session named '{name}' is already active on {backend} ({}). Use \
              `--on-existing adopt` to take it as it is, `--on-existing replace` \
              to tear it down first, or pick another name",
             found
@@ -1444,27 +1592,87 @@ fn resolve_existing(
                 .map(|s| s.id.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
-        )),
-        (OnExisting::Adopt, 1) => Ok(Some(existing_session_output(&found[0]))),
+        )
+        .into()),
+        (OnExisting::Adopt, 1) => Ok(Existing::Answered(Box::new(existing_session_output(
+            db, &found[0],
+        )))),
         (OnExisting::Replace, 1) => {
             crate::session_ops::delete::delete_session_headless(db, found[0].id, true)?;
-            Ok(None)
+            Ok(Existing::Replaced(found[0].id))
         }
-        (OnExisting::Adopt | OnExisting::Replace, n) => Err(format!(
-            "'{name}' matches {n} active sessions, so there is no single one to \
-             {}. Address them by id, or pick another name:\n{}",
-            if mode == OnExisting::Adopt {
-                "adopt"
-            } else {
-                "replace"
-            },
-            found
-                .iter()
-                .map(|s| format!("  {}  {}", s.id, s.agent))
-                .collect::<Vec<_>>()
-                .join("\n")
+        (OnExisting::Adopt | OnExisting::Replace, n) => Err(CommandError::with_code(
+            format!(
+                "'{name}' matches {n} active sessions on {backend}, so there is no single one \
+                 to {}. Address them by id, or pick another name:\n{}",
+                if mode == OnExisting::Adopt {
+                    "adopt"
+                } else {
+                    "replace"
+                },
+                found
+                    .iter()
+                    .map(|s| format!("  {}  {}", s.id, s.agent))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            super::EXIT_AMBIGUOUS,
         )),
     }
+}
+
+/// Put back what `replace` tore down when the replacement could not be spawned.
+///
+/// `replace` is a force delete followed by a create, and it cannot be the other
+/// way round: the new session wants the branch and the checkout the old one is
+/// holding. So the failure it has to answer for is the one in the middle —
+/// a spawn that fails after the teardown used to leave the caller with neither
+/// session. The undo is the same best-effort restore the interface runs, which
+/// brings back the row, the branch and the agent; uncommitted work went with
+/// the force delete and does not come back, and the message says so rather than
+/// implying the replace was free.
+fn rollback_replace(db: &Database, existing: &Existing, spawn_error: String) -> String {
+    let Existing::Replaced(id) = existing else {
+        return spawn_error;
+    };
+    match crate::session_ops::restore_session_headless(db, *id, true) {
+        Ok(report) => format!(
+            "{spawn_error} — the replacement could not be spawned, so '{}' ({id}) was restored \
+             best-effort: committed branch state is back, uncommitted work went with the \
+             force delete",
+            report.name
+        ),
+        Err(e) => format!(
+            "{spawn_error} — the replacement could not be spawned and the session it replaced \
+             ({id}) could not be restored either ({e}). `thurbox-cli session restore {id} \
+             --best-effort` is the retry"
+        ),
+    }
+}
+
+/// Refuse a `--reports-as`/`reports-as` agent thurbox ships no hooks for.
+///
+/// The declaration exists for the coverage it unlocks, so one that unlocks
+/// nothing is a typo rather than a preference — and a silent one, since the
+/// only symptom is the coverage the caller was trying to fix staying `none`.
+fn check_reports_as(
+    registry: &crate::session::AgentRegistry,
+    agent: &str,
+) -> Result<(), CommandError> {
+    if crate::session::coverage_for(registry, agent).is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "thurbox ships no status hooks for agent '{agent}', so declaring it would change \
+         nothing. Covered agents: {}. A custom agent asserts a family with `hook_schema` in \
+         agents.toml.",
+        crate::session::AGENT_HOOK_COVERAGE
+            .iter()
+            .map(|c| c.agent)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+    .into())
 }
 
 /// What `create --on-existing adopt` returns when the session was already there.
@@ -1472,7 +1680,15 @@ fn resolve_existing(
 /// The same document shape a real creation produces, with `created: false` as
 /// the only difference — so a caller reads one shape and needs no branch for
 /// "did I make this or find it".
-fn existing_session_output(session: &SharedSession) -> CommandOutput {
+///
+/// `stopped` and `state` are in both shapes for this verb's sake: the whole
+/// reason to adopt is to skip the follow-up read, and without them the answer
+/// could be a **parked** session — no pane, every `send`/`key`/`capture`
+/// refused — with nothing in it saying so.
+fn existing_session_output(db: &Database, session: &SharedSession) -> CommandOutput {
+    let registry = crate::agent::agent_config::load_or_seed();
+    let facts = SessionFacts::load(db);
+    let hook = facts.assess(&registry, session, true);
     CommandOutput::new(
         json!({
             "id": session.id.to_string(),
@@ -1486,11 +1702,19 @@ fn existing_session_output(session: &SharedSession) -> CommandOutput {
             "parent_session_id": session.parent_session_id.map(|id| id.to_string()),
             "hook_failures": Vec::<String>::new(),
             "sharing": Value::Null,
+            "reports_as": facts.declared_agent(session),
+            "stopped": hook.stopped,
+            "state": hook.state_word(),
             "created": false,
         }),
         format!(
-            "Session '{}' already exists ({}) — left as it is.",
-            session.name, session.id
+            "Session '{}' already exists ({}) — {}.",
+            session.name,
+            session.id,
+            match hook.stopped {
+                true => "stopped, so it has no pane; `session start` puts one back",
+                false => "left as it is",
+            }
         ),
     )
     .help(["thurbox-cli session get <id>   what it is doing now"])
@@ -1520,7 +1744,7 @@ fn refuse_if_parked(db: &Database, session: &SharedSession) -> Result<(), String
 
 /// Resolve the session a command was pointed at — a name, a UUID or an id
 /// prefix, all equally. See [`super::session_ref`] for why one resolver.
-pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, String> {
+pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, CommandError> {
     super::session_ref::resolve(db, reference)
 }
 
@@ -1598,49 +1822,108 @@ fn unknown_key(key: &str) -> String {
 /// **remote** session is never probed: its pane lives on its own host's
 /// multiplexer, so the answer is `unavailable` rather than a guess.
 ///
-/// `parked` is the set `session stop` marked. It short-circuits everything
-/// else: a parked session has no pane to probe and no agent to have reported,
-/// so probing one would ask tmux about a window that was deliberately killed
-/// and read the answer as if it meant something.
-pub(crate) fn assess(
-    registry: &crate::session::AgentRegistry,
-    s: &SharedSession,
-    states: &std::collections::HashMap<crate::session::SessionId, crate::storage::HookRow>,
-    parked: &std::collections::HashSet<crate::session::SessionId>,
-    probe: bool,
-) -> crate::session::Assessment {
-    let row = states.get(&s.id);
-    let hook = crate::session::Assessment::from_hooks(
-        registry,
-        &s.agent,
-        row.and_then(|r| r.state.as_deref()),
-        row.and_then(|r| r.state_at),
-        crate::sync::current_time_millis() as i64,
-    );
-    if parked.contains(&s.id) {
-        return hook.parked();
+/// The three per-row columns every assessment needs, read once for the whole
+/// database instead of once per session.
+///
+/// A listing that asked for each of them separately was three loads at every
+/// call site and, when a fourth arrived, three call sites to remember to
+/// update. Bundling them also fixes the order the answer is built in: the
+/// declared agent decides coverage before the hook columns are read against it.
+pub(crate) struct SessionFacts {
+    /// The latched `hook_state` columns, keyed by session.
+    states: std::collections::HashMap<crate::session::SessionId, crate::storage::HookRow>,
+    /// The set `session stop` marked. It short-circuits everything else: a
+    /// parked session has no pane to probe and no agent to have reported, so
+    /// probing one would ask tmux about a window that was deliberately killed
+    /// and read the answer as if it meant something.
+    parked: std::collections::HashSet<crate::session::SessionId>,
+    /// The agent a driver declared actually runs in the pane
+    /// (`--reports-as` / `session reports-as`), for the rows that have one.
+    reports_as: std::collections::HashMap<crate::session::SessionId, String>,
+    /// The rows created from a raw `--command` rather than an `agents.toml`
+    /// entry — the ones thurbox never had an agent to wire hooks for.
+    command_sessions: std::collections::HashSet<crate::session::SessionId>,
+}
+
+impl SessionFacts {
+    /// Read every per-row column an assessment needs, once.
+    ///
+    /// Each load falls back to empty: none of these is worth failing a listing
+    /// over, and an empty map means exactly what it meant before the column
+    /// existed.
+    pub(crate) fn load(db: &Database) -> Self {
+        Self {
+            states: db.load_hook_states().unwrap_or_default(),
+            parked: db.load_stopped_sessions().unwrap_or_default(),
+            reports_as: db.load_reports_as().unwrap_or_default(),
+            command_sessions: db.load_command_sessions().unwrap_or_default(),
+        }
     }
-    if !probe {
-        return hook;
+
+    /// The agent whose hook wiring this session's state should be read
+    /// against: the one a driver declared, else the one the row was created
+    /// with.
+    pub(crate) fn reporting_agent<'a>(&'a self, s: &'a SharedSession) -> &'a str {
+        self.reports_as
+            .get(&s.id)
+            .map(String::as_str)
+            .unwrap_or(&s.agent)
     }
-    if crate::session::is_remote_backend(&s.backend_type) {
-        return hook.pane_unavailable();
+
+    /// The agent a driver declared for this session, if any — `None` when the
+    /// row reports as the agent it was created with.
+    pub(crate) fn declared_agent(&self, s: &SharedSession) -> Option<&str> {
+        self.reports_as.get(&s.id).map(String::as_str)
     }
-    // The agent *binary*, not the agent name: `antigravity` runs `agy`, and the
-    // pane's foreground process is spelled the way it was invoked.
-    let command = registry
-        .get(&s.agent)
-        .map(|d| d.command.clone())
-        .unwrap_or_else(|| s.agent.clone());
-    let known: Vec<String> = registry.agents.iter().map(|a| a.command.clone()).collect();
-    let pane = crate::agent::tmux::pane_state(&s.name, &s.backend_id);
-    hook.with_pane(
-        &command,
-        &known,
-        pane.foreground_process.as_deref(),
-        pane.foreground_command.as_deref(),
-        pane.dead,
-    )
+
+    /// Whether thurbox ever had an agent here to wire hooks for.
+    ///
+    /// False for a `--command` session that has not declared one: it runs a
+    /// shell, a REPL or a build watcher, and there is no wiring to be broken.
+    pub(crate) fn hooks_expected(&self, s: &SharedSession) -> bool {
+        !self.command_sessions.contains(&s.id) || self.reports_as.contains_key(&s.id)
+    }
+
+    pub(crate) fn assess(
+        &self,
+        registry: &crate::session::AgentRegistry,
+        s: &SharedSession,
+        probe: bool,
+    ) -> crate::session::Assessment {
+        let agent = self.reporting_agent(s);
+        let row = self.states.get(&s.id);
+        let hook = crate::session::Assessment::from_hooks(
+            registry,
+            agent,
+            row.and_then(|r| r.state.as_deref()),
+            row.and_then(|r| r.state_at),
+            crate::sync::current_time_millis() as i64,
+        );
+        if self.parked.contains(&s.id) {
+            return hook.parked();
+        }
+        if !probe {
+            return hook;
+        }
+        if crate::session::is_remote_backend(&s.backend_type) {
+            return hook.pane_unavailable();
+        }
+        // The agent *binary*, not the agent name: `antigravity` runs `agy`, and
+        // the pane's foreground process is spelled the way it was invoked.
+        let command = registry
+            .get(agent)
+            .map(|d| d.command.clone())
+            .unwrap_or_else(|| agent.to_string());
+        let known: Vec<String> = registry.agents.iter().map(|a| a.command.clone()).collect();
+        let pane = crate::agent::tmux::pane_state(&s.name, &s.backend_id);
+        hook.with_pane(
+            &command,
+            &known,
+            pane.foreground_process.as_deref(),
+            pane.foreground_command.as_deref(),
+            pane.dead,
+        )
+    }
 }
 
 /// A deleted row as `session list --deleted` prints it: the session's facts
@@ -1693,14 +1976,14 @@ fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String 
 fn register_running_session(
     db: &Database,
     row: crate::session_ops::mirror::HostRow,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, CommandError> {
     let mut session = row.session;
     if db
         .get_session_by_id(session.id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .is_some()
     {
-        return Err(format!("session {} is already registered here", session.id));
+        return Err(format!("session {} is already registered here", session.id).into());
     }
     if let Some(existing) = db
         .get_session_by_name(&session.name)
@@ -1709,7 +1992,8 @@ fn register_running_session(
         return Err(format!(
             "a session named '{}' already exists here ({})",
             session.name, existing.id
-        ));
+        )
+        .into());
     }
     let pane = crate::agent::tmux::agent_window_pane(None, &session.name)
         .map_err(|e| format!("could not list windows: {e:#}"))?
@@ -1824,6 +2108,132 @@ mod tests {
             tombstone: false,
             tombstone_at: None,
         }
+    }
+
+    /// The name namespace spans machines (ADR-24 mirrors a shareable host's
+    /// rows into this database), so `--on-existing` has to ask about the
+    /// backend the creation will land on. Matching across all of them let a
+    /// local `replace` force-delete a session on another host, `fail` refuse a
+    /// local create because of a remote namesake, and `adopt` hand back an id
+    /// whose pane is on a different machine.
+    #[test]
+    fn on_existing_never_sees_a_namesake_on_another_host() {
+        let db = db();
+        let mut remote = make_test_session("build");
+        remote.backend_type = "ssh:devbox".into();
+        db.upsert_session(&remote).unwrap();
+
+        for mode in [OnExisting::Fail, OnExisting::Adopt, OnExisting::Replace] {
+            assert!(
+                matches!(
+                    resolve_existing(&db, "build", mode, "local-tmux"),
+                    Ok(Existing::None)
+                ),
+                "{mode:?} must not act on a row belonging to another host"
+            );
+        }
+        // The row is untouched — nothing was replaced on the other machine.
+        assert!(db.get_session_by_id(remote.id).unwrap().is_some());
+
+        // A create *for that host* does see it, on the same terms.
+        assert!(resolve_existing(&db, "build", OnExisting::Fail, "ssh:devbox").is_err());
+    }
+
+    /// Ambiguity here is the same failure the reference resolver reports, so it
+    /// earns the same exit code: a driver can act on "none" and only an
+    /// operator can settle "several".
+    #[test]
+    fn an_ambiguous_name_refuses_with_the_ambiguity_exit_code() {
+        let db = db();
+        db.upsert_session(&make_test_session("twin")).unwrap();
+        db.upsert_session(&make_test_session("twin")).unwrap();
+        let err = resolve_existing(&db, "twin", OnExisting::Adopt, "local-tmux").unwrap_err();
+        assert_eq!(err.exit_code, super::super::EXIT_AMBIGUOUS);
+        assert!(err.contains("matches 2"), "got {err}");
+    }
+
+    /// A driver that applied `agent launch-args claude` inside a `--command`
+    /// session is the one party that knows what the pane runs. Without the
+    /// declaration thurbox read coverage against the command's file stem and
+    /// published `hook_blocked_is_heuristic: false` — asserting the block
+    /// signal is structured when it is claude's text match on a notification
+    /// body, the single caveat a supervisor most needs.
+    #[test]
+    fn a_declared_agent_is_what_coverage_is_read_against() {
+        let db = db();
+        let mut session = make_test_session("task-7");
+        session.agent = "bash".into();
+        db.upsert_session(&session).unwrap();
+        db.set_launch_recipe(
+            session.id,
+            &crate::session::LaunchRecipe {
+                command: "/bin/bash".into(),
+                args: vec!["-i".into()],
+                env: Default::default(),
+            },
+        )
+        .unwrap();
+        let registry = crate::agent::agent_config::builtin_registry();
+
+        let facts = SessionFacts::load(&db);
+        let hook = facts.assess(&registry, &session, false);
+        assert_eq!(hook.coverage, crate::session::Coverage::None);
+        assert!(!hook.blocked_is_heuristic());
+        assert!(!facts.hooks_expected(&session), "no agent was ever wired");
+
+        run(
+            Action::ReportsAs {
+                session: "task-7".into(),
+                agent: Some("claude".into()),
+                clear: false,
+            },
+            &db,
+        )
+        .unwrap();
+
+        let facts = SessionFacts::load(&db);
+        let hook = facts.assess(&registry, &session, false);
+        assert_eq!(hook.coverage, crate::session::Coverage::Full);
+        assert!(hook.blocked_is_heuristic());
+        assert_eq!(facts.declared_agent(&session), Some("claude"));
+        // Declaring an agent is also the answer to "no hooks expected": there
+        // is one now, and doctor judges its wiring.
+        assert!(facts.hooks_expected(&session));
+
+        // And it survives being taken back.
+        run(
+            Action::ReportsAs {
+                session: "task-7".into(),
+                agent: None,
+                clear: true,
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(SessionFacts::load(&db).declared_agent(&session), None);
+    }
+
+    #[test]
+    fn declaring_an_agent_thurbox_ships_no_hooks_for_is_refused() {
+        // The declaration exists for the coverage it unlocks; one that unlocks
+        // nothing is a typo, and its only symptom would be the coverage the
+        // caller was trying to fix staying `none`.
+        let db = db();
+        db.upsert_session(&make_test_session("task-7")).unwrap();
+        let err = run(
+            Action::ReportsAs {
+                session: "task-7".into(),
+                agent: Some("clyde".into()),
+                clear: false,
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("clyde"), "got {err}");
+        assert!(
+            err.contains("claude"),
+            "the covered agents are named: {err}"
+        );
     }
 
     #[test]
@@ -2303,7 +2713,7 @@ mod tests {
         assert!(db.get_automation(auto).unwrap().unwrap().enabled);
         let restored = run(
             Action::Restore {
-                uuid: id.to_string(),
+                session: id.to_string(),
                 best_effort: false,
             },
             &db,
@@ -2333,7 +2743,7 @@ mod tests {
 
         let err = run(
             Action::Restore {
-                uuid: id.to_string(),
+                session: id.to_string(),
                 best_effort: false,
             },
             &db,
@@ -2345,7 +2755,7 @@ mod tests {
 
         let restored = run(
             Action::Restore {
-                uuid: id.to_string(),
+                session: id.to_string(),
                 best_effort: true,
             },
             &db,
@@ -2384,7 +2794,7 @@ mod tests {
 
         let restored = run(
             Action::Restore {
-                uuid: id.to_string(),
+                session: id.to_string(),
                 best_effort: false,
             },
             &db,
@@ -2422,7 +2832,7 @@ mod tests {
 
         let err = run(
             Action::Restore {
-                uuid: id.to_string(),
+                session: id.to_string(),
                 best_effort: false,
             },
             &db,

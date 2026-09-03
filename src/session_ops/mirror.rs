@@ -164,6 +164,14 @@ pub fn session_to_json_assessed(
     // the stream learn the same fact from the same key. Without it the two
     // verbs describe a parked session exactly as they describe a running one.
     put("stopped", json!(hook.stopped));
+    // Null unless a driver declared one: the agent the hook fields above were
+    // resolved against, when that is not the agent the row was created with.
+    // Without it a `--command` session's `hook_coverage: "full"` reads as a
+    // claim about the shell it launched.
+    put(
+        "reports_as",
+        json!((hook.agent != s.agent).then(|| hook.agent.clone())),
+    );
     value
 }
 

@@ -125,6 +125,31 @@ fn seed_session(env: &Env, name: &str, agent: &str) -> String {
     row.id.to_string()
 }
 
+/// Open the instance database directly, for the columns no verb sets from
+/// outside a real spawn.
+fn open_db(env: &Env) -> thurbox::storage::Database {
+    thurbox::storage::Database::open(&env.path("data").join("thurbox.db"))
+        .expect("open the instance database")
+}
+
+/// A `--command` session: the shape thurbox advertises for drivers (firstmate
+/// creates every task as `--command $SHELL --arg -i`), named after the
+/// command's file stem and with the launch recipe that makes it one.
+fn seed_command_session(env: &Env, name: &str) -> String {
+    let id = seed_session(env, name, "bash");
+    let db = open_db(env);
+    db.set_launch_recipe(
+        id.parse().expect("seeded id"),
+        &thurbox::session::LaunchRecipe {
+            command: "/bin/bash".into(),
+            args: vec!["-i".into()],
+            env: Default::default(),
+        },
+    )
+    .expect("record the launch recipe");
+    id
+}
+
 #[test]
 fn session_doctor_on_a_broken_session_prints_one_document_and_exits_non_zero() {
     let env = Env::new();
@@ -146,6 +171,229 @@ fn session_doctor_on_a_broken_session_prints_one_document_and_exits_non_zero() {
         "the failing session is named on stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // The half of the contract a driver has to read the other way round: an
+    // `error` key implies a non-zero exit, never the converse. A supervisor
+    // that gates on `$?` before parsing throws away every diagnosis it will
+    // ever ask for — so the document it discarded must be shown to be a
+    // *report*, not an error.
+    assert!(
+        report.get("error").is_none() && doc.get("error").is_none(),
+        "a failed doctor run is a report, not an error document: {doc}"
+    );
+}
+
+/// `doctor` must not fail a session thurbox never wired an agent for.
+///
+/// A `--command` session is by construction uncovered and, until something
+/// types an agent into it, unreported — so the old `Coverage::None` + not
+/// reported => Fail turned the exact session shape thurbox advertises for
+/// drivers into "hook wiring is broken". Worse, bare `session doctor`
+/// diagnoses every active session, so one shell session failed the whole
+/// machine.
+#[test]
+fn session_doctor_expects_no_hooks_from_a_command_session() {
+    let env = Env::new();
+    seed_command_session(&env, "task-7");
+
+    for args in [
+        vec!["session", "doctor", "task-7", "--json"],
+        vec!["session", "doctor", "--json"],
+    ] {
+        let out = env.run(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?} must not fail a session with no agent to wire:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let doc: Value = serde_json::from_slice(&out.stdout).expect("one JSON document");
+        let report = doc.as_array().expect("one report per session")[0].clone();
+        assert_ne!(report["verdict"], Value::String("fail".into()), "{report}");
+    }
+}
+
+/// The row has to be able to say "this pane runs claude".
+///
+/// A driver that applied `agent launch-args claude` inside a `--command bash`
+/// session left thurbox reading coverage against `bash`: `hook_coverage:
+/// "none"`, no reportable states, and `hook_blocked_is_heuristic: false` —
+/// asserting the block signal is structured when it is claude's text match on a
+/// notification body, which is the single caveat a supervisor most needs.
+#[test]
+fn a_declared_agent_is_what_coverage_is_published_against() {
+    let env = Env::new();
+    seed_command_session(&env, "task-7");
+
+    let before: Value = serde_json::from_slice(
+        &env.run(&["session", "get", "task-7", "--no-verify", "--json"])
+            .stdout,
+    )
+    .expect("JSON");
+    assert_eq!(before["hook_coverage"], Value::String("none".into()));
+    assert_eq!(before["hook_blocked_is_heuristic"], Value::Bool(false));
+
+    let declared = env.run(&["session", "reports-as", "task-7", "claude", "--json"]);
+    assert_eq!(
+        declared.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&declared.stderr)
+    );
+
+    let after: Value = serde_json::from_slice(
+        &env.run(&["session", "get", "task-7", "--no-verify", "--json"])
+            .stdout,
+    )
+    .expect("JSON");
+    assert_eq!(
+        after["hook_coverage"],
+        Value::String("full".into()),
+        "{after}"
+    );
+    assert_eq!(after["hook_blocked_is_heuristic"], Value::Bool(true));
+    // The row still runs what it always ran; only what reports changed.
+    assert_eq!(after["agent"], Value::String("bash".into()));
+
+    // A typo is refused rather than silently recording a declaration that
+    // unlocks nothing.
+    let typo = env.run(&["session", "reports-as", "task-7", "clyde", "--json"]);
+    assert_eq!(typo.status.code(), Some(1));
+}
+
+/// `session restore` takes a reference like every other session verb.
+///
+/// It was the one that did not: a raw UUID, error `Invalid session UUID`. A
+/// driver holding a name had to keep its own name-to-id map for that one verb.
+#[test]
+fn session_restore_takes_a_reference_like_every_other_verb() {
+    let env = Env::new();
+    let id = seed_session(&env, "gone", "claude");
+    assert_eq!(
+        env.run(&["session", "delete", &id, "--json"]).status.code(),
+        Some(0)
+    );
+
+    let out = env.run(&["session", "restore", "gone", "--json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "restore by name: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(doc["id"], Value::String(id.clone()));
+
+    // And a reference that matches nothing still says what it tried.
+    let missing = env.run(&["session", "restore", "never-existed", "--json"]);
+    assert_eq!(missing.status.code(), Some(1));
+}
+
+/// A reference matching two sessions is a different answer from one matching
+/// none, and a driver has to be able to tell them apart without matching on the
+/// message: it reconciles the first by creating a session, and can only escalate
+/// the second.
+#[test]
+fn an_ambiguous_reference_exits_differently_from_a_missing_one() {
+    let env = Env::new();
+    seed_session(&env, "twin", "claude");
+    seed_session(&env, "twin", "codex");
+
+    let ambiguous = env.run(&["session", "get", "twin", "--json"]);
+    assert_eq!(
+        ambiguous.status.code(),
+        Some(3),
+        "stdout: {}",
+        String::from_utf8_lossy(&ambiguous.stdout)
+    );
+    let doc: Value = serde_json::from_slice(&ambiguous.stdout).expect("JSON");
+    assert!(
+        doc["error"].as_str().is_some_and(|e| e.contains("twin")),
+        "{doc}"
+    );
+
+    assert_eq!(
+        env.run(&["session", "get", "nope", "--json"]).status.code(),
+        Some(1)
+    );
+}
+
+/// `replace` is a force delete followed by a create, and it cannot be the other
+/// way round: the new session wants the branch and the checkout the old one
+/// holds. So a spawn that fails after the teardown used to leave the caller
+/// with neither session — the mode's own help said "tear the existing session
+/// down first", and the skill's "a refusal leaves no window, worktree or row
+/// behind" read as a safety claim `replace` did not honour.
+#[test]
+fn replace_puts_the_old_session_back_when_the_replacement_cannot_spawn() {
+    let env = Env::new();
+    let id = seed_session(&env, "worker", "claude");
+
+    // A worktree branch off a directory that is not a git repository: the
+    // spawn fails after the teardown and before any window exists, which is
+    // exactly the window this rollback covers.
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "worker",
+        "--repo-path",
+        env.path("home").to_str().expect("utf-8 path"),
+        "--worktree-branch",
+        "feat",
+        "--on-existing",
+        "replace",
+        "--json",
+    ]);
+    assert_ne!(out.status.code(), Some(0), "the spawn must have failed");
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let error = doc["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("restored"),
+        "the answer says what became of the session it replaced: {doc}"
+    );
+
+    // The row is back, and addressable — not left as a tombstone.
+    let listed = env.run(&["session", "list", "--json"]);
+    let rows: Value = serde_json::from_slice(&listed.stdout).expect("JSON");
+    assert!(
+        rows.as_array()
+            .expect("array")
+            .iter()
+            .any(|r| r["id"] == Value::String(id.clone())),
+        "the replaced session came back: {rows}"
+    );
+}
+
+/// `--on-existing adopt` exists so a reconciling driver can skip the follow-up
+/// read. A **parked** session — no pane, every `send`/`key`/`capture` refused —
+/// came back with nothing in the answer saying so.
+#[test]
+fn adopt_says_when_the_session_it_hands_back_has_no_pane() {
+    let env = Env::new();
+    let repo = env.path("home");
+    let id = seed_session(&env, "worker", "claude");
+    open_db(&env)
+        .set_session_stopped(id.parse().expect("seeded id"), true)
+        .expect("park it");
+
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "worker",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--on-existing",
+        "adopt",
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(doc["id"], Value::String(id));
+    assert_eq!(doc["created"], Value::Bool(false));
+    assert_eq!(doc["stopped"], Value::Bool(true), "{doc}");
+    assert_eq!(doc["state"], Value::String("stopped".into()), "{doc}");
 }
 
 #[test]
@@ -378,8 +626,8 @@ fn an_ambiguous_name_is_never_adopted_or_replaced() {
         ]);
         assert_eq!(
             out.status.code(),
-            Some(1),
-            "--on-existing {mode} must refuse an ambiguous name"
+            Some(3),
+            "--on-existing {mode} must refuse an ambiguous name with the ambiguity code"
         );
         let doc = String::from_utf8_lossy(&out.stdout);
         assert!(doc.contains('2'), "the refusal counts the matches: {doc}");

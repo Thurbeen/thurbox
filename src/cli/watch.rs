@@ -33,6 +33,7 @@ use clap::Args;
 use serde_json::{json, Value};
 
 use crate::cli::output::Format;
+use crate::cli::CommandError;
 use crate::session::{Assessment, SessionId};
 use crate::storage::{Database, SessionEventRow, SessionFacts};
 
@@ -77,7 +78,7 @@ pub struct WatchArgs {
 
 /// Stream session changes until the deadline (or forever) — one event per line,
 /// flushed as it is written so a reader blocked on the pipe wakes on it.
-pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), String> {
+pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), CommandError> {
     let filter = args
         .session
         .as_deref()

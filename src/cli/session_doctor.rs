@@ -15,6 +15,7 @@
 use serde_json::{json, Value};
 
 use crate::cli::output::{self, CommandOutput};
+use crate::cli::CommandError;
 use crate::session::{Assessment, Corroboration, Coverage, HookDelivery};
 use crate::storage::Database;
 use crate::sync::SharedSession;
@@ -58,15 +59,14 @@ impl Level {
 /// those are facts to know, not breakage to fix, and a permanent non-zero exit
 /// for `aider`'s one-state coverage — or for a driver reporting its own state
 /// exactly as documented — would be noise rather than signal.
-pub fn run(db: &Database, uuid: Option<&str>) -> Result<CommandOutput, String> {
+pub fn run(db: &Database, uuid: Option<&str>) -> Result<CommandOutput, CommandError> {
     let sessions = match uuid {
         Some(uuid) => vec![super::sessions::resolve(db, uuid)?],
         None => db
             .list_active_sessions()
             .map_err(|e| format!("list_active_sessions: {e}"))?,
     };
-    let states = db.load_hook_states().unwrap_or_default();
-    let parked = db.load_stopped_sessions().unwrap_or_default();
+    let facts = super::sessions::SessionFacts::load(db);
     let registry = crate::agent::agent_config::load_or_seed();
     let hooks_active = crate::session_ops::builtin_hooks::hooks_enabled(db);
     // Resolved once: the same answer for every session, and each probe is a
@@ -75,9 +75,10 @@ pub fn run(db: &Database, uuid: Option<&str>) -> Result<CommandOutput, String> {
 
     let mut reports = Vec::new();
     for session in &sessions {
-        let hook = super::sessions::assess(&registry, session, &states, &parked, true);
+        let hook = facts.assess(&registry, session, true);
         reports.push(diagnose(
             session,
+            facts.hooks_expected(session),
             &hook,
             hooks_active,
             cli_on_path.as_deref(),
@@ -130,6 +131,9 @@ struct Report {
     verdict: Level,
     findings: Vec<Finding>,
     hook: Assessment,
+    /// The agent the wiring was judged against — the row's own unless a driver
+    /// declared another with `session reports-as`.
+    agent: String,
 }
 
 impl Report {
@@ -138,6 +142,10 @@ impl Report {
             "session_id": s.id.to_string(),
             "session_name": s.name,
             "agent": s.agent,
+            // Null unless the two differ: a driver reading `agent` alone would
+            // otherwise have no way to see that coverage was judged against
+            // something else.
+            "reports_as": (self.agent != s.agent).then(|| self.agent.clone()),
             "verdict": self.verdict.as_str(),
             "hook_state": self.hook.hook_state,
             "hook_state_age_secs": self.hook.age_secs,
@@ -155,10 +163,13 @@ impl Report {
     }
 
     fn render(&self, s: &SharedSession) -> String {
+        let agent = match self.agent == s.agent {
+            true => s.agent.clone(),
+            false => format!("{}, reporting as {}", s.agent, self.agent),
+        };
         let mut out = format!(
-            "{} ({}) — {}\n",
+            "{} ({agent}) — {}\n",
             s.name,
-            s.agent,
             self.verdict.as_str().to_uppercase()
         );
         for f in &self.findings {
@@ -177,12 +188,19 @@ impl Report {
 /// would ask it: is the machinery on, does this agent have any, is its payload
 /// where the agent will look, can the hook command find the binary it names,
 /// has anything actually arrived, and does the pane agree.
+///
+/// The wiring is judged against [`Assessment::agent`] — the row's own agent, or
+/// the one a driver declared with `--reports-as`. `hooks_expected` is false for
+/// a `--command` session that declared nothing: it runs a shell, a REPL or a
+/// build watcher, so there is no wiring for a check to find broken.
 fn diagnose(
     session: &SharedSession,
+    hooks_expected: bool,
     hook: &Assessment,
     hooks_active: bool,
     cli_on_path: Option<&str>,
 ) -> Report {
+    let agent = &hook.agent;
     let mut findings = Vec::new();
     let remote = crate::session::is_remote_backend(&session.backend_type);
 
@@ -203,6 +221,22 @@ fn diagnose(
     });
 
     findings.push(match hook.coverage {
+        // A `--command` session runs whatever the caller asked for — a shell, a
+        // REPL, a build watcher — and thurbox never had an agent to wire. There
+        // is no breakage here to report, and reporting one made bare `doctor`
+        // fail the whole machine over the exact session shape thurbox
+        // advertises for drivers.
+        Coverage::None if !hooks_expected => Finding {
+            key: "coverage",
+            level: Level::Ok,
+            detail: format!(
+                "'{agent}' is this session's own command, not an agent from agents.toml, so \
+                 thurbox wired no hooks and none are expected — declare what actually runs \
+                 in the pane with `thurbox-cli session reports-as {} <agent>` if it is a \
+                 coding agent, or have your driver call `thurbox-cli session signal`",
+                session.name
+            ),
+        },
         // Nothing thurbox ships wires this agent — but a driver that owns the
         // agent launch is *documented* to call `session signal` itself, and
         // when it does, state is demonstrably reaching thurbox. Failing that
@@ -212,36 +246,33 @@ fn diagnose(
             key: "coverage",
             level: Level::Warn,
             detail: format!(
-                "thurbox ships no status hooks for agent '{}', but signals are arriving — \
+                "thurbox ships no status hooks for agent '{agent}', but signals are arriving — \
                  something in the pane is calling `thurbox-cli session signal`, so this \
-                 session reports what that caller chooses to report",
-                session.agent
+                 session reports what that caller chooses to report"
             ),
         },
         Coverage::None => Finding {
             key: "coverage",
             level: Level::Fail,
             detail: format!(
-                "thurbox ships no status hooks for agent '{}' — set `hook_schema` in \
+                "thurbox ships no status hooks for agent '{agent}' — set `hook_schema` in \
                  agents.toml if it speaks a built-in's hook format, or have your driver call \
                  `thurbox-cli session signal --state <s>` (identity comes from the injected \
-                 $THURBOX_SESSION, so it needs no arguments)",
-                session.agent
+                 $THURBOX_SESSION, so it needs no arguments)"
             ),
         },
         Coverage::Partial => Finding {
             key: "coverage",
             level: Level::Warn,
             detail: format!(
-                "'{}' can only report {} — silence about any other state means nothing",
-                session.agent,
+                "'{agent}' can only report {} — silence about any other state means nothing",
                 hook.states_reportable().join(", ")
             ),
         },
         Coverage::Full => Finding {
             key: "coverage",
             level: Level::Ok,
-            detail: format!("'{}' can report every state", session.agent),
+            detail: format!("'{agent}' can report every state"),
         },
     });
 
@@ -266,6 +297,21 @@ fn diagnose(
             level: Level::Ok,
             detail: format!("hook commands resolve `thurbox-cli` to {path}"),
         },
+        // Nothing thurbox installed for this session invokes the binary, so
+        // "every hook command fails silently" is not true of it, and the
+        // verdict — the maximum over the findings — would otherwise come back
+        // `fail` for a session the coverage check has just declared healthy.
+        // Still worth saying: a driver reporting from the pane with `session
+        // signal` does need the binary. A session with an agent thurbox ships
+        // no hooks for is the other way round — its driver's `session signal`
+        // *is* the only route, so a missing binary there is a genuine failure.
+        None if !hooks_expected => Finding {
+            key: "cli",
+            level: Level::Warn,
+            detail: "`thurbox-cli` is not on PATH — nothing thurbox installed for this session \
+                     runs it, but a driver calling `session signal` from the pane needs it"
+                .into(),
+        },
         None => Finding {
             key: "cli",
             level: Level::Fail,
@@ -275,19 +321,23 @@ fn diagnose(
         },
     });
 
+    // A parked session reports nothing because there is nothing running to
+    // report — `stop` clears the state for exactly that reason. Warning about
+    // the silence would be warning about the operator's own request, and the
+    // check has to come *first*: `Assessment::parked` deliberately leaves the
+    // hook columns alone, and `stop` writes the mark and clears the state as
+    // two separate writes, so a stale `blocked` outlives the pane it described
+    // and would otherwise be printed as this session's current state.
     findings.push(match (&hook.hook_state, hook.age_secs) {
-        (Some(state), Some(age)) => Finding {
-            key: "last-signal",
-            level: Level::Ok,
-            detail: format!("{state}, {} ago", output::duration_short(age)),
-        },
-        // A parked session reports nothing because there is nothing running to
-        // report — `stop` clears the state for exactly that reason. Warning
-        // about the silence would be warning about the operator's own request.
         _ if hook.stopped => Finding {
             key: "last-signal",
             level: Level::Ok,
             detail: "stopped, so nothing is reporting".into(),
+        },
+        (Some(state), Some(age)) => Finding {
+            key: "last-signal",
+            level: Level::Ok,
+            detail: format!("{state}, {} ago", output::duration_short(age)),
         },
         _ => Finding {
             key: "last-signal",
@@ -353,6 +403,7 @@ fn diagnose(
         verdict,
         findings,
         hook: hook.clone(),
+        agent: agent.clone(),
     }
 }
 
@@ -472,6 +523,18 @@ mod tests {
         }
     }
 
+    /// [`diagnose`] for a session that names a registry agent — the ordinary
+    /// case, where the row's own agent is also what reports and hooks are
+    /// therefore expected.
+    fn diagnose_agent(
+        row: &SharedSession,
+        hook: &Assessment,
+        hooks_active: bool,
+        cli_on_path: Option<&str>,
+    ) -> Report {
+        diagnose(row, true, hook, hooks_active, cli_on_path)
+    }
+
     fn level_of(report: &Report, key: &str) -> Level {
         report
             .findings
@@ -484,7 +547,7 @@ mod tests {
     #[test]
     fn an_agent_with_no_wiring_fails_and_says_how_to_wire_it() {
         let hook = Assessment::from_hooks(&registry(), "mine", None, None, 0);
-        let report = diagnose(&row("s", "mine", "local-tmux"), &hook, true, Some("/bin/x"));
+        let report = diagnose_agent(&row("s", "mine", "local-tmux"), &hook, true, Some("/bin/x"));
         assert_eq!(report.verdict, Level::Fail);
         assert_eq!(level_of(&report, "coverage"), Level::Fail);
         // The point of failing rather than shrugging: there *is* a route, and
@@ -506,7 +569,7 @@ mod tests {
         // `session signal`. State is demonstrably arriving, so a `fail` verdict
         // — and the non-zero exit with it — would be false for this row.
         let hook = Assessment::from_hooks(&registry(), "shell", Some("working"), Some(0), 5_000);
-        let report = diagnose(
+        let report = diagnose_agent(
             &row("s", "shell", "local-tmux"),
             &hook,
             true,
@@ -530,7 +593,7 @@ mod tests {
         // PATH looks exactly like an agent that has not signalled. This is the
         // whole reason the subcommand exists.
         let hook = Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), 0);
-        let report = diagnose(&row("s", "claude", "local-tmux"), &hook, true, None);
+        let report = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, true, None);
         assert_eq!(level_of(&report, "cli"), Level::Fail);
         assert_eq!(report.verdict, Level::Fail);
     }
@@ -538,7 +601,7 @@ mod tests {
     #[test]
     fn a_deactivated_extension_is_a_failure_not_a_silence() {
         let hook = Assessment::from_hooks(&registry(), "claude", None, None, 0);
-        let report = diagnose(&row("s", "claude", "local-tmux"), &hook, false, Some("/x"));
+        let report = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, false, Some("/x"));
         assert_eq!(level_of(&report, "extension"), Level::Fail);
     }
 
@@ -547,7 +610,7 @@ mod tests {
         // aider can only ever report `blocked`; that is a fact to know, not
         // breakage to fix, so it must not exit non-zero forever.
         let hook = Assessment::from_hooks(&registry(), "aider", None, None, 0);
-        let report = diagnose(&row("s", "aider", "local-tmux"), &hook, true, Some("/x"));
+        let report = diagnose_agent(&row("s", "aider", "local-tmux"), &hook, true, Some("/x"));
         assert_eq!(level_of(&report, "coverage"), Level::Warn);
         assert_ne!(report.verdict, Level::Fail);
         // aider's wiring is a launch arg alone, so there is no file to check.
@@ -559,7 +622,7 @@ mod tests {
         let known = vec!["claude".to_string()];
         let hook = Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), 1_000)
             .with_pane("claude", &known, Some("bash"), Some("bash"), Some(false));
-        let report = diagnose(&row("s", "claude", "local-tmux"), &hook, true, Some("/x"));
+        let report = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, true, Some("/x"));
         assert_eq!(level_of(&report, "pane"), Level::Warn);
         let detail = &report
             .findings
@@ -577,11 +640,103 @@ mod tests {
         // here. Reporting a local file as missing would be a false failure.
         let hook = Assessment::from_hooks(&registry(), "claude", Some("done"), Some(0), 1_000)
             .pane_unavailable();
-        let report = diagnose(&row("s", "claude", "ssh:devbox"), &hook, true, Some("/x"));
+        let report = diagnose_agent(&row("s", "claude", "ssh:devbox"), &hook, true, Some("/x"));
         assert_eq!(level_of(&report, "payload"), Level::Warn);
         assert_eq!(level_of(&report, "cli"), Level::Warn);
         assert_ne!(report.verdict, Level::Fail);
         assert_eq!(hook.corroboration, Some(Corroboration::Unavailable));
+    }
+
+    #[test]
+    fn a_command_session_expects_no_hooks_and_is_never_a_failure() {
+        // The shape thurbox advertises for drivers: `--command $SHELL --arg -i`,
+        // named after the command's file stem. There is no wiring here to be
+        // broken, and failing it made bare `doctor` — which diagnoses every
+        // active session — fail the whole machine because one shell existed.
+        let hook = Assessment::from_hooks(&registry(), "bash", None, None, 0);
+        let report = diagnose(
+            &row("task-7", "bash", "local-tmux"),
+            false,
+            &hook,
+            true,
+            Some("/bin/x"),
+        );
+        assert_eq!(level_of(&report, "coverage"), Level::Ok);
+        assert_ne!(report.verdict, Level::Fail);
+        let detail = &report
+            .findings
+            .iter()
+            .find(|f| f.key == "coverage")
+            .unwrap()
+            .detail;
+        assert!(detail.contains("reports-as"), "got {detail}");
+    }
+
+    #[test]
+    fn a_declared_agent_decides_coverage_rather_than_the_rows_own_name() {
+        // The driver launched claude inside a `--command bash` session and said
+        // so. Judging the wiring against `bash` reported coverage `none` for a
+        // fully instrumented pane — and, worse, `blocked_is_heuristic: false`
+        // about claude's text match on a notification body.
+        let hook = Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), 0);
+        let report = diagnose(
+            &row("task-7", "bash", "local-tmux"),
+            true,
+            &hook,
+            true,
+            Some("/bin/x"),
+        );
+        assert_eq!(level_of(&report, "coverage"), Level::Ok);
+        assert!(hook.blocked_is_heuristic());
+        let json = report.to_json(&row("task-7", "bash", "local-tmux"));
+        assert_eq!(json["agent"], "bash");
+        assert_eq!(json["reports_as"], "claude");
+        assert_eq!(json["hook_coverage"], "full");
+    }
+
+    #[test]
+    fn a_stopped_session_reports_the_park_rather_than_a_stale_signal() {
+        // `stop` writes the mark and clears the hook state as two separate
+        // writes, and `Assessment::parked` leaves the columns alone — so a
+        // stale `blocked` outlives the pane it described. The pane check next
+        // to this one already answers `stopped` first; this one did not, and
+        // printed the dead agent's last word as the current state.
+        let hook =
+            Assessment::from_hooks(&registry(), "claude", Some("blocked"), Some(0), 1_000).parked();
+        let report = diagnose_agent(
+            &row("parked", "claude", "local-tmux"),
+            &hook,
+            true,
+            Some("/x"),
+        );
+        let detail = &report
+            .findings
+            .iter()
+            .find(|f| f.key == "last-signal")
+            .unwrap()
+            .detail;
+        assert_eq!(detail, "stopped, so nothing is reporting", "got {detail}");
+    }
+
+    #[test]
+    fn a_missing_cli_does_not_undo_the_no_hooks_expected_carve_out() {
+        // The verdict is the maximum over the findings, so an unconditional
+        // `fail` here came back as the session's verdict however healthy the
+        // coverage check had just declared it. Nothing thurbox installed for a
+        // command session runs the binary, so its absence cannot be what stops
+        // state arriving — it is still worth saying, because a driver calling
+        // `session signal` from the pane needs it.
+        let hook = Assessment::from_hooks(&registry(), "bash", None, None, 0);
+        let report = diagnose(&row("s", "bash", "local-tmux"), false, &hook, true, None);
+        assert_eq!(level_of(&report, "cli"), Level::Warn);
+        assert_ne!(report.verdict, Level::Fail);
+
+        // A registry agent thurbox ships no hooks for is the other way round:
+        // its driver's `session signal` is the only route state can take, so a
+        // binary that is not on PATH really is what breaks it.
+        let owned = Assessment::from_hooks(&registry(), "shell", Some("working"), Some(0), 5_000);
+        let report = diagnose_agent(&row("s", "shell", "local-tmux"), &owned, true, None);
+        assert_eq!(level_of(&report, "cli"), Level::Fail);
     }
 
     #[test]
@@ -592,13 +747,13 @@ mod tests {
         // another host, so it must not turn into a failure.
         let hook = Assessment::from_hooks(&registry(), "claude", Some("done"), Some(0), 1_000)
             .pane_unavailable();
-        let report = diagnose(&row("s", "claude", "ssh:devbox"), &hook, true, None);
+        let report = diagnose_agent(&row("s", "claude", "ssh:devbox"), &hook, true, None);
         assert_eq!(level_of(&report, "cli"), Level::Warn);
         assert_ne!(report.verdict, Level::Fail);
 
         // The same absent CLI is still a failure for a local session, whose
         // hooks really do shell out to it.
-        let local = diagnose(&row("s", "claude", "local-tmux"), &hook, true, None);
+        let local = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, true, None);
         assert_eq!(level_of(&local, "cli"), Level::Fail);
     }
 }

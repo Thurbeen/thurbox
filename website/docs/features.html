@@ -1281,7 +1281,15 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               <code>allow</code>
               is the default because a database mirroring a shareable host
               carries that host's rows beside its own, so Thurbox cannot make
-              names unique; uniqueness is something a caller asks for.
+              names unique; uniqueness is something a caller asks for. The
+              question is asked of the backend the creation lands on, so a
+              namesake on another host is never adopted or torn down, and
+              <code>replace</code>
+              puts the old session back if the replacement cannot be spawned.
+              <code>--reports-as &lt;agent&gt;</code>
+              records which agent a
+              <code>--command</code>
+              pane actually runs, so hook coverage is read against it.
             </li>
             <li>
               <strong>session exec</strong>

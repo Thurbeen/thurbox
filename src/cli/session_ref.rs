@@ -19,6 +19,7 @@
 //! every candidate named. Acting on whichever row sorted first is the one
 //! behaviour that would make a driver corrupt the wrong session silently.
 
+use crate::cli::{CommandError, EXIT_AMBIGUOUS};
 use crate::session::SessionId;
 use crate::storage::Database;
 use crate::sync::SharedSession;
@@ -33,15 +34,22 @@ pub enum Ambiguity {
 
 /// Resolve a reference to exactly one active session.
 ///
-/// `Err` carries the rendered explanation; callers that need to distinguish
-/// "none" from "several" use [`resolve_detailed`].
-pub fn resolve(db: &Database, reference: &str) -> Result<SharedSession, String> {
-    resolve_detailed(db, reference).map_err(|(reason, _)| reason)
+/// `Err` carries the rendered explanation and the exit code the failure earns:
+/// a reference matching several sessions exits [`EXIT_AMBIGUOUS`] rather than
+/// the generic failure code, because the two failures ask different things of
+/// the caller — one is reconciled by creating a session, the other only by an
+/// operator picking which was meant.
+pub fn resolve(db: &Database, reference: &str) -> Result<SharedSession, CommandError> {
+    resolve_detailed(db, reference).map_err(|(reason, kind)| match kind {
+        Ambiguity::NotFound => CommandError::from(reason),
+        Ambiguity::Many(_) => CommandError::with_code(reason, EXIT_AMBIGUOUS),
+    })
 }
 
-/// [`resolve`], also returning which kind of failure it was so a caller can
-/// pick an exit code (AXI principle 6 asks a usage error and a missing thing to
-/// exit differently).
+/// [`resolve`], also returning which kind of failure it was — the distinction
+/// [`resolve`] turns into an exit code (AXI principle 6 asks a usage error and
+/// a missing thing to exit differently), and which a caller rendering its own
+/// refusal document reads directly.
 pub fn resolve_detailed(
     db: &Database,
     reference: &str,
@@ -87,6 +95,72 @@ pub fn resolve_detailed(
             Ambiguity::NotFound,
         )),
         _ => Err((ambiguous(reference, &by_prefix), Ambiguity::Many(by_prefix))),
+    }
+}
+
+/// Resolve a reference against the **deleted** rows, the way [`resolve`] does
+/// against the active ones.
+///
+/// `session restore` is the one verb whose subject is a row that no longer
+/// exists, so it cannot share the active-session resolver — but it can share
+/// its rules, and a driver that holds a name rather than a UUID has no other
+/// way in. Same three spellings, same refusal to guess between two candidates,
+/// same exit code for the ambiguity.
+///
+/// Filtered in memory rather than in SQL because the deleted set is what
+/// `session list --deleted` already reads whole.
+pub fn resolve_deleted(
+    db: &Database,
+    reference: &str,
+) -> Result<crate::storage::DeletedSessionInfo, CommandError> {
+    let deleted = db
+        .list_deleted_sessions()
+        .map_err(|e| CommandError::from(format!("list_deleted_sessions: {e}")))?;
+    if let Ok(id) = reference.parse::<SessionId>() {
+        return deleted
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| CommandError::from(format!("Deleted session not found: {reference}")));
+    }
+    let by_name: Vec<_> = deleted
+        .iter()
+        .filter(|d| d.name == reference)
+        .cloned()
+        .collect();
+    if let Some(one) = pick_deleted(reference, by_name)? {
+        return Ok(one);
+    }
+    let by_prefix: Vec<_> = deleted
+        .into_iter()
+        .filter(|d| d.id.to_string().starts_with(reference))
+        .collect();
+    pick_deleted(reference, by_prefix)?.ok_or_else(|| {
+        CommandError::from(format!(
+            "Deleted session not found: {reference} (tried it as a UUID, a name, and an id prefix)"
+        ))
+    })
+}
+
+/// One candidate, none, or a refusal naming them all — the deleted half of the
+/// rule [`resolve`] follows.
+fn pick_deleted(
+    reference: &str,
+    mut found: Vec<crate::storage::DeletedSessionInfo>,
+) -> Result<Option<crate::storage::DeletedSessionInfo>, CommandError> {
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(Some(found.remove(0))),
+        n => {
+            let list = found
+                .iter()
+                .map(|d| format!("  {}  {}", d.id, d.name))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(CommandError::with_code(
+                format!("'{reference}' matches {n} deleted sessions:\n{list}"),
+                EXIT_AMBIGUOUS,
+            ))
+        }
     }
 }
 
@@ -171,7 +245,29 @@ mod tests {
     fn a_reference_that_matches_nothing_says_what_it_tried() {
         let db = db();
         let err = resolve(&db, "nope").unwrap_err();
-        assert!(err.contains("nope"));
-        assert!(err.contains("prefix"), "the message names every spelling");
+        assert!(err.message.contains("nope"));
+        assert!(
+            err.message.contains("prefix"),
+            "the message names every spelling"
+        );
+        assert_eq!(err.exit_code, crate::cli::EXIT_ERROR);
+    }
+
+    #[test]
+    fn an_ambiguous_reference_exits_differently_from_a_missing_one() {
+        // A driver reconciles "no such session" by creating one; only an
+        // operator can settle "two sessions answer to that name". Telling them
+        // apart used to mean string-matching the message.
+        let db = db();
+        db.upsert_session(&row("twin")).unwrap();
+        db.upsert_session(&row("twin")).unwrap();
+        assert_eq!(
+            resolve(&db, "twin").unwrap_err().exit_code,
+            crate::cli::EXIT_AMBIGUOUS
+        );
+        assert_eq!(
+            resolve(&db, "solo").unwrap_err().exit_code,
+            crate::cli::EXIT_ERROR
+        );
     }
 }
