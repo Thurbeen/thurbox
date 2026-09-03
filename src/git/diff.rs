@@ -349,55 +349,93 @@ fn remote_default_ref(cwd: &Path) -> Option<String> {
 /// default ref, a git failure) — never assumed, because the caller uses this
 /// to decide whether a delete needs confirming.
 ///
-/// Two questions, because a merge is not always a fast-forward:
+/// A merge is rarely a fast-forward, and each forge rewrites the work its own
+/// way, so no single comparison sees them all:
 ///
 /// ```text
-///   origin/main   A ── S ── U        S = the branch, squashed
+///   origin/main   A ── U ── S        S = the branch, squashed or replayed
 ///   feature        \── B ── C ── D    D is an ancestor of nothing
 /// ```
 ///
-/// `merge-base --is-ancestor` answers the merge-commit and fast-forward cases
-/// outright. A **squash** merge (this project's only merge mode, and the
-/// default on every forge) rewrites the branch into one new commit, so no
-/// commit of it is ever reachable from the default branch — the branch stays
-/// permanently "3 ahead". Comparing *patches* is what sees through that:
-/// square the branch off into a single throwaway commit on the merge base, and
-/// ask `git cherry` whether the default branch already carries that patch.
-/// `git cherry` prefixes `-` for a patch that is already upstream and `+` for
-/// one that is not.
+/// Four questions in ascending cost, each a different kind of evidence that
+/// the work is already upstream, and the first `true` is the answer:
+///
+/// 1. `reachable_from` — a merge commit, or a fast-forward.
+/// 2. `same_tree_as` — strategy-agnostic: however the content got there, a
+///    branch whose tree equals the default branch's loses nothing by going.
+/// 3. `every_commit_upstream` — rebase-and-merge, and GitLab's semi-linear
+///    merge: every commit replayed with a new sha but the same patch.
+/// 4. `squashed_upstream` — a squash merge: no commit of the branch is
+///    upstream, only the sum of them.
 ///
 /// Local refs only — no network, and no forge CLI — so GitHub, GitLab,
 /// Bitbucket and a bare repository behind an SSH remote all answer alike.
 pub fn merged_into_default(cwd: &Path) -> Option<bool> {
     let default = remote_default_ref(cwd)?;
-
-    // Fast path: a merge commit or a fast-forward leaves HEAD reachable.
-    let ancestor = git_command(
-        None,
-        cwd,
-        &["merge-base", "--is-ancestor", "HEAD", &default],
-    )
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .status()
-    .ok()?;
-    match ancestor.code() {
-        Some(0) => return Some(true),
-        // 1 is "not an ancestor"; anything else is git failing to answer, and
-        // an unanswered question must not read as "unmerged".
-        Some(1) => {}
-        _ => return None,
+    if reachable_from(cwd, &default)? {
+        return Some(true);
     }
-
-    // Squash path. `commit-tree` writes one dangling commit object, which git's
-    // own gc prunes; nothing references it and no ref moves.
+    if same_tree_as(cwd, &default)? {
+        return Some(true);
+    }
     let base = run_git_capture(&["merge-base", &default, "HEAD"], cwd)?;
     let base = base.trim();
+    if every_commit_upstream(cwd, &default, base)? {
+        return Some(true);
+    }
+    squashed_upstream(cwd, &default, base)
+}
+
+/// A git question answered by exit status: `Some` for the 0/1 the command
+/// documents, `None` for anything else, since git failing to answer must not
+/// read as "unmerged".
+fn git_predicate(cwd: &Path, args: &[&str]) -> Option<bool> {
+    let status = git_command(None, cwd, args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+/// Merge commit and fast-forward: the branch tip is still reachable, so no
+/// patch has to be compared at all.
+fn reachable_from(cwd: &Path, default: &str) -> Option<bool> {
+    git_predicate(cwd, &["merge-base", "--is-ancestor", "HEAD", default])
+}
+
+/// Content rather than history: an identical tree means a delete walks away
+/// from nothing, whichever strategy — or hand reimplementation — put it there.
+fn same_tree_as(cwd: &Path, default: &str) -> Option<bool> {
+    git_predicate(cwd, &["diff", "--quiet", default, "HEAD"])
+}
+
+/// Rebase-and-merge, and semi-linear merge: every commit is replayed upstream
+/// with a new sha, so identity says nothing and patch-ids say everything.
+/// `git cherry` prefixes `-` for a patch already upstream and `+` for one that
+/// is not — merged means no `+`, and at least one line, because an empty range
+/// is a question the check cannot answer rather than a yes.
+fn every_commit_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
+    let cherry = run_git_capture(&["cherry", default, "HEAD", base], cwd)?;
+    let mut lines = cherry.lines().filter(|l| !l.trim().is_empty()).peekable();
+    Some(lines.peek().is_some() && lines.all(|l| l.trim_start().starts_with('-')))
+}
+
+/// Squash merge: the branch landed as one new commit, so none of its own
+/// commits is upstream — only the sum of them. `commit-tree` squares the
+/// branch off onto its merge base as a single dangling commit (nothing
+/// references it and no ref moves, so git's own gc prunes it), and `git
+/// cherry` asks whether the default branch already carries that one patch.
+fn squashed_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
     let squashed = run_git_capture(
         &["commit-tree", "HEAD^{tree}", "-p", base, "-m", "squash"],
         cwd,
     )?;
-    let cherry = run_git_capture(&["cherry", &default, squashed.trim()], cwd)?;
+    let cherry = run_git_capture(&["cherry", default, squashed.trim()], cwd)?;
     Some(cherry.trim_start().starts_with('-'))
 }
 
@@ -483,9 +521,9 @@ pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
 ///
 /// `merged_head` short-circuits the merge check: pass the commit a caller has
 /// already seen [`merged_into_default`] answer `Some(true)` for, and if HEAD is
-/// still that commit the answer is reused instead of re-running two to four
-/// `git` subprocesses — one of which writes a fresh dangling commit — every
-/// time a settled worktree is restatted.
+/// still that commit the answer is reused instead of re-running the handful of
+/// `git` subprocesses it costs — one of which writes a fresh dangling commit —
+/// every time a settled worktree is restatted.
 ///
 /// The key is the **commit**, not the worktree, and that is the whole of its
 /// correctness. A landed squash never un-lands, but `merged` is a fact about
@@ -512,8 +550,8 @@ pub fn worktree_stats(cwd: &Path, merged_head: Option<&str>) -> Option<crate::se
     // `origin/main` → `origin/master`), preserving the old answer there.
     let (ahead, behind) = status.ahead_behind.unwrap_or_else(|| ahead_behind(cwd));
     // Only a branch that *is* ahead has commits whose fate is in question, and
-    // the check costs two to four `git` runs — so nothing ahead pays nothing,
-    // and reports `None` rather than an answer nobody asked for. A worktree
+    // the check costs several `git` runs — so nothing ahead pays nothing, and
+    // reports `None` rather than an answer nobody asked for. A worktree
     // still sitting on the commit a `true` was computed for skips it too: see
     // `merged_head`.
     let settled = merged_head.is_some() && merged_head == status.head.as_deref();
