@@ -416,9 +416,13 @@ the session status display itself is unaffected.
 undo window, it kills the session's tmux window, removes its worktrees
 and symlink workspace, and disables any pending `Send` automations —
 after a confirmation prompt (`Enter`/`y` to delete, `Esc`/`n` to
-cancel), since the teardown is irreversible. The soft-deleted row is
-still written last, so the session remains restorable via `Ctrl+U`
-(which re-spawns it fresh). This flag governs the TUI only:
+cancel), since the teardown is irreversible. The row is marked
+**first**, before anything comes down: a crash partway through the
+teardown would otherwise leave an active session whose worktrees are
+already gone. It is marked force-deleted with it, so `Ctrl+U` lists it
+and refuses — unless every worktree was one thurbox merely opened
+rather than created, in which case nothing was lost and the restore
+stands (which re-spawns it fresh). This flag governs the TUI only:
 `thurbox-cli session delete` always soft-deletes unless you pass
 `--force`, regardless of the setting.
 

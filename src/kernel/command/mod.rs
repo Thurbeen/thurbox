@@ -238,14 +238,14 @@ pub enum Command {
     Theme {
         name: String,
     },
-    /// Let a soft-deleted session's agent go, once its undo window has closed.
+    /// Let the agents of every session soft-deleted past its undo window go.
     ///
-    /// Issued by the loop rather than by a plugin: it is a consequence of time
-    /// passing, not of anything anyone pressed. Worktrees are left alone — they
-    /// are what makes the undo lossless.
-    Reap {
-        session: String,
-    },
+    /// Names no session: the question is asked of the database
+    /// (`deleted_at + UNDO_WINDOW`), not of a list the loop kept. Issued by the
+    /// loop on a slow cadence rather than by a plugin — it is a consequence of
+    /// time passing, not of anything anyone pressed. Worktrees are left alone —
+    /// they are what makes the undo lossless.
+    Reap,
     /// Write the user's settings back to `settings.toml`.
     ///
     /// Not parseable from a plugin, and deliberately: a pane may *read* what the
@@ -347,7 +347,7 @@ impl Command {
             Command::Theme { .. } => "theme",
             Command::Plugin { .. } => "plugin",
             Command::Bookmark { .. } => "bookmark",
-            Command::Reap { .. } => "reap",
+            Command::Reap => "reap",
             Command::Configure { .. } => "configure",
             Command::Order { .. } => "order",
             Command::Setting { .. } => "set",
@@ -368,7 +368,6 @@ impl Command {
             | Command::Copy { session }
             | Command::Diff { session }
             | Command::Editor { session }
-            | Command::Reap { session }
             | Command::Shell { session } => session,
             // Names no session yet — that is the point of creating one.
             Command::Create { .. } => "",
@@ -383,6 +382,8 @@ impl Command {
             | Command::Setting { .. }
             | Command::OpenLink { .. }
             | Command::Order { .. }
+            // Asked of the database, not of one row.
+            | Command::Reap
             // A plugin's pane belongs to the plugin, not to a session — which is
             // the whole point of it, and why it must never appear in anything
             // that enumerates sessions.

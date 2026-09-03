@@ -626,19 +626,18 @@ fn db_path() -> Option<PathBuf> {
     crate::paths::database_file()
 }
 
-/// Click handler: write the focus request straight to the SQLite metadata
-/// table from the wait-for-action thread. We open a fresh connection per
-/// click because clicks are rare and the dispatcher thread has no DB handle
-/// of its own.
+/// Click handler: record the focus request from the wait-for-action thread.
+///
+/// Through `storage` like every other write in the crate. It used to be a raw
+/// `rusqlite` statement on a connection opened here, which is the one place the
+/// SQL for a thurbox table lived outside the module that owns it — and the
+/// carve-out the architecture rules had to be written around. A fresh
+/// connection per click is still right: clicks are rare and the dispatcher
+/// thread has no handle of its own.
 #[cfg(target_os = "linux")]
 fn write_focus_request(session_id: SessionId) -> Result<(), Box<dyn std::error::Error>> {
     let path = db_path().ok_or("could not resolve thurbox DB path")?;
-    let conn = rusqlite::Connection::open(&path)?;
-    conn.execute(
-        "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        rusqlite::params![FOCUS_REQUEST_KEY, session_id.to_string()],
-    )?;
+    crate::storage::Database::open_existing(&path)?.set_pending_focus_session_id(session_id)?;
     Ok(())
 }
 

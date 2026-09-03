@@ -22,7 +22,10 @@ pub mod spawn;
 
 pub use builtin::{builtin_extension, ensure_builtin_extensions, Builtin};
 pub use builtin_hooks::hooks_enabled;
-pub use delete::{delete_session_headless, reap_soft_deleted, ForceDeleteReport};
+pub use delete::{
+    delete_session_headless, reap_overdue_soft_deletes, reap_soft_deleted, ForceDeleteReport,
+    UNDO_WINDOW,
+};
 pub use extensions::{
     activate_extension, deactivate_extension, ensure_extension, extension_health,
     heal_active_extensions, install_extension, reinstall_extension, uninstall_extension,
@@ -390,7 +393,7 @@ pub fn agent_launch_plan(
         ..SessionConfig::default()
     };
     match session {
-        Some(s) => config.env.extend(session_process_env(db, s)),
+        Some(s) => config.env.extend(session_process_env(db, s)?),
         // No session to take an identity from, but the instance is still
         // knowable — and a child `thurbox-cli` that resolves a different data
         // dir or socket would report into a database nothing here reads.
@@ -423,7 +426,7 @@ pub fn agent_launch_plan(
 pub fn session_process_env(
     db: &crate::storage::Database,
     session: &crate::sync::SharedSession,
-) -> BTreeMap<String, String> {
+) -> Result<BTreeMap<String, String>, String> {
     let mut config = SessionConfig {
         session_id: Some(session.id),
         agent_session_id: session.agent_session_id.clone(),
@@ -431,9 +434,12 @@ pub fn session_process_env(
         backend: Some(session.backend_type.clone()),
         ..SessionConfig::default()
     };
-    config
-        .env
-        .extend(db.load_launch_env(session.id).unwrap_or_default());
+    // Strict: the whole point of this function is that a session's recorded
+    // `--env` does not evaporate, and a read that failed is not "no env".
+    config.env.extend(
+        db.load_launch_env(session.id)
+            .map_err(|e| format!("read the launch env of '{}': {e}", session.name))?,
+    );
     inject_thurbox_env(
         &mut config,
         session.agent_session_id.as_deref().unwrap_or_default(),
@@ -442,7 +448,7 @@ pub fn session_process_env(
     if session.agent_session_id.is_none() {
         config.env.remove("THURBOX_SESSION_ID");
     }
-    config.env.into_iter().collect()
+    Ok(config.env.into_iter().collect())
 }
 
 /// Fork a session: a new one beside it, on the same directory and branch, with
@@ -490,11 +496,15 @@ pub fn fork_session_headless(
     // A command session has no registry entry, so the fork has to carry the
     // recipe rather than the agent name — otherwise it would look up an agent
     // called `bash` and find nothing.
-    let recipe = db.load_launch_recipe(id).unwrap_or_default();
+    let recipe = db
+        .load_launch_recipe(id)
+        .map_err(|e| format!("read the launch recipe: {e}"))?;
     // Read separately from the recipe: a registry-agent session has no
     // recipe at all, but its `--env` is still recorded in the same column and
     // there is nowhere else to re-resolve it from for the fork.
-    let env = db.load_launch_env(id).unwrap_or_default();
+    let env = db
+        .load_launch_env(id)
+        .map_err(|e| format!("read the launch env: {e}"))?;
 
     let request = spawn::SpawnRequest {
         name,

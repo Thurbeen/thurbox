@@ -2,7 +2,6 @@
 //! with its own database connection.
 
 use std::sync::mpsc::Sender;
-use std::sync::{Mutex, PoisonError};
 
 use super::bus::Progress;
 use super::{BookmarkEdit, Command, ExtraMember};
@@ -65,10 +64,19 @@ pub(super) fn execute(
             .map_err(|e| format!("write settings.toml: {e}"));
     }
 
+    // Asked of the database rather than of a session: the sweep finds every row
+    // whose undo window has closed.
+    if matches!(command, Command::Reap) {
+        let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
+        let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
+        crate::session_ops::reap_overdue_soft_deletes(&db);
+        return Ok(());
+    }
+
     // Keyed by nothing at all: an explicit order names every session at once.
     if let Command::Order { list } = command {
         let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
-        let db = Database::open(&path).map_err(|e| format!("open database: {e}"))?;
+        let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
         return order(&db, list);
     }
 
@@ -78,7 +86,7 @@ pub(super) fn execute(
         Command::Task { .. } | Command::DispatchTask { .. } | Command::Automation { .. }
     ) {
         let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
-        let db = Database::open(&path).map_err(|e| format!("open database: {e}"))?;
+        let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
         return match command {
             Command::Task {
                 id,
@@ -105,9 +113,12 @@ pub(super) fn execute(
         .map_err(|_| format!("not a session id: {}", command.session()))?;
 
     // Its own connection: sharing the UI thread's would mean locking against
-    // the very reads this is supposed to keep instant.
+    // the very reads this is supposed to keep instant. `open_existing` like
+    // the terminal and repos workers — the schema is already there, and
+    // `open` would re-run it (a `journal_mode = WAL` pragma that takes the
+    // write lock, plus two prune DELETEs) on every command dispatched.
     let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
-    let db = Database::open(&path).map_err(|e| format!("open database: {e}"))?;
+    let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
 
     // A fork mints a session too; like a creation, the new row simply appears
     // in the list rather than pulling the selection onto itself.
@@ -135,7 +146,6 @@ pub(super) fn execute(
             crate::session_ops::restart::restart_session_headless_with(&db, id, *if_missing)
                 .map(|_| ())
         }
-        Command::Reap { .. } => crate::session_ops::reap_soft_deleted(&db, id).map(|_| ()),
         Command::Send { text, .. } => {
             let session = db
                 .get_session_by_id(id)
@@ -158,6 +168,7 @@ pub(super) fn execute(
         | Command::Configure { .. }
         | Command::Task { .. }
         | Command::DispatchTask { .. }
+        | Command::Reap
         | Command::Automation { .. } => unreachable!("handled before the id parse"),
         Command::Theme { .. }
         | Command::Setting { .. }
@@ -227,7 +238,7 @@ fn create(
     progress: &Sender<Progress>,
 ) -> Result<(), String> {
     let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
-    let db = Database::open(&path).map_err(|e| format!("open database: {e}"))?;
+    let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
 
     let repo_path = crate::paths::expand_tilde(repo);
     // Only a local target can be checked here. Statting a *remote* path on this
@@ -304,7 +315,7 @@ fn create(
 /// minutes later inside `git worktree add`.
 fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
     let db_path = crate::paths::database_file().ok_or("could not resolve the database path")?;
-    let db = Database::open(&db_path).map_err(|e| format!("open database: {e}"))?;
+    let db = Database::open_existing(&db_path).map_err(|e| format!("open database: {e}"))?;
 
     // Removal names a path that is already remembered — an absolute one, since
     // the rows the flow offers come from the database — so it needs neither the
@@ -660,72 +671,63 @@ fn task_repo(db: &Database) -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "no repository to create a session in — start one session first".to_string())
 }
 
-/// Serializes reordering.
-///
-/// Reorder is a read-modify-write over *every* row, and commands run on
-/// independent threads — so holding a key down would otherwise have two moves
-/// read the same order, swap the same pair, and land as one. Ordering is the
-/// only command with this shape; the rest touch a single row and need no lock.
-static ORDER_LOCK: Mutex<()> = Mutex::new(());
-
 /// Move a session `delta` places in the manual order and renumber densely.
 ///
 /// Renumbering every row (rather than nudging one) is what v1 does, and it is
 /// what makes the order stable: a session that has never been moved sorts last
 /// by `display_order IS NULL`, and one move gives everything a definite place.
+///
+/// The listing and the renumbering are one transaction
+/// ([`Database::reorder_sessions`]), which is what lets two moves from a held-
+/// down key both land: reorder is a read-modify-write over *every* row and
+/// commands each run on their own thread.
 fn reorder(db: &Database, id: SessionId, delta: i64) -> Result<(), String> {
-    // Poisoning only means an earlier reorder panicked; the order is still
-    // consistent on disk, so recovering is better than refusing every future
-    // move.
-    let _guard = ORDER_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    db.reorder_sessions(|rows| {
+        let mut sessions: Vec<&crate::sync::SharedSession> = rows.iter().collect();
 
-    let mut sessions = db
-        .list_active_sessions()
-        .map_err(|e| format!("list sessions: {e}"))?;
+        // The order the list renders in: manual position first, then name — the
+        // same comparator ui/plugins/10_sessions.lua uses, or a move would appear
+        // to jump.
+        sessions.sort_by(|a, b| {
+            a.display_order
+                .unwrap_or(i64::MAX)
+                .cmp(&b.display_order.unwrap_or(i64::MAX))
+                .then_with(|| a.name.cmp(&b.name))
+        });
 
-    // The order the list renders in: manual position first, then name — the
-    // same comparator ui/plugins/10_sessions.lua uses, or a move would appear
-    // to jump.
-    sessions.sort_by(|a, b| {
-        a.display_order
-            .unwrap_or(i64::MAX)
-            .cmp(&b.display_order.unwrap_or(i64::MAX))
-            .then_with(|| a.name.cmp(&b.name))
-    });
+        let at = sessions
+            .iter()
+            .position(|s| s.id == id)
+            .ok_or_else(|| format!("session not in the active list: {id}"))?;
 
-    let at = sessions
-        .iter()
-        .position(|s| s.id == id)
-        .ok_or_else(|| format!("session not in the active list: {id}"))?;
+        // A move stays inside its repo group, because that is how the list is
+        // drawn: swapping past a group edge would reorder the underlying list
+        // while the screen appeared not to change at all.
+        let repo_of = |s: &crate::sync::SharedSession| {
+            snapshot::repo_name(&s.cwd, s.worktrees.first().map(|w| &w.repo_path))
+        };
+        let group = repo_of(sessions[at]);
 
-    // A move stays inside its repo group, because that is how the list is
-    // drawn: swapping past a group edge would reorder the underlying list
-    // while the screen appeared not to change at all.
-    let repo_of = |s: &crate::sync::SharedSession| {
-        snapshot::repo_name(&s.cwd, s.worktrees.first().map(|w| &w.repo_path))
-    };
-    let group = repo_of(&sessions[at]);
-
-    let step = if delta > 0 { 1i64 } else { -1 };
-    let mut target = at as i64 + step;
-    while target >= 0 && target < sessions.len() as i64 {
-        if repo_of(&sessions[target as usize]) == group {
-            break;
+        let step = if delta > 0 { 1i64 } else { -1 };
+        let mut target = at as i64 + step;
+        while target >= 0 && target < sessions.len() as i64 {
+            if repo_of(sessions[target as usize]) == group {
+                break;
+            }
+            target += step;
         }
-        target += step;
-    }
-    if target < 0 || target >= sessions.len() as i64 {
-        // Already at its group's edge; not an error, just nothing to do.
-        return Ok(());
-    }
-    sessions.swap(at, target as usize);
+        if target < 0 || target >= sessions.len() as i64 {
+            // Already at its group's edge; not an error, just nothing to do.
+            return Ok(Vec::new());
+        }
+        sessions.swap(at, target as usize);
 
-    for (position, session) in sessions.iter_mut().enumerate() {
-        session.display_order = Some(position as i64);
-        db.upsert_session(session)
-            .map_err(|e| format!("persist order: {e}"))?;
-    }
-    Ok(())
+        Ok(sessions
+            .iter()
+            .enumerate()
+            .map(|(position, session)| (session.id, position as i64))
+            .collect())
+    })
 }
 
 /// Persist an explicit manual order and renumber densely.
@@ -735,48 +737,42 @@ fn reorder(db: &Database, id: SessionId, delta: i64) -> Result<(), String> {
 /// did — so a permutation of a filtered view cannot silently discard rows it
 /// never showed.
 fn order(db: &Database, list: &[String]) -> Result<(), String> {
-    // Same lock as `reorder`: two concurrent renumberings must not interleave.
-    let _guard = ORDER_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    // Same transaction as `reorder`: two concurrent renumberings must not
+    // interleave, and neither may revive a row deleted between the two halves.
+    db.reorder_sessions(|sessions| {
+        let rank: std::collections::HashMap<&str, usize> = list
+            .iter()
+            .enumerate()
+            .map(|(position, id)| (id.as_str(), position))
+            .collect();
 
-    let mut sessions = db
-        .list_active_sessions()
-        .map_err(|e| format!("list sessions: {e}"))?;
+        // Unmentioned rows sort after every mentioned one, keeping the order
+        // they already had among themselves.
+        let existing =
+            |session: &crate::sync::SharedSession| session.display_order.unwrap_or(i64::MAX);
+        let mut indexed: Vec<(usize, i64, usize)> = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| {
+                let key = rank
+                    .get(session.id.to_string().as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                (key, existing(session), index)
+            })
+            .collect();
+        indexed.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
 
-    let rank: std::collections::HashMap<&str, usize> = list
-        .iter()
-        .enumerate()
-        .map(|(position, id)| (id.as_str(), position))
-        .collect();
-
-    // Unmentioned rows sort after every mentioned one, keeping the order they
-    // already had among themselves.
-    let existing = |session: &crate::sync::SharedSession| session.display_order.unwrap_or(i64::MAX);
-    let mut indexed: Vec<(usize, i64, usize)> = sessions
-        .iter()
-        .enumerate()
-        .map(|(index, session)| {
-            let key = rank
-                .get(session.id.to_string().as_str())
-                .copied()
-                .unwrap_or(usize::MAX);
-            (key, existing(session), index)
-        })
-        .collect();
-    indexed.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
-    });
-
-    let permutation: Vec<usize> = indexed.into_iter().map(|(_, _, index)| index).collect();
-    for (position, index) in permutation.into_iter().enumerate() {
-        sessions[index].display_order = Some(position as i64);
-    }
-    for session in sessions.iter_mut() {
-        db.upsert_session(session)
-            .map_err(|e| format!("persist order: {e}"))?;
-    }
-    Ok(())
+        Ok(indexed
+            .into_iter()
+            .enumerate()
+            .map(|(position, (_, _, index))| (sessions[index].id, position as i64))
+            .collect())
+    })
 }
 
 #[cfg(test)]

@@ -246,9 +246,10 @@ session), never on the loop, ADR-P12).
 - **A remote soft delete is reaped on the host.** `reap_soft_deleted` no longer
   gives up on a remote row: it asks a shareable host to collect it
   (`thurbox-cli session reap <ref>` there, which owns the host's own row), and
-  otherwise kills the windows itself through the stamp. Driven by the TUI's
-  `kernel::reaper` and, with no interface open, by `reap_overdue_soft_deletes`
-  on the heartbeat — which gates a remote row on the *host's* window listing,
+  otherwise kills the windows itself through the stamp. Driven by the one sweep,
+  `reap_overdue_soft_deletes` — the TUI's loop calls it on a slow cadence and,
+  with no interface open, the heartbeat's tick does — which gates a remote row
+  on the *host's* window listing,
   exactly as it gates a local one on this machine's. Without it every soft
   delete of a remote session (the TUI's default) leaked its `tb-`/`tbs-` pair
   forever, and re-creating the name put a second agent beside the first.

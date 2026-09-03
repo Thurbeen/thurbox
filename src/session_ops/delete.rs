@@ -39,9 +39,11 @@ pub struct ForceDeleteReport {
 /// scheduled commands queued against it.
 ///
 /// Worktree and tmux cleanup are best-effort — individual failures are
-/// captured in the report but do not abort the delete. The DB row is always
-/// marked deleted last, in one write (`delete_row`) so a watcher never sees
-/// an intermediate state where a force-delete reads as restorable.
+/// captured in the report but do not abort the delete. The row is marked in
+/// one write (`delete_row`) and, for a force delete, **before** the teardown:
+/// a watcher never sees an intermediate state where a force-delete reads as
+/// restorable, and a crash partway through the teardown cannot leave an active
+/// row whose worktrees are already gone.
 pub fn delete_session_headless(
     db: &Database,
     session_id: SessionId,
@@ -110,24 +112,44 @@ pub fn delete_session_headless(
     finish_locally(db, &session, force, report, &hook_ctx)
 }
 
-/// The delete taken from here: tear down what `force` asks for, mark the row,
+/// The delete taken from here: mark the row, tear down what `force` asks for,
 /// fire the post hooks. Shared by the plain path and by a delegated delete the
 /// host could not take (see [`is_unknown_session`]).
 fn finish_locally(
     db: &Database,
     session: &crate::sync::SharedSession,
     force: bool,
-    mut report: ForceDeleteReport,
+    report: ForceDeleteReport,
     hook_ctx: &crate::session::HookContext,
 ) -> Result<ForceDeleteReport, String> {
+    finish_locally_with(db, session, force, report, hook_ctx, |session, report| {
+        teardown_runtime_resources(session, report);
+    })
+}
+
+/// [`finish_locally`] with the teardown injected, so a test can look at the row
+/// from *inside* it — which is the only place the ordering below is visible.
+fn finish_locally_with(
+    db: &Database,
+    session: &crate::sync::SharedSession,
+    force: bool,
+    mut report: ForceDeleteReport,
+    hook_ctx: &crate::session::HookContext,
+    teardown: impl FnOnce(&crate::sync::SharedSession, &mut ForceDeleteReport),
+) -> Result<ForceDeleteReport, String> {
+    // Marked **before** anything is torn down. The teardown kills windows and
+    // removes worktrees, and a crash or a kill signal partway through used to
+    // leave an active, restore-listed row whose worktrees were already gone —
+    // a restore that could only hand back a session with nothing in it. The
+    // mark is the one write that makes the loss survivable news.
+    delete_row(db, session.id, force)?;
+
     if force {
-        teardown_runtime_resources(session, &mut report);
+        teardown(session, &mut report);
         report.disabled_automations = db
             .disable_send_automations_for_session(session.id)
             .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
     }
-
-    delete_row(db, session.id, force)?;
 
     report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, hook_ctx);
 
@@ -228,6 +250,83 @@ pub fn teardown_runtime_resources(
     }
 }
 
+/// How long a soft-deleted session keeps its agent, so the delete can still be
+/// undone. v1's `UNDO_TIMEOUT`, and the one place the undo window is stated:
+/// the interface and the headless heartbeat both sweep against it.
+pub const UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Let go of the agents of every session soft-deleted longer ago than the undo
+/// window, when the row still owns a window. Returns the ids reaped.
+///
+/// The one reaper. It asks the durable question — `deleted_at + UNDO_WINDOW` —
+/// so it gives the same answer with or without an interface running (ADR-8b),
+/// survives a restart of whatever is calling it, and is idempotent: a row
+/// reaped once owns nothing on the next pass. It replaced an in-memory watcher
+/// that inferred "was deleted" from "left the snapshot", which is a proxy for
+/// deletion that anything else emptying the snapshot also armed, and whose
+/// state a restart lost.
+///
+/// Only rows with windows of their *own* are touched, so a stale row is never
+/// reported as reaped on the strength of a live namesake's window. The gate is
+/// [`owned_windows_in`], the same and only ownership test the reap itself
+/// applies.
+///
+/// A remote row is gated the same way, against its host's own listing rather
+/// than this machine's: a session soft-deleted on a host has no interface there
+/// to collect it, and leaving it was how every headless delete of a remote
+/// session leaked its `tb-`/`tbs-` pair for good. That costs one
+/// `list-windows` per host, and only for a host with a row actually overdue.
+///
+/// Window ownership is the whole gate, so a row that owns none is skipped
+/// entirely and its metrics file and symlink workspace are left in place —
+/// artifacts [`reap_soft_deleted`] would otherwise release. Accepted rather
+/// than worked around: without an "already reaped" marker on the row,
+/// ownership is the only idempotence proxy the sweep has, and releasing
+/// artifacts on every tick forever is the worse trade.
+pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
+    let Ok(rows) = db.list_deleted_sessions() else {
+        return Vec::new();
+    };
+    let now = crate::sync::current_time_millis();
+    let window = UNDO_WINDOW.as_millis() as u64;
+    let mut reaped = Vec::new();
+    let mut windows: std::collections::HashMap<String, crate::agent::tmux::WindowIndex> =
+        std::collections::HashMap::new();
+    for row in rows {
+        if row.force_deleted || now.saturating_sub(row.deleted_at) < window {
+            continue;
+        }
+        let index = windows
+            .entry(row.backend_type.clone())
+            .or_insert_with(|| window_index_on(&row.backend_type));
+        if owned_windows_in(index, &row).is_empty() {
+            continue;
+        }
+        match reap_soft_deleted(db, row.id) {
+            Ok(true) => reaped.push(row.id.to_string()),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("reap of '{}': {e}", row.name),
+        }
+    }
+    reaped
+}
+
+/// Every thurbox window on the server `backend_type` names. An empty index for
+/// a host that is unconfigured or unreachable, which reads as "owns nothing" —
+/// the conservative answer a teardown gate wants.
+fn window_index_on(backend_type: &str) -> crate::agent::tmux::WindowIndex {
+    if !crate::session::is_remote_backend(backend_type) {
+        return crate::agent::tmux::local_window_index().unwrap_or_default();
+    }
+    match super::resolve_host(backend_type).flatten() {
+        Some(host) => crate::agent::tmux::remote_window_index(&host).unwrap_or_else(|e| {
+            tracing::debug!("could not list the windows of '{}': {e:#}", host.name);
+            crate::agent::tmux::WindowIndex::default()
+        }),
+        None => crate::agent::tmux::WindowIndex::default(),
+    }
+}
+
 /// Release what a *soft*-deleted session is still holding: its agent, its
 /// companion shell, its metrics file and its symlink workspace.
 ///
@@ -235,8 +334,9 @@ pub fn teardown_runtime_resources(
 /// stay on disk — but the agent process is not part of what an undo restores, and
 /// leaving it running means a deleted session keeps working, keeps writing, and
 /// keeps its tmux windows forever. v1 killed the agent's once the undo window closed;
-/// this is that, callable without a TUI. The TUI side is now
-/// `kernel::reaper::Reaper`, which watches the undo windows close.
+/// this is that, callable without a TUI. Whose turn it is to call it is
+/// [`reap_overdue_soft_deletes`], the one sweep both the interface and the
+/// headless heartbeat drive.
 ///
 /// Worktrees are deliberately untouched: they are what makes the undo lossless.
 ///
@@ -872,6 +972,126 @@ mod tests {
             "no local git worktree removal attempted for a remote session"
         );
         assert!(!report.killed_window);
+    }
+
+    #[test]
+    fn the_overdue_reap_skips_fresh_forced_and_remote_rows() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let fresh = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "fresh".into(),
+            agent: "claude".into(),
+            backend_id: "%1".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&fresh).unwrap();
+        db.soft_delete_session(fresh.id).unwrap();
+        let mut remote = fresh.clone();
+        remote.id = SessionId::default();
+        remote.name = "remote".into();
+        remote.backend_type = "ssh:devbox".into();
+        db.upsert_session(&remote).unwrap();
+        db.soft_delete_session(remote.id).unwrap();
+        // Inside the undo window, and on another machine: neither is touched
+        // (and no tmux is consulted for either).
+        assert!(reap_overdue_soft_deletes(&db).is_empty());
+    }
+
+    /// The sweep's ownership gate. Its old test was `agent_window_alive`, so an
+    /// overdue row whose pane had long gone was re-reported as reaped on every
+    /// tick on the strength of a live namesake's window. Ownership is now the
+    /// window's own stamp (ADR-25): with no window carrying this row's id — here
+    /// there is no tmux server at all — the row owns nothing and the sweep
+    /// leaves it alone.
+    #[test]
+    fn the_overdue_reap_skips_a_row_a_live_namesake_answers_for() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let stale = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "fleet".into(),
+            agent: "claude".into(),
+            backend_id: "%1".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&stale).unwrap();
+        db.soft_delete_session(stale.id).unwrap();
+        // Past the undo window, so only the gate can hold the sweep back.
+        db.conn_ref()
+            .execute(
+                "UPDATE sessions SET deleted_at = 0 WHERE id = ?1",
+                [stale.id.to_string()],
+            )
+            .unwrap();
+        let mut live = stale.clone();
+        live.id = SessionId::default();
+        db.upsert_session(&live).unwrap();
+
+        assert!(
+            reap_overdue_soft_deletes(&db).is_empty(),
+            "an overdue row whose pane and name a live namesake claims owns \
+             nothing to release"
+        );
+        assert!(
+            db.get_deleted_session_by_id(stale.id).unwrap().is_some(),
+            "and is left soft-deleted rather than reported collected"
+        );
+    }
+
+    /// A force delete's teardown destroys worktrees. If the row were marked
+    /// afterwards, a crash between the two would leave an active,
+    /// restore-listed session whose work is already gone — so the mark comes
+    /// first, and the teardown is the place to prove it.
+    #[test]
+    fn a_force_delete_marks_the_row_before_it_tears_anything_down() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session(&db, "doomed");
+        let session = db.get_session_by_id(id).unwrap().unwrap();
+        let ctx = super::super::lifecycle_hooks::context_for(&session);
+
+        let mut seen_force_deleted = false;
+        finish_locally_with(
+            &db,
+            &session,
+            true,
+            ForceDeleteReport::default(),
+            &ctx,
+            |_, _| {
+                seen_force_deleted = db
+                    .get_deleted_session_by_id(id)
+                    .unwrap()
+                    .is_some_and(|row| row.force_deleted);
+            },
+        )
+        .unwrap();
+
+        assert!(
+            seen_force_deleted,
+            "the row must already read force-deleted while its windows and \
+             worktrees are coming down"
+        );
+        assert!(db.get_session_by_id(id).unwrap().is_none());
     }
 
     #[test]

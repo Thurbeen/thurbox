@@ -251,7 +251,12 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         runs: thurbox::kernel::runs::RunStore::new(),
         inventory: Vec::new(),
         respawned: std::collections::HashSet::new(),
-        reaper: thurbox::kernel::reaper::Reaper::default(),
+        // Dated so the first iteration sweeps: a session soft-deleted while
+        // no interface was running is already overdue, and used to wait for
+        // one to watch it leave a snapshot it was never in.
+        last_reap: Instant::now()
+            .checked_sub(crate::REAP_INTERVAL)
+            .unwrap_or_else(Instant::now),
         bookmark_in_flight: false,
         hud: false,
         events: crate::coordinator::events::Events::new(),

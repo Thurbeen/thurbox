@@ -1442,7 +1442,7 @@ fn exec_in_session(
     } else {
         None
     };
-    let env = crate::session_ops::session_process_env(db, &session);
+    let env = crate::session_ops::session_process_env(db, &session)?;
     let output = crate::session_ops::exec_in_dir(host.as_ref(), &cwd, program, rest, &env)
         .map_err(|e| format!("could not run '{program}' in {}: {e}", cwd.display()))?;
 

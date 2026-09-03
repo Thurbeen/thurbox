@@ -108,6 +108,16 @@ const PERF_WINDOW_TICKS: u64 = 1000;
 /// pays for with a `data_version` bump.
 const PERF_PUBLISH_INTERVAL: Duration = Duration::from_secs(5);
 
+/// How often the loop asks the database whether any soft-deleted session's undo
+/// window has closed.
+///
+/// Slow on purpose: it is a consequence of time passing, and the row's own
+/// `deleted_at` is what answers it, so nothing is lost by asking late. A pass
+/// with nothing overdue costs one SELECT on a worker thread and consults no
+/// multiplexer; the price of asking often would be a thread and a connection
+/// per tick for an answer that changes every ten seconds at most.
+const REAP_INTERVAL: Duration = Duration::from_secs(5);
+
 /// The floor between two paints.
 ///
 /// The poll above runs every 10ms so input is noticed at once, but a frame here
@@ -482,9 +492,10 @@ struct App {
     /// Sessions already asked to relaunch, so a respawn is attempted once per
     /// session per run rather than every frame its window is still missing.
     respawned: std::collections::HashSet<String>,
-    /// Watches soft-deleted sessions' undo windows close, so their agents are
-    /// let go rather than left running forever.
-    reaper: thurbox::kernel::reaper::Reaper,
+    /// When the loop last asked the database for soft-deleted sessions whose
+    /// undo window has closed, so their agents are let go rather than left
+    /// running forever. See [`REAP_INTERVAL`].
+    last_reap: Instant,
     /// Whether a bookmark command is still running.
     ///
     /// Repository memory is the one read the flow can *change*, so its cached

@@ -1348,10 +1348,11 @@ follow from the host owning the record, none of which the first cut had:
   through to the local teardown instead, recorded in the report's
   `host_unknown`; any other host error still aborts, because the session may
   still be running there.
-- **A soft delete is reaped on the host.** Nothing reaps a soft-deleted row
-  but an interface's `kernel::reaper` or the heartbeat's sweep, and a host
-  running only `thurbox-cli` has neither — so the undo window never closed
-  there and every remote soft delete leaked its windows. `session reap <ref>`
+- **A soft delete is reaped on the host.** Nothing reaps a soft-deleted row but
+  the sweep (`session_ops::reap_overdue_soft_deletes`), and a host running only
+  `thurbox-cli` runs it only on its heartbeat — so on a host with neither the
+  undo window never closed there and every remote soft delete leaked its
+  windows. `session reap <ref>`
   is that operation as a verb, and a peer calls it once the undo window is up
   (a non-shareable host's windows are killed directly instead). A remote
   teardown also never calls `ensure_ready`, which would *create* the server
@@ -1424,3 +1425,64 @@ answers for a *role*, the companion shell became reachable: a session owns a
 the interface has opened one, and every teardown — force delete, reap, `stop`,
 `restart`, `--on-existing replace` — now takes both down through the stamp
 rather than through a column that is usually NULL.
+
+---
+
+## ADR-26: One reaper, and a row is written by the column that changed
+
+**Choice**: the undo window is asked of the database and nowhere else.
+`session_ops::reap_overdue_soft_deletes` is the single sweep — every row whose
+`deleted_at` is older than `UNDO_WINDOW` and that still owns a window by its
+ADR-25 stamp — and both drivers call it: the interface's loop on a slow cadence
+(`REAP_INTERVAL`, a `Command::Reap` that names no session) and `thurbox-cli`'s
+heartbeat on its tick. Alongside it, a caller that changes **one column** of a
+session row uses a targeted setter (`set_backend_id`, `set_session_shell`,
+`set_display_order`) rather than the full-row `upsert_session`.
+
+**Why**: there were two reapers answering different questions.
+`kernel::reaper::Reaper` fired on *"the id left the snapshot ten seconds ago"*,
+which is a proxy for deletion that anything else emptying the snapshot also
+armed — a filtered refresh, a failed `data_version` read — and whose state a
+restart of the interface simply lost, so a row soft-deleted while no interface
+was running was never collected by one. The headless sweep asked the real
+question against the durable column. Two answers to one question is a store to
+keep in step; the durable one wins, and the in-memory one and its "an undo
+cancels the reap" special case both go (a restored row no longer matches
+`deleted_at`, which *is* the cancellation).
+
+The full-row write-back is the same shape of problem one layer down.
+`upsert_session` carries `deleted_at = NULL` on conflict and replaces every
+worktree row, and `restart` and the two ordering commands were using it to
+change a single column — so a delete landing between a listing and the loop
+that followed it was undone by the very next row written, and every reorder
+rewrote every worktree row in the database. Reorder additionally serialised
+itself on a `static ORDER_LOCK`, which is process-local and therefore never
+protected against a second thurbox or a `thurbox-cli` write; the read and the
+renumbering are now one `BEGIN IMMEDIATE` transaction
+(`Database::reorder_sessions`) with the write a single `UPDATE … CASE`, which is
+what the mutex was reaching for and could not have.
+
+**Rejected**:
+
+- *Keeping the in-memory reaper for its cadence.* It costs nothing per tick,
+  which is genuinely cheaper than a SELECT — but the sweep short-circuits before
+  it consults any multiplexer when nothing is overdue, and a reap that happens a
+  few seconds late is not a defect. Paying a thread and a connection every five
+  seconds buys an answer that is right after a restart.
+- *Dropping `deleted_at = NULL` from `upsert_session` globally.* `mirror::apply`
+  genuinely applies a host's whole row, restore branch included (ADR-24), and it
+  is the one caller for which reviving on conflict is the intended meaning.
+  Making the *other* callers stop writing whole rows is the smaller change and
+  the one that names the real problem.
+
+**Consequences**: `Command::Reap` names no session — it is a sweep, and the
+loop no longer holds a list of ids it is waiting on. A restart whose row is
+deleted underneath it now fails to record its pane instead of reviving the row,
+and says so; the window it spawned carries the session's stamp, so the next
+sweep collects it. `upsert_session` replaces the worktree rows unconditionally,
+so a session that loses every worktree stops listing the ones it no longer owns
+— it used to skip the replacement for an empty list and keep them forever. And
+the reads that fed a relaunch stopped failing open: the `stop` guard, the launch
+recipe and the recorded `--env` are read strictly, because a DB error there
+relaunched a parked session or launched the default coding agent in place of a
+`--command` session's recorded command.

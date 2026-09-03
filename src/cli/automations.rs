@@ -4,8 +4,6 @@
 //! loop is what actually fires them. `run` just marks an automation due so the
 //! TUI picks it up on its next tick.
 
-use std::collections::HashMap;
-
 use clap::Subcommand;
 use serde_json::{json, Value};
 
@@ -509,7 +507,7 @@ fn tick(db: &Database) -> Result<Value, String> {
     };
     // A soft delete asked for headlessly — from a peer, or from this CLI —
     // has no interface here to reap it once the undo window has closed.
-    let reaped = reap_overdue_soft_deletes(db);
+    let reaped = crate::session_ops::reap_overdue_soft_deletes(db);
     Ok(json!({
         "fired": fired,
         "skipped": skipped,
@@ -555,71 +553,6 @@ fn poll_local_pane_states(db: &Database) -> usize {
         }
     }
     written
-}
-
-/// Let go of the agents of sessions soft-deleted longer ago than the
-/// interface's undo window, when the row still owns a window. Returns the ids
-/// reaped. Only rows with windows of their *own* are touched, so a row reaped
-/// once costs nothing on every later tick — and a stale row is never reported as
-/// reaped on the strength of a live namesake's window. The gate is
-/// `session_ops::delete::owned_windows_in`, the same and only ownership test
-/// the reap itself applies.
-///
-/// A remote row is gated the same way, against its host's own listing rather
-/// than this machine's: a session soft-deleted on a host has no interface there
-/// to collect it, and leaving it was how every headless delete of a remote
-/// session leaked its `tb-`/`tbs-` pair for good. That costs one
-/// `list-windows` per host, and only for a host with a row actually overdue —
-/// the same shape as the remote status poll two steps above.
-///
-/// Window ownership is the whole gate, so a row that owns none is skipped
-/// entirely and its metrics file and symlink workspace are left in place —
-/// artifacts `reap_soft_deleted` would otherwise release. Accepted rather than
-/// worked around: without an "already reaped" marker on the row, ownership is
-/// the only idempotence proxy the sweep has, and releasing artifacts on every
-/// tick forever is the worse trade. The TUI reaper fires once per id and does
-/// release them.
-fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
-    let Ok(rows) = db.list_deleted_sessions() else {
-        return Vec::new();
-    };
-    let now = current_time_millis();
-    let window = crate::kernel::reaper::UNDO_WINDOW.as_millis() as u64;
-    let mut reaped = Vec::new();
-    let mut windows: HashMap<String, crate::agent::tmux::WindowIndex> = HashMap::new();
-    for row in rows {
-        if row.force_deleted || now.saturating_sub(row.deleted_at) < window {
-            continue;
-        }
-        let index = windows
-            .entry(row.backend_type.clone())
-            .or_insert_with(|| window_index_on(&row.backend_type));
-        if crate::session_ops::delete::owned_windows_in(index, &row).is_empty() {
-            continue;
-        }
-        match crate::session_ops::reap_soft_deleted(db, row.id) {
-            Ok(true) => reaped.push(row.id.to_string()),
-            Ok(false) => {}
-            Err(e) => tracing::warn!("reap of '{}': {e}", row.name),
-        }
-    }
-    reaped
-}
-
-/// Every thurbox window on the server `backend_type` names. An empty index for
-/// a host that is unconfigured or unreachable, which reads as "owns nothing" —
-/// the conservative answer a teardown gate wants.
-fn window_index_on(backend_type: &str) -> crate::agent::tmux::WindowIndex {
-    if !crate::session::is_remote_backend(backend_type) {
-        return crate::agent::tmux::local_window_index().unwrap_or_default();
-    }
-    match crate::session_ops::resolve_host(backend_type).flatten() {
-        Some(host) => crate::agent::tmux::remote_window_index(&host).unwrap_or_else(|e| {
-            tracing::debug!("could not list the windows of '{}': {e:#}", host.name);
-            crate::agent::tmux::WindowIndex::default()
-        }),
-        None => crate::agent::tmux::WindowIndex::default(),
-    }
 }
 
 /// Execute one automation's action without a TUI, returning the run outcome.
@@ -850,91 +783,6 @@ mod tests {
         // shareable host is configured and nothing was soft-deleted.
         assert_eq!(v["synced"], json!([]));
         assert_eq!(v["reaped"], json!([]));
-    }
-
-    #[test]
-    fn the_overdue_reap_skips_fresh_forced_and_remote_rows() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let db = Database::open_in_memory().unwrap();
-        let fresh = crate::sync::SharedSession {
-            id: SessionId::default(),
-            name: "fresh".into(),
-            agent: "claude".into(),
-            backend_id: "%1".into(),
-            backend_type: "local-tmux".into(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            parent_session_id: None,
-            display_order: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        db.upsert_session(&fresh).unwrap();
-        db.soft_delete_session(fresh.id).unwrap();
-        let mut remote = fresh.clone();
-        remote.id = SessionId::default();
-        remote.name = "remote".into();
-        remote.backend_type = "ssh:devbox".into();
-        db.upsert_session(&remote).unwrap();
-        db.soft_delete_session(remote.id).unwrap();
-        // Inside the undo window, and on another machine: neither is touched
-        // (and no tmux is consulted for either).
-        assert!(reap_overdue_soft_deletes(&db).is_empty());
-    }
-
-    /// The sweep's ownership gate. Its old test was `agent_window_alive`, so an
-    /// overdue row whose pane had long gone was re-reported as reaped on every
-    /// tick on the strength of a live namesake's window. Ownership is now the
-    /// window's own stamp (ADR-25): with no window carrying this row's id — here
-    /// there is no tmux server at all — the row owns nothing and the sweep
-    /// leaves it alone.
-    #[test]
-    fn the_overdue_reap_skips_a_row_a_live_namesake_answers_for() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let db = Database::open_in_memory().unwrap();
-        let stale = crate::sync::SharedSession {
-            id: SessionId::default(),
-            name: "fleet".into(),
-            agent: "claude".into(),
-            backend_id: "%1".into(),
-            backend_type: "local-tmux".into(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            parent_session_id: None,
-            display_order: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        db.upsert_session(&stale).unwrap();
-        db.soft_delete_session(stale.id).unwrap();
-        // Past the undo window, so only the gate can hold the sweep back.
-        db.conn_ref()
-            .execute(
-                "UPDATE sessions SET deleted_at = 0 WHERE id = ?1",
-                [stale.id.to_string()],
-            )
-            .unwrap();
-        let mut live = stale.clone();
-        live.id = SessionId::default();
-        db.upsert_session(&live).unwrap();
-
-        assert!(
-            reap_overdue_soft_deletes(&db).is_empty(),
-            "an overdue row whose pane and name a live namesake claims owns \
-             nothing to release"
-        );
-        assert!(
-            db.get_deleted_session_by_id(stale.id).unwrap().is_some(),
-            "and is left soft-deleted rather than reported collected"
-        );
     }
 
     #[test]
