@@ -540,19 +540,24 @@ impl WindowIndex {
     ) -> Located {
         let usable = |w: &&ListedWindow| !live_only || w.alive;
         if !session_id.is_empty() {
-            let mut own = self
-                .stamped
-                .get(&(session_id.to_string(), role))
-                .into_iter()
-                .flatten()
-                .filter(usable);
-            if let Some(first) = own.next() {
-                return match own.next() {
+            if let Some(entries) = self.stamped.get(&(session_id.to_string(), role)) {
+                match entries.as_slice() {
+                    [] => {}
                     // One session, one window per role — two is a listing
-                    // nobody can act on rather than a choice to make.
-                    Some(_) => Located::Unknown,
-                    None => Located::At(first.pane.clone()),
-                };
+                    // nobody can act on rather than a choice to make. This
+                    // holds regardless of liveness: a dead entry does not
+                    // make the ambiguity go away, and must never fall
+                    // through to a same-named window that belongs to
+                    // somebody else.
+                    [_, _, ..] => return Located::Unknown,
+                    [only] => {
+                        return if !live_only || only.alive {
+                            Located::At(only.pane.clone())
+                        } else {
+                            Located::Absent
+                        };
+                    }
+                }
             }
         }
         let window = match role {
@@ -3599,6 +3604,18 @@ mod tests {
         assert_eq!(index.live_agent_window(ONE, "fleet"), Located::Absent);
         assert!(index.places_agent(ONE, "fleet", "%6"));
         assert!(!index.places_agent(ONE, "fleet", "%9"));
+    }
+
+    /// A dead own window must never be treated as "no stamped window at
+    /// all" — that reading is what let a live unstamped namesake, sharing
+    /// this session's `tb-<name>`, get attributed to this session instead.
+    #[test]
+    fn a_dead_own_window_does_not_fall_through_to_a_live_namesake() {
+        let index = WindowIndex::from_listing([
+            dead(listed("%6", "tb-fleet", ONE, WindowRole::Agent)),
+            listed("%7", "tb-fleet", "", WindowRole::Agent),
+        ]);
+        assert_eq!(index.live_agent_window(ONE, "fleet"), Located::Absent);
     }
 
     /// A remembered pane id still resolves among *unstamped* namesakes, which
