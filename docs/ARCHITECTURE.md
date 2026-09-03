@@ -1478,8 +1478,10 @@ what the mutex was reaching for and could not have.
 **Consequences**: `Command::Reap` names no session — it is a sweep, and the
 loop no longer holds a list of ids it is waiting on. A restart whose row is
 deleted underneath it now fails to record its pane instead of reviving the row,
-and says so; the window it spawned carries the session's stamp, so the next
-sweep collects it. `upsert_session` replaces the worktree rows unconditionally,
+and says so; the sweep only collects a *soft*-deleted row, so a concurrent
+*force* delete would otherwise orphan the window it spawned — the caller kills
+that window itself when the record fails, rather than leaning on a sweep that
+cannot see it. `upsert_session` replaces the worktree rows unconditionally,
 so a session that loses every worktree stops listing the ones it no longer owns
 — it used to skip the replacement for an empty list and keep them forever. And
 the reads that fed a relaunch stopped failing open: the `stop` guard, the launch
