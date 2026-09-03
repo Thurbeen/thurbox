@@ -132,6 +132,16 @@ fn open_db(env: &Env) -> thurbox::storage::Database {
         .expect("open the instance database")
 }
 
+/// Whether a real multiplexer is on `PATH`, for the one test here that spawns
+/// a real window. Mirrors `create_e2e.rs`/`attach_by_name.rs`/`reap_e2e.rs`.
+fn have_tmux() -> bool {
+    Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// A `--command` session: the shape thurbox advertises for drivers (firstmate
 /// creates every task as `--command $SHELL --arg -i`), named after the
 /// command's file stem and with the launch recipe that makes it one.
@@ -649,8 +659,18 @@ fn adopt_applies_reports_as_to_the_session_it_hands_back() {
 /// `Database` wraps a plain `rusqlite::Connection` with no fault-injection
 /// seam, so the only way to reach this branch is to sabotage the one column
 /// this write touches, in the real database file, after the schema exists.
+///
+/// Spawns a real window through the real multiplexer (`--command` needs a
+/// live pane to be created against), so — same as `create_e2e.rs`,
+/// `attach_by_name.rs` and the rest of the real-spawn suite — it skips rather
+/// than fails where no multiplexer binary is installed (the Windows CI job
+/// installs neither `tmux` nor `psmux`).
 #[test]
 fn a_failed_reports_as_write_leaves_the_new_session_in_place() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
     let env = Env::new();
     let repo = env.path("home");
 
