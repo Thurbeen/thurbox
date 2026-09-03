@@ -540,7 +540,10 @@ fn a_spawns_orphan_cleanup_owns_nothing_a_live_namesake_claims() {
          nothing (resolved {owned:?}, live pane {})",
         live.backend_id
     );
-    assert!(survived, "the ownership test must not touch the live window");
+    assert!(
+        survived,
+        "the ownership test must not touch the live window"
+    );
 }
 
 /// And the strictness is not a blanket refusal: with nothing else answering to
