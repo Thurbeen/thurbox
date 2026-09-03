@@ -406,13 +406,6 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        // Strict, for the same reason the reap is: this tears down a window
-        // that has no row, so it must kill only the window it just spawned.
-        // `kill_window`'s fallback to the `tb-<name>` target would resolve to
-        // whatever session already answers to that name — names are not unique,
-        // and the pane id is unusable exactly where it matters (psmux records
-        // none). Losing the window we leaked is the cheap failure; killing a
-        // live session's is not.
         // Ownership-gated, for the same reason the reap is: this tears down a
         // window that never became a row, so it must kill only the one it just
         // spawned. `kill_window`'s resolution would reach the `tb-<name>`

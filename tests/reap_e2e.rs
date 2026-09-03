@@ -498,3 +498,90 @@ fn reaping_spares_a_live_window_whose_name_only_collides_once_sanitized() {
         live.backend_id
     );
 }
+
+/// The decision the spawn's orphan cleanup delegates. When a spawn's DB upsert
+/// fails the tmux window is already up, and tearing it down through
+/// `kill_window` would reach `tb-<name>` whenever the pane id is unusable —
+/// always, on psmux. `owned_agent_pane_for` is that teardown's gate, reachable
+/// directly, so what the cleanup would do is asserted without having to make an
+/// upsert fail: a window whose name a live session claims is not provably the
+/// spawn's, so it leaks rather than taking the live one down.
+#[test]
+fn a_spawns_orphan_cleanup_owns_nothing_a_live_namesake_claims() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(live) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+
+    // The failed spawn: a window named 'fleet' that never became a row, so no
+    // id of its own excludes anything, and psmux's shape — no pane id at all.
+    let owned = thurbox::session_ops::delete::owned_agent_pane_for(
+        &db,
+        thurbox::session::SessionId::default(),
+        "fleet",
+        "",
+    );
+    let survived = pane_alive(&live.backend_id);
+    cleanup();
+
+    assert_eq!(
+        owned, None,
+        "a live 'fleet' claims the window name, so the orphan cleanup owns \
+         nothing (resolved {owned:?}, live pane {})",
+        live.backend_id
+    );
+    assert!(survived, "the ownership test must not touch the live window");
+}
+
+/// And the strictness is not a blanket refusal: with nothing else answering to
+/// the name or the pane id, the orphan cleanup resolves the window it just
+/// leaked, so a failed spawn still cleans up after itself.
+#[test]
+fn a_spawns_orphan_cleanup_owns_the_window_nothing_else_answers_for() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(session) = spawn(&db, repo.path(), "solo") else {
+        return;
+    };
+    // The upsert that never landed: the window is up with no row behind it.
+    // Force-deleting is how a row stops claiming its window, which is the state
+    // a failed upsert leaves the server in.
+    db.soft_delete_session(session.session_id).expect("delete");
+    db.mark_session_force_deleted(session.session_id)
+        .expect("force-delete");
+
+    let owned = thurbox::session_ops::delete::owned_agent_pane_for(
+        &db,
+        thurbox::session::SessionId::default(),
+        "solo",
+        &session.backend_id,
+    );
+    cleanup();
+
+    assert_eq!(
+        owned,
+        Some(session.backend_id.clone()),
+        "with no other claim on the name or the pane, the cleanup owns the \
+         window it leaked (pane {})",
+        session.backend_id
+    );
+}

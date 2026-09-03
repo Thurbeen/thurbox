@@ -560,6 +560,14 @@ fn poll_local_pane_states(db: &Database) -> usize {
 /// reaped on the strength of a live namesake's window. The gate is
 /// `session_ops::delete::owned_agent_pane`, the same and only ownership test the
 /// reap itself applies.
+///
+/// Window ownership is the whole gate, so a row that owns none is skipped
+/// entirely and its metrics file and symlink workspace are left in place —
+/// artifacts `reap_soft_deleted` would otherwise release. Accepted rather than
+/// worked around: without an "already reaped" marker on the row, ownership is
+/// the only idempotence proxy the sweep has, and releasing artifacts on every
+/// tick forever is the worse trade. The TUI reaper fires once per id and does
+/// release them.
 fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
     let Ok(rows) = db.list_deleted_sessions() else {
         return Vec::new();
@@ -889,7 +897,8 @@ mod tests {
 
         assert!(
             reap_overdue_soft_deletes(&db).is_empty(),
-            "an overdue row whose pane and name a live namesake claims owns              nothing to release"
+            "an overdue row whose pane and name a live namesake claims owns \
+             nothing to release"
         );
         assert!(
             db.get_deleted_session_by_id(stale.id).unwrap().is_some(),
