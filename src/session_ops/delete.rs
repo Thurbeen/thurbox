@@ -4,7 +4,7 @@
 //! running to observe the deletion.
 
 use crate::session::SessionId;
-use crate::storage::Database;
+use crate::storage::{Database, DeletedSessionInfo};
 
 /// Outcome of a force-delete, reported to callers for their JSON payload.
 #[derive(Debug, Clone, Default)]
@@ -196,9 +196,11 @@ pub fn teardown_runtime_resources(
 ///
 /// Worktrees are deliberately untouched: they are what makes the undo lossless.
 ///
-/// Returns whether anything was reaped — `false` when the row came back (the
-/// user undid it) or was force-deleted (already torn down), both of which are
-/// ordinary races rather than failures.
+/// Returns whether the row was processed — `false` when it came back (the user
+/// undid it) or was force-deleted (already torn down), both of which are
+/// ordinary races rather than failures. It is not a claim that a window came
+/// down: a row that owns none (see [`owned_agent_pane`]) still releases its
+/// derived artifacts and reports `true`.
 pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
     let Some(row) = db
         .get_deleted_session_by_id(id)
@@ -224,10 +226,26 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         return Ok(false);
     }
 
-    if let Err(e) = crate::agent::tmux::kill_window(&row.name, &row.backend_id) {
+    // Strict: kill only the window this row still owns. A reap must not resolve
+    // a pane id or a `tb-<name>` target another row answers to — that is how
+    // deleting a frozen session came to kill its replacement 30-60s later, and
+    // why each delete-and-recreate made the next one die sooner.
+    match owned_agent_pane(db, &row) {
+        // Not worth failing a cleanup over if the window went away underneath.
+        Some(target) => {
+            if let Err(e) = crate::agent::tmux::kill_window_at(&target) {
+                tracing::debug!("kill_window_at({target}) during reap: {e}");
+            }
+        }
         // The window may already be gone — the agent exited, or a previous reap
-        // got there first. Not worth failing a cleanup over.
-        tracing::debug!("kill_window({}) during reap: {e}", row.name);
+        // got there first. Logged rather than silent: owning nothing is also
+        // the shape a misdirected kill used to take.
+        None => tracing::debug!(
+            "reap of '{}': pane {:?} owns no window it may kill; \
+             leaving any same-named window alone",
+            row.name,
+            row.backend_id
+        ),
     }
 
     // Derived per-session artifacts, both rebuilt on restore.
@@ -240,6 +258,56 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         }
     }
     Ok(true)
+}
+
+/// The window a soft-deleted row still owns, if any — the sole target its reap
+/// may kill, and the answer to whether it has anything left to release.
+///
+/// The one place ownership is decided, so the reap and the headless sweep that
+/// gates on it cannot drift apart. It is decided here rather than in
+/// [`tmux::owned_agent_pane`](crate::agent::tmux::owned_agent_pane) because
+/// only a `Database` can settle it: a remembered pane id and a name are both
+/// this row's only while no other row answers to them — see
+/// [`session_window_claims`](crate::storage::Database::session_window_claims).
+///
+/// Conservatively owns nothing when the read fails: leaking a window costs a
+/// stale agent, killing the wrong one costs live work.
+pub fn owned_agent_pane(db: &Database, row: &DeletedSessionInfo) -> Option<String> {
+    owned_agent_pane_for(db, row.id, &row.name, &row.backend_id)
+}
+
+/// [`owned_agent_pane`] for a window whose row is not a `DeletedSessionInfo`:
+/// the one a spawn leaked when its own upsert failed, which owns a name and a
+/// pane id but never became a row at all. Same decision, same reason — a
+/// teardown may only kill what nothing else answers to.
+///
+/// `session_id` is excluded from the claims, so a row that *is* this window's
+/// does not read as somebody else's claim on it.
+pub fn owned_agent_pane_for(
+    db: &Database,
+    session_id: SessionId,
+    name: &str,
+    backend_id: &str,
+) -> Option<String> {
+    let Ok(claims) = db.session_window_claims(session_id) else {
+        return None;
+    };
+    let unclaimed = crate::agent::tmux::Unclaimed {
+        // An empty id is claimed by nobody — psmux rows all carry one, and
+        // `owned_agent_pane` declines to resolve it regardless.
+        pane_id: !claims
+            .iter()
+            .any(|(_, pane)| !pane.is_empty() && pane == backend_id),
+        name: {
+            let own = crate::agent::tmux::agent_window_name(name);
+            !claims
+                .iter()
+                .any(|(claimed, _)| crate::agent::tmux::agent_window_name(claimed) == own)
+        },
+    };
+    crate::agent::tmux::owned_agent_pane(name, backend_id, unclaimed)
+        .ok()
+        .flatten()
 }
 
 /// Kill the session's window on the local tmux server, reaping the pane's child

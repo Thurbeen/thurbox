@@ -442,7 +442,23 @@ bugs (#641, #2989), required 3 external deps in the data path
 - `window-size manual` — windows size independently
 - `pause-after 5` — flow control (auto-resumed by reader)
 
-**Window naming**: `tb-<session-name>` prefix for discovery.
+**Window naming**: `tb-<session-name>` prefix for discovery. It identifies a
+*name*, not a session: names are not unique, and a soft-deleted row keeps its
+name and its remembered pane id until the reaper lets it go. So resolving
+`tb-<name>` — or a stored `%N`, which a tmux server restart can renumber onto
+another window — proves only that *something* answers to that identity now.
+Live-session callers want that forgiveness (`agent::tmux::agent_target`;
+reaching a session's window after a restart renumbered the panes is what it is
+for), but a **teardown** may not have it: a reap of a soft-deleted row, and the
+orphan cleanup a spawn runs when its own database upsert fails, resolve through
+`agent::tmux::owned_agent_pane`, whose two halves are each gated on
+`Database::session_window_claims` showing that no other row answers to that pane
+id or that window name. An unprovable claim kills nothing and logs — leaking a
+window costs a stale agent, killing the wrong one costs live work. Without that
+gate, deleting a frozen session and recreating it under the same name meant the
+deleted row's reap killed the *replacement* once the undo window closed, and
+silently, since a same-named window matches exactly and `kill-window` exits 0
+(pinned by `tests/reap_e2e.rs`).
 
 **Which socket**: `thurbox` (`thurbox-dev` for a dev build) for an instance
 running out of the default data dir, and `thurbox-<digest of that dir>` for one

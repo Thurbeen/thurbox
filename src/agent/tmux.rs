@@ -2416,8 +2416,71 @@ pub fn kill_pane_remote(host: &crate::session::HostDef, backend_id: &str) -> Res
 /// one is usable (precise even when another session shares the name), by the
 /// `tb-<session_name>` window name otherwise.
 pub fn kill_window(session_name: &str, pane_id: &str) -> Result<()> {
-    let target = agent_target(session_name, pane_id);
-    let output = local_mux_command(&["kill-window", "-t", &target])
+    kill_window_at(&agent_target(session_name, pane_id))
+}
+
+/// Which parts of a torn-down row's identity no *other* session row answers
+/// to — the half of ownership this module cannot establish, since it may not
+/// read the database (see `tests/architecture_rules.rs`). Settled once by
+/// `session_ops::delete::owned_agent_pane`, which is the only intended caller
+/// of [`owned_agent_pane`].
+#[derive(Clone, Copy, Debug)]
+pub struct Unclaimed {
+    /// No other row remembers this pane id. A tmux server restarts its pane-id
+    /// counter, so a row's remembered `%N` can name another window's pane
+    /// afterwards — and when that other window is a namesake's, the window
+    /// name confirms nothing.
+    pub pane_id: bool,
+    /// No other row still answers to the *window* name `tb-<name>` — neither
+    /// an active session nor a soft-deleted one whose agent has not been
+    /// reaped yet. The window name rather than the session name, because that
+    /// is the namespace the fallback resolves in: `sanitize_window_name`
+    /// maps every character outside `[A-Za-z0-9_-]` to `_`, so `fleet 1` and
+    /// `fleet_1` are two rows sharing one `tb-fleet_1`.
+    pub name: bool,
+}
+
+/// The pane a torn-down row still owns, if any — the target a teardown may
+/// safely kill, and the answer to whether it has anything left to kill at all.
+///
+/// The counterpart to `agent_target`, for callers tearing down a row rather
+/// than acting on a live session. `agent_target` resolves whatever it can
+/// reach: the persisted pane id if its window carries the right name, the
+/// `tb-<name>` window otherwise. Neither step is proof of ownership, and for a
+/// teardown both are unsound — names are not unique, two sessions may share
+/// one, and a soft-deleted row keeps its name *and* its remembered pane id
+/// until it is reaped. Resolving either against a row that is not this one
+/// silently destroys a live session's window; a same-named window matches
+/// exactly, so `kill-window` succeeds against the wrong one.
+///
+/// So each step is gated on [`Unclaimed`], the caller's assurance that no other
+/// row answers to that part of the identity. Without the name half the teardown
+/// would leak a window whenever the pane id is unusable — a row persisted
+/// before local spawns recorded an id, one renumbered by a tmux restart, or any
+/// session on psmux, where [`spawn_window`] records no pane id at all.
+pub fn owned_agent_pane(
+    session_name: &str,
+    pane_id: &str,
+    unclaimed: Unclaimed,
+) -> Result<Option<String>> {
+    if unclaimed.pane_id
+        && !pane_id.is_empty()
+        && pane_matches_window(pane_id, &agent_window_name(session_name))
+    {
+        return Ok(Some(pane_id.to_string()));
+    }
+    if !unclaimed.name {
+        return Ok(None);
+    }
+    agent_window_pane(None, session_name)
+}
+
+/// Run `kill-window` against an already-resolved target, tolerating a window
+/// that is already gone. Shared by [`kill_window`] and the teardown path, which
+/// resolves its own target through [`owned_agent_pane`] — the two differ only
+/// in how the target is chosen.
+pub fn kill_window_at(target: &str) -> Result<()> {
+    let output = local_mux_command(&["kill-window", "-t", target])
         .output()
         .context("Failed to run tmux kill-window")?;
     if !output.status.success() {

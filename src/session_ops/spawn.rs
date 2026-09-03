@@ -406,15 +406,36 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
+        // Ownership-gated, for the same reason the reap is: this tears down a
+        // window that never became a row, so it must kill only the one it just
+        // spawned. `kill_window`'s resolution would reach the `tb-<name>`
+        // window when the pane id is unusable — and it is unusable exactly
+        // where it matters, since psmux records none — which on a name two
+        // sessions share destroys a live one. Leaking the window we already
+        // leaked is the cheap failure; killing someone else's is not.
         let cleanup = match host.as_ref() {
-            Some(h) => crate::agent::tmux::kill_pane_remote(h, &backend_id),
-            None => crate::agent::tmux::kill_window(&req.name, &backend_id),
+            Some(h) => crate::agent::tmux::kill_pane_remote(h, &backend_id).map(|()| true),
+            None => {
+                match super::delete::owned_agent_pane_for(db, session_id, &req.name, &backend_id) {
+                    Some(target) => crate::agent::tmux::kill_window_at(&target).map(|()| true),
+                    None => Ok(false),
+                }
+            }
         };
-        if let Err(kill_err) = cleanup {
-            tracing::error!(
+        match cleanup {
+            Ok(true) => {}
+            // Nothing this spawn can prove is its own. The window leaks rather
+            // than taking a live session's down with it.
+            Ok(false) => tracing::error!(
+                "orphaned window for '{}' (pane {:?}) is not provably its own; \
+                 leaving any same-named window alone",
+                req.name,
+                backend_id
+            ),
+            Err(kill_err) => tracing::error!(
                 "failed to tear down orphaned window for '{}': {kill_err}",
                 req.name
-            );
+            ),
         }
         return Err(format!("Failed to persist session: {e}"));
     }
