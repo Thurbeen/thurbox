@@ -25,9 +25,10 @@ pub use hook_def::{
     HookContext, HookEvent, HookWorktree, HooksFile, LifecycleHook, DEFAULT_HOOK_TIMEOUT_SECS,
 };
 pub use hook_status::{
-    age_secs, best_state, classify_foreground, contradicts, coverage_for, AgentHookCoverage,
-    Assessment, Corroboration, Coverage, CoverageSource, HookDelivery, StateSource,
-    AGENT_HOOK_COVERAGE, STATE_RUNNING, STATE_STOPPED, STATE_UNCOVERED, STATE_UNREPORTED,
+    age_secs, best_state, classify_foreground, contradicts, coverage_for, derive_state,
+    with_output_quiescence, with_reachability, AgentHookCoverage, Assessment, Corroboration,
+    Coverage, CoverageSource, HookDelivery, SessionState, StateSource, AGENT_HOOK_COVERAGE,
+    WORKING_QUIET_MS,
 };
 pub use host_def::{
     is_remote_backend, is_ssh_backend, is_wsl_backend, HostDef, HostKind, HostRegistry,
@@ -180,64 +181,6 @@ impl std::str::FromStr for SessionId {
     }
 }
 
-/// A session's lifecycle state, driven by agent hooks (see
-/// `thurbox-cli session signal`). Repo groups in the session list roll up to
-/// their most-urgent member so the whole list scans at a glance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionStatus {
-    /// 🟡 The agent is actively running (reported by a hook).
-    Working,
-    /// 🔴 The agent needs user input or approval (reported by a hook).
-    Blocked,
-    /// 🔵 A turn just finished; shown until the user switches focus off it.
-    Done,
-    /// 🟢 Acknowledged (focus moved off a `Done`), at rest, or never-active.
-    Idle,
-    /// Reserved for a crashed agent. **Not currently derived** — process exit has
-    /// no failure signal yet (a clean or crashed exit both map to `Idle`), so this
-    /// variant is wired through colour/glyph/rollup but never assigned. Kept for
-    /// when exit-code plumbing lands.
-    Error,
-    /// The session lives on a remote host that is currently unreachable (SSH
-    /// down / auth failing / host offline). Assigned to placeholder rows so a
-    /// remote session never silently vanishes from the list; cleared to the
-    /// real hook-driven status once the host recovers and the session adopts.
-    Unreachable,
-}
-
-impl SessionStatus {
-    /// A status glyph chosen for **shape** distinctiveness, not just colour, so
-    /// the state survives in greyscale / for colour-blind users: a spinner
-    /// (working — the live session list animates it from `theme.spinner` in
-    /// `ui/lib/theme.lua`)
-    /// vs. diamond (blocked) vs. filled circle (done, unseen) vs. hollow circle
-    /// (idle, seen) vs. cross (error). The filled/hollow pair makes
-    /// done-vs-idle read at a glance.
-    pub fn icon(self) -> &'static str {
-        match self {
-            Self::Working => "◐",
-            Self::Blocked => "◆",
-            Self::Done => "●",
-            Self::Idle => "○",
-            Self::Error => "✗",
-            Self::Unreachable => "⊘",
-        }
-    }
-}
-
-impl fmt::Display for SessionStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Working => write!(f, "Working"),
-            Self::Blocked => write!(f, "Blocked"),
-            Self::Done => write!(f, "Done"),
-            Self::Idle => write!(f, "Idle"),
-            Self::Error => write!(f, "Error"),
-            Self::Unreachable => write!(f, "Unreachable"),
-        }
-    }
-}
-
 /// Agent metrics collected from the Claude CLI statusline mechanism.
 #[derive(Debug, Clone, Default)]
 pub struct AgentMetrics {
@@ -384,7 +327,6 @@ impl AgentUsage {
 pub struct SessionInfo {
     pub id: SessionId,
     pub name: String,
-    pub status: SessionStatus,
     /// Name of the coding agent driving this session (e.g. `"claude"`).
     pub agent: String,
     pub worktrees: Vec<WorktreeInfo>,
@@ -403,7 +345,7 @@ pub struct SessionInfo {
     /// captured from the terminal and refreshed each tick. Agent-neutral.
     pub agent_activity: Option<String>,
     /// Message text from the agent's latest attention notification (OSC 9/777),
-    /// shown as the status when `status == SessionStatus::Blocked`.
+    /// shown as the status when the session reads [`SessionState::Blocked`].
     pub notification: Option<String>,
     /// Real git state of the session's worktree(s), refreshed periodically by
     /// the app layer. `None` until first computed (or for non-git sessions).
@@ -430,7 +372,6 @@ impl SessionInfo {
         Self {
             id: SessionId::default(),
             name,
-            status: SessionStatus::Working,
             agent: DEFAULT_AGENT_NAME.to_string(),
             worktrees: Vec::new(),
             agent_session_id: None,
@@ -503,21 +444,9 @@ mod tests {
     }
 
     #[test]
-    fn session_status_display_and_icon() {
-        assert_eq!(SessionStatus::Working.to_string(), "Working");
-        // Glyphs are shape-distinct (not all circles) so status reads without colour.
-        assert_eq!(SessionStatus::Working.icon(), "◐");
-        assert_eq!(SessionStatus::Blocked.icon(), "◆");
-        assert_eq!(SessionStatus::Done.icon(), "●");
-        assert_eq!(SessionStatus::Idle.icon(), "○");
-        assert_eq!(SessionStatus::Error.icon(), "✗");
-    }
-
-    #[test]
     fn session_info_new_defaults() {
         let info = SessionInfo::new("Test".to_string());
         assert_eq!(info.name, "Test");
-        assert_eq!(info.status, SessionStatus::Working);
         assert_eq!(info.agent, DEFAULT_AGENT_NAME);
         assert!(info.worktrees.is_empty());
         assert!(info.agent_session_id.is_none());

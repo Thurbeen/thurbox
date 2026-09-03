@@ -16,6 +16,7 @@ use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 const PLUGIN: &str = "search";
 const SESSIONS: &str = "sessions";
@@ -32,7 +33,7 @@ fn row(id: &str, name: &str, agent: &str, branch: &str) -> SessionRow {
         id: id.into(),
         name: name.into(),
         agent: agent.into(),
-        status: "idle".into(),
+        status: SessionState::Idle,
         cwd: Some(std::path::PathBuf::from("/src/thurbox")),
         repo: Some("thurbox".into()),
         repos: vec!["thurbox".into()],

@@ -33,6 +33,7 @@ use thurbox::kernel::paint::{render, PlaceholderSurfaces, ProgramPaint, SurfaceP
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 // --- the world --------------------------------------------------------------
 
@@ -98,7 +99,7 @@ fn row(name: &str, repo: &str, status: &str) -> SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),
         name: name.to_string(),
         agent: "claude".to_string(),
-        status: status.to_string(),
+        status: SessionState::from_hook_state(status).expect("a hook state"),
         cwd: Some(std::path::PathBuf::from(format!("/src/{repo}"))),
         repo: Some(repo.to_string()),
         repos: vec![repo.to_string()],

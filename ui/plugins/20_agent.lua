@@ -211,8 +211,8 @@ end
 
 -- --- the title -------------------------------------------------------------
 
---- The status as v1's `SessionStatus` Display writes it: capitalised, spelled
---- out, never a glyph. The snapshot hands Lua the lowercase state name.
+--- The status the way v1's session title writes it: capitalised, spelled out,
+--- never a glyph. The snapshot hands Lua the lowercase state name.
 local function status_word(status)
   local word = status or "idle"
   return (word:gsub("^%l", string.upper))

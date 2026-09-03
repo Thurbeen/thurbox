@@ -1,6 +1,6 @@
 ---
 name: thurbox-session-status
-description: Hooks-driven session status in thurbox: the six SessionStatus states and their glyphs/colours, the session signal callback and its persistence columns, derivation including Unreachable remote hosts and the output-quiescence stuck-working fallback, done-vs-seen acknowledgment, and OS desktop notifications with backend detection and click-to-focus. Use when working on session status, the status dot, hook state, or notifications.
+description: Hooks-driven session status in thurbox: the SessionState vocabulary and its glyphs/colours, the session signal callback and its persistence columns, derivation including Unreachable remote hosts and the output-quiescence stuck-working fallback, done-vs-seen acknowledgment, and OS desktop notifications with backend detection and click-to-focus. Use when working on session status, the status dot, hook state, or notifications.
 ---
 
 # Thurbox session status and notifications
@@ -10,17 +10,32 @@ description: Hooks-driven session status in thurbox: the six SessionStatus state
 ## Session status (hooks-driven)
 
 The session list shows, at a glance, which agents are blocked, working,
-or done. `SessionStatus` (`src/session/mod.rs`) has six states — five driven by
-**agent hooks**, not heuristics, plus `Unreachable` for a down remote host:
+or done. **`SessionState` (`src/session/hook_status.rs`) is the whole
+vocabulary — one enum, every surface.** Four of its words are the agent's own
+hook report; the rest are thurbox's own, and each is spelled apart from `idle`
+on purpose, because collapsing "nothing here is wired to report" or "the host
+is gone" into "the agent says it is at rest" is exactly the conflation the
+module exists to prevent:
 
 | State | Colour | Glyph | Meaning |
 |-------|--------|-------|---------|
-| `Working` | yellow | animated braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running |
-| `Blocked` | red | `◆` | agent needs input or approval |
-| `Done` | blue | `●` (filled) | a turn just finished; shown until you switch away |
-| `Idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
-| `Error` | red | `✗` | reserved for a crashed agent — **not derived yet** (no exit-code signal; exited → `Idle`) |
-| `Unreachable` | muted grey | `⊘` | remote host down/offline; the ordinary row, derived from a live attach failure, awaiting reconnect |
+| `working` | yellow | animated braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running (hook) |
+| `blocked` | red | `◆` | agent needs input or approval (hook) |
+| `done` | blue | `●` (filled) | a turn just finished; shown until you switch away (hook) |
+| `idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
+| `unreachable` | muted grey | `⊘` | remote host down/offline; the ordinary row, derived from a live attach failure, awaiting reconnect |
+| `stopped` | — | — | parked by `session stop`: no process at all, which is why it outranks whatever the hook columns still hold |
+| `running` | — | — | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
+| `uncovered` | — | — | this agent is wired to report nothing, so its silence means nothing |
+| `unreported` | — | — | the agent *can* report and has not yet |
+
+The last four carry no dot: the interface can always observe quiescence and
+reachability and knows the park mark from the row, so its rows resolve to the
+first five. The others are what a headless surface answers when a fact the
+interface has is one it cannot observe. The `Error` state v1 reserved for a
+crashed agent is gone with `SessionStatus`: it was never derived (process exit
+carries no failure signal), and a word no surface can produce is one more thing
+for a driver to handle for nothing.
 
 **Unreachable sessions.** A persisted **remote** session whose host cannot be
 reached **always appears in the list**, tagged `Unreachable`, rather than
@@ -58,8 +73,9 @@ time it is handed (`status_glyph` in `10_sessions.lua`); the clock behind that i
 the kernel's shared **animation tick** (`kernel::host::ANIMATION_HZ` = 8), which
 the loop advances **only while something is actually animating** — a free-running
 one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●`
-(Done) vs hollow `○` (Idle) pair reads done-vs-seen at a glance;
-`SessionStatus::icon()` is the static glyph, for contexts with no clock.
+(Done) vs hollow `○` (Idle) pair reads done-vs-seen at a glance; the glyphs
+themselves live in `ui/lib/theme.lua`, so a state with no row in the table above
+simply draws the way `idle` does.
 
 - **Reading it headlessly.** `session get`/`list --json` report the raw
   `hook_state` **plus what it takes to judge it**: `hook_state_at` /
@@ -78,6 +94,11 @@ one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●
   `hook_corroboration` and `hook_state_contradicted`, **never** overwriting
   `hook_state` with the inference. `session list` skips the probe unless
   `--verify`; a remote session is never probed and answers `unavailable`.
+  Without the probe those fields are `null`, meaning **not checked** — a
+  different answer from `false`, and the one reason `state` can read
+  `unreported` on `list` where `get` reads `running`. That is the only
+  difference between the two verbs' answers for one row, and `session list
+  --help` says so.
   `session doctor` is the same picture as a verdict plus the wiring checks
   (extension active, payload on disk carrying the signal marker, `thurbox-cli`
   resolvable on `PATH`), exiting non-zero when a session's wiring is broken —
@@ -126,16 +147,29 @@ one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●
   `from_state` → `to_state`. That log is what `thurbox-cli watch` streams —
   see the `thurbox-cli` skill — and it exists because sampling the columns
   collapses two transitions that land between two samples.
-- **Derivation.** The snapshot carries each session's `hook_state` and folds
-  attach state into the published status — a *remote* session with no live pane
-  → `Unreachable` (`with_reachability`); a `working` one gone quiet → `Idle`
-  (the fallback below, which subsumes exited → `Idle`); else the persisted state
-  (`working`/`blocked`; `idle`/none → `Idle`). A local session is never
-  unreachable: this is its machine, and a missing pane there means the agent was
-  not launched. The rows are read on the snapshot's own schedule rather than per
-  frame, gated on `PRAGMA data_version` moving (see `docs/PERFORMANCE.md`
-  ADR-P6) — but the quiescence fallback is re-derived every tick, since output
-  moves between reads. `done` shows as `Done` (blue)
+- **One derivation, in `session::hook_status`.** All three read-time rules live
+  in the pure module both the kernel and the CLI may import (`derive_state`,
+  `with_output_quiescence`, `with_reachability`, all returning `SessionState`),
+  because the interface and `thurbox-cli` were each folding the same three
+  columns their own way and answering different words for one row. A caller
+  applies the folds whose inputs it can actually observe:
+
+  | fold | input | who can supply it |
+  |---|---|---|
+  | `derive_state` (incl. the `done → idle` acknowledgment) | `hook_state`, `hook_state_at`, `seen_at` — all stored | everyone |
+  | `with_output_quiescence` | terminal output age | the interface only |
+  | `with_reachability` | a live attach error | the interface only |
+
+  `seen_at` being a **stored fact** rather than a timeout is why the CLI applies
+  it too: the CLI rightly refuses to guess a staleness bound, but this column is
+  simply there to be read, and until it was, a turn the interface had already
+  acknowledged reported `done` on `session get`/`list`/`watch` for the rest of
+  the session's life. The two folds the CLI cannot make it does not fake.
+  A local session is never unreachable: this is its machine, and a missing pane
+  there means the agent was not launched. The rows are read on the snapshot's
+  own schedule rather than per frame, gated on `PRAGMA data_version` moving (see
+  `docs/PERFORMANCE.md` ADR-P6) — but the quiescence fallback is re-derived
+  every tick, since output moves between reads. `done` shows as `Done` (blue)
   **whether focused or not** — so a turn you're watching visibly completes — and
   becomes `Idle` only when you **move focus off it** (acknowledge it): the focus
   change vs. `last_active_session_id` marks the just-left `done` session `seen`
@@ -144,7 +178,7 @@ one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●
 - **Stuck-`working` fallback.** Hooks can miss the turn-end edge: Claude Code
   fires **no hook on interrupt** (Esc/Ctrl+C) nor when it returns to the idle
   prompt, so an interrupted (or crashed) turn would leave `hook_state = working`
-  forever. `snapshot::with_output_quiescence` guards with an **output-quiescence
+  forever. `session::with_output_quiescence` guards with an **output-quiescence
   fallback** (`WORKING_QUIET_MS`, 10 s): a `working` session with no terminal
   output for that long is treated as `Idle`, and so is one with no live pane —
   which is where v1's exited → `Idle` branch lands, since a pane whose stream
@@ -173,7 +207,7 @@ one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●
 
 ## OS notifications
 
-When a session goes to `SessionStatus::Blocked` (the agent needs you, reported by a
+When a session goes to `SessionState::Blocked` (the agent needs you, reported by a
 hook) thurbox fires an OS desktop notification. `kernel::notify` owns the
 per-session bookkeeping and the edge detection; `src/notifications.rs` is still the
 leaf side-effect layer that knows only `session` + `paths`.

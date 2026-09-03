@@ -19,6 +19,7 @@ use thurbox::kernel::layout::resolve;
 use thurbox::kernel::registry::{is_ctrl_letter_chord, normalise_chord, Registry, Scope, RESERVED};
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 /// v1's keymap tables, compiled into this test crate only — see the module's
 /// own doc for why the oracle lives here rather than in `src/`.
 #[path = "support/v1_keymap.rs"]
@@ -53,7 +54,7 @@ fn row(name: &str) -> SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),
         name: name.to_string(),
         agent: "claude".to_string(),
-        status: "idle".to_string(),
+        status: SessionState::Idle,
         cwd: Some(PathBuf::from("/src/thurbox")),
         repo: Some("thurbox".to_string()),
         repos: Vec::new(),

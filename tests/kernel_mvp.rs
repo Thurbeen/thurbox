@@ -101,7 +101,7 @@ fn row(name: &str, repo: &str, status: &str) -> SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),
         name: name.to_string(),
         agent: "claude".to_string(),
-        status: status.to_string(),
+        status: SessionState::from_hook_state(status).expect("a hook state"),
         cwd: None,
         repo: Some(repo.to_string()),
         repos: vec![repo.to_string()],
@@ -840,6 +840,7 @@ fn a_session_backed_surface_falls_back_when_nothing_is_attached() {
 // --- command bus -----------------------------------------------------------
 
 use thurbox::kernel::command::{Command, InFlight, Phase};
+use thurbox::session::SessionState;
 
 /// Press a key and route it exactly as the binary does: registry first
 /// (declared actions), then raw `on_key`. Returns whatever commands it issued.

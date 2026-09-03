@@ -11,11 +11,12 @@ use super::session_events::{EventReason, SessionEventKind};
 use super::Database;
 
 /// The hooks-driven status columns of a session, read in one batch by the TUI
-/// each tick to derive [`crate::session::SessionStatus`]. See schema v34.
+/// each tick to derive [`crate::session::SessionState`]. See schema v34.
 #[derive(Debug, Clone, Default)]
 pub struct HookRow {
     /// `working` / `blocked` / `done` / `idle`, or `None` when no hook has fired
-    /// yet. (`idle` and unknown values render as [`crate::session::SessionStatus`]`::Idle`.)
+    /// yet. (`idle` and unknown values both derive to
+    /// [`SessionState::Idle`](crate::session::SessionState::Idle).)
     pub state: Option<String>,
     /// Epoch ms the state was last reported.
     pub state_at: Option<i64>,
@@ -36,6 +37,11 @@ pub struct SessionFacts {
     pub backend_id: String,
     /// Parked by `session stop`.
     pub stopped: bool,
+    /// Epoch ms an interface stamped when the user moved focus off a finished
+    /// turn. Read here so the stream applies the same `done → idle`
+    /// acknowledgment every other surface does, rather than reporting a turn
+    /// somebody has already looked at as unseen forever.
+    pub seen_at: Option<i64>,
 }
 
 /// Information about a soft-deleted session, including its worktrees.
@@ -629,9 +635,9 @@ impl Database {
     /// included. One lean scan with no worktree join: `thurbox-cli watch` reads
     /// it once per wake to name the sessions its events are about.
     pub fn load_session_facts(&self) -> rusqlite::Result<HashMap<SessionId, SessionFacts>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT id, name, agent, backend_id, stopped_at FROM sessions")?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, name, agent, backend_id, stopped_at, seen_at FROM sessions",
+        )?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             Ok((
@@ -641,6 +647,7 @@ impl Database {
                     agent: row.get(2)?,
                     backend_id: row.get(3)?,
                     stopped: row.get::<_, Option<i64>>(4)?.is_some(),
+                    seen_at: row.get(5)?,
                 },
             ))
         })?;

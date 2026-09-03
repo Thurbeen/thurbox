@@ -72,17 +72,24 @@ panel, not the list row.
 The colored **status dot** is driven by **agent hooks**, not output
 heuristics. Each agent CLI's lifecycle hooks call `thurbox-cli session
 signal --state <working|blocked|done|idle>` (identity from the injected
-`THURBOX_SESSION`), and `refresh_session_statuses` maps the persisted
-state to one of six `SessionStatus` values once per tick:
+`THURBOX_SESSION`), and the read-time folds in `session::hook_status` map the
+persisted columns onto a `SessionState` once per tick:
 
 | State | Colour | Glyph | Meaning |
 |-------|--------|-------|---------|
-| `Working` | yellow | braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running |
-| `Blocked` | red | `◆` | agent needs input or approval |
-| `Done` | blue | `●` | a turn just finished; shown until you switch away |
-| `Idle` | green | `○` | acknowledged, never active, or at rest |
-| `Error` | red | `✗` | reserved for a crashed agent (not derived yet) |
-| `Unreachable` | muted grey | `⊘` | remote host is down/offline; placeholder row awaiting reconnect |
+| `working` | yellow | braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running |
+| `blocked` | red | `◆` | agent needs input or approval |
+| `done` | blue | `●` | a turn just finished; shown until you switch away |
+| `idle` | green | `○` | acknowledged, never active, or at rest |
+| `unreachable` | muted grey | `⊘` | remote host is down/offline; placeholder row awaiting reconnect |
+
+`SessionState` carries four more words — `stopped`, `running`, `uncovered`,
+`unreported` — that the interface never has to draw, because it can always
+observe the park mark, the pane and the terminal. They are the answers a
+headless surface gives when one of those facts is out of its reach, and they
+are spelled apart from `idle` so "we cannot know" is never read as "the agent
+says it is at rest". One enum, so `session get`, `session list`,
+`thurbox-cli watch` and the session list cannot disagree about a row.
 
 A `Done` session becomes `Idle` once you move focus off it (you've
 acknowledged it); a `working` session that goes quiet for 10 s is
@@ -95,7 +102,7 @@ restore *and* a live session whose host dies mid-run (detected via the
 control-mode connection dropping). Status only **recolors** the dot — the
 manual order is never disturbed (see *Smart ordering* below). Repo groups
 roll up to their most-urgent member
-(`Blocked > Error > Working > Done > Unreachable > Idle`).
+(`Blocked > Working > Done > Unreachable > Idle`).
 
 The hooks are wired automatically by the built-in **hooks** extension
 (auto-activated on first run; opt out with `thurbox-cli extension
@@ -2362,15 +2369,15 @@ restore, worktree sync, and theme changes.
 Status messages are in-app and transient; OS notifications are the
 out-of-app analog for the one event a user must not miss — a session
 that **needs them**. When a session transitions to
-`SessionStatus::Blocked` (the agent's hook reported it needs input or
+`SessionState::Blocked` (the agent's hook reported it needs input or
 approval), thurbox fires an OS desktop notification. An opt-in
 `also_on_waiting` extends the trigger to the `Working → Done` (finished)
 edge for when you want a nudge each time a turn completes.
 
 ### Why the transition is observed in one place
 
-The edge is detected once per tick in `refresh_session_statuses` — the
-**same** place `SessionStatus` is computed — so the notification rule
+The edge is detected once per tick in `kernel::notify` — reading the very
+`SessionState` the list draws — so the notification rule
 can never drift from the status dot shown in the list. It is
 deduplicated per session by `min_interval_secs`, and the session you
 are currently viewing is skipped by default (`suppress_for_active`),

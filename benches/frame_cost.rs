@@ -27,6 +27,7 @@ use thurbox::kernel::paint::PlaceholderSurfaces;
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 static SCREEN: std::sync::OnceLock<(u16, u16)> = std::sync::OnceLock::new();
 #[allow(non_snake_case)]
@@ -95,7 +96,12 @@ fn snapshot(sessions: usize) -> Snapshot {
                 name: format!("fix-the-thing-number-{nth}"),
                 agent: "claude".into(),
                 stopped: false,
-                status: ["idle", "working", "blocked", "done"][nth % 4].into(),
+                status: [
+                    SessionState::Idle,
+                    SessionState::Working,
+                    SessionState::Blocked,
+                    SessionState::Done,
+                ][nth % 4],
                 cwd: Some(format!("{repo}/worktrees/w{nth}").into()),
                 repo: Some(repo.into()),
                 repos: vec![repo.into()],

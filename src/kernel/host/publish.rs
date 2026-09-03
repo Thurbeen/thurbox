@@ -647,11 +647,7 @@ fn build_sessions(
             "status",
             to_lua_string(
                 lua,
-                &crate::kernel::snapshot::with_reachability(
-                    &row.status,
-                    &row.backend,
-                    attach_error,
-                ),
+                crate::session::with_reachability(row.status, &row.backend, attach_error).as_str(),
             )?,
         )?;
         set(&entry, "backend", to_lua_string(lua, &row.backend)?)?;

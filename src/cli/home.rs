@@ -63,19 +63,11 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
     // Every state present is counted, the two silences included: a session
     // nothing can report for is exactly the one an agent orienting itself needs
     // told about, and rolling it into an unlisted `idle` hid it.
-    for state in [
-        "working",
-        "blocked",
-        "done",
-        "idle",
-        crate::session::STATE_RUNNING,
-        crate::session::STATE_UNCOVERED,
-        crate::session::STATE_UNREPORTED,
-        crate::session::STATE_STOPPED,
-    ] {
-        let n = rows.iter().filter(|r| r["state"] == json!(state)).count();
+    for state in crate::session::SessionState::ALL {
+        let word = state.as_str();
+        let n = rows.iter().filter(|r| r["state"] == json!(word)).count();
         if n > 0 {
-            totals.insert(state.into(), json!(n));
+            totals.insert(word.into(), json!(n));
         }
     }
 
@@ -153,7 +145,7 @@ fn suggestions(rows: &[Value], unread: usize, inside_session: bool) -> Vec<Strin
     // diagnostic is the difference between reading that as "at rest" and asking.
     if rows
         .iter()
-        .any(|r| r["state"] == json!(crate::session::STATE_UNCOVERED))
+        .any(|r| r["state"] == json!(crate::session::SessionState::Uncovered.as_str()))
     {
         help.push("thurbox-cli session doctor   why a session reports no state at all".to_string());
     }
@@ -204,7 +196,7 @@ fn human(rows: &[Value], unread: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{SessionId, STATE_UNCOVERED, STATE_UNREPORTED};
+    use crate::session::{SessionId, SessionState};
     use crate::sync::SharedSession;
 
     fn session(name: &str, agent: &str) -> SharedSession {
@@ -284,8 +276,8 @@ mod tests {
         db.set_hook_state(busy.id, "blocked").unwrap();
 
         for (name, want) in [
-            ("quiet", STATE_UNREPORTED),
-            ("foreign", STATE_UNCOVERED),
+            ("quiet", SessionState::Unreported.as_str()),
+            ("foreign", SessionState::Uncovered.as_str()),
             ("busy", "blocked"),
         ] {
             assert_eq!(home_state(&db, name), want, "home view for {name}");
@@ -302,7 +294,10 @@ mod tests {
             .unwrap();
 
         let out = run(&db).unwrap();
-        assert_eq!(out.json["totals"][STATE_UNCOVERED], json!(1));
+        assert_eq!(
+            out.json["totals"][SessionState::Uncovered.as_str()],
+            json!(1)
+        );
         assert_eq!(out.json["totals"]["idle"], Value::Null);
         // And the help names the diagnostic, since the row looks calm and is
         // simply unknown.

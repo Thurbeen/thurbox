@@ -1683,7 +1683,7 @@ mod tests {
             id: id.to_string(),
             name: "demo".to_string(),
             agent: "claude".to_string(),
-            status: "idle".to_string(),
+            status: crate::session::SessionState::Idle,
             cwd: None,
             repo: None,
             repos: Vec::new(),

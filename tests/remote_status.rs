@@ -63,7 +63,7 @@ fn status_of(store: &SnapshotStore, id: SessionId) -> String {
         .sessions
         .iter()
         .find(|row| row.id == id.to_string())
-        .map(|row| row.status.clone())
+        .map(|row| row.status.as_str().to_string())
         .unwrap_or_else(|| "<missing>".to_string())
 }
 

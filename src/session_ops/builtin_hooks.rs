@@ -1,6 +1,6 @@
 //! The built-in **hooks** extension: wires each coding agent's lifecycle hooks
 //! to `thurbox-cli session signal` so sessions report `working`/`blocked`/`done`
-//! back to thurbox (see the hooks-driven `SessionStatus`). For **remote**
+//! back to thurbox (see the hooks-driven `SessionState`). For **remote**
 //! sessions the same hook file is shipped with its commands rewritten to a tmux
 //! pane user option (`rewrite_hook_signals_for_remote`) — the local TUI
 //! receives those over its control-mode subscription.

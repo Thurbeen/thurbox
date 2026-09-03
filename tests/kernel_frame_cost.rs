@@ -162,7 +162,7 @@ fn row(id: &str, name: &str) -> SessionRow {
         id: id.into(),
         name: name.into(),
         agent: "claude".into(),
-        status: "idle".into(),
+        status: thurbox::session::SessionState::Idle,
         cwd: None,
         repo: None,
         repos: Vec::new(),

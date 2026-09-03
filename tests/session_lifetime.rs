@@ -15,13 +15,14 @@
 
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::terminal::Terminals;
+use thurbox::session::SessionState;
 
 fn row(id: &str, name: &str, backend: &str, pane: Option<&str>) -> SessionRow {
     SessionRow {
         id: id.into(),
         name: name.into(),
         agent: "claude".into(),
-        status: "idle".into(),
+        status: SessionState::Idle,
         cwd: None,
         repo: None,
         repos: Vec::new(),

@@ -709,7 +709,7 @@ pub struct Session {
     /// True for a **placeholder** session: a persisted remote session whose host
     /// is currently unreachable, so it has no live backend pane / reader / writer
     /// (its `input_tx` is a dead channel and its `parser` holds a static "host
-    /// unreachable" notice). Rendered with `SessionStatus::Unreachable` and
+    /// unreachable" notice). Rendered with `SessionState::Unreachable` and
     /// replaced in place by the real adopted session once the host recovers.
     ///
     /// **Unused in v2.** Its only caller was v1's remote-restore loop, which went
@@ -901,9 +901,10 @@ impl Session {
     /// writer loops are never spawned, `input_tx` is a dead channel (keystrokes
     /// are silently dropped), and the `parser` is seeded with a static notice.
     /// The row renders like any other (grouping/ordering/nesting all key off
-    /// `info`) but shows `SessionStatus::Unreachable` until the host recovers and
-    /// [`Self::adopt`] replaces it in place. `info.status` is forced to
-    /// `Unreachable` here regardless of the caller's value.
+    /// `info`) but shows [`SessionState::Unreachable`](crate::session::SessionState::Unreachable)
+    /// — derived from the attach failure by
+    /// [`with_reachability`](crate::session::with_reachability) — until the host
+    /// recovers and [`Self::adopt`] replaces it in place.
     pub fn placeholder(
         mut info: SessionInfo,
         rows: u16,
@@ -912,7 +913,6 @@ impl Session {
         provider: &Arc<dyn AgentProvider>,
         env: HashMap<String, String>,
     ) -> Self {
-        info.status = crate::session::SessionStatus::Unreachable;
         info.backend_id = None;
 
         let signals = SignalCells::new();
