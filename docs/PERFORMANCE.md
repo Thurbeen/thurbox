@@ -796,6 +796,19 @@ fetch stuck for the process lifetime. Each is now a TTL, an in-flight marker, or
 generation counter. **If you add a cache to the loop, give it an age**; the review
 that found these is in the history, and they were one field each.
 
+An age can be a **generation key** rather than a clock, and then *which* key you
+pick is the whole of the correctness. `GitStats::known` caches `merged` — is this
+branch's work already on origin's default? — keyed on the **commit** it was
+computed for (`# branch.oid`, free from the `status` run that drives every other
+field). Keyed on the session it read as monotonic ("a landed squash never
+un-lands") and latched: `merged` is a fact about HEAD, HEAD moves when the session
+keeps working after its PR lands, and the first `true` fed itself back through
+`drain` forever — so the delete confirmation stopped warning about commits that
+existed nowhere else. A 5 s TTL does not save a key like that; it re-ran the
+worker without re-opening the question. Only `true` is cached, because only one
+direction of staleness is safe here: a stale `true` hides work, a stale `false`
+costs one needless question.
+
 **Bounds belong to the kernel, not the plugin.** A plugin may ask for a program
 (`kernel::runs`) every frame — that is the documented pattern, because a fresh answer
 is a map lookup — so the store refuses a duplicate while the answer is fresh *or*
