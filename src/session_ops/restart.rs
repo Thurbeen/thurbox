@@ -1,10 +1,12 @@
-//! Headless session restart — tears down the tmux window and re-launches
-//! the agent CLI, resuming the existing conversation when the agent supports
-//! it and a transcript exists, starting fresh otherwise.
+//! Headless session restart — tears down the tmux windows (agent + companion
+//! shell) and re-launches the agent CLI, resuming the existing conversation
+//! when the agent supports it and a transcript exists, starting fresh
+//! otherwise.
 //!
-//! And its two halves on their own: [`stop_session_headless`] kills the window
-//! and leaves everything else standing, [`start_session_headless`] puts a
-//! window back. A restart is those two in a row, which is why they live here.
+//! And its two halves on their own: [`stop_session_headless`] kills the
+//! windows and leaves everything else standing, [`start_session_headless`]
+//! puts the agent's window back. A restart is those two in a row, which is
+//! why they live here.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -109,6 +111,15 @@ pub(crate) fn build_restart_plan(
     })
 }
 
+/// The pane ids a row remembers for its two windows — the psmux tiebreaker a
+/// remote teardown falls back on when nothing there is stamped.
+fn session_panes(session: &SharedSession) -> crate::agent::tmux::SessionPanes<'_> {
+    crate::agent::tmux::SessionPanes {
+        agent: &session.backend_id,
+        shell: session.shell_backend_id.as_deref().unwrap_or_default(),
+    }
+}
+
 /// Park a session: kill its pane, keep everything else.
 ///
 /// The row, the checkout, the branch, the agent's own conversation on disk all
@@ -132,11 +143,11 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
 
     let killed = if crate::session::is_remote_backend(&session.backend_type) {
         match super::resolve_host(&session.backend_type).flatten() {
-            Some(host) => crate::agent::tmux::kill_pane_remote(
+            Some(host) => crate::agent::tmux::kill_remote_windows(
                 &host,
                 &session.id.to_string(),
                 &session.name,
-                &session.backend_id,
+                session_panes(&session),
             )
             .unwrap_or(false),
             // An unreachable host is not a reason to refuse: the mark is what
@@ -145,7 +156,14 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
             _ => false,
         }
     } else {
-        crate::agent::tmux::kill_window(&session.id.to_string(), &session.name).is_ok()
+        let killed =
+            crate::agent::tmux::kill_window(&session.id.to_string(), &session.name).is_ok();
+        if let Err(e) =
+            crate::agent::tmux::kill_shell_window(&session.id.to_string(), &session.name)
+        {
+            tracing::debug!("no shell window to kill for '{}': {e:#}", session.name);
+        }
+        killed
     };
 
     Ok(killed)
@@ -173,8 +191,8 @@ pub struct RestartReport {
     pub hook_failures: Vec<String>,
 }
 
-/// Restart an existing session in-place — kills its tmux window and
-/// re-spawns the agent CLI.
+/// Restart an existing session in-place — kills its tmux windows (agent +
+/// companion shell) and re-spawns the agent CLI.
 ///
 /// For the `claude` agent, uses its resume group when a transcript for the
 /// session id exists on disk, otherwise pins the same id for a fresh start.
@@ -298,6 +316,13 @@ pub fn restart_session_headless_with(
             {
                 tracing::debug!("no window to kill for '{}': {e:#}", plan.window_name);
             }
+            // The companion shell goes with it: it was opened beside the agent
+            // this restart replaces, and the interface reopens one on demand.
+            if let Err(e) =
+                crate::agent::tmux::kill_shell_window(&session.id.to_string(), &plan.window_name)
+            {
+                tracing::debug!("no shell window to kill for '{}': {e:#}", plan.window_name);
+            }
             let pane = crate::agent::tmux::spawn_window(
                 &session.id.to_string(),
                 &plan.window_name,
@@ -319,18 +344,24 @@ pub fn restart_session_headless_with(
                 .map_err(|e| format!("Failed to record the new pane: {e}"))?;
         }
         Some(host) => {
-            // By pane id, not window name: the host's tmux server is shared with
-            // whatever else runs there, and a name is not ours to claim. A pane
-            // that is already gone is not an error — the restart is what the
-            // caller wanted, and it can still happen.
-            if let Err(e) = crate::agent::tmux::kill_pane_remote(
+            // Before anything is killed or spawned: acting on a socket the host
+            // has not vouched for would tear down nothing and then put a second
+            // agent on a server of our own guessing.
+            crate::agent::tmux::known_host_socket(host)
+                .map_err(|e| format!("cannot restart '{}': {e:#}", session.name))?;
+            // By the window's own stamp, exactly as the local branch: the
+            // host's tmux server is shared with whatever else runs there, so a
+            // name is not ours to claim. A window that is already gone is not
+            // an error — the restart is what the caller wanted, and it can
+            // still happen.
+            if let Err(e) = crate::agent::tmux::kill_remote_windows(
                 host,
                 &session.id.to_string(),
                 &session.name,
-                &session.backend_id,
+                session_panes(&session),
             ) {
                 tracing::warn!(
-                    "could not kill the remote window of '{}': {e:#}",
+                    "could not kill the remote windows of '{}': {e:#}",
                     session.name
                 );
             }

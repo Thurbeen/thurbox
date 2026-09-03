@@ -560,6 +560,7 @@ thurbox-cli session doctor [<uuid>]      # are this session's status hooks wired
 thurbox-cli session restart <uuid>       # kill + re-spawn with --resume
 thurbox-cli session delete <uuid>        # soft-delete (see below)
 thurbox-cli session restore <uuid>       # undo a soft-delete
+thurbox-cli session reap <uuid>          # collect a soft-delete's windows on demand
 ```
 
 `create` runs synchronously — the tmux window is live by the time it returns.
@@ -672,14 +673,18 @@ name rather than reaching for a window that is deliberately gone (see
 contract).
 
 **Deleting.** `session delete <uuid>` is a soft-delete: it only marks the
-database row. A running TUI kills the tmux window once the 10-second undo
-window closes; the worktrees stay, which is what makes `session restore <uuid>`
-lossless.
+database row, and `session restore <uuid>` brings it back. The session's tmux
+windows — the agent's and its companion shell's — come down once the
+10-second undo window closes: a running TUI does it, the `automation tick`
+heartbeat does it with no TUI open, and `session reap <uuid>` does it on
+demand (what a host running only the CLI needs, since it has no interface of
+its own). The worktrees stay, which is what makes the restore lossless.
 
 Pass `--force` to tear down the runtime resources in the same call, for headless
-cleanup with no TUI running. It kills the tmux window, removes the session's git
-worktrees (the underlying repos are left intact), removes the multi-repo symlink
-workspace if any, and disables `send` automations targeting the session.
+cleanup with no TUI running. It kills the session's tmux windows, removes the
+session's git worktrees (the underlying repos are left intact), removes the
+multi-repo symlink workspace if any, and disables `send` automations targeting
+the session.
 Teardown is best-effort: individual failures are recorded in the JSON report
 (`killed_window`, `removed_worktrees`, `worktree_errors`,
 `disabled_automations`) but never abort the delete, and the row is always

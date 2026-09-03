@@ -165,11 +165,13 @@ pub enum Action {
     /// Soft-delete a session. (`remove` is an alias.)
     #[command(alias = "remove")]
     ///
-    /// By default only the DB row is soft-deleted (the TUI cleans up the
-    /// tmux window and worktree on next sync). Pass `--force` to also
-    /// kill the tmux window, remove worktrees, and cancel pending
-    /// scheduled commands — useful for headless cleanup when the TUI
-    /// isn't running.
+    /// By default only the DB row is soft-deleted, and `session restore`
+    /// brings it back. The session's tmux windows come down once the undo
+    /// window closes — by a running interface, by the `automation tick`
+    /// heartbeat, or on demand with `session reap` — while the worktrees
+    /// stay, which is what makes the undo lossless. Pass `--force` to kill
+    /// the windows, remove the worktrees thurbox created, and cancel pending
+    /// scheduled commands in this call.
     Delete {
         /// Session UUID.
         uuid: String,
@@ -188,6 +190,18 @@ pub enum Action {
         /// state comes back (uncommitted/untracked work was lost on delete).
         #[arg(long)]
         best_effort: bool,
+    },
+    /// Let go of a soft-deleted session's agent, the way the interface does
+    /// once its undo window has closed.
+    ///
+    /// The row and its worktrees stay — reaping is not deleting — but the
+    /// windows the row still owns come down. What a peer calls on a host that
+    /// has no interface of its own to do it (ADR-24).
+    Reap {
+        /// Session name, UUID, or unique id prefix — resolved against the
+        /// deleted rows, since that is where a reapable session is.
+        #[arg(value_name = "SESSION")]
+        session: String,
     },
     /// Restart a session in-place (kills the window, re-spawns with --resume).
     Restart {
@@ -556,6 +570,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                 .collect();
             let facts = SessionFacts::load(db);
             let bases = db.load_base_branches().unwrap_or_default();
+            let updated = db.load_updated_at().unwrap_or_default();
             let registry = crate::agent::agent_config::load_or_seed();
             let assessments: Vec<crate::session::Assessment> = sessions
                 .iter()
@@ -570,6 +585,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                             s,
                             hook,
                             bases.get(&s.id).map(String::as_str),
+                            updated.get(&s.id).copied(),
                         )
                     })
                     .collect(),
@@ -607,6 +623,10 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                     &session,
                     &hook,
                     bases.get(&session.id).map(String::as_str),
+                    db.load_updated_at()
+                        .unwrap_or_default()
+                        .get(&session.id)
+                        .copied(),
                 ),
                 render_session_detail(&session, &hook),
             ))
@@ -743,6 +763,26 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             session,
             best_effort,
         } => restore_deleted(db, &session, best_effort),
+        Action::Reap { session } => {
+            let row = super::session_ref::resolve_deleted(db, &session)?;
+            let reaped = crate::session_ops::reap_soft_deleted(db, row.id)?;
+            let human = if reaped {
+                format!("Reaped session '{}' ({})", row.name, row.id)
+            } else {
+                format!(
+                    "Nothing to reap for '{}' ({}): it came back, or was force-deleted",
+                    row.name, row.id
+                )
+            };
+            Ok(CommandOutput::new(
+                json!({
+                    "reaped": reaped,
+                    "id": row.id.to_string(),
+                    "name": row.name,
+                }),
+                human,
+            ))
+        }
         Action::Restart { uuid, if_missing } => {
             let session = resolve(db, &uuid)?;
             let report = crate::session_ops::restart::restart_session_headless_with(
@@ -1050,6 +1090,9 @@ fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutpu
     let session = resolve(db, uuid)?;
     let report = crate::session_ops::delete_session_headless(db, session.id, force)?;
     let mut human = format!("Deleted session '{}' ({})", session.name, session.id);
+    if let Some(note) = &report.host_unknown {
+        human.push_str(&format!("\n  {note}"));
+    }
     if force {
         for line in output::kv(&force_delete_detail(&report)).lines() {
             human.push_str(&format!("\n  {line}"));
@@ -1068,6 +1111,7 @@ fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutpu
             "worktree_errors": report.worktree_errors,
             "disabled_automations": report.disabled_automations,
             "remote_teardown_error": report.remote_teardown_error,
+            "host_unknown": report.host_unknown,
             "hook_failures": report.hook_failures,
         }),
         human,
@@ -1994,12 +2038,13 @@ fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String 
     match &r.error {
         Some(error) => format!("{}: not mirrored — {error}", r.host),
         None => format!(
-            "{}: {} adopted, {} updated, {} deleted, {} restored{}{}",
+            "{}: {} adopted, {} updated, {} deleted, {} restored, {} tombstoned{}{}",
             r.host,
             r.adopted.len(),
             r.updated.len(),
             r.deleted.len(),
             r.restored.len(),
+            r.tombstoned.len(),
             match r.unknown_local.len() {
                 0 => String::new(),
                 n => format!(", {n} local session(s) the host does not know (use --adopt)"),
@@ -2088,6 +2133,20 @@ mod tests {
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn mirror_report_mentions_a_pushed_tombstone() {
+        let report = crate::session_ops::mirror::MirrorReport {
+            host: "debian-hp".to_string(),
+            tombstoned: vec![SessionId::default()],
+            ..Default::default()
+        };
+        let rendered = render_mirror_report(&report);
+        assert!(
+            rendered.contains("1 tombstoned"),
+            "a sync pass that only pushed a delete must say so: {rendered:?}"
+        );
     }
 
     #[test]

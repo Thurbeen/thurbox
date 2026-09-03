@@ -34,8 +34,15 @@ use rusqlite::Connection;
 /// rather than one sampled diff. v44 adds `reports_as` to `sessions`: the
 /// agent a driver actually launched inside a pane thurbox opened for
 /// something else, which is what hook coverage has to be read against.
+/// v45 adds `host_updated_at` to `sessions`: the host's own last-reported
+/// `updated_at` for the row, snapshotted whenever a mirror pass adopts or
+/// updates it from that host. `deleted_at` is stamped on this machine's clock
+/// and a host's `updated_at` on its own, so ordering a tombstone against a
+/// live restore by comparing those two directly conflates two clocks that can
+/// be skewed against each other; comparing the host's new `updated_at`
+/// against this snapshot instead orders two readings of the *same* clock.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 44;
+pub const SCHEMA_VERSION: u32 = 45;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -108,6 +115,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             launch_env        TEXT,
             stopped_at        INTEGER,
             reports_as        TEXT,
+            host_updated_at   INTEGER,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -349,6 +357,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (42, migrate_v42_worktree_provenance),
         (43, migrate_v43_session_events),
         (44, migrate_v44_reports_as),
+        (45, migrate_v45_host_updated_at),
     ];
 
     for &(target, step) in steps {

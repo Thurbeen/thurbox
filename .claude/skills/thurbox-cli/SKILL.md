@@ -34,7 +34,7 @@ thurbox-cli session list --json | jq           # machine output for scripts
 thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children only
 ```
 
-Subcommands: `agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/restore/restart
+Subcommands: `agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/reap/restore/restart
 [`--if-missing`]/stop/start/fork/exec/meta/reports-as/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
 `sync`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
 the session event log, one event per line), `runtime` (status/stop — what
@@ -434,10 +434,14 @@ there is no wiring here to be broken, and failing it made bare `session doctor`
 session shape thurbox advertises for drivers.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB row is marked
-deleted, and `session restore` revives it. The window is torn down once the undo
-window closes (`UNDO_WINDOW`, 10s): by the TUI's `kernel::reaper`, or headlessly
-by `reap_overdue_soft_deletes` on the heartbeat. Only the **window** — worktrees
-are what makes the undo lossless and are never touched by a soft delete. `--force`
+deleted, and `session restore` revives it. The windows are torn down once the
+undo window closes (`UNDO_WINDOW`, 10s): by the TUI's `kernel::reaper`, or
+headlessly by `reap_overdue_soft_deletes` on the heartbeat, or on demand with
+`session reap <ref>` — which is how a peer collects a row on a host that has no
+interface of its own (ADR-24), and resolves against the *deleted* rows the way
+`session restore` does. Only the **windows** (agent and companion shell, both
+found by their `@thurbox_session` stamp) — worktrees are what makes the undo
+lossless and are never touched by a soft delete. `--force`
 (`session_ops::delete_session_headless`) also kills the tmux window, removes
 the worktrees **thurbox created** + the symlink workspace, disables `send`
 automations targeting the session, and clears its `session meta` key/value space

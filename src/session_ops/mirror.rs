@@ -36,6 +36,10 @@ pub struct MirrorReport {
     pub unknown_local: Vec<SessionId>,
     /// Of `unknown_local`, the ones `--adopt` registered this pass.
     pub registered: Vec<SessionId>,
+    /// Rows the host still lists as active that were deleted here first — the
+    /// local tombstone stands, and the delete is pushed to the host. The
+    /// symmetric counterpart of `unknown_local`/[`register_unknown`].
+    pub tombstoned: Vec<SessionId>,
     /// Why the host could not be mirrored, when it could not.
     pub error: Option<String>,
 }
@@ -46,7 +50,8 @@ impl MirrorReport {
             && self.updated.is_empty()
             && self.deleted.is_empty()
             && self.restored.is_empty()
-            && self.registered.is_empty())
+            && self.registered.is_empty()
+            && self.tombstoned.is_empty())
     }
 
     pub fn to_json(&self) -> Value {
@@ -60,6 +65,7 @@ impl MirrorReport {
             "restored": ids(&self.restored),
             "unknown_local": ids(&self.unknown_local),
             "registered": ids(&self.registered),
+            "tombstoned": ids(&self.tombstoned),
             "error": self.error,
         })
     }
@@ -71,6 +77,11 @@ pub struct HostRow {
     pub session: SharedSession,
     pub hook_state: Option<String>,
     pub base_branch: Option<String>,
+    /// When the host last wrote this row (millis since epoch), when it says.
+    /// `None` from a host older than the field — every such row then loses to a
+    /// local tombstone, which is the reading that stops a delete from being
+    /// undone on the next pass.
+    pub updated_at: Option<u64>,
 }
 
 /// A deleted session as the host lists it.
@@ -82,13 +93,19 @@ pub struct HostDeletedRow {
 
 /// The one JSON shape of a session: what `session list`/`get` print, what a
 /// peer's mirror reads, and what `session register` accepts.
+///
+/// `updated_at` is when this database last wrote the row. A peer reads it
+/// against its own tombstones (see [`apply`]), which is the only ordering the
+/// two sides share.
 pub fn session_to_json(
     s: &SharedSession,
     hook_state: Option<&str>,
     base_branch: Option<&str>,
+    updated_at: Option<u64>,
 ) -> Value {
     json!({
         "id": s.id.to_string(),
+        "updated_at": updated_at,
         "name": s.name,
         "agent": s.agent,
         "backend_type": s.backend_type,
@@ -122,8 +139,9 @@ pub fn session_to_json_assessed(
     s: &SharedSession,
     hook: &Assessment,
     base_branch: Option<&str>,
+    updated_at: Option<u64>,
 ) -> Value {
-    let mut value = session_to_json(s, hook.hook_state.as_deref(), base_branch);
+    let mut value = session_to_json(s, hook.hook_state.as_deref(), base_branch, updated_at);
     let Some(obj) = value.as_object_mut() else {
         return value;
     };
@@ -237,6 +255,7 @@ pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, S
         },
         hook_state: string("hook_state"),
         base_branch: string("base_branch"),
+        updated_at: value.get("updated_at").and_then(Value::as_u64),
     })
 }
 
@@ -296,12 +315,17 @@ pub fn apply(
         .filter(|s| s.backend_type == backend_type)
         .map(|s| (s.id, s))
         .collect();
-    let local_deleted: HashMap<SessionId, bool> = db
+    // Tombstones with the instant each was taken, and the host's own
+    // `updated_at` as last known before that (schema v45): the host's row
+    // only outranks one when *the host's own clock* shows it was written
+    // after that snapshot. `deleted_at` is this machine's clock and cannot be
+    // compared to the host's `updated_at` directly — see `apply` below.
+    let local_deleted: HashMap<SessionId, (u64, bool, Option<u64>)> = db
         .list_deleted_sessions()
         .unwrap_or_default()
         .into_iter()
         .filter(|s| s.backend_type == backend_type)
-        .map(|s| (s.id, s.force_deleted))
+        .map(|s| (s.id, (s.deleted_at, s.force_deleted, s.host_updated_at)))
         .collect();
     let hook_rows = db.load_hook_states().unwrap_or_default();
     let bases = db.load_base_branches().unwrap_or_default();
@@ -316,10 +340,30 @@ pub fn apply(
                     continue;
                 }
                 report.updated.push(id);
+                record_host_clock(db, id, row.updated_at);
             }
-        } else if local_deleted.contains_key(&id) {
-            // The host restored it (or the delete here never reached the host);
-            // a row the host lists as active is active.
+        } else if let Some(&(deleted_at, _, host_updated_at)) = local_deleted.get(&id) {
+            // A tombstone here is a decision, not a gap. The host listing the
+            // row as active only outranks it when the host itself wrote the
+            // row *after* the last state this database knew from that host —
+            // that is a restore taken there. Comparing two readings of the
+            // host's own clock, rather than the host's `updated_at` against
+            // this machine's `deleted_at` (two different, possibly skewed
+            // clocks — see schema v45). When this database never held a
+            // reading from the host for this row (never mirrored before the
+            // delete), there is nothing to compare against, so this machine's
+            // own clock is the best available approximation. Otherwise the
+            // delete simply has not reached the host (its CLI was in backoff,
+            // or sharing was off when it was taken), and restoring would undo
+            // it on every pass for as long as both sides disagree.
+            let host_has_moved = match host_updated_at {
+                Some(known) => row.updated_at.is_some_and(|at| at > known),
+                None => row.updated_at.is_some_and(|at| at > deleted_at),
+            };
+            if !host_has_moved {
+                report.tombstoned.push(id);
+                continue;
+            }
             if let Err(e) = db
                 .restore_session(id)
                 .and_then(|()| db.upsert_session(&row.session))
@@ -328,6 +372,7 @@ pub fn apply(
                 continue;
             }
             report.restored.push(id);
+            record_host_clock(db, id, row.updated_at);
         } else {
             // Adopted, not spawned: the host launched it and this database is
             // taking it on, which is what a watcher's `registered` reason says.
@@ -338,6 +383,7 @@ pub fn apply(
                 continue;
             }
             report.adopted.push(id);
+            record_host_clock(db, id, row.updated_at);
         }
         // Status is the host's: its hooks wrote it. Only a *different* value is
         // written, so an acknowledged `done` is not re-reported as new, and a
@@ -372,7 +418,7 @@ pub fn apply(
                 continue;
             }
             report.deleted.push(id);
-        } else if let Some(false) = local_deleted.get(&id) {
+        } else if let Some((_, false, _)) = local_deleted.get(&id) {
             if gone.force_deleted {
                 let _ = db.mark_session_force_deleted(id);
             }
@@ -390,7 +436,19 @@ pub fn apply(
         .copied()
         .collect();
     report.unknown_local.sort_by_key(|id| id.to_string());
+    report.tombstoned.sort_by_key(|id| id.to_string());
     report
+}
+
+/// Snapshot the host's self-reported `updated_at` on the row this pass just
+/// wrote, best-effort. Only called after an actual local write, so an idle
+/// pass still writes nothing (see the module doc).
+fn record_host_clock(db: &Database, id: SessionId, host_updated_at: Option<u64>) {
+    if let Some(at) = host_updated_at {
+        if let Err(e) = db.set_host_updated_at(id, at) {
+            tracing::warn!("mirror: could not record host clock for {id}: {e}");
+        }
+    }
 }
 
 /// The host's facts on top of what is the observer's own. The pane id is the
@@ -424,12 +482,41 @@ pub fn mirror_host(db: &Database, host: &HostDef, cli: &CliInfo) -> Result<Mirro
     let backend = host.backend_name();
     let active = host_cli::run(host, cli, &["session", "list"])?;
     let deleted = host_cli::run(host, cli, &["session", "list", "--deleted"])?;
-    Ok(apply(
+    let report = apply(
         db,
         &backend,
         &parse_active(&active, &backend),
         &parse_deleted(&deleted),
-    ))
+    );
+    push_tombstones(db, host, cli, &report.tombstoned);
+    Ok(report)
+}
+
+/// Tell the host about the deletes it has not heard: the rows it still lists as
+/// active that were deleted here first.
+///
+/// The counterpart of [`register_unknown`], and unconditional where that one is
+/// opt-in — a delete the host never hears is a window left running there
+/// forever, and the local row cannot express it any other way. Soft, so the
+/// host's own undo window still applies. Best-effort per row: an unreachable
+/// host is retried next pass, since the tombstone does not go away.
+///
+/// Forced as it was taken here: a force delete has already torn the worktrees
+/// down on its side, and pushing it softly would leave the host holding a
+/// restorable row for a session whose checkouts are gone.
+fn push_tombstones(db: &Database, host: &HostDef, cli: &CliInfo, ids: &[SessionId]) {
+    for id in ids {
+        let forced =
+            matches!(db.get_deleted_session_by_id(*id), Ok(Some(row)) if row.force_deleted);
+        let id = id.to_string();
+        let mut args = vec!["session", "delete", &id];
+        if forced {
+            args.push("--force");
+        }
+        if let Err(e) = host_cli::run(host, cli, &args) {
+            tracing::warn!("could not push the delete of {id} to '{}': {e}", host.name);
+        }
+    }
 }
 
 /// Register the local rows the host does not know (`unknown_local`) in the
@@ -443,6 +530,7 @@ pub fn register_unknown(
 ) -> Vec<SessionId> {
     let hooks = db.load_hook_states().unwrap_or_default();
     let bases = db.load_base_branches().unwrap_or_default();
+    let updated = db.load_updated_at().unwrap_or_default();
     let mut registered = Vec::new();
     for id in ids {
         let Ok(Some(row)) = db.get_session_by_id(*id) else {
@@ -452,6 +540,7 @@ pub fn register_unknown(
             &row,
             hooks.get(id).and_then(|r| r.state.as_deref()),
             bases.get(id).map(String::as_str),
+            updated.get(id).copied(),
         )
         .to_string();
         match host_cli::run(host, cli, &["session", "register", "--json-row", &body]) {
@@ -538,6 +627,10 @@ mod tests {
                 "display_order": 3,
                 "base_branch": "main",
                 "hook_state": "blocked",
+                // Later than any tombstone a test here could take, so the
+                // fixture reads as "the host has touched this since". The
+                // tests about that ordering set their own value.
+                "updated_at": u64::MAX,
                 "worktrees": [{
                     "repo_path": "/srv/repo",
                     "worktree_path": "/home/me/.local/share/thurbox/worktrees/repo/feat",
@@ -577,6 +670,7 @@ mod tests {
                 &row.session,
                 row.hook_state.as_deref(),
                 row.base_branch.as_deref(),
+                row.updated_at,
             ),
             BACKEND,
         )
@@ -609,6 +703,7 @@ mod tests {
                 &row.session,
                 row.hook_state.as_deref(),
                 row.base_branch.as_deref(),
+                row.updated_at,
             ),
             BACKEND,
         )
@@ -736,6 +831,110 @@ mod tests {
         );
         assert!(!report.changed());
         assert!(db.list_deleted_sessions().unwrap().is_empty());
+    }
+
+    /// A tombstone taken here, with the host still listing the row as active
+    /// and nothing written there since.
+    fn tombstoned_locally(db: &Database, id: SessionId) -> HostRow {
+        db.upsert_session(&local_row(id, "foo")).unwrap();
+        db.soft_delete_session(id).unwrap();
+        let deleted_at = db
+            .get_deleted_session_by_id(id)
+            .unwrap()
+            .unwrap()
+            .deleted_at;
+        let mut row = host_row(id, "foo");
+        row.updated_at = Some(deleted_at - 1);
+        row
+    }
+
+    #[test]
+    fn a_local_tombstone_beats_a_host_row_the_host_has_not_touched_since() {
+        // The delete landed here while the host's CLI was unusable, so the host
+        // still lists the row as active. Reading that as "restore me" undid the
+        // delete on every pass for as long as the two disagreed.
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+        let row = tombstoned_locally(&db, id);
+
+        let report = apply(&db, BACKEND, &[row], &[]);
+
+        assert_eq!(report.tombstoned, vec![id]);
+        assert!(report.restored.is_empty());
+        assert!(db.get_session_by_id(id).unwrap().is_none());
+        assert!(db.get_deleted_session_by_id(id).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_host_that_reports_no_timestamp_does_not_outrank_a_tombstone() {
+        // A peer older than the field says nothing about when it wrote the row,
+        // and "I cannot tell" must not be the answer that resurrects a session.
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+        let mut row = tombstoned_locally(&db, id);
+        row.updated_at = None;
+
+        let report = apply(&db, BACKEND, &[row], &[]);
+
+        assert_eq!(report.tombstoned, vec![id]);
+        assert!(db.get_session_by_id(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_host_row_written_after_the_tombstone_is_a_restore() {
+        // The other half of the ordering: a peer that restored the session on
+        // the host wrote its row after the delete here, and that outranks the
+        // tombstone — otherwise the mirror would just re-delete it.
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+        let mut row = tombstoned_locally(&db, id);
+        row.updated_at = row.updated_at.map(|at| at + 2);
+
+        let report = apply(&db, BACKEND, &[row], &[]);
+
+        assert_eq!(report.restored, vec![id]);
+        assert!(report.tombstoned.is_empty());
+        assert!(db.get_session_by_id(id).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_host_restore_survives_a_slower_host_clock() {
+        // The host's `updated_at` and this machine's `deleted_at` are two
+        // different clocks. Comparing them directly means a host whose clock
+        // merely runs behind this machine's can write a genuine restore whose
+        // `updated_at` still reads below `deleted_at` — and a comparison that
+        // trusted that ordering would push the delete right back, destroying
+        // the very session the host's user just restored. Ordering the
+        // restore against the host's own last-known reading instead (schema
+        // v45) is immune to the offset between the two clocks.
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+
+        let mut adopted = host_row(id, "foo");
+        adopted.updated_at = Some(100);
+        apply(&db, BACKEND, &[adopted], &[]);
+        assert!(db.get_session_by_id(id).unwrap().is_some());
+
+        db.soft_delete_session(id).unwrap();
+        let deleted_at = db
+            .get_deleted_session_by_id(id)
+            .unwrap()
+            .unwrap()
+            .deleted_at;
+
+        // The host's clock is far behind this one: its new reading for the
+        // restore is only just past its own last-known value, nowhere near
+        // `deleted_at` (a real wall-clock timestamp).
+        let mut restored = host_row(id, "foo");
+        restored.updated_at = Some(101);
+        assert!(restored.updated_at.unwrap() < deleted_at);
+
+        let report = apply(&db, BACKEND, &[restored], &[]);
+
+        assert_eq!(report.restored, vec![id]);
+        assert!(report.tombstoned.is_empty());
+        assert!(db.get_session_by_id(id).unwrap().is_some());
+        assert!(db.get_deleted_session_by_id(id).unwrap().is_none());
     }
 
     #[test]

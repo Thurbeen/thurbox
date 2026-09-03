@@ -334,8 +334,16 @@ fn parse_discovered(line: &str) -> Option<DiscoveredSession> {
 /// `tb-foo` would resolve ambiguously when both `tb-foo` and
 /// `tb-foo-bar` exist — `send-keys`/`capture-pane` then fails with
 /// "ambiguous window" and the caller's text is silently dropped.
-fn window_target(session_name: &str) -> String {
-    format!("{TMUX_SESSION}:={}", agent_window_name(session_name))
+fn window_target(window_name: &str) -> String {
+    format!("{TMUX_SESSION}:={window_name}")
+}
+
+/// The window name a session's `role` window carries.
+fn window_name_for(role: WindowRole, session_name: &str) -> String {
+    match role {
+        WindowRole::Shell => shell_window_name(session_name),
+        _ => agent_window_name(session_name),
+    }
 }
 
 /// The tmux window option carrying the id of the session row that owns a
@@ -499,6 +507,14 @@ impl WindowIndex {
         self.locate(session_id, session_name, WindowRole::Agent, true)
     }
 
+    /// Where a session's companion shell window is. Resolved by the same stamp
+    /// as its agent: the row's `shell_backend_id` is only ever set once the
+    /// interface has opened the shell, so a session that has one is routinely a
+    /// session whose column is NULL.
+    pub fn shell_window(&self, session_id: &str, session_name: &str) -> Located {
+        self.locate(session_id, session_name, WindowRole::Shell, false)
+    }
+
     /// Whether the listing puts `pane` in an agent window this session may
     /// claim — the positive reading, where a pane the listing does not place is
     /// only an absence.
@@ -560,10 +576,7 @@ impl WindowIndex {
                 }
             }
         }
-        let window = match role {
-            WindowRole::Shell => shell_window_name(session_name),
-            _ => agent_window_name(session_name),
-        };
+        let window = window_name_for(role, session_name);
         let named: Vec<&ListedWindow> = self
             .by_name
             .get(&window)
@@ -621,6 +634,18 @@ pub fn local_window_index() -> Result<WindowIndex> {
     Ok(WindowIndex::from_listing(TmuxBackend::local().discover()?))
 }
 
+/// Every thurbox window on `host`'s server, indexed — [`local_window_index`]
+/// for a machine that is not this one.
+///
+/// One `list-windows` over the transport and nothing else: no control mode, so
+/// asking what a host holds never brings a server into being there.
+pub fn remote_window_index(host: &crate::session::HostDef) -> Result<WindowIndex> {
+    known_host_socket(host)?;
+    Ok(WindowIndex::from_listing(
+        TmuxBackend::from_host(host).discover()?,
+    ))
+}
+
 /// Whether the local multiplexer is psmux, which has no usable window options
 /// (ADR-13) and so leaves every window unstamped.
 ///
@@ -639,8 +664,14 @@ fn local_mux_is_psmux() -> bool {
 /// tmux matches exactly and resolves to an arbitrary one of a session's
 /// namesakes.
 fn agent_target(session_id: &str, session_name: &str) -> Option<String> {
+    owned_target(session_id, session_name, WindowRole::Agent)
+}
+
+/// [`agent_target`] for any of a session's windows — its agent, or the
+/// companion shell a teardown has to take down with it.
+fn owned_target(session_id: &str, session_name: &str, role: WindowRole) -> Option<String> {
     let located = match local_window_index() {
-        Ok(index) => index.agent_window(session_id, session_name),
+        Ok(index) => index.locate(session_id, session_name, role, false),
         Err(e) => {
             debug!("could not list windows to resolve '{session_name}': {e:#}");
             Located::Unknown
@@ -649,7 +680,9 @@ fn agent_target(session_id: &str, session_name: &str) -> Option<String> {
     match located {
         Located::At(pane) => Some(pane),
         Located::Absent => None,
-        Located::Unknown => local_mux_is_psmux().then(|| window_target(session_name)),
+        Located::Unknown => {
+            local_mux_is_psmux().then(|| window_target(&window_name_for(role, session_name)))
+        }
     }
 }
 
@@ -818,6 +851,22 @@ impl TmuxBackend {
     fn tmux_run(&self, args: &[&str]) -> Result<()> {
         self.run_tmux(args)?;
         Ok(())
+    }
+
+    /// Kill a pane with a one-shot command rather than through control mode.
+    ///
+    /// The teardown path's kill. [`SessionBackend::kill`] goes through control
+    /// mode, which a caller must open with
+    /// [`ensure_ready`](SessionBackend::ensure_ready) — and that *creates* the
+    /// server and the thurbox session when they are absent, so tearing a
+    /// session down on a host would leave an empty server behind. A pane that
+    /// is already gone is not an error: the teardown got what it wanted.
+    fn kill_pane_oneshot(&self, pane: &str) -> Result<()> {
+        match self.run_tmux(&["kill-pane", "-t", pane]) {
+            Ok(_) => Ok(()),
+            Err(e) if format!("{e:#}").contains("find pane") => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Execute a tmux command on the thurbox socket and check for errors.
@@ -2682,9 +2731,15 @@ pub fn agent_window(
     session_name: &str,
 ) -> Result<Located> {
     let backend = match host {
-        Some(host) => TmuxBackend::from_host(host),
+        Some(host) => {
+            known_host_socket(host)?;
+            TmuxBackend::from_host(host)
+        }
         None => TmuxBackend::local(),
     };
+    // A one-shot `list-windows`, and deliberately nothing more: `discover`
+    // answers empty for a server that is not there, where starting control
+    // mode would bring one into being.
     let index = WindowIndex::from_listing(backend.discover()?);
     Ok(index.live_agent_window(session_id, session_name))
 }
@@ -2748,36 +2803,110 @@ pub(crate) fn own_socket_path(tmux_env: &str) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
-/// Kill a session's window on `host`, best-effort.
+/// The socket a remote operation on `host` may act on, or why it must not act
+/// at all.
+///
+/// A host that runs a thurbox of its own owns the socket its sessions live on:
+/// its `hosts.toml` override, or what its CLI reported ([`learn_host_socket`]).
+/// This build's compile-time default is a guess about somebody else's machine —
+/// a dev build would aim at `thurbox-dev` while the host's release binary runs
+/// `thurbox`, and a host with a relocated data dir derives a name of its own —
+/// so a teardown refuses rather than acting on it. With sharing off nothing but
+/// this thurbox writes there, so the default is ours by construction.
+pub fn known_host_socket(host: &crate::session::HostDef) -> Result<String> {
+    if let Some(socket) = host
+        .socket
+        .clone()
+        .or_else(|| learned_host_socket(&host.backend_name()))
+    {
+        return Ok(socket);
+    }
+    if !host.shareable() {
+        return Ok(TMUX_SOCKET.to_string());
+    }
+    bail!(
+        "socket unknown for host '{}': it runs a thurbox of its own and has not \
+         reported which socket that is (set `socket` in hosts.toml, or make its \
+         thurbox-cli reachable)",
+        host.name
+    )
+}
+
+/// Kill the windows a session owns on `host`: its agent and, when it has one,
+/// its companion shell. Returns whether the *agent* window came down.
 ///
 /// Mirror of [`kill_window`] for the SSH transport, and strict in the same
 /// way: the pane a row remembers is a *hint* — the host's tmux server reissues
 /// ids from `%0` when it restarts, so a remembered `%N` can be a live
 /// namesake's pane afterwards. Only a window the host's own listing stamps for
-/// this session is killed. `pane_id` is the psmux fallback, where nothing is
+/// this session is killed. `panes` is the psmux fallback, where nothing is
 /// stamped and a name cannot be told apart from its namesake's.
-pub fn kill_pane_remote(
+///
+/// One listing serves both roles — an ssh round trip per role would double the
+/// cost of every remote teardown — and nothing here starts control mode:
+/// [`TmuxBackend::ensure_ready`] *creates* the server and the thurbox session
+/// on the host, which is how tearing a session down came to leave empty
+/// servers on other people's machines.
+pub fn kill_remote_windows(
     host: &crate::session::HostDef,
     session_id: &str,
     session_name: &str,
-    pane_id: &str,
+    panes: SessionPanes<'_>,
 ) -> Result<bool> {
+    known_host_socket(host)?;
     let backend = TmuxBackend::from_host(host);
-    backend.ensure_ready()?;
-    let located =
-        WindowIndex::from_listing(backend.discover()?).agent_window(session_id, session_name);
+    let index = WindowIndex::from_listing(backend.discover()?);
+    let killed = kill_located(
+        &backend,
+        index.agent_window(session_id, session_name),
+        panes.agent,
+        session_name,
+        &host.name,
+    )?;
+    kill_located(
+        &backend,
+        index.shell_window(session_id, session_name),
+        panes.shell,
+        session_name,
+        &host.name,
+    )?;
+    Ok(killed)
+}
+
+/// The pane ids a row remembers for its two windows — the psmux fallback and
+/// nothing more, since a stamped window is resolved without them.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SessionPanes<'a> {
+    pub agent: &'a str,
+    /// Usually empty: `shell_backend_id` is written only once the interface has
+    /// opened a shell for the session.
+    pub shell: &'a str,
+}
+
+impl<'a> SessionPanes<'a> {
+    /// The agent's pane alone, for a caller with no shell to speak of.
+    pub fn agent(agent: &'a str) -> Self {
+        Self { agent, shell: "" }
+    }
+}
+
+/// Kill what a listing placed, if it placed anything this session may claim.
+fn kill_located(
+    backend: &TmuxBackend,
+    located: Located,
+    psmux_fallback: &str,
+    session_name: &str,
+    host_name: &str,
+) -> Result<bool> {
     match located {
-        Located::At(pane) => backend.kill(&pane).map(|()| true),
+        Located::At(pane) => backend.kill_pane_oneshot(&pane).map(|()| true),
         // Already gone, or never this session's to begin with.
         Located::Absent => Ok(false),
-        Located::Unknown if backend.transport.uses_psmux() && !pane_id.is_empty() => {
-            backend.kill(pane_id).map(|()| true)
+        Located::Unknown if backend.transport.uses_psmux() && !psmux_fallback.is_empty() => {
+            backend.kill_pane_oneshot(psmux_fallback).map(|()| true)
         }
         Located::Unknown => {
-            debug!(
-                "not killing a window on {}: '{session_name}' is ambiguous there",
-                host.name
-            );
+            debug!("not killing a window on {host_name}: '{session_name}' is ambiguous there");
             Ok(false)
         }
     }
@@ -2791,6 +2920,21 @@ pub fn kill_pane_remote(
 /// reaped, and `kill-window -t tb-<name>` matches an arbitrary one of them.
 pub fn kill_window(session_id: &str, session_name: &str) -> Result<()> {
     match agent_target(session_id, session_name) {
+        Some(target) => kill_window_at(&target),
+        None => Ok(()),
+    }
+}
+
+/// Kill the session's companion shell window (`tbs-`), if the local server
+/// still holds one.
+///
+/// The other half of [`kill_window`]: a session owns two windows, and a
+/// teardown that takes only the agent leaves a `tbs-` shell running for a row
+/// that no longer exists. Resolved by the same stamp, so a NULL
+/// `shell_backend_id` — the usual state, since the column is written only when
+/// the interface opens the shell — costs nothing.
+pub fn kill_shell_window(session_id: &str, session_name: &str) -> Result<()> {
+    match owned_target(session_id, session_name, WindowRole::Shell) {
         Some(target) => kill_window_at(&target),
         None => Ok(()),
     }
@@ -3411,6 +3555,41 @@ mod tests {
         assert_eq!(backend.session, "sess-vm");
     }
 
+    #[test]
+    fn a_shareable_host_that_has_not_said_which_socket_it_uses_is_refused() {
+        // A remote teardown used to fall back on this build's own socket name.
+        // On a host running its own thurbox that is a guess about somebody
+        // else's machine — a dev build aims at `thurbox-dev` while the host's
+        // release binary runs `thurbox`, and a relocated data dir derives a
+        // name of its own — so the teardown acted on an empty server, and
+        // `ensure_ready` created one there while it was at it.
+        let host = crate::session::HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            ..Default::default()
+        };
+        let refusal = format!("{:#}", known_host_socket(&host).unwrap_err());
+        assert!(
+            refusal.contains("socket unknown for host 'devbox'"),
+            "{refusal}"
+        );
+
+        // Sharing off: nothing but this thurbox writes there, so its own socket
+        // is the host's by construction.
+        let solo = crate::session::HostDef {
+            share_sessions: false,
+            ..host.clone()
+        };
+        assert_eq!(known_host_socket(&solo).unwrap(), TMUX_SOCKET);
+
+        // And a pinned socket answers without asking anyone.
+        let pinned = crate::session::HostDef {
+            socket: Some("thurbox".into()),
+            ..host
+        };
+        assert_eq!(known_host_socket(&pinned).unwrap(), "thurbox");
+    }
+
     // Compile-time check: channel capacity must be large enough to buffer heavy output.
     const _: () = assert!(PANE_CHANNEL_CAPACITY >= 1024);
 
@@ -3590,6 +3769,29 @@ mod tests {
     fn a_sessions_shell_window_is_not_its_agent() {
         let index = WindowIndex::from_listing([listed("%5", "tbs-fleet", ONE, WindowRole::Shell)]);
         assert_eq!(index.agent_window(ONE, "fleet"), Located::Absent);
+        assert_eq!(index.shell_window(ONE, "fleet"), Located::At("%5".into()));
+    }
+
+    /// The rule a teardown reads the companion shell by. `shell_backend_id` is
+    /// written only once the interface has opened one, so most rows carry no id
+    /// for their shell at all and the stamp is the whole answer — including the
+    /// answer that a namesake's shell is *not* this session's to kill.
+    #[test]
+    fn a_shell_window_is_owned_by_its_stamp_the_way_an_agent_window_is() {
+        let theirs = WindowIndex::from_listing([listed("%5", "tbs-fleet", TWO, WindowRole::Shell)]);
+        assert_eq!(theirs.shell_window(ONE, "fleet"), Located::Absent);
+
+        // Unstamped and alone: the pre-ADR-25 shape, and psmux's permanent one.
+        let legacy = WindowIndex::from_listing([listed("%5", "tbs-fleet", "", WindowRole::Shell)]);
+        assert_eq!(legacy.shell_window(ONE, "fleet"), Located::At("%5".into()));
+
+        // Two of them, neither stamped: nobody can say, and a teardown that
+        // guessed would take a live session's shell down.
+        let ambiguous = WindowIndex::from_listing([
+            listed("%5", "tbs-fleet", "", WindowRole::Shell),
+            listed("%6", "tbs-fleet", "", WindowRole::Shell),
+        ]);
+        assert_eq!(ambiguous.shell_window(ONE, "fleet"), Located::Unknown);
     }
 
     /// `remain-on-exit` keeps a failed agent's window in place so the error is
@@ -3719,8 +3921,10 @@ mod tests {
         // Without `=`, tmux treats the window name as a pattern and will
         // resolve `tb-foo` ambiguously when both `tb-foo` and
         // `tb-foo-bar` exist. The `=` prefix forces exact-match lookup.
-        let t = window_target("foo");
+        let t = window_target(&agent_window_name("foo"));
         assert!(t.ends_with(":=tb-foo"), "got {t}");
+        let shell = window_target(&shell_window_name("foo"));
+        assert!(shell.ends_with(":=tbs-foo"), "got {shell}");
     }
 
     #[test]

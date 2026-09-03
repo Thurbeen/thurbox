@@ -1685,8 +1685,13 @@ thurbox-cli message inbox --for flow --claim</code></pre>
             <code>session delete &lt;uuid&gt;</code>
             is a
             <strong>soft-delete</strong>
-            by default: it only marks the database row deleted. A running TUI kills the tmux window
-            once the 10-second undo window closes; the worktrees stay, which is what makes
+            by default: it only marks the database row deleted. Its tmux windows &mdash; the agent's
+            and the companion shell's &mdash; come down once the 10-second undo window closes: a
+            running TUI does it, the
+            <code>automation tick</code>
+            heartbeat does it with no TUI open, and
+            <code>session reap &lt;session&gt;</code>
+            does it on demand. The worktrees stay, which is what makes
             <code>session restore &lt;uuid&gt;</code>
             &mdash; or
             <code>Ctrl+Z</code>

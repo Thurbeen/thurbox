@@ -418,7 +418,12 @@ pub fn spawn_session_headless_with_progress(
         // sessions share destroys a live one. Leaking the window we already
         // leaked is the cheap failure; killing someone else's is not.
         let cleanup = match host.as_ref() {
-            Some(h) => crate::agent::tmux::kill_pane_remote(h, &stamp, &req.name, &backend_id),
+            Some(h) => crate::agent::tmux::kill_remote_windows(
+                h,
+                &stamp,
+                &req.name,
+                crate::agent::tmux::SessionPanes::agent(&backend_id),
+            ),
             None => crate::agent::tmux::kill_window(&stamp, &req.name).map(|()| true),
         };
         match cleanup {
