@@ -360,7 +360,11 @@ fn collect_cells<'a>(value: &'a Value, fields: &[Field], out: &mut Vec<&'a Value
 }
 
 /// Encode one primitive token, quoting per §7.2 against `delim`.
-fn scalar(value: &Value, delim: char) -> String {
+///
+/// `pub(crate)`: [`crate::cli::watch`]'s streamed TOON rows share this rather
+/// than hand-rolling their own quoting, since a session name is free-form and
+/// can carry the delimiter, a colon, or anything else §7.2 requires quoted.
+pub(crate) fn scalar(value: &Value, delim: char) -> String {
     match value {
         Value::Null => "null".to_string(),
         Value::Bool(b) => b.to_string(),

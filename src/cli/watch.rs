@@ -98,8 +98,17 @@ pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), String>
             .map_err(|e| tracing::warn!("could not read the event log head: {e}"))
             .unwrap_or_default()
     });
+    // Seeds the per-session park state that `drain` advances from here: an
+    // event's own `stopped`/`started` reason updates it, everything else reads
+    // it as of the last event *for that session*, never a later batch's
+    // snapshot (see `drain`'s doc comment).
+    let seed_facts = db.load_session_facts().unwrap_or_default();
+    let mut stopped_state: HashMap<SessionId, bool> = seed_facts
+        .iter()
+        .map(|(id, facts)| (*id, facts.stopped))
+        .collect();
     if args.initial {
-        let facts = db.load_session_facts().unwrap_or_default();
+        let facts = &seed_facts;
         let states = db.load_hook_states().unwrap_or_default();
         for session in db.list_active_sessions().unwrap_or_default() {
             if filter.is_some_and(|only| only != session.id) {
@@ -130,7 +139,15 @@ pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), String>
     // moved `data_version`, so the gate below would sit on it until somebody
     // else committed again.
     let mut version = db.data_version().unwrap_or_default();
-    if !drain(db, &registry, filter, &mut seq, &args, &mut out) {
+    if !drain(
+        db,
+        &registry,
+        filter,
+        &mut seq,
+        &args,
+        &mut stopped_state,
+        &mut out,
+    ) {
         return Ok(());
     }
 
@@ -148,7 +165,15 @@ pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), String>
         }
         version = current;
 
-        if !drain(db, &registry, filter, &mut seq, &args, &mut out) {
+        if !drain(
+            db,
+            &registry,
+            filter,
+            &mut seq,
+            &args,
+            &mut stopped_state,
+            &mut out,
+        ) {
             return Ok(());
         }
     }
@@ -170,12 +195,19 @@ fn remaining(deadline: Option<Instant>) -> Option<Duration> {
 
 /// Emit every event after `seq`, advancing it. `false` means the reader is gone
 /// and the stream is over.
+///
+/// `stopped_state` carries each session's park state forward event by event,
+/// rather than reading it once per batch: the naming facts (`facts`, below)
+/// are the row *as of after the whole batch*, so two events for the same
+/// session sharing a batch — a `state` transition followed by a park, say —
+/// would otherwise both read the park state that only the second one earned.
 fn drain(
     db: &Database,
     registry: &crate::session::AgentRegistry,
     filter: Option<SessionId>,
     seq: &mut i64,
     args: &WatchArgs,
+    stopped_state: &mut HashMap<SessionId, bool>,
     out: &mut Stream,
 ) -> bool {
     loop {
@@ -190,11 +222,22 @@ fn drain(
             return true;
         }
         // One read of the naming facts per batch: an event names a session, and
-        // the row it names is the same row for every event in the batch.
+        // the row it names is the same row for every event in the batch. Only
+        // `stopped` needs point-in-time tracking; the rest doesn't change
+        // mid-batch the way a park does.
         let facts = db.load_session_facts().unwrap_or_default();
         for event in &events {
             *seq = event.seq;
-            if !out.write(&line(db, registry, &facts, event, args.verify)) {
+            let stopped = match event.reason.as_str() {
+                "stopped" => true,
+                "started" => false,
+                _ => stopped_state
+                    .get(&event.session_id)
+                    .copied()
+                    .unwrap_or(false),
+            };
+            stopped_state.insert(event.session_id, stopped);
+            if !out.write(&line(db, registry, &facts, event, stopped, args.verify)) {
                 return false;
             }
         }
@@ -208,12 +251,15 @@ fn drain(
 ///
 /// The state is assessed from the event's **own** `to_state` rather than the
 /// row's current one: two transitions inside one wake-up are two events, and
-/// re-reading the row would report the later one twice.
+/// re-reading the row would report the later one twice. `stopped` is likewise
+/// the mark as of *this* event ([`drain`]'s `stopped_state`), not the row's
+/// current one.
 fn line(
     db: &Database,
     registry: &crate::session::AgentRegistry,
     facts: &HashMap<SessionId, SessionFacts>,
     event: &SessionEventRow,
+    stopped: bool,
     verify: bool,
 ) -> Value {
     let unknown = SessionFacts {
@@ -223,13 +269,6 @@ fn line(
         stopped: false,
     };
     let facts = facts.get(&event.session_id).unwrap_or(&unknown);
-    // The mark as of *this* event, not as of now: a park and an un-park inside
-    // one wake-up would otherwise both read as whichever landed last.
-    let stopped = match event.reason.as_str() {
-        "stopped" => true,
-        "started" => false,
-        _ => facts.stopped,
-    };
     // Only the pane probe needs the backend, and only a live row has a pane to
     // probe — so the lookup is paid for exactly where it is used.
     let probe = verify && event.event != "gone";
@@ -412,15 +451,13 @@ impl Stream {
     }
 }
 
-/// One TOON row: the [`COLUMNS`] cells of this event, comma-delimited.
+/// One TOON row: the [`COLUMNS`] cells of this event, comma-delimited and
+/// quoted per §7.2 by the same encoder every other TOON surface uses — a
+/// session name is free-form and can otherwise carry the delimiter itself.
 fn row(event: &Value) -> String {
     COLUMNS
         .iter()
-        .map(|column| match event.get(*column) {
-            Some(Value::String(s)) => s.clone(),
-            Some(Value::Null) | None => String::new(),
-            Some(other) => other.to_string(),
-        })
+        .map(|column| crate::cli::toon::scalar(event.get(*column).unwrap_or(&Value::Null), ','))
         .collect::<Vec<_>>()
         .join(",")
 }
