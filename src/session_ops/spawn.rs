@@ -1316,6 +1316,17 @@ fn dir_label(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "repo".to_string())
 }
 
+/// The backend a creation on `host` will land on — `local-tmux`, or
+/// `ssh:<host>`/`wsl:<distro>`.
+///
+/// Exposed for `--on-existing`, which has to compare a proposed creation
+/// against the rows already on *that* backend: a database mirroring a shareable
+/// host (ADR-24) holds that host's rows beside its own, and matching a name
+/// across all of them let a local create replace a session on another machine.
+pub(crate) fn backend_type_for(host: Option<&str>) -> Result<String, String> {
+    resolve_host(host).map(|(backend, _)| backend)
+}
+
 /// Resolve `--host` to `(backend_type, host)`.
 ///
 /// `None`/empty → the local backend. A named host must exist in `hosts.toml`

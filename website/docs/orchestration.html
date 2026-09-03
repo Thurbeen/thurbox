@@ -422,7 +422,9 @@ thurbox-cli session list --parent "$LEAD" --json</code></pre>
   <code>1</code>
   ran and failed,
   <code>2</code>
-  bad invocation), and the trap that follows is worth naming:
+  bad invocation,
+  <code>3</code>
+  a session reference matched more than one session), and the trap that follows is worth naming:
   <code>thurbox-cli &hellip; --json | jq -r '.field'</code>
   exits
   <strong>0 with empty output</strong>

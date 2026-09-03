@@ -31,9 +31,11 @@ use rusqlite::Connection;
 /// v43 adds `session_events`, the append-only log `thurbox-cli watch`
 /// streams: every writer that changes what a watcher reports appends a row in
 /// its own transaction, so two writes in the same instant are two events
-/// rather than one sampled diff.
+/// rather than one sampled diff. v44 adds `reports_as` to `sessions`: the
+/// agent a driver actually launched inside a pane thurbox opened for
+/// something else, which is what hook coverage has to be read against.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 43;
+pub const SCHEMA_VERSION: u32 = 44;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -105,6 +107,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             launch_args       TEXT,
             launch_env        TEXT,
             stopped_at        INTEGER,
+            reports_as        TEXT,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -345,6 +348,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (41, migrate_v41_joinable),
         (42, migrate_v42_worktree_provenance),
         (43, migrate_v43_session_events),
+        (44, migrate_v44_reports_as),
     ];
 
     for &(target, step) in steps {

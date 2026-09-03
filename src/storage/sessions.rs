@@ -480,6 +480,60 @@ impl Database {
         }))
     }
 
+    /// Record which agent a session's pane actually runs, or clear the record
+    /// with `None`.
+    ///
+    /// The row's own `agent` says what thurbox launched; for a `--command`
+    /// session that is a shell, a REPL or a build watcher, and a driver that
+    /// then starts a coding agent inside it is the only party that knows. Hook
+    /// coverage is read against this when it is set — see
+    /// [`crate::session::coverage_for`].
+    ///
+    /// Written by name rather than through [`upsert_session`](Self::upsert_session)
+    /// for the reason the launch recipe is: a peer mirroring this machine
+    /// round-trips rows through that upsert and would clear the column.
+    pub fn set_reports_as(&self, id: SessionId, agent: Option<&str>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET reports_as = ?1 WHERE id = ?2",
+            params![agent, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The agent every session declared with [`set_reports_as`](Self::set_reports_as),
+    /// keyed by id — one query for a listing rather than one per row.
+    ///
+    /// Absent from the map means "the agent the row names", which is what every
+    /// caller assumed before the column existed.
+    pub fn load_reports_as(&self) -> rusqlite::Result<HashMap<SessionId, String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, reports_as FROM sessions              WHERE reports_as IS NOT NULL AND reports_as <> ''",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?.parse().unwrap_or_default(),
+                row.get::<_, String>(1)?,
+            ))
+        })?;
+        rows.collect()
+    }
+
+    /// Whether a session was created from a raw command rather than an
+    /// `agents.toml` entry, for every session at once.
+    ///
+    /// `launch_command` is the discriminant the restart path already reads
+    /// (schema v41); a diagnostic needs the same answer for a whole listing,
+    /// and asking per row would be a query per session.
+    pub fn load_command_sessions(&self) -> rusqlite::Result<HashSet<SessionId>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM sessions WHERE launch_command IS NOT NULL AND launch_command <> ''",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(row.get::<_, String>(0)?.parse().unwrap_or_default())
+        })?;
+        rows.collect()
+    }
+
     /// Mark a session stopped (`true`) or running again (`false`).
     ///
     /// The mark is what separates "parked on purpose" from "its window died",

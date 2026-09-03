@@ -16,9 +16,9 @@
 //! with no subcommand prints live state instead of a usage dump
 //! ([`home::run`], principle 8), every result can carry `help[N]:` next steps
 //! ([`output::AgentView`], principle 9), and errors are structured on stdout
-//! with the exit code saying which kind they are — 0 success, 1 failure, 2
-//! usage ([`error_output`], principle 6). The rest are per-command and marked
-//! where they are met.
+//! with the exit code saying which kind they are — [`EXIT_ERROR`],
+//! [`EXIT_USAGE`], [`EXIT_AMBIGUOUS`] ([`error_output`], principle 6). The rest
+//! are per-command and marked where they are met.
 //!
 //! One consequence of principle 6 is a rule the entrypoint enforces: **stdout
 //! carries exactly one document per invocation**. A command that renders a
@@ -26,6 +26,12 @@
 //! validate`) has already written it, so its failure comes back as
 //! [`Outcome::Failed`] and the sentence explaining the exit goes to stderr —
 //! see [`Outcome`].
+//!
+//! That is also why the exit code is only half a contract in one direction: an
+//! `error` key on stdout implies a non-zero exit, but a non-zero exit does
+//! **not** imply an `error` key. `session doctor` on a broken session exits 1
+//! with its report — the report *is* the answer, and a caller that gates on
+//! `$?` before parsing throws away every diagnosis it will ever ask for.
 
 use clap::{Parser, Subcommand};
 
@@ -58,6 +64,76 @@ pub mod version;
 pub mod watch;
 
 use output::{CommandOutput, Format, FormatFlags};
+
+/// The command ran and failed.
+pub const EXIT_ERROR: i32 = 1;
+/// The invocation was wrong: an unknown flag, a missing argument, a bad value.
+pub const EXIT_USAGE: i32 = 2;
+/// The session reference matched more than one session.
+///
+/// Its own code because the answer is different in kind: "no such session" is
+/// something a driver reconciles by creating one, while "several sessions
+/// answer to that name" is something only an operator can settle. AXI
+/// principle 6 asks the two to exit differently, and string-matching the
+/// message was the only way to tell them apart.
+pub const EXIT_AMBIGUOUS: i32 = 3;
+
+/// A failure that left nothing on stdout, and the exit code it deserves.
+///
+/// Almost every failure in the CLI is a plain sentence and takes
+/// [`EXIT_ERROR`]; those travel as `String` inside the subcommand modules and
+/// convert here. The exception is the one a driver has to branch on — an
+/// ambiguous session reference — which carries [`EXIT_AMBIGUOUS`]. There is
+/// deliberately no `From<CommandError> for String`: dropping the code where a
+/// helper happens to return a `String` is exactly how the distinction was lost
+/// before.
+#[derive(Debug)]
+pub struct CommandError {
+    pub message: String,
+    pub exit_code: i32,
+}
+
+impl From<String> for CommandError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            exit_code: EXIT_ERROR,
+        }
+    }
+}
+
+impl From<&str> for CommandError {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_string())
+    }
+}
+
+impl CommandError {
+    /// A failure with an exit code of its own.
+    pub fn with_code(message: impl Into<String>, exit_code: i32) -> Self {
+        Self {
+            message: message.into(),
+            exit_code,
+        }
+    }
+}
+
+// Deref to the message so `err.contains("…")` at a call site — overwhelmingly a
+// test asserting what the failure says — reads the sentence rather than the
+// struct, exactly as `CommandOutput` derefs to its JSON.
+impl std::ops::Deref for CommandError {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 
 /// Drive thurbox's sessions, tasks, automations and interface without the TUI.
 ///
@@ -270,7 +346,7 @@ pub enum Outcome {
 ///
 /// `Err` means nothing was printed. A command that rendered normally and still
 /// wants a non-zero exit comes back as [`Outcome::Failed`].
-pub fn run(cli: Cli, db: &Database) -> Result<Outcome, String> {
+pub fn run(cli: Cli, db: &Database) -> Result<Outcome, CommandError> {
     // A peer probing this machine looks for its CLI under the data dir; keep
     // that pointer true (a readlink when it already is).
     crate::session_ops::host_cli::advertise_running_cli();
@@ -290,9 +366,9 @@ pub fn run(cli: Cli, db: &Database) -> Result<Outcome, String> {
 
     let mut output: CommandOutput = match cli.command {
         // No subcommand: live state, not a usage dump (AXI principle 8).
-        None => home::run(db),
-        Some(command) => dispatch(command, db),
-    }?;
+        None => home::run(db)?,
+        Some(command) => dispatch(command, db)?,
+    };
     if cli.full {
         output.agent.max_text = None;
     }
@@ -332,28 +408,28 @@ fn parse_fields(spec: &str) -> Vec<String> {
 }
 
 /// Route one subcommand to the module that owns it.
-fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, String> {
-    match command {
-        Command::Editor { action } => editor::run(action, db),
-        Command::Agent { action } => agents::run(action, db),
-        Command::Session { action } => sessions::run(action, db),
-        Command::Automation { action } => automations::run(action, db),
-        Command::Task { action } => tasks::run(action, db),
-        Command::Message { action } => messages::run(action, db),
-        Command::Config { action } => config::run(action, db),
-        Command::Extension { action } => extensions::run(action, db),
-        Command::Version(args) => Ok(version::run(args)),
-        Command::Update(args) => Ok(update::run(args)),
-        Command::Notify(args) => Ok(notify::run(args)),
-        Command::Perf => perf::run(db),
+fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, CommandError> {
+    Ok(match command {
+        Command::Editor { action } => editor::run(action, db)?,
+        Command::Agent { action } => agents::run(action, db)?,
+        Command::Session { action } => sessions::run(action, db)?,
+        Command::Automation { action } => automations::run(action, db)?,
+        Command::Task { action } => tasks::run(action, db)?,
+        Command::Message { action } => messages::run(action, db)?,
+        Command::Config { action } => config::run(action, db)?,
+        Command::Extension { action } => extensions::run(action, db)?,
+        Command::Version(args) => version::run(args),
+        Command::Update(args) => update::run(args),
+        Command::Notify(args) => notify::run(args),
+        Command::Perf => perf::run(db)?,
         // Never returns a document: it *is* the document, one line at a time,
         // written as each change lands. Handled before dispatch for that
         // reason — see `run`.
         Command::Watch(_) => unreachable!("handled in run(), which owns the stream"),
-        Command::Runtime { action } => Ok(runtime::run(action)),
+        Command::Runtime { action } => runtime::run(action),
         // The only command that needs no database: a plugin is a file.
-        Command::Plugin { action } => plugins::run(action),
-    }
+        Command::Plugin { action } => plugins::run(action)?,
+    })
 }
 
 /// Render a failure the way AXI principle 6 asks for: a structured document on

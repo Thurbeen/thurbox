@@ -240,6 +240,7 @@ gone — and each one comes with what it takes to judge it:
 | `hook_corroboration`, `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
 | `state`, `state_source` | the best answer available, and where it came from |
 | `stopped` | whether the session is parked — `session stop`, no pane |
+| `reports_as` | the agent the hook fields were read against, when a driver declared one |
 
 `state` is always a word: `unreported` when nothing has reported for
 this session, `uncovered` when its agent is wired to report nothing, and
@@ -274,7 +275,17 @@ lives on its own host's multiplexer. `thurbox-cli session doctor` is the
 same information as a verdict, plus whether the wiring is installed at
 all; it exits non-zero when a session's wiring is broken. An agent
 thurbox ships no hooks for but which is signalling anyway — a driver
-calling `session signal` itself — is a warning, not a failure.
+calling `session signal` itself — is a warning, not a failure, and a
+`--command` session is "no hooks expected": thurbox never had an agent
+there to wire, so there is nothing to find broken.
+
+If your driver launches an agent *inside* such a session, say so with
+`session create --reports-as <agent>` or `session reports-as <ref>
+<agent>`. Every field in the table is then read against that agent
+instead of the command's file stem — including
+`hook_blocked_is_heuristic`, which otherwise reports `false` for a pane
+running claude and tells a supervisor the block signal is structured
+when it is a text match on a notification body.
 
 `session capture --json` adds the pane's live state alongside its text —
 `cursor_row`/`cursor_col`, `foreground_process` and `foreground_command`,
@@ -324,7 +335,7 @@ Errors are **structured documents on stdout**, not lines on stderr —
 AXI principle 6, because an agent reads one stream and a message on
 stderr is one it has to be told to capture. The exit code carries the
 verdict: `0` success, `1` the command ran and failed, `2` the invocation
-was wrong.
+was wrong, `3` a session reference matched more than one session.
 
 The consequence is a trap worth naming. `thurbox-cli … --json | jq -r
 '.field'` exits **0 with empty output** when the command failed: `jq`

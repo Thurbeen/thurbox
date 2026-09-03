@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::cli::identity::calling_session;
 use crate::cli::output::{self, CommandOutput};
+use crate::cli::CommandError;
 use crate::session::{SessionId, SessionMessage};
 use crate::storage::messages::{NewMessage, DEFAULT_RETENTION_DAYS};
 use crate::storage::Database;
@@ -92,7 +93,7 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError> {
     match action {
         Action::Send {
             to,
@@ -131,7 +132,7 @@ fn send_message(
     task: Option<i64>,
     from: Option<String>,
     no_wake: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, CommandError> {
     let recipient = resolve_uuid_or_name(db, &to)?;
     // Provenance + task tag default to the calling session's injected
     // identity (`THURBOX_SESSION` / `THURBOX_TASK`), so an agent never has
@@ -156,7 +157,7 @@ fn reply_message(
     kind: String,
     from: Option<String>,
     no_wake: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, CommandError> {
     let original = db
         .get_message(message_id)
         .map_err(|e| format!("get_message: {e}"))?
@@ -182,7 +183,7 @@ fn reply_message(
 
 /// Resolve the `--from` provenance: an explicit reference, else the calling
 /// session's injected id (`THURBOX_SESSION`).
-fn resolve_from(db: &Database, from: Option<&str>) -> Result<Option<SessionId>, String> {
+fn resolve_from(db: &Database, from: Option<&str>) -> Result<Option<SessionId>, CommandError> {
     match from {
         Some(f) => Ok(Some(resolve_uuid_or_name(db, f)?.id)),
         None => Ok(calling_session_id(db)),
@@ -196,7 +197,7 @@ fn read_inbox(
     claim: bool,
     all: bool,
     limit: Option<usize>,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, CommandError> {
     let recipient = match for_session {
         Some(ref r) => resolve_uuid_or_name(db, r)?,
         None => calling_session(db).ok_or_else(|| {
@@ -234,7 +235,7 @@ fn prune_messages(
     db: &Database,
     older_than_days: Option<u64>,
     read_only: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, CommandError> {
     let days = older_than_days.unwrap_or(DEFAULT_RETENTION_DAYS);
     let cutoff = current_time_millis().saturating_sub(days * MS_PER_DAY);
     let pruned = db
@@ -300,7 +301,7 @@ fn enqueue_and_wake(
     recipient: &SharedSession,
     new: NewMessage,
     no_wake: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, CommandError> {
     let id = db
         .enqueue_message(&new)
         .map_err(|e| format!("enqueue_message: {e}"))?;
@@ -358,7 +359,7 @@ fn calling_task_id() -> Option<i64> {
 /// This module had the only name-aware resolver in the CLI; it now shares the
 /// one every session verb uses ([`super::session_ref`]), which also refuses a
 /// name matching two sessions rather than picking one.
-fn resolve_uuid_or_name(db: &Database, reference: &str) -> Result<SharedSession, String> {
+fn resolve_uuid_or_name(db: &Database, reference: &str) -> Result<SharedSession, CommandError> {
     super::session_ref::resolve(db, reference)
 }
 

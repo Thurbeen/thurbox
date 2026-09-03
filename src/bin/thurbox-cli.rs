@@ -5,9 +5,16 @@
 //! are about the *process* rather than about any one command: a failure that
 //! left nothing to print is a structured document on **stdout**, and the exit
 //! code says which kind of failure it was — `0` success, `1` the command ran
-//! and failed, `2` the invocation was wrong. An agent reads one stream and one
-//! status; splitting the answer across stdout and stderr costs it a retry to
-//! find out what happened.
+//! and failed, `2` the invocation was wrong, `3` the session reference matched
+//! more than one session. An agent reads one stream and one status; splitting
+//! the answer across stdout and stderr costs it a retry to find out what
+//! happened.
+//!
+//! The exit code is the *only* half of that contract a caller may invert. An
+//! `error` key on stdout implies a non-zero exit; the converse does not hold,
+//! because a command whose report *is* the answer (`session doctor`, `config
+//! validate`) prints that report and asks for a non-zero exit anyway. Gate on
+//! the document, not on `$?`.
 //!
 //! The other half of that promise is that stdout carries **exactly one**
 //! document. A command that renders its report and then asks for a non-zero
@@ -18,12 +25,7 @@
 //! single-document parser on exactly the commands an integrator scripts.
 
 use clap::Parser;
-use thurbox::cli::{self, output::Format, output::FormatFlags, Cli};
-
-/// The command ran and failed.
-const EXIT_ERROR: i32 = 1;
-/// The invocation was wrong: an unknown flag, a missing argument, a bad value.
-const EXIT_USAGE: i32 = 2;
+use thurbox::cli::{self, output::Format, output::FormatFlags, Cli, EXIT_ERROR, EXIT_USAGE};
 
 fn main() {
     tracing_subscriber::fmt()
@@ -87,21 +89,29 @@ fn main() {
         // with its own wording and exit 2. Advising `--help` here misattributes
         // "that session has exited" to the arguments, and points at a page that
         // cannot fix it — so the suggestion sends the caller to the state the
-        // message is about.
-        Err(e) => fail(
-            &e,
+        // message is about. The code travels with the message: an ambiguous
+        // session reference is a different answer from a missing one, and only
+        // the failure itself knows which it was.
+        Err(e) => fail_with(
+            &e.message,
             "the command ran and failed; the message says what went wrong — \
              `thurbox-cli` prints the state it was working against",
             "thurbox-cli",
             format,
+            e.exit_code,
         ),
     }
 }
 
 /// Print a structured failure on stdout and exit [`EXIT_ERROR`].
 fn fail(message: &str, suggestion: &str, next: &str, format: Format) -> ! {
+    fail_with(message, suggestion, next, format, EXIT_ERROR)
+}
+
+/// [`fail`], with the exit code the failure asked for.
+fn fail_with(message: &str, suggestion: &str, next: &str, format: Format, code: i32) -> ! {
     println!("{}", cli::error_output(message, suggestion, next, format));
-    std::process::exit(EXIT_ERROR)
+    std::process::exit(code)
 }
 
 /// Turn a clap outcome into an exit.

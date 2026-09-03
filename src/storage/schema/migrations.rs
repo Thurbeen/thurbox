@@ -887,3 +887,21 @@ pub(super) fn migrate_v43_session_events(conn: &Connection) -> rusqlite::Result<
             ON session_events(session_id, seq);",
     )
 }
+
+/// v43 → v44: the agent a session's pane actually runs, when that is not the
+/// agent the row was created with.
+///
+/// A `--command` session is named after the command's file stem, so a driver
+/// that opens a shell and starts `claude` in it leaves thurbox reading hook
+/// coverage against `bash`: coverage `none`, no reportable states, and
+/// `blocked_is_heuristic` false — asserting the block signal is structured when
+/// it is claude's text match on a notification body. `reports_as` is how the
+/// driver says which agent is in there; `NULL` (every pre-v44 row) means "the
+/// one the row names", which is what was always assumed.
+///
+/// Deliberately not part of `upsert_session`, for the same reason the launch
+/// recipe is not: a peer mirroring this machine round-trips rows through that
+/// upsert, and one on an older release would clear the column on every tick.
+pub(super) fn migrate_v44_reports_as(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(conn, "sessions", "reports_as", "TEXT")
+}

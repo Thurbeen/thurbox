@@ -188,7 +188,22 @@ payload's events and that test fails until the table agrees.**
 `thurbox-cli session doctor [uuid]` is the runtime half — whether a given
 session's payload is actually installed where its agent reads it, whether a hook
 command could resolve `thurbox-cli` at all, and whether what was last reported
-is corroborated by the pane.
+is corroborated by the pane. A `--command` session is the one shape it does not
+judge: thurbox never had an agent there to wire, so it reports **no hooks
+expected** rather than broken wiring.
+
+**A pane can run an agent thurbox did not launch.** A `--command` session is
+named after the command's file stem, so a driver that opens a shell and starts
+`claude` inside it leaves every field above resolved against `bash` — coverage
+`none`, no reportable states, and `hook_blocked_is_heuristic: false`, which
+asserts the block signal is structured when it is claude's text match on a
+notification body. `session create --reports-as <agent>` and
+`thurbox-cli session reports-as <ref> <agent>` (`--clear` to take it back) let
+the driver name the agent that actually reports; it is stored on the row
+(`sessions.reports_as`, schema v44), survives restart, and changes nothing about
+the launch — `session restart` still replays the recorded command. Only an agent
+in the table above (or a custom agent that asserts a family with `hook_schema`)
+may be declared: a name with no coverage would unlock nothing, silently.
 
 **On a shared host** (`hosts.toml` `share_sessions = true`, the default — see
 ADR-24) none of the remote rewriting applies: the host's own `thurbox-cli`

@@ -1897,6 +1897,12 @@ four answers. `allow` (the default) creates a second session with that name;
 `adopt` returns the existing one with `created: false`; `replace` tears it down
 first; `fail` refuses and exits 1, naming the session in the way.
 
+The question is asked of **the backend the creation lands on** — this machine,
+or the `--host` it names. The name namespace is wider than that (a mirrored
+host's rows share the table), and matching across it made `replace`
+force-delete a session on another machine, `fail` refuse a local create over a
+remote namesake, and `adopt` hand back an id whose pane is not here.
+
 The default is `allow` because thurbox **cannot** make names unique: a database
 mirroring a shareable host (ADR-24) carries that host's rows beside its own, and
 two machines may each legitimately have a session called `build`. Uniqueness is
@@ -1905,7 +1911,32 @@ namespace — and `fail` exists because, without it, every external driver wrote
 its own list-then-create check with its own race.
 
 `adopt` and `replace` refuse a name matching *several* sessions, on the same
-principle the reference resolver follows: picking one of two is a guess.
+principle the reference resolver follows: picking one of two is a guess — and
+with the same exit code (3), so a driver can tell it from "nothing matched".
+
+`adopt` answers with `stopped` and `state` alongside the rest, because the
+reason to adopt is to skip the follow-up read and what comes back may be a
+parked session — no pane, `send`/`key`/`capture` refused — with nothing else in
+the answer saying so. A real creation publishes the same two fields, so the
+shapes stay identical.
+
+`replace` acts before the spawn and cannot be reordered: the replacement wants
+the branch and the checkout the old session is holding. A spawn that fails after
+the teardown therefore **rolls back** — the replaced session is restored
+best-effort (its row, its branch and its agent), and the error says so.
+Uncommitted work went with the force delete and does not return.
+
+### Saying which agent a pane actually runs
+
+A `--command` session is named after the command's file stem, so a driver that
+opens a shell and starts `claude` in it leaves thurbox reading hook coverage
+against `bash`. `session create --reports-as <agent>` and `session reports-as
+<ref> <agent>` (`--clear` to take it back) record which agent reports;
+`hook_coverage`, `hook_states_reportable`, `hook_delivery` and
+`hook_blocked_is_heuristic` are then read against it, and `reports_as` is
+published beside them. The launch is untouched: `session restart` still replays
+the recorded command. `session doctor` reads the same fact — an undeclared
+command session is "no hooks expected", not broken wiring.
 
 ### Stopping is not deleting
 

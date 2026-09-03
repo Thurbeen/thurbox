@@ -524,6 +524,13 @@ pub struct Assessment {
     /// not. Set by [`Self::parked`], and the one fact here that is thurbox's
     /// own rather than the agent's or the pane's.
     pub stopped: bool,
+    /// The agent every answer above was resolved against.
+    ///
+    /// Usually the session's own, but a `--command` session whose driver
+    /// declared what it launched (`session reports-as`) is judged against
+    /// *that* agent — so a reader can see which name the coverage belongs to
+    /// rather than assuming it is the row's.
+    pub agent: String,
 }
 
 impl Assessment {
@@ -604,6 +611,7 @@ impl Assessment {
             state: state.as_ref().map(|(s, _)| s.clone()),
             state_source: state.map(|(_, source)| source),
             stopped: false,
+            agent: agent.to_string(),
         }
     }
 

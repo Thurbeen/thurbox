@@ -551,6 +551,15 @@ thurbox-cli session doctor &lt;uuid&gt;       # just one</code></pre>
             <code>thurbox-cli extension reinstall hooks</code>
             is the repair.
           </p>
+          <p>
+            A
+            <code>--command</code>
+            session is the one shape it will not fail: Thurbox never had an agent there to wire, so
+            it reports
+            <em>no hooks expected</em>
+            rather than broken wiring. If your driver started an agent inside one, say so &mdash;
+            see below.
+          </p>
 
           <h2 id="own-agent">
             Reporting state for an agent Thurbox did not launch
@@ -580,6 +589,33 @@ thurbox-cli session signal --state blocked --session &lt;uuid&gt;   # from outsi
             with
             <code>state_source: "process"</code>
             , which is coarser than a hook by design but is not silence.
+          </p>
+          <p>
+            If what you launched in that pane
+            <em>is</em>
+            an agent Thurbox ships hooks for &mdash; you passed
+            <code>thurbox-cli agent launch-args claude</code>
+            through yourself, say &mdash; tell the row so:
+          </p>
+          <pre><code class="language-bash">thurbox-cli session create --name task-7 --command "$SHELL" --arg -i --reports-as claude
+thurbox-cli session reports-as task-7 claude   # or afterwards
+thurbox-cli session reports-as task-7 --clear  # take it back</code></pre>
+          <p>
+            The session is named after the command it launches, so without this
+            <code>hook_coverage</code>
+            ,
+            <code>hook_states_reportable</code>
+            and
+            <code>hook_blocked_is_heuristic</code>
+            are all read against
+            <code>bash</code>
+            &mdash; and that last one answering
+            <code>false</code>
+            tells a supervisor the block signal is structured when it is really a text match on a
+            notification body. The declaration changes only what coverage is read against: the
+            launch is untouched, and
+            <code>session restart</code>
+            still replays the command you recorded.
           </p>
 
           <h2 id="optout">

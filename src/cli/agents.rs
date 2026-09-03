@@ -16,6 +16,7 @@ use clap::Subcommand;
 use serde_json::json;
 
 use crate::cli::output::CommandOutput;
+use crate::cli::CommandError;
 use crate::storage::Database;
 
 #[derive(Subcommand, Debug)]
@@ -41,7 +42,7 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError> {
     match action {
         Action::LaunchArgs { agent, session } => {
             let session = session

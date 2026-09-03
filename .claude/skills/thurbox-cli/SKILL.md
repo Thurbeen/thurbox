@@ -35,7 +35,7 @@ thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children onl
 ```
 
 Subcommands: `agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/restore/restart
-[`--if-missing`]/stop/start/fork/exec/meta/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
+[`--if-missing`]/stop/start/fork/exec/meta/reports-as/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
 `sync`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
 the session event log, one event per line), `runtime` (status/stop — what
 thurbox runs that is not a session), `automation` (alias `auto`:
@@ -78,8 +78,11 @@ Every session verb takes the same reference, resolved in that order: a full
 UUID first (unambiguous by construction), then an exact name, then a unique id
 prefix. **Ambiguity is refused, never guessed** — names are not unique (thurbox
 does not enforce it, and a mirrored host contributes rows that legitimately
-collide), so a reference matching two sessions exits non-zero and names both
-ids. `--parent` resolves the same way.
+collide), so a reference matching two sessions exits **3** and names both ids —
+its own code, because a driver reconciles "no such session" (exit 1) by creating
+one and can only escalate "several answer to that name". `--parent` and
+`session restore` resolve the same way; restore resolves against the *deleted*
+rows, since that is where its subject now is.
 
 `session create --on-existing <allow|adopt|replace|fail>` answers "a session of
 this name already exists" — one question, four answers, because none of them is
@@ -92,6 +95,17 @@ safe to assume:
 | `replace` | tear the old one down (`delete --force`) first |
 | `fail` | refuse, naming the id in the way; exit 1 |
 
+**The match is scoped to the backend the creation lands on** — `local-tmux`, or
+the `ssh:`/`wsl:` backend of its `--host`. The name namespace is not: a mirrored
+host's rows sit in the same table, so an unscoped match let a local `replace`
+force-delete a session on another machine, `fail` refuse a local create because
+of a remote namesake, and `adopt` return an id whose pane is elsewhere.
+
+`adopt` answers with `stopped` and `state` as well, because the reason to adopt
+is to skip the follow-up read — and what it hands back may be a **parked**
+session, which refuses `send`/`key`/`capture`. `create` publishes the same two
+(`false`/`unreported`) so the shapes stay identical.
+
 `allow` is the default because thurbox **cannot** enforce uniqueness: a database
 mirroring a shareable host (ADR-24) holds that host's rows beside its own, and
 two machines may each legitimately have a session called `build`. Uniqueness is
@@ -100,9 +114,15 @@ is why `fail` exists at all, and why both firstmate and a Gas City provider were
 each hand-rolling it with their own list-then-create race.
 
 `adopt` and `replace` refuse an *ambiguous* name (one matching several
-sessions), for the same reason the reference resolver does: adopting one of two,
-or destroying one of two, is a guess. Every mode is decided before anything is
-spawned, so a refusal leaves no window, worktree or row behind. It is a check,
+sessions) with exit 3, for the same reason the reference resolver does: adopting
+one of two, or destroying one of two, is a guess. Every mode is decided before
+anything is spawned, so a refusal leaves no window, worktree or row behind.
+
+`replace` is the one mode that acts before the spawn, and it cannot be reordered
+— the replacement wants the branch and the checkout the old session holds. So a
+spawn that fails after the teardown **rolls back**: the session it replaced is
+restored best-effort (row, branch, agent), and the error says so. Uncommitted
+work went with the force delete and does not come back. It is a check,
 not a lock — two simultaneous creates can still both pass, which is inherent to
 a spawn that must make a multiplexer window before it has a row.
 
@@ -319,7 +339,13 @@ The shape that follows from that:
   quietly.
 - **Errors are structured on stdout, never stderr**, and the exit code says
   which kind: `0` success, `1` the command ran and failed, `2` the invocation
-  was wrong. The trap that follows is worth naming to integrators:
+  was wrong, `3` a session reference matched more than one session. The
+  implication runs **one way only**: an `error` key ⇒ a non-zero exit, *never*
+  the converse — `session doctor` on a broken session and `config validate` on
+  a bad file each exit 1 with a valid, error-free report on stdout, so a driver
+  that gates on `$?` before parsing throws away every diagnosis it asks for.
+  Read the document; use the code to classify, not to decide whether to parse.
+  The trap that follows is worth naming to integrators:
   `thurbox-cli … --json | jq -r .field` exits **0 with empty output** on a
   failure, because `jq` parsed the error object and the pipeline carries `jq`'s
   status (`pipefail` does not help — `jq` succeeded). Capture, branch on the
@@ -363,6 +389,30 @@ backend are delegated to that host's own `thurbox-cli` (`delegate_to_host` in
 window that was never there. The refusal survives only where delegation is
 genuinely impossible: a backend with no `hosts.toml` entry, or one whose
 `thurbox-cli` could not be reached.
+
+### A pane can run an agent thurbox did not launch
+
+`session create --command <exe>` makes a session *anything*, and the row is
+named after the command's file stem. A driver that opens a shell and then starts
+`claude` in it (the `agent launch-args claude` shape) leaves thurbox reading hook
+coverage against `bash`: `hook_coverage: "none"`, no reportable states, and —
+worst of all — `hook_blocked_is_heuristic: false`, asserting the block signal is
+structured when it is claude's text match on a notification body.
+
+`session create --reports-as <agent>` and `session reports-as <ref> <agent>`
+(`--clear` to take it back) are how the driver says what is in there. The
+declaration is stored on the row (`sessions.reports_as`, schema v44), survives
+restart, and changes **only** what coverage is read against: `session restart`
+still replays the recorded command. It is refused for an agent thurbox ships no
+hooks for, since the whole point is the coverage it unlocks and a typo would
+unlock nothing silently. `get`/`list`/`doctor` publish it as `reports_as` (null
+when the row reports as itself).
+
+`session doctor` follows the same fact from the other end: a `--command` session
+that has declared nothing is **`ok`, "no hooks expected"** rather than `fail` —
+there is no wiring here to be broken, and failing it made bare `session doctor`
+(which diagnoses every active session) fail the whole machine over the exact
+session shape thurbox advertises for drivers.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB row is marked
 deleted (the TUI tears down the tmux window/worktree on its next sync), and
