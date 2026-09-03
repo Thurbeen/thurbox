@@ -639,6 +639,80 @@ fn adopt_applies_reports_as_to_the_session_it_hands_back() {
     assert_eq!(declared, Some("claude".into()));
 }
 
+/// A post-spawn failure to record `--reports-as` must not be silently dropped
+/// nor mistaken for the whole command failing: by the time `db.set_reports_as`
+/// runs, `spawn_session_headless` already succeeded and the session is live,
+/// so the error has to say the *declaration* failed, point at the retry verb,
+/// and leave the session itself in place — unlike a `replace` spawn failure,
+/// there is nothing here to roll back to.
+///
+/// `Database` wraps a plain `rusqlite::Connection` with no fault-injection
+/// seam, so the only way to reach this branch is to sabotage the one column
+/// this write touches, in the real database file, after the schema exists.
+#[test]
+fn a_failed_reports_as_write_leaves_the_new_session_in_place() {
+    let env = Env::new();
+    let repo = env.path("home");
+
+    open_db(&env)
+        .conn_ref()
+        .execute_batch(
+            "CREATE TRIGGER sabotage_reports_as \
+             BEFORE UPDATE OF reports_as ON sessions \
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .expect("install trigger");
+
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "worker",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--command",
+        "/bin/sleep",
+        "--arg",
+        "300",
+        "--reports-as",
+        "claude",
+        "--json",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let error = doc["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("was created, but declaring it as 'claude' failed")
+            && error.contains("session reports-as"),
+        "{doc}"
+    );
+
+    // The session itself was not rolled back: it is a real, listed row, just
+    // without the declaration that failed to write.
+    let listed = env.run(&["session", "list", "--json"]);
+    let rows: Value = serde_json::from_slice(&listed.stdout).expect("JSON");
+    let rows = rows.as_array().expect("array");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["name"], Value::String("worker".into()));
+    assert_eq!(rows[0]["reports_as"], Value::Null, "{rows:?}");
+    let id = rows[0]["id"].as_str().expect("id").to_string();
+
+    // Tear down the real tmux window this test spawned.
+    let version = env.run(&["version", "--json"]);
+    let version: Value = serde_json::from_slice(&version.stdout).expect("JSON");
+    let socket = version["tmux_socket"].as_str().expect("tmux_socket").to_string();
+    env.run(&["session", "delete", &id, "--force", "--json"]);
+    let _ = std::process::Command::new("tmux")
+        .args(["-L", &socket, "kill-server"])
+        .output();
+}
+
 /// A name matching more than one session is refused for `adopt` and `replace`,
 /// because either would be a guess about which session was meant.
 ///
