@@ -303,10 +303,21 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     // restore inside that window — or one asked for from a peer before this
     // machine's reaper ran — finds the window still alive, and a second launch
     // beside it would be two agents on one conversation.
-    if let Ok(Some(pane)) = crate::agent::tmux::agent_window_pane(None, &session.name) {
-        db.set_backend_id(session.id, &pane)
-            .map_err(|e| format!("record the live pane: {e}"))?;
-        return Ok(());
+    let stamp = session.id.to_string();
+    // Strictly its own window: one stamped for a live namesake is not this
+    // row's to adopt, and recording it would put two rows on one pane — the
+    // next kill-by-id then destroys the other session's agent.
+    if let Ok(located) = crate::agent::tmux::agent_window(None, &stamp, &session.name) {
+        if let Some(pane) = located.pane() {
+            crate::agent::tmux::stamp_local_window(
+                &pane,
+                &stamp,
+                crate::agent::tmux::WindowRole::Agent,
+            );
+            db.set_backend_id(session.id, &pane)
+                .map_err(|e| format!("record the live pane: {e}"))?;
+            return Ok(());
+        }
     }
     let hooks_enabled = super::hooks_enabled(db);
     let recipe = db.load_launch_recipe(session.id).unwrap_or_default();
@@ -314,6 +325,7 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     let plan =
         super::restart::build_restart_plan(&session, None, hooks_enabled, recipe.as_ref(), &env)?;
     let pane = crate::agent::tmux::spawn_window(
+        &stamp,
         &plan.window_name,
         &plan.command,
         &plan.args,

@@ -50,11 +50,13 @@ pub struct DeletedSessionInfo {
     /// Persisted backend (`local-tmux` or `ssh:<host>`). Preserved on restore so
     /// a remote session re-spawns against its own host, not the local default.
     pub backend_type: String,
-    /// The pane id (`%N`) the session held when it was deleted — what the reap
-    /// kills once [`session_window_claims`](Database::session_window_claims)
-    /// confirms no other row answers to it, so a live session sharing the name
-    /// is never the one torn down. Empty for rows persisted before local spawns
-    /// recorded an id.
+    /// The pane id (`%N`) the session held when it was deleted, kept so a
+    /// restore can tell whether the pane it finds is the one the row left.
+    ///
+    /// **Not** what a teardown targets: tmux reissues pane ids when its server
+    /// restarts, so this can name a live namesake's pane. The reap resolves the
+    /// window's own `@thurbox_session` stamp instead (ADR-25). Empty for rows
+    /// persisted before local spawns recorded an id.
     pub backend_id: String,
     pub deleted_at: u64,
     /// Whether this row was hard-deleted (tmux window + worktrees torn down). A
@@ -706,51 +708,6 @@ impl Database {
         self.query_sessions("s.deleted_at IS NULL AND s.name = ?1", params![name])
     }
 
-    /// The `(name, backend_id)` of every session other than `exclude` that
-    /// could still own a live agent window **on the local tmux server** —
-    /// active rows *and* soft-deleted rows, which keep their agent until the
-    /// reaper lets them go.
-    ///
-    /// What a teardown resolves its target against: neither a stored pane id
-    /// nor a `tb-<name>` window proves ownership while another row answers to
-    /// it — names are not unique, and tmux restarts its pane-id counter, so a
-    /// row's remembered `%N` can be another window's pane after a reboot.
-    /// Force-deleted rows are excluded: their window went down with them, and
-    /// counting one would block a namesake's teardown forever (the row is
-    /// kept indefinitely, see schema v37). Remote (`ssh:` / `wsl:`) rows are
-    /// excluded for the mirror reason: their window is on another tmux server,
-    /// so it can never be what a local teardown resolves, and a name or a `%N`
-    /// it happens to share with a local row is a collision between two
-    /// independent namespaces rather than a claim. Both callers of the
-    /// ownership test already refuse to touch a remote row.
-    ///
-    /// The name returned is the **raw** session name. A caller comparing it
-    /// against a `tb-<name>` target has to sanitize it first — two distinct
-    /// names collapse onto one window name.
-    pub fn session_window_claims(
-        &self,
-        exclude: SessionId,
-    ) -> rusqlite::Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT name, backend_id, backend_type FROM sessions \
-             WHERE force_deleted = 0 AND id != ?1",
-        )?;
-        let rows = stmt.query_map(params![exclude.to_string()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
-        rows.filter_map(|row| match row {
-            Ok((name, pane, backend_type)) => {
-                (!crate::session::is_remote_backend(&backend_type)).then_some(Ok((name, pane)))
-            }
-            Err(e) => Some(Err(e)),
-        })
-        .collect()
-    }
-
     /// Active sessions whose id **starts with** `prefix`, for addressing a
     /// session by the first few characters of its UUID.
     pub fn find_sessions_by_id_prefix(&self, prefix: &str) -> rusqlite::Result<Vec<SharedSession>> {
@@ -1289,72 +1246,6 @@ mod tests {
         assert!(
             !bases.contains_key(&without.id),
             "a session with no base must be absent, not empty: {bases:?}"
-        );
-    }
-
-    /// The two exclusions the teardown ownership rule leans on. A soft-deleted
-    /// namesake still claims its window — it keeps its agent until the reaper
-    /// lets it go — while a force-deleted one went down with its window, and
-    /// counting one would block every namesake's teardown forever, since the
-    /// row is never removed (schema v37).
-    #[test]
-    fn window_claims_count_soft_deleted_rows_but_not_force_deleted_ones() {
-        let db = Database::open_in_memory().unwrap();
-        let subject = make_session("fleet");
-        let active = make_session("active-namesake");
-        let soft = make_session("soft-namesake");
-        let forced = make_session("forced-namesake");
-        for session in [&subject, &active, &soft, &forced] {
-            db.upsert_session(session).unwrap();
-        }
-        db.soft_delete_session(soft.id).unwrap();
-        db.soft_delete_session(forced.id).unwrap();
-        db.mark_session_force_deleted(forced.id).unwrap();
-
-        let claims = db.session_window_claims(subject.id).unwrap();
-        let names: Vec<&str> = claims.iter().map(|(name, _)| name.as_str()).collect();
-        assert!(
-            names.contains(&"active-namesake"),
-            "an active row claims its window: {names:?}"
-        );
-        assert!(
-            names.contains(&"soft-namesake"),
-            "a soft-deleted row still owns its agent, so it claims too: {names:?}"
-        );
-        assert!(
-            !names.contains(&"forced-namesake"),
-            "a force-deleted row's window is gone; counting it would deadlock \
-             every namesake's teardown: {names:?}"
-        );
-        assert!(
-            !names.contains(&"fleet"),
-            "the excluded row must not claim against itself: {names:?}"
-        );
-    }
-
-    /// A remote row's window is on its host's own tmux server, so it can
-    /// neither be what a local teardown resolves nor a claim against one. Both
-    /// callers of the ownership test skip remote rows outright, so counting one
-    /// here would only deny a local row the window it does own — a name and a
-    /// `%N` are independent counters per server, and low ids collide routinely.
-    #[test]
-    fn window_claims_ignore_remote_rows_that_cannot_own_a_local_window() {
-        let db = Database::open_in_memory().unwrap();
-        let subject = make_session("fleet");
-        let mut ssh = make_session("fleet");
-        ssh.backend_type = "ssh:builder".into();
-        ssh.backend_id = subject.backend_id.clone();
-        let mut wsl = make_session("fleet");
-        wsl.backend_type = "wsl:Ubuntu".into();
-        wsl.backend_id = subject.backend_id.clone();
-        for session in [&subject, &ssh, &wsl] {
-            db.upsert_session(session).unwrap();
-        }
-
-        let claims = db.session_window_claims(subject.id).unwrap();
-        assert!(
-            claims.is_empty(),
-            "a remote namesake sharing the pane id claims nothing locally: {claims:?}"
         );
     }
 

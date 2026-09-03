@@ -278,6 +278,55 @@ pub(crate) fn program_window_name(owner: &str, pane: &str) -> String {
     )
 }
 
+/// The `list-windows` format `discover` reads: pane, name, liveness, and the
+/// two stamps that give the window an identity its name cannot.
+///
+/// An option a window does not carry expands to the empty string, which is
+/// exactly how an unstamped window should read.
+///
+/// The two option names are spelled out because a `const` cannot interpolate
+/// another; `the_discover_format_reads_both_stamps` pins them to the constants.
+const DISCOVER_FORMAT: &str =
+    "#{pane_id}|#{window_name}|#{pane_dead}|#{@thurbox_session}|#{@thurbox_role}";
+
+/// One `list-windows` line, or `None` for a window that is not thurbox's.
+///
+/// Every thurbox prefix is discovered, not just the agent's: a `tbs-` shell and
+/// a `tbp-` program are windows an ownership question can be asked about too,
+/// and leaving them out of the listing is what made a name look unambiguous
+/// when it was not.
+fn parse_discovered(line: &str) -> Option<DiscoveredSession> {
+    let mut parts = line.splitn(5, '|');
+    let pane = parts.next()?;
+    let name = parts.next()?;
+    let dead = parts.next()?;
+    // Trailing fields are absent rather than empty on a multiplexer that drops
+    // them (ADR-13); an unstamped window is the same answer either way.
+    let session = parts.next().unwrap_or("");
+    let role = parts.next().unwrap_or("");
+
+    // The name still decides what is ours, because an unstamped window has
+    // nothing else — the stamp decides *whose*, which is a different question.
+    let by_name = WindowRole::from_window_name(name)?;
+    if !control_mode::is_valid_pane_id(pane) {
+        warn!("Skipping discovered window with invalid pane id: {pane:?}");
+        return None;
+    }
+    Some(DiscoveredSession {
+        backend_id: pane.to_string(),
+        name: name.to_string(),
+        is_alive: !parse_pane_dead(dead),
+        // A stamp is only worth reading if it is a session id: anyone can set a
+        // window option, and a multiplexer that does not expand `#{@...}` hands
+        // the format string straight back.
+        session: match session.parse::<crate::session::SessionId>() {
+            Ok(id) => id.to_string(),
+            Err(_) => String::new(),
+        },
+        role: WindowRole::parse(role).unwrap_or(by_name),
+    })
+}
+
 /// Build the `session:=window` tmux target for a thurbox agent session.
 ///
 /// The `=` prefix forces tmux to match the window name exactly. Without
@@ -289,32 +338,319 @@ fn window_target(session_name: &str) -> String {
     format!("{TMUX_SESSION}:={}", agent_window_name(session_name))
 }
 
-/// Whether `pane_id` (`%N`) is alive and sits in a window named `window`.
+/// The tmux window option carrying the id of the session row that owns a
+/// window — the identity a window has that a name and a pane id do not.
 ///
-/// The verification is what makes a *persisted* pane id safe to target: tmux
-/// reuses pane numbers after a server restart, so a stored id can point at a
-/// different window entirely (a shell, the heartbeat keeper). Checking the
-/// window name catches that; a dead or reassigned id falls back to the name.
-fn pane_matches_window(pane_id: &str, window: &str) -> bool {
-    let out =
-        local_mux_command(&["display-message", "-p", "-t", pane_id, "#{window_name}"]).output();
-    matches!(out, Ok(o) if o.status.success()
-        && String::from_utf8_lossy(&o.stdout).trim() == window)
+/// A window *name* is neither unique (two sessions may be given the same one,
+/// and ADR-24 mirrors a host's names verbatim) nor injective
+/// (`sanitize_window_name` collapses `a:b` and `a.b` onto one), while tmux
+/// reissues pane ids from `%0` every time its server starts. A window option
+/// survives both, stored once on the thing it describes — the same channel
+/// [`set_own_pane_state`] already uses for hook state. See ADR-25.
+pub const WINDOW_SESSION_OPTION: &str = "@thurbox_session";
+
+/// The tmux window option saying what a stamped window is *for*.
+///
+/// Part of the address rather than decoration: a session owns an agent window
+/// and a companion shell window, and both carry its id.
+pub const WINDOW_ROLE_OPTION: &str = "@thurbox_role";
+
+/// What a thurbox window holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WindowRole {
+    /// A session's agent (`tb-`).
+    Agent,
+    /// A session's companion shell (`tbs-`).
+    Shell,
+    /// A plugin's program (`tbp-`). Owned by a plugin rather than a session
+    /// row, so it is stamped with a role and no session id — which is what
+    /// keeps it from ever resolving as somebody's agent.
+    Program,
 }
 
-/// Resolve the tmux target for a session's agent pane: the persisted pane id
-/// when it still points at this session's own `tb-` window, else the window
-/// name (the legacy path, for rows persisted with no pane id).
-///
-/// The pane id is the precise half — two sessions can share a name, and their
-/// windows then share the `tb-<name>` target, which tmux resolves to an
-/// arbitrary one of them. Every one-shot helper that acts on a session's pane
-/// goes through here so the id wins whenever it is usable.
-fn agent_target(session_name: &str, pane_id: &str) -> String {
-    if !pane_id.is_empty() && pane_matches_window(pane_id, &agent_window_name(session_name)) {
-        return pane_id.to_string();
+impl WindowRole {
+    /// The value written to [`WINDOW_ROLE_OPTION`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Shell => "shell",
+            Self::Program => "program",
+        }
     }
-    window_target(session_name)
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "agent" => Some(Self::Agent),
+            "shell" => Some(Self::Shell),
+            "program" => Some(Self::Program),
+            _ => None,
+        }
+    }
+
+    /// The role a window *name* implies, for one spawned before windows were
+    /// stamped. `None` for a window that is not thurbox's at all.
+    fn from_window_name(name: &str) -> Option<Self> {
+        if name.starts_with(SHELL_WINDOW_PREFIX) {
+            Some(Self::Shell)
+        } else if name.starts_with(PROGRAM_WINDOW_PREFIX) {
+            Some(Self::Program)
+        } else if name.starts_with(WINDOW_PREFIX) {
+            Some(Self::Agent)
+        } else {
+            None
+        }
+    }
+}
+
+/// Where a listing puts a session's window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Located {
+    /// The window is this pane.
+    At(String),
+    /// The listing covers the server and nothing on it is this session's.
+    Absent,
+    /// The listing cannot say: more than one window answers to the name and at
+    /// least one of them carries no stamp.
+    ///
+    /// Never collapse this into [`Located::Absent`]. Reading ambiguity as
+    /// absence is what relaunches a session that is already running, so two
+    /// colliding windows become three.
+    Unknown,
+}
+
+impl Located {
+    /// The pane, when there is one to act on.
+    pub fn pane(self) -> Option<String> {
+        match self {
+            Self::At(pane) => Some(pane),
+            _ => None,
+        }
+    }
+
+    /// Whether the listing positively says there is no such window. The only
+    /// answer a relaunch may act on.
+    pub fn is_absent(&self) -> bool {
+        matches!(self, Self::Absent)
+    }
+}
+
+/// One thurbox window as a listing reported it.
+#[derive(Clone, Debug)]
+struct ListedWindow {
+    pane: String,
+    /// The [`WINDOW_SESSION_OPTION`] stamp, empty for a window spawned before
+    /// windows were stamped (or by a multiplexer without window options).
+    session: String,
+    alive: bool,
+}
+
+/// A backend's thurbox windows, indexed the two ways ownership is asked about.
+///
+/// Built from one `list-windows`, so every question below is answered against
+/// the same instant rather than a fresh round trip each.
+#[derive(Clone, Debug, Default)]
+pub struct WindowIndex {
+    /// Windows carrying a stamp, by the identity they carry.
+    stamped: HashMap<(String, WindowRole), Vec<ListedWindow>>,
+    /// Every thurbox window by name, stamped or not. This is what tells an
+    /// *ambiguous* name apart from an absent one.
+    by_name: HashMap<String, Vec<ListedWindow>>,
+    /// The window each listed pane sits in, for the one question asked the
+    /// other way round: is *this* pane still ours (see [`Self::places_agent`]).
+    by_pane: HashMap<String, (String, String, WindowRole)>,
+}
+
+impl WindowIndex {
+    /// Index one backend's listing.
+    pub fn from_listing(windows: impl IntoIterator<Item = DiscoveredSession>) -> Self {
+        let mut index = Self::default();
+        for window in windows {
+            let listed = ListedWindow {
+                pane: window.backend_id,
+                session: window.session,
+                alive: window.is_alive,
+            };
+            if !listed.session.is_empty() {
+                index
+                    .stamped
+                    .entry((listed.session.clone(), window.role))
+                    .or_default()
+                    .push(listed.clone());
+            }
+            index.by_pane.insert(
+                listed.pane.clone(),
+                (window.name.clone(), listed.session.clone(), window.role),
+            );
+            index.by_name.entry(window.name).or_default().push(listed);
+        }
+        index
+    }
+
+    /// Where a session's agent window is, counting one whose pane has exited —
+    /// `remain-on-exit` keeps that window in place, and it is still the
+    /// session's own (the interface attaches to it to show what went wrong).
+    pub fn agent_window(&self, session_id: &str, session_name: &str) -> Located {
+        self.locate(session_id, session_name, WindowRole::Agent, false)
+    }
+
+    /// Where a session's *running* agent window is. The question every
+    /// relaunch and liveness gate asks: a dead pane is not an agent.
+    pub fn live_agent_window(&self, session_id: &str, session_name: &str) -> Located {
+        self.locate(session_id, session_name, WindowRole::Agent, true)
+    }
+
+    /// Whether the listing puts `pane` in an agent window this session may
+    /// claim — the positive reading, where a pane the listing does not place is
+    /// only an absence.
+    ///
+    /// Asked of a pane the row already remembers, so it is answered the other
+    /// way round from [`Self::agent_window`]: a stamp for this session settles
+    /// it, and an *unstamped* window of this session's name is claimable too —
+    /// that is the pre-ADR-25 shape, and nothing in the listing contradicts it.
+    /// What it will not do is hand over a window stamped for somebody else,
+    /// which is what a remembered pane id becomes once a tmux server restart
+    /// has reissued it.
+    pub fn places_agent(&self, session_id: &str, session_name: &str, pane: &str) -> bool {
+        let Some((window, stamp, role)) = self.by_pane.get(pane) else {
+            return false;
+        };
+        *role == WindowRole::Agent
+            && if stamp.is_empty() {
+                *window == agent_window_name(session_name)
+            } else {
+                stamp == session_id
+            }
+    }
+
+    /// The resolution rule, in one place.
+    ///
+    /// A stamp is proof and is taken first. Without one the *name* is all
+    /// there is, and it only decides anything while a single window answers to
+    /// it: a lone unstamped window of the right name is this session's (the
+    /// migration path for a window spawned before stamping, and for every
+    /// window under a multiplexer with no window options), a lone window
+    /// stamped for somebody else is theirs, and several windows with no stamp
+    /// between them cannot be told apart.
+    fn locate(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        role: WindowRole,
+        live_only: bool,
+    ) -> Located {
+        let usable = |w: &&ListedWindow| !live_only || w.alive;
+        if !session_id.is_empty() {
+            if let Some(entries) = self.stamped.get(&(session_id.to_string(), role)) {
+                match entries.as_slice() {
+                    [] => {}
+                    // One session, one window per role — two is a listing
+                    // nobody can act on rather than a choice to make. This
+                    // holds regardless of liveness: a dead entry does not
+                    // make the ambiguity go away, and must never fall
+                    // through to a same-named window that belongs to
+                    // somebody else.
+                    [_, _, ..] => return Located::Unknown,
+                    [only] => {
+                        return if !live_only || only.alive {
+                            Located::At(only.pane.clone())
+                        } else {
+                            Located::Absent
+                        };
+                    }
+                }
+            }
+        }
+        let window = match role {
+            WindowRole::Shell => shell_window_name(session_name),
+            _ => agent_window_name(session_name),
+        };
+        let named: Vec<&ListedWindow> = self
+            .by_name
+            .get(&window)
+            .into_iter()
+            .flatten()
+            .filter(usable)
+            .collect();
+        match named.as_slice() {
+            [] => Located::Absent,
+            // A caller with no id of its own (a window addressed only by name)
+            // can claim a lone window; one with an id can only claim a window
+            // that is not already somebody else's.
+            [only] if session_id.is_empty() || only.session.is_empty() => {
+                Located::At(only.pane.clone())
+            }
+            [_] => Located::Absent,
+            // Every candidate stamped, none of them ours: definitively not here.
+            _ if !session_id.is_empty() && named.iter().all(|w| !w.session.is_empty()) => {
+                Located::Absent
+            }
+            _ => Located::Unknown,
+        }
+    }
+}
+
+/// Stamp a window on the local server with the identity every reconciler
+/// resolves it by.
+///
+/// `target` is the new window's pane id, or its `session:=window` target where
+/// the spawn could not report one. Best-effort by design, and so returns
+/// nothing to check: a multiplexer without window options (psmux, ADR-13)
+/// leaves the window unstamped, where the sole-namesake rule in
+/// [`WindowIndex`] carries it exactly as the name fallback did before.
+pub fn stamp_local_window(target: &str, session_id: &str, role: WindowRole) {
+    for (option, value) in [
+        (WINDOW_SESSION_OPTION, session_id),
+        (WINDOW_ROLE_OPTION, role.as_str()),
+    ] {
+        if value.is_empty() {
+            continue;
+        }
+        match local_mux_command(&["set-option", "-w", "-t", target, option, value]).output() {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => debug!(
+                "could not stamp {target} with {option}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            Err(e) => debug!("could not stamp {target} with {option}: {e}"),
+        }
+    }
+}
+
+/// Every thurbox window on the local server, indexed.
+pub fn local_window_index() -> Result<WindowIndex> {
+    Ok(WindowIndex::from_listing(TmuxBackend::local().discover()?))
+}
+
+/// Whether the local multiplexer is psmux, which has no usable window options
+/// (ADR-13) and so leaves every window unstamped.
+///
+/// The one place the name fallback still stands: with nothing stamped, two
+/// namesakes are genuinely indistinguishable, and refusing to act would be a
+/// regression on Windows rather than the safety it is everywhere else.
+fn local_mux_is_psmux() -> bool {
+    DEFAULT_MUX == "psmux"
+}
+
+/// Resolve the local tmux target for acting on a session's agent pane, or
+/// `None` when nothing on the server is this session's to act on.
+///
+/// Every one-shot helper that acts on a session's pane goes through here, so
+/// the stamp decides in one place. What it replaced was `tb-<name>`, a target
+/// tmux matches exactly and resolves to an arbitrary one of a session's
+/// namesakes.
+fn agent_target(session_id: &str, session_name: &str) -> Option<String> {
+    let located = match local_window_index() {
+        Ok(index) => index.agent_window(session_id, session_name),
+        Err(e) => {
+            debug!("could not list windows to resolve '{session_name}': {e:#}");
+            Located::Unknown
+        }
+    };
+    match located {
+        Located::At(pane) => Some(pane),
+        Located::Absent => None,
+        Located::Unknown => local_mux_is_psmux().then(|| window_target(session_name)),
+    }
 }
 
 /// Minimum tmux version required.
@@ -1213,9 +1549,10 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn find_window(&self, window_name: &str) -> Result<Option<String>> {
-        // The same listing `discover` reads, without its `tb-` filter and matched
-        // exactly rather than by prefix — tmux's own name matching is FNMATCH-ish,
-        // which would make `tbp-x-watch` findable by `tbp-x-watc`.
+        // A name lookup rather than an identity one: a program window carries no
+        // session id to resolve, only its deterministic name. Matched exactly
+        // rather than by prefix — tmux's own name matching is FNMATCH-ish, which
+        // would make `tbp-x-watch` findable by `tbp-x-watc`.
         let listing = self.tmux_output(&[
             "list-windows",
             "-t",
@@ -1254,48 +1591,33 @@ impl SessionBackend for TmuxBackend {
         };
         let result = if control_started {
             self.ctrl_command(&format!(
-                "list-windows -t {} -F '#{{pane_id}}|#{{window_name}}|#{{pane_dead}}'",
+                "list-windows -t {} -F '{DISCOVER_FORMAT}'",
                 self.session
             ))?
         } else {
-            self.tmux_output(&[
-                "list-windows",
-                "-t",
-                &self.session,
-                "-F",
-                "#{pane_id}|#{window_name}|#{pane_dead}",
-            ])?
+            self.tmux_output(&["list-windows", "-t", &self.session, "-F", DISCOVER_FORMAT])?
         };
 
-        let mut sessions = Vec::new();
-        for line in result.lines() {
-            let parts: Vec<&str> = line.splitn(3, '|').collect();
-            if parts.len() < 3 {
-                continue;
-            }
+        Ok(result.lines().filter_map(parse_discovered).collect())
+    }
 
-            let window_name = parts[1];
-            // Only discover windows with our prefix (tb- for Claude, tbs- for shells).
-            if !window_name.starts_with(WINDOW_PREFIX) {
-                continue;
-            }
-
-            if !control_mode::is_valid_pane_id(parts[0]) {
-                warn!(
-                    "Skipping discovered window with invalid pane id: {:?}",
-                    parts[0]
-                );
-                continue;
-            }
-
-            sessions.push(DiscoveredSession {
-                backend_id: parts[0].to_string(),
-                name: window_name.to_string(),
-                is_alive: parts[2] != "1",
-            });
+    fn stamp_window(&self, backend_id: &str, session_id: &str, role: WindowRole) -> Result<()> {
+        if !control_mode::is_valid_pane_id(backend_id) {
+            bail!("refusing to stamp an invalid pane id: {backend_id:?}");
         }
-
-        Ok(sessions)
+        // `-w`: the option belongs to the window, not the pane, so a pane that
+        // is split or replaced inside it does not take the identity with it.
+        if !session_id.is_empty() {
+            self.ctrl_command(&format!(
+                "set-option -w -t {backend_id} {WINDOW_SESSION_OPTION} {}",
+                shell_escape(session_id)
+            ))?;
+        }
+        self.ctrl_command(&format!(
+            "set-option -w -t {backend_id} {WINDOW_ROLE_OPTION} {}",
+            role.as_str()
+        ))?;
+        Ok(())
     }
 
     fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
@@ -1471,14 +1793,14 @@ fn pane_is_dead(target: &str) -> bool {
 /// The prompt-delivery shape every caller wants: [`send_text_now`] with the
 /// Enter kept, which is the behaviour this had before the CLI needed to leave
 /// text unsubmitted.
-pub fn send_prompt_now(session_name: &str, pane_id: &str, text: &str) -> Result<()> {
-    send_text_now(session_name, pane_id, text, true)
+pub fn send_prompt_now(session_id: &str, session_name: &str, text: &str) -> Result<()> {
+    send_text_now(session_id, session_name, text, true)
 }
 
 /// Type text into a session pane (no scheduling), submitting it or not.
 ///
-/// Targets the session's pane via `agent_target` (pane id first, window name
-/// as the legacy fallback). Submitting uses a "paste text → brief delay → press
+/// Targets the session's own pane via `agent_target`, which refuses a window
+/// stamped for another session (ADR-25). Submitting uses a "paste text → brief delay → press
 /// Enter" sequence so the target app has time to process the pasted input.
 ///
 /// `submit = false` types the text and stops: it lands in the agent's composer
@@ -1497,8 +1819,10 @@ pub fn send_prompt_now(session_name: &str, pane_id: &str, text: &str) -> Result<
 /// caller reads that success as "the agent got it" — which is how the mailbox
 /// wake came to report `woke: true` at a pane nothing was listening to — so the
 /// liveness check belongs here, once, rather than in each of them.
-pub fn send_text_now(session_name: &str, pane_id: &str, text: &str, submit: bool) -> Result<()> {
-    let target = agent_target(session_name, pane_id);
+pub fn send_text_now(session_id: &str, session_name: &str, text: &str, submit: bool) -> Result<()> {
+    let Some(target) = agent_target(session_id, session_name) else {
+        bail!("session '{session_name}' has no window of its own here");
+    };
     if pane_is_dead(&target) {
         bail!("session '{session_name}' has exited; its pane accepts no input");
     }
@@ -1641,8 +1965,10 @@ pub fn resolve_key(input: &str) -> Option<ResolvedKey> {
 ///
 /// Refuses a dead pane for the same reason [`send_text_now`] does — `send-keys`
 /// exits 0 into a `remain-on-exit` corpse, so success would be a lie.
-pub fn send_key_now(session_name: &str, pane_id: &str, tmux_key: &str) -> Result<()> {
-    let target = agent_target(session_name, pane_id);
+pub fn send_key_now(session_id: &str, session_name: &str, tmux_key: &str) -> Result<()> {
+    let Some(target) = agent_target(session_id, session_name) else {
+        bail!("session '{session_name}' has no window of its own here");
+    };
     if pane_is_dead(&target) {
         bail!("session '{session_name}' has exited; its pane accepts no input");
     }
@@ -1680,15 +2006,14 @@ fn list_window_names() -> Vec<String> {
         .collect()
 }
 
-/// Whether the session's agent pane currently exists in the thurbox tmux
-/// server — its persisted pane id when one is usable, the `tb-<session_name>`
-/// window otherwise. Used by the headless dispatcher to skip `send`
+/// Whether the session has an agent pane of its own on the thurbox tmux server.
+///
+/// A window stamped for a namesake does not count (ADR-25). Used by the
+/// headless dispatcher to skip `send`
 /// automations whose target session is no longer running rather than failing
 /// into a dead pane.
-pub fn window_exists(session_name: &str, pane_id: &str) -> bool {
-    let want = agent_window_name(session_name);
-    (!pane_id.is_empty() && pane_matches_window(pane_id, &want))
-        || list_window_names().contains(&want)
+pub fn window_exists(session_id: &str, session_name: &str) -> bool {
+    agent_target(session_id, session_name).is_some()
 }
 
 /// Schedule a one-shot prompt delivery into a session's window after
@@ -1698,12 +2023,14 @@ pub fn window_exists(session_name: &str, pane_id: &str) -> bool {
 /// prompt once the freshly launched agent CLI has had time to boot — offline
 /// there is no TUI deferred-input queue to lean on. Local-tmux scoped.
 pub fn send_prompt_after_delay(
+    session_id: &str,
     session_name: &str,
-    pane_id: &str,
     text: &str,
     delay_secs: u64,
 ) -> Result<()> {
-    let target = agent_target(session_name, pane_id);
+    let Some(target) = agent_target(session_id, session_name) else {
+        bail!("session '{session_name}' has no window of its own here");
+    };
     let script = deferred_prompt_script(&target, text);
     let out = local_mux_command(&["run-shell", "-b", "-d", &delay_secs.to_string(), &script])
         .output()
@@ -1871,12 +2198,14 @@ pub fn resolve_cli_binary() -> std::path::PathBuf {
 /// With `ansi`, tmux emits the styling escape sequences too (`capture-pane
 /// -e`) instead of flattening the screen to plain text.
 pub fn capture_pane_text(
+    session_id: &str,
     session_name: &str,
-    pane_id: &str,
     lines: u32,
     ansi: bool,
 ) -> Result<String> {
-    let target = agent_target(session_name, pane_id);
+    let Some(target) = agent_target(session_id, session_name) else {
+        bail!("session '{session_name}' has no window of its own here");
+    };
     let lines = lines.min(MAX_CAPTURE_LINES);
     let start = format!("-{lines}");
 
@@ -2003,11 +2332,13 @@ const PANE_STATE_UTF8_FLAG: &str = "-u";
 ///
 /// Best-effort by construction — see [`PaneState`]. One `display-message` for
 /// everything tmux knows, plus at most one `ps` to turn the cheap command
-/// *name* into the foreground process's argv. `pane_id` is the session's
-/// persisted `backend_id`, resolved the same way [`capture_pane_text`] resolves
-/// it, so the state describes the pane the capture came from.
-pub fn pane_state(session_name: &str, pane_id: &str) -> PaneState {
-    let target = agent_target(session_name, pane_id);
+/// *name* into the foreground process's argv. `session_id`/`session_name`
+/// resolve the window the same way [`capture_pane_text`] does, so the state
+/// describes the pane the capture came from.
+pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
+    let Some(target) = agent_target(session_id, session_name) else {
+        return PaneState::default();
+    };
     let format = [
         "#{cursor_y}",
         "#{cursor_x}",
@@ -2195,14 +2526,16 @@ const SESSION_OPTS: &[(&str, &str)] = &[
 /// Thin helper for headless callers (CLI, MCP) that don't need PTY I/O
 /// streams. Returns the new pane's id (`%N`) on success; the command runs
 /// inside it. Window name is `tb-<session_name>` — which is *not* unique (two
-/// sessions can share a name), so the returned id is what callers persist as
-/// `backend_id` and target thereafter.
+/// sessions can share a name), so the window is stamped with `session_id`
+/// before this returns and every later lookup resolves that (ADR-25).
 ///
 /// On Windows the local mux is psmux, whose `new-window -P -F` support is
 /// unverified against the documented divergences (ADR-13) — there the id is
-/// not asked for and an empty string is returned, preserving the
-/// resolve-by-name behavior until the e2e probes cover it.
+/// not asked for and an empty string is returned, so the stamp is written
+/// against the window name instead (and is best-effort, like the psmux carve-
+/// outs elsewhere).
 pub fn spawn_window(
+    session_id: &str,
     session_name: &str,
     command: &str,
     args: &[String],
@@ -2257,10 +2590,20 @@ pub fn spawn_window(
             stderr.trim()
         );
     }
-    if cfg!(windows) {
-        return Ok(String::new());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    // psmux reports no pane id, so the stamp goes on the window name — which is
+    // the only handle that path has either way.
+    let pane_id = if cfg!(windows) {
+        String::new()
+    } else {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    let target = if pane_id.is_empty() {
+        window_target(session_name)
+    } else {
+        pane_id.clone()
+    };
+    stamp_local_window(&target, session_id, WindowRole::Agent);
+    Ok(pane_id)
 }
 
 /// Headless spawn of an agent window on a remote host over SSH.
@@ -2271,6 +2614,7 @@ pub fn spawn_window(
 /// keeps the window alive for the TUI to adopt later.
 pub fn spawn_window_remote(
     host: &crate::session::HostDef,
+    session_id: &str,
     session_name: &str,
     command: &str,
     args: &[String],
@@ -2286,6 +2630,9 @@ pub fn spawn_window_remote(
     // Headless: no live terminal, so use a sane default geometry. The TUI
     // resizes the pane to its real dimensions when it adopts the session.
     let spawned = backend.spawn(&window_name, command, args, cwd, env, 24, 80)?;
+    if let Err(e) = backend.stamp_window(&spawned.backend_id, session_id, WindowRole::Agent) {
+        debug!("could not stamp the remote window for '{session_name}': {e:#}");
+    }
     Ok(spawned.backend_id)
 }
 
@@ -2321,38 +2668,38 @@ fn list_hook_states_on(backend: &TmuxBackend) -> Result<Vec<(String, String)>> {
     Ok(control_mode::parse_pane_hook_states(&body))
 }
 
-/// The live pane of the agent window a session's name produces, on the local
-/// server or on `host` — `None` when the window is absent, its pane has died,
-/// or the name is ambiguous (two windows; keystrokes to the wrong agent are
-/// worse than none). A one-shot listing, no control mode: this is asked by the
-/// headless relaunch paths.
-pub fn agent_window_pane(
+/// Where a session's *running* agent window is, on the local server or on
+/// `host`. A one-shot listing, no control mode: this is what the headless
+/// relaunch and teardown paths ask.
+///
+/// The answer is three-valued on purpose. [`Located::Unknown`] — several
+/// windows share the name and none is stamped — is not absence, and a caller
+/// that relaunches on it puts a third agent beside the two that already
+/// collide.
+pub fn agent_window(
     host: Option<&crate::session::HostDef>,
+    session_id: &str,
     session_name: &str,
-) -> Result<Option<String>> {
+) -> Result<Located> {
     let backend = match host {
         Some(host) => TmuxBackend::from_host(host),
         None => TmuxBackend::local(),
     };
-    let window = agent_window_name(session_name);
-    let mut panes = backend
-        .discover()?
-        .into_iter()
-        .filter(|w| w.name == window && w.is_alive)
-        .map(|w| w.backend_id);
-    let first = panes.next();
-    Ok(match (first, panes.next()) {
-        (Some(pane), None) => Some(pane),
-        _ => None,
-    })
+    let index = WindowIndex::from_listing(backend.discover()?);
+    Ok(index.live_agent_window(session_id, session_name))
 }
 
-/// Whether a session's agent window is alive — see [`agent_window_pane`].
+/// Whether a session's agent window is running — see [`agent_window`].
+///
+/// `Unknown` counts as running: every caller uses this to decide whether to
+/// launch another agent, and "I cannot tell" must not be the answer that
+/// launches one.
 pub fn agent_window_alive(
     host: Option<&crate::session::HostDef>,
+    session_id: &str,
     session_name: &str,
 ) -> Result<bool> {
-    Ok(agent_window_pane(host, session_name)?.is_some())
+    Ok(!agent_window(host, session_id, session_name)?.is_absent())
 }
 
 /// Record a hook state on the pane this process runs in — the pane option a
@@ -2401,84 +2748,58 @@ pub(crate) fn own_socket_path(tmux_env: &str) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
-/// Kill a remote tmux pane on `host` by its pane id (`%N`), best-effort.
+/// Kill a session's window on `host`, best-effort.
 ///
-/// Mirror of [`kill_window`] for the SSH transport. Used to tear down a window
-/// that was spawned remotely but could not be tracked (e.g. the DB write failed
-/// after the spawn), so it does not leak as an orphaned remote window.
-pub fn kill_pane_remote(host: &crate::session::HostDef, backend_id: &str) -> Result<()> {
-    let backend = TmuxBackend::from_host(host);
-    backend.ensure_ready()?;
-    backend.kill(backend_id)
-}
-
-/// Kill the session's tmux window if it exists — by its persisted pane id when
-/// one is usable (precise even when another session shares the name), by the
-/// `tb-<session_name>` window name otherwise.
-pub fn kill_window(session_name: &str, pane_id: &str) -> Result<()> {
-    kill_window_at(&agent_target(session_name, pane_id))
-}
-
-/// Which parts of a torn-down row's identity no *other* session row answers
-/// to — the half of ownership this module cannot establish, since it may not
-/// read the database (see `tests/architecture_rules.rs`). Settled once by
-/// `session_ops::delete::owned_agent_pane`, which is the only intended caller
-/// of [`owned_agent_pane`].
-#[derive(Clone, Copy, Debug)]
-pub struct Unclaimed {
-    /// No other row remembers this pane id. A tmux server restarts its pane-id
-    /// counter, so a row's remembered `%N` can name another window's pane
-    /// afterwards — and when that other window is a namesake's, the window
-    /// name confirms nothing.
-    pub pane_id: bool,
-    /// No other row still answers to the *window* name `tb-<name>` — neither
-    /// an active session nor a soft-deleted one whose agent has not been
-    /// reaped yet. The window name rather than the session name, because that
-    /// is the namespace the fallback resolves in: `sanitize_window_name`
-    /// maps every character outside `[A-Za-z0-9_-]` to `_`, so `fleet 1` and
-    /// `fleet_1` are two rows sharing one `tb-fleet_1`.
-    pub name: bool,
-}
-
-/// The pane a torn-down row still owns, if any — the target a teardown may
-/// safely kill, and the answer to whether it has anything left to kill at all.
-///
-/// The counterpart to `agent_target`, for callers tearing down a row rather
-/// than acting on a live session. `agent_target` resolves whatever it can
-/// reach: the persisted pane id if its window carries the right name, the
-/// `tb-<name>` window otherwise. Neither step is proof of ownership, and for a
-/// teardown both are unsound — names are not unique, two sessions may share
-/// one, and a soft-deleted row keeps its name *and* its remembered pane id
-/// until it is reaped. Resolving either against a row that is not this one
-/// silently destroys a live session's window; a same-named window matches
-/// exactly, so `kill-window` succeeds against the wrong one.
-///
-/// So each step is gated on [`Unclaimed`], the caller's assurance that no other
-/// row answers to that part of the identity. Without the name half the teardown
-/// would leak a window whenever the pane id is unusable — a row persisted
-/// before local spawns recorded an id, one renumbered by a tmux restart, or any
-/// session on psmux, where [`spawn_window`] records no pane id at all.
-pub fn owned_agent_pane(
+/// Mirror of [`kill_window`] for the SSH transport, and strict in the same
+/// way: the pane a row remembers is a *hint* — the host's tmux server reissues
+/// ids from `%0` when it restarts, so a remembered `%N` can be a live
+/// namesake's pane afterwards. Only a window the host's own listing stamps for
+/// this session is killed. `pane_id` is the psmux fallback, where nothing is
+/// stamped and a name cannot be told apart from its namesake's.
+pub fn kill_pane_remote(
+    host: &crate::session::HostDef,
+    session_id: &str,
     session_name: &str,
     pane_id: &str,
-    unclaimed: Unclaimed,
-) -> Result<Option<String>> {
-    if unclaimed.pane_id
-        && !pane_id.is_empty()
-        && pane_matches_window(pane_id, &agent_window_name(session_name))
-    {
-        return Ok(Some(pane_id.to_string()));
+) -> Result<bool> {
+    let backend = TmuxBackend::from_host(host);
+    backend.ensure_ready()?;
+    let located =
+        WindowIndex::from_listing(backend.discover()?).agent_window(session_id, session_name);
+    match located {
+        Located::At(pane) => backend.kill(&pane).map(|()| true),
+        // Already gone, or never this session's to begin with.
+        Located::Absent => Ok(false),
+        Located::Unknown if backend.transport.uses_psmux() && !pane_id.is_empty() => {
+            backend.kill(pane_id).map(|()| true)
+        }
+        Located::Unknown => {
+            debug!(
+                "not killing a window on {}: '{session_name}' is ambiguous there",
+                host.name
+            );
+            Ok(false)
+        }
     }
-    if !unclaimed.name {
-        return Ok(None);
+}
+
+/// Kill the session's own tmux window, if the local server still holds one.
+///
+/// Resolved through the window's own stamp, so one stamped for another session —
+/// a live namesake's — is never the one that comes down. That is not a
+/// nicety: names are not unique, a soft-deleted row keeps its name until it is
+/// reaped, and `kill-window -t tb-<name>` matches an arbitrary one of them.
+pub fn kill_window(session_id: &str, session_name: &str) -> Result<()> {
+    match agent_target(session_id, session_name) {
+        Some(target) => kill_window_at(&target),
+        None => Ok(()),
     }
-    agent_window_pane(None, session_name)
 }
 
 /// Run `kill-window` against an already-resolved target, tolerating a window
-/// that is already gone. Shared by [`kill_window`] and the teardown path, which
-/// resolves its own target through [`owned_agent_pane`] — the two differ only
-/// in how the target is chosen.
+/// that is already gone. Shared by [`kill_window`] and the reap, which resolves
+/// its own target through [`WindowIndex`] (`session_ops::delete`) — the two
+/// differ only in how the target is chosen.
 pub fn kill_window_at(target: &str) -> Result<()> {
     let output = local_mux_command(&["kill-window", "-t", target])
         .output()
@@ -2499,16 +2820,18 @@ pub fn kill_window_at(target: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the agent window `tb-<session_name>` and return the OS pid of its
-/// pane's foreground process (`#{pane_pid}`), or `None` when the window is gone
-/// or the pid can't be read.
+/// Resolve the session's own agent window and return the OS pid of its pane's
+/// foreground process (`#{pane_pid}`), or `None` when the window is gone or the
+/// pid can't be read.
 ///
 /// One-shot on the local socket. Used by the force-teardown path to reap a live
 /// pane process **before** removing its cwd on Windows, where a directory that
 /// is a live process's cwd cannot be removed (`os error 32`); Unix permits it,
 /// so callers only need the returned pid on Windows.
-pub fn window_pane_pid(session_name: &str, pane_id: &str) -> Result<Option<u32>> {
-    let target = agent_target(session_name, pane_id);
+pub fn window_pane_pid(session_id: &str, session_name: &str) -> Result<Option<u32>> {
+    let Some(target) = agent_target(session_id, session_name) else {
+        return Ok(None);
+    };
     let output = local_mux_command(&["display-message", "-p", "-t", &target, "#{pane_pid}"])
         .output()
         .context("Failed to run tmux display-message for pane pid")?;
@@ -3166,25 +3489,209 @@ mod tests {
         assert!(!once.starts_with(SHELL_WINDOW_PREFIX));
     }
 
-    /// A program window is invisible to session discovery — which is both a
-    /// safety property and the reason `find_window` exists.
-    ///
-    /// `discover` filters on `tb-`, so `tbp-` can never be adopted as a session's
-    /// agent pane. The same filter is why re-finding a program pane needs its own
-    /// lookup, and why the companion shell persists a pane id instead (`tbs-`
-    /// fails the filter too — the comment there claiming otherwise is wrong).
+    /// A listed window, as `discover` would have reported it.
+    fn listed(pane: &str, window: &str, session: &str, role: WindowRole) -> DiscoveredSession {
+        DiscoveredSession {
+            backend_id: pane.into(),
+            name: window.into(),
+            is_alive: true,
+            session: session.into(),
+            role,
+        }
+    }
+
+    fn dead(mut window: DiscoveredSession) -> DiscoveredSession {
+        window.is_alive = false;
+        window
+    }
+
+    const ONE: &str = "11111111-1111-4111-8111-111111111111";
+    const TWO: &str = "22222222-2222-4222-8222-222222222222";
+
+    /// The format is a literal because a `const` cannot interpolate another;
+    /// this is what keeps it honest.
     #[test]
-    fn discovery_cannot_see_a_program_window() {
-        let program = program_window_name("abcd1234", "watch");
-        assert!(
-            !program.starts_with(WINDOW_PREFIX),
-            "{program} must fail discovery's filter"
+    fn the_discover_format_reads_both_stamps() {
+        assert!(DISCOVER_FORMAT.contains(&format!("#{{{WINDOW_SESSION_OPTION}}}")));
+        assert!(DISCOVER_FORMAT.contains(&format!("#{{{WINDOW_ROLE_OPTION}}}")));
+    }
+
+    /// The stamp is the identity, so a window answers to its session whatever
+    /// it is called — a session cannot be renamed today, but resolution must
+    /// not be the reason it never can be.
+    #[test]
+    fn a_stamped_window_is_its_sessions_whatever_it_is_named() {
+        let index =
+            WindowIndex::from_listing([listed("%3", "tb-old_name", ONE, WindowRole::Agent)]);
+        assert_eq!(
+            index.agent_window(ONE, "new name"),
+            Located::At("%3".into())
         );
-        // And the shell's, for the same reason — pinned so the asymmetry is not
-        // mistaken for an oversight later.
-        assert!(!shell_window_name("s").starts_with(WINDOW_PREFIX));
-        // While an agent window of course passes it.
-        assert!(agent_window_name("s").starts_with(WINDOW_PREFIX));
+    }
+
+    /// The bug this whole mechanism exists for: the only `tb-fleet` on the
+    /// server belongs to a live namesake, and a teardown resolving the name
+    /// would kill it.
+    #[test]
+    fn a_namesakes_stamped_window_is_never_ours() {
+        let index = WindowIndex::from_listing([listed("%7", "tb-fleet", TWO, WindowRole::Agent)]);
+        assert_eq!(index.agent_window(ONE, "fleet"), Located::Absent);
+    }
+
+    /// The same answer when the row remembers that very pane id — which is the
+    /// state a tmux server restart leaves behind, since it reissues ids from
+    /// `%0`. Nothing here consults the remembered id, and that is the point.
+    #[test]
+    fn a_reissued_pane_id_cannot_make_a_namesakes_window_ours() {
+        let index = WindowIndex::from_listing([
+            listed("%1", "tb-fleet", TWO, WindowRole::Agent),
+            listed("%2", "tb-other", ONE, WindowRole::Agent),
+        ]);
+        // `%1` is what the stale row remembers; it resolves to its own window.
+        assert_eq!(index.agent_window(ONE, "fleet"), Located::At("%2".into()));
+    }
+
+    /// The migration path: a window spawned before windows were stamped, and
+    /// every window under a multiplexer that has no window options.
+    #[test]
+    fn a_lone_unstamped_namesake_is_adoptable() {
+        let index = WindowIndex::from_listing([listed("%4", "tb-fleet", "", WindowRole::Agent)]);
+        assert_eq!(index.agent_window(ONE, "fleet"), Located::At("%4".into()));
+        // And to a caller with no id of its own at all.
+        assert_eq!(index.agent_window("", "fleet"), Located::At("%4".into()));
+    }
+
+    /// Ambiguity is not absence. Reading it as absence is what relaunches a
+    /// session that is already running, so two colliding windows become three.
+    #[test]
+    fn unstamped_namesakes_are_unknown_rather_than_absent() {
+        let index = WindowIndex::from_listing([
+            listed("%1", "tb-fleet", "", WindowRole::Agent),
+            listed("%2", "tb-fleet", "", WindowRole::Agent),
+        ]);
+        assert_eq!(index.agent_window(ONE, "fleet"), Located::Unknown);
+        assert!(!index.agent_window(ONE, "fleet").is_absent());
+    }
+
+    /// Once every candidate carries a stamp there is no ambiguity left: none of
+    /// them is ours, so the window really is gone and a relaunch is right.
+    #[test]
+    fn stamped_namesakes_that_are_all_someone_elses_read_as_absent() {
+        let index = WindowIndex::from_listing([
+            listed("%1", "tb-fleet", TWO, WindowRole::Agent),
+            listed("%2", "tb-fleet", TWO, WindowRole::Agent),
+        ]);
+        assert_eq!(index.agent_window(ONE, "fleet"), Located::Absent);
+    }
+
+    /// A session stamps both of its windows with the same id, so the role is
+    /// what stops its shell being resolved — and killed — as its agent.
+    #[test]
+    fn a_sessions_shell_window_is_not_its_agent() {
+        let index = WindowIndex::from_listing([listed("%5", "tbs-fleet", ONE, WindowRole::Shell)]);
+        assert_eq!(index.agent_window(ONE, "fleet"), Located::Absent);
+    }
+
+    /// `remain-on-exit` keeps a failed agent's window in place so the error is
+    /// readable. It is still the session's own window — the interface attaches
+    /// to it — but it is not a *running* agent, which is the question every
+    /// relaunch gate asks.
+    #[test]
+    fn a_dead_pane_is_still_the_sessions_window_but_not_a_live_one() {
+        let index =
+            WindowIndex::from_listing([dead(listed("%6", "tb-fleet", ONE, WindowRole::Agent))]);
+        assert_eq!(index.agent_window(ONE, "fleet"), Located::At("%6".into()));
+        assert_eq!(index.live_agent_window(ONE, "fleet"), Located::Absent);
+        assert!(index.places_agent(ONE, "fleet", "%6"));
+        assert!(!index.places_agent(ONE, "fleet", "%9"));
+    }
+
+    /// A dead own window must never be treated as "no stamped window at
+    /// all" — that reading is what let a live unstamped namesake, sharing
+    /// this session's `tb-<name>`, get attributed to this session instead.
+    #[test]
+    fn a_dead_own_window_does_not_fall_through_to_a_live_namesake() {
+        let index = WindowIndex::from_listing([
+            dead(listed("%6", "tb-fleet", ONE, WindowRole::Agent)),
+            listed("%7", "tb-fleet", "", WindowRole::Agent),
+        ]);
+        assert_eq!(index.live_agent_window(ONE, "fleet"), Located::Absent);
+    }
+
+    /// A remembered pane id still resolves among *unstamped* namesakes, which
+    /// is how two pre-ADR-25 sessions sharing a name each attach to their own
+    /// pane. It stops resolving the moment a window says whose it is: a stamp
+    /// for somebody else is what a reissued pane id turns into.
+    #[test]
+    fn a_remembered_pane_is_claimable_while_no_window_says_otherwise() {
+        let index = WindowIndex::from_listing([
+            listed("%1", "tb-fleet", "", WindowRole::Agent),
+            listed("%2", "tb-fleet", "", WindowRole::Agent),
+        ]);
+        assert!(index.places_agent(ONE, "fleet", "%1"));
+        assert!(index.places_agent(TWO, "fleet", "%2"));
+        // Ambiguous for a caller with nothing but the name to go on.
+        assert_eq!(index.agent_window(ONE, "fleet"), Located::Unknown);
+
+        let stamped = WindowIndex::from_listing([listed("%1", "tb-fleet", TWO, WindowRole::Agent)]);
+        assert!(!stamped.places_agent(ONE, "fleet", "%1"));
+        assert!(stamped.places_agent(TWO, "fleet", "%1"));
+        // And a pane nothing listed is nobody's.
+        assert!(!stamped.places_agent(TWO, "fleet", "%9"));
+    }
+
+    /// Anyone can set a window option, and a multiplexer that does not expand
+    /// `#{@...}` hands the format string straight back — so only a stamp that
+    /// is a session id is believed.
+    #[test]
+    fn only_a_session_id_counts_as_a_stamp() {
+        let parsed = parse_discovered("%1|tb-fleet|0|#{@thurbox_session}|agent").expect("parsed");
+        assert_eq!(parsed.session, "");
+        assert_eq!(parsed.role, WindowRole::Agent);
+        assert_eq!(
+            parse_discovered(&format!("%1|tb-fleet|0|{ONE}|agent"))
+                .unwrap()
+                .session,
+            ONE
+        );
+    }
+
+    /// A listing that stops short — the psmux divergence (ADR-13) — reads as an
+    /// unstamped window rather than being dropped, and the prefix still says
+    /// what the window is.
+    #[test]
+    fn a_listing_without_the_stamp_fields_still_discovers_the_window() {
+        let parsed = parse_discovered("%1|tbs-fleet|0").expect("parsed");
+        assert_eq!(parsed.session, "");
+        assert_eq!(parsed.role, WindowRole::Shell);
+        assert!(parsed.is_alive);
+        assert!(parse_discovered("%1|someone-elses|0").is_none());
+        assert!(parse_discovered("not-a-pane|tb-fleet|0").is_none());
+    }
+
+    /// A program window is discovered but can never be adopted as a session's
+    /// agent, which is what the role is for.
+    ///
+    /// Discovery used to filter on the `tb-` prefix, which excluded `tbs-` and
+    /// `tbp-` outright — and so hid exactly the windows that make a name
+    /// ambiguous. They are listed now; the *role*, not the listing, is what
+    /// keeps a plugin's program from resolving as somebody's agent.
+    #[test]
+    fn a_program_window_is_discovered_but_is_nobodys_agent() {
+        let program = program_window_name("abcd1234", "watch");
+        assert_eq!(
+            WindowRole::from_window_name(&program),
+            Some(WindowRole::Program)
+        );
+        assert_eq!(
+            WindowRole::from_window_name(&shell_window_name("s")),
+            Some(WindowRole::Shell)
+        );
+        assert_eq!(
+            WindowRole::from_window_name(&agent_window_name("s")),
+            Some(WindowRole::Agent)
+        );
+        assert_eq!(WindowRole::from_window_name("someone-elses"), None);
     }
 
     /// Why the owner is a **digest** rather than the plugin's path.

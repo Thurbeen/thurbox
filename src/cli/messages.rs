@@ -311,8 +311,8 @@ fn enqueue_and_wake(
         // Best-effort nudge: a missing/dead window must not fail the send (the
         // message is already durably queued for the next drain).
         match crate::agent::tmux::send_prompt_now(
+            &recipient.id.to_string(),
             &recipient.name,
-            &recipient.backend_id,
             WAKE_TOKEN,
         ) {
             Ok(()) => woke = true,

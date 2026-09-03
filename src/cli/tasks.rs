@@ -334,16 +334,16 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
     match &task.action {
         None => Ok(json!({ "skipped": "task is not connected to an agent", "id": task.id })),
         Some(AutomationAction::Send { session_id }) => {
-            // The full row, not just the name: the persisted pane id is what
-            // disambiguates when another session shares the name.
+            // The full row, not just the name: the row id is what the window
+            // is stamped with, and so what disambiguates a shared name.
             let target = db
                 .get_session_by_id(*session_id)
                 .map_err(|e| format!("get_session_by_id: {e}"))?
                 .ok_or_else(|| format!("Target session not found: {session_id}"))?;
-            if !crate::agent::tmux::window_exists(&target.name, &target.backend_id) {
+            if !crate::agent::tmux::window_exists(&target.id.to_string(), &target.name) {
                 return Err("target session not running".into());
             }
-            crate::agent::tmux::send_prompt_now(&target.name, &target.backend_id, &prompt)
+            crate::agent::tmux::send_prompt_now(&target.id.to_string(), &target.name, &prompt)
                 .map_err(|e| format!("send_prompt_now: {e}"))?;
             mark_in_progress(db, task)?;
             Ok(json!({ "sent": true, "id": task.id, "session_id": session_id.to_string() }))
@@ -365,11 +365,15 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 .into_iter()
                 .find(|s| {
                     task.matches_spawn_session(&s.name)
-                        && crate::agent::tmux::window_exists(&s.name, &s.backend_id)
+                        && crate::agent::tmux::window_exists(&s.id.to_string(), &s.name)
                 });
             if let Some(session) = existing {
-                crate::agent::tmux::send_prompt_now(&session.name, &session.backend_id, &prompt)
-                    .map_err(|e| format!("send_prompt_now: {e}"))?;
+                crate::agent::tmux::send_prompt_now(
+                    &session.id.to_string(),
+                    &session.name,
+                    &prompt,
+                )
+                .map_err(|e| format!("send_prompt_now: {e}"))?;
                 mark_in_progress(db, task)?;
                 return Ok(json!({ "reused": session.name, "id": task.id }));
             }

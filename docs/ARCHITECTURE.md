@@ -442,23 +442,12 @@ bugs (#641, #2989), required 3 external deps in the data path
 - `window-size manual` — windows size independently
 - `pause-after 5` — flow control (auto-resumed by reader)
 
-**Window naming**: `tb-<session-name>` prefix for discovery. It identifies a
-*name*, not a session: names are not unique, and a soft-deleted row keeps its
-name and its remembered pane id until the reaper lets it go. So resolving
-`tb-<name>` — or a stored `%N`, which a tmux server restart can renumber onto
-another window — proves only that *something* answers to that identity now.
-Live-session callers want that forgiveness (`agent::tmux::agent_target`;
-reaching a session's window after a restart renumbered the panes is what it is
-for), but a **teardown** may not have it: a reap of a soft-deleted row, and the
-orphan cleanup a spawn runs when its own database upsert fails, resolve through
-`agent::tmux::owned_agent_pane`, whose two halves are each gated on
-`Database::session_window_claims` showing that no other row answers to that pane
-id or that window name. An unprovable claim kills nothing and logs — leaking a
-window costs a stale agent, killing the wrong one costs live work. Without that
-gate, deleting a frozen session and recreating it under the same name meant the
-deleted row's reap killed the *replacement* once the undo window closed, and
-silently, since a same-named window matches exactly and `kill-window` exits 0
-(pinned by `tests/reap_e2e.rs`).
+**Window naming**: `tb-<session-name>` prefix for discovery. The prefix is not
+identity — names are not unique, and a soft-deleted row keeps its name and its
+remembered pane id until the reaper lets it go. Every caller that acts on a
+session's window, live lookup or teardown alike, resolves it through the stamp
+`WindowIndex` reads off the window itself rather than the name or the
+remembered pane id; see ADR-25.
 
 **Which socket**: `thurbox` (`thurbox-dev` for a dev build) for an instance
 running out of the default data dir, and `thurbox-<digest of that dir>` for one
@@ -1328,3 +1317,65 @@ parent's checkout, two facts the host's `create` does not take — stays on the
 legacy path and is registered on the host by `session sync --adopt`, as is
 any session created before this change. `session register` is the one place
 a row is made for a window that already runs, and it refuses to launch.
+
+---
+
+## ADR-25: A window's identity is a stamp on the window, not its name
+
+**Choice**: every thurbox tmux window carries two window options written at
+spawn — `@thurbox_session`, the id of the session row that owns it, and
+`@thurbox_role` (`agent` / `shell` / `program`). `discover`'s format string
+reads both, `WindowIndex` (`agent::tmux`) indexes a listing by
+`(session id, role)`, and every reconciler that used to resolve `tb-<name>`
+asks it instead. The answer is three-valued: **at** a pane, **absent**, or
+**unknown** — several windows answer to the name and at least one carries no
+stamp. Nothing may read `unknown` as absence.
+
+**Why**: a window's only identity was its name, and a name is neither unique
+nor injective. Two sessions may legitimately be given one (`--on-existing
+allow`, and ADR-24 mirrors a host's names verbatim), and
+`sanitize_window_name` maps everything outside `[A-Za-z0-9_-]` to `_`, so
+`fleet 1` and `fleet_1` share `tb-fleet_1`. `sessions.backend_id` was the
+precise half, but tmux reissues pane ids from `%0` whenever its server
+starts, so a row's remembered `%N` can be a live namesake's pane afterwards —
+and the check that was supposed to catch that (does the pane sit in a window
+of the right *name*) confirms nothing when the two sessions share the name.
+Six reconcilers keyed on the name, and every teardown path — reap, force
+delete, `stop`, `restart`, spawn rollback — could therefore kill a live
+session's window. That is the "deleting a frozen session kills its
+replacement 30-60s later, and each delete-and-recreate makes the next one die
+sooner" report. A window option is the same fact stored once, on the thing it
+describes, and it is the channel `set_own_pane_state` already uses for hook
+state.
+
+**Rejected**:
+
+- *A `session_window_claims` table* (the first fix, replaced by this one).
+  It answered "does any other row still answer to this pane id or this name"
+  from the database, which is a second store to keep in step with tmux: a
+  claim is written by a spawn and never released, so after one soft delete of
+  `review` every later `review` whose pane id is unusable — every row on
+  psmux, every row after a tmux restart — was refused a reap forever. It also
+  only ever gated the *reap*; the other four teardown paths kept killing by
+  name.
+- *A pane-id tie-break inside an ambiguous name* — "the row remembers `%1`,
+  and `%1` is one of the two `tb-fleet` panes, so take it". This is exactly
+  the unsound step the reissued-id bug walks through, and keeping it would
+  have made the strict path a special case rather than the rule.
+- *Renaming windows to something unique.* The window name is what a person
+  reads in `tmux ls` and what a hand-run `tmux attach` reaches for; a uuid
+  there is a worse tool for a fix that does not need it.
+
+**Consequences**: `sessions.backend_id` is demoted to a hint — it is what the
+interface attaches to, not what a teardown targets, and no code resolves
+ownership through it. `discover` now lists `tbs-` and `tbp-` windows too:
+leaving them out is what let a name look unambiguous when it was not, and the
+*role*, not the listing, is what keeps a plugin's program from ever resolving
+as somebody's agent. Ambiguity that used to relaunch now refuses: a session
+whose name cannot be resolved is left alone rather than given a second agent.
+Migration is the sole-namesake rule — an unstamped window is adoptable only
+while it is the only one with that name, and it is stamped on adoption
+(`restore`'s adopt, `session register`), so a pre-ADR-25 window converts on
+first use. psmux (ADR-13) has no usable window options, so every window there
+reads as unstamped and the name fallback stands — the one place it still
+does, matching the shape of the other psmux carve-outs.

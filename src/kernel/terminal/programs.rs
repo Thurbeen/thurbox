@@ -245,9 +245,10 @@ impl Terminals {
         backend: &Arc<dyn crate::agent::SessionBackend>,
         window: &str,
     ) -> Option<String> {
-        // `find_window`, not `discover`: discovery filters to agent windows
-        // (`tb-`) and a program pane's prefix is `tbp-`, so it would never be seen
-        // there. That is also why it cannot be adopted as a session.
+        // `find_window`, not `discover`: a program window has no session id to
+        // resolve by, only its deterministic name. Discovery does list it, but
+        // stamped `@thurbox_role=program` and unowned, so it can never be
+        // adopted as a session's agent (ADR-25).
         backend.find_window(window).ok().flatten()
     }
 

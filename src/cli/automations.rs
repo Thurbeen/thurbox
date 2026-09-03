@@ -560,8 +560,12 @@ fn poll_local_pane_states(db: &Database) -> usize {
 /// reaped. Only rows with a window of their *own* are touched, so a row reaped
 /// once costs nothing on every later tick — and a stale row is never reported as
 /// reaped on the strength of a live namesake's window. The gate is
-/// `session_ops::delete::owned_agent_pane`, the same and only ownership test the
-/// reap itself applies.
+/// `session_ops::delete::owned_agent_pane_in`, the same and only ownership test
+/// the reap itself applies.
+///
+/// The listing is taken once and only when a row has actually come due: a
+/// sweep that finds nothing overdue — which is nearly every one — costs no tmux
+/// round trip at all.
 ///
 /// Window ownership is the whole gate, so a row that owns none is skipped
 /// entirely and its metrics file and symlink workspace are left in place —
@@ -577,6 +581,7 @@ fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
     let now = current_time_millis();
     let window = crate::kernel::reaper::UNDO_WINDOW.as_millis() as u64;
     let mut reaped = Vec::new();
+    let mut windows: Option<crate::agent::tmux::WindowIndex> = None;
     for row in rows {
         if row.force_deleted
             || crate::session::is_remote_backend(&row.backend_type)
@@ -584,7 +589,9 @@ fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
         {
             continue;
         }
-        if crate::session_ops::delete::owned_agent_pane(db, &row).is_none() {
+        let index = windows
+            .get_or_insert_with(|| crate::agent::tmux::local_window_index().unwrap_or_default());
+        if crate::session_ops::delete::owned_agent_pane_in(index, &row).is_none() {
             continue;
         }
         match crate::session_ops::reap_soft_deleted(db, row.id) {
@@ -663,14 +670,14 @@ fn fire_send(
             )
         }
     };
-    if !crate::agent::tmux::window_exists(&target.name, &target.backend_id) {
+    if !crate::agent::tmux::window_exists(&target.id.to_string(), &target.name) {
         return (
             AutomationRunStatus::Skipped,
             "target session not running".into(),
             None,
         );
     }
-    match crate::agent::tmux::send_prompt_now(&target.name, &target.backend_id, &auto.prompt) {
+    match crate::agent::tmux::send_prompt_now(&target.id.to_string(), &target.name, &auto.prompt) {
         Ok(()) => (
             AutomationRunStatus::Success,
             format!("sent to {session_id}"),
@@ -694,11 +701,13 @@ fn fire_spawn(
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
     // Reuse an existing session window (later fires / restored sessions).
-    // Name-only targeting: the reused window's session row (and so its pane
-    // id) has no cheap lookup here, and `auto-<id>` names don't collide.
-    if crate::agent::tmux::window_exists(&name, "") {
-        // The reused window's session id has no cheap lookup here.
-        return match crate::agent::tmux::send_prompt_now(&name, "", &auto.prompt) {
+    // Name-only targeting: the reused window's session row has no cheap lookup
+    // here, and `auto-<id>` names don't collide.
+    if crate::agent::tmux::window_exists("", &name) {
+        // The reused window's session id has no cheap lookup here, so it is
+        // addressed by name — which resolves only while `auto-<id>` is the sole
+        // window with that name, and they do not collide.
+        return match crate::agent::tmux::send_prompt_now("", &name, &auto.prompt) {
             Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
             Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
         };
@@ -860,9 +869,10 @@ mod tests {
 
     /// The sweep's ownership gate. Its old test was `agent_window_alive`, so an
     /// overdue row whose pane had long gone was re-reported as reaped on every
-    /// tick on the strength of a live namesake's window. A row whose pane id
-    /// *and* window name another live row answers to owns nothing, so the
-    /// sweep must leave it alone — and no tmux is consulted to find that out.
+    /// tick on the strength of a live namesake's window. Ownership is now the
+    /// window's own stamp (ADR-25): with no window carrying this row's id — here
+    /// there is no tmux server at all — the row owns nothing and the sweep
+    /// leaves it alone.
     #[test]
     fn the_overdue_reap_skips_a_row_a_live_namesake_answers_for() {
         let temp = tempfile::TempDir::new().unwrap();

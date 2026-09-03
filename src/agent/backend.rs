@@ -13,6 +13,7 @@ use tracing::{debug, error};
 
 use crate::agent::osc8;
 use crate::agent::provider::AgentProvider;
+use crate::agent::tmux::WindowRole;
 use crate::session::{HyperlinkTable, SessionConfig, SessionInfo};
 
 pub(crate) fn now_millis() -> u64 {
@@ -189,6 +190,23 @@ impl vt100::Callbacks for TermSignals {
 /// rendering is unaffected.
 pub type SessionParser = vt100::Parser<TermSignals>;
 
+/// Stamp a freshly spawned window with the session that owns it.
+///
+/// Best-effort and logged rather than propagated: a window that could not be
+/// stamped is still a perfectly good window, and resolves by name for as long
+/// as it is the only one with that name — which is what every window did
+/// before ADR-25.
+fn stamp(
+    backend: &Arc<dyn SessionBackend>,
+    backend_id: &str,
+    session_id: crate::session::SessionId,
+    role: WindowRole,
+) {
+    if let Err(e) = backend.stamp_window(backend_id, &session_id.to_string(), role) {
+        debug!(session_id = %session_id, "could not stamp the window: {e:#}");
+    }
+}
+
 /// Metadata returned when discovering existing sessions from the backend.
 #[derive(Clone)]
 pub struct DiscoveredSession {
@@ -198,6 +216,13 @@ pub struct DiscoveredSession {
     pub name: String,
     /// Whether the process is still running.
     pub is_alive: bool,
+    /// The id of the session row that owns this window, as the window itself
+    /// carries it (`@thurbox_session`). Empty for a window spawned before
+    /// windows were stamped, or by a multiplexer with no window options — see
+    /// [`crate::agent::tmux::WindowIndex`] for what that leaves resolvable.
+    pub session: String,
+    /// What the window is for.
+    pub role: crate::agent::tmux::WindowRole,
 }
 
 /// A newly spawned session from the backend.
@@ -268,6 +293,22 @@ pub trait SessionBackend: Send + Sync {
 
     /// Discover existing sessions managed by this backend.
     fn discover(&self) -> Result<Vec<DiscoveredSession>>;
+
+    /// Stamp a window with the identity every reconciler resolves it by: which
+    /// session row owns it, and in what role (see
+    /// [`crate::agent::tmux::WINDOW_SESSION_OPTION`]).
+    ///
+    /// Defaults to doing nothing, for a backend with no place to keep it —
+    /// such a backend's windows read as unstamped, which
+    /// [`crate::agent::tmux::WindowIndex`] resolves by name as before.
+    fn stamp_window(
+        &self,
+        _backend_id: &str,
+        _session_id: &str,
+        _role: crate::agent::tmux::WindowRole,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// The pane id of a live window with this **exact** name, if there is one.
     ///
@@ -559,6 +600,15 @@ impl ProgramPane {
         cols: u16,
     ) -> Result<Self> {
         let spawned = backend.spawn(window_name, program, args, cwd, env, rows, cols)?;
+        // No session id: a program belongs to a plugin, and the role is what
+        // keeps its window from ever resolving as somebody's agent.
+        if let Err(e) = backend.stamp_window(
+            &spawned.backend_id,
+            "",
+            crate::agent::tmux::WindowRole::Program,
+        ) {
+            debug!("could not stamp the program window {window_name}: {e:#}");
+        }
         let (wired, _signals) = Session::wire_up(
             rows,
             cols,
@@ -713,6 +763,7 @@ impl Session {
             info.agent = config.agent.clone();
         }
         info.backend_id = Some(spawned.backend_id.clone());
+        stamp(backend, &spawned.backend_id, info.id, WindowRole::Agent);
         info.remote_host = remote_host_from_backend(backend);
         debug!(session_id = %info.id, backend_id = %spawned.backend_id, "Spawned session via backend");
 
@@ -1122,6 +1173,13 @@ impl Session {
             cols,
         )?;
 
+        stamp(
+            &self.backend,
+            &spawned.backend_id,
+            self.info.id,
+            WindowRole::Agent,
+        );
+
         let (wired, _signals) = Self::wire_up(
             rows,
             cols,
@@ -1216,6 +1274,12 @@ impl Session {
             "Shell",
         );
 
+        stamp(
+            &self.backend,
+            &wired.backend_id,
+            self.info.id,
+            WindowRole::Shell,
+        );
         self.info.shell_backend_id = Some(wired.backend_id.clone());
         self.shell_pane = Some(ShellPane { wired });
 

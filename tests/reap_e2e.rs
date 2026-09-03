@@ -1,4 +1,4 @@
-//! Reaping a soft-deleted session must not kill a live session's window.
+//! Tearing a session down must not kill a live session's window.
 //!
 //! The reaper resolved its victim through `agent_target`, which falls back from
 //! a stale pane id to the `tb-<name>` window name unconditionally. That fallback
@@ -12,6 +12,11 @@
 //! the *deleted* row closes its undo window and kills the *replacement*. Each
 //! delete-and-recreate arms one more of these, so the session dies faster every
 //! time.
+//!
+//! The fix is not reap-shaped, so neither is this suite any more: every window
+//! carries the id of the session row that owns it (`@thurbox_session`, ADR-25),
+//! and force delete, stop and restart resolve that stamp exactly as the reap
+//! does. The last test here walks all three.
 //!
 //! Scoped to a throwaway socket and temporary directories, and skipped when
 //! tmux is absent, like the other end-to-end tests here.
@@ -139,6 +144,7 @@ fn spawn(
             // In place: a worktree is irrelevant to which window a reap targets.
             worktree_branch: None,
             base_branch: None,
+            existing_worktree: None,
             agent: Some("shell".into()),
             command: None,
             args: Vec::new(),
@@ -151,7 +157,6 @@ fn spawn(
             extra_repos: Vec::new(),
             fork_session_id: None,
             inherit_worktrees: Vec::new(),
-            existing_worktree: None,
         },
     );
     match result {
@@ -499,15 +504,17 @@ fn reaping_spares_a_live_window_whose_name_only_collides_once_sanitized() {
     );
 }
 
-/// The decision the spawn's orphan cleanup delegates. When a spawn's DB upsert
-/// fails the tmux window is already up, and tearing it down through
-/// `kill_window` would reach `tb-<name>` whenever the pane id is unusable —
-/// always, on psmux. `owned_agent_pane_for` is that teardown's gate, reachable
-/// directly, so what the cleanup would do is asserted without having to make an
-/// upsert fail: a window whose name a live session claims is not provably the
-/// spawn's, so it leaks rather than taking the live one down.
+/// The reap was never the only path that killed by name. Force delete, `stop`
+/// and `restart` all resolved `tb-<name>` too, so each of them destroyed a live
+/// namesake's window whenever the row being torn down no longer had one of its
+/// own — the state a frozen-and-recreated session leaves behind. Ownership is
+/// one rule now, so one test walks all three.
+///
+/// Each path gets a name of its own, and so a live namesake of its own: sharing
+/// one would make the second and third answers vacuous the moment the first
+/// path killed it.
 #[test]
-fn a_spawns_orphan_cleanup_owns_nothing_a_live_namesake_claims() {
+fn force_delete_stop_and_restart_all_spare_a_live_namesakes_window() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
@@ -519,38 +526,53 @@ fn a_spawns_orphan_cleanup_owns_nothing_a_live_namesake_claims() {
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
-    let Some(live) = spawn(&db, repo.path(), "fleet") else {
-        return;
-    };
+    // Per path: a stale row whose own window is gone, beside a live namesake.
+    let mut cases = Vec::new();
+    for name in ["fleet-delete", "fleet-stop", "fleet-restart"] {
+        let Some(stale) = spawn(&db, repo.path(), name) else {
+            return;
+        };
+        let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
+        let Some(live) = spawn(&db, repo.path(), name) else {
+            return;
+        };
+        assert!(
+            pane_alive(&live.backend_id),
+            "the live '{name}' should be up"
+        );
+        cases.push((stale, live));
+    }
 
-    // The failed spawn: a window named 'fleet' that never became a row, so no
-    // id of its own excludes anything, and psmux's shape — no pane id at all.
-    let owned = thurbox::session_ops::delete::owned_agent_pane_for(
-        &db,
-        thurbox::session::SessionId::default(),
-        "fleet",
-        "",
-    );
-    let survived = pane_alive(&live.backend_id);
+    let forced = thurbox::session_ops::delete_session_headless(&db, cases[0].0.session_id, true);
+    let after_delete = pane_alive(&cases[0].1.backend_id);
+
+    let stopped = thurbox::session_ops::restart::stop_session_headless(&db, cases[1].0.session_id);
+    let after_stop = pane_alive(&cases[1].1.backend_id);
+
+    let restarted = thurbox::session_ops::restart_session_headless(&db, cases[2].0.session_id);
+    let after_restart = pane_alive(&cases[2].1.backend_id);
+
+    let windows_after = windows();
     cleanup();
 
+    assert!(forced.is_ok(), "force delete: {forced:?}");
+    assert!(stopped.is_ok(), "stop: {stopped:?}");
+    assert!(restarted.is_ok(), "restart: {restarted:?}");
+    // Reported together, so one run says which paths killed rather than only
+    // the first.
     assert_eq!(
-        owned, None,
-        "a live 'fleet' claims the window name, so the orphan cleanup owns \
-         nothing (resolved {owned:?}, live pane {})",
-        live.backend_id
-    );
-    assert!(
-        survived,
-        "the ownership test must not touch the live window"
+        (after_delete, after_stop, after_restart),
+        (true, true, true),
+        "tearing a stale row down killed a live namesake's window \
+         (delete kept={after_delete}, stop kept={after_stop}, \
+         restart kept={after_restart}); windows left: {windows_after:?}"
     );
 }
 
-/// And the strictness is not a blanket refusal: with nothing else answering to
-/// the name or the pane id, the orphan cleanup resolves the window it just
-/// leaked, so a failed spawn still cleans up after itself.
+/// The other half of that contract, for the path with the least cover: a
+/// force delete must still take down the window the row really does own.
 #[test]
-fn a_spawns_orphan_cleanup_owns_the_window_nothing_else_answers_for() {
+fn force_delete_still_kills_the_rows_own_window() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
@@ -565,26 +587,102 @@ fn a_spawns_orphan_cleanup_owns_the_window_nothing_else_answers_for() {
     let Some(session) = spawn(&db, repo.path(), "solo") else {
         return;
     };
-    // The upsert that never landed: the window is up with no row behind it.
-    // Force-deleting is how a row stops claiming its window, which is the state
-    // a failed upsert leaves the server in.
-    db.soft_delete_session(session.session_id).expect("delete");
-    db.mark_session_force_deleted(session.session_id)
-        .expect("force-delete");
+    let report = thurbox::session_ops::delete_session_headless(&db, session.session_id, true)
+        .expect("force delete");
+    let still_there = pane_alive(&session.backend_id);
+    cleanup();
 
-    let owned = thurbox::session_ops::delete::owned_agent_pane_for(
-        &db,
-        thurbox::session::SessionId::default(),
-        "solo",
-        &session.backend_id,
+    assert!(report.killed_window, "the force delete reported no kill");
+    assert!(
+        !still_there,
+        "the force delete must kill the row's own window (pane {} survived)",
+        session.backend_id
     );
+}
+
+/// A row that never recorded a pane id — the psmux shape, and every row
+/// persisted before local spawns reported one — is still found by its stamp.
+/// Nothing here consults `backend_id`, which is the whole point: after a tmux
+/// server restart it names somebody else's pane.
+#[test]
+fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(session) = spawn(&db, repo.path(), "stamped") else {
+        return;
+    };
+    db.set_backend_id(session.session_id, "")
+        .expect("clear the pane id");
+
+    let located =
+        thurbox::agent::tmux::agent_window(None, &session.session_id.to_string(), "stamped");
+    let outcome = located.map(|l| l.pane());
     cleanup();
 
     assert_eq!(
-        owned,
+        outcome.expect("list windows"),
         Some(session.backend_id.clone()),
-        "with no other claim on the name or the pane, the cleanup owns the \
-         window it leaked (pane {})",
-        session.backend_id
+        "the window's stamp, not the row's pane id, is what finds it"
+    );
+}
+
+/// Restoring a session must not adopt a live namesake's window.
+///
+/// `respawn` asks "is the window still alive? then adopt it rather than
+/// launching a second agent" — a real case, since a soft-deleted row keeps its
+/// agent until the reaper lets it go. Resolved by name, that adopted whichever
+/// `tb-<name>` was there, putting two rows on one pane: the next kill by id
+/// then destroys the other session's agent. Extension self-heal sets this up
+/// routinely, since it matches its declared sessions by name.
+#[test]
+fn restoring_a_session_never_adopts_a_live_namesakes_window() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(stale) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+    thurbox::session_ops::delete_session_headless(&db, stale.session_id, false).expect("delete");
+    // Its agent exits, so the row has no window of its own to come back to.
+    let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
+
+    let Some(live) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+
+    let restored = thurbox::session_ops::restore_session_headless(&db, stale.session_id, false);
+    let adopted = db
+        .get_session_by_id(stale.session_id)
+        .expect("query")
+        .map(|row| row.backend_id);
+    let survived = pane_alive(&live.backend_id);
+    let windows_after = windows();
+    cleanup();
+
+    assert!(restored.is_ok(), "restore: {restored:?}");
+    assert!(survived, "the live namesake's pane must still be running");
+    assert_ne!(
+        adopted.as_deref(),
+        Some(live.backend_id.as_str()),
+        "the restore adopted the live namesake's pane {} instead of spawning \
+         its own agent; windows left: {windows_after:?}",
+        live.backend_id
     );
 }

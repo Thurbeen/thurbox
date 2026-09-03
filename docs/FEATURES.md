@@ -1993,10 +1993,11 @@ thurbox instances.
 - A persisted `backend_id` is a **hint, not a fact**. tmux hands out
   fresh pane ids every time its server starts, so after a reboot every
   stored id names a pane that no longer exists — and `%1` after one
-  belongs to whichever window came up first. So a pane id a window
-  listing contradicts (it is not in the window this session's name
-  produces) is dropped in favour of matching by name, and a session
-  with neither has its agent relaunched. Trusted verbatim, it instead
+  belongs to whichever window came up first. So a pane id a listing does
+  not place in this session's own window is dropped in favour of the
+  window carrying that session's stamp (`@thurbox_session`, ADR-25); a
+  session whose window is unstamped, ambiguous, or gone is left without a
+  pane rather than adopting a guess. Trusted verbatim, it instead
   failed to adopt on `resize-window` (`can't find pane`) once per retry
   interval for the life of the process, while the relaunch that would
   have fixed it was skipped precisely *because* the row named a pane.

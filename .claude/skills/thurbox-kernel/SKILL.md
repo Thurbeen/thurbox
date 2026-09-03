@@ -257,9 +257,10 @@ real terminal — keystrokes go to it, it is resized to its rect, it survives an
 plugin being rendered, so naming another plugin's pane is impossible by
 construction. Reuses the companion-shell machinery whole (`ProgramPane` mirrors
 `ShellPane` over the same `Session::wire_up`); the differences are a third window
-prefix (`tbp-`, invisible to `discover`'s `tb-` filter — hence `find_window`), and
+prefix (`tbp-`; `discover` lists it, but it is stamped `@thurbox_role=program`
+with no session id, so it can never resolve as a session's agent — ADR-25), and
 that **nothing is persisted**: the window name is deterministic, so re-adoption
-after a restart is a lookup and there is no stored id to go stale. Gated by its own
+after a restart is a lookup (`find_window`) and there is no stored id to go stale. Gated by its own
 capability, **not** `run`'s — `run` is bounded (256 KB, 600 s, 4 at a time) and an
 interactive program is none of those, so an existing grant must not silently widen.
 Four panes per plugin. `thurbox.granted.<name>` is how a pane knows, since

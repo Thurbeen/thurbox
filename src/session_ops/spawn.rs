@@ -352,14 +352,17 @@ pub fn spawn_session_headless_with_progress(
     let (command, args) = super::build_agent_invocation(&agent_def, &config);
 
     report(SpawnPhase::Launching);
-    // Both paths learn the real pane id up front — the remote one over the SSH
-    // backend's control mode, the local one from `new-window -P`. The id is
-    // what the row is targeted by thereafter: a window *name* is not unique
-    // (two sessions can share one), and resolving by name is only the legacy
-    // fallback for rows persisted before the id was recorded.
+    // The window is stamped with the row's id as it is created (ADR-25), which
+    // is what every later lookup resolves: a window *name* is not unique (two
+    // sessions can share one) and a pane id is reissued when the tmux server
+    // restarts. Both paths also learn the real pane id up front — the remote
+    // one over the SSH backend's control mode, the local one from
+    // `new-window -P` — which is the pane the interface attaches to.
+    let stamp = session_id.to_string();
     let backend_id = match host.as_ref() {
         Some(h) => crate::agent::tmux::spawn_window_remote(
             h,
+            &stamp,
             &req.name,
             &command,
             &args,
@@ -368,6 +371,7 @@ pub fn spawn_session_headless_with_progress(
         )
         .map_err(|e| format!("Failed to spawn remote tmux window: {e:#}"))?,
         None => crate::agent::tmux::spawn_window(
+            &stamp,
             &req.name,
             &command,
             &args,
@@ -414,13 +418,8 @@ pub fn spawn_session_headless_with_progress(
         // sessions share destroys a live one. Leaking the window we already
         // leaked is the cheap failure; killing someone else's is not.
         let cleanup = match host.as_ref() {
-            Some(h) => crate::agent::tmux::kill_pane_remote(h, &backend_id).map(|()| true),
-            None => {
-                match super::delete::owned_agent_pane_for(db, session_id, &req.name, &backend_id) {
-                    Some(target) => crate::agent::tmux::kill_window_at(&target).map(|()| true),
-                    None => Ok(false),
-                }
-            }
+            Some(h) => crate::agent::tmux::kill_pane_remote(h, &stamp, &req.name, &backend_id),
+            None => crate::agent::tmux::kill_window(&stamp, &req.name).map(|()| true),
         };
         match cleanup {
             Ok(true) => {}

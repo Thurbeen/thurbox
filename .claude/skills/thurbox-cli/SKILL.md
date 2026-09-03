@@ -415,8 +415,10 @@ there is no wiring here to be broken, and failing it made bare `session doctor`
 session shape thurbox advertises for drivers.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB row is marked
-deleted (the TUI tears down the tmux window/worktree on its next sync), and
-`session restore` revives it. `--force`
+deleted, and `session restore` revives it. The window is torn down once the undo
+window closes (`UNDO_WINDOW`, 10s): by the TUI's `kernel::reaper`, or headlessly
+by `reap_overdue_soft_deletes` on the heartbeat. Only the **window** — worktrees
+are what makes the undo lossless and are never touched by a soft delete. `--force`
 (`session_ops::delete_session_headless`) also kills the tmux window, removes
 the worktrees **thurbox created** + the symlink workspace, disables `send`
 automations targeting the session, and clears its `session meta` key/value space
