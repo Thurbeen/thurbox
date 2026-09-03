@@ -2166,8 +2166,7 @@ mod tests {
         let db = db();
         db.upsert_session(&make_test_session("twin")).unwrap();
         db.upsert_session(&make_test_session("twin")).unwrap();
-        let err =
-            resolve_existing(&db, "twin", OnExisting::Adopt, "local-tmux", None).unwrap_err();
+        let err = resolve_existing(&db, "twin", OnExisting::Adopt, "local-tmux", None).unwrap_err();
         assert_eq!(err.exit_code, super::super::EXIT_AMBIGUOUS);
         assert!(err.contains("matches 2"), "got {err}");
     }

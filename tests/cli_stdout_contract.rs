@@ -706,7 +706,10 @@ fn a_failed_reports_as_write_leaves_the_new_session_in_place() {
     // Tear down the real tmux window this test spawned.
     let version = env.run(&["version", "--json"]);
     let version: Value = serde_json::from_slice(&version.stdout).expect("JSON");
-    let socket = version["tmux_socket"].as_str().expect("tmux_socket").to_string();
+    let socket = version["tmux_socket"]
+        .as_str()
+        .expect("tmux_socket")
+        .to_string();
     env.run(&["session", "delete", &id, "--force", "--json"]);
     let _ = std::process::Command::new("tmux")
         .args(["-L", &socket, "kill-server"])
