@@ -79,6 +79,13 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   the stamp itself: a row with no pane id at all (the psmux shape) still
   resolves its own window, and restore refuses to adopt a live namesake's
   window rather than putting two rows on one pane.
+- **`tests/session_state_agreement.rs`** — one row, four independent readers
+  (`session get`, `session list`, `watch --initial` via the real binary, and
+  `SnapshotStore` in-process): all four must answer the same `SessionState`.
+  Pins the concrete regression the `session::hook_status` consolidation fixed —
+  `seen_at` is a stored fact only the snapshot used to read, so a turn the
+  interface already showed as `idle` kept answering `done` on every headless
+  surface for the rest of the session's life.
 
 Tests that shell out to `git` **must scrub the `GIT_*` location variables**
 (`git::GIT_LOCATION_ENV`): git exports them to hook processes, so the suite running
