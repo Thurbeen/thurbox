@@ -27,7 +27,6 @@ pub mod notify;
 pub mod packages;
 pub mod paint;
 pub mod perf;
-pub mod reaper;
 pub mod registry;
 pub mod repos;
 pub mod runs;

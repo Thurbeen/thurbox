@@ -844,3 +844,57 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
     cleanup();
     assert!(!started, "a teardown started a tmux server on the socket");
 }
+
+/// The one reaper is DB-driven, and this is what that buys: a row soft-deleted
+/// while no interface was running is collected by the next sweep from a process
+/// that never saw it alive. The reaper it replaced watched ids leave a
+/// snapshot, so it held no opinion at all about a session it had never had in
+/// one — and a restart of the interface lost the opinions it did hold.
+#[test]
+fn the_sweep_collects_a_row_deleted_while_nothing_was_watching() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _tmux_dir = isolate_tmux();
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(session) = spawn(&db, repo.path(), "unwatched") else {
+        return;
+    };
+    thurbox::session_ops::delete_session_headless(&db, session.session_id, false).expect("delete");
+
+    // Inside the undo window: the sweep leaves it, and the agent runs on.
+    assert!(
+        thurbox::session_ops::reap_overdue_soft_deletes(&db).is_empty(),
+        "a delete still inside its undo window is not overdue"
+    );
+    let untouched = pane_alive(&session.backend_id);
+
+    // Now past it. Nothing here has ever held the id in a snapshot.
+    db.conn_ref()
+        .execute(
+            "UPDATE sessions SET deleted_at = 0 WHERE id = ?1",
+            [session.session_id.to_string()],
+        )
+        .expect("backdate the delete");
+    let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db);
+    let collected = !pane_alive(&session.backend_id);
+    // Idempotent: the row owns nothing on the next pass, so it is not reported
+    // again on every tick for as long as it stays deleted.
+    let second = thurbox::session_ops::reap_overdue_soft_deletes(&db);
+    cleanup();
+
+    assert!(untouched, "the agent runs on until the undo window closes");
+    assert_eq!(
+        reaped,
+        vec![session.session_id.to_string()],
+        "the overdue row is the one the sweep collects"
+    );
+    assert!(collected, "and its window comes down");
+    assert!(second.is_empty(), "a row reaped once owns nothing to reap");
+}

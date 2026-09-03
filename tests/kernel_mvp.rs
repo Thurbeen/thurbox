@@ -1735,10 +1735,39 @@ fn a_force_deleted_restore_is_refused_without_best_effort() {
     }
 }
 
+/// Isolate a `CommandBus` test from the developer's real database.
+///
+/// By environment variable, not `paths::set_test_dir`: the bus dispatches each
+/// command on its own worker thread, and that override is thread-local, so a
+/// worker would resolve the developer's real `THURBOX_DATA_DIR` and open (or
+/// create) a database there. `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` are
+/// process-wide and are what the worker thread reads; nextest runs one process
+/// per test, so setting them here is safe.
+///
+/// Materialises the schema up front, as a real thurbox process does at boot
+/// before it dispatches anything: the command worker opens the database it is
+/// *given* (`open_existing`) rather than re-running `schema::initialize` on
+/// every command, so a test that skips this step hits a database file that was
+/// never created and fails before its own assertion is ever reached.
+fn isolate() -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("tempdir");
+    let config = home.path().join("config");
+    let data = home.path().join("data");
+    std::fs::create_dir_all(&config).expect("mkdir");
+    std::fs::create_dir_all(&data).expect("mkdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", &config);
+    std::env::set_var("THURBOX_DATA_DIR", &data);
+    thurbox::paths::set_test_dir(&data);
+    let path = thurbox::paths::database_file().expect("database path");
+    thurbox::storage::Database::open(&path).expect("open database");
+    home
+}
+
 #[test]
 fn a_creation_that_cannot_start_reports_why_and_leaves_nothing() {
     use thurbox::kernel::command::{Args, Command, CommandBus, Phase as CmdPhase};
 
+    let _home = isolate();
     let mut bus = CommandBus::new();
     bus.dispatch(
         Command::parse(
@@ -1790,6 +1819,7 @@ fn opening_a_worktree_that_is_not_there_reports_why_before_spawning() {
     // otherwise become the cwd of a pane that cannot start in it.
     let repo = tempfile::TempDir::new().expect("tempdir");
 
+    let _home = isolate();
     let mut bus = CommandBus::new();
     bus.dispatch(
         Command::parse(

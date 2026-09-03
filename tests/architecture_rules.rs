@@ -98,10 +98,16 @@ const MODULE_RULES: &[ModuleRules] = &[
             "paths",
             "notifications",
         ],
-        // `kernel` for `plugin check`, which loads the *real* host: the failures
-        // worth reporting are declaration-shaped (no `render`, an unplaced slot, a
-        // clashing key) and a syntax check passes all of them. Path-only, like
-        // `agent`, so the crossing stays visible at each call site.
+        // `kernel` for the two subcommands that drive the *interface's* own
+        // files — `plugin` (`check` loads the real host: the failures worth
+        // reporting are declaration-shaped — no `render`, an unplaced slot, a
+        // clashing key — and a syntax check passes all of them) and `config`
+        // (the interface directory and its `ui.json` overrides). Both are
+        // kernel-owned surfaces asked about from outside, not session logic
+        // duplicated here; the session engine the CLI shares with the loop is
+        // `session_ops`, and that is where the reap sweep it drives lives.
+        // Path-only, like `agent`, so the crossing stays visible at each call
+        // site.
         allowed_path_only: &["agent", "kernel"],
     },
     // v2 plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
@@ -150,16 +156,38 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["paths"],
         allowed_path_only: &[],
     },
+    // `main`'s own body, split across files: the loop, the workers and the
+    // chrome. It is the one module whose job *is* to wire the layers together,
+    // so its list is the widest — but it is a list, and a new layer reached
+    // from the loop is a decision recorded here rather than an exemption.
+    // Reaches the library by its crate name (`thurbox::`), which is the only
+    // spelling available from inside the binary.
+    ModuleRules {
+        name: "coordinator",
+        allowed: &[
+            "agent",
+            "clipboard",
+            "kernel",
+            "paths",
+            "session",
+            "session_ops",
+            "shell",
+            "storage",
+        ],
+        allowed_path_only: &[],
+    },
     // Leaf side-effect module: OS desktop notifications. Knows about
-    // `session` (for `SessionId`), `paths` (for the DB path the click
-    // callback writes to) and `shell` (the shared quoting rules — it grew a
-    // third copy of the PowerShell one before this was allowed); never
-    // reaches into agent / ui / app / storage beyond a single SQL statement
-    // on its own short-lived connection.
+    // `session` (for `SessionId`), `paths` (for the DB path the click callback
+    // writes to), `shell` (the shared quoting rules — it grew a third copy of
+    // the PowerShell one before this was allowed) and `storage`, through which
+    // the click handler records its focus request. That last one used to be a
+    // raw `rusqlite` statement here instead, which was a carve-out this
+    // allowlist could describe but not enforce: the module that owns a table's
+    // SQL is `storage`, and now this goes through it like every other write.
     ModuleRules {
         name: "notifications",
         allowed: &["session", "paths", "shell"],
-        allowed_path_only: &[],
+        allowed_path_only: &["storage"],
     },
     // Leaf side-effect module: clipboard writes (native + OSC 52). Knows
     // `session` only for the `ClipboardProvider` setting; writes to the tty
@@ -171,13 +199,15 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
 ];
 
-/// Modules exempt from the allowlist: `app` is the coordinator (imports
-/// everything by design); `bin`, `lib`, and `main` are crate roots, not
-/// architecture modules.
-// `main` is the coordinator, as `app` was before v1 was retired.
-/// `coordinator` is `main`'s own body, split across files: it wires every
-/// layer together by definition, which is exactly why `main` is exempt.
-const EXEMPT: &[&str] = &["bin", "coordinator", "lib", "main"];
+/// Modules exempt from the allowlist: `bin`, `lib`, and `main` are crate roots,
+/// not architecture modules.
+///
+/// `coordinator` is **not** exempt any more. It is `main`'s own body split
+/// across files, and it does wire every layer together — but "wires everything"
+/// was never the same claim as "may reach anything", and an exemption made the
+/// one module that touches the most layers the one nobody had to decide about.
+/// It has an entry above listing what it actually reaches today.
+const EXEMPT: &[&str] = &["bin", "lib", "main"];
 
 /// A single architecture violation: a forbidden crate-module reference.
 struct Violation {
@@ -420,27 +450,42 @@ fn brace_group_segments(bytes: &[u8], open: usize) -> Vec<String> {
 
 /// All `crate::<segment>` references in stripped source.
 fn crate_refs(stripped: &str) -> Vec<RefSite> {
-    const TOKEN: &str = "crate::";
     let bytes = stripped.as_bytes();
     let spans = use_spans(stripped);
     let mut refs = Vec::new();
-    let mut search = 0;
-    while let Some(found) = stripped[search..].find(TOKEN) {
-        let pos = search + found;
-        search = pos + TOKEN.len();
-        if is_crate_tail(bytes, pos) {
-            continue;
-        }
-        let in_use = spans.iter().any(|&(s, e)| pos >= s && pos < e);
-        for segment in refs_after(bytes, pos + TOKEN.len()) {
-            refs.push(RefSite {
-                offset: pos,
-                segment,
-                in_use,
-            });
+    // `thurbox::` alongside `crate::` because the binary's own modules
+    // (`coordinator`) reach the library by its name — the same crossing, spelt
+    // the only way it can be spelt from there.
+    for token in ["crate::", "thurbox::"] {
+        let mut search = 0;
+        while let Some(found) = stripped[search..].find(token) {
+            let pos = search + found;
+            search = pos + token.len();
+            if is_crate_tail(bytes, pos) {
+                continue;
+            }
+            let in_use = spans.iter().any(|&(s, e)| pos >= s && pos < e);
+            for segment in refs_after(bytes, pos + token.len()) {
+                refs.push(RefSite {
+                    offset: pos,
+                    segment,
+                    in_use,
+                });
+            }
         }
     }
     refs
+}
+
+/// Whether `name` is a module under `src/` — `src/<name>/` or `src/<name>.rs`.
+///
+/// What separates a module reference from a root item: the binary crate root
+/// holds constants the coordinator reads by `crate::NAME`, and those are not
+/// architecture edges. A misspelt module never reaches this test, since it does
+/// not compile.
+fn is_module(name: &str) -> bool {
+    let root = src_root();
+    root.join(name).is_dir() || root.join(format!("{name}.rs")).is_file()
 }
 
 /// Whether the `crate::` at `pos` is really the tail of something else —
@@ -479,6 +524,9 @@ fn check_module(rules: &ModuleRules) -> Vec<Violation> {
             // `self` (`use crate::{self, …}`) names the crate root, which
             // declares only modules — harmless. Own-module refs are fine.
             if site.segment == "self" || site.segment == rules.name {
+                continue;
+            }
+            if !is_module(&site.segment) {
                 continue;
             }
             if rules.allowed.contains(&site.segment.as_str()) {

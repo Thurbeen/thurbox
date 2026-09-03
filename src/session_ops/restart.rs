@@ -184,6 +184,56 @@ pub fn start_session_headless(
     restart_session_headless_with(db, session_id, true)
 }
 
+/// Refuse a restart of a row that has been deleted since it was loaded.
+///
+/// The row was active when `restart_session_headless_with` read it, but a
+/// `pre_restart` hook is the user's own program and takes as long as it takes.
+/// Asked again with nothing yet killed: relaunching a session somebody deleted
+/// in between puts an agent on a row whose windows the sweep is on its way to
+/// collect, and the pane write that follows would refuse anyway
+/// (see [`record_pane`]) — after the spawn rather than before it.
+fn refuse_if_deleted(db: &Database, session: &crate::sync::SharedSession) -> Result<(), String> {
+    match db.get_deleted_session_by_id(session.id) {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => Err(format!(
+            "'{}' was deleted while it was preparing to restart",
+            session.name
+        )),
+        Err(e) => Err(format!("could not re-read '{}': {e}", session.name)),
+    }
+}
+
+/// Persist the pane a restart just spawned.
+///
+/// A targeted [`Database::set_backend_id`] rather than the full-row
+/// `upsert_session` this used to be, and the difference is `deleted_at = NULL`:
+/// the full write revived a row deleted between the session being loaded and
+/// the new window being recorded, so a delete inside its own undo window came
+/// back attached to a freshly spawned agent. The targeted write refuses a
+/// deleted row instead — but a *force*-deleted row is never reaped (both
+/// [`reap_overdue_soft_deletes`](crate::session_ops::reap_overdue_soft_deletes)
+/// and [`reap_soft_deleted`](crate::session_ops::reap_soft_deleted) skip
+/// `force_deleted` rows unconditionally), so this failing is not on its own
+/// proof the window will ever be collected. The caller kills the window it
+/// just spawned when this returns `Err`, rather than leaning on a sweep that
+/// only covers the soft-delete case.
+fn record_pane(
+    db: &Database,
+    session: &crate::sync::SharedSession,
+    pane: &str,
+) -> Result<(), String> {
+    if db
+        .set_backend_id(session.id, pane)
+        .map_err(|e| format!("Failed to record the new pane: {e}"))?
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "'{}' was deleted while it was restarting; its new window is being killed",
+        session.name
+    ))
+}
+
 /// What a restart has to say beyond having happened.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RestartReport {
@@ -262,9 +312,12 @@ pub fn restart_session_headless_with(
         // parked session is missing on purpose. Only `session start` clears the
         // mark, so this is the one place that has to check it — refusing here
         // is what makes `stop` outlive the next sync tick.
+        // Read strictly: a failed read is not "not stopped". Falling open here
+        // relaunched a deliberately parked session under exactly the DB
+        // contention that caused the failure.
         if db
             .session_stopped_at(session_id)
-            .unwrap_or_default()
+            .map_err(|e| format!("could not read the stopped mark of '{}': {e}", session.name))?
             .is_some()
         {
             tracing::debug!("'{}' is stopped; not relaunching", session.name);
@@ -286,8 +339,19 @@ pub fn restart_session_headless_with(
     }
 
     let hooks_enabled = super::hooks_enabled(db);
-    let recipe = db.load_launch_recipe(session_id).unwrap_or_default();
-    let env = db.load_launch_env(session_id).unwrap_or_default();
+    // Strict, both of them: a `--command` session's recipe read as absent makes
+    // `build_restart_plan` treat it as a registry agent, find no `agents.toml`
+    // entry for a command like `bash`, and launch the *default* coding agent in
+    // its place. Refusing to restart is the honest answer to a read that failed.
+    let recipe = db.load_launch_recipe(session_id).map_err(|e| {
+        format!(
+            "could not read the launch recipe of '{}': {e}",
+            session.name
+        )
+    })?;
+    let env = db
+        .load_launch_env(session_id)
+        .map_err(|e| format!("could not read the launch env of '{}': {e}", session.name))?;
     let plan = build_restart_plan(
         &session,
         host.as_ref(),
@@ -300,6 +364,8 @@ pub fn restart_session_headless_with(
     // leaves the running window running.
     let mut hook_ctx = super::lifecycle_hooks::context_for(&session);
     super::fire_pre(crate::session::HookEvent::PreRestart, &hook_ctx)?;
+
+    refuse_if_deleted(db, &session)?;
 
     match host.as_ref() {
         None => {
@@ -338,10 +404,21 @@ pub fn restart_session_headless_with(
             // interface at a pane that no longer exists. (Empty on psmux, where
             // the spawn can't report an id; the interface then resolves by
             // window name as before.)
-            let mut session = session.clone();
-            session.backend_id = pane;
-            db.upsert_session(&session)
-                .map_err(|e| format!("Failed to record the new pane: {e}"))?;
+            if let Err(e) = record_pane(db, &session, &pane) {
+                // The row lost the race (deleted between the load above and
+                // here), so nothing will ever attach to this window — a
+                // force-deleted row is never reaped. Kill what was just
+                // spawned rather than leave it running forever.
+                if let Err(kill_err) =
+                    crate::agent::tmux::kill_window(&session.id.to_string(), &plan.window_name)
+                {
+                    tracing::warn!(
+                        "could not kill orphaned restart window for '{}': {kill_err:#}",
+                        session.name
+                    );
+                }
+                return Err(e);
+            }
         }
         Some(host) => {
             // Before anything is killed or spawned: acting on a socket the host
@@ -379,17 +456,35 @@ pub fn restart_session_headless_with(
             // The new pane is a different one, and the id is how every later
             // read finds it — leaving the old one persisted would point the
             // interface at a pane that no longer exists.
-            let mut session = session.clone();
-            session.backend_id = pane;
-            db.upsert_session(&session)
-                .map_err(|e| format!("Failed to record the new pane: {e}"))?;
+            if let Err(e) = record_pane(db, &session, &pane) {
+                // Same race as the local branch: a force-deleted row is never
+                // reaped, so the window this just spawned on the host has to
+                // be killed here or it runs forever.
+                if let Err(kill_err) = crate::agent::tmux::kill_remote_windows(
+                    host,
+                    &session.id.to_string(),
+                    &plan.window_name,
+                    crate::agent::tmux::SessionPanes::agent(&pane),
+                ) {
+                    tracing::warn!(
+                        "could not kill orphaned restart window for '{}' on '{}': {kill_err:#}",
+                        session.name,
+                        host.name
+                    );
+                }
+                return Err(e);
+            }
         }
     }
 
     // The agent was re-spawned fresh; clear any stale hook-driven status so it
     // doesn't show a leftover Blocked/Working/Done until the agent re-reports
-    // (a resumed agent may not re-fire its boot hook). Best-effort.
-    let _ = db.clear_hook_state(session_id);
+    // (a resumed agent may not re-fire its boot hook). A failure here leaves
+    // the old status on a new process, which `session doctor` then reports as
+    // a live signal — worth a line in the log rather than a discarded Result.
+    if let Err(e) = db.clear_hook_state(session_id) {
+        tracing::warn!("could not clear the hook state of '{}': {e}", session.name);
+    }
 
     // The new pane is what the row now points at, so that is what the
     // post-restart hooks are told.
@@ -420,6 +515,27 @@ mod tests {
             tombstone: false,
             tombstone_at: None,
         }
+    }
+
+    /// A `pre_restart` hook runs the user's own program between the row being
+    /// read and the window being killed, so "it was active a moment ago" is not
+    /// an answer. A restart that went ahead here spawned an agent for a row the
+    /// sweep was on its way to collect — and, when it still wrote the whole row
+    /// back, revived the delete outright.
+    #[test]
+    fn a_restart_refuses_a_row_deleted_since_it_was_loaded() {
+        let db = Database::open_in_memory().unwrap();
+        let row = session(None, None);
+        db.upsert_session(&row).unwrap();
+
+        refuse_if_deleted(&db, &row).expect("an active row restarts");
+
+        db.soft_delete_session(row.id).unwrap();
+        let error = refuse_if_deleted(&db, &row).unwrap_err();
+        assert!(
+            error.contains("was deleted while it was preparing to restart"),
+            "got {error}"
+        );
     }
 
     #[test]

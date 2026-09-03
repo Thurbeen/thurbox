@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use rusqlite::{params, OptionalExtension};
@@ -198,9 +199,10 @@ impl Database {
             )?;
         }
 
-        if !session.worktrees.is_empty() {
-            self.upsert_worktrees(session.id, &session.worktrees)?;
-        }
+        // Unconditional, empty list included: skipping the replacement for an
+        // empty one left a session that had lost every worktree still listing
+        // the rows it no longer owns.
+        self.upsert_worktrees(session.id, &session.worktrees)?;
 
         match before {
             None => self.record_session_event(
@@ -1004,6 +1006,82 @@ impl Database {
         }
         tx.commit()?;
         Ok(updated > 0)
+    }
+
+    /// Renumber the manual order: read the rows and write their new positions
+    /// inside one `BEGIN IMMEDIATE` transaction.
+    ///
+    /// `plan` is handed the active rows as they stand *under the write lock*
+    /// and answers with each row's new position. Holding the read and the write
+    /// together is what makes concurrent moves safe: two of them cannot read
+    /// the same order, swap the same pair and land as one. A process-local
+    /// mutex used to buy that, and only within one process — a second thurbox
+    /// or a `thurbox-cli` write interleaved regardless.
+    ///
+    /// A plan that refuses rolls the transaction back, so a refusal leaves the
+    /// order exactly as it was.
+    pub fn reorder_sessions<F>(&self, plan: F) -> Result<(), String>
+    where
+        F: FnOnce(&[SharedSession]) -> Result<Vec<(SessionId, i64)>, String>,
+    {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| format!("begin reorder: {e}"))?;
+        let outcome = (|| {
+            let sessions = self
+                .list_active_sessions()
+                .map_err(|e| format!("list sessions: {e}"))?;
+            let orders = plan(&sessions)?;
+            self.set_display_order(&orders)
+                .map(|_| ())
+                .map_err(|e| format!("persist order: {e}"))
+        })();
+        match outcome {
+            Ok(()) => self
+                .conn
+                .execute_batch("COMMIT")
+                .map_err(|e| format!("commit reorder: {e}")),
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    /// Give several sessions their manual position at once: one `UPDATE … CASE`
+    /// rather than a full-row [`upsert_session`](Self::upsert_session) per row.
+    ///
+    /// Targeted like [`set_backend_id`](Self::set_backend_id) and for the same
+    /// two reasons: the full-row write carries `deleted_at = NULL`, so a row
+    /// deleted underneath a renumbering came back, and it rewrote every
+    /// worktree row on each move. Returns how many rows moved; a deleted or
+    /// unknown id is skipped rather than counted.
+    pub fn set_display_order(&self, orders: &[(SessionId, i64)]) -> rusqlite::Result<usize> {
+        if orders.is_empty() {
+            return Ok(0);
+        }
+        let mut cases = String::new();
+        let mut ids = String::new();
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for (index, (id, position)) in orders.iter().enumerate() {
+            let id_param = index * 2 + 1;
+            let position_param = index * 2 + 2;
+            let _ = write!(cases, " WHEN ?{id_param} THEN ?{position_param}");
+            if index > 0 {
+                ids.push(',');
+            }
+            let _ = write!(ids, "?{id_param}");
+            values.push(Box::new(id.to_string()));
+            values.push(Box::new(*position));
+        }
+        let now_param = orders.len() * 2 + 1;
+        values.push(Box::new(current_time_millis() as i64));
+        let sql = format!(
+            "UPDATE sessions SET display_order = CASE id{cases} END, updated_at = ?{now_param} \
+             WHERE deleted_at IS NULL AND id IN ({ids})"
+        );
+        let bound: Vec<&dyn rusqlite::ToSql> = values.iter().map(AsRef::as_ref).collect();
+        self.conn.execute(&sql, bound.as_slice())
     }
 
     /// Record — or clear — the pane id of a session's companion shell. A
@@ -1864,6 +1942,139 @@ mod tests {
         assert!(db.load_hook_state(SessionId::default()).unwrap().is_none());
         db.soft_delete_session(sid).unwrap();
         assert!(db.load_hook_state(sid).unwrap().is_none());
+    }
+
+    /// Why the ordering commands stopped writing whole rows: `upsert_session`
+    /// revives on conflict — deliberately, for the mirror, which applies a
+    /// host's whole row including its restores — so a renumbering that wrote
+    /// each row back undid a delete that landed between the listing and the
+    /// loop that followed it.
+    #[test]
+    fn a_renumbering_leaves_a_row_deleted_underneath_it_deleted() {
+        let db = Database::open_in_memory().unwrap();
+        let first = make_session("alpha");
+        let mut second = make_session("beta");
+        db.upsert_session(&first).unwrap();
+        db.upsert_session(&second).unwrap();
+
+        // The delete a concurrent renumbering races with.
+        db.soft_delete_session(second.id).unwrap();
+
+        // The full-row write-back the ordering commands used to do.
+        second.display_order = Some(1);
+        db.upsert_session(&second).unwrap();
+        assert!(
+            db.get_session_by_id(second.id).unwrap().is_some(),
+            "upsert_session revives on conflict, which is why a renumbering \
+             must not be one"
+        );
+
+        db.soft_delete_session(second.id).unwrap();
+        db.set_display_order(&[(first.id, 0), (second.id, 1)])
+            .unwrap();
+
+        assert_eq!(
+            db.get_session_by_id(first.id)
+                .unwrap()
+                .unwrap()
+                .display_order,
+            Some(0)
+        );
+        assert!(
+            db.get_session_by_id(second.id).unwrap().is_none(),
+            "the targeted write leaves the deleted row deleted"
+        );
+    }
+
+    /// A renumbering changes one column and must not churn the worktree rows
+    /// the full-row write-back rewrote on every move.
+    #[test]
+    fn a_renumbering_does_not_touch_worktree_rows() {
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("with-worktree");
+        session.worktrees = vec![SharedWorktree {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.worktrees/feat"),
+            branch: "feat".to_string(),
+            created_by_thurbox: true,
+        }];
+        db.upsert_session(&session).unwrap();
+
+        db.set_display_order(&[(session.id, 3)]).unwrap();
+
+        let row = db.get_session_by_id(session.id).unwrap().unwrap();
+        assert_eq!(row.display_order, Some(3));
+        assert_eq!(row.worktrees.len(), 1);
+    }
+
+    /// The read and the write are one transaction, so the plan sees the rows it
+    /// renumbers and nothing can slip between the two halves.
+    #[test]
+    fn reordering_hands_the_plan_the_rows_it_renumbers() {
+        let db = Database::open_in_memory().unwrap();
+        let first = make_session("alpha");
+        let second = make_session("beta");
+        db.upsert_session(&first).unwrap();
+        db.upsert_session(&second).unwrap();
+
+        db.reorder_sessions(|rows| {
+            assert_eq!(rows.len(), 2);
+            Ok(rows
+                .iter()
+                .enumerate()
+                .map(|(position, row)| (row.id, position as i64))
+                .collect())
+        })
+        .unwrap();
+
+        let mut orders: Vec<Option<i64>> = db
+            .list_active_sessions()
+            .unwrap()
+            .iter()
+            .map(|row| row.display_order)
+            .collect();
+        orders.sort();
+        assert_eq!(orders, vec![Some(0), Some(1)]);
+
+        // A plan that refuses leaves the order exactly as it was.
+        let refused = db.reorder_sessions(|_| Err("nope".to_string()));
+        assert_eq!(refused.unwrap_err(), "nope");
+    }
+
+    /// A session that loses every worktree loses its rows too. The replacement
+    /// used to be skipped for an empty list, so a session whose worktrees were
+    /// all removed kept them listed forever.
+    #[test]
+    fn upserting_an_empty_worktree_list_clears_the_stale_rows() {
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("shrinking");
+        session.worktrees = vec![SharedWorktree {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.worktrees/feat"),
+            branch: "feat".to_string(),
+            created_by_thurbox: true,
+        }];
+        db.upsert_session(&session).unwrap();
+        assert_eq!(
+            db.get_session_by_id(session.id)
+                .unwrap()
+                .unwrap()
+                .worktrees
+                .len(),
+            1
+        );
+
+        session.worktrees.clear();
+        db.upsert_session(&session).unwrap();
+
+        assert!(
+            db.get_session_by_id(session.id)
+                .unwrap()
+                .unwrap()
+                .worktrees
+                .is_empty(),
+            "a session that lost every worktree keeps no rows for them"
+        );
     }
 
     #[test]

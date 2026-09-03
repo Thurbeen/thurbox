@@ -46,8 +46,11 @@ main     ← the coordinator: the loop, the workers, the chrome
 
 Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
 entry naming what it may reference in *any* form (`use`, `pub use`, brace groups,
-fully-qualified `crate::…`), so a new module fails the test until its place is
-declared. `main` is `EXEMPT`, as `app` was before v1 was retired. `kernel` reaches
+fully-qualified `crate::…` — and `thurbox::…`, the only spelling the binary's own
+modules have for the library), so a new module fails the test until its place is
+declared. Only the crate roots (`bin`, `lib`, `main`) are `EXEMPT`;
+`coordinator/` has an entry of its own listing the layers it wires, because
+"wires everything" was never the same claim as "may reach anything". `kernel` reaches
 `agent`/`usage` by fully-qualified path only — never `use` — so every crossing into
 the side-effect layer is visible at its call site, the rule `session_ops` and `cli`
 already follow.

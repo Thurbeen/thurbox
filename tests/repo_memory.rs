@@ -54,6 +54,12 @@ fn isolate() -> tempfile::TempDir {
     std::env::set_var("THURBOX_DATA_DIR", &data);
     // And for this thread's own reads, which go through the same resolver.
     thurbox::paths::set_test_dir(&data);
+    // Materialise the schema, as a real thurbox process does at boot before it
+    // dispatches anything: a command worker opens the database it is *given*
+    // (`open_existing`) rather than re-running `schema::initialize` — a
+    // `journal_mode = WAL` pragma that takes the write lock, plus two prune
+    // DELETEs — on every command.
+    let _ = database();
     home
 }
 

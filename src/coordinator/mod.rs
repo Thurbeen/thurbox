@@ -332,13 +332,15 @@ impl App {
 
         // A session that has stayed deleted past its undo window keeps its
         // worktrees and loses its agent — the reap v1 does when the undo
-        // expires.
-        for session in self
-            .reaper
-            .observe(self.snapshots.current(), Instant::now())
-        {
+        // expires. The question is asked of the database, on a slow cadence:
+        // the row's own `deleted_at` states it durably, so the answer survives
+        // a restart of this process and is the same one the headless heartbeat
+        // gets (ADR-8b). A pass with nothing overdue is one SELECT and
+        // consults no multiplexer at all.
+        if self.last_reap.elapsed() >= REAP_INTERVAL {
+            self.last_reap = Instant::now();
             self.commands
-                .dispatch(thurbox::kernel::command::Command::Reap { session });
+                .dispatch(thurbox::kernel::command::Command::Reap);
         }
 
         // An update that replaced binaries is worth saying once; a check that

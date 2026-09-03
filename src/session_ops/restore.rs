@@ -320,8 +320,15 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
         }
     }
     let hooks_enabled = super::hooks_enabled(db);
-    let recipe = db.load_launch_recipe(session.id).unwrap_or_default();
-    let env = db.load_launch_env(session.id).unwrap_or_default();
+    // Strict: a `--command` session whose recipe read as absent is planned as a
+    // registry-agent session, and the default coding agent is launched in place
+    // of the command that was recorded. See `restart_session_headless_with`.
+    let recipe = db
+        .load_launch_recipe(session.id)
+        .map_err(|e| format!("read the launch recipe: {e}"))?;
+    let env = db
+        .load_launch_env(session.id)
+        .map_err(|e| format!("read the launch env: {e}"))?;
     let plan =
         super::restart::build_restart_plan(&session, None, hooks_enabled, recipe.as_ref(), &env)?;
     let pane = crate::agent::tmux::spawn_window(

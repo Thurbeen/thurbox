@@ -8,9 +8,10 @@
 //!
 //! Each subcommand is the same question `F11` answers, asked from outside.
 //!
-//! This is the one place `cli` reaches `crate::kernel`, and only by
-//! fully-qualified path (the rule `agent` already follows here): `check` has to
-//! load the *real* host, because the failures worth reporting are
+//! `cli` reaches `crate::kernel` here and in `cli::config`, and only by
+//! fully-qualified path (the rule `agent` already follows here): both drive the
+//! *interface's* own files, which is kernel-owned. `check` in particular has to
+//! load the real host, because the failures worth reporting are
 //! declaration-shaped — a plugin with no `render`, a slot nothing places, a key
 //! that clashes — and a syntax check passes all of them.
 
