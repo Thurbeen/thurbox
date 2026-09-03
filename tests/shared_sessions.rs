@@ -177,15 +177,16 @@ fn sync_with_no_shareable_host_configured_is_an_empty_report() {
 fn the_mirror_reconciles_a_real_database_both_ways() {
     let db = Database::open_in_memory().unwrap();
     let theirs = SessionId::default();
-    // `updated_at` later than any tombstone this test takes: the restore leg
-    // below is the host having written the row *after* the local delete, which
-    // is the only reading that outranks a local tombstone.
+    // A low `updated_at` for the adopt: the restore leg below needs a *later*
+    // reading of the host's own clock to outrank the local tombstone (schema
+    // v45 orders a restore against the host's last-known value, not against
+    // this machine's `deleted_at` — see `mirror::apply`).
     let host_rows = vec![mirror::session_from_json(
         &mirror::session_to_json(
             &row(theirs, "theirs", "local-tmux"),
             Some("working"),
             None,
-            Some(u64::MAX),
+            Some(1),
         ),
         BACKEND,
     )
@@ -213,7 +214,19 @@ fn the_mirror_reconciles_a_real_database_both_ways() {
             .force_deleted
     );
 
-    // The host restores it; so does the peer.
+    // The host restores it; so does the peer. A restore only outranks the
+    // tombstone when the host's own clock reads past its last-known value, so
+    // this leg needs a fresh, later `updated_at`.
+    let host_rows = vec![mirror::session_from_json(
+        &mirror::session_to_json(
+            &row(theirs, "theirs", "local-tmux"),
+            Some("working"),
+            None,
+            Some(2),
+        ),
+        BACKEND,
+    )
+    .unwrap()];
     let report = mirror::apply(&db, BACKEND, &host_rows, &[]);
     assert_eq!(report.restored, vec![theirs]);
     assert!(db.get_session_by_id(theirs).unwrap().is_some());
