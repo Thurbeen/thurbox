@@ -18,10 +18,12 @@ pub mod repo_bookmarks;
 pub mod review;
 mod schema;
 pub use schema::SCHEMA_VERSION;
+pub mod session_events;
 mod session_meta;
 mod sessions;
 mod settings;
-pub use sessions::{DeletedSessionInfo, HookRow};
+pub use session_events::{EventReason, SessionEventKind, SessionEventRow};
+pub use sessions::{DeletedSessionInfo, HookRow, SessionFacts};
 pub mod sync;
 pub mod tasks;
 mod worktrees;
@@ -153,6 +155,9 @@ impl Database {
         }
         if let Err(e) = db.prune_old_messages() {
             tracing::warn!("Failed to prune session messages: {e}");
+        }
+        if let Err(e) = db.prune_session_events() {
+            tracing::warn!("Failed to prune the session event log: {e}");
         }
         Ok(db)
     }

@@ -696,7 +696,7 @@ timeout_secs = 120</code></pre>
               <tr>
                 <td><code>audit_retention_days</code></td>
                 <td><code>90</code></td>
-                <td>audit-log history kept (pruned on startup)</td>
+                <td>audit + session-event history kept (pruned on startup)</td>
               </tr>
             </tbody>
           </table>
@@ -713,7 +713,7 @@ timeout_secs = 120</code></pre>
 scrollback_lines      = 1000   # terminal scrollback kept per session
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # width unlocking the optional third column
-audit_retention_days  = 90     # audit-log history kept (pruned on startup)
+audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
 
 [features]
 tasks         = true

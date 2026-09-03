@@ -317,7 +317,9 @@ fn watch_emits_a_line_when_another_process_changes_a_session() {
     // A relocated instance: its own database, and its own tmux socket name,
     // so nothing here can reach the operator's server even by accident.
     let mut child = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-        .args(["watch", "--for-secs", "20"])
+        // `--json`: watch honours the CLI-wide format rule, and a pipe would
+        // otherwise get TOON.
+        .args(["watch", "--json", "--for-secs", "20"])
         .env("HOME", dir.path())
         .env("USERPROFILE", dir.path())
         .env("XDG_DATA_HOME", dir.path().join("xdg-data"))

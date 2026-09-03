@@ -152,6 +152,39 @@ that matters:
 `--kind` is a free-form tag, so a run can distinguish `result` from
 `questions` or `plan` without the lead parsing prose.
 
+### `watch`, for everything that is not a report
+
+The mailbox is how a worker says it finished. `thurbox-cli watch` is how a
+driver learns everything the worker was never going to mail — that it went
+blocked on a permission, that its pane died, that somebody deleted it:
+
+```sh
+thurbox-cli watch --json --initial | while read -r line; do …; done
+```
+
+It streams an **append-only log**, not a sampled diff. Every writer that
+changes what a watcher reports appends its event in the same transaction as the
+change, so two transitions in the same instant are two events. That is not a
+detail: `working → blocked → working` is what an auto-answered permission looks
+like, and a sampler that reads the row every 250 ms sees neither edge.
+
+Each line carries a `seq` (monotonic, never reused), the `event`
+(`present`/`created`/`changed`/`gone`), a `reason` saying which kind it was —
+`spawned`/`registered`/`restored`, `state`/`stopped`/`started`/`updated`,
+`soft_deleted`/`force_deleted` — the `from_state` → `to_state` of the
+transition, and the same gating fields the table above lists, so acting on a
+`blocked` needs no follow-up `session get`. `hook_state_contradicted` is `null`
+(not checked) unless you pass `--verify`.
+
+A driver that persists the last `seq` it handled restarts with
+`--since <seq>` and gets exactly what it missed. `--session` narrows the stream
+to one session, `--for-secs` bounds it, and it exits the moment its reader
+closes the pipe.
+
+`gone` used to be one word for both deletes. It is now two, and the difference
+is the one that matters to a driver: `soft_deleted` can be restored,
+`force_deleted` had its worktrees and window torn down.
+
 ### `--parent`
 
 Spawn workers with `--parent "$THURBOX_SESSION"` and the lead/worker
@@ -217,11 +250,18 @@ agent can signal, and `state_source` is null for all of them. The piped
 A **parked** session (`session stop`: pane killed, row and checkout
 kept) stays in `session list` and is told apart there — `stopped: true`
 and `state: "stopped"` on both read verbs, so a liveness check is the
-poll you were already doing rather than a pane probe or a one-second
-`watch --initial`. Its `backend_id` still names the window it had: that
-is what the row records, and `session start` replaces it with the new
-pane's id. `send`, `key` and `capture` refuse a parked session by name
-instead of reaching for the window that is gone.
+poll you were already doing rather than a pane probe. Its `backend_id`
+still names the window it had: that is what the row records, and
+`session start` replaces it with the new pane's id. `send`, `key` and
+`capture` refuse a parked session by name instead of reaching for the
+window that is gone.
+
+Parking also **clears the latched state and refuses a new one**. A parked
+session has no process, so a heartbeat's pane-option poll or a mirror pass
+carrying a host's last word would be reporting a turn on a session that cannot
+be in one — and every watcher of that row would see a transition that did not
+happen. `session signal` against a parked session fails rather than silently
+doing nothing, and says to `session start` it first.
 
 There is deliberately **no staleness timeout**. A turn may legitimately
 run for an hour, so any bound thurbox picked would report live work as

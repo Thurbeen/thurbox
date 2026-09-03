@@ -452,7 +452,9 @@ pub(crate) fn poll_remote_hook_states(db: &crate::storage::Database) -> usize {
             .collect();
         for (id, state) in remote_status_updates(&polled, &rows) {
             match db.set_hook_state(id, &state) {
-                Ok(()) => written += 1,
+                // A parked session takes nothing, and that is not a failure:
+                // `session stop` killed the pane the host is still reporting.
+                Ok(taken) => written += usize::from(taken),
                 Err(e) => tracing::debug!("remote status poll write failed for {id}: {e}"),
             }
         }

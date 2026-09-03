@@ -32,9 +32,9 @@ pub struct ForceDeleteReport {
 /// scheduled commands queued against it.
 ///
 /// Worktree and tmux cleanup are best-effort — individual failures are
-/// captured in the report but do not abort the delete. The DB row is
-/// always soft-deleted last so `Ctrl+U` / `restore_session` can still
-/// revive the metadata (the TUI will re-spawn a fresh window on restore).
+/// captured in the report but do not abort the delete. The DB row is always
+/// marked deleted last, in one write (`delete_row`) so a watcher never sees
+/// an intermediate state where a force-delete reads as restorable.
 pub fn delete_session_headless(
     db: &Database,
     session_id: SessionId,
@@ -78,14 +78,7 @@ pub fn delete_session_headless(
             report.disabled_automations = db
                 .disable_send_automations_for_session(session_id)
                 .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
-            db.soft_delete_session(session_id)
-                .map_err(|e| format!("soft_delete_session: {e}"))?;
-            if force {
-                db.mark_session_force_deleted(session_id)
-                    .map_err(|e| format!("mark_session_force_deleted: {e}"))?;
-                db.clear_session_meta(session_id)
-                    .map_err(|e| format!("clear_session_meta: {e}"))?;
-            }
+            delete_row(db, session_id, force)?;
             report.hook_failures =
                 super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
             return Ok(report);
@@ -99,21 +92,27 @@ pub fn delete_session_headless(
             .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
     }
 
-    db.soft_delete_session(session_id)
-        .map_err(|e| format!("soft_delete_session: {e}"))?;
-
-    // Record that this delete tore down the worktrees/tmux so the restore list
-    // can tag + block it (a force-delete is not restorable).
-    if force {
-        db.mark_session_force_deleted(session_id)
-            .map_err(|e| format!("mark_session_force_deleted: {e}"))?;
-        db.clear_session_meta(session_id)
-            .map_err(|e| format!("clear_session_meta: {e}"))?;
-    }
+    delete_row(db, session_id, force)?;
 
     report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
 
     Ok(report)
+}
+
+/// Mark the row gone. A force delete says so in the same statement rather than
+/// marking twice: the restore list needs to know the worktrees and window were
+/// torn down, and a watcher must not first be told the session is restorable.
+fn delete_row(db: &Database, session_id: SessionId, force: bool) -> Result<(), String> {
+    if force {
+        db.force_delete_session(session_id)
+            .map_err(|e| format!("force_delete_session: {e}"))?;
+        db.clear_session_meta(session_id)
+            .map_err(|e| format!("clear_session_meta: {e}"))?;
+    } else {
+        db.soft_delete_session(session_id)
+            .map_err(|e| format!("soft_delete_session: {e}"))?;
+    }
+    Ok(())
 }
 
 fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {

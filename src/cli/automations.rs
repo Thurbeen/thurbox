@@ -546,7 +546,9 @@ fn poll_local_pane_states(db: &Database) -> usize {
         if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
             continue;
         }
-        if db.set_hook_state(session.id, &state).is_ok() {
+        // `Ok(false)` is a parked session refusing a state it has no process
+        // to be in — not a write that failed, and not one that happened.
+        if matches!(db.set_hook_state(session.id, &state), Ok(true)) {
             written += 1;
         }
     }

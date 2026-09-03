@@ -1158,7 +1158,7 @@ thurbox-cli session start reviewer                           # and put it back
 thurbox-cli session exec reviewer -- git status --porcelain  # run in its dir, not in its pane
 thurbox-cli session meta set reviewer fm.task_id T-1043      # your own key/value space
 thurbox-cli agent launch-args claude                         # what to run so its hooks report
-thurbox-cli watch --initial                                  # one JSON line per change
+thurbox-cli watch --json --initial                           # one event per line, no polling
 thurbox-cli message send --to flow --kind questions --task 5 --body "scope?"
 thurbox-cli message inbox --for flow --claim</code></pre>
           <p>
@@ -1347,7 +1347,7 @@ thurbox-cli message inbox --for flow --claim</code></pre>
             </li>
             <li>
               <strong>watch</strong>
-              &mdash; streams one JSON object per change (
+              &mdash; streams the session event log, one event per line (
               <code>created</code>
               ,
               <code>changed</code>
@@ -1359,7 +1359,46 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               <code>--initial</code>
               ), so nothing driving Thurbox has to poll. It works with no TUI
               running, because everything worth waking on is already in the
-              database.
+              database. Each writer appends its own event in the same
+              transaction as the change, so two transitions in the same instant
+              are two events rather than one &mdash; which is what
+              <code>working &rarr; blocked &rarr; working</code>
+              around an auto-answered permission looks like. Every line carries
+              a monotonic
+              <code>seq</code>
+              (
+              <code>--since &lt;seq&gt;</code>
+              resumes exactly where a driver left off), a
+              <code>reason</code>
+              (
+              <code>spawned</code>
+              /
+              <code>registered</code>
+              /
+              <code>restored</code>
+              ,
+              <code>state</code>
+              /
+              <code>stopped</code>
+              /
+              <code>started</code>
+              /
+              <code>updated</code>
+              ,
+              <code>soft_deleted</code>
+              /
+              <code>force_deleted</code>
+              &mdash; a soft delete can be restored, a force delete cannot), the
+              <code>from_state</code>
+              &rarr;
+              <code>to_state</code>
+              of the transition, and the same
+              <code>state</code>
+              /
+              <code>hook_coverage</code>
+              gating fields
+              <code>session get</code>
+              publishes.
             </li>
             <li>
               <strong>runtime</strong>
@@ -1675,6 +1714,6 @@ thurbox-cli message inbox --for flow --claim</code></pre>
             <code>worktree_errors</code>
             ,
             <code>disabled_automations</code>
-            ) but never abort the delete. The DB row is always soft-deleted last, so even a forced
+            ) but never abort the delete. The DB row is always marked deleted last, in one write, so even a forced
             delete stays restorable &mdash; it just re-spawns from a clean slate.
           </p>

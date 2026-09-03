@@ -843,8 +843,16 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         Action::Doctor { uuid } => super::session_doctor::run(db, uuid.as_deref()),
         Action::Signal { state, session } => {
             let target = resolve_signal_target(db, session.as_deref())?;
-            db.set_hook_state(target.id, &state)
-                .map_err(|e| format!("set_hook_state: {e}"))?;
+            if !db
+                .set_hook_state(target.id, &state)
+                .map_err(|e| format!("set_hook_state: {e}"))?
+            {
+                return Err(format!(
+                    "'{}' is parked, so it has no turn to report; \
+                     thurbox-cli session start {} first",
+                    target.name, target.id
+                ));
+            }
             // The same state on the pane, for a peer's live subscription:
             // best-effort, and nothing at all outside tmux.
             if let Err(e) = crate::agent::tmux::set_own_pane_state(&state) {
@@ -1713,7 +1721,7 @@ fn register_running_session(
             )
         })?;
     session.backend_id = pane;
-    db.upsert_session(&session)
+    db.upsert_session_as(&session, crate::storage::EventReason::Registered)
         .map_err(|e| format!("upsert_session: {e}"))?;
     if let Some(state) = row.hook_state.as_deref() {
         let _ = db.set_hook_state(session.id, state);

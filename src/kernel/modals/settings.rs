@@ -253,7 +253,7 @@ const CORE_FIELDS: &[CoreField] = &[
     // fail on an unknown key — it simply has no reader and no UI.
     CoreField {
         id: "audit_retention_days",
-        description: "days of audit history kept",
+        description: "days of audit + event history kept",
         get: |s| Value::Number(s.audit_retention_days as f64),
         set: |s, v| {
             if let Value::Number(n) = v {

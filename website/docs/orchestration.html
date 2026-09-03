@@ -372,7 +372,45 @@ thurbox-cli session list --parent "$LEAD" --json</code></pre>
   <code>session get</code>
   and
   <code>list</code>
-  alike, so a liveness check is the poll you were already doing.
+  alike, so a liveness check is the poll you were already doing. Parking also
+  clears the latched state and refuses a new one &mdash; a parked session has no
+  process, so a heartbeat poll or a mirror pass writing a turn onto it would
+  report something that did not happen.
+</p>
+<h3>watch, for everything that is not a report</h3>
+<p>
+  The mailbox is how a worker says it finished.
+  <code>thurbox-cli watch --json --initial</code>
+  is how a driver learns everything the worker was never going to mail: that it
+  went blocked on a permission, that its pane died, that somebody deleted it.
+</p>
+<p>
+  It streams an
+  <strong>append-only log</strong>
+  , not a sampled diff. Every writer that changes what a watcher reports appends
+  its event in the same transaction as the change, so two transitions in the
+  same instant are two events &mdash; which matters because
+  <code>working &rarr; blocked &rarr; working</code>
+  is exactly what an auto-answered permission looks like, and a sampler reading
+  the row every 250&nbsp;ms sees neither edge. Each line carries a monotonic
+  <code>seq</code>
+  (
+  <code>--since &lt;seq&gt;</code>
+  resumes exactly where a restarted driver left off), a
+  <code>reason</code>
+  saying which kind of event it was &mdash;
+  <code>soft_deleted</code>
+  can be restored,
+  <code>force_deleted</code>
+  cannot &mdash; the
+  <code>from_state</code>
+  &rarr;
+  <code>to_state</code>
+  of the transition, and the same gating fields
+  <code>session get</code>
+  publishes, so acting on a
+  <code>blocked</code>
+  needs no second call. The stream exits the moment its reader closes the pipe.
 </p>
 <h3>Read the exit status before parsing</h3>
 <p>

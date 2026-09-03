@@ -186,8 +186,14 @@ pub enum Command {
     /// Print the perf snapshot a running TUI publishes (THURBOX_PERF_LOG or
     /// the perf HUD must be active in that TUI).
     Perf,
-    /// Stream session changes as newline-delimited JSON — one object per
-    /// transition, so nothing driving thurbox has to poll.
+    /// Stream the session event log — one line per transition, so nothing
+    /// driving thurbox has to poll.
+    ///
+    /// Every writer appends its event in the same transaction as the change, so
+    /// two transitions in the same instant are two events. Each carries a
+    /// monotonic `seq` (`--since` resumes from it), a `reason`, the
+    /// `from_state` → `to_state`, and the gating fields `session get`
+    /// publishes. `--json` for one JSON object per line.
     Watch(watch::WatchArgs),
     /// What thurbox runs besides sessions (the automation heartbeat keeper).
     Runtime {
@@ -278,7 +284,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<Outcome, String> {
     // writes a line per change for as long as it runs, so the one-document rule
     // below (and the renderer it exists for) does not apply to it.
     if let Some(Command::Watch(args)) = cli.command {
-        watch::run(db, args)?;
+        watch::run(db, args, format)?;
         return Ok(Outcome::Ok);
     }
 
