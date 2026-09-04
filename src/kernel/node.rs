@@ -162,6 +162,44 @@ impl ClickVerb {
     }
 }
 
+/// Runs painted onto a frame's own border cells, after the block is drawn.
+///
+/// The border row is chrome a pane wants to *layer* — the session list puts its
+/// status-dot strip on the top border and a `▲ N` count over the right end of
+/// it, the agent pane puts a tab strip on the left of the same row and a
+/// scrollbar down the right border column. Every one of those costs zero
+/// content cells, which is the whole reason they live on the border; expressing
+/// them without this meant composing the border out of `text` nodes and
+/// re-drawing what a block already knows how to draw.
+///
+/// Each slot is clipped to the cells between the corners, so an over-long strip
+/// loses its tail rather than eating the corner that makes a pane read as one.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Overlay {
+    /// Painted rightward from the cell after the top-left corner.
+    pub top_left: Vec<Run>,
+    /// Painted leftward from the cell before the top-right corner.
+    pub top_right: Vec<Run>,
+    pub bottom_left: Vec<Run>,
+    pub bottom_right: Vec<Run>,
+    /// One run per inner row, down the right border column. A shorter list
+    /// leaves the rows below it as border.
+    pub right_column: Vec<Run>,
+}
+
+/// Which glyphs a frame's border is drawn with.
+///
+/// Two, because two is what the bundled panes distinguish: rounded is the
+/// program's normal chrome and square is what the agent pane's empty state
+/// draws. `Square` is what the panes call it; `Plain` is ratatui's name for the
+/// same corners and is accepted as a second spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BorderKind {
+    #[default]
+    Rounded,
+    Square,
+}
+
 /// A frame drawn around a node.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Frame {
@@ -174,10 +212,16 @@ pub struct Frame {
     /// the list uses for *blocked*. `Run` and `to_line` already existed for text
     /// nodes; this is the same treatment.
     pub title: Option<Vec<Run>>,
+    /// Where the title sits along the top border.
+    pub title_align: Align,
     pub borders: Borders,
+    pub border_type: BorderKind,
     pub border_style: Style,
     pub style: Style,
     pub padding: u16,
+    /// Boxed because a frame is carried by every node that has one and almost
+    /// none of them overlay anything, and [`Node`] is built afresh every frame.
+    pub overlay: Option<Box<Overlay>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -198,6 +242,21 @@ pub enum Axis {
 pub struct Run {
     pub text: String,
     pub style: Style,
+    /// What this run alone can be targeted as, when it is not the whole node.
+    ///
+    /// Identity used to hang off [`Node`] only, so a clickable chip inside a
+    /// line had to become a `text` node of its own with a hand-computed `len` —
+    /// and a two-colour button (` ◀ F9 `: an accent chevron, a muted hint) came
+    /// out as two hitboxes with the pointer having to find one of them. The
+    /// paint walk already knows every run's column offset, so this is that
+    /// offset kept: adjacent runs sharing an identity coalesce into one [`Hit`],
+    /// which is what makes the two halves of that button one target.
+    ///
+    /// Boxed because it is absent from nearly every run, and a run is the
+    /// hottest allocation in the renderer — one per span per plugin per frame.
+    ///
+    /// [`Hit`]: super::paint::Hit
+    pub identity: Option<Box<Identity>>,
 }
 
 impl Run {
@@ -206,7 +265,14 @@ impl Run {
         Run {
             text: text.into(),
             style: Style::default(),
+            identity: None,
         }
+    }
+
+    /// The columns this run occupies when painted.
+    pub fn width(&self) -> u16 {
+        use unicode_width::UnicodeWidthStr;
+        u16::try_from(self.text.width()).unwrap_or(u16::MAX)
     }
 }
 
@@ -408,6 +474,7 @@ impl Node {
             lines: vec![vec![Run {
                 text: text.into(),
                 style,
+                identity: None,
             }]],
             align: Align::Left,
             wrap: true,

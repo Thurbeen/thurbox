@@ -31,6 +31,7 @@ fn styled_tree() -> Node {
             Run {
                 text: "○ ".into(),
                 style: Style::default().fg(Color::Green),
+                identity: None,
             },
             Run {
                 text: "fix-osc52".into(),
@@ -38,6 +39,7 @@ fn styled_tree() -> Node {
                     .fg(Color::White)
                     .bg(Color::Indexed(24))
                     .add_modifier(Modifier::BOLD),
+                identity: None,
             },
         ]],
         align: Default::default(),
@@ -126,6 +128,7 @@ fn an_unstyled_run_stays_unstyled() {
         lines: vec![vec![Run {
             text: "plain".into(),
             style: Style::default(),
+            identity: None,
         }]],
         align: Default::default(),
         wrap: false,
@@ -145,7 +148,9 @@ fn an_unstyled_run_stays_unstyled() {
 /// flattened to plain text.
 #[test]
 fn every_field_survives_the_trip_out_and_back() {
-    use thurbox::kernel::node::{Align, Axis, Borders, Frame, Size, SurfaceSource};
+    use thurbox::kernel::node::{
+        Align, Axis, BorderKind, Borders, Frame, Overlay, Size, SurfaceSource,
+    };
 
     let framed = Node::Box {
         axis: Axis::Horizontal,
@@ -159,11 +164,35 @@ fn every_field_survives_the_trip_out_and_back() {
             max: Some(9),
         },
         frame: Some(Frame {
-            title: Some(vec![thurbox::kernel::node::Run::plain("Panel")]),
+            title: Some(vec![Run {
+                text: "Panel".into(),
+                style: Style::default().fg(Color::Cyan),
+                identity: None,
+            }]),
+            title_align: Align::Right,
             borders: Borders::All,
+            border_type: BorderKind::Square,
             border_style: Style::default().fg(Color::Magenta),
             style: Style::default().bg(Color::Indexed(17)),
             padding: 1,
+            // The border overlay round-trips too, and a run's identity with it:
+            // the session list's dot strip and the agent pane's tab chips live
+            // here, and the search pane decorates both.
+            overlay: Some(Box::new(Overlay {
+                top_left: vec![Run {
+                    text: " ◀ F9 ".into(),
+                    style: Style::default().fg(Color::Blue),
+                    identity: Some(Box::new(Identity {
+                        id: None,
+                        classes: Vec::new(),
+                        role: Some("action:sessions.toggle_panel".into()),
+                    })),
+                }],
+                top_right: vec![Run::plain("●")],
+                bottom_left: Vec::new(),
+                bottom_right: vec![Run::plain("▼ 2 ")],
+                right_column: vec![Run::plain("█")],
+            })),
         }),
         children: vec![
             Node::Text {
@@ -174,6 +203,7 @@ fn every_field_survives_the_trip_out_and_back() {
                 lines: vec![vec![Run {
                     text: "scrolled".into(),
                     style: Style::default(),
+                    identity: None,
                 }]],
                 align: Align::Right,
                 wrap: true,
@@ -198,10 +228,12 @@ fn every_field_survives_the_trip_out_and_back() {
                     Run {
                         text: "+ added".into(),
                         style: Style::default().fg(Color::Green),
+                        identity: None,
                     },
                     Run {
                         text: " tail".into(),
                         style: Style::default().fg(Color::Red),
+                        identity: None,
                     },
                 ]]),
             },

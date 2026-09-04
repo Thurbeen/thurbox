@@ -12,7 +12,7 @@ works and one that fails at runtime with nothing on screen to say why.
 ```text
 layout.lua      the arrangement: which slots exist, and where
 lib/            shared helpers — widgets, theme roles, fuzzy match, text input,
-                border chrome, modal shells, scrolling, and the session-list
+                focus styling, modal shells, scrolling, and the session-list
                 and repo-picker models
 lib/thurbox.d.lua   the API as types: node props, ctx, the event payloads, every
                 published `thurbox.*` row, every command verb's options, and the
@@ -161,6 +161,22 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 | `run(key, cmd, opts)` | run a program and read its output — **only if trusted**, see below |
 | `files` | bounded reads the kernel performs for you |
 | `thurbox.platform` | `os` and `arch`, so a plugin shipping several builds can pick one |
+
+**Borders**: a node's `frame` is the whole border vocabulary — `title` (styled
+runs, not a bare string), `title_align`, `border_type` (`rounded` or `square`),
+`border_style`, `padding`, and `overlay`. The overlay paints runs onto the
+frame's *own* border cells after the block draws them —
+`top_left`/`top_right`/`bottom_left`/`bottom_right` along the horizontal borders
+and `right_column` one run per inner row down the right one — so a status strip,
+a scroll count or a scrollbar costs no content cell. Slots clip between the
+corners, which are never painted over.
+
+**Clickable spans**: a run inside a line takes `id`/`role` of its own and becomes
+a target over the columns it is laid out at, so a chip needs no node with a
+hand-computed `len`. Adjacent runs carrying the same identity coalesce into one
+hitbox — which is how ` ◀ F9 `, two runs because a run has one style, stays one
+button. It applies to overlay runs too: that is what makes the terminal pane's
+scrollbar one target the length of its column.
 
 **Dragging**: a node with `role = "drag"` takes hold of the pointer — the press
 arms no text selection and every move until release arrives as a further
