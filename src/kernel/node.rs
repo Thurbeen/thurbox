@@ -239,6 +239,15 @@ pub enum Node {
         align: Align,
         wrap: bool,
         scroll: u16,
+        /// The node's base style, painted over its whole rect before the runs
+        /// are drawn on top.
+        ///
+        /// This is what a selection bar is: a background that reaches the right
+        /// edge without the pane appending a spacer span sized by hand, and a
+        /// foreground every run that names none inherits. A run that DOES name
+        /// one keeps it — which is what lets a search hit stay accent-coloured
+        /// on the row the cursor is on, with the bar painting through it.
+        style: Style,
         frame: Option<Frame>,
         size: Size,
         identity: Identity,
@@ -386,6 +395,7 @@ impl Node {
             align: Align::Left,
             wrap: false,
             scroll: 0,
+            style: Style::default(),
             frame: None,
             size: Size::default(),
             identity: Identity::default(),
@@ -402,6 +412,7 @@ impl Node {
             align: Align::Left,
             wrap: true,
             scroll: 0,
+            style: Style::default(),
             frame: None,
             size: Size::default(),
             identity: Identity::default(),

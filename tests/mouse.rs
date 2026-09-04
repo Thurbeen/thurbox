@@ -198,6 +198,7 @@ fn a_pane_url_node_becomes_a_link_over_the_cells_it_drew() {
         align: Default::default(),
         wrap: false,
         scroll: 0,
+        style: ratatui::style::Style::default(),
         frame: None,
         size: Size::default(),
         identity: Identity {
@@ -293,6 +294,7 @@ fn a_parent_is_recorded_before_its_children() {
         align: Default::default(),
         wrap: false,
         scroll: 0,
+        style: ratatui::style::Style::default(),
         frame: None,
         size: Size::default(),
         identity: Identity {
@@ -349,6 +351,7 @@ fn a_framed_node_is_clickable_on_its_border() {
         align: Default::default(),
         wrap: false,
         scroll: 0,
+        style: ratatui::style::Style::default(),
         frame: Some(Frame::default()),
         size: Size::default(),
         identity: Identity {

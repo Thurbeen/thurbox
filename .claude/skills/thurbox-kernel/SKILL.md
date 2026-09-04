@@ -18,6 +18,12 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
 
 1. **Four node kinds, forever** — `text`, `box`, `input`, `surface`. Everything
    else composes in `ui/lib/widgets.lua`. `tests/kernel_mvp.rs` asserts the count.
+   A new appearance arrives as a **prop** on one of the four: `text` takes a
+   `style` the kernel paints across its whole rect before the spans go on top,
+   which is what a selection bar or hover band is — no pane pads a row with a
+   spacer span, and a span naming its own colour keeps it (a search hit stays
+   visible under the bar). `widgets.list` exposes it as `selected_style` /
+   `hover_style`.
 2. **Layout resolves before render** — rects are computed first, then each plugin
    is called with its own. Plugins declare size *statically*, in their declaration
    table, which is what breaks the circularity.

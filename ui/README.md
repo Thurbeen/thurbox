@@ -62,7 +62,11 @@ said out loud.
 1. **Four node kinds, forever**: `text`, `box`, `input`, `surface`. Lists,
    panels, tables and gauges are *not* node kinds — they compose from these in
    `lib/widgets.lua`. If you find yourself wanting a fifth kind, you want a
-   widget.
+   widget. New *appearances* arrive as props on these four: a `text` node takes
+   a `style` painted across its whole rect before the spans go on top, which is
+   what a selection bar or a hover band is — nothing pads a row with a spacer
+   span, and a span that names its own colour keeps it. `widgets.list` takes
+   `selected_style` / `hover_style` and puts them there for you.
 2. **Layout resolves before render.** Size is declared *statically* in the
    plugin's table, never returned from `render`. That is what lets the kernel
    tell your `render` the rect it is drawing into.

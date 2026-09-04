@@ -13,6 +13,7 @@
 -- So: when you need a new appearance, add it HERE. Adding a node kind to the
 -- kernel is a design decision, not a shortcut.
 
+local hover = require("lib.hover")
 local theme = require("lib.theme")
 
 local widgets = {}
@@ -251,7 +252,15 @@ end
 --- onto the table after the call was reaching for the one prop the widget could
 --- not express.
 ---
---- opts: rows, selected, height, frame, empty, len, fill
+--- `selected_style` and `hover_style` are the row's own `style`, which the
+--- kernel paints across its whole rect before the spans go on top. That is a
+--- full-width bar with no spacer span to pad it and no style merged into every
+--- span by hand — and a span that names its own colour keeps it, so a search
+--- highlight stays visible under the bar. `hover_style` is matched on `row.id`
+--- and skipped on the selected row, which already wears the stronger one.
+---
+--- opts: rows, selected, height, frame, empty, len, fill, selected_style,
+--- hover_style
 function widgets.list(opts)
   local rows = opts.rows or {}
   local height = opts.height or #rows
@@ -303,15 +312,25 @@ function widgets.list(opts)
       spans[#spans + 1] = span
     end
 
+    -- Addressable by default. `index` is the row's position in the FULL list,
+    -- not the visible window, so a click resolves to the same index j/k moves
+    -- through -- which is what lets a pane answer a click with one line instead
+    -- of repeating the window arithmetic. Hover is matched on the very id the
+    -- node carries, so the highlight and the click can never disagree.
+    local id = row.id or tostring(index)
+    local style = nil
+    if is_selected then
+      style = opts.selected_style
+    elseif hover.id(id) then
+      style = opts.hover_style
+    end
+
     children[#children + 1] = {
       type = "text",
       len = 1,
       text = { spans },
-      -- Addressable by default. `index` is the row's position in the FULL
-      -- list, not the visible window, so a click resolves to the same index
-      -- j/k moves through -- which is what lets a pane answer a click with
-      -- one line instead of repeating the window arithmetic.
-      id = row.id or tostring(index),
+      style = style,
+      id = id,
       class = table.concat(classes, " "),
       role = "row",
     }

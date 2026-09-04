@@ -31,46 +31,6 @@ local session_model = require("lib.session_model")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
--- ── Text helpers the contract needs and widgets.lua does not have ───────────
-
---- Append a raw-space span so a styled run covers the full width — how v1 makes
---- the selection background reach the right edge.
-local function pad_spans(spans, width)
-  local short = width - chrome.spans_len(spans)
-  if short > 0 then
-    spans[#spans + 1] = { text = string.rep(" ", short) }
-  end
-  return spans
-end
-
---- ratatui's `Style::patch` over every span: the overlay wins for the fields it
---- sets, the span keeps the rest.
----
---- `keep_fg` names spans whose COLOUR is a signal of its own — the characters a
---- search query matched. They still take everything else the overlay sets, so the
---- selection bar paints through them (a bar with a gap in it is not a bar), but
---- their foreground survives it. v1 layered the same two the same way round:
---- `highlight_style` was built ON TOP of the row's base style
---- (`src/ui/highlight.rs`), so an accent match stayed accent on the selected row.
---- Patching over it left the match wearing the selection's own colour with only
---- its underline showing — on the one row the strip was pointing at, since
---- previewing a result moves this list's cursor onto it.
-local function patch_spans(spans, style, keep_fg)
-  for index, span in ipairs(spans) do
-    local merged = {}
-    for key, value in pairs(span.style or {}) do
-      merged[key] = value
-    end
-    for key, value in pairs(style) do
-      if not (keep_fg and keep_fg[index] and key == "fg") then
-        merged[key] = value
-      end
-    end
-    span.style = merged
-  end
-  return spans
-end
-
 -- ── The model, the border chrome and the ordering algebra live in lib/ ──────
 --
 -- `lib.session_model` builds the item list (one selectable unit per row, with
@@ -192,17 +152,24 @@ local function name_hits(session, search)
   return nil
 end
 
+--- The spans of one session row, and the style the whole row wears.
+---
+--- The second return is the node's own `style`: the kernel paints it across the
+--- row's whole rect before the spans go on top, which is what a selection bar
+--- and a hover band are. Nothing here pads the spans to the right edge or merges
+--- a style into each of them by hand.
 local function session_line(item, inner_width, elapsed, is_selected, work, search)
   local session = item.session
-  local glyph, glyph_color = status_glyph(session.status, elapsed)
-  local status_style = { fg = glyph_color }
+  local glyph, glyph_color
+  glyph, glyph_color = status_glyph(session.status, elapsed)
   -- A blocked row's text is an attention message, so it keeps the dot's colour;
   -- plain activity is muted, leaving the name the row's visual anchor. v1 draws
   -- the same split.
   local trailing = agent_status_text(session)
-  local trailing_style = status_style
+  local trailing_color
+  trailing_color = glyph_color
   if session.status ~= "blocked" then
-    trailing_style = { fg = theme.muted }
+    trailing_color = theme.muted
   end
 
   -- Work already accepted but not yet in the snapshot is the more recent truth,
@@ -210,77 +177,85 @@ local function session_line(item, inner_width, elapsed, is_selected, work, searc
   -- geometry is v1's, the signal is v2's.
   if work then
     if work.phase == "failed" then
-      glyph, status_style = "✗", { fg = theme.role("status_error") }
+      glyph, glyph_color = "✗", theme.role("status_error")
       trailing = work.error and ("failed: " .. work.error) or "failed"
-      trailing_style = { fg = theme.role("status_error") }
+      trailing_color = theme.role("status_error")
     else
-      glyph, status_style = "◌", { fg = theme.muted }
-      trailing, trailing_style = work.kind, { fg = theme.muted }
+      glyph, glyph_color = "◌", theme.muted
+      trailing, trailing_color = work.kind, theme.muted
     end
   end
 
-  local spans = { { text = " " .. glyph .. " ", style = status_style } }
+  local hits = name_hits(session, search)
+
+  --- The colour a span wears, unless the ROW speaks for all of them.
+  ---
+  --- Selected: nothing names a foreground, so every cell takes the bar's —
+  --- a span that named one would poke a hole in it. Unmatched: v1 keeps a
+  --- non-matching row on screen and lets the contrast do the filtering, so the
+  --- list never jumps around under a cursor you are still moving.
+  local function tone(color)
+    if is_selected then
+      return nil
+    end
+    if search and hits == nil then
+      return { fg = theme.muted }
+    end
+    return { fg = color }
+  end
+
+  local spans = { { text = " " .. glyph .. " ", style = tone(glyph_color) } }
 
   -- Nesting prefix: a tree mark for a child inside the group, a lone mark for
   -- one whose parent renders elsewhere in the list.
   if item.depth > 0 then
     spans[#spans + 1] = {
       text = string.rep("  ", item.depth - 1) .. "└ ",
-      style = { fg = theme.muted },
+      style = tone(theme.muted),
     }
   elseif item.cross_group then
-    spans[#spans + 1] = { text = "↳ ", style = { fg = theme.muted } }
+    spans[#spans + 1] = { text = "↳ ", style = tone(theme.muted) }
   end
 
   -- An agent running on another machine, then a session that owns a worktree.
   if session.host then
-    spans[#spans + 1] = { text = "⇅ ", style = { fg = theme.accent } }
+    spans[#spans + 1] = { text = "⇅ ", style = tone(theme.accent) }
   end
   if (session.worktrees or 0) > 0 then
-    spans[#spans + 1] = { text = "⑂ ", style = { fg = theme.branch } }
+    spans[#spans + 1] = { text = "⑂ ", style = tone(theme.branch) }
   end
 
   -- Never truncated: the name is the row's anchor, and overflow clips.
-  local hits = name_hits(session, search)
-  local name_style = is_selected and { fg = theme.role("selection_fg"), bold = true }
-    or { fg = theme.text }
-  -- Which spans the search highlight owns, by position in `spans`. The overlays
-  -- below are told, so the selection bar cannot repaint a match — see
-  -- `patch_spans`. Identity on the style table is what marks one: `fuzzy.spans`
-  -- hands back the very table it was given for a matched run.
-  local matched_spans = nil
+  local name_style = tone(theme.text)
   if hits then
+    -- A matched run is the one thing that keeps its colour on a selected row:
+    -- it names a foreground, and the bar underneath supplies only what a span
+    -- left unsaid. v1 layered the same two the same way round —
+    -- `highlight_style` was built ON TOP of the row's base style
+    -- (`src/ui/highlight.rs`) — and previewing a result moves this list's
+    -- cursor onto the row, so the selected row is exactly the one whose marks
+    -- would otherwise disappear.
     local hit_style = { fg = theme.accent, bold = true, underline = true }
-    matched_spans = {}
     for _, span in ipairs(fuzzy.spans(session.name or "?", hits, name_style, hit_style)) do
       spans[#spans + 1] = span
-      if span.style == hit_style then
-        matched_spans[#spans] = true
-      end
     end
   else
     spans[#spans + 1] = { text = session.name or "?", style = name_style }
   end
 
-  push_status(spans, trailing, trailing_style, inner_width)
+  push_status(spans, trailing, tone(trailing_color), inner_width)
 
-  -- A row nothing matched is dimmed rather than hidden: v1 keeps every row on
-  -- screen and lets the contrast do the filtering, so the list never jumps
-  -- around under a cursor you are still moving.
-  if search and hits == nil then
-    patch_spans(spans, { fg = theme.muted, bold = false, underline = false })
-  end
-
-  -- The selection bar is painted here rather than by a list-wide highlight,
-  -- which would bleed onto the group header glued above a group's first row.
+  -- The bar is the row's own style rather than a list-wide highlight, which
+  -- would bleed onto the group header glued above a group's first row.
   if is_selected then
-    pad_spans(spans, inner_width)
-    patch_spans(spans, {
-      bg = theme.role("selection_bg"),
-      fg = theme.role("selection_fg"),
-      bold = true,
-    }, matched_spans)
-  elseif hover.id(session.id) then
+    return spans,
+      {
+        bg = theme.role("selection_bg"),
+        fg = theme.role("selection_fg"),
+        bold = true,
+      }
+  end
+  if hover.id(session.id) then
     -- v1's row hover: a subtle band marking what a click would hit. Only the
     -- BACKGROUND is tinted — each cell keeps its own fg, so the status dot and
     -- the branch colour survive being hovered. A button gets the stronger
@@ -288,8 +263,7 @@ local function session_line(item, inner_width, elapsed, is_selected, work, searc
     --
     -- Skipped on the selected row because v1 tints it to the colour it already
     -- has, which is no change at all.
-    pad_spans(spans, inner_width)
-    patch_spans(spans, { bg = theme.role("selection_bg") })
+    return spans, { bg = theme.role("selection_bg") }
   end
 
   return spans
@@ -712,7 +686,8 @@ return {
     -- identical within a frame, and building two four-deep tables per row was
     -- pure churn (the agent pane's `edge` upvalue is the same pattern).
     local edge = { type = "text", len = 1, text = { { { text = "│", style = frame_style } } } }
-    local function row(spans, id, class)
+    local function row(line)
+      line = line or {}
       return {
         type = "box",
         axis = "horizontal",
@@ -722,13 +697,17 @@ return {
           {
             type = "text",
             fill = 1,
-            text = { spans },
-            id = id,
-            class = class,
+            text = { line.spans or {} },
+            -- The row's own style covers this rect and this rect only: the
+            -- edges are siblings, so a selection bar reaches the border and
+            -- never paints over it.
+            style = line.style,
+            id = line.id,
+            class = line.class,
             -- Decoration (the search plugin) finds rows by this role, and only
             -- the content is inside it — so a highlight can never repaint the
             -- border cells.
-            role = id and "row" or nil,
+            role = line.id and "row" or nil,
           },
           edge,
         },
@@ -784,15 +763,17 @@ return {
               class = "pending-row",
             }
           else
+            local spans, style = session_line(
+              item,
+              inner_width,
+              ctx.elapsed,
+              index == cursor,
+              busy[item.session.id],
+              search
+            )
             lines[#lines + 1] = {
-              spans = session_line(
-                item,
-                inner_width,
-                ctx.elapsed,
-                index == cursor,
-                busy[item.session.id],
-                search
-              ),
+              spans = spans,
+              style = style,
               id = item.session.id,
               class = "session-row",
             }
@@ -820,9 +801,7 @@ return {
     children[#children + 1] = { type = "text", len = 1, text = { chrome.cells_to_spans(top) } }
 
     for index = 1, inner_height do
-      local line = lines[index]
-      children[#children + 1] =
-        row(line and line.spans or {}, line and line.id, line and line.class)
+      children[#children + 1] = row(lines[index])
     end
 
     local bottom = chrome.new_cells(width, "─", frame_style)

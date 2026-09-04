@@ -78,13 +78,16 @@
 ---@field frame? thurbox.Frame|string|boolean
 ---@field block? thurbox.Frame|string|boolean The POC's spelling of `frame`.
 
---- Text. Carries no style of its own — style the spans.
+--- Text. `style` paints across the whole rect before the spans go on top, so a
+--- span that names its own colour keeps it — that is a selection bar or a
+--- hover band, and `widgets.list` exposes it as `selected_style`/`hover_style`.
 ---@class (exact) thurbox.TextNode : thurbox.NodeCommon
 ---@field type? "text"|"paragraph"|"line"
 ---@field text thurbox.Text
 ---@field align? "left"|"center"|"centre"|"right"
 ---@field wrap? boolean
 ---@field scroll? integer
+---@field style? thurbox.StyleSpec
 
 --- A row or a column. Children live under `children`, or in the array part.
 ---@class (exact) thurbox.BoxNode : thurbox.NodeCommon
