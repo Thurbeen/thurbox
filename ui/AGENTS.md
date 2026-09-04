@@ -13,6 +13,14 @@ the whole rect, so a bar reaches the right edge without a padding span and a
 span that names its own colour survives it. `widgets.list` exposes the same
 thing as `selected_style` / `hover_style`.
 
+A second: a border is a **`frame`**, never hand-drawn cells. It takes styled
+title runs, `title_align`, `border_type` and an `overlay` that paints onto its
+own border cells (`top_left`/`top_right`/`bottom_left`/`bottom_right`/
+`right_column`) — a status strip, a scroll count or a scrollbar there costs no
+content cell. And a run inside a line carries its own `id`/`role`, so a chip is a
+click target without becoming a sized node; adjacent runs sharing an identity are
+one hitbox.
+
 ## "Install a plugin" means `thurbox-cli plugin install`
 
 A *plugin* here is a thurbox interface pane, not a package from a language

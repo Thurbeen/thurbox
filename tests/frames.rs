@@ -512,6 +512,112 @@ fn a_span_keeps_the_colour_it_names_over_the_node_style() {
     );
 }
 
+#[test]
+fn a_frame_title_takes_the_alignment_it_asks_for() {
+    // The reason two panes drew their borders by hand: a title could only sit at
+    // the left, so a right-aligned session title meant composing the row out of
+    // `text` nodes.
+    let left = paint_lua_node(r#"{ text = "", frame = { title = "T" } }"#, 8, 3);
+    let centre = paint_lua_node(
+        r#"{ text = "", frame = { title = "T", title_align = "center" } }"#,
+        8,
+        3,
+    );
+    let right = paint_lua_node(
+        r#"{ text = "", frame = { title = "T", title_align = "right" } }"#,
+        8,
+        3,
+    );
+    assert_frame(
+        &[
+            text(&left)[0].clone(),
+            text(&centre)[0].clone(),
+            text(&right)[0].clone(),
+        ],
+        &[
+            "\u{256d}T\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256e}",
+            "\u{256d}\u{2500}\u{2500}T\u{2500}\u{2500}\u{2500}\u{256e}",
+            "\u{256d}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}T\u{256e}",
+        ],
+    );
+}
+
+#[test]
+fn a_frame_draws_the_border_type_it_asks_for() {
+    // `square` is what the panes call it and `plain` is ratatui's name for the
+    // same corners; the agent pane's empty state is the one that wants them.
+    assert_frame(
+        &text(&paint_lua_node(r#"{ text = "", frame = true }"#, 4, 3)),
+        &[
+            "\u{256d}\u{2500}\u{2500}\u{256e}",
+            "\u{2502}  \u{2502}",
+            "\u{2570}\u{2500}\u{2500}\u{256f}",
+        ],
+    );
+    for spelling in ["square", "plain"] {
+        assert_frame(
+            &text(&paint_lua_node(
+                &format!(r#"{{ text = "", frame = {{ border_type = "{spelling}" }} }}"#),
+                4,
+                3,
+            )),
+            &[
+                "\u{250c}\u{2500}\u{2500}\u{2510}",
+                "\u{2502}  \u{2502}",
+                "\u{2514}\u{2500}\u{2500}\u{2518}",
+            ],
+        );
+    }
+}
+
+const OVERLAY_NODE: &str = r#"{
+    text = "",
+    frame = {
+      overlay = {
+        top_left = { { text = "ab" } },
+        top_right = { { text = "cd" } },
+        bottom_left = { { text = "ef" } },
+        bottom_right = { { text = "gh" } },
+        right_column = { { text = "x" }, { text = "y" } },
+      },
+    },
+  }"#;
+
+#[test]
+fn a_frame_overlay_paints_onto_the_border_cells() {
+    // The other half of what the hand-drawn chrome was for: the session list's
+    // dot strip and its scroll counts, and the agent pane's scrollbar in the
+    // border column, all of which cost zero content cells.
+    assert_frame(
+        &text(&paint_lua_node(OVERLAY_NODE, 10, 4)),
+        &[
+            "\u{256d}ab\u{2500}\u{2500}\u{2500}\u{2500}cd\u{256e}",
+            "\u{2502}        x",
+            "\u{2502}        y",
+            "\u{2570}ef\u{2500}\u{2500}\u{2500}\u{2500}gh\u{256f}",
+        ],
+    );
+}
+
+#[test]
+fn an_overlay_never_paints_over_a_corner() {
+    // An over-long strip clips at the corner rather than eating it: the corners
+    // are what makes a pane read as a pane.
+    let buffer = paint_lua_node(
+        r#"{ text = "", frame = { overlay = { top_left = { { text = "abcdefgh" } } } } }"#,
+        6,
+        3,
+    );
+    assert_frame(
+        &text(&buffer),
+        &[
+            "\u{256d}abcd\u{256e}",
+            "\u{2502}    \u{2502}",
+            "\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{256f}",
+        ],
+    );
+}
+
 /// A one-off pane in a materialized copy of the bundled interface, so a `lib/`
 /// widget can be held to its painted output without a bundled pane adopting it.
 fn paint_probe(render_body: &str, hovered: Option<&str>, width: u16, height: u16) -> Buffer {

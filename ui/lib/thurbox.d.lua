@@ -41,9 +41,16 @@
 ---@alias thurbox.StyleSpec thurbox.Color|thurbox.Style
 
 --- One styled run within a line.
+---
+--- `id`/`role` make the run itself a click target over the columns it is laid
+--- out at, so a chip inside a line needs no node of its own. Adjacent runs
+--- carrying the SAME identity coalesce into one hitbox, which is how a
+--- two-colour button (` ◀ F9 `) stays one target.
 ---@class thurbox.Span
 ---@field text string|number|boolean
 ---@field style? thurbox.StyleSpec
+---@field id? string
+---@field role? string
 
 --- One line: a bare string, one span, or a list of spans.
 ---@alias thurbox.Line string|number|boolean|thurbox.Span|thurbox.Span[]
@@ -51,14 +58,28 @@
 --- What a `text` node or a frame title accepts: one line, or a list of them.
 ---@alias thurbox.Text thurbox.Line|thurbox.Line[]
 
---- A frame drawn around a node. `borders` is all-or-none and the border type is
---- fixed; there is no `title_align`.
+--- Runs painted onto a frame's own border cells, after the block is drawn.
+---
+--- Border cells cost no content row or column, which is why the status-dot
+--- strip, the `▲ N`/`▼ N` scroll counts and the terminal scrollbar live here.
+--- Each slot is clipped between the corners, which are never painted over.
+---@class thurbox.Overlay
+---@field top_left? thurbox.Text Rightward from the cell after the top-left corner.
+---@field top_right? thurbox.Text Leftward from the cell before the top-right corner.
+---@field bottom_left? thurbox.Text
+---@field bottom_right? thurbox.Text
+---@field right_column? thurbox.Text One run per inner row, down the right border column.
+
+--- A frame drawn around a node. `borders` is all-or-none.
 ---@class thurbox.Frame
 ---@field title? thurbox.Text
+---@field title_align? "left"|"center"|"centre"|"right"
 ---@field borders? "all"|"none"
+---@field border_type? "rounded"|"square"|"plain"
 ---@field border_style? thurbox.StyleSpec
 ---@field style? thurbox.StyleSpec
 ---@field padding? integer
+---@field overlay? thurbox.Overlay
 
 --- What every node may say about its space and its identity.
 ---

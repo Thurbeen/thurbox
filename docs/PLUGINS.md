@@ -438,6 +438,30 @@ it already does the right thing; a raw `input` node that never sets the flag
 draws no caret at all, which is visible at once. A caret guessed from the value
 being non-empty is not: it wanders to whichever field happens to hold text.
 
+Every kind takes a **`frame`**, and a frame is the whole border vocabulary:
+
+```lua
+frame = {
+  title = { { text = " Sessions ", style = badge } },  -- styled runs, not a string
+  title_align = "right",                               -- left | center | right
+  border_type = "square",                              -- rounded (default) | square
+  border_style = { fg = theme.accent },
+  padding = 1,
+  overlay = {
+    top_right = dots,        -- painted leftward from before the top-right corner
+    right_column = bar,      -- one run per inner row, down the right border
+  },
+}
+```
+
+`overlay` paints runs onto the frame's *own* border cells, after the block draws
+them — `top_left` and `top_right` along the top border, `bottom_left` and
+`bottom_right` along the bottom, `right_column` down the right one. A status
+strip, a `▲ N` scroll count or a scrollbar there costs no content cell, which is
+the reason it exists: the session list's dot strip and the terminal pane's
+scrollbar are both border cells, and every row of the pane stays a row. Each slot
+clips between the corners, which are never painted over.
+
 `surface` is the exception that proves the rule: it carries **cells**, for
 content positioned by character measurement rather than by structure — a live
 terminal, or a diff body. You place and frame it; the kernel fills it.
@@ -664,6 +688,23 @@ verb and the kernel answers it without calling you at all:
   view is brought forward.
 - `url:<link>` opens the link, and is the one verb that also changes how the
   node is *painted* — see below.
+
+A **run inside a line** carries `id`/`role` of its own, and becomes a target over
+the columns it is laid out at:
+
+```lua
+{ type = "text", text = { {
+  { text = " ◀ ", style = accent, role = "action:sessions.toggle_panel" },
+  { text = "F9 ", style = muted,  role = "action:sessions.toggle_panel" },
+} } }
+```
+
+so a chip inside a row needs no node of its own with a hand-counted `len`.
+Adjacent runs carrying the **same** identity coalesce into one hitbox — which is
+what makes that two-colour button one button rather than two halves the pointer
+has to find. It applies to a frame's overlay runs too: the terminal pane's
+scrollbar is one target the length of its column because every row of it names
+the same role.
 
 ### `url:` is a link, not just a click
 

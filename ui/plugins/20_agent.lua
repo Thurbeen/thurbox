@@ -18,13 +18,13 @@
 --
 -- Replace this file and you have replaced the central pane.
 --
--- The chrome here is drawn BY HAND rather than with `widgets.panel`, because
--- v1's terminal pane needs three things the kernel's `frame` cannot express:
+-- The chrome here is an ordinary kernel `frame`. It was drawn by hand for as
+-- long as a frame could not express the three things v1's terminal pane needs:
 -- a RIGHT-aligned border title, a STYLED one (the focused badge is
 -- inverted_fg-on-accent), and a scrollbar overlaid on the right border column
--- so it costs zero content columns. A framed node hands its whole inner rect to
--- one child, which forecloses all three. Composing the border out of `text`
--- nodes keeps every one of them and still uses only the four primitives.
+-- so it costs zero content columns. `title_align`, styled title runs and
+-- `frame.overlay` are each of those, so the border is one table again and the
+-- surface keeps the whole inner rect.
 
 local chrome = require("lib.chrome")
 local panels = require("lib.panels")
@@ -271,6 +271,14 @@ end
 
 -- --- the scrollbar ---------------------------------------------------------
 
+--- The role the scrollbar column carries.
+---
+--- The kernel's own spelling for "a press here takes hold of the pointer", so
+--- the moves that follow reach this pane instead of painting a text selection
+--- across the terminal the bar is about to scroll. This pane has one draggable,
+--- so the bare role identifies it; a pane with two would tell them apart by `id`.
+local DRAG = "drag"
+
 local SCROLLBAR = { begin_ = "▲", end_ = "▼", track = "║", thumb = "█" }
 
 --- Integer divide, rounding to nearest — ratatui's `rounding_divide`.
@@ -340,11 +348,13 @@ local function scrollbar_rows(height, content_len, viewport, position)
   local track_end = track_length - (thumb_start + thumb_length)
 
   -- The caps carry no style in v1 (ratatui leaves begin/end unstyled); the
-  -- track and thumb do.
-  local track_run = { text = SCROLLBAR.track, style = { fg = theme.muted } }
-  local thumb_run = { text = SCROLLBAR.thumb, style = { fg = theme.accent } }
+  -- track and thumb do. Every row carries `DRAG`, and adjacent runs sharing an
+  -- identity coalesce into ONE hitbox — which is what makes the bar a single
+  -- target the length of the column rather than one target per row.
+  local track_run = { text = SCROLLBAR.track, style = { fg = theme.muted }, role = DRAG }
+  local thumb_run = { text = SCROLLBAR.thumb, style = { fg = theme.accent }, role = DRAG }
 
-  local rows = { { text = SCROLLBAR.begin_ } }
+  local rows = { { text = SCROLLBAR.begin_, role = DRAG } }
   for _ = 1, thumb_start do
     rows[#rows + 1] = track_run
   end
@@ -354,7 +364,7 @@ local function scrollbar_rows(height, content_len, viewport, position)
   for _ = 1, track_end do
     rows[#rows + 1] = track_run
   end
-  rows[#rows + 1] = { text = SCROLLBAR.end_ }
+  rows[#rows + 1] = { text = SCROLLBAR.end_, role = DRAG }
   return rows
 end
 
@@ -368,19 +378,12 @@ local function bar_content_len(depth)
   return depth + 1
 end
 
---- The role the scrollbar column carries.
----
---- The kernel's own spelling for "a press here takes hold of the pointer", so
---- the moves that follow reach this pane instead of painting a text selection
---- across the terminal the bar is about to scroll. This pane has one draggable,
---- so the bare role identifies it; a pane with two would tell them apart by `id`.
-local DRAG = "drag"
-
 --- A press or a drag on the scrollbar, mapped back to a scroll offset.
 ---
---- The bar is one node for the whole column, so `hit.y` is already the row of
---- the bar under the pointer and `hit.h` its length — which is the only reason a
---- `pure` pane can answer this at all, since `render` may not stash geometry.
+--- Every row of the bar carries the same role, so the paint walk coalesces them
+--- into one hitbox: `hit.y` is already the row of the bar under the pointer and
+--- `hit.h` its length — which is the only reason a `pure` pane can answer this
+--- at all, since `render` may not stash geometry.
 local function scrollbar_grab(id, hit)
   local surface = surface_of(id, tab_of(id))
   local scroll, depth = scroll_of(surface)
@@ -623,10 +626,10 @@ end
 --- at 1, exactly where v1 puts the chevron rect (`terminal.x + 1`).
 local function border_strip(width, border_style, active)
   local runs, cursor = {}, 1
-  --- `role`, when given, is the kernel's click verb for this run. It only
-  --- reaches the hit registry if the run becomes a node of its own, which is
-  --- what `chrome` does with a tagged run -- identity is per NODE, so a chip
-  --- painted as one span among many is unclickable however it is styled.
+  --- `role`, when given, is the kernel's click verb for this run: a run carries
+  --- its own identity and the paint walk registers a hitbox over the columns it
+  --- laid the run out at. The `─` filler between chips is what puts each one at
+  --- the column it belongs at, since the overlay paints its runs consecutively.
   local function put(at, text, style, role)
     if at > cursor then
       runs[#runs + 1] = { text = string.rep("─", at - cursor), style = border_style }
@@ -640,11 +643,11 @@ local function border_strip(width, border_style, active)
     -- The chevron and its ` F9 ` hint are ONE affordance in two colours: the
     -- chevron reads accent, the hint muted.
     --
-    -- They are two runs — a run is one node and a node has one style — but both
-    -- carry the SAME role, so the kernel hit-tests them as one target. Without
-    -- that the hint was inert: not clickable, and not lit when the pointer was
-    -- over it, which made the button feel like it had a three-cell hitbox in the
-    -- middle of a six-cell label.
+    -- They are two runs — a run has one style — but both carry the SAME role,
+    -- and adjacent runs sharing an identity coalesce into one hitbox, so the
+    -- kernel hit-tests them as one target. Without that the hint was inert: not
+    -- clickable, and not lit when the pointer was over it, which made the button
+    -- feel like it had a three-cell hitbox in the middle of a six-cell label.
     local toggle = "action:sessions.toggle_panel"
     -- v1: "a button by action but a bare border glyph by look, so it takes the
     -- subtle band too" — a filled pill here would invent a chip on the border
@@ -691,11 +694,19 @@ local function border_strip(width, border_style, active)
   return runs, cursor
 end
 
--- --- hand-drawn chrome -----------------------------------------------------
---
--- The framed-pane builder itself is `chrome.frame` (`lib/chrome.lua`), shared
--- with the session list's border helpers. What stays here is what this pane
--- puts ON that frame: the strip above, the scrollbar, and the titles.
+--- This pane's border: a right-aligned styled title, the tab strip painted over
+--- the top border's left half, and the scrollbar down the right border column.
+---
+--- All three are border cells, which is the point — the surface underneath
+--- keeps the full inner rect, exactly as v1 insets the terminal vertically only.
+local function border_frame(title, level, border, strip, bar)
+  return {
+    title = { { text = title, style = chrome.title_style(level) } },
+    title_align = "right",
+    border_style = border,
+    overlay = { top_left = strip, right_column = bar },
+  }
+end
 
 -- --- the empty pane --------------------------------------------------------
 
@@ -858,15 +869,13 @@ return {
     -- No session: v1 switches to a different frame entirely — SQUARE borders,
     -- a muted left-aligned " No Session " title, and the hint box.
     if not session then
-      return chrome.frame({
-        width = width,
-        height = height,
-        square = true,
-        title = " No Session ",
-        title_align = "left",
+      local body = empty_body(math.max(0, width - 2), math.max(0, height - 2))
+      body.frame = {
+        title = { { text = " No Session " } },
+        border_type = "square",
         border_style = { fg = theme.muted },
-        body = empty_body(math.max(0, width - 2), math.max(0, height - 2)),
-      })
+      }
+      return body
     end
 
     -- v1 draws neither the chevron nor the tabs on the empty welcome screen, so
@@ -891,19 +900,12 @@ return {
     -- deliberate v2 addition — styled `danger`, the role for a thing that is
     -- broken, rather than the working-yellow it used to borrow.
     if session.attach_error then
-      return chrome.frame({
-        width = width,
-        height = height,
-        title = title,
-        title_align = "right",
-        title_style = chrome.title_style(level),
-        border_style = border,
-        left = strip,
-        body = centered({
-          { { text = "no live terminal", style = { fg = theme.bad, bold = true } } },
-          { { text = session.attach_error, style = { fg = theme.muted } } },
-        }),
+      local body = centered({
+        { { text = "no live terminal", style = { fg = theme.bad, bold = true } } },
+        { { text = session.attach_error, style = { fg = theme.muted } } },
       })
+      body.frame = border_frame(title, level, border, strip)
+      return body
     end
 
     -- The bar overlays the right border column, so the terminal grid keeps the
@@ -921,25 +923,15 @@ return {
       )
     end
 
-    return chrome.frame({
-      width = width,
-      height = height,
-      title = title,
-      title_align = "right",
-      title_style = chrome.title_style(level),
-      border_style = border,
-      left = strip,
-      right_column = rows,
-      right_column_role = DRAG,
-      -- The shell is a second surface over the same primitive, addressed as
-      -- `<id>#shell` — no new node kind, and the kernel resolves the suffix.
-      body = {
-        type = "surface",
-        session = surface,
-        scroll = scroll,
-        fill = 1,
-      },
-    })
+    -- The shell is a second surface over the same primitive, addressed as
+    -- `<id>#shell` — no new node kind, and the kernel resolves the suffix.
+    return {
+      type = "surface",
+      session = surface,
+      scroll = scroll,
+      fill = 1,
+      frame = border_frame(title, level, border, strip, rows),
+    }
   end,
 
   -- The palette's rows (Ctrl+P). None of these spends a chord: the tabs are

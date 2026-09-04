@@ -8,14 +8,15 @@
 //! rect among children ([`super::node::divide`]) and recurses.
 
 use ratatui::buffer::{Buffer, CellDiffOption};
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Borders as RatBorders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::node::{
-    divide, to_line, Align, Axis, Borders, Frame as NodeFrame, Identity, Node, SurfaceSource,
+    divide, to_line, Align, Axis, BorderKind, Borders, Frame as NodeFrame, Identity, Node, Overlay,
+    Run, SurfaceSource,
 };
 
 /// A painted node that carried identity, and the rect it went into.
@@ -180,6 +181,9 @@ pub fn render_recording(
             let block = build_block(spec);
             let inner = block.inner(area);
             frame.render_widget(block, area);
+            if let (Some(overlay), Borders::All) = (spec.overlay.as_deref(), spec.borders) {
+                paint_overlay(frame.buffer_mut(), area, overlay, hits);
+            }
             pad(inner, spec.padding)
         }
         None => area,
@@ -211,6 +215,9 @@ pub fn render_recording(
                 paragraph = paragraph.wrap(Wrap { trim: false });
             }
             frame.render_widget(paragraph, inner);
+            if !*wrap {
+                record_run_hits(lines, inner, *align, *scroll, hits);
+            }
         }
 
         Node::Box {
@@ -445,7 +452,10 @@ fn build_block(spec: &NodeFrame) -> Block<'_> {
     block = match spec.borders {
         Borders::All => block
             .borders(RatBorders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(match spec.border_type {
+                BorderKind::Rounded => BorderType::Rounded,
+                BorderKind::Square => BorderType::Plain,
+            })
             .border_style(spec.border_style),
         Borders::None => block.borders(RatBorders::NONE),
     };
@@ -472,9 +482,255 @@ fn build_block(spec: &NodeFrame) -> Block<'_> {
                 ratatui::text::Span::styled(run.text.as_str(), style)
             })
             .collect();
-        block = block.title(Line::from(spans));
+        block = block
+            .title(Line::from(spans))
+            .title_alignment(match spec.title_align {
+                Align::Left => Alignment::Left,
+                Align::Center => Alignment::Center,
+                Align::Right => Alignment::Right,
+            });
     }
     block
+}
+
+/// Paint a frame's overlay onto the border cells it just drew, recording a
+/// [`Hit`] for every run that names one.
+///
+/// After the block, because that is what "overlay" means: the strip, the counts
+/// and the scrollbar sit ON the cells the border occupies, so they cost no
+/// content column. Only a bordered frame has such cells, so a frame with
+/// `borders = "none"` overlays nothing.
+fn paint_overlay(buf: &mut Buffer, area: Rect, overlay: &Overlay, hits: &mut Vec<Hit>) {
+    if area.width < 2 || area.height < 1 {
+        return;
+    }
+    // The corners are never painted over: they are what makes a pane read as a
+    // pane, and v1's strips stop one cell short of each.
+    let left = i32::from(area.x) + 1;
+    let right = i32::from(area.right()) - 1;
+    let top = area.y;
+    paint_row(buf, top, left, right, &overlay.top_left, Align::Left, hits);
+    paint_row(
+        buf,
+        top,
+        left,
+        right,
+        &overlay.top_right,
+        Align::Right,
+        hits,
+    );
+    let bottom = area.bottom() - 1;
+    if bottom > top {
+        let slots = [
+            (&overlay.bottom_left, Align::Left),
+            (&overlay.bottom_right, Align::Right),
+        ];
+        for (runs, align) in slots {
+            paint_row(buf, bottom, left, right, runs, align, hits);
+        }
+    }
+    if area.height > 2 {
+        paint_column(
+            buf,
+            area.right() - 1,
+            area.y + 1,
+            bottom,
+            &overlay.right_column,
+            hits,
+        );
+    }
+}
+
+/// Paint `runs` along row `y`, clipped to the columns `[left, right)`.
+///
+/// Columns are `i32` because a right-aligned strip that does not fit starts
+/// left of the frame: keeping the arithmetic signed is what makes it lose its
+/// HEAD rather than its tail, which is what right-aligned means.
+fn paint_row(
+    buf: &mut Buffer,
+    y: u16,
+    left: i32,
+    right: i32,
+    runs: &[Run],
+    align: Align,
+    hits: &mut Vec<Hit>,
+) {
+    if runs.is_empty() || left >= right {
+        return;
+    }
+    let total: i32 = runs.iter().map(|run| i32::from(run.width())).sum();
+    let mut cursor = match align {
+        Align::Right => right - total,
+        _ => left,
+    };
+    let mut group: Option<(&Identity, i32, i32)> = None;
+    for run in runs {
+        let start = cursor;
+        cursor += i32::from(run.width());
+        let from = start.max(left);
+        let to = cursor.min(right);
+        if from < to {
+            let text = clip_left(&run.text, (from - start) as u16);
+            buf.set_stringn(from as u16, y, text, (to - from) as usize, run.style);
+        }
+        group = extend(group, run, start, cursor, |identity, from, to| {
+            push_hit(hits, identity, from.max(left), to.min(right), y, 1);
+        });
+    }
+    if let Some((identity, from, to)) = group {
+        push_hit(hits, identity, from.max(left), to.min(right), y, 1);
+    }
+}
+
+/// Paint one run per row down column `x`, from `top` up to (not including)
+/// `bottom`. A shorter list leaves the rows under it as border.
+fn paint_column(
+    buf: &mut Buffer,
+    x: u16,
+    top: u16,
+    bottom: u16,
+    runs: &[Run],
+    hits: &mut Vec<Hit>,
+) {
+    let mut group: Option<(&Identity, i32, i32)> = None;
+    for (index, run) in runs.iter().enumerate() {
+        let Ok(offset) = u16::try_from(index) else {
+            break;
+        };
+        let y = top.saturating_add(offset);
+        if y >= bottom {
+            break;
+        }
+        buf.set_stringn(x, y, &run.text, 1, run.style);
+        group = extend(
+            group,
+            run,
+            i32::from(y),
+            i32::from(y) + 1,
+            |identity, from, to| {
+                push_hit(
+                    hits,
+                    identity,
+                    i32::from(x),
+                    i32::from(x) + 1,
+                    from as u16,
+                    (to - from) as u16,
+                );
+            },
+        );
+    }
+    if let Some((identity, from, to)) = group {
+        push_hit(
+            hits,
+            identity,
+            i32::from(x),
+            i32::from(x) + 1,
+            from as u16,
+            (to - from) as u16,
+        );
+    }
+}
+
+/// Grow the open group of adjacent runs sharing an identity, flushing it
+/// through `emit` when this run starts a different one.
+///
+/// Adjacency is what makes ` ◀ F9 ` — an accent chevron and a muted hint, two
+/// runs because a run carries one style — a single hitbox rather than two with
+/// the pointer having to find one of them.
+fn extend<'a>(
+    group: Option<(&'a Identity, i32, i32)>,
+    run: &'a Run,
+    start: i32,
+    end: i32,
+    emit: impl FnOnce(&Identity, i32, i32),
+) -> Option<(&'a Identity, i32, i32)> {
+    let identity = run.identity.as_deref();
+    match (group, identity) {
+        (Some((open, from, to)), Some(next)) if open == next && to == start => {
+            Some((open, from, end))
+        }
+        (open, next) => {
+            if let Some((open, from, to)) = open {
+                emit(open, from, to);
+            }
+            next.map(|next| (next, start, end))
+        }
+    }
+}
+
+fn push_hit(hits: &mut Vec<Hit>, identity: &Identity, from: i32, to: i32, y: u16, height: u16) {
+    if from >= to || height == 0 {
+        return;
+    }
+    hits.push(Hit {
+        rect: Rect {
+            x: from as u16,
+            y,
+            width: (to - from) as u16,
+            height,
+        },
+        identity: identity.clone(),
+    });
+}
+
+/// Drop the first `columns` display columns of `text`.
+///
+/// A wide character straddling the cut goes whole, which is what the cell
+/// buffer this replaces did with an out-of-range cell.
+fn clip_left(text: &str, columns: u16) -> &str {
+    if columns == 0 {
+        return text;
+    }
+    use unicode_width::UnicodeWidthChar;
+    let mut used = 0u16;
+    for (index, ch) in text.char_indices() {
+        if used >= columns {
+            return &text[index..];
+        }
+        used = used.saturating_add(u16::try_from(ch.width().unwrap_or(0)).unwrap_or(0));
+    }
+    ""
+}
+
+/// Record a [`Hit`] for every run that names an identity, at the columns the
+/// paragraph will lay it out at.
+///
+/// Only for an unwrapped node: with `wrap` on, ratatui decides where a line
+/// breaks, and a hitbox computed from the unwrapped columns would sit over
+/// cells the run never reached.
+fn record_run_hits(lines: &[Vec<Run>], area: Rect, align: Align, scroll: u16, hits: &mut Vec<Hit>) {
+    let left = i32::from(area.x);
+    let right = i32::from(area.right());
+    for (index, runs) in lines.iter().enumerate().skip(usize::from(scroll)) {
+        if runs.iter().all(|run| run.identity.is_none()) {
+            continue;
+        }
+        let Ok(row) = u16::try_from(index - usize::from(scroll)) else {
+            break;
+        };
+        if row >= area.height {
+            break;
+        }
+        let y = area.y + row;
+        let width: i32 = runs.iter().map(|run| i32::from(run.width())).sum();
+        let mut cursor = left
+            + match align {
+                Align::Left => 0,
+                Align::Center => (i32::from(area.width) - width).max(0) / 2,
+                Align::Right => (i32::from(area.width) - width).max(0),
+            };
+        let mut group: Option<(&Identity, i32, i32)> = None;
+        for run in runs {
+            let start = cursor;
+            cursor += i32::from(run.width());
+            group = extend(group, run, start, cursor, |identity, from, to| {
+                push_hit(hits, identity, from.max(left), to.min(right), y, 1);
+            });
+        }
+        if let Some((identity, from, to)) = group {
+            push_hit(hits, identity, from.max(left), to.min(right), y, 1);
+        }
+    }
 }
 
 /// Shrink a rect by `padding` on every side, never past zero.

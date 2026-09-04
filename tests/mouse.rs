@@ -250,13 +250,10 @@ fn only_identified_nodes_become_targets() {
 
 #[test]
 fn the_collapse_toggle_is_one_target_covering_its_chevron_and_its_hint() {
-    // The label is ` ◀ F9 ` and it is ONE button. It has to be two nodes — a node
+    // The label is ` ◀ F9 ` and it is ONE button. It has to be two runs — a run
     // carries one style, and the chevron reads accent while the hint reads muted
-    // — so both carry the same role, and the click registry answers either.
-    //
-    // Before this, only the three-cell chevron was a target: the pointer had to
-    // find the arrow inside a six-cell label, which is the "increased click size"
-    // this fixes.
+    // — so both carry the same role, and the paint walk coalesces them into one
+    // hitbox over the whole label.
     let hits = hits_of("agent", 113, 10);
     let toggle: Vec<&Hit> = hits
         .iter()
@@ -267,20 +264,107 @@ fn the_collapse_toggle_is_one_target_covering_its_chevron_and_its_hint() {
 
     assert_eq!(
         toggle.len(),
-        2,
-        "the chevron and its hint are both targets: {:?}",
+        1,
+        "the chevron and its hint are one target: {:?}",
         toggle.iter().map(|hit| hit.rect).collect::<Vec<_>>()
     );
-    let covered: u16 = toggle.iter().map(|hit| hit.rect.width).sum();
-    assert_eq!(covered, 6, "` ◀ F9 ` is six cells wide: {covered}");
-    // Adjacent, so there is no dead cell between the halves.
-    let mut rects: Vec<Rect> = toggle.iter().map(|hit| hit.rect).collect();
-    rects.sort_by_key(|rect| rect.x);
     assert_eq!(
-        rects[0].x + rects[0].width,
-        rects[1].x,
-        "the two halves must touch: {rects:?}"
+        toggle[0].rect.width, 6,
+        "` ◀ F9 ` is six cells wide: {:?}",
+        toggle[0].rect
     );
+}
+
+/// Convert a Lua node table and record the hits painting it declares.
+fn hits_for(source: &str, width: u16, height: u16) -> Vec<Hit> {
+    let lua = mlua::Lua::new();
+    let value: mlua::Value = lua.load(source).eval().expect("the table evaluates");
+    let node = thurbox::kernel::convert::to_node(&value, "plugins/90_test.lua")
+        .expect("the table converts");
+    let mut hits = Vec::new();
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| render_recording(frame, frame.area(), &node, &PlaceholderSurfaces, &mut hits))
+        .expect("draw");
+    hits
+}
+
+#[test]
+fn a_run_that_names_a_role_is_a_target_over_its_own_columns() {
+    // Identity used to hang off the node alone, so a clickable chip inside a
+    // line forced the row to be exploded into one sized node per run. The paint
+    // walk already knows each run's column offset; this is that offset kept.
+    let hits = hits_for(
+        r#"{ text = { { { text = "ab" }, { text = "cd", role = "action:go" }, { text = "ef" } } } }"#,
+        10,
+        1,
+    );
+    assert_eq!(hits.len(), 1, "only the run carries identity: {hits:#?}");
+    assert_eq!(
+        hits[0].identity.click_verb(),
+        Some(ClickVerb::Action("go".into()))
+    );
+    assert_eq!(hits[0].rect, Rect::new(2, 0, 2, 1));
+}
+
+#[test]
+fn adjacent_runs_sharing_an_identity_are_one_target() {
+    // ` ◀ F9 ` is one button in two colours — a run carries one style, so it has
+    // to be two runs — and a hitbox per run gave it a hole in the middle.
+    let hits = hits_for(
+        r#"{ text = { { { text = " ◀ ", role = "action:go" }, { text = "F9 ", role = "action:go" } } } }"#,
+        10,
+        1,
+    );
+    assert_eq!(hits.len(), 1, "one button, one target: {hits:#?}");
+    assert_eq!(hits[0].rect, Rect::new(0, 0, 6, 1));
+}
+
+#[test]
+fn a_run_hit_stops_at_the_edge_of_the_node_that_holds_it() {
+    // A row wider than its rect clips rather than declaring a target over cells
+    // it never painted.
+    let hits = hits_for(
+        r#"{ text = { { { text = "ab" }, { text = "cdef", role = "action:go" } } } }"#,
+        4,
+        1,
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].rect, Rect::new(2, 0, 2, 1));
+}
+
+#[test]
+fn an_overlay_run_is_a_target_on_the_border_it_paints_on() {
+    // The chips the agent pane puts on its top border, and the scrollbar it
+    // puts in the right border column: the column is ONE target, so a press
+    // arrives with `y` the row of the bar and `h` its length.
+    let hits = hits_for(
+        r#"{
+             text = "",
+             frame = {
+               overlay = {
+                 top_left = { { text = "ab", role = "action:go" } },
+                 right_column = {
+                   { text = "x", role = "drag" },
+                   { text = "y", role = "drag" },
+                 },
+               },
+             },
+           }"#,
+        8,
+        4,
+    );
+    let chip = hits
+        .iter()
+        .find(|hit| hit.identity.click_verb() == Some(ClickVerb::Action("go".into())))
+        .expect("the chip is a target");
+    assert_eq!(chip.rect, Rect::new(1, 0, 2, 1));
+
+    let bar = hits
+        .iter()
+        .find(|hit| hit.identity.is_drag_handle())
+        .expect("the bar is a target");
+    assert_eq!(bar.rect, Rect::new(7, 1, 1, 2));
 }
 
 #[test]

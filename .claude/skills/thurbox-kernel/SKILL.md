@@ -23,7 +23,15 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
    which is what a selection bar or hover band is — no pane pads a row with a
    spacer span, and a span naming its own colour keeps it (a search hit stays
    visible under the bar). `widgets.list` exposes it as `selected_style` /
-   `hover_style`.
+   `hover_style`. A `frame` takes `title_align`, `border_type`
+   (`rounded`/`square`) and an `overlay` — runs painted onto its own border
+   cells (`top_left`/`top_right`/`bottom_left`/`bottom_right`/`right_column`)
+   after the block, which is where the session list's dot strip and `▲ N`/`▼ N`
+   counts and the terminal pane's scrollbar live, at the cost of no content
+   cell. And a **run** takes `id`/`role`, so a chip inside a line is a click
+   target over its own columns without becoming a node; adjacent runs sharing an
+   identity coalesce into one hitbox, which is what makes ` ◀ F9 ` — an accent
+   chevron and a muted hint — a single button.
 2. **Layout resolves before render** — rects are computed first, then each plugin
    is called with its own. Plugins declare size *statically*, in their declaration
    table, which is what breaks the circularity.
@@ -110,7 +118,8 @@ already follow.
   these groups.
 - **`ui/`** (Lua, not Rust) — `layout.lua` is the arrangement; `lib/` holds
   widgets, theme roles, fuzzy match, text input, trees — plus the extracted
-  pane halves: `chrome` (borders/cells), `modal` (frame + footer), `scroll`,
+  pane halves: `chrome` (the two full-height panes' focus styling), `modal`
+  (frame + footer), `scroll`,
   `order` and `session_model` (the session list's model, with its memo),
   `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
   panes.

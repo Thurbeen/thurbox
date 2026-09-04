@@ -11,14 +11,12 @@
 -- dot strip on the top border, and the `▲ N`/`▼ N` scroll indicators overlaid on
 -- the border rows.
 --
--- WHY THE BORDER IS DRAWN BY HAND. `Frame.title` is a plain, unstyled,
--- left-aligned string, so a frame cannot express any of the three things v1 puts
--- on its border: the focused title *badge* (inverted fg on an accent
--- background), the right-aligned per-session status dots, or the scroll counts
--- overlaid on the border cells. Drawing a header line inside the frame would
--- cost a content row and so would not be parity. Composing the border out of
--- `text` nodes costs nothing — the border rows are the rows the frame would have
--- occupied — and stays inside the four-kind vocabulary.
+-- The border is an ordinary kernel `frame`. It was drawn by hand, out of a cell
+-- buffer, for as long as a frame title was a plain unstyled left-aligned string
+-- — a frame could express none of the three things v1 puts on this border. It
+-- can now: the title is styled runs, so the focused badge is a title; the dot
+-- strip and the scroll counts are `frame.overlay`, painted onto the border cells
+-- after the block, which is what keeps them off the content rows.
 
 local chrome = require("lib.chrome")
 local fuzzy = require("lib.fuzzy")
@@ -31,11 +29,11 @@ local session_model = require("lib.session_model")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
--- ── The model, the border chrome and the ordering algebra live in lib/ ──────
+-- ── The model, the focus styling and the ordering algebra live in lib/ ──────
 --
 -- `lib.session_model` builds the item list (one selectable unit per row, with
 -- the group header glued to its group's first session), `lib.chrome` holds the
--- cell primitives and focus styles the hand-drawn border is composed from, and
+-- focus levels this pane and the terminal pane map their borders through, and
 -- `lib.order` is the move/sort algebra over the rendered items. All three are
 -- pure over what this pane hands them; everything about how a row LOOKS stays
 -- here.
@@ -464,6 +462,31 @@ local function persist_order(items)
   end
 end
 
+--- `glyph N ` right-aligned over the tail of `strip`.
+---
+--- v1 LAYERS the two: the count is painted onto border cells the dot strip
+--- already occupies, so it covers the last dots rather than pushing them left.
+--- One right-aligned run list says the same thing, and the dots it would have
+--- covered are dropped here instead of overwritten there.
+local function with_count(strip, glyph, count)
+  if count <= 0 then
+    return strip
+  end
+  local text = glyph .. " " .. count .. " "
+  local keep = chrome.spans_len(strip) - widgets.len(text)
+  local runs, used = {}, 0
+  for _, run in ipairs(strip) do
+    local width = widgets.len(run.text)
+    if used + width > keep then
+      break
+    end
+    used = used + width
+    runs[#runs + 1] = run
+  end
+  runs[#runs + 1] = { text = text, style = { fg = theme.muted } }
+  return runs
+end
+
 return {
   name = "sessions",
   slot = "sessions",
@@ -682,35 +705,21 @@ return {
       end
     end
 
-    -- One edge node shared by every row this render: the `│` cells are
-    -- identical within a frame, and building two four-deep tables per row was
-    -- pure churn (the agent pane's `edge` upvalue is the same pattern).
-    local edge = { type = "text", len = 1, text = { { { text = "│", style = frame_style } } } }
     local function row(line)
       line = line or {}
       return {
-        type = "box",
-        axis = "horizontal",
+        type = "text",
         len = 1,
-        children = {
-          edge,
-          {
-            type = "text",
-            fill = 1,
-            text = { line.spans or {} },
-            -- The row's own style covers this rect and this rect only: the
-            -- edges are siblings, so a selection bar reaches the border and
-            -- never paints over it.
-            style = line.style,
-            id = line.id,
-            class = line.class,
-            -- Decoration (the search plugin) finds rows by this role, and only
-            -- the content is inside it — so a highlight can never repaint the
-            -- border cells.
-            role = line.id and "row" or nil,
-          },
-          edge,
-        },
+        text = { line.spans or {} },
+        -- The row's own style covers this rect and this rect only, and the rect
+        -- is the frame's inner width — so a selection bar reaches the border and
+        -- never paints over it.
+        style = line.style,
+        id = line.id,
+        class = line.class,
+        -- Decoration (the search plugin) finds rows by this role, and only the
+        -- content is inside it — so a highlight can never repaint the border.
+        role = line.id and "row" or nil,
       }
     end
 
@@ -783,37 +792,25 @@ return {
     end
 
     local children = {}
-
-    -- Top border: the title badge at the left, the dot strip right-aligned, and
-    -- the "items above" count painted over it — the same layering v1 gets from
-    -- a right-aligned title plus a paragraph drawn on the border cells.
-    local top = chrome.new_cells(width, "─", frame_style)
-    top[1] = { ch = "╭", style = frame_style }
-    top[width] = { ch = "╮", style = frame_style }
-    chrome.place_spans(top, 2, { { text = " Sessions ", style = chrome.title_style(level) } })
-    if #dots > 0 then
-      chrome.place_spans(top, width - chrome.spans_len(dots), dots)
-    end
-    if above > 0 then
-      local text = "▲ " .. above .. " "
-      chrome.place_text(top, width - widgets.len(text), text, { fg = theme.muted })
-    end
-    children[#children + 1] = { type = "text", len = 1, text = { chrome.cells_to_spans(top) } }
-
     for index = 1, inner_height do
       children[#children + 1] = row(lines[index])
     end
 
-    local bottom = chrome.new_cells(width, "─", frame_style)
-    bottom[1] = { ch = "╰", style = frame_style }
-    bottom[width] = { ch = "╯", style = frame_style }
-    if below > 0 then
-      local text = "▼ " .. below .. " "
-      chrome.place_text(bottom, width - widgets.len(text), text, { fg = theme.muted })
-    end
-    children[#children + 1] = { type = "text", len = 1, text = { chrome.cells_to_spans(bottom) } }
-
-    return { type = "box", children = children }
+    -- The title badge at the left, the dot strip right-aligned on the same row
+    -- with the "items above" count over its tail, and "items below" on the
+    -- bottom border — every one of them a border cell, so none costs a row.
+    return {
+      type = "box",
+      children = children,
+      frame = {
+        title = { { text = " Sessions ", style = chrome.title_style(level) } },
+        border_style = frame_style,
+        overlay = {
+          top_right = with_count(dots, "▲", above),
+          bottom_right = with_count({}, "▼", below),
+        },
+      },
+    }
   end,
 
   --- Go to a session you just made, when you asked to be taken there.

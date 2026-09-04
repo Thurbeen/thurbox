@@ -10,7 +10,8 @@ use mlua::{Table, Value};
 use ratatui::style::Style;
 
 use super::node::{
-    parse_color, Align, Axis, Borders, Frame, Identity, Node, Run, Size, SurfaceSource,
+    parse_color, Align, Axis, BorderKind, Borders, Frame, Identity, Node, Overlay, Run, Size,
+    SurfaceSource,
 };
 
 /// Where in the tree an error happened, built as a borrowed chain rather than a
@@ -337,10 +338,12 @@ fn read_lines(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Vec<Ru
         Value::String(s) => Ok(vec![vec![Run {
             text: s.to_string_lossy(),
             style: Style::default(),
+            identity: None,
         }]]),
         Value::Integer(_) | Value::Number(_) | Value::Boolean(_) => Ok(vec![vec![Run {
             text: scalar_to_string(value),
             style: Style::default(),
+            identity: None,
         }]]),
         Value::Table(table) => {
             // `{ text = ..., style = ... }` is one line, not a list of lines.
@@ -375,10 +378,12 @@ fn read_runs(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Run>, S
         Value::String(s) => Ok(vec![Run {
             text: s.to_string_lossy(),
             style: Style::default(),
+            identity: None,
         }]),
         Value::Integer(_) | Value::Number(_) | Value::Boolean(_) => Ok(vec![Run {
             text: scalar_to_string(value),
             style: Style::default(),
+            identity: None,
         }]),
         Value::Nil => Ok(Vec::new()),
         Value::Table(table) => {
@@ -396,6 +401,7 @@ fn read_runs(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Run>, S
                 return Ok(vec![Run {
                     text,
                     style: read_style_field(table, "style", path)?,
+                    identity: read_run_identity(table, path)?,
                 }]);
             }
             let mut runs = Vec::new();
@@ -414,6 +420,24 @@ fn read_runs(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Run>, S
             type_name(other)
         )),
     }
+}
+
+/// A run's own `id`/`role`, when it names either.
+///
+/// `class` is deliberately absent: a run is a click target, not a selector
+/// surface, and every read here costs a crossing into the VM per span per
+/// frame — the hottest leaf in the renderer.
+fn read_run_identity(table: &Table, path: Crumb<'_>) -> Result<Option<Box<Identity>>, String> {
+    let id = opt_string(table, "id", path)?;
+    let role = opt_string(table, "role", path)?;
+    if id.is_none() && role.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Box::new(Identity {
+        id,
+        classes: Vec::new(),
+        role,
+    })))
 }
 
 fn read_size(fields: &Fields, path: Crumb<'_>) -> Result<Size, String> {
@@ -490,12 +514,30 @@ fn read_frame(fields: &Fields, path: Crumb<'_>) -> Result<Option<Frame>, String>
                 )?),
                 Err(e) => return Err(format!("{path}.frame.title: {e}")),
             };
+            let border_type = match opt_string(&spec, "border_type", path)?.as_deref() {
+                Some("rounded") | None => BorderKind::Rounded,
+                // Two spellings for one shape: `square` is what the panes call
+                // it, `plain` is ratatui's name for the same corners.
+                Some("square") | Some("plain") => BorderKind::Square,
+                Some(other) => {
+                    return Err(format!(
+                    "{path}.frame.border_type: expected \"rounded\" or \"square\", found {other:?}"
+                ))
+                }
+            };
             Ok(Some(Frame {
                 title,
+                title_align: align_named(
+                    opt_string(&spec, "title_align", path)?.as_deref(),
+                    Crumb::Field(&path, "frame"),
+                    "title_align",
+                )?,
                 borders,
+                border_type,
                 border_style: read_style_field(&spec, "border_style", path)?,
                 style: read_style_field(&spec, "style", path)?,
                 padding: opt_u16(&spec, "padding", path)?.unwrap_or(0),
+                overlay: read_overlay(&spec, path)?,
             }))
         }
         ref other => Err(format!(
@@ -505,13 +547,52 @@ fn read_frame(fields: &Fields, path: Crumb<'_>) -> Result<Option<Frame>, String>
     }
 }
 
+/// The runs a frame paints onto its own border cells.
+fn read_overlay(spec: &Table, path: Crumb<'_>) -> Result<Option<Box<Overlay>>, String> {
+    let raw: Value = spec
+        .raw_get("overlay")
+        .map_err(|e| lua_err(path, "overlay", &e))?;
+    let Value::Table(table) = raw else {
+        return match raw {
+            Value::Nil => Ok(None),
+            ref other => Err(format!(
+                "{path}.frame.overlay: expected a table, found {}",
+                type_name(other)
+            )),
+        };
+    };
+    let crumb = Crumb::Field(&path, "frame");
+    let slot = |key: &'static str| -> Result<Vec<Run>, String> {
+        match table.raw_get::<Value>(key) {
+            Ok(Value::Nil) => Ok(Vec::new()),
+            Ok(value) => read_runs(&value, Crumb::Field(&crumb, key), 0),
+            Err(e) => Err(format!("{path}.frame.overlay.{key}: {e}")),
+        }
+    };
+    Ok(Some(Box::new(Overlay {
+        top_left: slot("top_left")?,
+        top_right: slot("top_right")?,
+        bottom_left: slot("bottom_left")?,
+        bottom_right: slot("bottom_right")?,
+        right_column: slot("right_column")?,
+    })))
+}
+
 fn read_align(fields: &Fields, path: Crumb<'_>) -> Result<Align, String> {
-    match val_string(fields.align.as_ref(), "align", path)?.as_deref() {
+    align_named(
+        val_string(fields.align.as_ref(), "align", path)?.as_deref(),
+        path,
+        "align",
+    )
+}
+
+fn align_named(value: Option<&str>, path: Crumb<'_>, key: &str) -> Result<Align, String> {
+    match value {
         Some("center") | Some("centre") => Ok(Align::Center),
         Some("right") => Ok(Align::Right),
         Some("left") | None => Ok(Align::Left),
         Some(other) => Err(format!(
-            "{path}.align: expected \"left\", \"center\" or \"right\", found {other:?}"
+            "{path}.{key}: expected \"left\", \"center\" or \"right\", found {other:?}"
         )),
     }
 }
@@ -769,6 +850,48 @@ fn style_to_lua(lua: &mlua::Lua, style: &Style) -> Result<Option<Table>, String>
     Ok(any.then_some(table))
 }
 
+/// One run as the table a plugin would have written, identity included.
+///
+/// Everything a run carries MUST round-trip, for the reason the styles below
+/// do: a decorator is handed the tree and returns one, so a field dropped here
+/// is dropped from the pane.
+fn run_to_lua(lua: &mlua::Lua, run: &Run) -> Result<Table, String> {
+    let entry = lua.create_table().map_err(|e| e.to_string())?;
+    entry
+        .set("text", run.text.clone())
+        .map_err(|e| e.to_string())?;
+    if let Some(style) = style_to_lua(lua, &run.style)? {
+        entry.set("style", style).map_err(|e| e.to_string())?;
+    }
+    if let Some(identity) = &run.identity {
+        if let Some(id) = &identity.id {
+            entry.set("id", id.clone()).map_err(|e| e.to_string())?;
+        }
+        if let Some(role) = &identity.role {
+            entry.set("role", role.clone()).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(entry)
+}
+
+/// A run list as the sequence of run tables `read_runs` reads back.
+fn runs_to_lua(lua: &mlua::Lua, runs: &[Run]) -> Result<Table, String> {
+    let out = lua.create_table().map_err(|e| e.to_string())?;
+    for (index, run) in runs.iter().enumerate() {
+        out.set(index + 1, run_to_lua(lua, run)?)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+fn align_name(align: Align) -> &'static str {
+    match align {
+        Align::Left => "left",
+        Align::Center => "center",
+        Align::Right => "right",
+    }
+}
+
 pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
     let table = lua.create_table().map_err(|e| e.to_string())?;
     let set = |key: &str, value: Value| -> Result<(), String> {
@@ -809,9 +932,15 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
     }
     if let Some(frame) = node.frame() {
         let spec = lua.create_table().map_err(|e| e.to_string())?;
-        if let Some(text) = frame.title_text() {
-            spec.set("title", text).map_err(|e| e.to_string())?;
+        if let Some(title) = &frame.title {
+            // The runs, not `title_text()`: a title carries styled runs (the
+            // session list's badge, the agent pane's status word) and
+            // flattening it here would hand every decorated pane a plain one.
+            spec.set("title", runs_to_lua(lua, title)?)
+                .map_err(|e| e.to_string())?;
         }
+        spec.set("title_align", align_name(frame.title_align))
+            .map_err(|e| e.to_string())?;
         spec.set(
             "borders",
             match frame.borders {
@@ -820,6 +949,30 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
             },
         )
         .map_err(|e| e.to_string())?;
+        spec.set(
+            "border_type",
+            match frame.border_type {
+                BorderKind::Rounded => "rounded",
+                BorderKind::Square => "square",
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(overlay) = &frame.overlay {
+            let out = lua.create_table().map_err(|e| e.to_string())?;
+            for (key, runs) in [
+                ("top_left", &overlay.top_left),
+                ("top_right", &overlay.top_right),
+                ("bottom_left", &overlay.bottom_left),
+                ("bottom_right", &overlay.bottom_right),
+                ("right_column", &overlay.right_column),
+            ] {
+                if !runs.is_empty() {
+                    out.set(key, runs_to_lua(lua, runs)?)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            spec.set("overlay", out).map_err(|e| e.to_string())?;
+        }
         spec.set("padding", frame.padding)
             .map_err(|e| e.to_string())?;
         if let Some(style) = style_to_lua(lua, &frame.border_style)? {
@@ -844,10 +997,6 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
             for (index, runs) in lines.iter().enumerate() {
                 let line = lua.create_table().map_err(|e| e.to_string())?;
                 for (span, run) in runs.iter().enumerate() {
-                    let entry = lua.create_table().map_err(|e| e.to_string())?;
-                    entry
-                        .set("text", run.text.clone())
-                        .map_err(|e| e.to_string())?;
                     // The style MUST round-trip. A decorator is handed the
                     // tree and returns one, so anything dropped here is
                     // dropped from the pane -- and a decorator that returns
@@ -855,25 +1004,13 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
                     // empty) would silently strip every colour the pane drew.
                     // That is exactly what happened: the session list rendered
                     // colourless because search decorates its slot.
-                    if let Some(style) = style_to_lua(lua, &run.style)? {
-                        entry.set("style", style).map_err(|e| e.to_string())?;
-                    }
-                    line.set(span + 1, entry).map_err(|e| e.to_string())?;
+                    line.set(span + 1, run_to_lua(lua, run)?)
+                        .map_err(|e| e.to_string())?;
                 }
                 out.set(index + 1, line).map_err(|e| e.to_string())?;
             }
             table.set("text", out).map_err(|e| e.to_string())?;
-            set(
-                "align",
-                string_value(
-                    lua,
-                    match align {
-                        Align::Left => "left",
-                        Align::Center => "center",
-                        Align::Right => "right",
-                    },
-                )?,
-            )?;
+            set("align", string_value(lua, align_name(*align))?)?;
             table.set("wrap", *wrap).map_err(|e| e.to_string())?;
             table.set("scroll", *scroll).map_err(|e| e.to_string())?;
             // Round-trips for the same reason a run's style does: a decorator
@@ -945,18 +1082,8 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
                     // the moment any decorator touches the pane.
                     let out = lua.create_table().map_err(|e| e.to_string())?;
                     for (index, runs) in lines.iter().enumerate() {
-                        let line = lua.create_table().map_err(|e| e.to_string())?;
-                        for (span, run) in runs.iter().enumerate() {
-                            let entry = lua.create_table().map_err(|e| e.to_string())?;
-                            entry
-                                .set("text", run.text.clone())
-                                .map_err(|e| e.to_string())?;
-                            if let Some(style) = style_to_lua(lua, &run.style)? {
-                                entry.set("style", style).map_err(|e| e.to_string())?;
-                            }
-                            line.set(span + 1, entry).map_err(|e| e.to_string())?;
-                        }
-                        out.set(index + 1, line).map_err(|e| e.to_string())?;
+                        out.set(index + 1, runs_to_lua(lua, runs)?)
+                            .map_err(|e| e.to_string())?;
                     }
                     table.set("cells", out).map_err(|e| e.to_string())?;
                 }
