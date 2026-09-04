@@ -65,15 +65,27 @@ fn snapshot() -> Snapshot {
 }
 
 fn registry(host: &LuaHost) -> Registry {
+    registry_rebound(host, None)
+}
+
+/// The registry, optionally with one action moved to another chord — which is
+/// the whole point of the footer reading it rather than naming keys itself.
+fn registry_rebound(host: &LuaHost, rebind: Option<(&str, &str)>) -> Registry {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
+    if let Some((action, chord)) = rebind {
+        registry.rebind(action, Some(chord)).expect("rebind");
+    }
     registry
 }
 
 fn publish_in(host: &LuaHost, snapshot: &Snapshot) {
+    publish_with(host, snapshot, registry(host));
+}
+
+fn publish_with(host: &LuaHost, snapshot: &Snapshot, registry: Registry) {
     let themes = Themes::load(None);
-    let registry = registry(host);
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
@@ -240,6 +252,43 @@ fn esc_closes_without_restoring_anything() {
     press(&host, "esc");
     assert!(host.drain_commands().is_empty());
     assert!(!rendered(&host, &snapshot(), PLUGIN).0);
+}
+
+/// The footer's hints come from the key REGISTRY, not from the letters this
+/// pane happens to have declared — so a rebind moves the hint with the key.
+///
+/// That is the whole reason `ui.footer` takes actions rather than strings. Four
+/// panes wrote their hints out as literals, and a rebound chord left every one
+/// of them advertising a key that no longer did anything.
+#[test]
+fn the_footer_names_the_chord_the_registry_resolves() {
+    let host = host();
+    press(&host, "ctrl+u");
+    let tree = tree(&host);
+    assert!(tree.contains("j/k"), "the declared chords: {tree}");
+
+    // Move "next session" to `n` and the hint follows it, with no edit here.
+    let index = host.index_of(PLUGIN).expect("no restore plugin");
+    publish_with(
+        &host,
+        &snapshot(),
+        registry_rebound(&host, Some(("restore.next", "n"))),
+    );
+    let out = host
+        .render(
+            index,
+            RenderContext {
+                width: 60,
+                height: 16,
+                focused: false,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render");
+    let tree = format!("{:?}", out.node);
+    assert!(tree.contains("n/k"), "the rebound chord: {tree}");
+    assert!(!tree.contains("j/k"), "the old chord is gone: {tree}");
 }
 
 #[test]

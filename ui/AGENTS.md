@@ -7,13 +7,22 @@ file reloads it; there is no build step.
 `README.md` beside this file is the reference — the node kinds, the sizing rules,
 what you can read and write. This file is the part that is easy to get wrong.
 
-One habit it pays to have before you write a row: a highlight is a **node
-style**, not a loop over spans. `{ type = "text", style = { bg = … } }` covers
-the whole rect, so a bar reaches the right edge without a padding span and a
-span that names its own colour survives it. `widgets.list` exposes the same
-thing as `selected_style` / `hover_style`.
+The first habit: **start from `lib/ui.lua`**, the component layer, not from raw
+nodes. `ui.panel` is a framed pane in the one focus convention this interface
+has, `ui.list` is a scrolling list with the window arithmetic and the selection
+bar already in it, `ui.cursor` is the "where am I, and did somebody else steer
+me" state every pane with a list grows, `ui.row` is a span builder that knows
+how wide the row is, and `ui.empty`/`ui.footer` are the one empty state and the
+one footer — with hints resolved from the key registry, so a rebind moves them.
+`10_sessions.lua` and `80_restore.lua` are the worked examples. `lib/widgets.lua`
+is the primitive kit underneath; reach past `ui` for the piece it does not cover.
 
-A second: a border is a **`frame`**, never hand-drawn cells. It takes styled
+A second habit, for when you do: a highlight is a **node style**, not a loop over
+spans. `{ type = "text", style = { bg = … } }` covers the whole rect, so a bar
+reaches the right edge without a padding span and a span that names its own
+colour survives it. `ui.list` and `widgets.list` both do this for you.
+
+A third: a border is a **`frame`**, never hand-drawn cells. It takes styled
 title runs, `title_align`, `border_type` and an `overlay` that paints onto its
 own border cells (`top_left`/`top_right`/`bottom_left`/`bottom_right`/
 `right_column`) — a status strip, a scroll count or a scrollbar there costs no
@@ -58,10 +67,10 @@ Put generated files in `$XDG_CACHE_HOME/<plugin>/` (or `~/.cache/<plugin>/`).
 
 **There is no `npm`, `cargo`, `pip` or `go get` in this directory, and nothing to
 run one on.** No `package.json`, no lockfile of that kind, no `node_modules`. The
-only dependencies a pane has are the modules in `lib/` — widgets, theme, fuzzy,
-textinput, chrome, modal, scroll, order, settings, panels, hover, tree, and the
-session-list/path-picker/repo-picker models — which are already here and are reached with
-`require("lib.theme")`. If you find yourself about to run a
+only dependencies a pane has are the modules in `lib/` — ui, widgets, theme,
+fuzzy, textinput, chrome, modal, scroll, order, settings, panels, hover, tree, and
+the session-list/path-picker/repo-picker models — which are already here and are
+reached with `require("lib.ui")`. If you find yourself about to run a
 package manager, you have misread the request.
 
 `plugins.toml` records what this interface is composed of and `plugins.lock` what
@@ -156,7 +165,12 @@ of a fresh table (writing the same *value* is free; a new table never is).
   permission error. The VM enforces it, so `plugin check` is what catches it here —
   the static lint that also enforces it needs the thurbox checkout's own config.
 - **No blocking.** Reads come from a snapshot and return instantly; writes are
-  `command(...)` calls the kernel applies later. There is nothing to await.
+  `command(...)` calls the kernel applies later. There is nothing to await. Two of
+  those writes reach outside your own rect: `command("message", { text =, level = })`
+  says something in the kernel's message band, and `command("action", { text =
+  "help.open" })` runs a declared action — which is how a **key handler** opens
+  help, settings, themes or the palette, rather than painting a `role =
+  "action:…"` node and hoping for a click.
 - **No granting yourself a capability.** A pane that wants to run a program says so
   with `capabilities = { … }`, and the *user* grants it in settings
   (`Ctrl+,` → `]` → `t`). You cannot do that step for them, and you should not

@@ -285,6 +285,36 @@ pub enum Command {
         name: String,
         payload: Vec<(String, super::events::Field)>,
     },
+    /// Run a declared action, exactly as its chord or a click on it would.
+    ///
+    /// UI-thread applied, because the action registry and the kernel's own
+    /// modals are the loop's. Without this a pane could reach `help.open` only
+    /// by *painting* a node with `role = "action:…"` and waiting for a click —
+    /// so a key handler could not open help, settings, themes or the palette
+    /// at all, and three panes rebuilt a float shell rather than reuse the
+    /// modal furniture the kernel already has.
+    ///
+    /// `owner` is **stamped by the kernel** from the plugin executing, like
+    /// [`Command::Program`]'s. It is the fallback the click path already
+    /// carries: an action no binding declares is offered to the pane that
+    /// asked for it, which is how a pane reaches its own undeclared verbs.
+    Action {
+        owner: String,
+        action: String,
+    },
+    /// Say something in the message band.
+    ///
+    /// UI-thread applied: the band draws from state the loop holds, and its
+    /// text expires on a timer the loop owns.
+    ///
+    /// The band is kernel chrome and stays kernel-drawn — a plugin contributes
+    /// a sentence and a severity, exactly as it contributes a pill or a
+    /// binding. That is what lets a pane report a refusal it made itself
+    /// without spending a row of its own on a message line.
+    Message {
+        text: String,
+        level: super::bands::Level,
+    },
 }
 
 /// A further repository a new session spans.
@@ -352,6 +382,8 @@ impl Command {
             Command::Order { .. } => "order",
             Command::Setting { .. } => "set",
             Command::Emit { .. } => "emit",
+            Command::Action { .. } => "action",
+            Command::Message { .. } => "message",
         }
     }
 
@@ -389,6 +421,10 @@ impl Command {
             // that enumerates sessions.
             | Command::Program { .. }
             | Command::Emit { .. }
+            // Chrome, not a row: an action names a verb and a message a
+            // sentence.
+            | Command::Action { .. }
+            | Command::Message { .. }
             | Command::Focus { .. } => "",
         }
     }
@@ -417,6 +453,8 @@ impl Command {
                 | Command::Focus { .. }
                 | Command::Plugin { .. }
                 | Command::Emit { .. }
+                | Command::Action { .. }
+                | Command::Message { .. }
         )
     }
 
@@ -478,6 +516,7 @@ impl Command {
             owner,
             argv,
             payload,
+            level,
         } = args;
         // An event names nothing the kernel owns: the name is the subject, and
         // every other field travels as the payload. Refused for a kernel name so
@@ -492,6 +531,33 @@ impl Command {
                 name,
                 payload,
             });
+        }
+        // Chrome a pane contributes to. Neither names a session: one names a
+        // verb the registry already knows, the other a sentence.
+        if kind == "action" {
+            let Some(action) = text.filter(|t| !t.is_empty()) else {
+                // Names the field, because the field is what goes wrong:
+                // `{ action = … }` is what this verb invites, and an option no
+                // verb reads is collected and ignored — so it would enqueue a
+                // no-op with nothing to report.
+                return Err("command \"action\" needs an action id in text".to_string());
+            };
+            return Ok(Command::Action { owner, action });
+        }
+        if kind == "message" {
+            let Some(text) = text.filter(|t| !t.is_empty()) else {
+                return Err("command \"message\" needs text".to_string());
+            };
+            let level = match level.as_deref() {
+                None => super::bands::Level::Info,
+                Some(name) => super::bands::Level::parse(name).ok_or_else(|| {
+                    format!(
+                        "command \"message\" got level {name:?} — try \"info\", \
+                         \"success\" or \"error\""
+                    )
+                })?,
+            };
+            return Ok(Command::Message { text, level });
         }
         // The interface's own files name no session, and the verb is explicit:
         // removing a plugin is destructive, so it is never the default.
@@ -692,7 +758,8 @@ impl Command {
             "editor" => Ok(Command::Editor { session }),
             other => Err(format!(
                 "unknown command {other:?} — try create, fork, sync, copy, diff, \
-                 delete, restore, restart, send, reorder, theme, set or emit"
+                 delete, restore, restart, send, reorder, theme, set, emit, \
+                 action or message"
             )),
         }
     }
@@ -742,6 +809,8 @@ pub struct Args {
     /// Every other scalar field of the options table, for a command that
     /// forwards them whole — an event's payload.
     pub payload: Vec<(String, super::events::Field)>,
+    /// How severe a message is: `info`, `success` or `error`.
+    pub level: Option<String>,
 }
 
 #[cfg(test)]
@@ -836,6 +905,77 @@ mod tests {
                 delta: -1
             })
         );
+    }
+
+    /// A pane reaching the action registry from a key handler, which is the
+    /// only way it can open help, settings, themes or the palette without
+    /// painting a node and waiting for a click.
+    #[test]
+    fn an_action_command_carries_the_action_and_the_plugin_that_asked() {
+        assert_eq!(
+            Command::parse(
+                "action",
+                Args {
+                    text: Some("help.open".into()),
+                    owner: "plugins/10_sessions.lua".into(),
+                    ..Args::default()
+                }
+            ),
+            Ok(Command::Action {
+                owner: "plugins/10_sessions.lua".into(),
+                action: "help.open".into(),
+            })
+        );
+        // Names the field, because the field is what goes wrong: `{ action = … }`
+        // is what the verb invites, and it parses to no text at all.
+        let error = Command::parse("action", Args::default()).unwrap_err();
+        assert!(error.contains("text"), "{error}");
+    }
+
+    /// The message band is kernel chrome, so a plugin contributes to it rather
+    /// than drawing it — and it names a severity the band already badges.
+    #[test]
+    fn a_message_names_a_level_the_band_can_badge() {
+        assert_eq!(
+            Command::parse(
+                "message",
+                Args {
+                    text: Some("nothing to undo".into()),
+                    ..Args::default()
+                }
+            ),
+            Ok(Command::Message {
+                text: "nothing to undo".into(),
+                level: crate::kernel::bands::Level::Info,
+            })
+        );
+        assert_eq!(
+            Command::parse(
+                "message",
+                Args {
+                    text: Some("gone".into()),
+                    level: Some("error".into()),
+                    ..Args::default()
+                }
+            ),
+            Ok(Command::Message {
+                text: "gone".into(),
+                level: crate::kernel::bands::Level::Error,
+            })
+        );
+        // Refused rather than quietly read as info: a level nobody badges is a
+        // typo, and a typo that renders as a normal message is invisible.
+        let error = Command::parse(
+            "message",
+            Args {
+                text: Some("gone".into()),
+                level: Some("critical".into()),
+                ..Args::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("critical"), "{error}");
+        assert!(error.contains("success"), "{error}");
     }
 
     #[test]

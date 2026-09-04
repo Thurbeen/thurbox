@@ -747,6 +747,70 @@ fn a_pane_that_fails_to_load_is_reported_and_the_rest_of_the_interface_runs() {
     assert!(status.success(), "exit must still be clean: {status:?}");
 }
 
+/// A pane written for this test, dropped in beside the bundled ones.
+fn interface_plus(name: &str, body: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    copy_tree(&source, dir.path());
+    std::fs::write(dir.path().join("plugins").join(name), body).expect("add a pane");
+    dir
+}
+
+#[test]
+fn a_pane_can_speak_in_the_message_band_and_open_a_kernel_modal() {
+    // The coordinator half of `command("message")` and `command("action")`.
+    // Both are only reachable through the loop: one writes the status the
+    // message band reads, the other runs a declared action exactly as a click
+    // on it would — and neither can be seen from a `TestBackend`, because the
+    // bands and the modals are drawn by the binary's own `draw`.
+    //
+    // `ctrl+p` is the palette's chord and reaches the pane from anywhere, so
+    // the scenario needs no focus dance; `p` alone would be swallowed by
+    // whatever holds the keyboard.
+    let interface = interface_plus(
+        "91_speaker.lua",
+        r#"return {
+  name = "speaker",
+  slot = "sessions",
+  render = function()
+    return { type = "text", text = "" }
+  end,
+  keys = {
+    { key = "ctrl+g", action = "speaker.say", desc = "say something", scope = "global" },
+    { key = "ctrl+b", action = "speaker.help", desc = "open help", scope = "global" },
+  },
+  on_action = function(action)
+    if action == "speaker.say" then
+      command("message", { text = "the pane said so", level = "error" })
+      return true
+    elseif action == "speaker.help" then
+      command("action", { text = "help.open" })
+      return true
+    end
+    return false
+  end,
+}"#,
+    );
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+
+    tui.send(b"\x07");
+    // The band badges the level the pane asked for, which is what makes this a
+    // contribution to kernel chrome rather than a string the pane painted.
+    tui.wait_for("ERROR");
+    tui.wait_for("the pane said so");
+
+    tui.send(b"\x02");
+    tui.wait_for("Keybindings");
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+
+    assert!(tui.quit().success());
+}
+
 // --- a live session ---------------------------------------------------------
 
 fn git(dir: &Path, args: &[&str]) {

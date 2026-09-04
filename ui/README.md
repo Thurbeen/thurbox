@@ -83,7 +83,7 @@ said out loud.
 
 ```lua
 local theme = require("lib.theme")
-local widgets = require("lib.widgets")
+local ui = require("lib.ui")
 
 return {
   name = "example",     -- what the focus ring and help call it
@@ -115,16 +115,25 @@ return {
 
   render = function(ctx)
     -- ctx carries the RESOLVED rect: ctx.width, ctx.height, ctx.focused.
-    local rows = {}
-    for _, session in ipairs(thurbox.sessions) do
-      rows[#rows + 1] = { spans = { { text = "  " .. session.name,
-        style = { fg = theme.text } } } }
-    end
-    return {
-      type = "box",
-      frame = widgets.panel("Example", ctx.focused),
-      children = { widgets.list({ rows = rows, height = ctx.height - 2 }) },
-    }
+    local items = thurbox.sessions
+    return ui.panel({
+      title = "Example",
+      focused = ctx.focused,
+      body = ui.list({
+        items = items,
+        cursor = ui.cursor("example", items),
+        width = ctx.width - 2,
+        height = ctx.height - 2,
+        on_overflow = "rows",
+        row = function(session)
+          return ui.row({ width = ctx.width - 2 })
+            :add(" " .. session.name, { fg = theme.text })
+            :trailing(session.branch, { fg = theme.muted })
+            :spans_list()
+        end,
+        empty = ui.empty({ title = "Nothing here yet", width = ctx.width - 2 }),
+      }),
+    })
   end,
 
   on_action = function(action)
@@ -139,6 +148,34 @@ return {
 
 Save it as `plugins/90_example.lua` and it is a pane. `thurbox-cli plugin new
 <name>` writes a starter that already loads.
+
+## The component layer (`lib/ui.lua`)
+
+`lib/widgets.lua` is the primitive kit — measurement, windowing, a row of text.
+`lib/ui.lua` is the layer above it: the shapes a pane turns out to be, with the
+conventions that make six panes look like one program. Reach for it first; drop
+to `widgets` for the piece it does not cover.
+
+| | what it is |
+|---|---|
+| `ui.panel{title, focused, body, overlay_left, overlay_right, right_column, border, title_align}` | a framed pane in the one focus convention. Focus is a brighter border and a title badge, never a marker glyph |
+| `ui.list{items, cursor, width, height, row, header, empty, on_overflow, pad, len, fill}` | a scrolling list. Variable row heights (`header` glues a group heading to its first row), the selection bar, hover, and the window arithmetic |
+| `ui.cursor(key, items, opts)` | `{index, offset, follow}` over a list, with `move`/`select`/`select_by_id`/`follow`. `opts.steer` is the `store` key another pane moves this list with; `opts.request` a one-shot "go to this row" |
+| `ui.row{width, tone}` | a span builder that knows the row's columns: `:add`, `:gap`, `:button`, `:match` (search hits), `:trailing` (a note budgeted against what is left), `:spans_list` |
+| `ui.empty{title, width, hint, hint_action}` | the one empty state — a blank line, the sentence centred, and the chord that fixes it, shown only while something is bound to it |
+| `ui.modal{title, cols, children, crumbs, border}` | a float sized from what is in it |
+| `ui.footer{actions, primary, cancel}` | key hints resolved **from the registry**, plus the confirm/dismiss pills |
+| `ui.status(name, elapsed)` / `ui.dots(items, elapsed, status_of)` | a status glyph, spinner included; and the strip of them a panel puts on its border |
+| `ui.rule(label, width)` | `── label ────`, the group heading |
+| `ui.chord(action)` / `ui.describe(action)` / `ui.follow(key, id)` / `ui.reset(key)` | the registry lookups, and a cursor addressed without holding one |
+
+Two things the layer decides so a pane does not: a **selected row is a
+full-width bar** (the row's own `style`, so a span that names a colour keeps it),
+and **hints come from the key registry**, so a rebind moves the hint and a
+removed action takes its hint with it.
+
+`10_sessions.lua` and `80_restore.lua` are the two worked examples — a
+full-height pane and a float.
 
 ## What you have to work with
 
@@ -155,6 +192,7 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 |---|---|
 | `thurbox` | the read side — the snapshot. `thurbox.sessions`, `.settings`, `.theme`, `.repos`, `.runs`, `.diffs`, `.metrics`, `.chrome`, `.ui_dir`, … |
 | `command(name, args)` | the write side. Accepted now, applied by the kernel later. |
+| `text` | display width in COLUMNS: `text.width`, `text.truncate`, `text.pad` |
 | `store` | scratch state that survives a frame, and how you *ask* for things (`store.want_branches`, `store.want_worktrees`, `store.want_content`, …) |
 | `state` | your plugin's own scratch state — survives a reload, **not** a restart |
 | `require` | `lib/` modules only |
@@ -191,6 +229,15 @@ plus `wheel.x`/`wheel.y` inside your rect — before the kernel turns it into an
 what a pane that already declares those keys wants. It exists for the pane that
 cannot declare them: one taking `input = "session"` hands every unclaimed key to
 the agent.
+
+**Speaking and acting outside your pane**: `command("message", { text = …,
+level = "info"|"success"|"error" })` puts a sentence in the message band, which
+stays kernel-drawn — a pane contributes to it as it contributes a pill or a
+binding, rather than spending a row of its own on a message line.
+`command("action", { text = "help.open" })` runs a declared action exactly as its
+chord or a click on it would, which is how a **key handler** reaches help,
+settings, themes or the palette. Before these two, both were reachable only by
+painting a node with `role = "action:…"` and waiting for a click.
 
 **Events**: declare `events = { "session.status", … }` and an `on_event(name,
 payload)` and the kernel calls you once per change, with the same environment a

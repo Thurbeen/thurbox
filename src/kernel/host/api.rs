@@ -252,6 +252,7 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
             agent: get_string("agent"),
             host: get_string("host"),
             status: get_string("status"),
+            level: get_string("level"),
             file: get_string("file"),
             action: get_string("action"),
             // A Lua array of session ids. Read here rather than as text so a

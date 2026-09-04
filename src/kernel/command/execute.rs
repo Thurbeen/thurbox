@@ -180,6 +180,8 @@ pub(super) fn execute(
         | Command::Editor { .. }
         | Command::Focus { .. }
         | Command::Emit { .. }
+        | Command::Action { .. }
+        | Command::Message { .. }
         | Command::Plugin { .. } => unreachable!("applied on the UI thread"),
     }
 }

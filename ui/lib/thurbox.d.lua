@@ -809,11 +809,23 @@ function require(name) end
 ---@field session string
 ---@field text? string The new session's name.
 
+--- Run a declared action, exactly as its chord or a click on it would — which
+--- is how a pane opens help, settings, themes or the palette from a key
+--- handler. The plugin that asked is the fallback owner, stamped by the kernel.
+---@class (exact) thurbox.cmd.Action
+---@field text string The action id. `action` is not read.
+
+--- Say something in the message band. The band stays kernel-drawn; this is a
+--- sentence and a severity contributed to it, like a pill or a binding.
+---@class (exact) thurbox.cmd.Message
+---@field text string
+---@field level? "info"|"success"|"error" Defaults to `info`; anything else is refused.
+
 ---@alias thurbox.Verb
 ---| "emit" | "plugin" | "set" | "task" | "dispatch" | "automation"
 ---| "create" | "bookmark" | "focus" | "open" | "theme" | "order" | "program"
 ---| "delete" | "restore" | "restart" | "send" | "reorder" | "fork"
----| "sync" | "copy" | "diff" | "shell" | "editor"
+---| "sync" | "copy" | "diff" | "shell" | "editor" | "action" | "message"
 
 --- The only way a plugin changes anything. Enqueues and returns; it never runs
 --- the operation, which is why a plugin cannot stall the loop.
@@ -844,6 +856,8 @@ function require(name) end
 ---@overload fun(verb: "diff", opts: thurbox.cmd.Session)
 ---@overload fun(verb: "shell", opts: thurbox.cmd.Session)
 ---@overload fun(verb: "editor", opts: thurbox.cmd.Session)
+---@overload fun(verb: "action", opts: thurbox.cmd.Action)
+---@overload fun(verb: "message", opts: thurbox.cmd.Message)
 ---@param verb thurbox.Verb
 ---@param opts? table
 function command(verb, opts) end

@@ -368,9 +368,13 @@ fn undo_restores_the_delete_that_was_just_made_and_nothing_else() {
     .expect("render the list");
     host.drain_commands();
 
-    // Nothing deleted yet: the key is inert rather than restoring a stranger.
+    // Nothing deleted yet: the key says so rather than restoring a stranger.
+    // Silence was indistinguishable from the chord never arriving — Ctrl+Z is
+    // global, so it fires with the column hidden and from a focused terminal.
     fire(&host, "ctrl+z");
-    assert!(host.drain_commands().is_empty());
+    let issued = host.drain_commands();
+    assert_eq!(issued.len(), 1, "{issued:?}");
+    assert_eq!(issued[0].kind(), "message");
 
     fire(&host, "ctrl+d");
     host.drain_commands();
@@ -380,9 +384,12 @@ fn undo_restores_the_delete_that_was_just_made_and_nothing_else() {
     assert_eq!(issued[0].kind(), "restore");
     assert_eq!(issued[0].session(), snapshot.sessions[0].id);
 
-    // One undo per delete: the second press has nothing left to undo.
+    // One undo per delete: the second press has nothing left to undo, and says
+    // that rather than restoring the row again.
     fire(&host, "ctrl+z");
-    assert!(host.drain_commands().is_empty());
+    let issued = host.drain_commands();
+    assert_eq!(issued.len(), 1, "{issued:?}");
+    assert_eq!(issued[0].kind(), "message");
 }
 
 /// Chords v1 hands to the agent that v2 does not yet.

@@ -1,4 +1,4 @@
--- What the two full-height panes agree on about their borders.
+-- What the full-height panes agree on about their borders.
 --
 -- The borders themselves are ordinary kernel `frame`s. They were once drawn by
 -- hand, out of `text` nodes and a cell buffer, because a frame's title was a
@@ -7,9 +7,11 @@
 -- `border_type` and an `overlay` — the strip, the scroll counts and the
 -- scrollbar all paint onto the border cells the block drew — so the cell buffer
 -- and the framed-pane builder are gone and what is left here is the agreement:
--- the three focus levels both panes map through, and the box-drawing set the
--- agent pane's hint box still draws by hand because it is a box INSIDE a pane,
--- not a frame around one.
+-- the three focus levels a pane's border and title map through — reached through
+-- `lib/ui`'s `ui.panel` for a pane that uses the component layer, and directly by
+-- the agent pane, which still assembles its own frame — and the box-drawing set
+-- the agent pane's hint box draws by hand because it is a box INSIDE a pane, not
+-- a frame around one.
 
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")

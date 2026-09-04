@@ -185,6 +185,31 @@ examples to read and copy from, not a catalogue thurbox maintains for anyone —
 `check` fails on a pane that **loaded but which no arrangement places** — the only
 failure with no symptom — and prints the `layout.lua` line to add.
 
+**`ui/lib/ui.lua` is the component layer**, and the first thing a pane should
+reach for: `ui.panel` (one focus convention — a brighter border and a title
+badge, never a marker glyph), `ui.list` (variable row heights, a sticky window,
+the selection bar as the row's own `style`, overflow either as marker rows or as
+`▲ N`/`▼ N` on the frame), `ui.cursor` (`{index, offset, follow}` plus the
+steer/publish protocol, so another pane writing `store.selected` moves the list
+and the list's own echo is not mistaken for one), `ui.row` (a span builder that
+knows the row's width, so a trailing note is budgeted rather than re-measured),
+`ui.empty`, `ui.modal`, `ui.footer` (hints resolved from the key **registry**,
+so a rebind moves them), `ui.status`/`ui.dots`, `ui.rule`. `lib/widgets.lua` is
+the primitive kit underneath it. `10_sessions` and `80_restore` are the two
+worked consumers; `65_search`, `70_new_session` and `20_agent` still spell their
+own and are the follow-up.
+
+**Two commands reach outside a pane's own rect.** `command("message", { text,
+level })` puts a sentence in the message band — kernel chrome stays kernel-drawn
+and a plugin contributes to it, as it contributes a pill or a binding, instead of
+spending a row of its own on a message line. `command("action", { text =
+"help.open" })` runs a declared action through the very handler a click on an
+`action:` node runs, so a **key handler** can open help, settings, themes or the
+palette; the issuing plugin is the fallback owner, stamped by the kernel. Both
+are applied on the UI thread (the action registry, the modals and the band are
+the loop's), and both refuse rather than guess — a message with no `text`, or a
+`level` no band badges, is an error at parse time and not a silent no-op.
+
 **Measuring text is the kernel's job** (`host::api::install_text`). The `text`
 global gives a plugin `text.width(s)`, `text.truncate(s, cols, opts)` and
 `text.pad(s, cols, align)`, all in terminal COLUMNS and all backed by the same
