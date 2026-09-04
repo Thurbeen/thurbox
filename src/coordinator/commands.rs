@@ -102,6 +102,21 @@ impl App {
                 event.payload.push(("source".to_string(), source.into()));
                 self.enqueue_event(event);
             }
+            // A declared action, run exactly as a click on an `action:` node
+            // runs one — the same handler, so a pane's key and its own button
+            // cannot come to mean different things. The issuing plugin is the
+            // fallback owner, which is what the click path passes too.
+            Command::Action { owner, action } => {
+                let asked = self
+                    .host
+                    .name_of_path(owner)
+                    .and_then(|name| self.host.index_of(name))
+                    .unwrap_or(self.focus);
+                self.run_clicked_action(action, asked);
+            }
+            // The message band is kernel chrome; this is a plugin contributing
+            // to it, like a pill or a binding.
+            Command::Message { text, level } => self.report(text.clone(), *level),
             _ => return false,
         }
         true

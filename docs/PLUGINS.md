@@ -230,9 +230,10 @@ levers, in the order they pay:
    so `rawequal(published, cache.src)` is a sound one-comparison staleness
    test. Build once into an upvalue, rebuild on identity change. Never key a
    cache on anything time-based.
-3. **Window before you build.** Compute the visible slice
-   (`widgets.window`, or `lib/scroll` for variable-height rows) and build
-   spans only for it; a thousand-row list costs its ten visible rows.
+3. **Window before you build.** `ui.list` does this for you — it calls `row`
+   only for the rows it draws — and under it are `widgets.window` and
+   `lib/scroll` for variable-height rows. Either way a thousand-row list costs
+   its ten visible rows.
 4. **Hoist per-row work.** A `store` read crosses the VM boundary; a
    `theme.role` lookup walks tables; `fuzzy.compile(query)` splits the query
    once so per-row matching does not. Read once per render, pass down.
@@ -394,10 +395,37 @@ Those three examples are literally `tests/fixtures/lua_types/`, and
 to stay that way.
 
 Lists, gauges, panels, dividers and tables are **not** node kinds — they are
-`lib/widgets.lua`, composed from the four. When you need a new appearance, add
-it there. A prior version of this design froze its catalog at six kinds and
-watched it reach sixteen, because every new appearance had nowhere else to go
-and each one cost a release. A widget in Lua costs a file save.
+Lua, composed from the four. When you need a new appearance, add it there. A
+prior version of this design froze its catalog at six kinds and watched it reach
+sixteen, because every new appearance had nowhere else to go and each one cost a
+release. A widget in Lua costs a file save.
+
+The Lua side is two layers. `lib/ui.lua` is the **component layer** — the shapes
+a pane turns out to be, and the conventions that make several panes look like one
+program — and it is what a new pane should reach for first:
+
+```lua
+local ui = require("lib.ui")
+
+ui.panel({ title = "Notes", focused = ctx.focused, body = ui.list({ … }) })
+ui.list({ items = rows, cursor = ui.cursor("notes", rows), row = spans_of, … })
+ui.row({ width = w }):add(name, { fg = theme.text }):trailing(age):spans_list()
+ui.modal({ title = "Pick one", cols = 60, children = { body, ui.footer({ … }) } })
+```
+
+| | what it is |
+|---|---|
+| `ui.panel{title, focused, body, overlay_left, overlay_right, right_column, border, title_align}` | a framed pane in the one focus convention — a brighter border and a title badge, never a marker glyph |
+| `ui.list{items, cursor, width, height, row, header, empty, on_overflow, pad, len, fill}` | a scrolling list: variable row heights, the sticky window, the selection bar, hover, and overflow either as marker rows or as `▲ N`/`▼ N` on the frame |
+| `ui.cursor(key, items, opts)` | `{index, offset, follow}` with `move`/`select`/`select_by_id`/`follow`. `opts.steer` names the `store` key another pane moves this list with — and the protocol that tells a foreign write from this list's own echo |
+| `ui.row{width, tone}` | a span builder that knows the row's columns: `:add`, `:gap`, `:button`, `:match`, `:trailing`, `:spans_list` |
+| `ui.empty{title, width, hint, hint_action}` | the one empty state, its chord shown only while something is bound to it |
+| `ui.modal{title, cols, children}` / `ui.footer{actions, primary, cancel}` | a float sized from its children, and hints resolved from the key registry |
+| `ui.status` / `ui.dots` / `ui.rule` / `ui.chord` / `ui.describe` / `ui.follow` / `ui.reset` | a status glyph with its spinner, the border strip of them, a group heading, and the registry lookups |
+
+`lib/widgets.lua` is the **primitive kit** underneath it — measurement,
+windowing, `widgets.list`, `widgets.panel`, `widgets.gauge`. Reach past `ui` for
+what it does not cover:
 
 ```lua
 local widgets = require("lib.widgets")
@@ -866,6 +894,26 @@ end
 This is not a limitation to work around. A plugin that could wait would be a
 plugin that can freeze the interface on a slow git fetch or an unreachable SSH
 host.
+
+Two verbs reach outside your own rect:
+
+```lua
+command("message", { text = "nothing to undo" })              -- INFO in the band
+command("message", { text = "no such host", level = "error" })
+command("action",  { text = "help.open" })                    -- as its chord would
+```
+
+`message` puts a sentence in the message band. The band stays kernel-drawn —
+your pane contributes to it as it contributes a pill or a binding, rather than
+spending a row of its own on a message line. `level` is `info` (the default),
+`success` or `error`, and anything else is refused rather than read as `info`: a
+severity nobody badges renders as an ordinary message, which is a message nobody
+notices.
+
+`action` runs a declared action through the very handler a click on a `role =
+"action:…"` node runs, so a **key handler** can open help, settings, themes or
+the palette. Before it, those were reachable only by painting a node and waiting
+for a click — which is why three floats rebuilt a modal shell of their own.
 
 ## Floating panes and modals
 

@@ -47,7 +47,8 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
    ─────────────────────────             ──────────────────────────
    node      four primitives             layout.lua    arrangement
    layout    rects before render         lib/theme     roles
-   convert   table <-> node              lib/widgets   list, gauge, panel…
+   convert   table <-> node              lib/ui        panel, list, cursor, row…
+                                         lib/widgets   measure, window, list…
    paint     node -> ratatui             lib/tree      decoration helper
    host      VM, reload, isolation       plugins/*     3 panes + 3 floats
    registry  keys, settings, commands
@@ -72,7 +73,8 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
 ## The five rules
 
 **1. Four node kinds, forever.** `text`, `box`, `input`, `surface`. Everything
-else composes in `ui/lib/widgets.lua`. A prior attempt froze its catalog at six
+else composes in Lua — `ui/lib/ui.lua`, the component layer, over
+`ui/lib/widgets.lua`, the primitive kit. A prior attempt froze its catalog at six
 and reached sixteen, because it never built the userland layer and each new
 appearance had nowhere else to live. `tests/kernel_mvp.rs` asserts the count.
 

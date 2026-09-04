@@ -11,8 +11,8 @@
 -- through `store.confirm` — the same confirmation the session list uses for a
 -- delete, which is why there is no bespoke `ConfirmRestore` here.
 
-local modal = require("lib.modal")
 local theme = require("lib.theme")
+local ui = require("lib.ui")
 local widgets = require("lib.widgets")
 
 --- The float's width, asked for in CELLS rather than as a share of the screen.
@@ -25,18 +25,22 @@ local widgets = require("lib.widgets")
 local MODAL_COLS = 60
 
 --- The columns a row inside the float actually gets: the frame's own border on
---- each side, then the selection marker `widgets.list` draws.
+--- each side, then the column the row is indented by so its text does not sit
+--- against the frame.
 local function row_cols(cols)
-  return math.max(1, cols - 4)
+  return math.max(1, cols - 3)
 end
 
---- Rows shown at once. More than this and the list windows, which
---- `widgets.list` does with the overflow markers already.
+--- Rows shown at once. More than this and the list windows, which `ui.list`
+--- does with the overflow markers already.
 local LIST_MAX = 10
 
 local function deleted()
   return (thurbox and thurbox.deleted) or {}
 end
+
+--- The name this float's cursor keeps its state under.
+local CURSOR = "restore"
 
 local function is_open()
   return state.open == true
@@ -44,14 +48,10 @@ end
 
 local function close()
   state.open = nil
-  state.cursor = nil
-end
-
---- The selection, always resolved against the list it indexes: rows leave
---- `thurbox.deleted` as they are restored, so a stored cursor outlives the row
---- it pointed at.
-local function cursor_in(list)
-  return widgets.clamp(state.cursor or 1, #list)
+  -- The list opens at the top rather than wherever it was left: rows leave
+  -- `thurbox.deleted` as they are restored, so a remembered cursor outlives the
+  -- row it pointed at.
+  ui.reset(CURSOR)
 end
 
 --- One row, in v1's spelling: `name (agent) 3m ago [wt]`.
@@ -72,23 +72,37 @@ local function row_spans(entry, cols)
   -- Truncated against the columns a row really has, so the tag is never what
   -- gets clipped: it is the part of the row that changes what Enter means.
   text = widgets.truncate(text, math.max(1, row_cols(cols) - widgets.len(tag)))
-  local spans = { { text = text, style = { fg = base } } }
+  local row = ui.row({ width = cols - 2 })
+  -- One column of lead-in, so the text clears the frame. The selected row wears
+  -- the interface's full-width bar rather than a marker glyph, so there is
+  -- nothing else to make room for.
+  row:add(" ")
+  row:add(text, { fg = base })
   if entry.partial then
-    spans[#spans + 1] = { text = tag, style = { fg = theme.bad } }
+    row:add(tag, { fg = theme.bad })
   end
-  return spans
+  return row:spans_list()
 end
 
---- v1's `key_hint_line` plus its `[ Restore ]` / `[ Close ]` pills — the
---- shared `modal.footer`, with the Restore pill offered only while there is a
---- row for Enter to act on.
+--- v1's `key_hint_line` plus its `[ Restore ]` / `[ Close ]` pills — the shared
+--- `ui.footer`, with the Restore pill offered only while there is a row for
+--- Enter to act on.
+---
+--- The navigation hint names the chords the REGISTRY resolves rather than the
+--- letters this file happens to have declared, so a rebind moves the hint with
+--- the key. `esc` is written out because no binding carries it: dismissing is
+--- what a modal owns without declaring.
 local function footer(list)
-  local hints = {}
+  local actions = {}
   if #list > 0 then
-    hints[#hints + 1] = { "j/k", "navigate" }
+    actions[#actions + 1] = { { "restore.next", "restore.previous" }, "navigate" }
   end
-  hints[#hints + 1] = { "esc", "close" }
-  return modal.footer(hints, #list > 0 and "Restore" or nil, { cancel = "Close" })
+  actions[#actions + 1] = { key = "esc", label = "close" }
+  return ui.footer({
+    actions = actions,
+    primary = #list > 0 and "Restore" or nil,
+    cancel = "Close",
+  })
 end
 
 --- Ask before a restore the kernel would otherwise refuse, through the
@@ -127,9 +141,9 @@ return {
   -- This render reads `thurbox.deleted`, `state` and the theme and writes
   -- nothing, so the kernel may reuse the tree — and floats render every frame
   -- even while closed, so without this the closed state costs a Lua call per
-  -- frame forever. `state.open`/`state.cursor` writes bump the state version,
-  -- which is part of the cache key, and `thurbox.deleted` rides the snapshot
-  -- version, so opening and refreshing stay on the very next frame.
+  -- frame forever. `state.open` and the cursor's own writes bump the state
+  -- version, which is part of the cache key, and `thurbox.deleted` rides the
+  -- snapshot version, so opening and refreshing stay on the very next frame.
   pure = true,
   -- Never a tab stop: it is up only while it is open, and it takes every key
   -- while it is.
@@ -164,34 +178,33 @@ return {
     -- the clamp the kernel will apply to the float is applied to the rows too.
     local cols = math.min(MODAL_COLS, math.max(4, ctx.width or MODAL_COLS))
     local list = deleted()
-    local cursor = cursor_in(list)
-    -- Spans only for the visible window — the list's own window is a sub-range
-    -- of this one (it shrinks to make room for the overflow markers), so every
-    -- row it reads has spans; off-window entries are placeholders whose spans
-    -- the list never reads. The deleted list can be long after an unpurged
-    -- week, and it shows ten rows.
-    local height = math.max(1, math.min(#list, LIST_MAX))
-    local first, last = widgets.window(#list, height, cursor)
-    local rows = {}
-    for index, entry in ipairs(list) do
-      if index >= first and index <= last then
-        rows[index] = { spans = row_spans(entry, cols), id = entry.id }
-      else
-        rows[index] = { spans = {}, id = entry.id }
-      end
-    end
-    local body = widgets.list({
-      rows = rows,
-      selected = cursor,
-      height = height,
-      len = height,
-      empty = "  No deleted sessions",
-    })
+    local cursor = ui.cursor(CURSOR, list)
+    -- The empty state is measured rather than assumed a row high: this float is
+    -- sized in cells, and one that guessed would clip its own footer.
+    local empty = ui.empty({ title = "No deleted sessions", width = cols - 2 })
+    -- The deleted list can be long after an unpurged week, and it shows ten
+    -- rows. `ui.list` builds spans only for the rows it draws, so a long list
+    -- costs the ten it shows.
+    local height = #list > 0 and math.min(#list, LIST_MAX) or #empty
 
-    return modal.frame("Restore Deleted Sessions", {
+    return ui.modal({
+      title = "Restore Deleted Sessions",
       cols = cols,
-      rows = height + 3,
-      children = { body, footer(list) },
+      children = {
+        ui.list({
+          items = list,
+          cursor = cursor,
+          width = cols - 2,
+          height = height,
+          len = height,
+          on_overflow = "rows",
+          row = function(entry)
+            return row_spans(entry, cols)
+          end,
+          empty = empty,
+        }),
+        footer(list),
+      },
     })
   end,
 
@@ -203,19 +216,19 @@ return {
         close()
       else
         state.open = true
-        state.cursor = 1
+        ui.reset(CURSOR)
       end
       return true
     end
     if not is_open() then
       return false
     end
-    local list = deleted()
+    local cursor = ui.cursor(CURSOR, deleted())
     if action == "restore.next" then
-      state.cursor = widgets.clamp(cursor_in(list) + 1, #list)
+      cursor:move(1)
       return true
     elseif action == "restore.previous" then
-      state.cursor = widgets.clamp(cursor_in(list) - 1, #list)
+      cursor:move(-1)
       return true
     end
     return false
@@ -232,8 +245,7 @@ return {
       return true
     end
     if key.key == "enter" then
-      local list = deleted()
-      local entry = list[cursor_in(list)]
+      local entry = ui.cursor(CURSOR, deleted()):item()
       if not entry then
         -- An empty list still swallows the key: a modal that acted on nothing
         -- would be indistinguishable from one that failed.
@@ -262,10 +274,7 @@ return {
       return false
     end
     if hit.id then
-      local index = widgets.index_of(deleted(), hit.id)
-      if index then
-        state.cursor = index
-      end
+      ui.cursor(CURSOR, deleted()):select_by_id(hit.id)
     end
     -- Claimed either way, so a miss inside the float does not fall through to
     -- the pane beneath it.

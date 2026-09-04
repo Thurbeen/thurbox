@@ -34,6 +34,21 @@ pub enum Level {
 }
 
 impl Level {
+    /// The name a plugin writes in `command("message", { level = … })`.
+    ///
+    /// `None` for anything else, so a level nobody badges is refused at parse
+    /// time rather than quietly read as `Info` — a misspelt severity that
+    /// renders as an ordinary message is a message nobody notices, which is
+    /// the failure the three levels exist to prevent.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "info" => Some(Level::Info),
+            "success" => Some(Level::Success),
+            "error" => Some(Level::Error),
+            _ => None,
+        }
+    }
+
     /// The badge v1 prints in front of the text.
     fn badge(self) -> &'static str {
         match self {

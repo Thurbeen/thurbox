@@ -10,8 +10,15 @@
 -- converter arm, a renderer arm, type definitions and a release. Everything
 -- below costs a file save.
 --
--- So: when you need a new appearance, add it HERE. Adding a node kind to the
+-- So: when you need a new appearance, add it in Lua. Adding a node kind to the
 -- kernel is a design decision, not a shortcut.
+--
+-- Which of the two Lua files, though: this one is the PRIMITIVE KIT — measuring,
+-- windowing, a row of text, a bar. `lib/ui.lua` is the component layer above it,
+-- and it is what a pane should reach for first: a panel, a list, a cursor, a row
+-- builder, an empty state, a footer, and with them the conventions that make
+-- several panes look like one program. A new appearance that a pane composes is
+-- this file's; a new SHAPE, with a convention attached, is `ui`'s.
 
 local hover = require("lib.hover")
 local theme = require("lib.theme")

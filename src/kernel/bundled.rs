@@ -56,6 +56,7 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ),
     ("lib/theme.lua", include_str!("../../ui/lib/theme.lua")),
     ("lib/widgets.lua", include_str!("../../ui/lib/widgets.lua")),
+    ("lib/ui.lua", include_str!("../../ui/lib/ui.lua")),
     ("lib/tree.lua", include_str!("../../ui/lib/tree.lua")),
     ("lib/panels.lua", include_str!("../../ui/lib/panels.lua")),
     ("lib/hover.lua", include_str!("../../ui/lib/hover.lua")),
@@ -1024,6 +1025,7 @@ mod tests {
             "layout.lua",
             "lib/theme.lua",
             "lib/widgets.lua",
+            "lib/ui.lua",
             "plugins/10_sessions.lua",
             "plugins/20_agent.lua",
         ] {

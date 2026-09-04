@@ -11,53 +11,39 @@
 -- dot strip on the top border, and the `▲ N`/`▼ N` scroll indicators overlaid on
 -- the border rows.
 --
--- The border is an ordinary kernel `frame`. It was drawn by hand, out of a cell
--- buffer, for as long as a frame title was a plain unstyled left-aligned string
--- — a frame could express none of the three things v1 puts on this border. It
--- can now: the title is styled runs, so the focused badge is a title; the dot
--- strip and the scroll counts are `frame.overlay`, painted onto the border cells
--- after the block, which is what keeps them off the content rows.
+-- The border is an ordinary kernel `frame`, and this file no longer spells it:
+-- `ui.panel` does. It was drawn by hand, out of a cell buffer, for as long as a
+-- frame title was a plain unstyled left-aligned string — a frame could express
+-- none of the three things v1 puts on this border. It can now: the title is
+-- styled runs, so the focused badge is a title; the dot strip and the scroll
+-- counts are `frame.overlay`, painted onto the border cells after the block,
+-- which is what keeps them off the content rows.
+--
+-- What is left here is the DECISIONS — which glyph, which colour role, when to
+-- drop a trailing status, what a repo header says — while the window
+-- arithmetic, the selection bar, the empty state and the focus border are
+-- `lib/ui`'s, shared with every other pane.
 
-local chrome = require("lib.chrome")
 local fuzzy = require("lib.fuzzy")
-local hover = require("lib.hover")
 local order = require("lib.order")
 local panels = require("lib.panels")
 local plugin_settings = require("lib.settings")
-local scroll = require("lib.scroll")
 local session_model = require("lib.session_model")
 local theme = require("lib.theme")
+local ui = require("lib.ui")
 local widgets = require("lib.widgets")
 
--- ── The model, the focus styling and the ordering algebra live in lib/ ──────
+-- ── The model, the components and the ordering algebra live in lib/ ─────────
 --
 -- `lib.session_model` builds the item list (one selectable unit per row, with
--- the group header glued to its group's first session), `lib.chrome` holds the
--- focus levels this pane and the terminal pane map their borders through, and
--- `lib.order` is the move/sort algebra over the rendered items. All three are
--- pure over what this pane hands them; everything about how a row LOOKS stays
--- here.
+-- the group header glued to its group's first session), `lib.ui` is the
+-- component layer — the panel, the list, the cursor and the row builder, and
+-- with them the window arithmetic, the selection bar and the focus border this
+-- pane used to spell itself — and `lib.order` is the move/sort algebra over the
+-- rendered items. All three are pure over what this pane hands them; everything
+-- about how a row LOOKS stays here.
 
 -- ── Turning a model item into lines ────────────────────────────────────────
-
---- `── label ────────`, muted, full bleed. The header never reflects selection:
---- highlighting belongs to the session rows alone.
-local function header_line(label, inner_width)
-  local text = "── " .. label .. " "
-  local used = widgets.len(text)
-  if inner_width > used then
-    text = text .. string.rep("─", inner_width - used)
-  end
-  return { { text = text, style = { fg = theme.muted } } }
-end
-
-local function status_glyph(status, elapsed)
-  local spec = theme.status(status)
-  if status == "working" then
-    return theme.spinner_frame(elapsed), spec.color
-  end
-  return spec.glyph, spec.color
-end
 
 --- The status text that follows the name. v1 shows the agent's notification (or
 --- the word "Blocked") for a blocked row, and the OSC activity title otherwise;
@@ -87,23 +73,6 @@ local function agent_status_text(session)
     end
   end
   return nil
-end
-
---- Append the trailing status, budgeted against the width actually available.
---- Dropped rather than overflowed, exactly as v1 drops it.
-local SEPARATOR = "  "
-local MIN_WIDTH = 4
-
-local function push_status(spans, text, style, inner_width)
-  if not text or text == "" then
-    return
-  end
-  local used = chrome.spans_len(spans) + widgets.len(SEPARATOR)
-  local avail = math.max(0, inner_width - used)
-  if avail >= MIN_WIDTH then
-    spans[#spans + 1] = { text = SEPARATOR }
-    spans[#spans + 1] = { text = widgets.truncate_hard(text, avail), style = style }
-  end
 end
 
 --- The live search query, or nil when nothing is being searched.
@@ -150,22 +119,22 @@ local function name_hits(session, search)
   return nil
 end
 
---- The spans of one session row, and the style the whole row wears.
+--- The spans of one session row.
 ---
---- The second return is the node's own `style`: the kernel paints it across the
---- row's whole rect before the spans go on top, which is what a selection bar
---- and a hover band are. Nothing here pads the spans to the right edge or merges
---- a style into each of them by hand.
-local function session_line(item, inner_width, elapsed, is_selected, work, search)
+--- The row's own `style` — the selection bar, the hover band — is `ui.list`'s,
+--- not this pane's: it is the one selection idiom the whole interface uses, and
+--- a pane that spelled its own would be the fourth spelling. What is still
+--- decided here is every colour a span asks for, and `tone` is where a row says
+--- the bar speaks for all of them.
+local function session_line(item, width, elapsed, is_selected, work, search)
   local session = item.session
-  local glyph, glyph_color
-  glyph, glyph_color = status_glyph(session.status, elapsed)
+  local spec = ui.status(session.status, elapsed)
+  local glyph, glyph_color = spec.glyph, spec.color
   -- A blocked row's text is an attention message, so it keeps the dot's colour;
   -- plain activity is muted, leaving the name the row's visual anchor. v1 draws
   -- the same split.
   local trailing = agent_status_text(session)
-  local trailing_color
-  trailing_color = glyph_color
+  local trailing_color = glyph_color
   if session.status ~= "blocked" then
     trailing_color = theme.muted
   end
@@ -186,85 +155,58 @@ local function session_line(item, inner_width, elapsed, is_selected, work, searc
 
   local hits = name_hits(session, search)
 
-  --- The colour a span wears, unless the ROW speaks for all of them.
-  ---
-  --- Selected: nothing names a foreground, so every cell takes the bar's —
-  --- a span that named one would poke a hole in it. Unmatched: v1 keeps a
-  --- non-matching row on screen and lets the contrast do the filtering, so the
-  --- list never jumps around under a cursor you are still moving.
-  local function tone(color)
-    if is_selected then
-      return nil
-    end
-    if search and hits == nil then
-      return { fg = theme.muted }
-    end
-    return { fg = color }
-  end
+  local row = ui.row({
+    width = width,
+    --- The colour a span wears, unless the ROW speaks for all of them.
+    ---
+    --- Selected: nothing names a foreground, so every cell takes the bar's —
+    --- a span that named one would poke a hole in it. Unmatched: v1 keeps a
+    --- non-matching row on screen and lets the contrast do the filtering, so
+    --- the list never jumps around under a cursor you are still moving.
+    tone = function(style)
+      if is_selected then
+        return nil
+      end
+      if search and hits == nil then
+        return { fg = theme.muted }
+      end
+      return style
+    end,
+  })
 
-  local spans = { { text = " " .. glyph .. " ", style = tone(glyph_color) } }
+  row:add(" " .. glyph .. " ", { fg = glyph_color })
 
   -- Nesting prefix: a tree mark for a child inside the group, a lone mark for
   -- one whose parent renders elsewhere in the list.
   if item.depth > 0 then
-    spans[#spans + 1] = {
-      text = string.rep("  ", item.depth - 1) .. "└ ",
-      style = tone(theme.muted),
-    }
+    row:add(string.rep("  ", item.depth - 1) .. "└ ", { fg = theme.muted })
   elseif item.cross_group then
-    spans[#spans + 1] = { text = "↳ ", style = tone(theme.muted) }
+    row:add("↳ ", { fg = theme.muted })
   end
 
   -- An agent running on another machine, then a session that owns a worktree.
   if session.host then
-    spans[#spans + 1] = { text = "⇅ ", style = tone(theme.accent) }
+    row:add("⇅ ", { fg = theme.accent })
   end
   if (session.worktrees or 0) > 0 then
-    spans[#spans + 1] = { text = "⑂ ", style = tone(theme.branch) }
+    row:add("⑂ ", { fg = theme.branch })
   end
 
   -- Never truncated: the name is the row's anchor, and overflow clips.
-  local name_style = tone(theme.text)
-  if hits then
-    -- A matched run is the one thing that keeps its colour on a selected row:
-    -- it names a foreground, and the bar underneath supplies only what a span
-    -- left unsaid. v1 layered the same two the same way round —
-    -- `highlight_style` was built ON TOP of the row's base style
-    -- (`src/ui/highlight.rs`) — and previewing a result moves this list's
-    -- cursor onto the row, so the selected row is exactly the one whose marks
-    -- would otherwise disappear.
-    local hit_style = { fg = theme.accent, bold = true, underline = true }
-    for _, span in ipairs(fuzzy.spans(session.name or "?", hits, name_style, hit_style)) do
-      spans[#spans + 1] = span
-    end
-  else
-    spans[#spans + 1] = { text = session.name or "?", style = name_style }
-  end
+  --
+  -- A matched run is the one thing that keeps its colour on a selected row: it
+  -- names a foreground, and the bar underneath supplies only what a span left
+  -- unsaid. v1 layered the same two the same way round — `highlight_style` was
+  -- built ON TOP of the row's base style (`src/ui/highlight.rs`) — and
+  -- previewing a result moves this list's cursor onto the row, so the selected
+  -- row is exactly the one whose marks would otherwise disappear.
+  row:match(session.name or "?", hits, { fg = theme.text }, {
+    fg = theme.accent,
+    bold = true,
+    underline = true,
+  })
 
-  push_status(spans, trailing, tone(trailing_color), inner_width)
-
-  -- The bar is the row's own style rather than a list-wide highlight, which
-  -- would bleed onto the group header glued above a group's first row.
-  if is_selected then
-    return spans,
-      {
-        bg = theme.role("selection_bg"),
-        fg = theme.role("selection_fg"),
-        bold = true,
-      }
-  end
-  if hover.id(session.id) then
-    -- v1's row hover: a subtle band marking what a click would hit. Only the
-    -- BACKGROUND is tinted — each cell keeps its own fg, so the status dot and
-    -- the branch colour survive being hovered. A button gets the stronger
-    -- accent fill instead (see the agent pane's chips); a row is not a button.
-    --
-    -- Skipped on the selected row because v1 tints it to the colour it already
-    -- has, which is no change at all.
-    return spans, { bg = theme.role("selection_bg") }
-  end
-
-  return spans
+  return row:trailing(trailing, { fg = trailing_color }):spans_list()
 end
 
 --- v1's phase vocabulary, which the placeholder row shows beside the label.
@@ -280,8 +222,8 @@ local PHASE_LABEL = {
   persisting = "spawning…",
 }
 
-local function pending_line(command, inner_width, elapsed)
-  local failed = command.phase == "failed"
+local function pending_line(work, width, elapsed)
+  local failed = work.phase == "failed"
   local glyph, glyph_style
   if failed then
     glyph, glyph_style = "✗", { fg = theme.role("status_error") }
@@ -290,40 +232,24 @@ local function pending_line(command, inner_width, elapsed)
     glyph, glyph_style = theme.spinner_frame(elapsed), { fg = theme.warn }
   end
 
-  local label = command.subject or "new session"
+  local label = work.subject or "new session"
   local phase
   if failed then
-    phase = command.error and ("failed: " .. command.error) or "failed"
+    phase = work.error and ("failed: " .. work.error) or "failed"
   else
-    phase = PHASE_LABEL[command.phase] or "creating…"
+    phase = PHASE_LABEL[work.phase] or "creating…"
   end
 
-  local spans = {
-    { text = " " .. glyph .. " ", style = glyph_style },
-    { text = label, style = { fg = theme.secondary } },
-  }
-  -- Drop the phase rather than overflow a narrow panel.
-  local used = 3 + widgets.len(label)
-  if inner_width > used + widgets.len(phase) + 2 then
-    spans[#spans + 1] = { text = "  " .. phase, style = { fg = theme.muted } }
+  local row = ui.row({ width = width })
+  row:add(" " .. glyph .. " ", glyph_style)
+  row:add(label, { fg = theme.secondary })
+  -- Drop the phase rather than overflow a narrow panel. Not `row:trailing`:
+  -- that keeps a note only when four columns are left for it, and a creation
+  -- phase is either shown whole or not at all.
+  if width > row.used + widgets.len(phase) + 2 then
+    row:add("  " .. phase, { fg = theme.muted })
   end
-  return spans
-end
-
---- Move the cursor by `step`, skipping items that select nothing.
-local function move(items, from, step)
-  local count = #items
-  if count == 0 then
-    return 1
-  end
-  local at = from
-  for _ = 1, count do
-    at = (at - 1 + step) % count + 1
-    if items[at].target then
-      return at
-    end
-  end
-  return from
+  return row:spans_list()
 end
 
 local function sessions()
@@ -434,22 +360,20 @@ local function delete_for_good(session, question)
   }
 end
 
---- The chord bound to opening the creation flow, if anything is.
----
---- Read from the registry rather than hardcoded, because it is rebindable and
---- because the flow is removable: the empty state must not name a key that
---- resolves to nothing.
-local function new_session_chord()
-  for _, binding in ipairs((thurbox and thurbox.registry and thurbox.registry.keys) or {}) do
-    if binding.action == "new_session.open" then
-      return binding.key
-    end
-  end
-  return nil
-end
-
 --- Persist a rendered order. Header ownership is a *rendering* property of the
 --- first row in a group, so it is left to the next build rather than carried.
+--- This list's cursor, in the one spelling every handler here reads it with.
+---
+--- `target` is a model item's identity — nil on a group header, `false` on work
+--- with no session yet — so a row that selects nothing is skipped by
+--- construction rather than by each caller checking. `steer` is the `store` key
+--- another pane writes to move this list; `request` is the one-shot
+--- `focus_session` a clicked notification or `thurbox-cli session focus` leaves,
+--- and it is read only by `render` because consuming it anywhere else would
+--- spend it on a frame that is not being drawn.
+local CURSOR_OPTS = { id = "target", steer = "selected" }
+local CURSOR_OPTS_WITH_REQUEST = { id = "target", steer = "selected", request = "focus_session" }
+
 local function persist_order(items)
   local ids = {}
   for _, item in ipairs(items) do
@@ -460,31 +384,6 @@ local function persist_order(items)
   if #ids > 0 then
     command("order", { list = ids })
   end
-end
-
---- `glyph N ` right-aligned over the tail of `strip`.
----
---- v1 LAYERS the two: the count is painted onto border cells the dot strip
---- already occupies, so it covers the last dots rather than pushing them left.
---- One right-aligned run list says the same thing, and the dots it would have
---- covered are dropped here instead of overwritten there.
-local function with_count(strip, glyph, count)
-  if count <= 0 then
-    return strip
-  end
-  local text = glyph .. " " .. count .. " "
-  local keep = chrome.spans_len(strip) - widgets.len(text)
-  local runs, used = {}, 0
-  for _, run in ipairs(strip) do
-    local width = widgets.len(run.text)
-    if used + width > keep then
-      break
-    end
-    used = used + width
-    runs[#runs + 1] = run
-  end
-  runs[#runs + 1] = { text = text, style = { fg = theme.muted } }
-  return runs
 end
 
 return {
@@ -636,16 +535,12 @@ return {
     -- ctx.width/height are THIS PANE's, not the screen's.
     local width = math.max(0, ctx.width or 0)
     local height = math.max(0, ctx.height or 0)
-    local level = ctx.focused and "focused" or "active"
-    local frame_style = chrome.border_style(level)
     if width < 2 or height < 2 then
       return { type = "text", text = "" }
     end
     local inner_width = width - 2
-    local inner_height = height - 2
 
-    local list = sessions()
-    local items = session_model.build(list)
+    local items = session_model.build(sessions())
     local busy = session_model.pending()
     -- The live query, read once per render and compiled once: `session_line`
     -- runs per visible row, and each used to re-read the store and re-split
@@ -653,164 +548,63 @@ return {
     local query = search_query()
     local search = query and { text = query, needle = fuzzy.compile(query) } or nil
 
-    -- Keep the cursor on the session it was on, not on a row number.
-    --
-    -- A reorder is a command: it lands a frame or two later, and the row that
-    -- was under the cursor has moved by then. Following the id instead means
-    -- holding J walks a session down the list, which is what you meant.
-    local cursor = state.cursor or 1
-    -- An outside request to select a session: a clicked OS notification, or
-    -- `thurbox-cli session focus`. Consumed here and cleared, because the cursor
-    -- is republished from this pane every frame — anything that merely wrote
-    -- `store.selected` would be overwritten a frame later.
-    if store.focus_session then
-      state.follow = store.focus_session
-      store.focus_session = nil
-    end
-    -- Another PANE may steer the selection by writing `store.selected` — the
-    -- search strip jumping to a result, a task opening the session it spawned.
-    -- Publishing the cursor every frame would undo that write a frame later, so a
-    -- value this pane did not publish is read as a request and followed. v1's
-    -- panes call `App::select_session` for the same reason.
-    local steered = store.selected
-    if steered and steered ~= state.published then
-      state.follow = steered
-    end
-    if state.follow then
-      for index, item in ipairs(items) do
-        if item.target == state.follow then
-          cursor = index
-          break
-        end
-      end
-    end
-    cursor = widgets.clamp(cursor, #items)
-    if #items > 0 and not items[cursor].target then
-      cursor = move(items, cursor, 1)
-    end
-    state.cursor = cursor
-    -- Publish the selection so the agent pane knows what to show, remembering
-    -- what was published so an outside write can be told from our own echo.
-    local target = items[cursor] and items[cursor].target or nil
-    store.selected = target
-    state.published = target
+    -- The cursor follows the SESSION it was on rather than a row number, is
+    -- steered by another pane writing `store.selected`, and answers a focus
+    -- request from outside the interface — all three written once in `ui.cursor`
+    -- and shared with the two handlers below.
+    local cursor = ui.cursor("sessions", items, CURSOR_OPTS_WITH_REQUEST)
 
-    -- One dot per session on the top border, in render order, each in its own
-    -- status colour. Suppressed entirely when there are no sessions.
-    local dots = {}
-    for _, item in ipairs(items) do
-      if item.kind == "session" then
-        local glyph, color = status_glyph(item.session.status, ctx.elapsed)
-        dots[#dots + 1] = { text = glyph, style = { fg = color } }
-      end
-    end
-
-    local function row(line)
-      line = line or {}
-      return {
-        type = "text",
-        len = 1,
-        text = { line.spans or {} },
-        -- The row's own style covers this rect and this rect only, and the rect
-        -- is the frame's inner width — so a selection bar reaches the border and
-        -- never paints over it.
-        style = line.style,
-        id = line.id,
-        class = line.class,
-        -- Decoration (the search plugin) finds rows by this role, and only the
-        -- content is inside it — so a highlight can never repaint the border.
-        role = line.id and "row" or nil,
-      }
-    end
-
-    local lines, above, below = {}, 0, 0
-
-    if #items == 0 then
-      -- v1's placeholder: a blank line, then two centred muted lines.
-      local function centred(text)
-        local pad = math.max(0, math.floor((inner_width - widgets.len(text)) / 2))
-        return { { text = string.rep(" ", pad) .. text, style = { fg = theme.muted } } }
-      end
-      -- `{ spans = … }`, like every other entry: the row builder below reads
-      -- `line.spans`, so a bare span list here renders as a blank row — which is
-      -- exactly what the placeholder did until a test looked at it.
-      lines[1] = { spans = {} }
-      lines[2] = { spans = centred("No sessions yet") }
-      -- v1's second line names the chord that creates one, and it is only shown
-      -- when something actually answers it: the chord is looked up in the
-      -- registry rather than written here, so a rebind — or the flow being
-      -- removed — cannot leave the empty state advertising a key that does
-      -- nothing.
-      local chord = new_session_chord()
-      if chord then
-        lines[3] = { spans = centred("Press " .. chord .. " to create one") }
-      end
-    else
-      local heights = {}
-      for index, item in ipairs(items) do
-        heights[index] = item.header and 2 or 1
-      end
-
-      local first, visible =
-        scroll.window_variable(heights, state.offset or 0, cursor, inner_height)
-      state.offset = first - 1
-      above = first - 1
-      below = #items - (first - 1 + visible)
-
-      for index = first, #items do
-        local item = items[index]
-        if #lines >= inner_height then
-          break
-        end
-        if item.header then
-          lines[#lines + 1] = { spans = header_line(item.header, inner_width) }
-        end
-        if #lines < inner_height then
+    return ui.panel({
+      title = "Sessions",
+      focused = ctx.focused,
+      -- One dot per session, in render order and in its own status colour,
+      -- painted onto the top border. The scroll counts are laid over its tail
+      -- by `ui.panel`, from the list's own hidden-row counts — every one of
+      -- them a border cell, so none costs a row.
+      overlay_right = ui.dots(items, ctx.elapsed, function(item)
+        return item.kind == "session" and item.session.status or nil
+      end),
+      body = ui.list({
+        items = items,
+        cursor = cursor,
+        width = inner_width,
+        height = height - 2,
+        on_overflow = "border",
+        -- The pane is a column of its own: it holds its rows apart from the
+        -- bottom border however few of them there are.
+        pad = true,
+        --- `── label ────────`, muted, full bleed. The header never reflects
+        --- selection: highlighting belongs to the session rows alone.
+        header = function(item)
+          return item.header and ui.rule(item.header, inner_width) or nil
+        end,
+        class_of = function(item)
+          return item.kind == "pending" and "pending-row" or "session-row"
+        end,
+        row = function(item, selected)
           if item.kind == "pending" then
-            lines[#lines + 1] = {
-              spans = pending_line(item.command, inner_width, ctx.elapsed),
-              class = "pending-row",
-            }
-          else
-            local spans, style = session_line(
-              item,
-              inner_width,
-              ctx.elapsed,
-              index == cursor,
-              busy[item.session.id],
-              search
-            )
-            lines[#lines + 1] = {
-              spans = spans,
-              style = style,
-              id = item.session.id,
-              class = "session-row",
-            }
+            return pending_line(item.command, inner_width, ctx.elapsed)
           end
-        end
-      end
-    end
-
-    local children = {}
-    for index = 1, inner_height do
-      children[#children + 1] = row(lines[index])
-    end
-
-    -- The title badge at the left, the dot strip right-aligned on the same row
-    -- with the "items above" count over its tail, and "items below" on the
-    -- bottom border — every one of them a border cell, so none costs a row.
-    return {
-      type = "box",
-      children = children,
-      frame = {
-        title = { { text = " Sessions ", style = chrome.title_style(level) } },
-        border_style = frame_style,
-        overlay = {
-          top_right = with_count(dots, "▲", above),
-          bottom_right = with_count({}, "▼", below),
-        },
-      },
-    }
+          return session_line(
+            item,
+            inner_width,
+            ctx.elapsed,
+            selected,
+            busy[item.session.id],
+            search
+          )
+        end,
+        -- v1's placeholder, and its second line names the chord that creates a
+        -- session — shown only while something actually answers it, so a rebind
+        -- or the flow being removed cannot leave this advertising a dead key.
+        empty = ui.empty({
+          title = "No sessions yet",
+          width = inner_width,
+          hint = "Press %s to create one",
+          hint_action = "new_session.open",
+        }),
+      }),
+    })
   end,
 
   --- Go to a session you just made, when you asked to be taken there.
@@ -835,7 +629,7 @@ return {
     -- the one that shows a session, takes the keyboard. `store.selected` is
     -- written here as well as followed, because a pane that draws before this
     -- one otherwise shows the previous session for a frame.
-    state.follow = id
+    ui.follow("sessions", id)
     store.selected = id
     command("focus", { text = "agent" })
   end,
@@ -855,15 +649,7 @@ return {
       return false
     end
     local items = session_model.build(sessions())
-    local index = widgets.index_of(items, hit.id, "target")
-    if not index then
-      return false
-    end
-    state.follow = nil
-    state.cursor = index
-    store.selected = hit.id
-    state.published = hit.id
-    return true
+    return ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) ~= nil
   end,
 
   on_action = function(action)
@@ -877,31 +663,29 @@ return {
       -- restores its own `pending_delete` — rather than reaching for the most
       -- recently deleted row, which may belong to another instance.
       if not state.deleted then
-        return false
+        -- Said out loud rather than swallowed. Ctrl+Z is global: it fires
+        -- from a focused terminal, and with the column hidden (F9) there is
+        -- nothing on screen to tell "there was nothing to undo" from a chord
+        -- that never arrived.
+        command("message", { text = "nothing to undo" })
+        return true
       end
       command("restore", { session = state.deleted })
       state.deleted = nil
       return true
     end
 
-    local list = sessions()
-    local items = session_model.build(list)
+    local items = session_model.build(sessions())
     if #items == 0 then
       return false
     end
-    local at = widgets.clamp(state.cursor or 1, #items)
-    local id = items[at].target or nil
-
-    -- Moving the cursor republishes the selection here as well as in render,
-    -- because Ctrl+J/K are global: with the column hidden (F9) or a terminal
-    -- focused, this pane may not render again before the agent pane does.
-    local function select_row(index)
-      state.follow = nil
-      state.cursor = index
-      local target = items[index] and items[index].target or store.selected
-      store.selected = target
-      state.published = target
-    end
+    -- The same cursor `render` builds, from the same state: moving it here
+    -- republishes the selection as well, because Ctrl+J/K are global — with the
+    -- column hidden (F9) or a terminal focused, this pane may not render again
+    -- before the agent pane does.
+    local cursor = ui.cursor("sessions", items, CURSOR_OPTS)
+    local at = cursor.index
+    local id = cursor:id()
 
     -- Actions, not chords. The kernel already resolved which key was pressed,
     -- so the capital-vs-shift encoding trap is its problem now, not ours.
@@ -912,11 +696,11 @@ return {
         command("focus", { text = "agent" })
       end
     elseif action == "sessions.next" then
-      select_row(move(items, at, 1))
+      cursor:move(1)
     elseif action == "sessions.previous" then
-      select_row(move(items, at, -1))
+      cursor:move(-1)
     elseif action == "sessions.first" then
-      select_row(move(items, 0, 1))
+      cursor:select(1)
 
     -- Every state change below is a COMMAND: accepted instantly, its effect
     -- appearing in a later snapshot. Nothing here waits for anything.
@@ -962,23 +746,23 @@ return {
     elseif action == "sessions.editor" and id then
       command("editor", { session = id })
     -- A move is computed over the RENDERED items and sent whole, so a root row
-    -- drags its subtree and a group edge moves the group. `state.follow` keeps
-    -- the cursor on the session rather than the row index, since the order it
-    -- was pressed at lands a frame or two later.
+    -- drags its subtree and a group edge moves the group. The cursor FOLLOWS the
+    -- session rather than the row index, since the order it was pressed at lands
+    -- a frame or two later.
     elseif action == "sessions.move_down" and id then
       local moved = order.move_block(items, at, true)
       if moved then
-        state.follow = id
+        cursor:follow(id)
         persist_order(moved)
       end
     elseif action == "sessions.move_up" and id then
       local moved = order.move_block(items, at, false)
       if moved then
-        state.follow = id
+        cursor:follow(id)
         persist_order(moved)
       end
     elseif action == "sessions.sort" then
-      state.follow = id
+      cursor:follow(id)
       persist_order(order.sorted_within_groups(items))
     else
       return false

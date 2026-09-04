@@ -76,7 +76,8 @@ The interface is Lua on a Rust kernel (ADR-23). v1's TEA loop — a single
 with a mechanism rather than a review habit:
 
 1. **Four node kinds, forever** — `text`, `box`, `input`, `surface`.
-   Everything else composes in `ui/lib/widgets.lua`.
+   Everything else composes in Lua: `ui/lib/ui.lua` (the component
+   layer) over `ui/lib/widgets.lua` (the primitive kit).
    *Enforced by* `tests/kernel_mvp.rs`, which asserts the count.
 2. **Layout resolves before render** — rects are computed first, then
    each plugin is called with its own. Plugins declare size statically,
