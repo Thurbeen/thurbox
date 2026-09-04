@@ -86,6 +86,18 @@ Annotate the node you build (`---@type thurbox.TextNode` above the table) so a
 misspelt prop reads back as a missing required field. An **extra** key is never
 reported, so the annotation is what does the work.
 
+## Measure in columns
+
+A terminal budget is columns, and Lua counts neither of the two things it can
+count for you: `#` is bytes and `utf8.len` is codepoints, so a CJK glyph — one
+codepoint, two columns — comes out a column short every time. The kernel
+measures instead: `text.width(s)`, `text.truncate(s, cols, opts)` and
+`text.pad(s, cols, align)`, with the same `unicode-width` the painter uses. The
+`widgets` helpers (`len`, `truncate`, `truncate_hard`, `keep_left`,
+`keep_right`, `middle_truncate`, `pad`) forward to them, so either spelling is
+right. The one count that is *not* columns is `input.cursor`, a character
+offset — `widgets.chars` is that.
+
 ## Adding a pane is two edits
 
 The plugin file, **and** its slot in `layout.lua`. A pane names a slot; the
