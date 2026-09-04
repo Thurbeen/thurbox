@@ -437,7 +437,9 @@ session shape thurbox advertises for drivers.
 deleted, and `session restore` revives it. The windows are torn down once the
 undo window closes (`UNDO_WINDOW`, 10s) by the one sweep,
 `session_ops::reap_overdue_soft_deletes` — driven by the TUI's loop on a slow
-cadence (`REAP_INTERVAL`) and by the heartbeat's tick, or on demand with
+cadence (`REAP_INTERVAL`, as background housekeeping the bus keeps no in-flight
+record of, so it never captions the message band) and by the heartbeat's tick,
+or on demand with
 `session reap <ref>` — which is how a peer collects a row on a host that has no
 interface of its own (ADR-24), and resolves against the *deleted* rows the way
 `session restore` does. Only the **windows** (agent and companion shell, both

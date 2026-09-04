@@ -420,6 +420,21 @@ impl Command {
         )
     }
 
+    /// Whether this is background housekeeping rather than work someone is
+    /// waiting on.
+    ///
+    /// The bus keeps no in-flight record of one, so it appears nowhere the
+    /// interface reads: no published `thurbox.commands` row, no message-band
+    /// caption, and nothing for the redraw loop to call activity. The reap
+    /// sweep is dispatched every few seconds for as long as thurbox runs —
+    /// reported like a command someone pressed, it reserved the band and gave
+    /// it back on that cadence, reflowing every pane twice every five seconds.
+    /// A failure is reported through `tracing` instead, which is where the rest
+    /// of the sweep already speaks.
+    pub fn is_housekeeping(&self) -> bool {
+        matches!(self, Command::Reap)
+    }
+
     /// What this command concerns when it names no session.
     ///
     /// For a creation that is the repository, which is what lets the session
@@ -1059,6 +1074,23 @@ mod tests {
         let found = bus.first_running().expect("the dispatched command");
         assert_eq!(found.id, id);
         assert_eq!(found.kind, "restore");
+    }
+
+    #[test]
+    fn housekeeping_is_never_reported_in_flight() {
+        // The reap sweep is dispatched every few seconds for as long as thurbox
+        // runs. Recorded like a command someone pressed, it reserves the message
+        // band and gives it back on that cadence — the whole frame reflowing
+        // twice every five seconds, captioned "reap".
+        let bus = CommandBus::new();
+        bus.dispatch(Command::Reap);
+        assert!(
+            bus.inflight().is_empty(),
+            "the sweep must not be published: {:?}",
+            bus.inflight()
+        );
+        assert!(!bus.has_inflight(), "nor counted as work the loop is doing");
+        assert!(bus.first_running().is_none(), "nor drawn as progress");
     }
 
     #[test]

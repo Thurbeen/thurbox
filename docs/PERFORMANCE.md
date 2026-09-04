@@ -963,7 +963,8 @@ interface. Three fixes:
   `ctx.elapsed` as `floor(elapsed * 8)`, so it advanced 8 times a second whether
   or not anything was moving — and at the 4fps idle floor that invalidated every
   pure pane on every frame. It now lives in `Epoch::animation`, advanced by the
-  loop only while something animates (a `working` session, a command in flight).
+  loop only while something animates (a `working` session, a command in flight —
+  background housekeeping is not one, ADR-P22).
   This was a bug against this capability's own requirement that an idle
   interface rebuild nothing, not a tuning choice.
 - **An adaptive poll timeout.** The loop blocked in `event::poll(10ms)`
@@ -1438,6 +1439,51 @@ context); both are stated for plugin authors in `docs/PLUGINS.md`, which owns
 that contract, along with the rule the mechanism creates: reading `ctx.elapsed`
 is what subscribes a tree to the animation tick, so read it where you animate and
 not at the top of a render that usually draws nothing moving.
+
+---
+
+## ADR-P22: Background housekeeping is invisible to the interface (2026-09-04)
+
+**Context**: the deleted-session sweep is dispatched on the command bus every
+`REAP_INTERVAL` (5s) for as long as thurbox runs (ADR-26). The bus records every
+command it accepts, and three things read that record: `status_rows` reserves a
+message-band row while anything is in flight, the band captions it with the
+command's kind, and `advance_animation` counts it as something moving. So the
+sweep flashed "reap" through the band and reflowed every pane twice every five
+seconds — and a reflow forces a *full* repaint (ADR-P1), which is the most
+expensive frame there is. Its completion also went through `poll_command_bus`,
+re-reading the snapshot and marking a data change 12 times a minute on an
+interface nobody was touching.
+
+**Decision**: a command answers `is_housekeeping()`, true for `Reap` alone, and
+the bus keeps **no in-flight record** of one. Not a filter at each reader — a
+single `dispatch` branch, so the sweep is absent from `inflight()`,
+`has_inflight()`, `first_running()`, `is_busy()` and therefore from
+`thurbox.commands`, the band, the arrangement and the animation clock at once.
+The work still runs on its own worker thread, unchanged; a failure is reported
+through `tracing` rather than the band, which is where the rest of the sweep
+already speaks.
+
+**Rejected**:
+
+- *Excluding it in `status_rows`* — the cheapest edit and the wrong one: the
+  same row still reaches plugins through `thurbox.commands` and still animates
+  the clock, so the flicker would come back through whichever reader was not
+  patched. There are four.
+- *Slowing `REAP_INTERVAL`* — makes the flash rarer, not absent, and the cadence
+  is the undo window's business, not the render loop's.
+- *Moving the sweep back onto the UI thread* — it opens the database and can
+  reach a multiplexer; that is exactly what the bus exists to keep off the frame.
+
+**Consequences**: a reaped row leaves the list on the next due snapshot refresh
+rather than the instant the sweep finishes. That is the right trade — nobody is
+waiting on a sweep, and the row it collects has been invisible for the whole undo
+window already. Anything a *person* dispatched is unaffected: it still takes the
+band, still captions it, still animates. Pinned by
+`kernel::command::tests::housekeeping_is_never_reported_in_flight` and
+`chrome::a_housekeeping_sweep_neither_captions_the_band_nor_reflows_the_frame`,
+which asserts both halves — the sweep placing no `status` slot and moving no
+pane, a delete still doing both.
 
 ---
 

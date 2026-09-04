@@ -1435,7 +1435,10 @@ rather than through a column that is usually NULL.
 `deleted_at` is older than `UNDO_WINDOW` and that still owns a window by its
 ADR-25 stamp — and both drivers call it: the interface's loop on a slow cadence
 (`REAP_INTERVAL`, a `Command::Reap` that names no session) and `thurbox-cli`'s
-heartbeat on its tick. Alongside it, a caller that changes **one column** of a
+heartbeat on its tick. `Command::Reap` is the one command the bus keeps no
+in-flight record of — it recurs forever with nobody waiting on it, and a row
+there is drawn, captioned and counted as activity (ADR-P22 in
+`docs/PERFORMANCE.md`). Alongside it, a caller that changes **one column** of a
 session row uses a targeted setter (`set_backend_id`, `set_session_shell`,
 `set_display_order`) rather than the full-row `upsert_session`.
 
