@@ -87,7 +87,7 @@
 ---@field scroll? integer
 
 --- A row or a column. Children live under `children`, or in the array part.
----@class thurbox.BoxNode : thurbox.NodeCommon
+---@class (exact) thurbox.BoxNode : thurbox.NodeCommon
 ---@field type? "box"|"vstack"|"hstack"|"column"|"row"|"stack"
 ---@field axis? "vertical"|"horizontal"|"column"|"row"|"v"|"h"
 ---@field gap? integer
@@ -104,7 +104,7 @@
 
 --- Pre-rendered cells: a live session's terminal, a program this plugin asked
 --- to run, or lines the plugin produced itself. Exactly one source.
----@class thurbox.SurfaceNode : thurbox.NodeCommon
+---@class (exact) thurbox.SurfaceNode : thurbox.NodeCommon
 ---@field type? "surface"|"terminal"
 ---@field session? string
 ---@field program? string
@@ -452,7 +452,7 @@
 ---@field label? string
 ---@field is_parent boolean
 ---@field offered boolean
----@field worktrees integer
+---@field is_git? boolean
 
 --- Remembered repositories, served only while `store.want_bookmarks` asks.
 ---@class (exact) thurbox.Bookmarks
@@ -724,7 +724,7 @@ function require(name) end
 ---@field list string[] Every session id, in the order wanted.
 
 ---@class (exact) thurbox.cmd.Program
----@field text? string This plugin's name for the pane.
+---@field text string This plugin's name for the pane.
 ---@field repo? string The program to run; required unless closing.
 ---@field args? string[]
 ---@field action? "close"|"stop"
