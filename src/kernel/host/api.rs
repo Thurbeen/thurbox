@@ -701,10 +701,17 @@ fn pad(s: &str, cols: usize, align: &Align) -> String {
     }
 }
 
-/// A column count as Lua spells it: any number, floored, never negative.
+/// No real terminal is remotely this wide; the ceiling exists so that
+/// `pad`'s `" ".repeat(cols)` — a Rust-side allocation the VM's own
+/// [`super::memory_limit`] cannot see or budget for — stays too small to
+/// ever hit the allocator's abort path, whatever a plugin passes in.
+const MAX_COLS: usize = 1 << 20;
+
+/// A column count as Lua spells it: any number, floored, never negative,
+/// and never past [`MAX_COLS`].
 fn cols_arg(n: f64) -> usize {
     if n.is_finite() && n > 0.0 {
-        n.floor() as usize
+        (n.floor() as usize).min(MAX_COLS)
     } else {
         0
     }
@@ -829,5 +836,15 @@ mod tests {
         assert!(Side::parse("centre").is_err());
         assert!(Align::parse("middle").is_err());
         assert!(Align::parse("centre").is_ok());
+    }
+
+    /// `pad`'s `" ".repeat(cols)` is a Rust-side allocation the VM's memory
+    /// limit cannot see; a plugin passing a huge `cols` must not drive it
+    /// past a bounded size regardless of how large the request claims to be.
+    #[test]
+    fn a_huge_cols_is_capped_rather_than_allocated_in_full() {
+        assert_eq!(cols_arg(f64::MAX), MAX_COLS);
+        assert_eq!(cols_arg(1e18), MAX_COLS);
+        assert_eq!(pad("x", cols_arg(1e18), &Align::Left).len(), MAX_COLS);
     }
 }
