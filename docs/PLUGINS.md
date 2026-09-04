@@ -160,12 +160,19 @@ undefined variable; the runtime message will not help you.
 turns a *failed* match (`nil`) into an empty table, which then reads as a match —
 so a filter silently keeps everything. Spell it as an `if`.
 
-**A Lua character class is a set of *bytes*.** `text:match("[▸▾]")` does not mean
+**A Lua character class is a set of *bytes*.** `value:match("[▸▾]")` does not mean
 "either of those arrows" — it means any byte occurring in their encodings, which
 matches no arrow and plenty of unrelated things. `#` counts bytes for the same reason,
 so a column computed from it comes out short on any row with `é` or `╭` in it. This
 interface is full of multi-byte glyphs, so both apply constantly: measure with
-`utf8.len`, and compare whole strings rather than classing them.
+`text.width`, and compare whole strings rather than classing them.
+
+**A column is not a character either.** `utf8.len` fixes the byte count and stops
+there: a CJK glyph is one codepoint over *two* columns and a combining mark one
+over none, so a budget counted in codepoints shears every row a double-width name
+appears in. `text.width` / `text.truncate` / `text.pad` measure in columns, with
+the same `unicode-width` the painter uses. The one place codepoints are right is
+`input.cursor`, which is a character offset — `widgets.chars` is that count.
 
 **`ipairs` stops at the first hole.** It is not "iterate the array"; it is "iterate
 until a `nil`". A table built by index where one slot was left empty — a diff row with
@@ -314,6 +321,7 @@ that throws costs its own pane and nothing else.
 | `state` | Private to your plugin. Survives a reload; **not** a restart |
 | `store` | Shared by every plugin — the bus between them. Same lifetime as `state` |
 | `files.list/read` | Directory entries and file text, rooted at a session's directory |
+| `text.width/truncate/pad` | Display width in terminal COLUMNS, and the two cuts that spend a budget in it |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
 | `thurbox.bookmarks/browse/branches/worktrees` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list, the worktrees a repo already has — each served only while `store.want_bookmarks`/`want_browse`/`want_branches`/`want_worktrees` asks for it |
 | `require` | Loads **any** `.lua` under the interface directory, and nothing outside it |

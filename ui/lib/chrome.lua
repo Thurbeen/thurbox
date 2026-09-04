@@ -21,7 +21,7 @@ local chrome = {}
 
 -- ── Span measurement ────────────────────────────────────────────────────────
 
---- Character count across a span list (widgets.len handles one string).
+--- Display columns across a span list (widgets.len handles one string).
 function chrome.spans_len(spans)
   local total = 0
   for _, span in ipairs(spans) do

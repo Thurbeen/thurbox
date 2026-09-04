@@ -642,6 +642,39 @@ function files.list(session, path) end
 ---@return string
 function files.read(session, path) end
 
+---@class (exact) thurbox.TruncateOpts
+---@field ellipsis? string What marks the cut. `""` cuts without a mark.
+---@field side? "right"|"left"|"middle" Which end is eaten. Defaults to `"right"`.
+
+--- Display width, in terminal COLUMNS.
+---
+--- The one measurement Lua cannot make: `#` counts bytes and `utf8.len` counts
+--- codepoints, and a CJK glyph is one codepoint over two columns. Backed by the
+--- same `unicode-width` the painter measures with, so a budget computed here
+--- agrees with what lands on the screen.
+---@class thurbox.TextApi
+text = {}
+
+---@param str string
+---@return integer
+function text.width(str) end
+
+--- Cut `str` down to `cols` columns. `opts` is the ellipsis, or a table. An
+--- unknown `side` raises rather than being quietly read as `"right"`.
+---@param str string
+---@param cols integer
+---@param opts? string|thurbox.TruncateOpts
+---@return string
+function text.truncate(str, cols, opts) end
+
+--- Space `str` out to `cols` columns. Never truncates: what to do with text
+--- that is already too wide is the caller's choice.
+---@param str string
+---@param cols integer
+---@param align? "left"|"right"|"center"|"centre"
+---@return string
+function text.pad(str, cols, align) end
+
 ---@class (exact) thurbox.RunOpts
 ---@field session? string Run in this session's directory.
 ---@field ttl? number Seconds an answer stays fresh.

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use mlua::{Lua, Table, Value};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::load::BUDGET_EXCEEDED;
 use super::{
@@ -36,6 +37,7 @@ pub(super) fn install_api(
     install_files(lua, roots)?;
     install_run(lua, runs, current_path)?;
     install_clock(lua, clock, clock_read)?;
+    install_text(lua)?;
     Ok(())
 }
 
@@ -561,4 +563,288 @@ pub(super) fn clean_error(error: &mlua::Error) -> String {
         .unwrap_or(&text)
         .trim()
         .to_string()
+}
+
+// ── Display width ───────────────────────────────────────────────────────────
+
+/// What a cut is marked with when the caller does not say.
+const ELLIPSIS: &str = "…";
+
+/// How many terminal columns `s` occupies.
+///
+/// Not its bytes and not its characters: a CJK glyph takes two columns and a
+/// combining mark none, so the three counts disagree on exactly the text a
+/// column budget is hardest to get right on. This is the same `unicode-width`
+/// the painter measures with, so a plugin that budgets with it agrees with what
+/// lands on the screen.
+fn columns(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
+/// The longest prefix of `s` that fits in `cols` columns.
+///
+/// A double-width glyph that would straddle the edge is left out rather than
+/// half-drawn, so the result is never *wider* than asked for — which is what
+/// lets a caller add its own marker and still fit.
+fn take_left(s: &str, cols: usize) -> &str {
+    let mut used = 0;
+    for (at, ch) in s.char_indices() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > cols {
+            return &s[..at];
+        }
+        used += w;
+    }
+    s
+}
+
+/// The longest suffix of `s` that fits in `cols` columns.
+fn take_right(s: &str, cols: usize) -> &str {
+    let mut used = 0;
+    for (at, ch) in s.char_indices().rev() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > cols {
+            return &s[at + ch.len_utf8()..];
+        }
+        used += w;
+    }
+    s
+}
+
+/// Which end of the text a truncation eats.
+enum Side {
+    Right,
+    Left,
+    Middle,
+}
+
+impl Side {
+    fn parse(name: &str) -> mlua::Result<Self> {
+        match name {
+            "right" => Ok(Self::Right),
+            "left" => Ok(Self::Left),
+            "middle" => Ok(Self::Middle),
+            other => Err(mlua::Error::runtime(format!(
+                "text.truncate: side must be right, left or middle, not {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Cut `s` down to `cols` columns, marking the cut with `ellipsis`.
+fn truncate(s: &str, cols: usize, ellipsis: &str, side: &Side) -> String {
+    if cols == 0 {
+        return String::new();
+    }
+    if columns(s) <= cols {
+        return s.to_string();
+    }
+    let mark = columns(ellipsis);
+    // No room for both the mark and any text: the mark alone is the whole
+    // answer, itself cut to fit rather than overrunning the budget it was
+    // meant to respect.
+    if mark >= cols {
+        return take_left(ellipsis, cols).to_string();
+    }
+    let budget = cols - mark;
+    match side {
+        Side::Right => format!("{}{ellipsis}", take_left(s, budget)),
+        Side::Left => format!("{ellipsis}{}", take_right(s, budget)),
+        Side::Middle => {
+            // The tail gets the larger share of an odd remainder: for a path it
+            // carries the leaf, which is the half that identifies the thing.
+            let head = budget / 2;
+            format!(
+                "{}{ellipsis}{}",
+                take_left(s, head),
+                take_right(s, budget - head)
+            )
+        }
+    }
+}
+
+/// Where the short side of a pad goes.
+enum Align {
+    Left,
+    Right,
+    Center,
+}
+
+impl Align {
+    fn parse(name: &str) -> mlua::Result<Self> {
+        match name {
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            "center" | "centre" => Ok(Self::Center),
+            other => Err(mlua::Error::runtime(format!(
+                "text.pad: align must be left, right or center, not {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Spaces `s` out to `cols` columns. Text already that wide is returned as it
+/// is — a pad never truncates, because the two answers to "too long" are the
+/// caller's to choose between.
+fn pad(s: &str, cols: usize, align: &Align) -> String {
+    let short = cols.saturating_sub(columns(s));
+    if short == 0 {
+        return s.to_string();
+    }
+    match align {
+        Align::Left => format!("{s}{}", " ".repeat(short)),
+        Align::Right => format!("{}{s}", " ".repeat(short)),
+        Align::Center => {
+            let before = short / 2;
+            format!("{}{s}{}", " ".repeat(before), " ".repeat(short - before))
+        }
+    }
+}
+
+/// No real terminal is remotely this wide; the ceiling exists so that
+/// `pad`'s `" ".repeat(cols)` — a Rust-side allocation the VM's own
+/// [`super::memory_limit`] cannot see or budget for — stays too small to
+/// ever hit the allocator's abort path, whatever a plugin passes in.
+const MAX_COLS: usize = 1 << 20;
+
+/// A column count as Lua spells it: any number, floored, never negative,
+/// and never past [`MAX_COLS`].
+fn cols_arg(n: f64) -> usize {
+    if n.is_finite() && n > 0.0 {
+        (n.floor() as usize).min(MAX_COLS)
+    } else {
+        0
+    }
+}
+
+/// `text.width(s)`, `text.truncate(s, cols, opts)` and `text.pad(s, cols, align)`.
+///
+/// The one measurement a plugin cannot make for itself. Lua's `#` counts bytes
+/// and `utf8.len` counts codepoints; a terminal budget is columns, and no
+/// arithmetic over the other two recovers it. Every truncation and every pad in
+/// the interface rides on this, so it is the kernel's `unicode-width` — the
+/// painter's own measure — rather than an approximation per plugin.
+///
+/// `opts` is the ellipsis, or `{ ellipsis = "…", side = "right"|"left"|"middle" }`
+/// for the cuts that keep the far end. An unknown `side` or `align` raises
+/// rather than being ignored: a misspelt option that silently means "left" is
+/// the trap `command`'s option list already documents.
+fn install_text(lua: &Lua) -> mlua::Result<()> {
+    let table = lua.create_table()?;
+
+    table.set(
+        "width",
+        lua.create_function(|_, s: String| Ok(columns(&s)))?,
+    )?;
+
+    table.set(
+        "truncate",
+        lua.create_function(|_, (s, cols, opts): (String, f64, Option<Value>)| {
+            let (ellipsis, side) = match opts {
+                Some(Value::String(mark)) => (mark.to_string_lossy(), Side::Right),
+                Some(Value::Table(opts)) => (
+                    opts.get::<Option<String>>("ellipsis")?
+                        .unwrap_or_else(|| ELLIPSIS.to_string()),
+                    match opts.get::<Option<String>>("side")? {
+                        Some(name) => Side::parse(&name)?,
+                        None => Side::Right,
+                    },
+                ),
+                _ => (ELLIPSIS.to_string(), Side::Right),
+            };
+            Ok(truncate(&s, cols_arg(cols), &ellipsis, &side))
+        })?,
+    )?;
+
+    table.set(
+        "pad",
+        lua.create_function(|_, (s, cols, align): (String, f64, Option<String>)| {
+            let align = match align {
+                Some(name) => Align::parse(&name)?,
+                None => Align::Left,
+            };
+            Ok(pad(&s, cols_arg(cols), &align))
+        })?,
+    )?;
+
+    lua.globals().set("text", table)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three counts a plugin could reach for disagree here, which is why
+    /// this one is the kernel's: six characters, eighteen bytes, twelve columns.
+    #[test]
+    fn width_is_columns_and_not_bytes_or_characters() {
+        assert_eq!(columns("修复终端宽度"), 12);
+        assert_eq!("修复终端宽度".len(), 18);
+        assert_eq!("修复终端宽度".chars().count(), 6);
+    }
+
+    /// A double-width glyph that would straddle the budget's edge is dropped
+    /// rather than half-drawn: the result must never be wider than asked for,
+    /// or the caller's own marker pushes the row over.
+    #[test]
+    fn a_cut_never_returns_more_columns_than_it_was_given() {
+        assert_eq!(take_left("修复终端", 3), "修");
+        assert_eq!(take_right("修复终端", 3), "端");
+        assert_eq!(
+            truncate("修复终端宽度", 7, ELLIPSIS, &Side::Right),
+            "修复终…"
+        );
+    }
+
+    #[test]
+    fn each_side_keeps_the_end_it_names() {
+        assert_eq!(truncate("abcdefgh", 5, ELLIPSIS, &Side::Right), "abcd…");
+        assert_eq!(truncate("abcdefgh", 5, ELLIPSIS, &Side::Left), "…efgh");
+        assert_eq!(truncate("abcdefgh", 5, ELLIPSIS, &Side::Middle), "ab…gh");
+        // The tail takes the larger share of an odd remainder.
+        assert_eq!(truncate("abcdefgh", 6, ELLIPSIS, &Side::Middle), "ab…fgh");
+    }
+
+    /// Below the mark's own width there is nothing to say but the mark, and it
+    /// is cut to the budget rather than overrunning the one it protects.
+    #[test]
+    fn a_budget_too_small_for_the_mark_holds_the_mark() {
+        assert_eq!(truncate("abcdefgh", 1, ELLIPSIS, &Side::Right), "…");
+        assert_eq!(truncate("abcdefgh", 0, ELLIPSIS, &Side::Right), "");
+        assert_eq!(truncate("abcdefgh", 2, "...", &Side::Right), "..");
+    }
+
+    #[test]
+    fn an_empty_mark_cuts_without_saying_so() {
+        assert_eq!(truncate("abcdefgh", 4, "", &Side::Right), "abcd");
+        assert_eq!(truncate("abcdefgh", 4, "", &Side::Left), "efgh");
+    }
+
+    #[test]
+    fn pad_counts_columns_and_never_truncates() {
+        assert_eq!(pad("修复", 6, &Align::Left), "修复  ");
+        assert_eq!(pad("修复", 6, &Align::Right), "  修复");
+        assert_eq!(pad("修复", 7, &Align::Center), " 修复  ");
+        assert_eq!(pad("修复终端", 4, &Align::Left), "修复终端");
+    }
+
+    /// A misspelt option means the caller asked for something; answering with
+    /// the default would draw a plausible frame and report nothing.
+    #[test]
+    fn an_unknown_side_or_align_is_refused() {
+        assert!(Side::parse("centre").is_err());
+        assert!(Align::parse("middle").is_err());
+        assert!(Align::parse("centre").is_ok());
+    }
+
+    /// `pad`'s `" ".repeat(cols)` is a Rust-side allocation the VM's memory
+    /// limit cannot see; a plugin passing a huge `cols` must not drive it
+    /// past a bounded size regardless of how large the request claims to be.
+    #[test]
+    fn a_huge_cols_is_capped_rather_than_allocated_in_full() {
+        assert_eq!(cols_arg(f64::MAX), MAX_COLS);
+        assert_eq!(cols_arg(1e18), MAX_COLS);
+        assert_eq!(pad("x", cols_arg(1e18), &Align::Left).len(), MAX_COLS);
+    }
 }
