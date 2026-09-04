@@ -11,6 +11,7 @@ use ratatui::Terminal;
 
 use ratatui::style::Color;
 use thurbox::kernel::bands::BandState;
+use thurbox::kernel::command::{Command, CommandBus, InFlight};
 use thurbox::kernel::host::{LuaHost, Published, RenderContext};
 use thurbox::kernel::layout::{resolve, SlotRect};
 use thurbox::kernel::node::ClickVerb;
@@ -80,6 +81,18 @@ fn world(automations: usize) -> Snapshot {
 }
 
 fn publish(host: &LuaHost, snapshot: &Snapshot, themes: &Themes) {
+    publish_with(host, snapshot, themes, &[], 0);
+}
+
+/// [`publish`], with the two inputs the message band moves with: what is in
+/// flight, and the row `App::status_rows` reserved for it.
+fn publish_with(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    themes: &Themes,
+    inflight: &[InFlight],
+    status_rows: u16,
+) {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
@@ -89,7 +102,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot, themes: &Themes) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors: &Default::default(),
-        inflight: &[],
+        inflight,
         themes,
         registry: &registry,
         diffs: &diffs,
@@ -97,7 +110,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot, themes: &Themes) {
         content: &Default::default(),
         meta: &Default::default(),
         metrics: &Default::default(),
-        status_rows: 0,
+        status_rows,
         can_open: true,
         inventory: &[],
         ui_dir: "ui",
@@ -188,7 +201,19 @@ fn screen(
 }
 
 fn slots(host: &LuaHost, snapshot: &Snapshot, width: u16, height: u16) -> Vec<SlotRect> {
-    publish(host, snapshot, &Themes::load(None));
+    slots_with(host, snapshot, &[], 0, width, height)
+}
+
+/// [`slots`] for a frame the message band is reporting work on.
+fn slots_with(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    inflight: &[InFlight],
+    status_rows: u16,
+    width: u16,
+    height: u16,
+) -> Vec<SlotRect> {
+    publish_with(host, snapshot, &Themes::load(None), inflight, status_rows);
     let area = Rect {
         x: 0,
         y: 0,
@@ -623,6 +648,97 @@ fn a_band_is_placed_by_the_arrangement_and_omitting_it_is_not_an_error() {
     assert!(
         short_names.contains(&"center"),
         "the panes survive: {short_names:?}"
+    );
+}
+
+/// The progress line `App::draw` builds from the bus, mirrored so the label a
+/// command would put on screen is the one asserted here.
+fn progress_label(bus: &CommandBus) -> Option<String> {
+    bus.first_running().map(|item| match &item.subject {
+        Some(subject) => format!("{} {subject}…", item.kind),
+        None => format!("{}…", item.kind),
+    })
+}
+
+#[test]
+fn a_housekeeping_sweep_neither_captions_the_band_nor_reflows_the_frame() {
+    // The reap sweep is dispatched every few seconds forever. Reported like a
+    // command someone pressed, it flashed "reap" through the message band and
+    // reflowed every pane on that cadence, twice.
+    //
+    // Isolated by environment variable, process-wide: the dispatched command
+    // runs on a thread of its own and would otherwise open — and sweep — the
+    // developer's real database. nextest runs a process per test.
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path().join("config"));
+    std::env::set_var("THURBOX_DATA_DIR", home.path().join("data"));
+
+    let host = host();
+    let themes = Themes::load(None);
+    let registry = Registry::default();
+    let quiet = rect_of(&slots(&host, &world(0), 160, 40), "sessions").expect("a session column");
+
+    let bus = CommandBus::new();
+    bus.dispatch(Command::Reap);
+    assert!(
+        !bus.inflight().iter().any(|item| item.kind == "reap"),
+        "the sweep must not be published to plugins: {:?}",
+        bus.inflight()
+    );
+
+    // What `App::status_rows` derives from, with no live message to say.
+    let placed = slots_with(
+        &host,
+        &world(0),
+        &bus.inflight(),
+        u16::from(bus.has_inflight()),
+        160,
+        40,
+    );
+    assert!(
+        !placed.iter().any(|s| s.slot == "status"),
+        "the sweep must not reserve the message band"
+    );
+    assert_eq!(
+        rect_of(&placed, "sessions"),
+        Some(quiet),
+        "the panes must not move while housekeeping runs"
+    );
+
+    let mut state = band_state(&registry, &themes, None);
+    let label = progress_label(&bus);
+    state.progress = label.as_deref();
+    assert_eq!(
+        band_row(thurbox::kernel::bands::Band::Message, &state, 60),
+        "",
+        "and there is nothing to caption"
+    );
+
+    // The other half: a command someone pressed still takes its row.
+    bus.dispatch(Command::Delete {
+        session: "not-a-uuid".into(),
+        force: false,
+    });
+    assert!(
+        bus.has_inflight(),
+        "a user command is work someone waits on"
+    );
+    let busy = slots_with(
+        &host,
+        &world(0),
+        &bus.inflight(),
+        u16::from(bus.has_inflight()),
+        160,
+        40,
+    );
+    assert!(
+        busy.iter().any(|s| s.slot == "status"),
+        "a delete still reserves the band"
+    );
+    assert_eq!(
+        rect_of(&busy, "sessions").expect("a session column").height,
+        quiet.height - 1,
+        "and the panes give it the row"
     );
 }
 

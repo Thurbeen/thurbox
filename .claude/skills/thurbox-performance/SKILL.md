@@ -21,7 +21,13 @@ frame is agent output. Applying the tight floor to both made a chatty agent driv
 (ADR-P17). What marks the screen dirty:
 any input, a resize, a reload, a worker result, and **new agent output** —
 `Terminals::output_generation` is summed each iteration, which is what stops a
-printing agent being drawn at 4 fps. A **reflow** — the arrangement placing a
+printing agent being drawn at 4 fps. What does **not**: background housekeeping.
+A command answering `Command::is_housekeeping()` (the 5-second deleted-session
+sweep, and nothing else) is dispatched to a worker with no in-flight record at
+all, so it reaches neither `thurbox.commands`, nor the message band, nor the
+animation clock — recorded like a command someone pressed, the sweep reserved a
+band row and gave it back every five seconds, and a band row appearing is a
+reflow (ADR-P22). A **reflow** — the arrangement placing a
 slot at a new rect, so a column opened or closed — additionally forces one *full*
 repaint: the cell diff is only correct while ratatui and the terminal agree on a
 glyph's width, and where they cannot (a flag, an emoji presentation sequence) the
@@ -96,8 +102,9 @@ This is ADR-P16 closed out by ADR-P18, and it all rests on one rule: a signal is
 mutation and only when the value actually changed — writing an unchanged value
 counts as no change, which is the difference between the gate saving 27% and
 saving nothing. The **animation clock** obeys it too: it lives in the epoch and
-the loop advances it only while something is actually animating, because a
-free-running one invalidated every pure pane on every idle frame. It is also
+the loop advances it only while something is actually animating — a `working`
+session, a *user's* command in flight, a repo read — because a free-running one
+invalidated every pure pane on every idle frame. It is also
 **scoped to its readers**: `ctx.elapsed` is served through the render context's
 metatable rather than set as a field, so the kernel can see which panes asked for
 it, and a pure tree is keyed on the animation tick only if the render that built

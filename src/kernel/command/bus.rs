@@ -110,6 +110,9 @@ impl CommandBus {
     /// Accept a command. Returns immediately, always.
     pub fn dispatch(&self, command: Command) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        if command.is_housekeeping() {
+            return self.dispatch_housekeeping(command, id);
+        }
         let entry = InFlight {
             id,
             kind: command.kind(),
@@ -135,6 +138,22 @@ impl CommandBus {
             }
             let error = execute(&command, id, &progress).err();
             let _ = finished.send(Done { id, error });
+        });
+        id
+    }
+
+    /// Run background housekeeping on a worker, unrecorded.
+    ///
+    /// Deliberately touches neither the in-flight list nor the completion
+    /// channel: a row there is drawn, captioned and counted as activity, and
+    /// this work recurs forever with nobody waiting on it — see
+    /// [`Command::is_housekeeping`]. Its failures go to the log.
+    fn dispatch_housekeeping(&self, command: Command, id: u64) -> u64 {
+        let progress = self.progress_tx.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = execute(&command, id, &progress) {
+                tracing::warn!(command = command.kind(), "housekeeping failed: {e}");
+            }
         });
         id
     }
