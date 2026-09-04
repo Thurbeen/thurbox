@@ -160,12 +160,14 @@ end
 --- a style into each of them by hand.
 local function session_line(item, inner_width, elapsed, is_selected, work, search)
   local session = item.session
-  local glyph, glyph_color = status_glyph(session.status, elapsed)
+  local glyph, glyph_color
+  glyph, glyph_color = status_glyph(session.status, elapsed)
   -- A blocked row's text is an attention message, so it keeps the dot's colour;
   -- plain activity is muted, leaving the name the row's visual anchor. v1 draws
   -- the same split.
   local trailing = agent_status_text(session)
-  local trailing_color = glyph_color
+  local trailing_color
+  trailing_color = glyph_color
   if session.status ~= "blocked" then
     trailing_color = theme.muted
   end
