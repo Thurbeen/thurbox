@@ -45,6 +45,15 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ("CLAUDE.md", include_str!("../../ui/CLAUDE.md")),
     ("GEMINI.md", include_str!("../../ui/GEMINI.md")),
     ("layout.lua", include_str!("../../ui/layout.lua")),
+    // Not code either: the API as lua-language-server types. It ships because a
+    // pane is edited in the user's own interface directory, and luals loads a
+    // `---@meta` file that is simply *in* the workspace — so delivering it is
+    // what gives an author (or an agent) `lua-language-server --check .` there
+    // with no config to write. Nothing requires it; the VM never sees it.
+    (
+        "lib/thurbox.d.lua",
+        include_str!("../../ui/lib/thurbox.d.lua"),
+    ),
     ("lib/theme.lua", include_str!("../../ui/lib/theme.lua")),
     ("lib/widgets.lua", include_str!("../../ui/lib/widgets.lua")),
     ("lib/tree.lua", include_str!("../../ui/lib/tree.lua")),

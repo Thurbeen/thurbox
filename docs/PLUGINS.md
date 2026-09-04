@@ -343,6 +343,43 @@ them every withheld capability is declared absent, so reaching for one is a lint
 error rather than a nil-index at the moment someone opens your pane. `stylua ui`
 formats. All three run in CI; selene and stylua also run on commit.
 
+## Names, checked before you run
+
+Absence is the loud half. The quiet half is everything that *is* there and is
+simply misspelt: `convert.rs` drops a node key it does not know (deliberately —
+that is how you carry your own bookkeeping on the node table), `command` reads a
+fixed list of option names and collects the rest into an event payload, and a
+theme role no palette defines is nil. All three render something plausible and
+report nothing.
+
+`ui/lib/thurbox.d.lua` is those names written down as lua-language-server types:
+every node prop and the values it accepts, `ctx`, the `hit`/`key`/`wheel`
+payloads, the declaration table, every published `thurbox.*` row, every command
+verb's options, and the theme roles. `.luarc.json` loads it, so an editor opened
+on the repository — or on your own interface directory — has it already.
+
+lua-language-server will not flag an **extra** key in a table constructor, so the
+file is written to catch a typo the other way round:
+
+```lua
+---@type thurbox.TextNode
+local row = { type = "text", txet = "hello" }
+-- Missing required fields in type `thurbox.TextNode`: `text`
+
+command("open", { url = "https://example.com" })
+-- Missing required fields in type `thurbox.cmd.Open`: `text`
+
+local colour = theme.warning
+-- Undefined field `warning`.
+```
+
+The first needs the `---@type` line: without an annotation there is no type to
+check the table against. The second and third need nothing — `command` and
+`lib/theme.lua` are typed already.
+
+Those three examples are literally `tests/fixtures/lua_types/`, and
+`scripts/ci/check-lua-types.sh` fails if any of them stops being reported.
+
 ## The four node kinds
 
 `text`, `box`, `input`, `surface`. That is the whole vocabulary, and it is meant

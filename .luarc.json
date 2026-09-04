@@ -16,14 +16,17 @@
       "state",
       "store",
       "files",
-      "require"
+      "require",
+      "run"
     ],
     "disable": [
       "lowercase-global"
     ]
   },
   "workspace": {
-    "library": [],
+    "library": [
+      "ui/lib/thurbox.d.lua"
+    ],
     "checkThirdParty": false
   }
 }

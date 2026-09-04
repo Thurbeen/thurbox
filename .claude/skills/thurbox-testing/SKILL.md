@@ -38,8 +38,14 @@ kernel over the real `ui/`** rather than a harness that imitates either:
 - **`tests/kernel_limits.rs`** — instruction and memory ceilings, in their own file
   because they mutate process-wide limits.
 - **Lua statics** — `selene ui` (undefined names + the sandbox, via `thurbox.yml`),
-  `lua-language-server --check` (types + withheld libraries), `stylua` (format).
-  The three cover different halves; see **Linting & Formatting**.
+  `lua-language-server --check` (types + withheld libraries, via
+  `ui/lib/thurbox.d.lua`), `stylua` (format). The three cover different halves;
+  see **Linting & Formatting**.
+- **`scripts/ci/check-lua-types.sh`** — the definitions' own test. Three panes in
+  `tests/fixtures/lua_types/` each misspell one thing the plugin API otherwise
+  drops in silence (a node prop, a command option, a theme role) and each must
+  still be reported. `--check ui` proves the panes are clean; this proves the
+  types have teeth. Runs in the Lua Lint job and in `just lint`.
 - **`tests/frames.rs`** — the bundled panes' frames pinned cell for cell, as
   literals in the file (no snapshot tool): the session list grouped, nested,
   windowed, narrow and under double-width names; the selection as a *style*;

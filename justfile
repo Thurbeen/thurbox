@@ -52,6 +52,9 @@ lint:
     # server's install dir, and a missed config reports every injected global as
     # undefined instead of erroring.
     lua-language-server --check ui --configpath "{{ justfile_directory() }}/.luarc.json" --checklevel=Warning
+    # The other direction: three panes that each misspell something, which must
+    # each still come back as a finding.
+    scripts/ci/check-lua-types.sh
 
 # Format the Lua interface in place (the counterpart to `cargo fmt`).
 fmt-lua:

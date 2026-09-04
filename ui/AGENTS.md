@@ -68,6 +68,18 @@ the one that looks like success:
   It compiles, declares its keys, appears in listings, and is absent from the
   screen. `check` prints the `layout.lua` line to add.
 
+`check` loads; it does not read names. The mistakes it cannot see are the quiet
+ones — a node prop the kernel drops, a command option no verb reads, a theme role
+no palette defines — and `lib/thurbox.d.lua` is what turns those into findings:
+
+```bash
+lua-language-server --check . --checklevel=Warning
+```
+
+Annotate the node you build (`---@type thurbox.TextNode` above the table) so a
+misspelt prop reads back as a missing required field. An **extra** key is never
+reported, so the annotation is what does the work.
+
 ## Adding a pane is two edits
 
 The plugin file, **and** its slot in `layout.lua`. A pane names a slot; the

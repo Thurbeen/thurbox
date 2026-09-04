@@ -14,6 +14,9 @@ layout.lua      the arrangement: which slots exist, and where
 lib/            shared helpers — widgets, theme roles, fuzzy match, text input,
                 border chrome, modal shells, scrolling, and the session-list
                 and repo-picker models
+lib/thurbox.d.lua   the API as types: node props, ctx, the event payloads, every
+                published `thurbox.*` row, every command verb's options, and the
+                theme roles. Declarations only — nothing loads it at runtime
 plugins/        the panes themselves, loaded in filename order
 ```
 
@@ -185,6 +188,35 @@ interactive program pane is asked for through `command`, which every plugin has.
 they are *missing* — `os.time()` is an `attempt to index a nil value`, not a
 permission error. `selene` catches this at lint time via `thurbox.yml`, which is
 the sandbox written down; run `selene ui` if it is installed.
+
+## Names, checked before you run
+
+The other half of the API fails quietly rather than loudly: `convert.rs` drops a
+node key it does not know (that is how you carry your own bookkeeping on the node
+table), `command` reads a fixed list of option names, and an undefined theme role
+is nil. Each of those draws something plausible and reports nothing.
+
+`lib/thurbox.d.lua` is what turns those into findings. Point an editor at the
+repository (it reads `.luarc.json`) or run the checker over your own directory:
+
+```bash
+lua-language-server --check . --checklevel=Warning
+```
+
+No config to write: `lib/thurbox.d.lua` ships beside the panes, and the checker
+loads a `---@meta` file that is simply in the directory it is checking.
+
+Two habits make it earn its keep:
+
+- **Annotate the node you build**: `---@type thurbox.TextNode` above a table is
+  what lets `txet = "…"` read back as "missing required field `text`". Without
+  an annotation there is no type to check against.
+- **Name a verb's options as the verb spells them.** `command("open", { url = u })`
+  is the classic: the url goes in `text`, and `url` is collected and ignored.
+
+Extra keys in a table are never reported — lua-language-server does not flag
+them — which is why each kind and each verb declares the field it cannot work
+without, so a misspelling reads as that field missing.
 
 ## Traps
 
