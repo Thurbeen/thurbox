@@ -81,6 +81,10 @@ jobs:
               - 'thurbox.yml'
               - 'stylua.toml'
               - '.luarc.json'
+              # The probes that hold the type definitions to their job, and the
+              # script that runs them.
+              - 'tests/fixtures/lua_types/**'
+              - 'scripts/ci/check-lua-types.sh'
               - '.github/workflows/ci.yml'
             website:
               - 'website/**'
@@ -398,6 +402,11 @@ jobs:
         # silently not found and every injected global reads as undefined — 79
         # phantom findings rather than an error saying the config was missed.
         run: lua-language-server --check ui --configpath "$PWD/.luarc.json" --checklevel=Warning
+      - name: Check the type definitions still catch a typo
+        # The complement to the step above: `--check ui` proves the bundled
+        # panes are clean, which definitions describing nothing would also
+        # achieve. These probes prove the definitions have teeth.
+        run: scripts/ci/check-lua-types.sh
 
   website-lint:
     name: Website Lint

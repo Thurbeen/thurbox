@@ -6,6 +6,13 @@
 # things at once: that the Lua is sound, and that it stays inside the sandbox.
 std = "thurbox"
 
+# The type definitions are declarations, not code: nothing loads
+# `lib/thurbox.d.lua` into the VM, and describing a global means *assigning* it,
+# which is the one thing the sandbox forbids of a plugin. Linting it against the
+# sandbox would therefore reject the file for saying exactly what the sandbox
+# is. `lua-language-server` checks it instead — see `scripts/ci/check-lua-types.sh`.
+exclude = ["ui/lib/thurbox.d.lua"]
+
 [lints]
 # A plugin is one file returning one table; the kernel calls its fields. Nothing
 # else references them, which is not "unused".

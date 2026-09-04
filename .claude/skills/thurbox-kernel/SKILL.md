@@ -170,6 +170,23 @@ examples to read and copy from, not a catalogue thurbox maintains for anyone —
 `check` fails on a pane that **loaded but which no arrangement places** — the only
 failure with no symptom — and prints the `layout.lua` line to add.
 
+`ui/lib/thurbox.d.lua` is the API as lua-language-server types — node props and
+their allowed values, `ctx`, the `hit`/`key`/`wheel` payloads, the declaration
+table, every published `thurbox.*` row shape, every `command` verb's options, and
+the theme roles. It is declarations only; nothing loads it into the VM (which is
+why `selene.toml` excludes it — describing a global means assigning one, and that
+is the one thing the sandbox forbids). Keep it in step with `node.rs`/`convert.rs`,
+`host/load.rs`, `host/publish.rs`, `command/mod.rs` and `theme.rs`, the same way
+`thurbox.yml` is kept in step with `LuaHost::publish`.
+
+Two shapes do the catching, because lua-language-server does **not** flag an extra
+key in a table constructor: every kind and every verb declares the field it cannot
+work without (a misspelt one reads as `missing-fields`), and every field drawn from
+a fixed set is spelled as that set (a misspelt value is `assign-type-mismatch`).
+`tests/fixtures/lua_types/` holds three panes that each make one of those mistakes
+and `scripts/ci/check-lua-types.sh` fails when any of them stops being reported —
+the counterpart to `--check ui`, which only proves the bundled panes are clean.
+
 The directory ships its own guidance for whoever edits it: `README.md` is the
 reference, and **`AGENTS.md`** is the operational half a coding CLI loads as context
 without being asked — which is what stops "install this plugin" being read as a

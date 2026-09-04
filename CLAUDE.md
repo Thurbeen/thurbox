@@ -113,6 +113,7 @@ stylua ui                            # Lua format (stylua.toml); --check in CI
 # silently not found, and then reports every injected global as undefined (79
 # phantom findings). `just lint` passes an absolute one:
 lua-language-server --check ui --configpath "$PWD/.luarc.json" --checklevel=Warning
+scripts/ci/check-lua-types.sh        # the definitions' own test (see below)
 ```
 
 Three tools on `ui/`, chosen to match what the Lua ecosystem actually gates on —
@@ -129,6 +130,28 @@ The split is not redundancy: selene's `removed:` works on plain functions but no
 on a table's fields, and luals' `runtime.builtin` disables whole libraries but
 cannot drop a single base function. Verified by probing every withheld capability
 against both.
+
+**`ui/lib/thurbox.d.lua` is the API as types**, and is what gives luals something
+to check names against: node props and their allowed values, `ctx`, the
+`hit`/`key`/`wheel` payloads, the declaration table, every published `thurbox.*`
+row, every `command` verb's options, and the theme roles. Declarations only —
+nothing loads it into the VM, which is why `selene.toml` excludes it (describing a
+global means assigning one, the single thing the sandbox forbids a plugin).
+
+`.luarc.json` names it in `workspace.library` for an editor opened at the
+repository root. `--check ui` does not need that entry — luals loads a `---@meta`
+file that is inside the workspace it is checking — which is also why the file
+ships in `BUNDLED` and works in a user's own interface directory with no config
+at all. The relative library path resolves against the workspace ROOT, not the
+working directory, so it is spelled for the root the repository is opened at.
+
+luals will **not** flag an extra key in a table constructor, so the file catches a
+typo the other way round: each kind and each verb declares the field it cannot work
+without, so a misspelt one reads as `missing-fields`, and each field drawn from a
+fixed set is spelled as that set, so a misspelt value is `assign-type-mismatch`.
+`scripts/ci/check-lua-types.sh` runs three panes from `tests/fixtures/lua_types/`
+that each make one of those mistakes and fails if any stops being reported —
+`--check ui` alone would also pass against a file describing nothing.
 
 **`thurbox.yml` is the plugin sandbox, checked statically.** It is selene's
 standard library for `ui/`, and it deliberately declares **no `base:`** — it lists

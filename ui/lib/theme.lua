@@ -10,6 +10,25 @@
 -- never heard of your theme. A plugin that hardcodes "#5fafff" opts out of all
 -- of that, which is why nothing here hands one out.
 
+--- Declared so the shorthands the metatable serves are checkable: `__index`
+--- answers nil for a name it does not know, so without this a misspelt one is a
+--- run that renders in the terminal's default colour and looks deliberate. The
+--- full role vocabulary is `thurbox.Role` in `thurbox.d.lua`; these are the
+--- short names, and the two are kept in step by SHORTHAND below.
+---@class thurbox.ThemeLib
+---@field accent thurbox.Color?
+---@field accent_bright thurbox.Color?
+---@field muted thurbox.Color?
+---@field text thurbox.Color?
+---@field secondary thurbox.Color?
+---@field ok thurbox.Color?
+---@field warn thurbox.Color?
+---@field bad thurbox.Color?
+---@field info thurbox.Color?
+---@field border thurbox.Color?
+---@field border_focused thurbox.Color?
+---@field branch thurbox.Color?
+---@field hint thurbox.Color?
 local theme = {}
 
 -- Resolved on access so a theme change is picked up on the next frame, and
@@ -34,6 +53,8 @@ end
 ---
 --- nil is deliberate: an undefined role must render as "no colour", never as an
 --- arbitrary one that looks deliberate.
+---@param name thurbox.Role
+---@return thurbox.Color?
 function theme.role(name)
   return roles()[name]
 end
@@ -89,6 +110,8 @@ local STATUS_ROLES = {
 ---
 --- Colour comes from the theme's own status roles, so a theme that recolours
 --- "blocked" recolours it here without this file changing.
+---@param name thurbox.Status
+---@return { glyph: string, color: thurbox.Color? }
 function theme.status(name)
   return {
     glyph = STATUS_GLYPHS[name] or STATUS_GLYPHS.idle,
@@ -115,20 +138,27 @@ theme.spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 --- and only while something is animating, so a spinner advancing faster than the
 --- clock would skip frames and one advancing slower would be re-rendered for no
 --- visible change.
+---@param elapsed number?
+---@return string
 function theme.spinner_frame(elapsed)
   local frame = math.floor((elapsed or 0) * 8) % #theme.spinner + 1
   return theme.spinner[frame]
 end
 
+---@param text string
+---@return thurbox.Span
 function theme.dim(text)
   return { text = text, style = { fg = theme.muted } }
 end
 
+---@param text string
+---@return thurbox.Span
 function theme.heading(text)
   return { text = text, style = { fg = theme.accent, bold = true } }
 end
 
 --- The active theme's identifier, for anything that wants to show it.
+---@return string
 function theme.name()
   return (thurbox and thurbox.theme and thurbox.theme.name) or "default"
 end
