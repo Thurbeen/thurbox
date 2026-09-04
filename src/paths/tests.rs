@@ -678,18 +678,25 @@ fn no_unit_test_temp_dir_outlives_the_test_process() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    // Scanned as a substring rather than line-by-line: with --nocapture the
+    // harness's own "test <name> ... " / "ok" progress text shares stdout
+    // with the test's println! on the same fd, unsynchronized, so a marker
+    // can land mid-line (e.g. "...okTEMP_SANDBOX=/tmp/..." or "... ...
+    // TEMP_SANDBOX=/tmp/...\nok") rather than as a line of its own.
+    const MARKER: &str = "TEMP_SANDBOX=";
     let mut reported = 0;
-    for line in stdout.lines() {
-        let Some(path) = line.strip_prefix("TEMP_SANDBOX=") else {
-            continue;
-        };
-        let path = Path::new(path.trim_end());
+    let mut rest: &str = &stdout;
+    while let Some(start) = rest.find(MARKER) {
+        let after = &rest[start + MARKER.len()..];
+        let end = after.find(char::is_whitespace).unwrap_or(after.len());
+        let path = Path::new(&after[..end]);
         assert!(
             !path.exists(),
             "a temp dir outlived the test process that made it: {}",
             path.display()
         );
         reported += 1;
+        rest = &after[end..];
     }
     assert_eq!(
         reported,
