@@ -1329,13 +1329,17 @@ fn the_granted_capability_set_matches_a_declared_list() {
     // Capabilities are introduced with their consumer, never
     // ahead of one. This is the tripwire — a new global in the plugin
     // environment has to be added here deliberately.
-    const GRANTED: [&str; 6] = [
+    const GRANTED: [&str; 7] = [
         "require", "state", "store", "command", "thurbox",
         // Two rooted reads — directory entries and a file's text — confined to
         // a session's working directory. NOT a filesystem: there is no open,
         // no write, no path outside the root. Granted with its consumer (the
         // file viewer).
         "files",
+        // Display width, which Lua cannot compute for itself: `#` counts bytes
+        // and `utf8.len` counts codepoints. Pure measurement — it reads
+        // nothing and reaches nothing.
+        "text",
     ];
 
     let dir = tempfile::tempdir().expect("tempdir");

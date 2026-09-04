@@ -13,9 +13,11 @@
 -- function here therefore mutates in place and returns whether it consumed the
 -- key.
 --
--- `cursor` counts CHARACTERS before the caret, not bytes — the kernel's caret is
--- placed by character offset, and a path with an accent in it must not put the
--- caret in the wrong column.
+-- `cursor` counts CHARACTERS before the caret, not bytes and not columns — the
+-- kernel's caret is placed by character offset, and a path with an accent in it
+-- must not put the caret in the wrong column. `widgets.chars` is that count;
+-- `widgets.len` is the column width every layout budgets in, and using it here
+-- would misplace the caret in exactly the double-width text it exists for.
 --
 -- One chord v1 has is missing, and cannot be had: `ctrl+h` (delete backwards) is
 -- reserved by the kernel for moving focus, so it never reaches a plugin.
@@ -42,13 +44,13 @@ end
 
 function textinput.new(value)
   local text = value or ""
-  return { value = text, cursor = widgets.len(text) }
+  return { value = text, cursor = widgets.chars(text) }
 end
 
 --- Replace the contents, caret at the end — how a field is prefilled.
 function textinput.set(field, value)
   field.value = value or ""
-  field.cursor = widgets.len(field.value)
+  field.cursor = widgets.chars(field.value)
   return field
 end
 
@@ -62,7 +64,7 @@ function textinput.insert(field, text)
   end
   local before, after = split(field)
   field.value = before .. text .. after
-  field.cursor = field.cursor + widgets.len(text)
+  field.cursor = field.cursor + widgets.chars(text)
   return field
 end
 
@@ -98,11 +100,11 @@ local function control(field, key)
   if name == "a" then
     field.cursor = 0
   elseif name == "e" then
-    field.cursor = widgets.len(field.value)
+    field.cursor = widgets.chars(field.value)
   elseif name == "b" then
     field.cursor = math.max(0, field.cursor - 1)
   elseif name == "f" then
-    field.cursor = math.min(widgets.len(field.value), field.cursor + 1)
+    field.cursor = math.min(widgets.chars(field.value), field.cursor + 1)
   elseif name == "d" then
     local before, after = split(field)
     if after ~= "" then
@@ -135,7 +137,7 @@ function textinput.key(field, key)
     -- A modifier chord that is not a line edit is still swallowed rather than
     -- typed, but only for letters: `ctrl+p` and friends belong to the pane, and
     -- it declares them as actions so they never arrive here at all.
-    if key.ctrl and not key.alt and key.char and widgets.len(key.char) == 1 then
+    if key.ctrl and not key.alt and key.char and widgets.chars(key.char) == 1 then
       return control(field, key)
     end
     return false
@@ -159,13 +161,13 @@ function textinput.key(field, key)
     field.cursor = math.max(0, field.cursor - 1)
     return true
   elseif name == "right" then
-    field.cursor = math.min(widgets.len(field.value), field.cursor + 1)
+    field.cursor = math.min(widgets.chars(field.value), field.cursor + 1)
     return true
   elseif name == "home" then
     field.cursor = 0
     return true
   elseif name == "end" then
-    field.cursor = widgets.len(field.value)
+    field.cursor = widgets.chars(field.value)
     return true
   elseif name == "space" then
     textinput.insert(field, " ")
@@ -174,7 +176,7 @@ function textinput.key(field, key)
 
   -- Anything that produced a character is typed, which is what makes a path
   -- with `~`, `/` or a digit in it work without listing them.
-  if key.char and not key.ctrl and widgets.len(key.char) == 1 then
+  if key.char and not key.ctrl and widgets.chars(key.char) == 1 then
     textinput.insert(field, key.char)
     return true
   end

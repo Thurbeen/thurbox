@@ -194,8 +194,8 @@ end
 
 -- --- text measurement ------------------------------------------------------
 --
--- `widgets.len`/`pad` are utf8-aware; `#` is not, and every glyph below is
--- multi-byte.
+-- `widgets.len`/`pad` measure in terminal COLUMNS, which is what a border
+-- budget is spent in; `#` counts bytes and every glyph below is multi-byte.
 
 --- v1's `ui::fit_right_title`: clamp a right-aligned title to what the tab strip
 --- on the left of the same border leaves it — the border minus its two corners,
@@ -454,9 +454,9 @@ local function compact_chord(chord)
     modifiers = modifiers .. symbol
     key = rest
   end
-  if widgets.len(key) == 1 then
+  if widgets.chars(key) == 1 then
     key = string.upper(key)
-  elseif widgets.len(key) > 1 then
+  elseif widgets.chars(key) > 1 then
     key = string.upper(string.sub(key, 1, 1)) .. string.sub(key, 2)
   end
   return modifiers .. key

@@ -400,6 +400,19 @@ globals:
     args:
       - type: "..."
 
+  # Display width, which Lua cannot compute: `#` counts bytes and `utf8.len`
+  # counts codepoints, and a terminal budget is columns. Backed by the same
+  # `unicode-width` the painter measures with.
+  text.width:
+    args:
+      - type: "..."
+  text.truncate:
+    args:
+      - type: "..."
+  text.pad:
+    args:
+      - type: "..."
+
   # Loads `lib/*.lua`, and nothing outside the plugin directory.
   require:
     args:

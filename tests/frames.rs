@@ -32,6 +32,7 @@ use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::paint::{render, PlaceholderSurfaces, ProgramPaint, SurfaceProvider};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
+use thurbox::kernel::terminal::AgentMeta;
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
@@ -69,17 +70,27 @@ fn publish_hovered(
     snapshot: &Snapshot,
     hovered: Option<&thurbox::kernel::node::Identity>,
 ) {
-    publish_inner(host, snapshot, &HashMap::new(), hovered);
+    publish_inner(host, snapshot, &HashMap::new(), &HashMap::new(), hovered);
 }
 
 fn publish_with(host: &LuaHost, snapshot: &Snapshot, attach_errors: &HashMap<String, String>) {
-    publish_inner(host, snapshot, attach_errors, None);
+    publish_inner(host, snapshot, attach_errors, &HashMap::new(), None);
+}
+
+fn publish_meta(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    attach_errors: &HashMap<String, String>,
+    meta: &HashMap<String, AgentMeta>,
+) {
+    publish_inner(host, snapshot, attach_errors, meta, None);
 }
 
 fn publish_inner(
     host: &LuaHost,
     snapshot: &Snapshot,
     attach_errors: &HashMap<String, String>,
+    meta: &HashMap<String, AgentMeta>,
     hovered: Option<&thurbox::kernel::node::Identity>,
 ) {
     let themes = themes();
@@ -96,7 +107,7 @@ fn publish_inner(
         diffs: &diffs,
         links: &Default::default(),
         content: &Default::default(),
-        meta: &Default::default(),
+        meta,
         metrics: &Default::default(),
         status_rows: 0,
         can_open: true,
@@ -366,6 +377,35 @@ fn the_session_list_keeps_its_columns_under_double_width_names() {
 }
 
 #[test]
+fn a_double_width_name_budgets_the_status_by_the_columns_it_takes() {
+    // The trailing status is budgeted against what the name left of the row.
+    // A CJK name spends two columns per character, so a budget counted in
+    // characters is six columns too generous here: the status overruns the
+    // row and the clip shears it, dropping the very mark that says it was
+    // cut.
+    let host = host();
+    let world = snapshot(vec![row("修复终端宽度", "thurbox", "idle")]);
+    let meta = HashMap::from([(
+        world.sessions[0].id.clone(),
+        AgentMeta {
+            activity: Some("waiting for your review".to_string()),
+            notification: None,
+        },
+    )]);
+    publish_meta(&host, &world, &HashMap::new(), &meta);
+    assert_frame(
+        &text(&paint(&host, "sessions", 40, 5, true)),
+        &[
+            "╭ Sessions ───────────────────────────○╮",
+            "│── thurbox ───────────────────────────│",
+            "│ ○ ⑂ 修复终端宽度  waiting for your r…│",
+            "│                                      │",
+            "╰──────────────────────────────────────╯",
+        ],
+    );
+}
+
+#[test]
 fn the_session_list_truncates_rather_than_overflows_when_narrow() {
     let host = host();
     publish(&host, &sample());
@@ -584,6 +624,28 @@ fn the_agent_pane_before_its_session_is_attached() {
             "│                       not attached                       │",
             "│                                                          │",
             "│                                                          │",
+            "╰──────────────────────────────────────────────────────────╯",
+        ],
+    );
+}
+
+#[test]
+fn the_agent_pane_closes_its_border_over_a_double_width_name() {
+    // The title is fitted to the columns the border has left, and a CJK name
+    // spends two of them per character. Measured in characters the title is
+    // wider than its budget, and the corner drawn afterwards lands on top of
+    // the very ellipsis that says the branch was cut.
+    let host = host();
+    let world = snapshot(vec![row("修复终端宽度", "thurbox", "idle")]);
+    publish(&host, &world);
+    host.render(index_of(&host, "sessions"), ctx(40, 12, true))
+        .expect("render list");
+    assert_frame(
+        &text(&paint(&host, "agent", 60, 4, true)),
+        &[
+            "╭ ◀ F9 ─ Agent ─ Shell · F8 ── 修复终端宽度 (claude) [feat…╮",
+            "│                     terminal surface                     │",
+            "│                       修复终端宽度                       │",
             "╰──────────────────────────────────────────────────────────╯",
         ],
     );

@@ -176,6 +176,17 @@ examples to read and copy from, not a catalogue thurbox maintains for anyone —
 `check` fails on a pane that **loaded but which no arrangement places** — the only
 failure with no symptom — and prints the `layout.lua` line to add.
 
+**Measuring text is the kernel's job** (`host::api::install_text`). The `text`
+global gives a plugin `text.width(s)`, `text.truncate(s, cols, opts)` and
+`text.pad(s, cols, align)`, all in terminal COLUMNS and all backed by the same
+`unicode-width` the painter measures with. Lua cannot compute this: `#` counts
+bytes, `utf8.len` counts codepoints, and a CJK glyph is one codepoint over two
+columns — so a budget counted either way sheared every row with a double-width
+name in it. `ui/lib/widgets.lua` forwards to it (`widgets.len`, `truncate`,
+`truncate_hard`, `keep_left`, `keep_right`, `middle_truncate`, `pad`), and
+`widgets.chars` is the separate codepoint count a CARET needs, since
+`input.cursor` is a character offset.
+
 `ui/lib/thurbox.d.lua` is the API as lua-language-server types — node props and
 their allowed values, `ctx`, the `hit`/`key`/`wheel` payloads, the declaration
 table, every published `thurbox.*` row shape, every `command` verb's options, and

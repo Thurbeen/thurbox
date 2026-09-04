@@ -230,6 +230,12 @@ These are the ones that cost real time.
   designed to be called on every render: a fresh answer is a table lookup, not a
   process. Do not try to call them "only once" — you will get a pane that never
   updates.
+- **Measure in columns, not characters.** `#s` is bytes and `utf8.len(s)` is
+  codepoints; a terminal budget is neither, and a CJK name is one codepoint over
+  two columns. `text.width(s)` is the measure the painter itself uses, and
+  `text.truncate` / `text.pad` (or the `widgets` helpers that forward to them)
+  spend a budget in it. The exception is `input.cursor`, which is a CHARACTER
+  offset — `widgets.chars` is that count.
 - **The answer is not there yet.** `run` returns nothing useful on the frame you
   ask. Read `thurbox.runs[key]` and handle `nil` and `state ~= "done"` — a pane
   that assumes the answer is present renders an error on its first frame.

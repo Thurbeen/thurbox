@@ -60,40 +60,36 @@ function widgets.window(count, height, selected)
   return first, last, first > 1, last < count
 end
 
---- Length in characters, not bytes.
+--- Width in terminal COLUMNS — what every layout here budgets in.
 ---
---- Lua's `#` is a byte count, so "Rosé Pine" measures 10 and pads a column
---- short. This is still not display *width* — a CJK or emoji character occupies
---- two columns and counts as one here — but it is right for the Latin text the
---- bundled panes show. True width belongs in the kernel, which already has
---- unicode-width linked.
-function widgets.len(text)
-  return utf8 and utf8.len(text) or #text
+--- Lua has no way to compute this: `#` counts bytes and `utf8.len` counts
+--- codepoints, and a CJK glyph is one codepoint over two columns while a
+--- combining mark is one codepoint over none. So the kernel measures, with the
+--- same `unicode-width` the painter uses, and a budget computed here agrees
+--- with what lands on the screen.
+---
+--- Use `widgets.chars` instead for a caret: `input.cursor` is a CHARACTER
+--- offset, and columns would put it in the wrong place in exactly the text
+--- this function exists for.
+---@param str string
+---@return integer
+function widgets.len(str)
+  return text.width(str)
 end
 
---- Byte offset of the character at position `n`, for safe substring cuts.
-local function offset(text, n)
-  if not utf8 then
-    return n
-  end
-  return (utf8.offset(text, n + 1) or (#text + 1)) - 1
+--- Count of characters, for the one job columns cannot do: placing a caret.
+---@param str string
+---@return integer
+function widgets.chars(str)
+  return utf8.len(str) or #str
 end
 
---- Truncate to `width` characters, marking the cut with an ellipsis.
-function widgets.truncate(text, width)
-  if width <= 0 then
-    return ""
-  end
-  if widgets.len(text) <= width then
-    return text
-  end
-  if width == 1 then
-    return "…"
-  end
-  return string.sub(text, 1, offset(text, width - 1)) .. "…"
+--- Truncate to `width` columns, marking the cut with an ellipsis.
+function widgets.truncate(str, width)
+  return text.truncate(str, width)
 end
 
---- Truncate to `max` characters, marking the cut with an ellipsis — but return
+--- Truncate to `max` columns, marking the cut with an ellipsis — but return
 --- NOTHING at `max <= 1` rather than a bare `…`.
 ---
 --- v1's `ui::truncate_ellipsis`, and the counterpart to `widgets.truncate`
@@ -107,47 +103,31 @@ end
 --- explaining why it was not `widgets.truncate`. That is the signal that the
 --- library was missing a variant, not that the callers were wrong — so it lives
 --- here now and the forks are gone.
-function widgets.truncate_hard(text, max)
-  if widgets.len(text) <= max then
-    return text
-  end
-  if max <= 1 then
+function widgets.truncate_hard(str, max)
+  if max <= 1 and text.width(str) > max then
     return ""
   end
-  return string.sub(text, 1, offset(text, max - 1)) .. "…"
+  return text.truncate(str, max)
 end
 
---- Keep the FIRST `max` characters, adding nothing.
+--- Keep the FIRST `max` columns, adding nothing.
 ---
 --- What a left-aligned border title does when it overruns its area: ratatui
 --- truncates the far side and marks the cut in no way at all. Use this when you
 --- are MATCHING that behaviour; use `truncate`/`truncate_hard` when you are
 --- telling the reader something was cut.
-function widgets.keep_left(text, max)
-  if max <= 0 then
-    return ""
-  end
-  if widgets.len(text) <= max then
-    return text
-  end
-  return string.sub(text, 1, offset(text, max))
+function widgets.keep_left(str, max)
+  return text.truncate(str, max, "")
 end
 
---- Keep the LAST `max` characters.
+--- Keep the LAST `max` columns.
 ---
 --- What a right-aligned border title does when it overruns: ratatui's
 --- `Line::render_with_alignment` skips from the left, so the title shrinks
 --- toward the right edge. v1's recorded frame shows exactly this — a 42-char
 --- title in a 40-wide pane renders as `╭-osc52 (claude) …`.
-function widgets.keep_right(text, max)
-  if max <= 0 then
-    return ""
-  end
-  local count = widgets.len(text)
-  if count <= max then
-    return text
-  end
-  return string.sub(text, offset(text, count - max) + 1)
+function widgets.keep_right(str, max)
+  return text.truncate(str, max, { ellipsis = "", side = "left" })
 end
 
 --- Truncate in the MIDDLE, keeping both ends.
@@ -158,33 +138,16 @@ end
 --- column it had on boilerplate and cut off the only part that identifies the
 --- repository. Falls back to end-truncation below eight columns, where there is
 --- not room for two halves and an ellipsis.
-function widgets.middle_truncate(text, width)
-  if width <= 0 then
-    return ""
-  end
-  if widgets.len(text) <= width then
-    return text
-  end
+function widgets.middle_truncate(str, width)
   if width < 8 then
-    return widgets.truncate(text, width)
+    return text.truncate(str, width)
   end
-  -- The tail gets the larger share of an odd remainder: it carries the leaf.
-  local keep = width - 1
-  local head = math.floor(keep / 2)
-  local tail = keep - head
-  local len = widgets.len(text)
-  return string.sub(text, 1, offset(text, head))
-    .. "…"
-    .. string.sub(text, offset(text, len - tail) + 1)
+  return text.truncate(str, width, { side = "middle" })
 end
 
---- Pad `text` out to `width` characters.
-function widgets.pad(text, width)
-  local short = width - widgets.len(text)
-  if short <= 0 then
-    return text
-  end
-  return text .. string.rep(" ", short)
+--- Pad `str` out to `width` columns.
+function widgets.pad(str, width)
+  return text.pad(str, width)
 end
 
 --- A row's text as a LIST of spans, whatever shape it arrived in.
@@ -209,8 +172,8 @@ local function span_list(spans)
 end
 
 --- An overflow marker: a row of its own, never drawn over one.
-local function overflow_marker(text)
-  return { type = "text", len = 1, text = theme.dim(text), role = "overflow" }
+local function overflow_marker(label)
+  return { type = "text", len = 1, text = theme.dim(label), role = "overflow" }
 end
 
 --- The visible window, plus which overflow markers fit beside it.
