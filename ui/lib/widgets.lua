@@ -207,30 +207,76 @@ local function span_list(spans)
   return spans
 end
 
+--- An overflow marker: a row of its own, never drawn over one.
+local function overflow_marker(text)
+  return { type = "text", len = 1, text = theme.dim(text), role = "overflow" }
+end
+
+--- The visible window, plus which overflow markers fit beside it.
+---
+--- A marker is a row, so it costs a line the rows would otherwise have had —
+--- and giving up that line can push a further row out of view, which calls for
+--- the second marker too. Hence two passes rather than one subtraction.
+---
+--- What comes back is always a sub-range of `widgets.window` for the same
+--- height, which is what lets a pane build spans against that wider window and
+--- know the list reads no row it skipped.
+---
+--- A list with no line to spare — one or two rows with both ends hidden —
+--- shows rows and no markers: a strip made entirely of "N more" says nothing.
+local function marked_window(count, height, selected)
+  if count <= height then
+    return 1, count, false, false
+  end
+  for markers = 1, 2 do
+    if height - markers < 1 then
+      break
+    end
+    local first, last, above, below = widgets.window(count, height - markers, selected)
+    if (above and 1 or 0) + (below and 1 or 0) <= markers then
+      return first, last, above, below
+    end
+  end
+  local first, last = widgets.window(count, height, selected)
+  return first, last, false, false
+end
+
 --- A scrollable list of rows.
 ---
 --- Each row is `{ spans = <text>, id =, class =, role = }` or a plain string.
 --- Rows get identity by default (`role = "row"`), so decoration and event
 --- targeting work without every pane opting in.
 ---
---- opts: rows, selected, height, focused, frame, empty
+--- `len` and `fill` size the returned box. A caller that had to patch a size
+--- onto the table after the call was reaching for the one prop the widget could
+--- not express.
+---
+--- opts: rows, selected, height, frame, empty, len, fill
 function widgets.list(opts)
   local rows = opts.rows or {}
   local height = opts.height or #rows
   local count = #rows
+  local children = {}
 
   if count == 0 then
+    children[1] = { type = "text", text = theme.dim(opts.empty or "  nothing here") }
     return {
       type = "box",
       frame = opts.frame,
-      children = { { type = "text", text = theme.dim(opts.empty or "  nothing here") } },
+      len = opts.len,
+      fill = opts.fill,
+      children = children,
     }
   end
 
   local selected = widgets.clamp(opts.selected, count)
-  local first, last, more_above, more_below = widgets.window(count, height, selected)
+  local first, last, more_above, more_below = marked_window(count, height, selected)
 
-  local children = {}
+  -- The markers bracket the rows and their counts are exact: everything before
+  -- `first` and everything after `last` is hidden, and no row is drawn over.
+  if more_above then
+    children[1] = overflow_marker("  ↑ " .. (first - 1) .. " more")
+  end
   for index = first, last do
     local row = rows[index]
     if type(row) == "string" then
@@ -271,25 +317,17 @@ function widgets.list(opts)
     }
   end
 
-  -- Overflow markers, so a windowed list never silently hides rows.
-  if more_above then
-    children[1] = {
-      type = "text",
-      len = 1,
-      text = theme.dim("  ↑ " .. (first - 1) .. " more"),
-      role = "overflow",
-    }
-  end
   if more_below then
-    children[#children] = {
-      type = "text",
-      len = 1,
-      text = theme.dim("  ↓ " .. (count - last) .. " more"),
-      role = "overflow",
-    }
+    children[#children + 1] = overflow_marker("  ↓ " .. (count - last) .. " more")
   end
 
-  return { type = "box", frame = opts.frame, children = children }
+  return {
+    type = "box",
+    frame = opts.frame,
+    len = opts.len,
+    fill = opts.fill,
+    children = children,
+  }
 end
 
 --- A horizontal bar. Composed from text — not a node kind.

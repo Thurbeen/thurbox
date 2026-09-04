@@ -165,10 +165,11 @@ return {
     local cols = math.min(MODAL_COLS, math.max(4, ctx.width or MODAL_COLS))
     local list = deleted()
     local cursor = cursor_in(list)
-    -- Spans only for the visible window — the same `widgets.window` call the
-    -- list itself makes, so the two agree; off-window entries are placeholders
-    -- whose spans the list never reads. The deleted list can be long after an
-    -- unpurged week, and it shows ten rows.
+    -- Spans only for the visible window — the list's own window is a sub-range
+    -- of this one (it shrinks to make room for the overflow markers), so every
+    -- row it reads has spans; off-window entries are placeholders whose spans
+    -- the list never reads. The deleted list can be long after an unpurged
+    -- week, and it shows ten rows.
     local height = math.max(1, math.min(#list, LIST_MAX))
     local first, last = widgets.window(#list, height, cursor)
     local rows = {}
@@ -183,9 +184,9 @@ return {
       rows = rows,
       selected = cursor,
       height = height,
+      len = height,
       empty = "  No deleted sessions",
     })
-    body.len = height
 
     return modal.frame("Restore Deleted Sessions", {
       cols = cols,
