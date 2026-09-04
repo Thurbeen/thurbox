@@ -377,10 +377,10 @@ end
 local function result_rows(rows, cursor, width, height)
   -- Line numbers are assigned arithmetically first, then spans are built only
   -- for the visible window: every result used to be fully rendered — fuzzy
-  -- spans, truncation and all — for a strip that shows a handful. The window
-  -- is the same `widgets.window` call the list itself makes over the same
-  -- (count, height, selected), so the two agree on which lines are on screen;
-  -- an off-window entry is a placeholder whose spans the list never reads.
+  -- spans, truncation and all — for a strip that shows a handful. The list's
+  -- own window is a sub-range of this one (it shrinks to make room for the
+  -- overflow markers) over the same (count, height, selected), so every line it
+  -- draws has spans; an off-window entry is a placeholder it never reads.
   local entries, selected_line = {}, 1
   local scope = nil
   for index, row in ipairs(rows) do
@@ -500,14 +500,13 @@ return {
     local list_height = math.max(0, height - consumed)
     local lines, selected_line =
       result_rows(rows, search.cursor, math.max(0, width - 4), list_height)
-    local list = widgets.list({
+    children[#children + 1] = widgets.list({
       rows = lines,
       selected = selected_line,
       height = list_height,
+      fill = 1,
       empty = "  nothing matches",
     })
-    list.fill = 1
-    children[#children + 1] = list
 
     return {
       type = "box",

@@ -243,6 +243,38 @@ fn esc_closes_without_restoring_anything() {
 }
 
 #[test]
+fn an_overflowing_list_hides_only_the_rows_its_marker_counts() {
+    // The overflow marker is a ROW, not an overlay: it used to be written over
+    // `children[1]`/`children[#children]`, so the window's own first or last row
+    // vanished under it while the count reported one fewer hidden than there
+    // were. Twelve rows in a ten-line window: nine rows fit beside the marker,
+    // and the marker says three.
+    let host = host();
+    let snapshot = Snapshot {
+        deleted: (1..=12)
+            .map(|n| deleted(&format!("id{n}"), &format!("row-{n:02}"), false))
+            .collect(),
+        taken_at_ms: 7_200_000,
+        ..Snapshot::default()
+    };
+    press_in(&host, &snapshot, PLUGIN, "ctrl+u");
+    let (_, tree) = rendered(&host, &snapshot, PLUGIN);
+
+    let shown: Vec<u32> = (1..=12)
+        .filter(|n| tree.contains(&format!("row-{n:02} (claude)")))
+        .collect();
+    assert_eq!(
+        shown,
+        (1..=9).collect::<Vec<_>>(),
+        "the marker takes a line of its own, it does not eat a row: {tree}"
+    );
+    assert!(
+        tree.contains(&format!("\u{2193} {} more", 12 - shown.len())),
+        "the count is what is actually hidden: {tree}"
+    );
+}
+
+#[test]
 fn a_force_deleted_row_is_tagged_and_asks_before_a_best_effort_restore() {
     // v1 gates this behind `ConfirmRestore`: force-delete removed the worktree
     // directory, so only committed work on the branch comes back. The tag is on

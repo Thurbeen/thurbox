@@ -362,6 +362,11 @@ widgets.panel("title", ctx.focused)
 widgets.gauge(0.7, { width = 20 })
 ```
 
+`widgets.list` sizes itself — pass `len` or `fill` alongside the rows rather
+than patching the returned table — and windows itself: when the rows outrun
+`height` it spends a line of its own on an `↑ N more` / `↓ N more` marker, so
+the count is exactly what you cannot see and no row is drawn over.
+
 `input` carries one thing the other three do not: a claim on the **caret**. A
 screen can hold several fields and the terminal has one cursor, so the field
 being typed into says so with `focused = true` and the others say nothing — and
