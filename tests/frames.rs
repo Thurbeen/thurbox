@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::Frame;
 use ratatui::Terminal;
 
@@ -64,7 +64,24 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
     publish_with(host, snapshot, &HashMap::new());
 }
 
+fn publish_hovered(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    hovered: Option<&thurbox::kernel::node::Identity>,
+) {
+    publish_inner(host, snapshot, &HashMap::new(), hovered);
+}
+
 fn publish_with(host: &LuaHost, snapshot: &Snapshot, attach_errors: &HashMap<String, String>) {
+    publish_inner(host, snapshot, attach_errors, None);
+}
+
+fn publish_inner(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    attach_errors: &HashMap<String, String>,
+    hovered: Option<&thurbox::kernel::node::Identity>,
+) {
     let themes = themes();
     let registry = registry(host);
     let diffs = thurbox::kernel::diff::DiffStore::new();
@@ -89,7 +106,7 @@ fn publish_with(host: &LuaHost, snapshot: &Snapshot, attach_errors: &HashMap<Str
         repos: &repos,
         wants: &Default::default(),
         focus: None,
-        hovered: None,
+        hovered,
     })
     .expect("publish");
 }
@@ -394,6 +411,138 @@ fn the_selection_is_a_style_and_moves_with_j() {
             "⟨LightCyan/Reset/NONE⟩│⟨White/Indexed(24)/BOLD⟩ ○ └ ⑂ fix-osc52-tests                ⟨LightCyan/Reset/NONE⟩│",
         ],
     );
+}
+
+// --- node props -------------------------------------------------------------
+
+/// Convert a Lua node table the way a plugin's return value is converted, then
+/// paint it alone into a fresh buffer.
+fn paint_lua_node(source: &str, width: u16, height: u16) -> Buffer {
+    let lua = mlua::Lua::new();
+    let value: mlua::Value = lua.load(source).eval().expect("the table evaluates");
+    let node = thurbox::kernel::convert::to_node(&value, "plugins/90_test.lua")
+        .expect("the table converts");
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| render(frame, frame.area(), &node, &PlaceholderSurfaces))
+        .expect("draw");
+    terminal.backend().buffer().clone()
+}
+
+#[test]
+fn a_styled_text_node_paints_its_style_across_its_whole_rect() {
+    // What a selection bar is: the row's style covers the rect, so it reaches
+    // the right edge without the pane appending a spacer span sized by hand.
+    let buffer = paint_lua_node(
+        r#"{ text = "hi", style = { fg = "white", bg = 24, bold = true } }"#,
+        10,
+        1,
+    );
+    for x in 0..10 {
+        let cell = &buffer[(x, 0)];
+        assert_eq!(
+            cell.bg,
+            Color::Indexed(24),
+            "cell {x} should carry the band"
+        );
+        assert_eq!(cell.fg, Color::Gray, "cell {x} should carry the band's fg");
+        assert!(cell.modifier.contains(Modifier::BOLD), "cell {x} bold");
+    }
+}
+
+#[test]
+fn a_span_keeps_the_colour_it_names_over_the_node_style() {
+    // The other half of the same contract, and why the pane no longer needs a
+    // `keep_fg` exception list: a search hit names its own foreground and the
+    // bar underneath it supplies only what the span left unsaid.
+    let buffer = paint_lua_node(
+        r#"{
+             style = { fg = "white", bg = 24 },
+             text = { { { text = "ab" }, { text = "cd", style = "green" } } },
+           }"#,
+        6,
+        1,
+    );
+    assert_eq!(buffer[(1, 0)].fg, Color::Gray);
+    assert_eq!(buffer[(2, 0)].fg, Color::Green);
+    assert_eq!(
+        buffer[(2, 0)].bg,
+        Color::Indexed(24),
+        "the band paints through"
+    );
+}
+
+/// A one-off pane in a materialized copy of the bundled interface, so a `lib/`
+/// widget can be held to its painted output without a bundled pane adopting it.
+fn paint_probe(render_body: &str, hovered: Option<&str>, width: u16, height: u16) -> Buffer {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let report = thurbox::kernel::bundled::materialize(dir.path());
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    std::fs::write(
+        dir.path().join("plugins").join("95_probe.lua"),
+        format!(
+            "local widgets = require(\"lib.widgets\")\n\
+             return {{ name = \"probe\", slot = \"center\", focusable = true,\n\
+             render = function(ctx) {render_body} end }}"
+        ),
+    )
+    .expect("write the probe");
+
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let identity = hovered.map(|id| thurbox::kernel::node::Identity {
+        id: Some(id.to_string()),
+        classes: Vec::new(),
+        role: Some("row".to_string()),
+    });
+    publish_hovered(&host, &snapshot(Vec::new()), identity.as_ref());
+
+    let node = host
+        .render(index_of(&host, "probe"), ctx(width, height, true))
+        .expect("the probe renders")
+        .node;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| render(frame, frame.area(), &node, &PlaceholderSurfaces))
+        .expect("draw");
+    terminal.backend().buffer().clone()
+}
+
+const PROBE_LIST: &str = r#"
+    return widgets.list({
+      rows = { { spans = "one", id = "a" }, { spans = "two", id = "b" } },
+      selected = 1,
+      height = ctx.height,
+      selected_style = { bg = 24, fg = "white" },
+      hover_style = { bg = 17 },
+    })
+"#;
+
+#[test]
+fn a_list_paints_its_selected_and_hovered_rows_edge_to_edge() {
+    // The two props that replace hand-padding a spacer span and merging a style
+    // into every span: the row's own style covers its rect, so the bar reaches
+    // the right edge whatever the row says.
+    let buffer = paint_probe(PROBE_LIST, Some("b"), 12, 2);
+    for x in 0..12 {
+        assert_eq!(buffer[(x, 0)].bg, Color::Indexed(24), "selected cell {x}");
+        assert_eq!(buffer[(x, 1)].bg, Color::Indexed(17), "hovered cell {x}");
+    }
+}
+
+#[test]
+fn a_list_without_the_style_props_paints_no_band() {
+    // They are opt-in: a pane that asks for neither gets the marker it always
+    // had and no background at all.
+    let buffer = paint_probe(
+        r#"return widgets.list({ rows = { "one" }, selected = 1, height = ctx.height })"#,
+        None,
+        12,
+        1,
+    );
+    for x in 0..12 {
+        assert_eq!(buffer[(x, 0)].bg, Color::Reset, "cell {x}");
+    }
 }
 
 // --- the agent pane ---------------------------------------------------------

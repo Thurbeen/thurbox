@@ -194,10 +194,14 @@ pub fn render_recording(
             align,
             wrap,
             scroll,
+            style,
             ..
         } => {
             let text: Vec<Line> = lines.iter().map(|runs| to_line(runs)).collect();
-            let mut paragraph = Paragraph::new(text).scroll((*scroll, 0));
+            // The node's style is the paragraph's base: ratatui fills the rect
+            // with it and each run patches over, so a bar reaches the right
+            // edge and a run that names a colour keeps it.
+            let mut paragraph = Paragraph::new(text).style(*style).scroll((*scroll, 0));
             paragraph = match align {
                 Align::Left => paragraph.left_aligned(),
                 Align::Center => paragraph.centered(),

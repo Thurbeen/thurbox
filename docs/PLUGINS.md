@@ -402,7 +402,23 @@ widgets.gauge(0.7, { width = 20 })
 `widgets.list` sizes itself — pass `len` or `fill` alongside the rows rather
 than patching the returned table — and windows itself: when the rows outrun
 `height` it spends a line of its own on an `↑ N more` / `↓ N more` marker, so
-the count is exactly what you cannot see and no row is drawn over.
+the count is exactly what you cannot see and no row is drawn over. Give it
+`selected_style` and `hover_style` and it puts them on the row itself, which is
+the `text` style below.
+
+A `text` node takes a **`style` of its own**, painted across its whole rect
+before the spans go on top:
+
+```lua
+{ type = "text", style = { bg = theme.role("selection_bg"), bold = true },
+  text = { spans } }
+```
+
+That is what a selection bar or a hover band is. The style reaches the right
+edge of the rect whatever the spans say, so nothing has to append a spacer span
+sized by hand — and a span that names a colour keeps it, because the node style
+only supplies what a span left unsaid. A search highlight therefore stays
+visible on the selected row with the bar painting through it.
 
 `input` carries one thing the other three do not: a claim on the **caret**. A
 screen can hold several fields and the terminal has one cursor, so the field

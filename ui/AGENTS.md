@@ -7,6 +7,12 @@ file reloads it; there is no build step.
 `README.md` beside this file is the reference — the node kinds, the sizing rules,
 what you can read and write. This file is the part that is easy to get wrong.
 
+One habit it pays to have before you write a row: a highlight is a **node
+style**, not a loop over spans. `{ type = "text", style = { bg = … } }` covers
+the whole rect, so a bar reaches the right edge without a padding span and a
+span that names its own colour survives it. `widgets.list` exposes the same
+thing as `selected_style` / `hover_style`.
+
 ## "Install a plugin" means `thurbox-cli plugin install`
 
 A *plugin* here is a thurbox interface pane, not a package from a language

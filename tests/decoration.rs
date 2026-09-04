@@ -25,6 +25,7 @@ fn styled_tree() -> Node {
             role: Some("row".into()),
         },
         size: Default::default(),
+        style: Style::default(),
         frame: None,
         lines: vec![vec![
             Run {
@@ -80,6 +81,32 @@ fn a_style_survives_the_trip_out_to_a_decorator_and_back() {
 }
 
 #[test]
+fn a_node_style_survives_the_trip_out_to_a_decorator_and_back() {
+    // The selection bar lives on the node now rather than on every span, so the
+    // boundary has to carry it there too — a decorator that returns its input
+    // untouched must not flatten the row the cursor is on.
+    let mut before = styled_tree();
+    let Node::Text { style, .. } = &mut before else {
+        unreachable!("styled_tree is a text node");
+    };
+    *style = Style::default()
+        .fg(Color::White)
+        .bg(Color::Indexed(24))
+        .add_modifier(Modifier::BOLD);
+
+    let after = round_trip(&before);
+    let Node::Text { style, .. } = &after else {
+        panic!("expected a text node, got {after:?}");
+    };
+    assert_eq!(style.bg, Some(Color::Indexed(24)), "the bar lost its band");
+    assert_eq!(style.fg, Some(Color::White), "the bar lost its fg");
+    assert!(
+        style.add_modifier.contains(Modifier::BOLD),
+        "the bar lost its bold"
+    );
+}
+
+#[test]
 fn an_untouched_tree_comes_back_unchanged() {
     // The strongest form of the rule, and the case that actually broke: a
     // decorator that changes nothing must cost nothing.
@@ -94,6 +121,7 @@ fn an_unstyled_run_stays_unstyled() {
     let node = Node::Text {
         identity: Identity::default(),
         size: Default::default(),
+        style: Style::default(),
         frame: None,
         lines: vec![vec![Run {
             text: "plain".into(),
@@ -141,6 +169,7 @@ fn every_field_survives_the_trip_out_and_back() {
             Node::Text {
                 identity: Identity::default(),
                 size: Default::default(),
+                style: Style::default(),
                 frame: None,
                 lines: vec![vec![Run {
                     text: "scrolled".into(),

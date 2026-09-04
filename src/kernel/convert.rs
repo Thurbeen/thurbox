@@ -203,6 +203,7 @@ fn convert_table(
             align: read_align(&fields, path)?,
             wrap: val_bool(fields.wrap.as_ref(), "wrap", path)?.unwrap_or(false),
             scroll: val_u16(fields.scroll.as_ref(), "scroll", path)?.unwrap_or(0),
+            style: read_style_value(fields.style.as_ref(), "style", path)?,
             frame,
             size,
             identity,
@@ -836,6 +837,7 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
             align,
             wrap,
             scroll,
+            style,
             ..
         } => {
             let out = lua.create_table().map_err(|e| e.to_string())?;
@@ -874,6 +876,12 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
             )?;
             table.set("wrap", *wrap).map_err(|e| e.to_string())?;
             table.set("scroll", *scroll).map_err(|e| e.to_string())?;
+            // Round-trips for the same reason a run's style does: a decorator
+            // is handed the tree and returns one, so a selection bar dropped
+            // here is a selection bar dropped from the pane.
+            if let Some(style) = style_to_lua(lua, style)? {
+                table.set("style", style).map_err(|e| e.to_string())?;
+            }
         }
         Node::Box {
             axis,
