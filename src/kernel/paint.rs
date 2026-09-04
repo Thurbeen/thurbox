@@ -716,7 +716,7 @@ fn record_run_hits(lines: &[Vec<Run>], area: Rect, align: Align, scroll: u16, hi
         let mut cursor = left
             + match align {
                 Align::Left => 0,
-                Align::Center => (i32::from(area.width) - width).max(0) / 2,
+                Align::Center => (i32::from(area.width) / 2 - width / 2).max(0),
                 Align::Right => (i32::from(area.width) - width).max(0),
             };
         let mut group: Option<(&Identity, i32, i32)> = None;

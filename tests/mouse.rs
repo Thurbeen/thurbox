@@ -334,6 +334,34 @@ fn a_run_hit_stops_at_the_edge_of_the_node_that_holds_it() {
 }
 
 #[test]
+fn a_center_aligned_run_hit_lines_up_with_where_ratatui_paints_it() {
+    // ratatui halves the area and the run width independently before
+    // subtracting (Paragraph's get_line_offset), not `(area - width) / 2` —
+    // the two diverge whenever area and run width differ in parity, which
+    // used to shift the hitbox a column left of the glyph it names.
+    let lua = mlua::Lua::new();
+    let value: mlua::Value = lua
+        .load(r#"{ text = { { { text = "x", role = "action:go" } } }, align = "center" }"#)
+        .eval()
+        .expect("the table evaluates");
+    let node = thurbox::kernel::convert::to_node(&value, "plugins/90_test.lua")
+        .expect("the table converts");
+    let mut hits = Vec::new();
+    let mut terminal = Terminal::new(TestBackend::new(4, 1)).expect("terminal");
+    terminal
+        .draw(|frame| render_recording(frame, frame.area(), &node, &PlaceholderSurfaces, &mut hits))
+        .expect("draw");
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].rect, Rect::new(2, 0, 1, 1));
+    assert_eq!(
+        terminal.backend().buffer()[(hits[0].rect.x, 0)].symbol(),
+        "x",
+        "the hitbox must sit under the glyph ratatui actually painted"
+    );
+}
+
+#[test]
 fn an_overlay_run_is_a_target_on_the_border_it_paints_on() {
     // The chips the agent pane puts on its top border, and the scrollbar it
     // puts in the right border column: the column is ONE target, so a press
