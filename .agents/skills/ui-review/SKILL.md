@@ -34,7 +34,7 @@ sets up the sandbox, seeds sessions/tasks/an automation, and runs VHS to emit on
 per UI state plus a `manifest.json` describing them.
 
 ```bash
-SKILL_DIR="$(cd "$(dirname "$(readlink -f .claude/skills/ui-review/SKILL.md)")" && pwd)"
+SKILL_DIR="$(cd "$(dirname "$(readlink -f .agents/skills/ui-review/SKILL.md)")" && pwd)"
 # Default output dir is <repo>/target/ui-review/screenshots. Override with arg 1.
 # Optional flags: --theme <thurbox-theme> (default doom), --width N, --height N.
 "$SKILL_DIR/scripts/capture.sh"
