@@ -20,7 +20,7 @@ Related docs:
 - [FEATURES.md → Agent definitions](FEATURES.md#agent-definitions) — the
   agents-as-data design.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the `session::AgentDef` purity rule.
-- `../.claude/skills/thurbox-agents/` → *Agent Definitions* — the in-repo
+- `../.agents/skills/thurbox-agents/` → *Agent Definitions* — the in-repo
   working reference.
 
 ## Where the built-ins live
@@ -260,7 +260,7 @@ automatically. Work the checklist top to bottom:
      the "N built-ins" count.
    - [FEATURES.md → Agent definitions](FEATURES.md#agent-definitions) — the prose
      list and the pinned-id sentence.
-   - `../.claude/skills/thurbox-agents/` → *Agent Definitions* and
+   - `../.agents/skills/thurbox-agents/` → *Agent Definitions* and
      *Custom-agent status hooks* — the built-in lists and the resume/fork
      caveats.
 

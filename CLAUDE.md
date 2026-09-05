@@ -72,7 +72,9 @@ full flavor). Single source of truth for the `thurbox-dev` sandbox pattern;
 ## Working reference (skills)
 
 The per-subsystem reference that used to live in this file is now **eleven
-skills** under `.claude/skills/`, loaded on demand instead of on every turn.
+skills** under `.agents/skills/`, loaded on demand instead of on every turn.
+Every skill's body lives there, agent-neutrally; `.claude/skills/<name>` is a
+relative symlink into it, so Claude Code and opencode read the one copy.
 Each carries its subject verbatim, so a section named elsewhere in the repo
 ("the *Agent Definitions* section of CLAUDE.md") is now the skill on this list
 that names it. Read the one your change touches:

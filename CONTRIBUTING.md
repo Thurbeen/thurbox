@@ -58,17 +58,21 @@ canonical guidance doc — Claude Code reads it directly, and
 Claude-Code compatibility (which only applies when no `AGENTS.md` exists, so
 there is deliberately no `AGENTS.md` duplicating it).
 
-The skills are checked in under `.claude/skills/`: eleven per-subsystem
+The skills are checked in under `.agents/skills/`: eleven per-subsystem
 working references (`thurbox-testing`, `thurbox-kernel`, `thurbox-remote-hosts`,
 … — `CLAUDE.md` indexes them) plus `ui-review` and `thurview`. They carry the
 detail that used to sit in `CLAUDE.md`, so it stays an index and an agent loads
-only the subject it is working on. opencode auto-discovers that directory, so a
-single copy serves both agents — don't mirror it under `.opencode/skills/`,
-which would double-register it. `thurview` is vendored, not authored here: its
-body lives under `.agents/skills/thurview` (verbatim from
-[Thurbeen/thurview](https://github.com/Thurbeen/thurview)), `.claude/skills/thurview`
-is a relative symlink into it, and `skills-lock.json` pins the source repo,
-skill path and content hash so it can be verified and refreshed later. Slash
+only the subject it is working on. `.agents/skills/` is the agent-neutral home —
+the body of every skill lives there once, and each is exposed to a specific CLI
+by a **relative symlink** from that CLI's own directory (`.claude/skills/<name>`
+→ `../../.agents/skills/<name>` today). A new skill is authored in
+`.agents/skills/` and symlinked, never the other way round. opencode
+auto-discovers `.claude/skills/`, so those symlinks serve it too — don't mirror
+anything under `.opencode/skills/`, which would double-register it. `thurview`
+is additionally vendored, not authored here: its body is verbatim from
+[Thurbeen/thurview](https://github.com/Thurbeen/thurview) and `skills-lock.json`
+pins the source repo, skill path and content hash so it can be verified and
+refreshed later. Slash
 commands are the one kind opencode does **not** auto-discover, so a new one goes
 in both `.claude/commands/` and `.opencode/commands/`, kept in sync by hand.
 A minimal [`opencode.json`](opencode.json) declares the `$schema` for editor
@@ -145,7 +149,7 @@ the new one to paste; there are no snapshot files and no tool to run. Crash
 invariants are properties in `tests/render_props.rs`, and `tests/tui_e2e.rs`
 drives the real binary on a real pty (`just smoke`). All of it runs in the one
 `cargo nextest run --all`; see the `thurbox-testing` skill under
-`.claude/skills/`.
+`.agents/skills/`.
 
 ## Linting and formatting
 
