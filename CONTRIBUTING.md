@@ -60,11 +60,15 @@ there is deliberately no `AGENTS.md` duplicating it).
 
 The skills are checked in under `.claude/skills/`: eleven per-subsystem
 working references (`thurbox-testing`, `thurbox-kernel`, `thurbox-remote-hosts`,
-… — `CLAUDE.md` indexes them) plus `ui-review`. They carry the detail that used
-to sit in `CLAUDE.md`, so it stays an index and an agent loads only the subject
-it is working on. opencode auto-discovers that directory, so a single copy
-serves both agents — don't mirror it under `.opencode/skills/`, which would
-double-register it. Slash
+… — `CLAUDE.md` indexes them) plus `ui-review` and `thurview`. They carry the
+detail that used to sit in `CLAUDE.md`, so it stays an index and an agent loads
+only the subject it is working on. opencode auto-discovers that directory, so a
+single copy serves both agents — don't mirror it under `.opencode/skills/`,
+which would double-register it. `thurview` is vendored, not authored here: its
+body lives under `.agents/skills/thurview` (verbatim from
+[Thurbeen/thurview](https://github.com/Thurbeen/thurview)), `.claude/skills/thurview`
+is a relative symlink into it, and `skills-lock.json` pins the source repo,
+skill path and content hash so it can be verified and refreshed later. Slash
 commands are the one kind opencode does **not** auto-discover, so a new one goes
 in both `.claude/commands/` and `.opencode/commands/`, kept in sync by hand.
 A minimal [`opencode.json`](opencode.json) declares the `$schema` for editor

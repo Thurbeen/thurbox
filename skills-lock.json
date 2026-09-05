@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "thurview": {
+      "source": "Thurbeen/thurview",
+      "sourceType": "github",
+      "skillPath": "skills/thurview/SKILL.md",
+      "computedHash": "51d371e62f4709be7561b90b88b0c5ad3b99cf2d7d38226a32a63846491d5ed2"
+    }
+  }
+}
