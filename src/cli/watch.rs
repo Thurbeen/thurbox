@@ -68,7 +68,7 @@ pub struct WatchArgs {
     #[arg(long, value_name = "SEQ")]
     pub since: Option<i64>,
     /// Also check each event's session against its pane, filling
-    /// `hook_state_contradicted`.
+    /// `hook_state_contradicted` and `detected_agent`.
     ///
     /// Off by default for the same reason `session list --verify` is: it costs
     /// a multiplexer query and a `ps` per event.
@@ -342,6 +342,9 @@ fn base(id: SessionId, facts: &SessionFacts, hook: &Assessment) -> Value {
         "hook_coverage": hook.coverage.as_str(),
         "hook_blocked_is_heuristic": hook.blocked_is_heuristic(),
         "hook_state_contradicted": hook.contradicted,
+        // Which agent is in the pane, when it is not the one the row was
+        // created with — `--verify` only, like every other pane field.
+        "detected_agent": hook.detected_agent(),
     })
 }
 
@@ -381,11 +384,10 @@ fn assess(
         .get(&facts.agent)
         .map(|d| d.command.clone())
         .unwrap_or_else(|| facts.agent.clone());
-    let known: Vec<String> = registry.agents.iter().map(|a| a.command.clone()).collect();
     let pane = crate::agent::tmux::pane_state(&facts.name, &facts.backend_id);
     hook.with_pane(
         &command,
-        &known,
+        registry,
         pane.foreground_process.as_deref(),
         pane.foreground_command.as_deref(),
         pane.dead,

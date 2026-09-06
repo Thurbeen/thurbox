@@ -167,8 +167,12 @@ pub fn session_to_json_assessed(
     );
     put(
         "hook_corroboration",
-        json!(hook.corroboration.map(|c| c.as_str())),
+        json!(hook.corroboration.as_ref().map(|c| c.as_str())),
     );
+    // Which agent the pane was found to be running, when it is not the one the
+    // row was created with. A live observation, distinct from `agent` and from
+    // `reports_as` — see `Assessment::detected_agent`.
+    put("detected_agent", json!(hook.detected_agent()));
     put("hook_state_contradicted", json!(hook.contradicted));
     put("foreground_process", json!(hook.foreground_process));
     put("foreground_command", json!(hook.foreground_command));

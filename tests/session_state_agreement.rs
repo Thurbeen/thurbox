@@ -84,10 +84,14 @@ impl Env {
 }
 
 fn seed(db: &Database, name: &str) -> SessionId {
+    seed_as(db, name, "claude")
+}
+
+fn seed_as(db: &Database, name: &str, agent: &str) -> SessionId {
     let row = SharedSession {
         id: SessionId::default(),
         name: name.into(),
-        agent: "claude".into(),
+        agent: agent.into(),
         backend_id: "%7".into(),
         backend_type: "local-tmux".into(),
         agent_session_id: Some("sid".into()),
@@ -183,6 +187,42 @@ fn an_unacknowledged_done_is_done_on_every_surface() {
     assert_eq!(
         states,
         ["done", "done", "done", "done"],
+        "get, list, watch, tui"
+    );
+}
+
+/// The regression the captain saw. A session that has reported **nothing** was
+/// `unreported` on all three CLI surfaces and `idle` on the interface, which
+/// draws the green hollow "the agent says it is at rest" dot — for a worker
+/// that was mid-turn. The interface derived from the hook columns alone; it now
+/// takes the same `Assessment` path the CLI does.
+#[test]
+fn a_session_that_never_reported_is_not_idle_on_any_surface() {
+    let env = Env::new();
+    let db = env.db();
+    let id = seed(&db, "silent");
+
+    let states = states(&env, id);
+    assert_eq!(
+        states,
+        ["unreported", "unreported", "unreported", "unreported"],
+        "get, list, watch, tui"
+    );
+}
+
+/// The other silence, and the one a foreign driver actually produces: a row
+/// created as a bare shell, which thurbox wires no hooks for. Its silence means
+/// nothing at all, and saying `idle` would launder that into a report.
+#[test]
+fn a_session_wired_to_report_nothing_is_uncovered_on_every_surface() {
+    let env = Env::new();
+    let db = env.db();
+    let id = seed_as(&db, "driver-owned", "zsh");
+
+    let states = states(&env, id);
+    assert_eq!(
+        states,
+        ["uncovered", "uncovered", "uncovered", "uncovered"],
         "get, list, watch, tui"
     );
 }

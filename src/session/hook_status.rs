@@ -264,7 +264,7 @@ pub fn age_secs(state_at: Option<i64>, now: i64) -> Option<u64> {
 /// The decisive check the hook state cannot make for itself: `hook_state` is
 /// self-reported and latched, while this is observed. It is deliberately
 /// coarse — the question is "is an agent there", not "what is it doing".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Corroboration {
     /// The foreground process is the session's own agent.
     Agent,
@@ -272,7 +272,22 @@ pub enum Corroboration {
     /// was created with — an agent some driver started inside a pane thurbox
     /// opened for something else (typically a bare shell). The session is
     /// running an agent whether or not it ever signalled.
-    ForeignAgent,
+    ///
+    /// Carries the registry **name** of the agent that was found, which is the
+    /// whole reason a driver-launched session can be labelled at all: the
+    /// answer used to be computed and thrown away, leaving every surface to
+    /// say "some agent" about a pane thurbox could name. Not `Copy` for it,
+    /// which is the price of the payload and is paid once here.
+    ///
+    /// `None` when the executable is one **several** registered profiles
+    /// share, which is a shape the shipped `agents.toml` walks the user
+    /// through: pinning a model means a second entry on the same `command`
+    /// (`claude-opus` beside `claude`). A process listing sees the executable,
+    /// not the profile, so there is no answer to publish — and the variant
+    /// still says an agent is *present*, which is observed, while leaving the
+    /// identity blank, which is not. A plausible-but-arbitrary name is worse
+    /// than none: it invites exactly the trust it has not earned.
+    ForeignAgent(Option<String>),
     /// A bare interactive shell holds the pane. For a session whose agent was
     /// launched into that pane, this means the agent is gone.
     Shell,
@@ -291,10 +306,10 @@ pub enum Corroboration {
 }
 
 impl Corroboration {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Corroboration::Agent => "agent",
-            Corroboration::ForeignAgent => "foreign-agent",
+            Corroboration::ForeignAgent(_) => "foreign-agent",
             Corroboration::Shell => "shell",
             Corroboration::Other => "other",
             Corroboration::Dead => "dead",
@@ -303,10 +318,24 @@ impl Corroboration {
         }
     }
 
-    /// Whether an agent process is demonstrably running in the pane.
-    pub fn agent_present(self) -> Option<bool> {
+    /// The registered agent found holding the pane, when it is not the one the
+    /// session was created with.
+    ///
+    /// A live observation and nothing more — deliberately **not** written back
+    /// onto the row as `reports_as`, which is a durable declaration a driver
+    /// makes. Deriving one from the other would make a passing `claude` in the
+    /// pane permanent.
+    pub fn detected_agent(&self) -> Option<&str> {
         match self {
-            Corroboration::Agent | Corroboration::ForeignAgent => Some(true),
+            Corroboration::ForeignAgent(name) => name.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Whether an agent process is demonstrably running in the pane.
+    pub fn agent_present(&self) -> Option<bool> {
+        match self {
+            Corroboration::Agent | Corroboration::ForeignAgent(_) => Some(true),
             Corroboration::Shell | Corroboration::Dead => Some(false),
             // `Other` is a command the agent (or the user) is running; it says
             // nothing about whether the agent is still behind it.
@@ -347,34 +376,162 @@ fn executable_name(argv0: &str) -> &str {
     base.strip_suffix(".exe").unwrap_or(base)
 }
 
-/// Whether `command_line` runs `program` as a command rather than merely
-/// mentioning it — a whole whitespace-separated token whose executable name
-/// matches.
+/// Whether `command_line` runs `program` **in command position** rather than
+/// merely mentioning it somewhere in its argv.
 ///
 /// This is what keeps a wrapper honest: a remote session's window command is
 /// `/bin/sh -lc 'exec claude --resume …'`, whose argv0 is `sh`. Reading argv0
 /// alone would call that pane a shell and declare the agent lost.
+///
+/// The position matters as much as the token, because a driver-launched agent
+/// is handed a multi-kilobyte prose brief as one argv element and `ps` prints
+/// argv joined by spaces: matching a bare token *anywhere* reported
+/// `perl -e 'sleep 300' claude` as a claude agent holding the pane. Only four
+/// places start a command, and all four are checked here:
+///
+/// - argv0;
+/// - after `exec`, `env`, `command` or `nohup`, and past leading `VAR=value`
+///   assignments, all of which are prefixes to the command they run;
+/// - after a shell's `-c`/`-lc`/`-ic` option, whose operand is a whole new
+///   command line — the wrapper case above;
+/// - the shell's first operand, which is the script it runs: an agent shipped
+///   as a `#!/bin/sh` script is executed as `/bin/sh …/bin/codex`, and codex is
+///   what is running there;
+///
+/// and nowhere else. Everything a shell takes is honoured only while its *own*
+/// options are still being scanned, so a `-c` that turns up inside prose argv
+/// opens nothing. Anything else is a false negative rather than a false
+/// positive: no identity is more honest than a confidently wrong one.
 fn runs_program(command_line: &str, program: &str) -> bool {
-    command_line
-        .split_whitespace()
-        .any(|token| executable_name(token.trim_matches(['\'', '"'])) == program)
+    // `true` at the start of a line and after every prefix above: the next
+    // token that is not itself a prefix is the command being run.
+    let mut expect_command = true;
+    // Whether the command already resolved is a shell whose own options we are
+    // still walking — the only state in which what follows is a command again.
+    let mut scanning_shell_options = false;
+    for raw in command_line.split_whitespace() {
+        let token = raw.trim_matches(['\'', '"']);
+        if token.is_empty() {
+            continue;
+        }
+        if expect_command {
+            match command_position_token(token, program) {
+                CommandPositionToken::Prefix => {}
+                CommandPositionToken::Match => return true,
+                CommandPositionToken::Other { is_shell } => {
+                    expect_command = false;
+                    scanning_shell_options = is_shell;
+                }
+            }
+            continue;
+        }
+        if !scanning_shell_options {
+            continue;
+        }
+        match shell_option_token(token, program) {
+            ShellOptionToken::Match => return true,
+            ShellOptionToken::EndsOptions { next_is_command } => {
+                scanning_shell_options = false;
+                expect_command = next_is_command;
+            }
+            ShellOptionToken::StillScanning => {}
+        }
+    }
+    false
+}
+
+/// What a token means while `runs_program` still expects the command itself.
+enum CommandPositionToken {
+    /// A prefix (`exec`, `env`, `FOO=1`, …): the command is still ahead.
+    Prefix,
+    /// Resolves to `program` in command position.
+    Match,
+    /// Some other command; `is_shell` says whether its own options follow.
+    Other { is_shell: bool },
+}
+
+fn command_position_token(token: &str, program: &str) -> CommandPositionToken {
+    if COMMAND_PREFIXES.contains(&token) || is_assignment(token) {
+        return CommandPositionToken::Prefix;
+    }
+    let name = executable_name(token);
+    if name == program {
+        return CommandPositionToken::Match;
+    }
+    CommandPositionToken::Other {
+        is_shell: SHELLS.contains(&name),
+    }
+}
+
+/// What a token means while `runs_program` is walking a shell's own options.
+enum ShellOptionToken {
+    /// The shell's first operand resolves to `program`.
+    Match,
+    /// The option list ended here; `next_is_command` says whether the token
+    /// right after this one is a command (a script operand already consumed
+    /// its own answer, so it never is).
+    EndsOptions { next_is_command: bool },
+    /// Still an option; the shell's own options continue past it.
+    StillScanning,
+}
+
+fn shell_option_token(token: &str, program: &str) -> ShellOptionToken {
+    match token.strip_prefix('-') {
+        // `--` ends the option list; the next token is the operand.
+        Some("-") => ShellOptionToken::EndsOptions {
+            next_is_command: true,
+        },
+        // A cluster like `-lc`, whose operand is a whole command line.
+        Some(flags) if !flags.starts_with('-') => {
+            if flags.contains('c') {
+                ShellOptionToken::EndsOptions {
+                    next_is_command: true,
+                }
+            } else {
+                ShellOptionToken::StillScanning
+            }
+        }
+        // Any other long option: no shell takes one that runs a command.
+        Some(_) => ShellOptionToken::StillScanning,
+        // The first operand — the script the shell runs, and so a command.
+        None if executable_name(token) == program => ShellOptionToken::Match,
+        None => ShellOptionToken::EndsOptions {
+            next_is_command: false,
+        },
+    }
+}
+
+/// Commands that run another command: whatever follows one is still a command.
+const COMMAND_PREFIXES: &[&str] = &["exec", "env", "command", "nohup"];
+
+/// Whether a token is a `VAR=value` assignment, which precedes the command it
+/// applies to (`FOO=1 claude …`, `env FOO=1 claude …`) rather than being one.
+fn is_assignment(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
 }
 
 /// Judge what holds a pane against the session's agent and every agent the user
 /// has defined.
 ///
 /// `agent_command` is the session's own agent binary (`AgentDef::command`, not
-/// the agent *name* — `antigravity` runs `agy`). `known_agents` is every
-/// command in the registry, which is what makes an externally-launched agent
-/// visible: thurbox wires no hooks for a session whose agent is `bash`, but if
-/// `claude` is in the registry and `claude` holds the pane, an agent is running.
+/// the agent *name* — `antigravity` runs `agy`). `registry` is every agent the
+/// user has defined, which is what makes an externally-launched agent visible:
+/// thurbox wires no hooks for a session whose agent is `bash`, but if `claude`
+/// is in the registry and `claude` holds the pane, an agent is running. The
+/// whole registry rather than a list of commands, so the answer can be
+/// reported under the *name* a person configured (`antigravity`, not `agy`).
 ///
 /// `dead` is tmux's `#{pane_dead}`; it is checked first because a dead pane
 /// still answers `#{pane_current_command}` with whatever last ran there, which
 /// is a plausible wrong answer rather than an honest absence.
 pub fn classify_foreground(
     agent_command: &str,
-    known_agents: &[String],
+    registry: &AgentRegistry,
     process: Option<&str>,
     command_line: Option<&str>,
     dead: Option<bool>,
@@ -396,16 +553,32 @@ pub fn classify_foreground(
     if own_is_agent && (name == own || runs_program(line, own)) {
         return Corroboration::Agent;
     }
-    let foreign = known_agents
+    // Every registry profile whose executable this pane could be running —
+    // walked rather than `find`-ed, because the *first* match is not an answer.
+    // Several profiles may share one executable, and the shipped `agents.toml`
+    // walks the user through creating exactly that: pinning a model means a
+    // second entry on the same `command` (`claude-opus` beside `claude`).
+    // Taking the first would publish whichever the file happens to list first.
+    let mut found = registry
+        .agents
         .iter()
-        .map(|c| executable_name(c))
-        .filter(|c| !c.is_empty() && *c != own)
+        .map(|def| (def, executable_name(&def.command)))
+        .filter(|(_, c)| !c.is_empty() && *c != own)
         // A registry entry that *is* a shell (the bare-shell agent an external
         // driver asks for) must not make every shell look like an agent.
-        .filter(|c| !SHELLS.contains(c))
-        .any(|c| name == c || runs_program(line, c));
-    if foreign {
-        return Corroboration::ForeignAgent;
+        .filter(|(_, c)| !SHELLS.contains(c))
+        .filter(|(_, c)| name == *c || runs_program(line, c))
+        .map(|(def, _)| def.name.as_str());
+    if let Some(first) = found.next() {
+        // Presence is observed; identity may not be. `ps` reports the
+        // executable, and two profiles that share one are indistinguishable
+        // through it — so the presence is reported and the name is left blank
+        // rather than guessed. Deliberately not broken by a tie-break on argv:
+        // a heuristic that is usually right is the failure this whole change
+        // set out to remove, and a confident wrong name is worse on screen
+        // than the bare `shell` label it replaced.
+        let names_one_agent = found.all(|other| other == first);
+        return Corroboration::ForeignAgent(names_one_agent.then(|| first.to_string()));
     }
     if SHELLS.contains(&name) {
         return Corroboration::Shell;
@@ -423,7 +596,7 @@ pub fn classify_foreground(
 /// A contradiction is **reported, never applied**: the stored `hook_state` is
 /// left exactly as the agent wrote it, because overwriting an agent's own
 /// report with an inference is how a state becomes unfalsifiable.
-pub fn contradicts(state: Option<&str>, corroboration: Corroboration) -> bool {
+pub fn contradicts(state: Option<&str>, corroboration: &Corroboration) -> bool {
     matches!(state, Some("working" | "blocked"))
         && matches!(corroboration, Corroboration::Shell | Corroboration::Dead)
 }
@@ -502,7 +675,7 @@ pub enum SessionState {
 impl SessionState {
     /// Every word, in the order a reader scans them — so a surface that counts
     /// or documents the vocabulary enumerates it rather than restating it.
-    pub const ALL: &'static [SessionState] = &[
+    pub const ALL: &[SessionState] = &[
         SessionState::Working,
         SessionState::Blocked,
         SessionState::Done,
@@ -649,7 +822,7 @@ pub fn best_state(
     hook_state: Option<&str>,
     state_at: Option<i64>,
     seen_at: Option<i64>,
-    corroboration: Option<Corroboration>,
+    corroboration: Option<&Corroboration>,
 ) -> Option<(SessionState, StateSource)> {
     if hook_state.is_some() {
         return Some((
@@ -658,7 +831,7 @@ pub fn best_state(
         ));
     }
     match corroboration {
-        Some(Corroboration::Agent | Corroboration::ForeignAgent) => {
+        Some(Corroboration::Agent | Corroboration::ForeignAgent(_)) => {
             Some((SessionState::Running, StateSource::Process))
         }
         _ => None,
@@ -805,6 +978,19 @@ impl Assessment {
         }
     }
 
+    /// The agent found holding the pane, when it is not the one the session was
+    /// created with — `None` when the pane was not looked at, holds a shell, or
+    /// holds this session's own agent.
+    ///
+    /// The third of three names for one row, and none of them substitutes for
+    /// another: [`Self::agent`] is what the row reports *as*, `reports_as` is
+    /// what a driver declared, and this is what is observably there right now.
+    pub fn detected_agent(&self) -> Option<&str> {
+        self.corroboration
+            .as_ref()
+            .and_then(Corroboration::detected_agent)
+    }
+
     /// Fold in what the pane's foreground process says.
     ///
     /// The stored state is left exactly as it was; the observation only adds
@@ -813,26 +999,40 @@ impl Assessment {
     pub fn with_pane(
         mut self,
         agent_command: &str,
-        known_agents: &[String],
+        registry: &AgentRegistry,
         process: Option<&str>,
         command_line: Option<&str>,
         dead: Option<bool>,
     ) -> Self {
-        let corroboration =
-            classify_foreground(agent_command, known_agents, process, command_line, dead);
-        self.contradicted = Some(contradicts(self.hook_state.as_deref(), corroboration));
         self.foreground_process = process.filter(|p| !p.is_empty()).map(str::to_string);
         self.foreground_command = command_line.filter(|c| !c.is_empty()).map(str::to_string);
-        self.corroboration = Some(corroboration);
+        self.with_corroboration(classify_foreground(
+            agent_command,
+            registry,
+            process,
+            command_line,
+            dead,
+        ))
+    }
+
+    /// Fold in an already-computed pane verdict.
+    ///
+    /// Split out of [`Self::with_pane`] for the caller that cannot classify
+    /// where it folds: the interface probes panes on a worker thread (the
+    /// render loop may not shell out), so the verdict arrives on its own and
+    /// the argv it was read from is not carried back.
+    pub fn with_corroboration(mut self, corroboration: Corroboration) -> Self {
+        self.contradicted = Some(contradicts(self.hook_state.as_deref(), &corroboration));
         if let Some((state, source)) = best_state(
             self.hook_state.as_deref(),
             self.state_at,
             self.seen_at,
-            Some(corroboration),
+            Some(&corroboration),
         ) {
             self.state = Some(state);
             self.state_source = Some(source);
         }
+        self.corroboration = Some(corroboration);
         self
     }
 
@@ -1119,7 +1319,10 @@ mod tests {
 
     #[test]
     fn the_session_agent_in_the_foreground_corroborates() {
-        let known = vec!["claude".to_string(), "codex".to_string()];
+        let known = registry(vec![
+            agent("claude", "claude", Some("claude")),
+            agent("codex", "codex", Some("codex")),
+        ]);
         assert_eq!(
             classify_foreground("claude", &known, Some("claude"), None, Some(false)),
             Corroboration::Agent
@@ -1141,7 +1344,7 @@ mod tests {
     fn a_login_wrapper_is_not_mistaken_for_a_bare_shell() {
         // The remote window command is `/bin/sh -lc 'exec claude …'`. Judging
         // argv0 alone would report a shell and declare the agent lost.
-        let known = vec!["claude".to_string()];
+        let known = registry(vec![agent("claude", "claude", Some("claude"))]);
         assert_eq!(
             classify_foreground(
                 "claude",
@@ -1156,27 +1359,27 @@ mod tests {
 
     #[test]
     fn a_bare_shell_contradicts_an_active_state() {
-        let known = vec!["claude".to_string()];
+        let known = registry(vec![agent("claude", "claude", Some("claude"))]);
         let shell =
             classify_foreground("claude", &known, Some("-bash"), Some("-bash"), Some(false));
         assert_eq!(shell, Corroboration::Shell);
         assert_eq!(shell.agent_present(), Some(false));
-        assert!(contradicts(Some("working"), shell));
-        assert!(contradicts(Some("blocked"), shell));
+        assert!(contradicts(Some("working"), &shell));
+        assert!(contradicts(Some("blocked"), &shell));
         // A finished turn asserts nothing about a live process.
-        assert!(!contradicts(Some("done"), shell));
-        assert!(!contradicts(Some("idle"), shell));
-        assert!(!contradicts(None, shell));
+        assert!(!contradicts(Some("done"), &shell));
+        assert!(!contradicts(Some("idle"), &shell));
+        assert!(!contradicts(None, &shell));
     }
 
     #[test]
     fn a_dead_pane_beats_the_command_name_it_still_answers_with() {
         // `remain-on-exit` keeps the frame, and tmux keeps naming the command
         // that died there — a plausible wrong answer, so deadness wins.
-        let known = vec!["claude".to_string()];
+        let known = registry(vec![agent("claude", "claude", Some("claude"))]);
         let dead = classify_foreground("claude", &known, Some("claude"), None, Some(true));
         assert_eq!(dead, Corroboration::Dead);
-        assert!(contradicts(Some("working"), dead));
+        assert!(contradicts(Some("working"), &dead));
     }
 
     #[test]
@@ -1184,7 +1387,10 @@ mod tests {
         // The externally-driven shape: the session's agent is a bare shell (so
         // thurbox wired no hooks and nothing ever signalled), and a driver
         // started a real agent inside the pane.
-        let known = vec!["bash".to_string(), "claude".to_string()];
+        let known = registry(vec![
+            agent("shell", "bash", None),
+            agent("claude", "claude", Some("claude")),
+        ]);
         let seen = classify_foreground(
             "bash",
             &known,
@@ -1192,10 +1398,11 @@ mod tests {
             Some("claude --permission-mode acceptEdits"),
             Some(false),
         );
-        assert_eq!(seen, Corroboration::ForeignAgent);
+        assert_eq!(seen, Corroboration::ForeignAgent(Some("claude".into())));
+        assert_eq!(seen.detected_agent(), Some("claude"));
         assert_eq!(seen.agent_present(), Some(true));
         assert_eq!(
-            best_state(None, None, None, Some(seen)),
+            best_state(None, None, None, Some(&seen)),
             Some((SessionState::Running, StateSource::Process))
         );
 
@@ -1204,7 +1411,179 @@ mod tests {
         // as an agent running is the failure this branch exists to avoid.
         let idle = classify_foreground("bash", &known, Some("bash"), Some("bash -i"), Some(false));
         assert_eq!(idle, Corroboration::Shell);
-        assert_eq!(best_state(None, None, None, Some(idle)), None);
+        assert_eq!(best_state(None, None, None, Some(&idle)), None);
+    }
+
+    /// F6. `runs_program` matched a bare token anywhere in the command line, so
+    /// the *shape a foreign driver produces* — a multi-kilobyte prose brief in
+    /// argv, printed back by `ps` as one long space-separated line — classified
+    /// a pane holding no agent at all as a foreign agent.
+    #[test]
+    fn a_registry_name_mentioned_in_argv_is_not_an_agent_in_the_pane() {
+        let known = registry(vec![
+            agent("shell", "zsh", None),
+            agent("claude", "claude", Some("claude")),
+        ]);
+        // The reproduction, verbatim: `perl -e 'sleep 300' claude`.
+        let inert = classify_foreground(
+            "zsh",
+            &known,
+            Some("perl"),
+            Some("perl -e sleep 300 claude"),
+            Some(false),
+        );
+        assert_eq!(inert, Corroboration::Other);
+        assert_eq!(inert.detected_agent(), None);
+        assert_eq!(best_state(None, None, None, Some(&inert)), None);
+
+        // The same word inside prose, which is what a driver's brief is.
+        let brief = classify_foreground(
+            "zsh",
+            &known,
+            Some("zsh"),
+            Some("zsh -i -- read the report and tell claude to fix it"),
+            Some(false),
+        );
+        assert_eq!(brief, Corroboration::Shell);
+        // Even a `-c` that turns up mid-prose opens nothing: a shell's own
+        // options stop being scanned at its first operand.
+        let flag = classify_foreground(
+            "zsh",
+            &known,
+            Some("zsh"),
+            Some("zsh -i -- run it with -c claude afterwards"),
+            Some(false),
+        );
+        assert_eq!(flag, Corroboration::Shell);
+    }
+
+    /// The other half of F6: constraining the match must not lose the wrapper
+    /// shapes `runs_program` exists for.
+    #[test]
+    fn a_command_position_is_still_matched_through_every_wrapper() {
+        let known = registry(vec![
+            agent("shell", "zsh", None),
+            agent("claude", "claude", Some("claude")),
+        ]);
+        for line in [
+            // argv0, absolute or bare.
+            "claude --resume x",
+            "/usr/local/bin/claude --resume x",
+            // The remote window command: a shell whose `-c` operand is a whole
+            // new command line, with `exec` in front of it.
+            "/bin/sh -lc 'exec claude --resume x'",
+            "bash -c claude",
+            // An agent shipped as a `#!/bin/sh` script: the shell's first
+            // operand is the program that is running.
+            "/bin/sh /opt/agents/bin/claude",
+            // Prefixes to the command they run.
+            "env CLAUDE_CODE=1 claude --resume x",
+            "exec claude",
+            "nohup claude --resume x",
+            // A leading assignment, with no `env` at all.
+            "FOO=1 claude",
+        ] {
+            let seen = classify_foreground("zsh", &known, Some("sh"), Some(line), Some(false));
+            assert_eq!(
+                seen,
+                Corroboration::ForeignAgent(Some("claude".into())),
+                "should have found claude in {line}"
+            );
+        }
+    }
+
+    /// One executable, several registered profiles: an agent is demonstrably
+    /// there, and *which* one is not something a process listing can say.
+    ///
+    /// This is not a theoretical registry. The shipped `agents.toml` walks the
+    /// user through building it: pinning a model means a second entry on the
+    /// same `command`, `claude-opus` beside `claude`. Taking the first match
+    /// published whichever profile the file happened to list first — a
+    /// confident name the observation never determined, which is worse on
+    /// screen than the bare `shell` label this vocabulary set out to improve
+    /// on, because a specific name invites trust.
+    #[test]
+    fn an_executable_several_profiles_share_names_no_agent() {
+        // Exactly the shape the shipped config's "Pin a model" section builds.
+        let shared = registry(vec![
+            agent("shell", "zsh", None),
+            agent("claude", "claude", Some("claude")),
+            agent("claude-opus", "claude", Some("claude")),
+        ]);
+        let seen = classify_foreground(
+            "zsh",
+            &shared,
+            Some("claude"),
+            Some("claude --model opus"),
+            Some(false),
+        );
+
+        // An agent IS running here — that much is observed, and the status
+        // must not lose it.
+        assert_eq!(seen, Corroboration::ForeignAgent(None));
+        assert_eq!(seen.agent_present(), Some(true));
+        assert_eq!(
+            best_state(None, None, None, Some(&seen)),
+            Some((SessionState::Running, StateSource::Process))
+        );
+        // But nothing may be published about WHICH, in either order — the
+        // answer must not depend on how the file happens to be sorted.
+        assert_eq!(seen.detected_agent(), None);
+        let reversed = registry(vec![
+            agent("shell", "zsh", None),
+            agent("claude-opus", "claude", Some("claude")),
+            agent("claude", "claude", Some("claude")),
+        ]);
+        assert_eq!(
+            classify_foreground("zsh", &reversed, Some("claude"), None, Some(false)),
+            Corroboration::ForeignAgent(None)
+        );
+
+        // And the blank reaches the assessment as a blank, beside a status
+        // that still says something is running.
+        let assessment = Assessment::from_hooks(&shared, "shell", None, None, None, NOW)
+            .with_corroboration(seen);
+        assert_eq!(assessment.detected_agent(), None);
+        assert_eq!(assessment.state(), SessionState::Running);
+
+        // The single-profile case is untouched: one profile owning the
+        // executable is still named, or the guard would have cost the feature.
+        let sole = registry(vec![
+            agent("shell", "zsh", None),
+            agent("claude", "claude", Some("claude")),
+        ]);
+        assert_eq!(
+            classify_foreground("zsh", &sole, Some("claude"), None, Some(false)).detected_agent(),
+            Some("claude")
+        );
+    }
+
+    /// R3. The detector resolved *which* agent holds the pane and then dropped
+    /// the answer on the floor, leaving every surface able to say only that
+    /// "some agent" was there.
+    #[test]
+    fn a_detected_agent_is_named_under_its_registry_name() {
+        // `antigravity` runs `agy`: the pane spells the binary, a person spells
+        // the agent, and the name is the half worth showing.
+        let known = registry(vec![
+            agent("shell", "zsh", None),
+            agent("antigravity", "agy", Some("antigravity")),
+        ]);
+        let seen = classify_foreground("zsh", &known, Some("agy"), Some("agy"), Some(false));
+        assert_eq!(
+            seen,
+            Corroboration::ForeignAgent(Some("antigravity".into()))
+        );
+        assert_eq!(seen.detected_agent(), Some("antigravity"));
+
+        // And it reaches the assessment, beside — never instead of — the agent
+        // the row was created as.
+        let assessment =
+            Assessment::from_hooks(&known, "shell", None, None, None, NOW).with_corroboration(seen);
+        assert_eq!(assessment.detected_agent(), Some("antigravity"));
+        assert_eq!(assessment.agent, "shell");
+        // Named, and still not a claim about the turn: `running`, not `working`.
+        assert_eq!(assessment.state(), SessionState::Running);
     }
 
     #[test]
@@ -1212,35 +1591,35 @@ mod tests {
         // The agent's own report is richer than anything observable, so the
         // pane never overwrites it — it only ever adds the contradiction flag.
         assert_eq!(
-            best_state(Some("blocked"), None, None, Some(Corroboration::Shell)),
+            best_state(Some("blocked"), None, None, Some(&Corroboration::Shell)),
             Some((SessionState::Blocked, StateSource::Hook))
         );
         assert_eq!(
-            best_state(Some("idle"), None, None, Some(Corroboration::Agent)),
+            best_state(Some("idle"), None, None, Some(&Corroboration::Agent)),
             Some((SessionState::Idle, StateSource::Hook))
         );
     }
 
     #[test]
     fn an_unresolvable_pane_is_unknown_rather_than_guessed() {
-        let known = vec!["claude".to_string()];
+        let known = registry(vec![agent("claude", "claude", Some("claude"))]);
         for state in [
             classify_foreground("claude", &known, None, None, None),
             classify_foreground("claude", &known, Some(""), None, Some(false)),
         ] {
             assert_eq!(state, Corroboration::Unknown);
             assert_eq!(state.agent_present(), None);
-            assert!(!contradicts(Some("working"), state));
-            assert_eq!(best_state(None, None, None, Some(state)), None);
+            assert!(!contradicts(Some("working"), &state));
+            assert_eq!(best_state(None, None, None, Some(&state)), None);
         }
         // A remote pane is not unknown but unreadable, and says so.
         assert_eq!(Corroboration::Unavailable.agent_present(), None);
-        assert!(!contradicts(Some("working"), Corroboration::Unavailable));
+        assert!(!contradicts(Some("working"), &Corroboration::Unavailable));
     }
 
     #[test]
     fn a_command_the_agent_ran_is_neither_agent_nor_shell() {
-        let known = vec!["claude".to_string()];
+        let known = registry(vec![agent("claude", "claude", Some("claude"))]);
         let other = classify_foreground(
             "claude",
             &known,
@@ -1252,6 +1631,6 @@ mod tests {
         assert_eq!(other.agent_present(), None);
         // The agent is probably still there behind it, so this never
         // contradicts an active state.
-        assert!(!contradicts(Some("working"), other));
+        assert!(!contradicts(Some("working"), &other));
     }
 }

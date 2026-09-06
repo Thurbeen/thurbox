@@ -266,7 +266,7 @@ Each line carries:
 | `event` | `present` (baseline) / `created` / `changed` / `gone` |
 | `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated` · `soft_deleted`, `force_deleted` |
 | `from_state`, `to_state` | the transition itself, for a `changed`/`state` event |
-| `state`, `hook_state`, `state_source`, `hook_coverage`, `hook_blocked_is_heuristic`, `hook_state_contradicted` | the same gating fields `session get` publishes, so reacting to a `blocked` needs no follow-up call |
+| `state`, `hook_state`, `state_source`, `hook_coverage`, `hook_blocked_is_heuristic`, `hook_state_contradicted`, `detected_agent` | the same gating fields `session get` publishes, so reacting to a `blocked` needs no follow-up call |
 
 `reason` is what a bare event name could not say: a `gone` used to mean both
 deletes, and only one of them is restorable. `hook_state_contradicted` is
@@ -426,6 +426,26 @@ still replays the recorded command. It is refused for an agent thurbox ships no
 hooks for, since the whole point is the coverage it unlocks and a typo would
 unlock nothing silently. `get`/`list`/`doctor` publish it as `reports_as` (null
 when the row reports as itself).
+
+**`detected_agent` is the third name and a different fact.** `get`/`doctor`
+(and `list --verify`) also publish which registered agent was found *in the
+pane*, under its registry name — `antigravity`, not the `agy` its argv spells —
+whenever that is not the agent the row was created with **and the observation
+determines which profile it is**. An executable that several registered
+profiles share (the shipped `agents.toml` builds exactly that when it shows you
+how to pin a model) publishes `detected_agent: null` beside
+`hook_corroboration: "foreign-agent"` and `state: "running"`: an agent is
+demonstrably there, and `ps` cannot say which profile. `agent` is what the
+row was created as, `reports_as` what a driver declared, `detected_agent` what
+is observably running; null on an unprobed listing means **not checked**, the
+same as every other pane field. It is deliberately never written back as
+`reports_as`: a declaration is durable and an observation is not.
+
+The match is in **command position only** — argv0, a shell's `-c` operand or
+its script, and past `exec`/`env`/`VAR=value` prefixes. It used to match a bare
+token anywhere in the command line, so a driver's multi-kilobyte prose brief in
+argv could name an agent that was not there (`perl -e 'sleep 300' claude` read
+as claude). A missed identity is a blank; a wrong one is on screen.
 
 `session doctor` follows the same fact from the other end: a `--command` session
 that has declared nothing is **`ok`, "no hooks expected"** rather than `fail` —

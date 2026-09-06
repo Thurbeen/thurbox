@@ -53,6 +53,12 @@ local widgets = require("lib.widgets")
 --- Both come off the agent's own terminal — the activity line is its OSC window
 --- title, the notification its OSC 9/777 message — so they are published from
 --- the live pane rather than the database.
+---
+--- v2 adds the row nothing has reported for. Its dot says only that no status
+--- arrived, which is honest but not diagnosable, so the text names what thurbox
+--- does know: the agent found in the pane, or why the silence means nothing.
+--- Naming the agent never displaces what it said — an activity line is the
+--- agent talking, and it wins the rest of the line.
 local function agent_status_text(session)
   -- Nothing the agent said can be current on a host we cannot reach, so the
   -- row says why instead of showing a last message as if it were live.
@@ -68,9 +74,36 @@ local function agent_status_text(session)
   local activity = session.activity
   if activity then
     activity = activity:match("^%s*(.-)%s*$")
-    if activity ~= "" then
-      return activity
+    if activity == "" then
+      activity = nil
     end
+  end
+  -- An agent thurbox did not launch: the row is labelled with whatever the
+  -- driver asked for (`zsh`), and the agent actually in front of the user is
+  -- named here. It says WHICH agent, never what it is doing — the dot already
+  -- says that nothing has reported.
+  local detected = session.detected_agent
+  if detected then
+    if activity then
+      return detected .. " · " .. activity
+    end
+    return detected .. " · no status reported"
+  end
+  if activity then
+    return activity
+  end
+  if session.status == "uncovered" then
+    return "no status hooks"
+  end
+  if session.status == "unreported" then
+    return "no status reported"
+  end
+  -- An agent is demonstrably in the pane and could not be named: several
+  -- registered profiles share its executable, so `ps` sees the command and not
+  -- the profile. The row says what is actually known rather than falling
+  -- silent, and it never guesses which profile.
+  if session.status == "running" then
+    return "agent running · no status reported"
   end
   return nil
 end

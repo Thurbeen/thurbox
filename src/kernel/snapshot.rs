@@ -14,7 +14,10 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::session::{derive_state, with_output_quiescence, SessionId, SessionState};
+use crate::session::{
+    derive_state, with_output_quiescence, AgentRegistry, Assessment, Corroboration, SessionId,
+    SessionState,
+};
 use crate::storage::Database;
 
 /// How often the snapshot is rebuilt. A read never waits on this; it only
@@ -111,6 +114,32 @@ pub struct SessionRow {
     /// or an acknowledged `done` (derived `idle`) would be written back and
     /// resurrected on every reconnect.
     pub hook_state: Option<String>,
+    /// The agent a driver **declared** this session runs (`session reports-as`),
+    /// when it declared one. A durable statement about the row.
+    pub reports_as: Option<String>,
+    /// The agent **observed** holding this session's pane, when it is not the
+    /// one the row was created with.
+    ///
+    /// The third of three names, and the reason all three are published: `agent`
+    /// is what the row was created as, `reports_as` is what a driver declared,
+    /// and this is what is running right now. A driver that asks for a bare
+    /// shell and starts an agent in it is otherwise a row labelled `zsh` with
+    /// nothing to say about the claude in front of the user.
+    ///
+    /// A live reading with a short life (see `PANE_PROBE_TTL`) and no claim
+    /// about what the agent is *doing* — that is `status`, which stays
+    /// [`SessionState::Running`] precisely because no process inspection can
+    /// tell a turn in flight from a prompt waiting for input. Published only
+    /// for a row nothing has reported for (`assess`'s gate on `hook.state`),
+    /// so it is never attached to a row that is already speaking for itself,
+    /// regardless of what a stale probe answer still says.
+    ///
+    /// `None` also when an agent is demonstrably in the pane but *which* one
+    /// is not determined — several registered profiles sharing one executable,
+    /// which the shipped `agents.toml` teaches the user to create. The status
+    /// still reads [`SessionState::Running`], because presence is observed;
+    /// only the name is withheld. See [`crate::session::Corroboration`].
+    pub detected_agent: Option<String>,
 }
 
 /// A session that was deleted but not purged.
@@ -366,6 +395,140 @@ impl GitStats {
     }
 }
 
+/// How long a pane verdict stands before it is asked for again.
+///
+/// The probe shells out — one `display-message` plus one `ps` — so it can no
+/// more run on the render path than a git stat can, and this bound is what
+/// stops a session that never reports from paying for one per refresh. Two
+/// seconds is also about the resolution the answer has: it says an agent is
+/// *there*, not what it is doing, and that fact changes when a process starts
+/// or exits.
+const PANE_PROBE_TTL: Duration = Duration::from_secs(2);
+
+/// One worker's answer: the session it probed, and what holds its pane.
+type ProbeResult = (String, Corroboration);
+
+/// One pane's verdict and when it was reached.
+struct Probe {
+    corroboration: Corroboration,
+    at: Instant,
+}
+
+/// What holds each session's pane, computed off the render path.
+///
+/// Another instance of the worker pattern (see [`GitStats`] beside it, and
+/// `kernel::updates`): touch the world on a thread, publish the result.
+///
+/// The interface used to skip this check altogether and derive its dot from
+/// the hook columns alone, which is why a driver-launched agent — nothing
+/// wired, nothing signalled — drew the green hollow `idle` circle while it
+/// worked.
+///
+/// Asked **only** about rows whose `hook_state` is null. An agent that reports
+/// for itself needs no observation ([`crate::session::best_state`] would
+/// discard it anyway), and probing every session every refresh is the cost the
+/// interface declined to pay in the first place.
+#[derive(Default)]
+struct PaneProbe {
+    known: std::collections::HashMap<String, Probe>,
+    inflight: std::collections::HashSet<String>,
+    channel: Option<(
+        std::sync::mpsc::Sender<ProbeResult>,
+        std::sync::mpsc::Receiver<ProbeResult>,
+    )>,
+}
+
+impl PaneProbe {
+    fn ensure_channel(&mut self) -> std::sync::mpsc::Sender<ProbeResult> {
+        if self.channel.is_none() {
+            self.channel = Some(std::sync::mpsc::channel());
+        }
+        self.channel.as_ref().expect("just created").0.clone()
+    }
+
+    /// Ask what holds a session's pane, unless a probe is in flight or the last
+    /// answer is still fresh.
+    fn request(
+        &mut self,
+        session: &str,
+        name: &str,
+        agent_command: String,
+        registry: &std::sync::Arc<AgentRegistry>,
+    ) {
+        if self.inflight.contains(session) {
+            return;
+        }
+        if self
+            .known
+            .get(session)
+            .is_some_and(|probe| probe.at.elapsed() < PANE_PROBE_TTL)
+        {
+            return;
+        }
+        self.inflight.insert(session.to_string());
+        let tx = self.ensure_channel();
+        let (session, name) = (session.to_string(), name.to_string());
+        let registry = std::sync::Arc::clone(registry);
+        std::thread::spawn(move || {
+            let pane = crate::agent::tmux::pane_state(&session, &name);
+            // Classified on the worker rather than at the fold, so the argv the
+            // verdict was read from — a driver's brief runs to kilobytes — never
+            // crosses the channel or lands in the snapshot.
+            let corroboration = crate::session::classify_foreground(
+                &agent_command,
+                &registry,
+                pane.foreground_process.as_deref(),
+                pane.foreground_command.as_deref(),
+                pane.dead,
+            );
+            let _ = tx.send((session, corroboration));
+        });
+    }
+
+    /// Take whatever the workers have answered, reporting whether any verdict
+    /// actually moved — which is what makes the derived rows stale.
+    fn drain(&mut self) -> bool {
+        let Some((_, rx)) = &self.channel else {
+            return false;
+        };
+        let mut moved = false;
+        while let Ok((session, corroboration)) = rx.try_recv() {
+            self.inflight.remove(&session);
+            // `Option::is_none_or` would read better but is stable only from
+            // 1.82; this crate's MSRV is 1.75.
+            let changed = self
+                .known
+                .get(&session)
+                .map_or(true, |probe| probe.corroboration != corroboration);
+            self.known.insert(
+                session,
+                Probe {
+                    corroboration,
+                    at: Instant::now(),
+                },
+            );
+            moved |= changed;
+        }
+        moved
+    }
+
+    fn get(&self, session: &str) -> Option<&Corroboration> {
+        self.known.get(session).map(|probe| &probe.corroboration)
+    }
+
+    /// Forget every session this poll is not currently asking about.
+    ///
+    /// Hygiene rather than the correctness guard: this cache tracking a set it
+    /// has stopped asking about would keep answering a question nobody put to
+    /// it, and re-requesting one that never left would waste a subprocess.
+    /// What stops a stale verdict from *publishing* is `assess`'s own gate on
+    /// `hook.state`, which does not depend on this eviction's timing relative
+    /// to a refresh.
+    fn retain(&mut self, probed: &std::collections::HashSet<&str>) {
+        self.known.retain(|id, _| probed.contains(id.as_str()));
+    }
+}
+
 /// Owns the snapshot and decides when to rebuild it.
 ///
 /// Refresh happens on the kernel's schedule, never inside a plugin call — so a
@@ -373,6 +536,12 @@ impl GitStats {
 pub struct SnapshotStore {
     database: Option<Database>,
     git: GitStats,
+    /// What holds each unreported session's pane — see [`PaneProbe`].
+    panes: PaneProbe,
+    /// The agent registry every state answer is judged against: coverage comes
+    /// from it, and so does the name a detected agent is reported under. Read
+    /// once, like `agents` below, so a refresh never touches the filesystem.
+    registry: std::sync::Arc<AgentRegistry>,
     /// Read once at startup: these change only when their config files do, and
     /// re-reading them every 400ms would be a filesystem hit for nothing.
     agents: Vec<AgentRow>,
@@ -426,11 +595,14 @@ impl SnapshotStore {
                 Some("could not resolve the database path".to_string()),
             ),
         };
+        let registry = read_registry();
         let mut store = Self {
             database,
             git: GitStats::default(),
-            agents: read_agents(),
-            agent_default: read_agent_default(),
+            panes: PaneProbe::default(),
+            agents: read_agents(&registry),
+            agent_default: registry.default_name().to_string(),
+            registry,
             hosts: read_hosts(),
             current: Snapshot {
                 error,
@@ -449,11 +621,14 @@ impl SnapshotStore {
     /// Build a store over an already-open database (tests, and any caller that
     /// owns its own connection).
     pub fn with_database(database: Database) -> Self {
+        let registry = read_registry();
         let mut store = Self {
             database: Some(database),
             git: GitStats::default(),
-            agents: read_agents(),
-            agent_default: read_agent_default(),
+            panes: PaneProbe::default(),
+            agents: read_agents(&registry),
+            agent_default: registry.default_name().to_string(),
+            registry,
             hosts: read_hosts(),
             current: Snapshot::default(),
             last_refresh: None,
@@ -503,7 +678,12 @@ impl SnapshotStore {
         if !due {
             return false;
         }
-        if self.rows_are_current() {
+        // Asked either way, like the git stats below and for the same reason:
+        // the answers come from worker threads, so `data_version` says nothing
+        // about them — and without asking on this path a verdict would be
+        // requested once and never refreshed.
+        let panes_moved = self.poll_pane_probes();
+        if !panes_moved && self.rows_are_current() {
             self.last_refresh = Some(Instant::now());
             let stamp = taken_at_stamp();
             let restamped = self.current.taken_at_ms != stamp;
@@ -538,6 +718,53 @@ impl SnapshotStore {
             Ok(current) => current == seen,
             Err(_) => false,
         }
+    }
+
+    /// Take the pane verdicts the workers have answered and ask for the ones
+    /// that are missing or stale, returning whether any verdict moved.
+    ///
+    /// A moved verdict makes the derived rows stale in a way `PRAGMA
+    /// data_version` cannot see, so it forces the rebuild rather than being
+    /// patched into the rows: the status it feeds is decided by `assess`, and a
+    /// second place that decided it would be the second answer this module was
+    /// written to prevent.
+    ///
+    /// Only rows whose agent has reported nothing are asked about — everything
+    /// else already has a better answer than a process listing can give.
+    fn poll_pane_probes(&mut self) -> bool {
+        let moved = self.panes.drain();
+
+        let wanted: Vec<(String, String, String)> = self
+            .current
+            .sessions
+            .iter()
+            .filter(|row| {
+                row.hook_state.is_none()
+                    && !row.stopped
+                    && !crate::session::is_remote_backend(&row.backend)
+            })
+            .map(|row| {
+                // The agent *binary*, not the agent name: `antigravity` runs
+                // `agy`, and a pane's foreground process is spelled the way it
+                // was invoked.
+                let agent = row.reports_as.as_deref().unwrap_or(&row.agent);
+                let command = self
+                    .registry
+                    .get(agent)
+                    .map(|def| def.command.clone())
+                    .unwrap_or_else(|| agent.to_string());
+                (row.id.clone(), row.name.clone(), command)
+            })
+            .collect();
+
+        let probed: std::collections::HashSet<&str> =
+            wanted.iter().map(|(id, _, _)| id.as_str()).collect();
+        self.panes.retain(&probed);
+
+        for (id, name, command) in wanted {
+            self.panes.request(&id, &name, command, &self.registry);
+        }
+        moved
     }
 
     /// Attach whatever git stats are known and ask for anything stale.
@@ -684,14 +911,21 @@ impl SnapshotStore {
             let Some(id) = parse_id(&row.id) else {
                 continue;
             };
-            if database.set_hook_state(id, &event.state).is_err() {
+            // `Ok(false)` is a parked session refusing a state it has no
+            // process to be in — not a write that failed, and not one that
+            // happened, so the row must not be corrected as though it were.
+            if !matches!(database.set_hook_state(id, &event.state), Ok(true)) {
                 continue;
             }
             // Corrected in place for the same reason `acknowledge` does it: this
             // is our own connection, so `PRAGMA data_version` will not move and a
-            // refresh would re-derive from the row we just wrote.
+            // refresh would re-derive from the row we just wrote. `detected_agent`
+            // is cleared here rather than left to that (absent) refresh, because
+            // this path never reaches `assess` at all — it writes the row
+            // directly, which is the one case its hook.state gate cannot cover.
             row.status = derive_state(Some(&event.state), Some(now_ms()), None);
             row.hook_state = Some(event.state);
+            row.detected_agent = None;
             applied += 1;
         }
         if applied > 0 {
@@ -880,6 +1114,11 @@ impl SnapshotStore {
         let hooks = database.load_hook_states().unwrap_or_default();
         let bases = database.load_base_branches().unwrap_or_default();
         let stopped = database.load_stopped_sessions().unwrap_or_default();
+        // What a driver declared this row runs. Read here for the same reason
+        // `session get` reads it: the coverage a state is judged against belongs
+        // to the declared agent, not to the shell the row was created with.
+        let reports_as = database.load_reports_as().unwrap_or_default();
+        let now = crate::sync::current_time_millis() as i64;
 
         self.git.drain();
 
@@ -887,12 +1126,26 @@ impl SnapshotStore {
             .into_iter()
             .map(|session| {
                 let hook = hooks.get(&session.id);
-                let status = derive_state(
-                    hook.and_then(|h| h.state.as_deref()),
-                    hook.and_then(|h| h.state_at),
-                    hook.and_then(|h| h.seen_at),
-                );
                 let hook_state = hook.and_then(|h| h.state.clone());
+                let declared = reports_as.get(&session.id).cloned();
+                // The whole assessment, not `derive_state` alone. Deriving from
+                // the hook columns by themselves answers `idle` for a session
+                // that never reported — laundering "we cannot know" into "the
+                // agent says it is at rest", which is the one conflation
+                // `session::hook_status` exists to prevent. The CLI has always
+                // answered `running`/`uncovered`/`unreported` here; the screen
+                // now answers the same words.
+                let assessment = assess(
+                    &self.registry,
+                    declared.as_deref().unwrap_or(&session.agent),
+                    hook,
+                    now,
+                    stopped.contains(&session.id),
+                    &session.backend_type,
+                    self.panes.get(&session.id.to_string()),
+                );
+                let status = assessment.state();
+                let detected_agent = assessment.detected_agent().map(str::to_string);
                 let worktree = session.worktrees.first();
                 let members = session_members(
                     session.cwd.as_deref(),
@@ -925,6 +1178,8 @@ impl SnapshotStore {
                     shell_backend_id: session.shell_backend_id.clone(),
                     stopped: stopped.contains(&session.id),
                     hook_state,
+                    reports_as: declared,
+                    detected_agent,
                     member_dirs,
                 }
             })
@@ -1052,10 +1307,66 @@ impl SnapshotStore {
     }
 }
 
+/// One row's whole state assessment, from the columns plus whatever the pane
+/// probe has answered so far.
+///
+/// The same [`Assessment`] the CLI builds (`cli::sessions::SessionFacts::
+/// assess`), with the pane verdict handed in rather than probed for: the render
+/// loop may not shell out, so [`PaneProbe`] does it on a worker and the answer
+/// arrives here later. `None` means *not looked at yet*, which resolves to
+/// `uncovered`/`unreported` — both honest, and neither of them `idle`.
+fn assess(
+    registry: &AgentRegistry,
+    agent: &str,
+    hook: Option<&crate::storage::HookRow>,
+    now: i64,
+    parked: bool,
+    backend: &str,
+    pane: Option<&Corroboration>,
+) -> Assessment {
+    let assessment = Assessment::from_hooks(
+        registry,
+        agent,
+        hook.and_then(|h| h.state.as_deref()),
+        hook.and_then(|h| h.state_at),
+        hook.and_then(|h| h.seen_at),
+        now,
+    );
+    if parked {
+        return assessment.parked();
+    }
+    // A remote pane lives on its own host's multiplexer, which is not a thing
+    // this process can ask `ps` about — `unavailable`, never `unknown`.
+    if crate::session::is_remote_backend(backend) {
+        return assessment.pane_unavailable();
+    }
+    // An observation is published only for a row nothing has reported for.
+    // `best_state` already answers from the hook columns whenever they hold
+    // anything, so this changes nothing about the derived status — it only
+    // stops a pane verdict, cached before the hook onset and not yet evicted
+    // by that onset's own poll, from being attached to a row that now speaks
+    // for itself.
+    match pane {
+        Some(corroboration) if !assessment.reported => {
+            assessment.with_corroboration(corroboration.clone())
+        }
+        _ => assessment,
+    }
+}
+
+/// The registry the launcher itself uses, read once.
+///
+/// One read rather than three: the picker's rows, the agent a bare launch
+/// preselects and the coverage every state answer is judged against are all
+/// this one file, and `load_or_seed` seeds it when it is missing.
+fn read_registry() -> std::sync::Arc<AgentRegistry> {
+    std::sync::Arc::new(crate::agent::agent_config::load_or_seed())
+}
+
 /// Agents from the registry the launcher itself uses — so the flow can never
 /// offer one that would fail to launch.
-fn read_agents() -> Vec<AgentRow> {
-    crate::agent::agent_config::load_or_seed()
+fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
+    registry
         .agents
         .iter()
         .map(|agent| AgentRow {
@@ -1063,13 +1374,6 @@ fn read_agents() -> Vec<AgentRow> {
             command: agent.command.clone(),
         })
         .collect()
-}
-
-/// The agent a bare launch would use, so the flow preselects the same one.
-fn read_agent_default() -> String {
-    crate::agent::agent_config::load_or_seed()
-        .default_name()
-        .to_string()
 }
 
 /// Configured and discovered hosts. Empty means local only, and the flow skips
@@ -1270,6 +1574,180 @@ mod tests {
                 PathBuf::from("/worktrees/b"),
                 PathBuf::from("/reference"),
             ]
+        );
+    }
+
+    /// Seed an in-memory store with one session whose pane probe already found
+    /// a foreign agent, so `detected_agent` is published for it — the
+    /// "firstmate" scenario: a bare shell with a real agent running in it.
+    fn store_with_a_detected_agent() -> (SnapshotStore, crate::sync::SharedSession) {
+        let database = Database::open_in_memory().expect("in-memory database opens");
+        let row = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "shell".into(),
+            agent: "zsh".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        database.upsert_session(&row).expect("upsert");
+        let mut store = SnapshotStore::with_database(database);
+        store.panes.known.insert(
+            row.id.to_string(),
+            Probe {
+                corroboration: Corroboration::ForeignAgent(Some("claude".into())),
+                at: Instant::now(),
+            },
+        );
+        store.refresh();
+        let published = store
+            .current()
+            .sessions
+            .iter()
+            .find(|s| s.id == row.id.to_string())
+            .expect("row published");
+        assert_eq!(published.detected_agent.as_deref(), Some("claude"));
+        assert!(published.hook_state.is_none());
+        (store, row)
+    }
+
+    #[test]
+    fn a_hook_report_clears_its_row_detected_agent_at_once() {
+        let (mut store, row) = store_with_a_detected_agent();
+
+        // The same pane starts delivering real hook events — through the exact
+        // entry point production code uses, with nothing else run in between.
+        store.apply_hook_states(
+            vec![(
+                "local-tmux".to_string(),
+                "%7".to_string(),
+                "working".to_string(),
+            )],
+            Instant::now(),
+        );
+
+        let published = store
+            .current()
+            .sessions
+            .iter()
+            .find(|s| s.id == row.id.to_string())
+            .expect("row published");
+        assert_eq!(published.hook_state.as_deref(), Some("working"));
+        assert_eq!(
+            published.detected_agent, None,
+            "a pane verdict published before the hook onset must not survive it"
+        );
+    }
+
+    #[test]
+    fn a_hook_report_evicts_a_stale_pane_probe() {
+        let (mut store, row) = store_with_a_detected_agent();
+
+        store.apply_hook_states(
+            vec![(
+                "local-tmux".to_string(),
+                "%7".to_string(),
+                "working".to_string(),
+            )],
+            Instant::now(),
+        );
+        store.poll_pane_probes();
+
+        assert_eq!(
+            store.panes.get(&row.id.to_string()),
+            None,
+            "a row that now reports its own hook state must leave the probed cache"
+        );
+    }
+
+    /// The local path: an agent's own `thurbox-cli session signal` writes the
+    /// hook state through a second connection, never through
+    /// `apply_hook_states`, so only `refresh_if_due`'s normal DB-read cadence
+    /// ever sees it. Driven exactly as the coordinator drives it — no
+    /// hand-rolled `poll_pane_probes`/`refresh` call — because the ordering
+    /// between that cadence and the pane-probe cache is the thing under test.
+    #[test]
+    fn a_local_hook_report_does_not_resurrect_a_stale_detected_agent() {
+        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let path = temp.path();
+
+        let database = Database::open(path).expect("open store connection");
+        let row = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "shell".into(),
+            agent: "zsh".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        database.upsert_session(&row).expect("upsert");
+        let mut store = SnapshotStore::with_database(database);
+
+        store.panes.known.insert(
+            row.id.to_string(),
+            Probe {
+                corroboration: Corroboration::ForeignAgent(Some("claude".into())),
+                at: Instant::now(),
+            },
+        );
+        store.refresh();
+        let published = store
+            .current()
+            .sessions
+            .iter()
+            .find(|s| s.id == row.id.to_string())
+            .expect("row published");
+        assert_eq!(published.detected_agent.as_deref(), Some("claude"));
+
+        let driver = Database::open(path).expect("open a second connection");
+        driver
+            .set_hook_state(row.id, "working")
+            .expect("write the hook state through the other connection");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            store.refresh_if_due();
+            let seen = store
+                .current()
+                .sessions
+                .iter()
+                .find(|s| s.id == row.id.to_string())
+                .expect("row published")
+                .hook_state
+                .clone();
+            if seen.as_deref() == Some("working") || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let published = store
+            .current()
+            .sessions
+            .iter()
+            .find(|s| s.id == row.id.to_string())
+            .expect("row published");
+        assert_eq!(published.hook_state.as_deref(), Some("working"));
+        assert_eq!(
+            published.detected_agent, None,
+            "a pane verdict cached before a hook onset seen through another \
+             connection must not publish once the row reports for itself"
         );
     }
 }

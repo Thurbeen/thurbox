@@ -228,6 +228,21 @@ end
 --- trailing space. The branch bracket is absent rather than empty when the
 --- session has no worktree, and the leading/trailing spaces keep the title off
 --- the rounded corners.
+--- What the pane is running, for the title's `(…)` bracket.
+---
+--- The row's own agent, plus the one observed in the pane when a driver started
+--- something else there — `(zsh → claude)`. Two names rather than one because
+--- neither is the whole truth: the row says what thurbox launched, the arrow
+--- says what answered.
+local function agent_word(session)
+  local agent = session.agent or ""
+  local detected = session.detected_agent
+  if detected and detected ~= agent then
+    return agent .. " → " .. detected
+  end
+  return agent
+end
+
 local function terminal_title(session, opts)
   opts = opts or {}
   local name = session.name or ""
@@ -238,7 +253,7 @@ local function terminal_title(session, opts)
     base = " "
       .. name
       .. " ("
-      .. (session.agent or "")
+      .. agent_word(session)
       .. ") ["
       .. session.branch
       .. "] ["
@@ -248,7 +263,7 @@ local function terminal_title(session, opts)
     base = " "
       .. name
       .. " ("
-      .. (session.agent or "")
+      .. agent_word(session)
       .. ") ["
       .. status_word(session.status)
       .. "] "

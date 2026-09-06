@@ -503,6 +503,11 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
     // empty one, and the coarser provenance says how far to trust it.
     assert_eq!(out["state"], Value::String("running".into()));
     assert_eq!(out["state_source"], Value::String("process".into()));
+    // And it says WHICH agent, under the name the registry spells it with —
+    // beside `agent`, never instead of it. Naming it is the difference between
+    // "some agent is here" and a row a person can act on.
+    assert_eq!(out["agent"], Value::String("shell".into()));
+    assert_eq!(out["detected_agent"], Value::String("codex".into()));
     assert_eq!(out["hook_state_contradicted"], Value::Bool(false));
     assert!(out["foreground_command"]
         .as_str()

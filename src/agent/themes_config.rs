@@ -32,6 +32,7 @@ pub const SEED_THEMES_TOML: &str = r##"# Thurbox custom themes  —  ~/.config/t
 #
 # Overridable colour keys: accent, accent_bright, status_working,
 # status_blocked, status_done, status_idle, status_error, status_unreachable,
+# status_running, status_unknown,
 # text_primary, text_secondary, text_muted,
 # border_focused, border_unfocused, role_name, branch_name, search_bar,
 # keybind_hint, tool_allowed, tool_disallowed, danger, selection_bg,
@@ -193,6 +194,8 @@ mod tests {
             "status_idle",
             "status_error",
             "status_unreachable",
+            "status_running",
+            "status_unknown",
             "text_primary",
             "text_secondary",
             "text_muted",

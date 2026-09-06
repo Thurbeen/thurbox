@@ -152,7 +152,8 @@ impl Report {
             "hook_reported": self.hook.reported,
             "hook_coverage": self.hook.coverage.as_str(),
             "hook_states_reportable": self.hook.states_reportable(),
-            "hook_corroboration": self.hook.corroboration.map(|c| c.as_str()),
+            "hook_corroboration": self.hook.corroboration.as_ref().map(|c| c.as_str()),
+            "detected_agent": self.hook.detected_agent(),
             "hook_state_contradicted": self.hook.contradicted,
             "checks": self.findings.iter().map(|f| json!({
                 "check": f.key,
@@ -358,7 +359,7 @@ fn diagnose(
                       puts one back"
                 .into(),
         });
-    } else if let Some(corroboration) = hook.corroboration {
+    } else if let Some(corroboration) = hook.corroboration.as_ref() {
         let process = hook.foreground_process.as_deref().unwrap_or("nothing");
         findings.push(if hook.contradicted == Some(true) {
             Finding {
@@ -620,10 +621,15 @@ mod tests {
 
     #[test]
     fn a_pane_that_disagrees_is_called_out() {
-        let known = vec!["claude".to_string()];
         let hook =
             Assessment::from_hooks(&registry(), "claude", Some("working"), Some(0), None, 1_000)
-                .with_pane("claude", &known, Some("bash"), Some("bash"), Some(false));
+                .with_pane(
+                    "claude",
+                    &registry(),
+                    Some("bash"),
+                    Some("bash"),
+                    Some(false),
+                );
         let report = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, true, Some("/x"));
         assert_eq!(level_of(&report, "pane"), Level::Warn);
         let detail = &report

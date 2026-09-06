@@ -34,7 +34,8 @@ pub enum Action {
     ///
     /// **Unprobed fields are null, and null means "not checked".** Without
     /// `--verify` the pane is never looked at, so `hook_corroboration`,
-    /// `hook_state_contradicted` and `foreground_process`/`foreground_command`
+    /// `detected_agent`, `hook_state_contradicted` and
+    /// `foreground_process`/`foreground_command`
     /// are all `null` — *unchecked*, which is a different answer from
     /// `false`/"nothing found" (a remote session, which has no pane to look at
     /// from here, says `hook_corroboration: "unavailable"` instead). For the
@@ -70,6 +71,20 @@ pub enum Action {
     /// coverage of its agent's hooks, and — for a local session — what the
     /// pane's foreground process says about it (`hook_corroboration`,
     /// `hook_state_contradicted`). Pass `--no-verify` to skip the pane probe.
+    ///
+    /// `detected_agent` names the registered agent found holding the pane when
+    /// it is not the one the row was created with — the shape a harness that
+    /// owns the agent launch produces. Three names, three fields: `agent` is
+    /// what the row was created as, `reports_as` what a driver declared, and
+    /// this what is observably running. It is a live reading and is never
+    /// written back as `reports_as`.
+    ///
+    /// It is `null` whenever the observation does not determine one profile:
+    /// `ps` reports the executable, so an executable that several registered
+    /// agents share (pinning a model puts `claude-opus` on `claude`'s command)
+    /// answers `hook_corroboration: "foreign-agent"` and `state: "running"`
+    /// with no name — an agent is there, and which one is not knowable from
+    /// the process listing.
     ///
     /// A session parked by `session stop` reports `stopped: true` and
     /// `state: "stopped"`, and its pane is not probed — there is none.
@@ -518,119 +533,13 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             deleted: true,
             parent: _,
             verify: _,
-        } => {
-            let rows = db
-                .list_deleted_sessions()
-                .map_err(|e| format!("list_deleted_sessions: {e}"))?;
-            let json = Value::Array(rows.iter().map(deleted_session_to_json).collect());
-            let human = if rows.is_empty() {
-                "No deleted sessions.".to_string()
-            } else {
-                output::table(
-                    &["NAME", "AGENT", "BACKEND", "RECOVERABLE", "ID"],
-                    &rows
-                        .iter()
-                        .map(|r| {
-                            vec![
-                                r.name.clone(),
-                                r.agent.clone(),
-                                r.backend_type.clone(),
-                                if r.force_deleted { "in part" } else { "fully" }.to_string(),
-                                r.id.to_string(),
-                            ]
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            };
-            Ok(CommandOutput::new(json, human)
-                .list(
-                    "deleted_sessions",
-                    &["name", "agent", "force_deleted", "id"],
-                )
-                .empty("0 deleted sessions to restore")
-                .help([
-                    "thurbox-cli session restore <name|id>   bring one back",
-                    "thurbox-cli session restore <name|id> --best-effort   for a force-deleted row",
-                ]))
-        }
+        } => run_list_deleted(db),
         Action::List {
             parent,
             deleted: false,
             verify,
-        } => {
-            let parent_id = parent
-                .as_deref()
-                .map(|reference| resolve(db, reference).map(|s| s.id))
-                .transpose()?;
-            let sessions: Vec<SharedSession> = db
-                .list_active_sessions()
-                .map_err(|e| format!("list_active_sessions: {e}"))?
-                .into_iter()
-                .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
-                .collect();
-            let facts = SessionFacts::load(db);
-            let bases = db.load_base_branches().unwrap_or_default();
-            let updated = db.load_updated_at().unwrap_or_default();
-            let registry = crate::agent::agent_config::load_or_seed();
-            let assessments: Vec<crate::session::Assessment> = sessions
-                .iter()
-                .map(|s| facts.assess(&registry, s, verify))
-                .collect();
-            let json = Value::Array(
-                sessions
-                    .iter()
-                    .zip(&assessments)
-                    .map(|(s, hook)| {
-                        crate::session_ops::mirror::session_to_json_assessed(
-                            s,
-                            hook,
-                            bases.get(&s.id).map(String::as_str),
-                            updated.get(&s.id).copied(),
-                        )
-                    })
-                    .collect(),
-            );
-            Ok(
-                CommandOutput::new(json, render_session_list(&sessions, &assessments))
-                    // `state`, not `hook_state`: the raw latched word is null for a
-                    // session that never reported and carries no age or coverage to
-                    // judge it by, so an agent reading the default answer would get
-                    // less than the human table on the same call. `--json` still
-                    // carries `hook_state` verbatim for a consumer that reads it.
-                    //
-                    // The id is not decoration: every follow-up command resolves a
-                    // session by UUID, so omitting it would only buy a second call.
-                    .list("sessions", &["name", "agent", "state", "id"])
-                    .empty(match parent_id {
-                        Some(id) => format!("0 sessions with parent {id}"),
-                        None => "0 active sessions on this machine".to_string(),
-                    })
-                    .help([
-                        "thurbox-cli session get <id>   the full record, worktrees included",
-                        "thurbox-cli session capture <id> --lines 50   what its pane is showing",
-                        "thurbox-cli session list --json   every field, for a script",
-                    ]),
-            )
-        }
-        Action::Get { uuid, no_verify } => {
-            let session = resolve(db, &uuid)?;
-            let facts = SessionFacts::load(db);
-            let bases = db.load_base_branches().unwrap_or_default();
-            let registry = crate::agent::agent_config::load_or_seed();
-            let hook = facts.assess(&registry, &session, !no_verify);
-            Ok(CommandOutput::new(
-                crate::session_ops::mirror::session_to_json_assessed(
-                    &session,
-                    &hook,
-                    bases.get(&session.id).map(String::as_str),
-                    db.load_updated_at()
-                        .unwrap_or_default()
-                        .get(&session.id)
-                        .copied(),
-                ),
-                render_session_detail(&session, &hook),
-            ))
-        }
+        } => run_list_active(db, parent, verify),
+        Action::Get { uuid, no_verify } => run_get(db, uuid, no_verify),
         Action::Create {
             name,
             repo_path,
@@ -647,340 +556,46 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             resume,
             on_existing,
             reports_as,
-        } => {
-            let parent_session_id = parent
-                .as_deref()
-                .map(|reference| resolve(db, reference).map(|s| s.id))
-                .transpose()?;
-            let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
-            let env = parse_env(&env)?;
-            let registry = crate::agent::agent_config::load_or_seed();
-            // Checked before anything is spawned: a typo here is silent
-            // otherwise, and the session it would have described is already
-            // running by the time the caller could notice.
-            if let Some(declared) = &reports_as {
-                check_reports_as(&registry, declared)?;
-            }
-            // Names are not unique, so "already exists" is a decision the
-            // caller makes rather than something thurbox assumes — and it is a
-            // decision about *this* backend, since a mirrored host's rows share
-            // the namespace.
-            let backend = crate::session_ops::spawn::backend_type_for(host.as_deref())?;
-            let existing =
-                resolve_existing(db, &name, on_existing, &backend, reports_as.as_deref())?;
-            if let Existing::Answered(output) = existing {
-                return Ok(*output);
-            }
-            let req = crate::session_ops::SpawnRequest {
+        } => run_create(
+            db,
+            CreateArgs {
                 name,
                 repo_path,
+                agent,
                 worktree_branch,
                 base_branch,
-                agent,
                 host,
-                parent_session_id,
-                extra_repos,
+                parent,
+                add_repo,
+                add_dir,
                 command,
-                args: arg,
+                arg,
                 env,
-                resume_session_id: resume,
-                ..Default::default()
-            };
-            let res = match crate::session_ops::spawn_session_headless(db, req) {
-                Ok(res) => res,
-                // `replace` tore the old session down first, so a spawn that
-                // fails here would otherwise leave the caller with neither
-                // session. Put back what can be put back before reporting.
-                Err(e) => return Err(rollback_replace(db, &existing, e).into()),
-            };
-            if let Some(declared) = &reports_as {
-                if let Err(e) = db.set_reports_as(res.session_id, Some(declared)) {
-                    return Err(format!(
-                        "session '{}' ({}) was created, but declaring it as '{declared}' \
-                         failed: set_reports_as: {e}. Retry with `thurbox-cli session \
-                         reports-as {} {declared}`",
-                        res.name, res.session_id, res.session_id
-                    )
-                    .into());
-                }
-            }
-            // Nothing has signalled yet, so this is `uncovered` or `unreported`
-            // — read against whatever will actually report.
-            let state = crate::session::Assessment::from_hooks(
-                &registry,
-                reports_as.as_deref().unwrap_or(&res.agent),
-                None,
-                None,
-                None,
-                0,
-            )
-            .state_word();
-            // A host driven from afar has no interface of its own to arm the
-            // heartbeat: this creation is the moment its sessions start needing
-            // the tick (status polls, extension self-heal, reaping).
-            super::automations::arm_heartbeat();
-            let mut human = format!(
-                "Created session '{}' ({}) — {}\ncwd: {}",
-                res.name,
-                res.agent,
-                res.session_id,
-                res.cwd.display()
-            );
-            if let Some(note) = &res.sharing {
-                human.push_str(&format!("\n  {note}"));
-            }
-            push_hook_failures(&mut human, &res.hook_failures);
-            Ok(CommandOutput::new(
-                json!({
-                    "id": res.session_id.to_string(),
-                    "name": res.name,
-                    "agent": res.agent,
-                    "agent_session_id": res.agent_session_id,
-                    // The pane, the checkouts and the server: everything the
-                    // caller would otherwise have to come back for with a
-                    // second `session get`, and poll for until it appeared.
-                    "backend_id": res.backend_id,
-                    "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-                    "tmux_socket": crate::agent::tmux::local_socket_name(),
-                    "cwd": res.cwd.display().to_string(),
-                    "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
-                    "hook_failures": res.hook_failures,
-                    "sharing": res.sharing,
-                    "reports_as": reports_as,
-                    // Present here only so `--on-existing adopt` can answer in
-                    // the same shape: a session that was just spawned is
-                    // running by construction and has said nothing yet, while
-                    // one that was already there may be parked.
-                    "stopped": false,
-                    "state": state,
-                    "created": true,
-                }),
-                human,
-            ))
-        }
+                resume,
+                on_existing,
+                reports_as,
+            },
+        ),
         Action::Delete { uuid, force } => delete_session(db, &uuid, force),
         Action::Restore {
             session,
             best_effort,
         } => restore_deleted(db, &session, best_effort),
-        Action::Reap { session } => {
-            let row = super::session_ref::resolve_deleted(db, &session)?;
-            let reaped = crate::session_ops::reap_soft_deleted(db, row.id)?;
-            let human = if reaped {
-                format!("Reaped session '{}' ({})", row.name, row.id)
-            } else {
-                format!(
-                    "Nothing to reap for '{}' ({}): it came back, or was force-deleted",
-                    row.name, row.id
-                )
-            };
-            Ok(CommandOutput::new(
-                json!({
-                    "reaped": reaped,
-                    "id": row.id.to_string(),
-                    "name": row.name,
-                }),
-                human,
-            ))
-        }
-        Action::Restart { uuid, if_missing } => {
-            let session = resolve(db, &uuid)?;
-            let report = crate::session_ops::restart::restart_session_headless_with(
-                db, session.id, if_missing,
-            )?;
-            let mut human = format!("Restarted session '{}' ({})", session.name, session.id);
-            push_hook_failures(&mut human, &report.hook_failures);
-            Ok(CommandOutput::new(
-                json!({
-                    "restarted": true,
-                    "session_id": session.id.to_string(),
-                    "session_name": session.name,
-                    "hook_failures": report.hook_failures,
-                }),
-                human,
-            ))
-        }
+        Action::Reap { session } => run_reap(db, session),
+        Action::Restart { uuid, if_missing } => run_restart(db, uuid, if_missing),
         Action::Send {
             uuid,
             text,
             no_enter,
-        } => {
-            let session = resolve(db, &uuid)?;
-            if text.trim().is_empty() {
-                return Err("text must not be empty".into());
-            }
-            refuse_if_parked(db, &session)?;
-            let id = session.id.to_string();
-            let mut args = vec!["session", "send", &id, &text];
-            if no_enter {
-                args.push("--no-enter");
-            }
-            if let Some(remote) = delegate_to_host(&session, &args)? {
-                return Ok(remote);
-            }
-            let submit = !no_enter;
-            crate::agent::tmux::send_text_now(
-                &session.id.to_string(),
-                &session.name,
-                &text,
-                submit,
-            )
-            .map_err(|e| format!("send_text_now: {e}"))?;
-            let human = if submit {
-                format!("Sent to '{}'.", session.name)
-            } else {
-                format!("Typed into '{}' (not submitted).", session.name)
-            };
-            Ok(CommandOutput::new(
-                json!({
-                    "sent": true,
-                    "submitted": submit,
-                    "session_id": session.id.to_string(),
-                    "session_name": session.name,
-                }),
-                human,
-            ))
-        }
-        Action::Key { uuid, key } => {
-            let session = resolve(db, &uuid)?;
-            let resolved =
-                crate::agent::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
-            refuse_if_parked(db, &session)?;
-            let id = session.id.to_string();
-            if let Some(remote) =
-                delegate_to_host(&session, &["session", "key", &id, &resolved.name])?
-            {
-                return Ok(remote);
-            }
-            crate::agent::tmux::send_key_now(
-                &session.id.to_string(),
-                &session.name,
-                &resolved.tmux,
-            )
-            .map_err(|e| format!("send_key_now: {e}"))?;
-            Ok(CommandOutput::new(
-                json!({
-                    "sent": true,
-                    "key": resolved.name,
-                    "tmux_key": resolved.tmux,
-                    "session_id": session.id.to_string(),
-                    "session_name": session.name,
-                }),
-                format!("Sent {} to '{}'.", resolved.name, session.name),
-            ))
-        }
+        } => run_send(db, uuid, text, no_enter),
+        Action::Key { uuid, key } => run_key(db, uuid, key),
         Action::Capture { uuid, lines, ansi } => capture_pane(db, &uuid, lines, ansi),
-        Action::Focus { uuid } => {
-            let session = resolve(db, &uuid)?;
-            db.set_pending_focus_session_id(session.id)
-                .map_err(|e| format!("set_pending_focus_session_id: {e}"))?;
-            Ok(CommandOutput::new(
-                json!({
-                    "focused": true,
-                    "session_id": session.id.to_string(),
-                    "session_name": session.name,
-                }),
-                format!("Focus requested for '{}'.", session.name),
-            ))
-        }
-        Action::Sync { host, adopt } => {
-            let reports = crate::session_ops::mirror::sync(db, host.as_deref(), adopt)?;
-            let json = Value::Array(reports.iter().map(|r| r.to_json()).collect());
-            let human = if reports.is_empty() {
-                "No shareable hosts configured.".to_string()
-            } else {
-                reports
-                    .iter()
-                    .map(render_mirror_report)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            Ok(CommandOutput::new(json, human))
-        }
-        Action::Register { json_row } => {
-            let value: Value =
-                serde_json::from_str(&json_row).map_err(|e| format!("--json-row: {e}"))?;
-            let row = crate::session_ops::mirror::session_from_json(
-                &value,
-                crate::session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE,
-            )?;
-            register_running_session(db, row)
-        }
-        Action::Stop { session } => {
-            let target = resolve(db, &session)?;
-            let killed = crate::session_ops::restart::stop_session_headless(db, target.id)?;
-            Ok(CommandOutput::new(
-                json!({
-                    "id": target.id.to_string(),
-                    "name": target.name,
-                    "stopped": true,
-                    "killed_window": killed,
-                }),
-                format!(
-                    "Stopped '{}' ({}). Its worktree and conversation are untouched.",
-                    target.name, target.id
-                ),
-            )
-            .help([
-                "thurbox-cli session start <ref>   put its pane back",
-                "thurbox-cli session delete <ref>   let it go for good",
-            ]))
-        }
-        Action::Start { session } => {
-            let target = resolve(db, &session)?;
-            let report = crate::session_ops::restart::start_session_headless(db, target.id)?;
-            let mut human = format!("Started '{}' ({})", target.name, target.id);
-            push_hook_failures(&mut human, &report.hook_failures);
-            Ok(CommandOutput::new(
-                json!({
-                    "id": target.id.to_string(),
-                    "name": target.name,
-                    "stopped": false,
-                    "hook_failures": report.hook_failures,
-                }),
-                human,
-            ))
-        }
-        Action::Fork { session, name } => {
-            let source = resolve(db, &session)?;
-            let res = crate::session_ops::fork_session_headless(
-                db,
-                source.id,
-                name.as_deref().unwrap_or_default(),
-            )?;
-            // Whether the conversation actually came along is the agent's
-            // answer, not thurbox's: an agent with no `fork_args` gets a fresh
-            // one, and saying so beats letting the caller assume continuity.
-            let registry = crate::agent::agent_config::load_or_seed();
-            let continues = registry
-                .get(&res.agent)
-                .map(|def| !def.fork_args.is_empty())
-                .unwrap_or(false);
-            let human = format!(
-                "Forked '{}' → '{}' ({})\n{}",
-                source.name,
-                res.name,
-                res.session_id,
-                if continues {
-                    "  continuing its conversation"
-                } else {
-                    "  starting a fresh conversation (this agent declares no fork_args)"
-                }
-            );
-            Ok(CommandOutput::new(
-                json!({
-                    "id": res.session_id.to_string(),
-                    "name": res.name,
-                    "agent": res.agent,
-                    "parent_session_id": source.id.to_string(),
-                    "backend_id": res.backend_id,
-                    "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-                    "cwd": res.cwd.display().to_string(),
-                    "continues_conversation": continues,
-                }),
-                human,
-            ))
-        }
+        Action::Focus { uuid } => run_focus(db, uuid),
+        Action::Sync { host, adopt } => run_sync(db, host, adopt),
+        Action::Register { json_row } => run_register(db, json_row),
+        Action::Stop { session } => run_stop(db, session),
+        Action::Start { session } => run_start(db, session),
+        Action::Fork { session, name } => run_fork(db, session, name),
         Action::Exec {
             session,
             exit_passthrough,
@@ -993,35 +608,532 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
         } => set_reports_as(db, &session, agent.as_deref(), clear),
         Action::Meta { action } => run_meta(action, db),
         Action::Doctor { uuid } => super::session_doctor::run(db, uuid.as_deref()),
-        Action::Signal { state, session } => {
-            let target = resolve_signal_target(db, session.as_deref())?;
-            if !db
-                .set_hook_state(target.id, &state)
-                .map_err(|e| format!("set_hook_state: {e}"))?
-            {
-                return Err(format!(
-                    "'{}' is parked, so it has no turn to report; \
-                     thurbox-cli session start {} first",
-                    target.name, target.id
+        Action::Signal { state, session } => run_signal(db, state, session),
+    }
+}
+
+fn run_list_deleted(db: &Database) -> Result<CommandOutput, CommandError> {
+    let rows = db
+        .list_deleted_sessions()
+        .map_err(|e| format!("list_deleted_sessions: {e}"))?;
+    let json = Value::Array(rows.iter().map(deleted_session_to_json).collect());
+    let human = if rows.is_empty() {
+        "No deleted sessions.".to_string()
+    } else {
+        output::table(
+            &["NAME", "AGENT", "BACKEND", "RECOVERABLE", "ID"],
+            &rows
+                .iter()
+                .map(|r| {
+                    vec![
+                        r.name.clone(),
+                        r.agent.clone(),
+                        r.backend_type.clone(),
+                        if r.force_deleted { "in part" } else { "fully" }.to_string(),
+                        r.id.to_string(),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    Ok(CommandOutput::new(json, human)
+        .list(
+            "deleted_sessions",
+            &["name", "agent", "force_deleted", "id"],
+        )
+        .empty("0 deleted sessions to restore")
+        .help([
+            "thurbox-cli session restore <name|id>   bring one back",
+            "thurbox-cli session restore <name|id> --best-effort   for a force-deleted row",
+        ]))
+}
+
+fn run_list_active(
+    db: &Database,
+    parent: Option<String>,
+    verify: bool,
+) -> Result<CommandOutput, CommandError> {
+    let parent_id = parent
+        .as_deref()
+        .map(|reference| resolve(db, reference).map(|s| s.id))
+        .transpose()?;
+    let sessions: Vec<SharedSession> = db
+        .list_active_sessions()
+        .map_err(|e| format!("list_active_sessions: {e}"))?
+        .into_iter()
+        .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
+        .collect();
+    let facts = SessionFacts::load(db);
+    let bases = db.load_base_branches().unwrap_or_default();
+    let updated = db.load_updated_at().unwrap_or_default();
+    let registry = crate::agent::agent_config::load_or_seed();
+    let assessments: Vec<crate::session::Assessment> = sessions
+        .iter()
+        .map(|s| facts.assess(&registry, s, verify))
+        .collect();
+    let json = Value::Array(
+        sessions
+            .iter()
+            .zip(&assessments)
+            .map(|(s, hook)| {
+                crate::session_ops::mirror::session_to_json_assessed(
+                    s,
+                    hook,
+                    bases.get(&s.id).map(String::as_str),
+                    updated.get(&s.id).copied(),
                 )
-                .into());
-            }
-            // The same state on the pane, for a peer's live subscription:
-            // best-effort, and nothing at all outside tmux.
-            if let Err(e) = crate::agent::tmux::set_own_pane_state(&state) {
-                tracing::debug!("could not set the pane state option: {e:#}");
-            }
-            Ok(CommandOutput::new(
-                json!({
-                    "signaled": true,
-                    "session_id": target.id.to_string(),
-                    "session_name": target.name,
-                    "state": state,
-                }),
-                format!("Signaled {state} for '{}'.", target.name),
-            ))
+            })
+            .collect(),
+    );
+    Ok(
+        CommandOutput::new(json, render_session_list(&sessions, &assessments))
+            // `state`, not `hook_state`: the raw latched word is null for a
+            // session that never reported and carries no age or coverage to
+            // judge it by, so an agent reading the default answer would get
+            // less than the human table on the same call. `--json` still
+            // carries `hook_state` verbatim for a consumer that reads it.
+            //
+            // The id is not decoration: every follow-up command resolves a
+            // session by UUID, so omitting it would only buy a second call.
+            .list("sessions", &["name", "agent", "state", "id"])
+            .empty(match parent_id {
+                Some(id) => format!("0 sessions with parent {id}"),
+                None => "0 active sessions on this machine".to_string(),
+            })
+            .help([
+                "thurbox-cli session get <id>   the full record, worktrees included",
+                "thurbox-cli session capture <id> --lines 50   what its pane is showing",
+                "thurbox-cli session list --json   every field, for a script",
+            ]),
+    )
+}
+
+fn run_get(db: &Database, uuid: String, no_verify: bool) -> Result<CommandOutput, CommandError> {
+    let session = resolve(db, &uuid)?;
+    let facts = SessionFacts::load(db);
+    let bases = db.load_base_branches().unwrap_or_default();
+    let registry = crate::agent::agent_config::load_or_seed();
+    let hook = facts.assess(&registry, &session, !no_verify);
+    Ok(CommandOutput::new(
+        crate::session_ops::mirror::session_to_json_assessed(
+            &session,
+            &hook,
+            bases.get(&session.id).map(String::as_str),
+            db.load_updated_at()
+                .unwrap_or_default()
+                .get(&session.id)
+                .copied(),
+        ),
+        render_session_detail(&session, &hook),
+    ))
+}
+
+/// Every option `session create` takes — carried as one struct so the
+/// dispatcher's match arm stays under clippy's argument-count lint instead of
+/// forwarding fifteen positional parameters.
+struct CreateArgs {
+    name: String,
+    repo_path: PathBuf,
+    agent: Option<String>,
+    worktree_branch: Option<String>,
+    base_branch: Option<String>,
+    host: Option<String>,
+    parent: Option<String>,
+    add_repo: Vec<String>,
+    add_dir: Vec<String>,
+    command: Option<String>,
+    arg: Vec<String>,
+    env: Vec<String>,
+    resume: Option<String>,
+    on_existing: OnExisting,
+    reports_as: Option<String>,
+}
+
+fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandError> {
+    let CreateArgs {
+        name,
+        repo_path,
+        agent,
+        worktree_branch,
+        base_branch,
+        host,
+        parent,
+        add_repo,
+        add_dir,
+        command,
+        arg,
+        env,
+        resume,
+        on_existing,
+        reports_as,
+    } = args;
+    let parent_session_id = parent
+        .as_deref()
+        .map(|reference| resolve(db, reference).map(|s| s.id))
+        .transpose()?;
+    let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
+    let env = parse_env(&env)?;
+    let registry = crate::agent::agent_config::load_or_seed();
+    // Checked before anything is spawned: a typo here is silent
+    // otherwise, and the session it would have described is already
+    // running by the time the caller could notice.
+    if let Some(declared) = &reports_as {
+        check_reports_as(&registry, declared)?;
+    }
+    // Names are not unique, so "already exists" is a decision the
+    // caller makes rather than something thurbox assumes — and it is a
+    // decision about *this* backend, since a mirrored host's rows share
+    // the namespace.
+    let backend = crate::session_ops::spawn::backend_type_for(host.as_deref())?;
+    let existing = resolve_existing(db, &name, on_existing, &backend, reports_as.as_deref())?;
+    if let Existing::Answered(output) = existing {
+        return Ok(*output);
+    }
+    let req = crate::session_ops::SpawnRequest {
+        name,
+        repo_path,
+        worktree_branch,
+        base_branch,
+        agent,
+        host,
+        parent_session_id,
+        extra_repos,
+        command,
+        args: arg,
+        env,
+        resume_session_id: resume,
+        ..Default::default()
+    };
+    let res = match crate::session_ops::spawn_session_headless(db, req) {
+        Ok(res) => res,
+        // `replace` tore the old session down first, so a spawn that
+        // fails here would otherwise leave the caller with neither
+        // session. Put back what can be put back before reporting.
+        Err(e) => return Err(rollback_replace(db, &existing, e).into()),
+    };
+    if let Some(declared) = &reports_as {
+        if let Err(e) = db.set_reports_as(res.session_id, Some(declared)) {
+            return Err(format!(
+                "session '{}' ({}) was created, but declaring it as '{declared}' \
+                 failed: set_reports_as: {e}. Retry with `thurbox-cli session \
+                 reports-as {} {declared}`",
+                res.name, res.session_id, res.session_id
+            )
+            .into());
         }
     }
+    // Nothing has signalled yet, so this is `uncovered` or `unreported`
+    // — read against whatever will actually report.
+    let state = crate::session::Assessment::from_hooks(
+        &registry,
+        reports_as.as_deref().unwrap_or(&res.agent),
+        None,
+        None,
+        None,
+        0,
+    )
+    .state_word();
+    // A host driven from afar has no interface of its own to arm the
+    // heartbeat: this creation is the moment its sessions start needing
+    // the tick (status polls, extension self-heal, reaping).
+    super::automations::arm_heartbeat();
+    let mut human = format!(
+        "Created session '{}' ({}) — {}\ncwd: {}",
+        res.name,
+        res.agent,
+        res.session_id,
+        res.cwd.display()
+    );
+    if let Some(note) = &res.sharing {
+        human.push_str(&format!("\n  {note}"));
+    }
+    push_hook_failures(&mut human, &res.hook_failures);
+    Ok(CommandOutput::new(
+        json!({
+            "id": res.session_id.to_string(),
+            "name": res.name,
+            "agent": res.agent,
+            "agent_session_id": res.agent_session_id,
+            // The pane, the checkouts and the server: everything the
+            // caller would otherwise have to come back for with a
+            // second `session get`, and poll for until it appeared.
+            "backend_id": res.backend_id,
+            "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
+            "tmux_socket": crate::agent::tmux::local_socket_name(),
+            "cwd": res.cwd.display().to_string(),
+            "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
+            "hook_failures": res.hook_failures,
+            "sharing": res.sharing,
+            "reports_as": reports_as,
+            // Present here only so `--on-existing adopt` can answer in
+            // the same shape: a session that was just spawned is
+            // running by construction and has said nothing yet, while
+            // one that was already there may be parked.
+            "stopped": false,
+            "state": state,
+            "created": true,
+        }),
+        human,
+    ))
+}
+
+fn run_reap(db: &Database, session: String) -> Result<CommandOutput, CommandError> {
+    let row = super::session_ref::resolve_deleted(db, &session)?;
+    let reaped = crate::session_ops::reap_soft_deleted(db, row.id)?;
+    let human = if reaped {
+        format!("Reaped session '{}' ({})", row.name, row.id)
+    } else {
+        format!(
+            "Nothing to reap for '{}' ({}): it came back, or was force-deleted",
+            row.name, row.id
+        )
+    };
+    Ok(CommandOutput::new(
+        json!({
+            "reaped": reaped,
+            "id": row.id.to_string(),
+            "name": row.name,
+        }),
+        human,
+    ))
+}
+
+fn run_restart(
+    db: &Database,
+    uuid: String,
+    if_missing: bool,
+) -> Result<CommandOutput, CommandError> {
+    let session = resolve(db, &uuid)?;
+    let report =
+        crate::session_ops::restart::restart_session_headless_with(db, session.id, if_missing)?;
+    let mut human = format!("Restarted session '{}' ({})", session.name, session.id);
+    push_hook_failures(&mut human, &report.hook_failures);
+    Ok(CommandOutput::new(
+        json!({
+            "restarted": true,
+            "session_id": session.id.to_string(),
+            "session_name": session.name,
+            "hook_failures": report.hook_failures,
+        }),
+        human,
+    ))
+}
+
+fn run_send(
+    db: &Database,
+    uuid: String,
+    text: String,
+    no_enter: bool,
+) -> Result<CommandOutput, CommandError> {
+    let session = resolve(db, &uuid)?;
+    if text.trim().is_empty() {
+        return Err("text must not be empty".into());
+    }
+    refuse_if_parked(db, &session)?;
+    let id = session.id.to_string();
+    let mut args = vec!["session", "send", &id, &text];
+    if no_enter {
+        args.push("--no-enter");
+    }
+    if let Some(remote) = delegate_to_host(&session, &args)? {
+        return Ok(remote);
+    }
+    let submit = !no_enter;
+    crate::agent::tmux::send_text_now(&session.id.to_string(), &session.name, &text, submit)
+        .map_err(|e| format!("send_text_now: {e}"))?;
+    let human = if submit {
+        format!("Sent to '{}'.", session.name)
+    } else {
+        format!("Typed into '{}' (not submitted).", session.name)
+    };
+    Ok(CommandOutput::new(
+        json!({
+            "sent": true,
+            "submitted": submit,
+            "session_id": session.id.to_string(),
+            "session_name": session.name,
+        }),
+        human,
+    ))
+}
+
+fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, CommandError> {
+    let session = resolve(db, &uuid)?;
+    let resolved = crate::agent::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
+    refuse_if_parked(db, &session)?;
+    let id = session.id.to_string();
+    if let Some(remote) = delegate_to_host(&session, &["session", "key", &id, &resolved.name])? {
+        return Ok(remote);
+    }
+    crate::agent::tmux::send_key_now(&session.id.to_string(), &session.name, &resolved.tmux)
+        .map_err(|e| format!("send_key_now: {e}"))?;
+    Ok(CommandOutput::new(
+        json!({
+            "sent": true,
+            "key": resolved.name,
+            "tmux_key": resolved.tmux,
+            "session_id": session.id.to_string(),
+            "session_name": session.name,
+        }),
+        format!("Sent {} to '{}'.", resolved.name, session.name),
+    ))
+}
+
+fn run_focus(db: &Database, uuid: String) -> Result<CommandOutput, CommandError> {
+    let session = resolve(db, &uuid)?;
+    db.set_pending_focus_session_id(session.id)
+        .map_err(|e| format!("set_pending_focus_session_id: {e}"))?;
+    Ok(CommandOutput::new(
+        json!({
+            "focused": true,
+            "session_id": session.id.to_string(),
+            "session_name": session.name,
+        }),
+        format!("Focus requested for '{}'.", session.name),
+    ))
+}
+
+fn run_sync(
+    db: &Database,
+    host: Option<String>,
+    adopt: bool,
+) -> Result<CommandOutput, CommandError> {
+    let reports = crate::session_ops::mirror::sync(db, host.as_deref(), adopt)?;
+    let json = Value::Array(reports.iter().map(|r| r.to_json()).collect());
+    let human = if reports.is_empty() {
+        "No shareable hosts configured.".to_string()
+    } else {
+        reports
+            .iter()
+            .map(render_mirror_report)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Ok(CommandOutput::new(json, human))
+}
+
+fn run_register(db: &Database, json_row: String) -> Result<CommandOutput, CommandError> {
+    let value: Value = serde_json::from_str(&json_row).map_err(|e| format!("--json-row: {e}"))?;
+    let row = crate::session_ops::mirror::session_from_json(
+        &value,
+        crate::session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE,
+    )?;
+    register_running_session(db, row)
+}
+
+fn run_stop(db: &Database, session: String) -> Result<CommandOutput, CommandError> {
+    let target = resolve(db, &session)?;
+    let killed = crate::session_ops::restart::stop_session_headless(db, target.id)?;
+    Ok(CommandOutput::new(
+        json!({
+            "id": target.id.to_string(),
+            "name": target.name,
+            "stopped": true,
+            "killed_window": killed,
+        }),
+        format!(
+            "Stopped '{}' ({}). Its worktree and conversation are untouched.",
+            target.name, target.id
+        ),
+    )
+    .help([
+        "thurbox-cli session start <ref>   put its pane back",
+        "thurbox-cli session delete <ref>   let it go for good",
+    ]))
+}
+
+fn run_start(db: &Database, session: String) -> Result<CommandOutput, CommandError> {
+    let target = resolve(db, &session)?;
+    let report = crate::session_ops::restart::start_session_headless(db, target.id)?;
+    let mut human = format!("Started '{}' ({})", target.name, target.id);
+    push_hook_failures(&mut human, &report.hook_failures);
+    Ok(CommandOutput::new(
+        json!({
+            "id": target.id.to_string(),
+            "name": target.name,
+            "stopped": false,
+            "hook_failures": report.hook_failures,
+        }),
+        human,
+    ))
+}
+
+fn run_fork(
+    db: &Database,
+    session: String,
+    name: Option<String>,
+) -> Result<CommandOutput, CommandError> {
+    let source = resolve(db, &session)?;
+    let res = crate::session_ops::fork_session_headless(
+        db,
+        source.id,
+        name.as_deref().unwrap_or_default(),
+    )?;
+    // Whether the conversation actually came along is the agent's
+    // answer, not thurbox's: an agent with no `fork_args` gets a fresh
+    // one, and saying so beats letting the caller assume continuity.
+    let registry = crate::agent::agent_config::load_or_seed();
+    let continues = registry
+        .get(&res.agent)
+        .map(|def| !def.fork_args.is_empty())
+        .unwrap_or(false);
+    let human = format!(
+        "Forked '{}' → '{}' ({})\n{}",
+        source.name,
+        res.name,
+        res.session_id,
+        if continues {
+            "  continuing its conversation"
+        } else {
+            "  starting a fresh conversation (this agent declares no fork_args)"
+        }
+    );
+    Ok(CommandOutput::new(
+        json!({
+            "id": res.session_id.to_string(),
+            "name": res.name,
+            "agent": res.agent,
+            "parent_session_id": source.id.to_string(),
+            "backend_id": res.backend_id,
+            "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
+            "cwd": res.cwd.display().to_string(),
+            "continues_conversation": continues,
+        }),
+        human,
+    ))
+}
+
+fn run_signal(
+    db: &Database,
+    state: String,
+    session: Option<String>,
+) -> Result<CommandOutput, CommandError> {
+    let target = resolve_signal_target(db, session.as_deref())?;
+    if !db
+        .set_hook_state(target.id, &state)
+        .map_err(|e| format!("set_hook_state: {e}"))?
+    {
+        return Err(format!(
+            "'{}' is parked, so it has no turn to report; \
+             thurbox-cli session start {} first",
+            target.name, target.id
+        )
+        .into());
+    }
+    // The same state on the pane, for a peer's live subscription:
+    // best-effort, and nothing at all outside tmux.
+    if let Err(e) = crate::agent::tmux::set_own_pane_state(&state) {
+        tracing::debug!("could not set the pane state option: {e:#}");
+    }
+    Ok(CommandOutput::new(
+        json!({
+            "signaled": true,
+            "session_id": target.id.to_string(),
+            "session_name": target.name,
+            "state": state,
+        }),
+        format!("Signaled {state} for '{}'.", target.name),
+    ))
 }
 
 /// Read a session's pane: its rendered text, and the live state around it.
@@ -1356,7 +1468,7 @@ fn render_session_detail(s: &SharedSession, hook: &crate::session::Assessment) -
             output::dash(s.parent_session_id.map(|id| id.to_string()).as_deref()),
         ),
     ];
-    if let Some(corroboration) = hook.corroboration {
+    if let Some(corroboration) = hook.corroboration.as_ref() {
         pairs.push((
             "pane",
             match hook.foreground_process.as_deref() {
@@ -1364,6 +1476,11 @@ fn render_session_detail(s: &SharedSession, hook: &crate::session::Assessment) -
                 None => corroboration.as_str().to_string(),
             },
         ));
+    }
+    // Named, never implied: an agent seen in the pane says which agent is
+    // there, and nothing at all about whether it is mid-turn.
+    if let Some(detected) = hook.detected_agent() {
+        pairs.push(("detected_agent", detected.to_string()));
     }
     let mut block = output::kv(&pairs);
     for w in &s.worktrees {
@@ -2000,11 +2117,10 @@ impl SessionFacts {
             .get(agent)
             .map(|d| d.command.clone())
             .unwrap_or_else(|| agent.to_string());
-        let known: Vec<String> = registry.agents.iter().map(|a| a.command.clone()).collect();
         let pane = crate::agent::tmux::pane_state(&s.id.to_string(), &s.name);
         hook.with_pane(
             &command,
-            &known,
+            registry,
             pane.foreground_process.as_deref(),
             pane.foreground_command.as_deref(),
             pane.dead,
