@@ -332,9 +332,11 @@ control-mode connection. Delivery per agent, at spawn time:
   is provisioned into the host's agent config dir
   (`session_ops::remote_hooks`), with the same safety rules as the local
   install: skipped when the agent isn't installed there (`requires_dir` probed
-  over ssh), deep-merge-not-clobber for a shared config (prune-then-merge on both
-  the `session signal` and `@thurbox_state` markers, so upgrades replace
-  rather than accumulate), managed-marker guard for standalone files, and
+  over ssh), deep-merge-not-clobber for a shared config (prune-then-merge so
+  upgrades replace rather than accumulate — JSON on either the `session
+  signal` or `@thurbox_state` marker in an entry's content, TOML on the same
+  ownership comment used locally, which recognises a stale entry under either
+  command form), managed-marker guard for standalone files, and
   compare-before-write.
 
 The local TUI receives the state over its persistent control-mode connection;
