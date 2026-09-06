@@ -1475,6 +1475,16 @@ renumbering are now one `BEGIN IMMEDIATE` transaction
 (`Database::reorder_sessions`) with the write a single `UPDATE … CASE`, which is
 what the mutex was reaching for and could not have.
 
+Every targeted setter now opens through the same `BEGIN IMMEDIATE`
+(`Database::write_transaction`), not only `reorder_sessions`. A `BEGIN
+DEFERRED` transaction that reads before it writes — `set_backend_id` among
+them, and `set_hook_state`, the path every agent hook takes — upgrades to a
+write lock mid-flight, and in WAL mode an upgrade whose read snapshot a peer
+has already overtaken fails `SQLITE_BUSY` immediately, without consulting
+`busy_timeout`. The database is shared by the TUI, `thurbox-cli` and every
+agent hook, so that upgrade race is not rare; taking the lock at `BEGIN`
+instead makes the write wait out a peer rather than fail in front of one.
+
 **Rejected**:
 
 - *Keeping the in-memory reaper for its cadence.* It costs nothing per tick,
@@ -1493,8 +1503,12 @@ loop no longer holds a list of ids it is waiting on. A restart whose row is
 deleted underneath it now fails to record its pane instead of reviving the row,
 and says so; the sweep only collects a *soft*-deleted row, so a concurrent
 *force* delete would otherwise orphan the window it spawned — the caller kills
-that window itself when the record fails, rather than leaning on a sweep that
-cannot see it. `upsert_session` replaces the worktree rows unconditionally,
+that window itself when the record says the row is genuinely gone, rather than
+leaning on a sweep that cannot see it. A record that merely *failed to write*
+says nothing about the row: the agent that was just spawned is a live process,
+and killing it over a transient storage error — which `BEGIN IMMEDIATE` makes
+rarer but does not eliminate — is a defect the record's caller must not commit
+regardless. `upsert_session` replaces the worktree rows unconditionally,
 so a session that loses every worktree stops listing the ones it no longer owns
 — it used to skip the replacement for an empty list and keep them forever. And
 the reads that fed a relaunch stopped failing open: the `stop` guard, the launch
