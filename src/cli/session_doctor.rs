@@ -274,7 +274,10 @@ fn diagnose(
             key: "coverage",
             level: Level::Warn,
             detail: format!(
-                "nothing declares an agent for this session, but its pane is running                  '{}' — which can report {} once its hooks are wired. Declare it with                  `thurbox-cli session reports-as {} {}` so coverage stops depending on                  what a process listing happens to see",
+                "nothing declares an agent for this session, but its pane is running \
+                 '{}' — which can report {} once its hooks are wired. Declare it with \
+                 `thurbox-cli session reports-as {} {}` so coverage stops depending on \
+                 what a process listing happens to see",
                 hook.detected_agent().unwrap_or(agent),
                 hook.states_reportable().join(", "),
                 session.name,
