@@ -303,8 +303,12 @@ This extension exercises two extension-manifest capabilities (see
   agent's own *shared* config file (antigravity's `~/.gemini/settings.json`,
   kimi's `~/.kimi-code/config.toml`) without clobbering the
   user's other settings: objects/tables recurse, arrays union, and uninstall prunes
-  exactly the entries we shipped (matched by the `session signal` marker, so it
-  stays correct across payload changes). Guarded by `requires_dir`; no-op when
+  exactly the entries we shipped. JSON recognises them by the `session signal`
+  marker in their content; TOML by an ownership comment stamped on each entry,
+  which is stricter in both directions — a hook *you* wrote that calls `session
+  signal` is not ours and survives uninstall, and an entry of ours whose event or
+  command changed in a later payload is still ours and gets replaced rather than
+  duplicated. Guarded by `requires_dir`; no-op when
   the merge is already present. A merge whose target is malformed is
   soft-skipped (logged, never aborts the rest of the install). JSON by default;
   `format = "toml"` picks the TOML merge (`agent::toml_merge`, on `toml_edit`,

@@ -11,7 +11,7 @@ use crate::storage::Database;
 
 use super::fs::{
     ensure_safe_relative, guard_removable_dir, is_user_modified, make_symlink,
-    remove_dir_all_resilient, safe_join, set_executable,
+    remove_dir_all_resilient, safe_join, set_executable, MANAGED_MARKER,
 };
 use super::lifecycle::{activate_extension, deactivate_extension, DeactivateReport, EnsureReport};
 
@@ -310,26 +310,32 @@ fn install_external_file(
 /// rewritten form's [`crate::session::REMOTE_HOOK_STATE_OPTION`] marker.
 pub(crate) const HOOK_SIGNAL_MARKER: &str = "thurbox-cli session signal";
 
-/// Read the JSON config at `path` (or `{}` when absent), parsed. A malformed
-/// file is an error rather than a silent overwrite — we never clobber config we
-/// can't safely round-trip.
+/// Read the JSON config at `path` (or `{}` when it does not exist), parsed.
+///
+/// Only a **missing** file is an empty document. A file that exists but cannot
+/// be read or parsed is an error the caller soft-skips, because the merged
+/// result is written straight back: treating an unreadable file as empty would
+/// replace the user's whole config with our hook entries alone. A file we cannot
+/// read is not an empty file, and the only safe answer is to refuse and say so.
 fn read_json_or_empty(path: &Path) -> Result<serde_json::Value, String> {
     match std::fs::read_to_string(path) {
         Ok(s) if s.trim().is_empty() => Ok(serde_json::json!({})),
         Ok(s) => serde_json::from_str(&s).map_err(|e| format!("parse {}: {e}", path.display())),
-        Err(_) => Ok(serde_json::json!({})),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(e) => Err(format!("read {}: {e}", path.display())),
     }
 }
 
-/// [`read_json_or_empty`] for a TOML target: a missing or blank file is an empty
-/// document, and a malformed one is an error the caller soft-skips.
+/// [`read_json_or_empty`] for a TOML target, with the same rule: absent is an
+/// empty document, present-but-unreadable refuses.
 fn read_toml_or_empty(path: &Path) -> Result<toml_edit::DocumentMut, String> {
     match std::fs::read_to_string(path) {
         Ok(s) if s.trim().is_empty() => Ok(toml_edit::DocumentMut::new()),
         Ok(s) => s
             .parse()
             .map_err(|e| format!("parse {}: {e}", path.display())),
-        Err(_) => Ok(toml_edit::DocumentMut::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml_edit::DocumentMut::new()),
+        Err(e) => Err(format!("read {}: {e}", path.display())),
     }
 }
 
@@ -407,6 +413,13 @@ fn merged_config(
                 .parse()
                 .map_err(|e| format!("parse merge source {source_name}: {e}"))?;
             let mut doc = read_toml_or_empty(dest)?;
+            // Prune, then merge. Our entries are identified by an ownership
+            // comment rather than by their content, so a payload that renamed an
+            // event or edited a command replaces the entry already on disk
+            // instead of stacking a second copy beside it. (The JSON sibling
+            // cannot do this: a content match would delete a user hook it never
+            // wrote and then not put it back.)
+            crate::agent::toml_merge::prune_owned(&mut doc, MANAGED_MARKER);
             crate::agent::toml_merge::merge(&mut doc, &to_merge);
             Ok(doc.to_string())
         }
@@ -434,7 +447,7 @@ fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> 
         },
         crate::session::ConfigMergeFormat::Toml => match read_toml_or_empty(&dest) {
             Ok(mut doc) => {
-                crate::agent::toml_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
+                crate::agent::toml_merge::prune_owned(&mut doc, MANAGED_MARKER);
                 Ok(doc.to_string())
             }
             Err(e) => Err(e),

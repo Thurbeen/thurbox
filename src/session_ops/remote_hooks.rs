@@ -390,8 +390,11 @@ fn merged_remote_toml_doc(existing: &str, payload: &str) -> Result<Option<String
         .map_err(|e| format!("payload is not valid TOML: {e}"))?;
 
     let mut doc = before.clone();
-    crate::agent::toml_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
-    crate::agent::toml_merge::prune_marked(&mut doc, crate::session::REMOTE_HOOK_STATE_OPTION);
+    // One marker covers both command forms here, unlike the JSON sibling: the
+    // ownership comment is on the entry, and the remote rewrite only touches the
+    // command inside it, so a stale un-rewritten entry is recognised as ours
+    // just the same.
+    crate::agent::toml_merge::prune_owned(&mut doc, MANAGED_MARKER);
     crate::agent::toml_merge::merge(&mut doc, &to_merge);
 
     let after = doc.to_string();
@@ -653,19 +656,44 @@ mod tests {
     #[test]
     fn merged_toml_doc_preserves_the_remote_users_config_and_replaces_stale_entries() {
         let payload = builtin_hooks::rewrite_hook_signals_for_remote(builtin_hooks::KIMI_HOOKS);
+        // The host's file carries the remote user's own settings and hook, plus
+        // a *stale* thurbox entry an older thurbox shipped in the un-rewritten
+        // local command form. Ownership is the comment, so that entry is
+        // recognised as ours whichever command form it holds — which is why one
+        // prune call replaces the two the JSON sibling needs.
         let existing = "# theirs\nmodel = \"kimi-code/k3\"\n\n\
-                        [[hooks]]\nevent = \"Stop\"\ncommand = \"notify-send hi\"\n\n\
                         [[hooks]]\nevent = \"Stop\"\n\
+                        command = \"notify-send hi; thurbox-cli session signal --state done\"\n\n\
+                        # managed by thurbox `extension install`\n\
+                        [[hooks]]\nevent = \"Retired\"\n\
                         command = \"thurbox-cli session signal --state done || true\"\n";
         let merged = merged_remote_toml_doc(existing, &payload)
             .expect("merges")
             .expect("writes");
-        // Their config and their own hook survive; the stale un-rewritten
-        // thurbox entry is replaced rather than accumulated beside the new one.
+
+        // The remote user's config and their own hook survive untouched — even
+        // though that hook calls `thurbox-cli session signal` itself.
         assert!(merged.contains("# theirs"));
-        assert!(merged.contains("notify-send hi"));
-        assert!(!merged.contains("thurbox-cli"));
+        assert!(merged.contains("notify-send hi; thurbox-cli session signal --state done"));
+        // The stale entry is gone rather than sitting beside the new one, and
+        // ours now reports through the pane option.
+        assert!(
+            !merged.contains("Retired"),
+            "stale entry replaced: {merged}"
+        );
         assert!(merged.contains("tmux set-option -p @thurbox_state done"));
+
+        // Every command we ship reports remotely; the only one still naming the
+        // local CLI is the user's own.
+        let doc: toml::Value = toml::from_str(&merged).expect("merged doc is valid TOML");
+        for hook in doc["hooks"].as_array().expect("[[hooks]]") {
+            let command = hook["command"].as_str().expect("hook has a command");
+            assert!(
+                !command.contains("thurbox-cli") || command.starts_with("notify-send hi"),
+                "a shipped command still calls the local CLI: {command}"
+            );
+        }
+
         // Idempotent: merging into the just-written doc is a no-op.
         assert_eq!(merged_remote_toml_doc(&merged, &payload).unwrap(), None);
     }

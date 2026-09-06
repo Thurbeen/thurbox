@@ -229,13 +229,28 @@ mod tests {
         // A remote grok/kimi session reports through the tmux pane option, so
         // the rewrite has to survive each payload's own syntax — JSON string
         // escaping for grok, TOML for kimi.
+        // Checked on the *commands*, not the raw text: a payload may mention
+        // `thurbox-cli` in a comment (kimi's does, explaining the ownership
+        // marker), and a comment is not something the agent runs.
         let grok = rewrite_hook_signals_for_remote(GROK_HOOKS);
-        assert!(!grok.contains("thurbox-cli"));
-        serde_json::from_str::<serde_json::Value>(&grok).expect("grok stays valid JSON");
+        let grok_doc: serde_json::Value =
+            serde_json::from_str(&grok).expect("grok stays valid JSON");
+        for command in json_hook_commands(&grok_doc) {
+            assert!(
+                !command.contains("thurbox-cli"),
+                "grok command still calls the local CLI: {command}"
+            );
+        }
 
         let kimi = rewrite_hook_signals_for_remote(KIMI_HOOKS);
-        assert!(!kimi.contains("thurbox-cli"));
-        toml::from_str::<toml::Value>(&kimi).expect("kimi stays valid TOML");
+        let kimi_doc: toml::Value = toml::from_str(&kimi).expect("kimi stays valid TOML");
+        for hook in kimi_doc["hooks"].as_array().expect("[[hooks]]") {
+            let command = hook["command"].as_str().expect("hook has a command");
+            assert!(
+                !command.contains("thurbox-cli"),
+                "kimi command still calls the local CLI: {command}"
+            );
+        }
 
         for state in ["idle", "working", "blocked", "done"] {
             let option = format!("tmux set-option -p @thurbox_state {state}");
@@ -490,6 +505,48 @@ mod tests {
         assert!(mapped("PermissionResult").contains("--state working"));
         assert!(mapped("SessionStart").contains("--state idle"));
         assert!(mapped("Stop").contains("--state done"));
+    }
+
+    /// kimi's entries are merged into a file the user also writes hooks in, so
+    /// uninstall has to tell ours from theirs. It does that by the ownership
+    /// comment on each entry (`agent::toml_merge`) — an entry shipped without
+    /// one would be installed and then never pruned, and an update would stack a
+    /// second copy beside it.
+    #[test]
+    fn every_kimi_entry_carries_the_ownership_marker() {
+        let doc: toml_edit::DocumentMut = KIMI_HOOKS.parse().expect("kimi payload is valid TOML");
+        let entries = doc["hooks"]
+            .as_array_of_tables()
+            .expect("[[hooks]] table array");
+        assert!(!entries.is_empty());
+        for entry in entries.iter() {
+            let event = entry["event"].as_str().unwrap_or("<no event>");
+            let prefix = entry
+                .decor()
+                .prefix()
+                .and_then(|d| d.as_str())
+                .unwrap_or_default();
+            assert!(
+                prefix.contains(super::super::extensions::MANAGED_MARKER),
+                "kimi hook `{event}` ships without the ownership comment, so \
+                 uninstall would leave it behind"
+            );
+        }
+
+        // And the marker really does round-trip through a render + re-parse,
+        // which is what makes it usable as ownership at uninstall time.
+        let reparsed: toml_edit::DocumentMut = doc.to_string().parse().expect("re-parses");
+        assert_eq!(
+            reparsed["hooks"].as_array_of_tables().unwrap().len(),
+            entries.len()
+        );
+        for entry in reparsed["hooks"].as_array_of_tables().unwrap().iter() {
+            assert!(entry
+                .decor()
+                .prefix()
+                .and_then(|d| d.as_str())
+                .is_some_and(|p| p.contains(super::super::extensions::MANAGED_MARKER)));
+        }
     }
 
     #[test]

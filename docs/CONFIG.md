@@ -705,7 +705,9 @@ source = "antigravity-hooks.json"  # objects recurse, arrays union; uninstall pr
 requires_dir = "~/.gemini"      #   exactly our entries (by marker). no-op write
                                 #   when unchanged; malformed target soft-skipped
 # format = "toml"                # OPTIONAL; JSON by default. Set for a TOML
-                                #   shared config (agent::toml_merge via toml_edit)
+                                #   shared config (agent::toml_merge via toml_edit).
+                                #   TOML owns its entries by a comment on each, so
+                                #   the payload must stamp every one of them
 
 # runtime spec (ensured on activate, self-healed if deleted) -----------------
 [[sessions]]

@@ -1017,9 +1017,15 @@ selects `agent::toml_merge` (`toml_edit`, preserving the user's comments and
 key order) for an agent whose shared config is TOML (kimi's
 `~/.kimi-code/config.toml`). Either way the merge recurses objects/tables,
 unions arrays by deep-equality, and leaves a user's conflicting value
-untouched; uninstall **prunes by marker** (every shipped hook command
-contains `thurbox-cli session signal`), so removal stays correct even after
-the payload's schema changes across an update — no orphans. Writes are
+untouched; uninstall **prunes by marker**, but the two formats mark
+differently. JSON matches a marker in the entry's *content* (every shipped
+hook command contains `thurbox-cli session signal`) — the only handle a
+format without comments offers. TOML marks *ownership* with a comment on the
+entry (`agent::toml_merge`), which a content match cannot do: it tells our
+entry from a user hook that calls `session signal` itself, and still
+recognises ours after its event or command changes. So the TOML install
+prunes-then-merges, replacing our previous entries rather than accumulating
+beside them — no orphans either way, and no collateral. Writes are
 skipped when unchanged (it re-runs every startup + heartbeat tick). All
 three are honoured by `session_ops::install_extension` /
 `session_ops::uninstall_extension`.

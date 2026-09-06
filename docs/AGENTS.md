@@ -147,7 +147,11 @@ embedded hook assets live in
   `format = "toml"` selects the TOML merge for an agent whose shared config is
   TOML (kimi). Either way the semantics match: objects/tables recurse, arrays
   union, a type conflict with the user's value is left alone, and uninstall
-  prunes exactly our entries by the `session signal` marker.
+  prunes exactly our entries. How "ours" is decided differs by format: JSON
+  matches the `session signal` marker in an entry's content, while TOML reads an
+  ownership comment stamped on each shipped entry — so a user hook that calls
+  `session signal` itself survives a TOML uninstall, and a payload that renames
+  an event replaces its old entry instead of stacking a second one beside it.
   - `codex`: merged into `~/.codex/hooks.json` (SessionStart→idle,
     UserPromptSubmit/PreToolUse→working, Stop→done; **no blocked**). *Experimental.*
   - `kimi` (Kimi Code CLI): merged into `~/.kimi-code/config.toml` — TOML, so

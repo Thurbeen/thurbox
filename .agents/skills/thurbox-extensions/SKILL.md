@@ -143,8 +143,10 @@ agents.toml, and `[[config_merges]]` deep-merges a shipped document into an
 agent's *shared* config file (`agent::json_merge`, or `agent::toml_merge` when
 the entry sets `format = "toml"` for a TOML config such as kimi's
 `~/.kimi-code/config.toml` — `toml_edit`, so the user's comments and key order
-survive; uninstall prunes by the `thurbox-cli session signal` marker either way,
-so removal survives payload schema changes).
+survive; JSON prunes by the `thurbox-cli session signal` marker in an entry's
+content, TOML by an ownership comment on the entry itself — which is why the TOML
+payload stamps every entry with one, and why a user hook that calls `session
+signal` survives uninstall there but would not in JSON).
 
 **Built-in extensions** (`session_ops::builtin`) — two of them, `hooks`
 (`extensions/hooks/`) and `ui-skill` (`extensions/ui-skill/`), which unlike user
