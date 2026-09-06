@@ -102,9 +102,9 @@ impl Database {
     /// The whole write — row, audits, worktree replacement, the watch event —
     /// is one transaction: each statement in autocommit was its own WAL commit,
     /// so a single upsert cost N+5 `data_version` bumps and re-triggered every
-    /// peer process's refresh that many times. (`unchecked_transaction` because
-    /// `Database` methods take `&self`; the connection is not shared across
-    /// threads.)
+    /// peer process's refresh that many times. It takes the write lock up
+    /// front, which is what keeps the read below and the write after it from
+    /// failing over a peer's commit.
     pub fn upsert_session(&self, session: &SharedSession) -> rusqlite::Result<()> {
         self.upsert_session_as(session, EventReason::Spawned)
     }
@@ -121,7 +121,7 @@ impl Database {
         session: &SharedSession,
         created_as: EventReason,
     ) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
 
@@ -258,7 +258,7 @@ impl Database {
     }
 
     fn delete_session(&self, id: SessionId, reason: EventReason) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
@@ -295,7 +295,7 @@ impl Database {
     /// Deleting *and* marking in one go is
     /// [`force_delete_session`](Self::force_delete_session).
     pub fn mark_session_force_deleted(&self, id: SessionId) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_transaction()?;
         let marked = self.conn.execute(
             "UPDATE sessions SET force_deleted = 1 \
              WHERE id = ?1 AND deleted_at IS NOT NULL AND force_deleted = 0",
@@ -315,7 +315,7 @@ impl Database {
 
     /// Restore a soft-deleted session.
     pub fn restore_session(&self, id: SessionId) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
@@ -569,7 +569,7 @@ impl Database {
     /// same rule [`set_hook_state`](Self::set_hook_state) enforces from the
     /// other side.
     pub fn set_session_stopped(&self, id: SessionId, stopped: bool) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
@@ -885,7 +885,7 @@ impl Database {
     /// a session that has no process to be in it, and every watcher of that row
     /// would see a transition that did not happen.
     pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<bool> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
@@ -977,7 +977,7 @@ impl Database {
     /// ordinary spawns persist theirs through
     /// [`upsert_session`](Self::upsert_session). Returns whether a row matched.
     pub fn set_backend_id(&self, id: SessionId, pane: &str) -> rusqlite::Result<bool> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_transaction()?;
         let id_str = id.to_string();
         let before: Option<String> = self
             .conn
@@ -1120,7 +1120,7 @@ impl Database {
     /// [`set_session_stopped`](Self::set_session_stopped), which reports the
     /// park rather than a bare state change; this is the restart edge alone.
     pub fn clear_hook_state(&self, id: SessionId) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_transaction()?;
         let id_str = id.to_string();
         let previous: Option<Option<String>> = self
             .conn

@@ -277,6 +277,15 @@ impl App {
                     thurbox::kernel::messages::failed(kind, label.as_deref(), &error),
                     Level::Error,
                 );
+                // A relaunch that failed has to be allowed to happen again.
+                // `respawn_missing_agents` marks a session the moment it
+                // dispatches, so without this the one attempt a session gets per
+                // process is spent on an attempt that did nothing — and a
+                // session whose agent is still missing sits there with no pane
+                // and no further try until thurbox is restarted.
+                if kind == "restart" && !tracked.session.is_empty() {
+                    self.respawned.remove(&tracked.session);
+                }
                 self.note_command_failed(&tracked, &error);
             }
         }
