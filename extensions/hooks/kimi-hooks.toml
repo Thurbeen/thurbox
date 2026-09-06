@@ -1,0 +1,38 @@
+# Managed by thurbox `extension install`: these entries report Kimi Code's
+# lifecycle to the thurbox session they run in. Deactivating the hooks extension
+# prunes exactly them and leaves the rest of this file alone.
+
+[[hooks]]
+event = "SessionStart"
+command = "thurbox-cli session signal --state idle || true"
+timeout = 10
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = "thurbox-cli session signal --state working || true"
+timeout = 10
+
+[[hooks]]
+event = "PreToolUse"
+command = "thurbox-cli session signal --state working || true"
+timeout = 10
+
+[[hooks]]
+event = "PostToolUse"
+command = "thurbox-cli session signal --state working || true"
+timeout = 10
+
+[[hooks]]
+event = "PermissionRequest"
+command = "thurbox-cli session signal --state blocked || true"
+timeout = 10
+
+[[hooks]]
+event = "PermissionResult"
+command = "thurbox-cli session signal --state working || true"
+timeout = 10
+
+[[hooks]]
+event = "Stop"
+command = "thurbox-cli session signal --state done || true"
+timeout = 10

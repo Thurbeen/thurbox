@@ -124,7 +124,12 @@ CLIs support forking a conversation to a thurbox-pinned target.
 ### Status hook mechanisms
 
 Every built-in reports status via the **hooks** extension, but *how* the hook is
-delivered differs by what each CLI supports. All are declared in
+delivered differs by what each CLI supports. Two entries below (`grok`, `kimi`)
+are **not** built-in agents: their hooks are installed into their own config dirs
+all the same, so a session running one — started from a `--command` shell, a
+custom `agents.toml` entry, or an outside driver — reports state whoever launched
+it. Naming the agent on the row (`session create --reports-as grok`) is what
+resolves the coverage. All are declared in
 [`extensions/hooks/extension.toml`](../extensions/hooks/extension.toml); the
 embedded hook assets live in
 [`extensions/hooks/`](../extensions/hooks/) and are `include_str!`'d by
@@ -137,10 +142,27 @@ embedded hook assets live in
   - `aider`: `--notifications-command "thurbox-cli session signal --state
     blocked"`. aider has only a "waiting for input" callback, so **blocked is the
     only state it can report**.
-- **`config_merges` (reversible JSON deep-merge into a shared config file)** —
-  for agents whose hooks live in a file thurbox must not overwrite.
+- **`config_merges` (reversible deep-merge into a shared config file)** — for
+  agents whose hooks live in a file thurbox must not overwrite. JSON by default;
+  `format = "toml"` selects the TOML merge for an agent whose shared config is
+  TOML (kimi). Either way the semantics match: objects/tables recurse, arrays
+  union, a type conflict with the user's value is left alone, and uninstall
+  prunes exactly our entries by the `session signal` marker.
   - `codex`: merged into `~/.codex/hooks.json` (SessionStart→idle,
     UserPromptSubmit/PreToolUse→working, Stop→done; **no blocked**). *Experimental.*
+  - `kimi` (Kimi Code CLI): merged into `~/.kimi-code/config.toml` — TOML, so
+    the merge is `agent::toml_merge` (`format = "toml"` on the `[[config_merges]]`
+    entry) rather than the JSON one; `toml_edit` keeps the user's comments and key
+    order. Kimi reads hooks from a `[[hooks]]` array in that one shared file and
+    has no drop-in hooks dir, so a managed file would clobber the user's whole
+    configuration. SessionStart→idle, UserPromptSubmit/PreToolUse/PostToolUse→
+    working, PermissionRequest→blocked, PermissionResult→working, Stop→done. The
+    only agent here whose block edge is a **structured permission event on both
+    sides** — a real request event and a real result event — so `blocked` neither
+    false-fires nor latches. Kimi accepts exactly four keys per hook entry
+    (event/command/matcher/timeout) and refuses to load the whole config file on a
+    fifth, so `kimi-hooks.toml` must never grow one (a test pins this).
+    *Experimental.*
   - `antigravity` (`agy`): merged into the shared `~/.gemini/settings.json` (agy
     adopted claude's hook schema — PreToolUse/PostToolUse→working,
     Notification→blocked, Stop→done; no UserPromptSubmit, so working fires at the
@@ -166,6 +188,20 @@ embedded hook assets live in
     (session_start→idle, agent_start/tool_execution_start/tool_execution_end→
     working, agent_end→done; **blocked inferred only** from an
     `ask_user_question` tool call, cleared when that tool ends). *Experimental.*
+  - `grok` (xAI's Grok Build CLI): `~/.grok/hooks/thurbox-status.json` — grok
+    loads every `*.json` in that dir on its own, so a standalone drop never
+    touches a hook file the user wrote. It is the **global** dir deliberately:
+    global hooks are always trusted and load on first launch, while
+    `<project>/.grok/hooks` additionally needs the folder granted trust in grok's
+    own `~/.grok/trusted_folders.toml` (or a `--trust` launch flag, which would
+    only cover sessions thurbox itself launches). grok is Claude-Code-compatible,
+    so the mapping mirrors claude: SessionStart→idle,
+    UserPromptSubmit/PreToolUse/PostToolUse→working, Notification (payload
+    matched to permission/approval)→blocked, Stop→done. Every command is
+    deliberately `$`-free: a `$VAR` reference without an inline `:-default` makes
+    grok silently refuse to load the whole hook file, so the blocked edge pipes
+    stdin through `grep` instead of reusing claude's `case "$(cat)"` (a test pins
+    it). *Experimental.*
   - `omp`: a TypeScript extension at `~/.omp/agent/extensions/thurbox-status.ts`,
     mirroring pi's but mapping OMP's structured user-question tool — named `ask`
     — to blocked (it recognizes both `ask` and pi's `ask_user_question`), cleared
@@ -174,6 +210,32 @@ embedded hook assets live in
 Each `requires_dir` guard makes the drop a no-op when that agent isn't installed,
 so a fresh install with only claude present doesn't scatter files for agents you
 don't have.
+
+**Deliberately uninstrumented.** Two agents have a hook surface thurbox cannot
+reach with any of the three mechanisms, and are left out of the table so they
+keep reporting `uncovered` honestly rather than claiming a payload that never
+fires:
+
+- **cursor** (`cursor-agent`). The only scope its CLI is known to load hooks
+  from is per-project `<repo>/.cursor/hooks.json`, and only when the agent is
+  launched with `--trust` — which is a `[[agent_patches]]` flag, so it would
+  cover nothing an outside driver launches, and a per-repo file is not a config
+  dir any mechanism here writes to. User-scope `~/.cursor/hooks.json` is
+  documented for the IDE; in the CLI it is reported to run only the
+  shell/MCP/file-edit hooks, none of which can say `done`. Wiring it there would
+  latch a session at `working` forever. It becomes a plain `config_merges` entry
+  into `~/.cursor/hooks.json` the moment `stop`/`sessionStart` are confirmed to
+  fire from user scope in the CLI.
+- **muse** (Muse Code). Its hooks exist only as capabilities of a native plugin:
+  installing one means running `muse plugins install` and `muse plugins approve`
+  (the management CLI itself gated behind `MUSE_EXPERIMENTAL_PLUGINS`), and a
+  dropped-in config file is silently ignored. An extension manifest writes files;
+  it does not run an agent's install-and-approve commands, so there is nothing to
+  ship. Muse does keep a durable per-session event log
+  (`${XDG_DATA_HOME:-~/.local/share}/muse/sessions/YYYY/MM/DD/<uuid>/session.jsonl`)
+  whose `run` `started`/`terminal` events bracket every turn — reading it would be
+  a **fourth** delivery mechanism (a poller, not a hook) and is a separate
+  decision, not a variation on these three.
 
 **This list has a machine-readable twin.** `session::hook_status::
 AGENT_HOOK_COVERAGE` carries the same per-agent facts — the states each payload
@@ -220,7 +282,7 @@ name. It exists for a **user's** custom agent that runs a built-in under a
 different name (e.g. a rebranded-claude CLI called `fleet`): set `hook_schema =
 "claude"` and it inherits claude's `--settings` hook wiring under its own name.
 Only the per-arg-patch families (`claude`, `aider`) need it; the config-dir
-agents (codex/opencode/antigravity/vibe/copilot/pi) wire through their own config
+agents (codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own config
 dir, so a rebrand sharing that dir already reports without it. See
 [CONFIG.md](CONFIG.md#agentstoml) and the `AgentDef.hook_schema` doc comment.
 
@@ -249,9 +311,17 @@ automatically. Work the checklist top to bottom:
    [`src/session_ops/builtin_hooks.rs`](../src/session_ops/builtin_hooks.rs), and
    add its row to `AGENT_HOOK_COVERAGE` in
    [`src/session/hook_status.rs`](../src/session/hook_status.rs) (the drift test
-   fails until it matches the payload). Bump the hooks extension `version`.
-   Skipping this step means the new agent launches fine but **never shows
-   working/blocked/done**.
+   fails until it matches the payload), and — for a `config_merges` /
+   `external_files` wiring — the matching entry in `remote_asset_for`
+   ([`src/session_ops/remote_hooks.rs`](../src/session_ops/remote_hooks.rs)), so
+   remote sessions get the same payload (a test fails until local and remote
+   agree). Bump the hooks extension `version`. Skipping this step means the new
+   agent launches fine but **never shows working/blocked/done**.
+
+   This step also stands **alone**: an agent thurbox ships no `[[agents]]` entry
+   for still gets its hooks installed into its own config dir, which is what
+   makes `grok`/`kimi` report for a driver that launches them itself. Steps 1,
+   3 and 4 are about launching an agent, not instrumenting one.
 
 3. **Docs — update every list of built-ins** (these are prose, not generated, so
    they drift):

@@ -54,9 +54,10 @@ pub enum HookDelivery {
     /// Args appended to the agent's launch command (`[[agent_patches]]`).
     /// Wired at spawn, so it covers only agents thurbox itself launches.
     Args,
-    /// A reversible JSON deep-merge into a config file the agent and its user
-    /// share (`[[config_merges]]`).
-    MergeJson,
+    /// A reversible deep-merge into a config file the agent and its user share
+    /// (`[[config_merges]]`) — JSON, or TOML for an agent whose shared config is
+    /// TOML (kimi).
+    ConfigMerge,
     /// A standalone thurbox-managed file dropped into the agent's own config
     /// directory (`[[external_files]]`).
     File,
@@ -67,7 +68,7 @@ impl HookDelivery {
     pub fn as_str(self) -> &'static str {
         match self {
             HookDelivery::Args => "args",
-            HookDelivery::MergeJson => "config-merge",
+            HookDelivery::ConfigMerge => "config-merge",
             HookDelivery::File => "config-file",
         }
     }
@@ -139,14 +140,14 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
     AgentHookCoverage {
         agent: "codex",
         states: &["working", "done", "idle"],
-        delivery: HookDelivery::MergeJson,
+        delivery: HookDelivery::ConfigMerge,
         hook_file: Some("~/.codex/hooks.json"),
         blocked_is_heuristic: false,
     },
     AgentHookCoverage {
         agent: "antigravity",
         states: &["working", "blocked", "done", "idle"],
-        delivery: HookDelivery::MergeJson,
+        delivery: HookDelivery::ConfigMerge,
         hook_file: Some("~/.gemini/settings.json"),
         // agy adopted claude's schema, including the text match.
         blocked_is_heuristic: true,
@@ -184,6 +185,24 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         states: &["working", "blocked", "done", "idle"],
         delivery: HookDelivery::File,
         hook_file: Some("~/.omp/agent/extensions/thurbox-status.ts"),
+        blocked_is_heuristic: false,
+    },
+    AgentHookCoverage {
+        agent: "grok",
+        states: &["working", "blocked", "done", "idle"],
+        delivery: HookDelivery::File,
+        hook_file: Some("~/.grok/hooks/thurbox-status.json"),
+        // grok is claude-shaped, including the `Notification` text match.
+        blocked_is_heuristic: true,
+    },
+    AgentHookCoverage {
+        agent: "kimi",
+        states: &["working", "blocked", "done", "idle"],
+        delivery: HookDelivery::ConfigMerge,
+        hook_file: Some("~/.kimi-code/config.toml"),
+        // kimi has a real `PermissionRequest` event (and a `PermissionResult`
+        // to clear it), so the block edge is structured rather than a text
+        // match on a notification body.
         blocked_is_heuristic: false,
     },
 ];
@@ -1288,17 +1307,20 @@ mod tests {
 
     #[test]
     fn claude_and_antigravity_are_flagged_as_matching_notification_text() {
-        // Both grep the notification body for *permission*/*approval*, so a
+        // These grep the notification body for *permission*/*approval*, so a
         // reworded upstream notification stops `blocked` silently. A consumer
-        // has to be able to see that from the data.
-        for name in ["claude", "antigravity"] {
+        // has to be able to see that from the data. kimi is the counter-case
+        // that makes the flag worth publishing: it has a real
+        // `PermissionRequest` event, so its silence about `blocked` means the
+        // agent is not blocked rather than "the wording may have moved".
+        for name in ["claude", "antigravity", "grok"] {
             let c = AGENT_HOOK_COVERAGE
                 .iter()
                 .find(|c| c.agent == name)
                 .expect("covered");
             assert!(c.blocked_is_heuristic, "{name}");
         }
-        for name in ["opencode", "copilot", "codex", "vibe"] {
+        for name in ["opencode", "copilot", "codex", "vibe", "kimi"] {
             let c = AGENT_HOOK_COVERAGE
                 .iter()
                 .find(|c| c.agent == name)

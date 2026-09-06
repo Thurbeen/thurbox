@@ -30,6 +30,8 @@ pub(crate) const VIBE_HOOKS: &str = include_str!("../../extensions/hooks/vibe-ho
 pub(crate) const COPILOT_HOOKS: &str = include_str!("../../extensions/hooks/copilot-hooks.json");
 pub(crate) const PI_STATUS: &str = include_str!("../../extensions/hooks/pi-status.ts");
 pub(crate) const OMP_STATUS: &str = include_str!("../../extensions/hooks/omp-status.ts");
+pub(crate) const GROK_HOOKS: &str = include_str!("../../extensions/hooks/grok-hooks.json");
+pub(crate) const KIMI_HOOKS: &str = include_str!("../../extensions/hooks/kimi-hooks.toml");
 
 /// Marker prefix of every thurbox-managed hook command; the state word
 /// (`working`/`blocked`/`done`/`idle`) follows it directly.
@@ -159,6 +161,8 @@ pub(crate) static HOOKS: Builtin = Builtin {
         ("copilot-hooks.json", COPILOT_HOOKS),
         ("pi-status.ts", PI_STATUS),
         ("omp-status.ts", OMP_STATUS),
+        ("grok-hooks.json", GROK_HOOKS),
+        ("kimi-hooks.toml", KIMI_HOOKS),
     ],
     home_dir: "hooks",
     notices: hooks_notices,
@@ -221,6 +225,26 @@ mod tests {
     }
 
     #[test]
+    fn remote_rewrite_covers_the_config_dir_payloads_and_keeps_them_parseable() {
+        // A remote grok/kimi session reports through the tmux pane option, so
+        // the rewrite has to survive each payload's own syntax — JSON string
+        // escaping for grok, TOML for kimi.
+        let grok = rewrite_hook_signals_for_remote(GROK_HOOKS);
+        assert!(!grok.contains("thurbox-cli"));
+        serde_json::from_str::<serde_json::Value>(&grok).expect("grok stays valid JSON");
+
+        let kimi = rewrite_hook_signals_for_remote(KIMI_HOOKS);
+        assert!(!kimi.contains("thurbox-cli"));
+        toml::from_str::<toml::Value>(&kimi).expect("kimi stays valid TOML");
+
+        for state in ["idle", "working", "blocked", "done"] {
+            let option = format!("tmux set-option -p @thurbox_state {state}");
+            assert!(grok.contains(&option), "grok is missing rewritten {state}");
+            assert!(kimi.contains(&option), "kimi is missing rewritten {state}");
+        }
+    }
+
+    #[test]
     fn remote_rewrite_is_idempotent_and_passes_through() {
         let once = rewrite_hook_signals_for_remote(CLAUDE_SETTINGS);
         assert_eq!(rewrite_hook_signals_for_remote(&once), once);
@@ -244,6 +268,8 @@ mod tests {
             ("copilot-hooks.json", COPILOT_HOOKS),
             ("pi-status.ts", PI_STATUS),
             ("omp-status.ts", OMP_STATUS),
+            ("grok-hooks.json", GROK_HOOKS),
+            ("kimi-hooks.toml", KIMI_HOOKS),
             ("extension.toml", MANIFEST), // aider's literal --notifications-command arg
         ] {
             // Key on the invocation-with-flags form (`thurbox-cli session
@@ -350,6 +376,120 @@ mod tests {
         assert!(OMP_STATUS.contains("thurbox-cli session signal"));
         assert!(OMP_STATUS.contains("thurbox `extension install`"));
         assert!(OMP_STATUS.contains("\"ask\""));
+        // grok's standalone file carries the signal command and the managed
+        // marker (external-file uninstall, see `is_user_modified`).
+        assert!(GROK_HOOKS.contains("thurbox-cli session signal"));
+        assert!(GROK_HOOKS.contains("thurbox `extension install`"));
+        // kimi's entries are merged into the user's own config.toml, so they
+        // are pruned by the signal marker rather than by a managed marker.
+        assert!(KIMI_HOOKS.contains("thurbox-cli session signal"));
+    }
+
+    #[test]
+    fn embedded_manifest_parses_with_grok_and_kimi_wiring() {
+        let def: crate::session::ExtensionDef =
+            toml::from_str(MANIFEST).expect("embedded manifest parses");
+
+        // grok drops a managed standalone file into its ALWAYS-TRUSTED global
+        // hooks dir. A project `<repo>/.grok/hooks` would additionally need the
+        // folder granted trust in grok's own trusted_folders.toml, so a drop
+        // there would load for nobody who had not already opted in by hand.
+        let grok = def
+            .external_files
+            .iter()
+            .find(|f| f.path.contains(".grok"))
+            .expect("grok external file present");
+        assert_eq!(grok.source_path(), "grok-hooks.json");
+        assert_eq!(grok.requires_dir.as_deref(), Some("~/.grok"));
+        assert_eq!(grok.path, "~/.grok/hooks/thurbox-status.json");
+
+        // The payload is valid JSON in grok's own (claude-shaped) schema, so a
+        // typo can't ship a file grok would reject.
+        let grok_payload: serde_json::Value =
+            serde_json::from_str(GROK_HOOKS).expect("grok payload is valid JSON");
+        for event in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "Notification",
+            "Stop",
+        ] {
+            assert!(
+                grok_payload["hooks"][event].is_array(),
+                "grok hook event {event} missing"
+            );
+        }
+        // grok refuses to load a hook file whose command references `$VAR`
+        // without an inline `:-default` — silently, taking the whole file with
+        // it. Every command here must therefore stay `$`-free, which is why the
+        // blocked edge pipes stdin through `grep` rather than reusing claude's
+        // `case "$(cat)"`.
+        for command in json_hook_commands(&grok_payload) {
+            assert!(
+                !command.contains('$'),
+                "grok hook command references a variable: {command}"
+            );
+        }
+
+        // kimi has no drop-in hooks dir — its hooks live in the `[[hooks]]`
+        // array of the user's own ~/.kimi-code/config.toml — so it is a
+        // reversible TOML merge, never a managed file that would clobber the
+        // user's whole configuration.
+        let kimi = def
+            .config_merges
+            .iter()
+            .find(|m| m.path.contains(".kimi-code"))
+            .expect("kimi config merge present");
+        assert_eq!(kimi.source_path(), "kimi-hooks.toml");
+        assert_eq!(kimi.requires_dir.as_deref(), Some("~/.kimi-code"));
+        assert_eq!(kimi.format, crate::session::ConfigMergeFormat::Toml);
+        assert!(
+            def.external_files.iter().all(|f| !f.path.contains(".kimi")),
+            "kimi's config.toml must never be written as a whole file"
+        );
+
+        // The payload is valid TOML, and every entry carries ONLY the four keys
+        // kimi accepts: a fifth makes kimi refuse to load the entire config
+        // file, which would break the user's agent rather than merely leave it
+        // unreported.
+        let kimi_payload: toml::Value =
+            toml::from_str(KIMI_HOOKS).expect("kimi payload is valid TOML");
+        let kimi_hooks = kimi_payload["hooks"]
+            .as_array()
+            .expect("kimi payload declares a [[hooks]] table array");
+        assert!(!kimi_hooks.is_empty());
+        let allowed = ["event", "command", "matcher", "timeout"];
+        let mut events = Vec::new();
+        for hook in kimi_hooks {
+            let table = hook.as_table().expect("hook entry is a table");
+            for key in table.keys() {
+                assert!(
+                    allowed.contains(&key.as_str()),
+                    "kimi hook entry carries `{key}`, which is not one of {allowed:?}"
+                );
+            }
+            let event = table["event"].as_str().expect("hook has an event");
+            assert!(
+                table["command"].as_str().is_some_and(|c| !c.is_empty()),
+                "kimi hook `{event}` has a non-empty command"
+            );
+            events.push((event.to_string(), table["command"].as_str().unwrap()));
+        }
+        // The block edge is structured (a real permission event) and has a real
+        // clearing event, unlike claude's text-matched Notification.
+        let mapped = |event: &str| -> String {
+            events
+                .iter()
+                .find(|(e, _)| e == event)
+                .unwrap_or_else(|| panic!("kimi hook for {event} missing"))
+                .1
+                .to_string()
+        };
+        assert!(mapped("PermissionRequest").contains("--state blocked"));
+        assert!(mapped("PermissionResult").contains("--state working"));
+        assert!(mapped("SessionStart").contains("--state idle"));
+        assert!(mapped("Stop").contains("--state done"));
     }
 
     #[test]
@@ -684,6 +824,8 @@ mod tests {
             ("vibe", VIBE_HOOKS, PayloadKind::Toml),
             ("pi", PI_STATUS, PayloadKind::Script),
             ("omp", OMP_STATUS, PayloadKind::Script),
+            ("grok", GROK_HOOKS, PayloadKind::Json),
+            ("kimi", KIMI_HOOKS, PayloadKind::Toml),
         ];
         for (agent, payload, kind) in payloads {
             let claimed = AGENT_HOOK_COVERAGE

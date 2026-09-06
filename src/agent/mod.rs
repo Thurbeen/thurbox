@@ -14,6 +14,7 @@ pub mod self_update;
 pub mod settings_config;
 pub mod themes_config;
 pub mod tmux;
+pub mod toml_merge;
 pub mod transport;
 pub mod version_check;
 

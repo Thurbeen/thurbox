@@ -118,19 +118,32 @@ pub struct AgentPatch {
     pub append_args: Vec<String>,
 }
 
-/// A **non-destructive, reversible JSON merge** into a config file an agent owns
+/// How a [`ConfigMerge`]'s target (and the shipped source) is encoded.
+///
+/// The merge semantics are the same either way — recurse into tables/objects,
+/// union arrays, leave a type conflict with the user's value alone — so this
+/// only picks which parser reads the two documents.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigMergeFormat {
+    #[default]
+    Json,
+    Toml,
+}
+
+/// A **non-destructive, reversible merge** into a config file an agent owns
 /// (e.g. `~/.gemini/settings.json`). Unlike [`ExternalFile`] (which writes a
 /// whole file and would clobber the user's config), this deep-merges the shipped
-/// `source` JSON into the target in place: objects recurse, arrays union by
-/// deep-equality, and uninstall removes exactly our entries (see
-/// `agent::json_merge`). For agents whose hooks live in a *shared* config file
-/// that has no drop-in plugin location.
+/// `source` document into the target in place: objects/tables recurse, arrays
+/// union, and uninstall removes exactly our entries (see `agent::json_merge`,
+/// and `agent::toml_merge` for `format = "toml"`). For agents whose hooks live
+/// in a *shared* config file that has no drop-in plugin location.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigMerge {
     /// Target config file: absolute, `~`-relative, or containing [`HOME_TOKEN`].
     pub path: String,
-    /// Source path (relative to the install source) of the JSON to merge in;
-    /// defaults to `path`'s file name.
+    /// Source path (relative to the install source) of the document to merge
+    /// in; defaults to `path`'s file name.
     #[serde(default)]
     pub source: Option<String>,
     /// Only merge when this directory exists (absolute / `~`) — skips the merge
@@ -138,10 +151,14 @@ pub struct ConfigMerge {
     /// [`ExternalFile::requires_dir`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires_dir: Option<String>,
+    /// Encoding of both the target and the shipped source. JSON unless the
+    /// agent's shared config is TOML (kimi's `~/.kimi-code/config.toml`).
+    #[serde(default)]
+    pub format: ConfigMergeFormat,
 }
 
 impl ConfigMerge {
-    /// Source-relative path to read the JSON-to-merge from (defaults to the
+    /// Source-relative path to read the document-to-merge from (defaults to the
     /// destination's file name).
     pub fn source_path(&self) -> &str {
         source_or_dest_filename(&self.source, &self.path)
@@ -664,6 +681,7 @@ prompt = "tick"
             path: "~/.gemini/settings.json".into(),
             source: Some("gemini-hooks.json".into()),
             requires_dir: None,
+            format: ConfigMergeFormat::Json,
         };
         assert_eq!(explicit.source_path(), "gemini-hooks.json");
         // Unset source falls back to the destination's file name (not its full
@@ -672,8 +690,21 @@ prompt = "tick"
             path: "~/.gemini/settings.json".into(),
             source: None,
             requires_dir: None,
+            format: ConfigMergeFormat::Json,
         };
         assert_eq!(defaulted.source_path(), "settings.json");
+    }
+
+    #[test]
+    fn config_merge_format_defaults_to_json_and_parses_toml() {
+        let def: ExtensionDef = toml::from_str(
+            "name = \"hooks\"\n\
+             [[config_merges]]\npath = \"~/.codex/hooks.json\"\n\
+             [[config_merges]]\npath = \"~/.kimi-code/config.toml\"\nformat = \"toml\"\n",
+        )
+        .expect("manifest parses");
+        assert_eq!(def.config_merges[0].format, ConfigMergeFormat::Json);
+        assert_eq!(def.config_merges[1].format, ConfigMergeFormat::Toml);
     }
 
     #[test]

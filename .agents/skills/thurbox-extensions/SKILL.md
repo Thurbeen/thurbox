@@ -139,9 +139,12 @@ ensure/self-heal). The `{home}` token expands to the resolved home dir.
 Three of those reach **outside** the extension home, all reversible:
 `[[external_files]]` drops a managed file into an agent's own config dir (guarded
 by `requires_dir`), `[[agent_patches]]` appends args to an existing agent in
-agents.toml, and `[[config_merges]]` deep-merges shipped JSON into an agent's
-*shared* config file (`agent::json_merge`; uninstall prunes by the
-`thurbox-cli session signal` marker, so removal survives payload schema changes).
+agents.toml, and `[[config_merges]]` deep-merges a shipped document into an
+agent's *shared* config file (`agent::json_merge`, or `agent::toml_merge` when
+the entry sets `format = "toml"` for a TOML config such as kimi's
+`~/.kimi-code/config.toml` — `toml_edit`, so the user's comments and key order
+survive; uninstall prunes by the `thurbox-cli session signal` marker either way,
+so removal survives payload schema changes).
 
 **Built-in extensions** (`session_ops::builtin`) — two of them, `hooks`
 (`extensions/hooks/`) and `ui-skill` (`extensions/ui-skill/`), which unlike user
