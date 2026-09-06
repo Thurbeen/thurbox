@@ -236,6 +236,7 @@ gone — and each one comes with what it takes to judge it:
 | `hook_state_at`, `hook_state_age_secs` | when it was made, and how long ago |
 | `hook_reported` | whether anything has *ever* reported (silence ≠ idle) |
 | `hook_coverage`, `hook_states_reportable` | what this agent can report at all |
+| `hook_coverage_source` | which name that answer came from: `name`, `hook_schema`, or `detection` (the pane, for a row that declares no agent — coverage then reads `presumed`, never `full`) |
 | `hook_blocked_is_heuristic` | whether its `blocked` is a text match on a notification body |
 | `hook_corroboration`, `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
 | `detected_agent` | which registered agent is in the pane, when it is not the row's own |

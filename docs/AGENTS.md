@@ -260,10 +260,14 @@ expected** rather than broken wiring.
 
 **A pane can run an agent thurbox did not launch.** A `--command` session is
 named after the command's file stem, so a driver that opens a shell and starts
-`claude` inside it leaves every field above resolved against `bash` — coverage
-`none`, no reportable states, and `hook_blocked_is_heuristic: false`, which
-asserts the block signal is structured when it is claude's text match on a
-notification body. `session create --reports-as <agent>` and
+`claude` inside it has no declared agent for the fields above to resolve
+against. When the pane probe has already named one, that name is used and
+coverage reads `presumed` (`hook_coverage_source: "detection"`) — deliberately
+not `full`, because seeing an agent in a pane is evidence about the process and
+never about whether its hooks are wired. Undeclared and unprobed, it stays
+coverage `none` with `hook_blocked_is_heuristic: false`, which asserts the block
+signal is structured when it is claude's text match on a notification
+message. `session create --reports-as <agent>` and
 `thurbox-cli session reports-as <ref> <agent>` (`--clear` to take it back) let
 the driver name the agent that actually reports; it is stored on the row
 (`sessions.reports_as`, schema v44), survives restart, and changes nothing about

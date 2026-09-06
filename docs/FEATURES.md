@@ -82,7 +82,7 @@ persisted columns onto a `SessionState` once per tick:
 | `done` | blue | `●` | a turn just finished; shown until you switch away |
 | `idle` | green | `○` | acknowledged, never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host is down/offline; placeholder row awaiting reconnect |
-| `running` | accent | `◍` | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
+| `running` | accent | `◉` | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
 | `uncovered` | muted grey | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | muted grey | `◌` | the agent *can* report and has not yet |
 
@@ -1957,8 +1957,13 @@ Uncommitted work went with the force delete and does not return.
 ### Saying which agent a pane actually runs
 
 A `--command` session is named after the command's file stem, so a driver that
-opens a shell and starts `claude` in it leaves thurbox reading hook coverage
-against `bash`. `session create --reports-as <agent>` and `session reports-as
+opens a shell and starts `claude` in it leaves thurbox with no declared agent to
+read hook coverage against. The pane probe answers when nothing else does —
+coverage then reads `presumed` with `hook_coverage_source: "detection"`, which
+is deliberately not `full`: seeing claude in a pane is evidence about the
+process, never about whether anything wired its hooks. Declaring it is still
+better, because a declaration is durable where a probe is a live reading.
+`session create --reports-as <agent>` and `session reports-as
 <ref> <agent>` (`--clear` to take it back) record which agent reports;
 `hook_coverage`, `hook_states_reportable`, `hook_delivery` and
 `hook_blocked_is_heuristic` are then read against it, and `reports_as` is

@@ -14,7 +14,7 @@
 name = "hooks"
 description = "Report each agent's lifecycle state (working/blocked/done) to thurbox via agent hooks."
 config_version = 1
-version = "1.8.0"  # v1.8: grok (global ~/.grok/hooks drop) + kimi (TOML merge into ~/.kimi-code/config.toml) status hooks; v1.7: omp (Oh My Pi) status extension (ask/ask_user_question → blocked); v1.6: vibe hooks rewritten to vibe 2.21.0's real schema (pre_tool/post_agent); v1.5: pi (pi.dev) status extension
+version = "1.9.0"  # v1.9: claude/antigravity/grok match the *message* of a Notification rather than the whole payload — a checkout path carrying "permission" signalled a permanent `blocked` on the idle notification that ends every turn; v1.8: grok (global ~/.grok/hooks drop) + kimi (TOML merge into ~/.kimi-code/config.toml) status hooks; v1.7: omp (Oh My Pi) status extension (ask/ask_user_question → blocked); v1.6: vibe hooks rewritten to vibe 2.21.0's real schema (pre_tool/post_agent); v1.5: pi (pi.dev) status extension
 # Default home; the auto-activation path overrides this with *this build's*
 # resolved config dir (`~/.config/thurbox` or `~/.config/thurbox-dev`) so dev and
 # release installs stay isolated. See `session_ops::builtin_hooks::hooks_home`.
@@ -22,6 +22,15 @@ home = "~/.config/thurbox/hooks"
 
 # claude reads hooks from a settings file we pass via --settings (merged with the
 # user's own settings, never clobbering them). The file lives under the home dir.
+#
+# Its `Notification` hook matches permission/approval against the payload's
+# `message` and nothing else. Globbing the whole payload looked equivalent and is
+# not: `cwd` and `transcript_path` are the operator's own directory names, so a
+# checkout under a path with "permission" in it signalled `blocked` on the idle
+# notification that fires a minute after every turn ends — and that notification
+# is the last hook such a session ever fires, so the state stood for good. The
+# block edge stays a text match either way (`blocked_is_heuristic`); what changed
+# is which text.
 [[files]]
 path = "claude.json"
 
@@ -152,8 +161,9 @@ requires_dir = "~/.copilot"
 #
 # `agy` adopted Claude Code's hook schema (verified against agy 1.0.9): the event
 # names live in antigravity-hooks.json and map SessionStart→idle, PreToolUse→
-# working, Stop→done, and Notification→blocked (payload-parsed for permission/
-# approval, like claude, so an idle Notification doesn't flip the dot red). It has
+# working, Stop→done, and Notification→blocked (the notification's `message`
+# matched for permission/approval, like claude, so an idle Notification doesn't
+# flip the dot red). It has
 # no UserPromptSubmit, so working is signaled at the first tool call. If a future
 # agy changes the schema, fix antigravity-hooks.json (no code change needed).
 # Identity needs $THURBOX_SESSION to reach the hook process; if agy sanitizes the
@@ -174,7 +184,8 @@ requires_dir = "~/.gemini"
 #
 # Grok is Claude-Code-compatible, so the mapping mirrors claude.json:
 # SessionStart → idle, UserPromptSubmit/PreToolUse/PostToolUse → working,
-# Notification (payload matched to permission/approval) → blocked, Stop → done.
+# Notification (its `message` matched to permission/approval) → blocked,
+# Stop → done.
 # The blocked command deliberately contains no `$` — a `$VAR` reference in a
 # grok hook command must carry an inline `:-default` or grok silently refuses to
 # load the whole hook file — so it pipes stdin through `grep` instead of

@@ -99,7 +99,12 @@ local STATUS_GLYPHS = {
   -- An agent holds the pane and has reported nothing. Filled, because
   -- something IS there; not the working spinner, because no process listing
   -- can tell a turn in flight from a prompt waiting for input.
-  running = "◍",
+  --
+  -- FISHEYE rather than CIRCLE WITH VERTICAL FILL (U+25CD), which is rare
+  -- enough that monospace fonts routinely have no glyph for it and draw a
+  -- fallback box. Still distinct from done's solid circle and idle's hollow
+  -- one, which is the whole job of this row.
+  running = "◉",
   -- The two silences. Dotted, because the content of both is an absence: no
   -- hooks are wired (`uncovered`), or none have fired yet (`unreported`).
   -- Kept visibly apart from `idle`'s green hollow circle, which is a claim

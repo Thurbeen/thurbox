@@ -24,7 +24,7 @@ module exists to prevent:
 | `done` | blue | `●` (filled) | a turn just finished; shown until you switch away (hook) |
 | `idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host down/offline; the ordinary row, derived from a live attach failure, awaiting reconnect |
-| `running` | `status_running` (accent) | `◍` | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
+| `running` | `status_running` (accent) | `◉` | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
 | `uncovered` | `status_unknown` (muted) | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | `status_unknown` (muted) | `◌` | the agent *can* report and has not yet |
 | `stopped` | — | — | parked by `session stop`: no process at all, which is why it outranks whatever the hook columns still hold |
@@ -213,7 +213,7 @@ own, which is the point.
   |---|---|---|
   | `derive_state` (incl. the `done → idle` acknowledgment) | `hook_state`, `hook_state_at`, `seen_at` — all stored | everyone |
   | `classify_foreground` → `Assessment::with_corroboration` | the pane's foreground process group | anyone who can run `ps` |
-  | `with_output_quiescence` | terminal output age | the interface only |
+  | `with_output_quiescence` (incl. the latched-`blocked` fold) | terminal output age, against `hook_state_at` | the interface only |
   | `with_reachability` | a live attach error | the interface only |
 
   `seen_at` being a **stored fact** rather than a timeout is why the CLI applies
@@ -248,6 +248,25 @@ own, which is the point.
   (whose cadence is the database's) and re-derived from `hook_state` each pass,
   so it reverses itself when output resumes. The DB row is left untouched — the
   override is purely per-tick derivation.
+- **Latched-`blocked` fallback.** `blocked` is still never time-gated: a session
+  waiting on you is quiet for exactly as long as it waits, so no clock may end
+  one and an hour-long block stays `blocked`. What ends one is evidence —
+  `session::outlived_by_output`, in the same tick pass. A block edge stops the
+  pane printing, so a real block keeps `millis_since_output` within measurement
+  slop of `hook_state_age`; a block the agent resolved by itself leaves the two
+  diverging, because the turn goes on printing. When the pane has printed more
+  than `WORKING_QUIET_MS` past the edge the block is over, and what is left runs
+  through the `working` rule above: still printing reads `working`, gone quiet
+  reads `idle`. The margin is `WORKING_QUIET_MS` rather than a new constant
+  because it is the same claim that one already makes. Why it is needed at all:
+  claude's `blocked` is a **text match on a `Notification` body**
+  (`blocked_is_heuristic`), that hook also fires for advisories an autonomous
+  agent answers on its own, and — unlike kimi's `PermissionRequest` /
+  `PermissionResult` pair — nothing in the payload clears it. A false block that
+  landed as the newest word therefore stood for the rest of the session's life.
+  Only the interface can apply this: `session get` has no terminal to ask and
+  keeps reporting the latched word, which is the same line the CLI already draws
+  at the two folds it cannot make.
 - **Per-session only.** Status renders on the session's own row (and in the
   ` Sessions ` panel border title, one dot per session). Repo-group headers
   (`group_header_line` in `10_sessions.lua`) carry **no** status — a rolled-up
