@@ -274,8 +274,8 @@ fn diagnose(
             key: "coverage",
             level: Level::Warn,
             detail: format!(
-                "nothing declares an agent for this session, but its pane is running \
-                 '{}' — which can report {} once its hooks are wired. Declare it with \
+                "no agent thurbox recognises is declared for this session, but its pane is \
+                 running '{}' — which can report {} once its hooks are wired. Declare it with \
                  `thurbox-cli session reports-as {} {}` so coverage stops depending on \
                  what a process listing happens to see",
                 hook.detected_agent().unwrap_or(agent),
@@ -789,5 +789,50 @@ mod tests {
         // hooks really do shell out to it.
         let local = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, true, None);
         assert_eq!(level_of(&local, "cli"), Level::Fail);
+    }
+
+    #[test]
+    fn a_command_session_with_a_detected_agent_still_expects_no_hooks() {
+        // A detected identity is evidence about the process, not a declaration
+        // — so it must not turn a `--command` session's carve-out into a
+        // warning or failure. The advice should still name what was actually
+        // found running, though, rather than a placeholder.
+        let hook = Assessment::from_hooks(&registry(), "bash", None, None, None, 0)
+            .with_corroboration(Corroboration::ForeignAgent(Some("claude".into())));
+        assert_eq!(hook.coverage, Coverage::Presumed);
+        let report = diagnose(&row("s", "bash", "local-tmux"), false, &hook, true, Some("/x"));
+        assert_eq!(level_of(&report, "coverage"), Level::Ok);
+        let detail = &report
+            .findings
+            .iter()
+            .find(|f| f.key == "coverage")
+            .unwrap()
+            .detail;
+        assert!(detail.contains("claude"), "got {detail}");
+    }
+
+    #[test]
+    fn an_uncovered_agent_with_a_detected_identity_warns_and_names_it() {
+        // The row's own agent ("shell") has no coverage of its own, but its
+        // pane was found running a recognised claude — hooks are expected
+        // here, so this must warn (not silently pass as `Ok`, and not fail as
+        // though nothing was learned about the pane at all), and the advice
+        // must name the agent that was actually detected together with what
+        // it can report.
+        let hook = Assessment::from_hooks(&registry(), "shell", None, None, None, 0)
+            .with_corroboration(Corroboration::ForeignAgent(Some("claude".into())));
+        assert_eq!(hook.coverage, Coverage::Presumed);
+        let report = diagnose_agent(&row("s", "shell", "local-tmux"), &hook, true, Some("/x"));
+        assert_eq!(level_of(&report, "coverage"), Level::Warn);
+        let detail = &report
+            .findings
+            .iter()
+            .find(|f| f.key == "coverage")
+            .unwrap()
+            .detail;
+        assert!(detail.contains("claude"), "got {detail}");
+        for state in hook.states_reportable() {
+            assert!(detail.contains(state), "got {detail}");
+        }
     }
 }
