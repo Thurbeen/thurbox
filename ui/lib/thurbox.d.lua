@@ -284,6 +284,8 @@
 ---| "status_idle"
 ---| "status_error"
 ---| "status_unreachable"
+---| "status_running"
+---| "status_unknown"
 ---| "text_primary"
 ---| "text_secondary"
 ---| "text_muted"
@@ -310,8 +312,12 @@
 
 --- A session's derived status, as `SessionState::as_str` spells it.
 --- `lib/theme.lua` has a glyph and a role for `working`, `blocked`, `done`,
---- `idle` and `unreachable`, and falls back to `idle` for the rest — which is
---- why `theme.status` accepts the whole vocabulary.
+--- `idle`, `unreachable`, `running`, `uncovered` and `unreported`, and falls
+--- back to `idle` only for `stopped` — which is at rest by definition. The
+--- three silences are drawn apart from `idle` on purpose: `running` is "an
+--- agent holds the pane and said nothing", `uncovered` is "wired to report
+--- nothing" and `unreported` is "can report, has not yet". None of them is
+--- the agent saying it is at rest.
 ---@alias thurbox.Status
 ---| "working"
 ---| "blocked"
@@ -338,7 +344,9 @@
 ---@class (exact) thurbox.Session
 ---@field id string
 ---@field name string
----@field agent string
+---@field agent string What the row was created as.
+---@field reports_as? string What a driver declared this session runs (`session reports-as`).
+---@field detected_agent? string The registered agent observed in the pane, when it is not `agent`.
 ---@field status thurbox.Status
 ---@field backend string
 ---@field repo? string

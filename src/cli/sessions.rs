@@ -34,7 +34,8 @@ pub enum Action {
     ///
     /// **Unprobed fields are null, and null means "not checked".** Without
     /// `--verify` the pane is never looked at, so `hook_corroboration`,
-    /// `hook_state_contradicted` and `foreground_process`/`foreground_command`
+    /// `detected_agent`, `hook_state_contradicted` and
+    /// `foreground_process`/`foreground_command`
     /// are all `null` — *unchecked*, which is a different answer from
     /// `false`/"nothing found" (a remote session, which has no pane to look at
     /// from here, says `hook_corroboration: "unavailable"` instead). For the
@@ -70,6 +71,13 @@ pub enum Action {
     /// coverage of its agent's hooks, and — for a local session — what the
     /// pane's foreground process says about it (`hook_corroboration`,
     /// `hook_state_contradicted`). Pass `--no-verify` to skip the pane probe.
+    ///
+    /// `detected_agent` names the registered agent found holding the pane when
+    /// it is not the one the row was created with — the shape a harness that
+    /// owns the agent launch produces. Three names, three fields: `agent` is
+    /// what the row was created as, `reports_as` what a driver declared, and
+    /// this what is observably running. It is a live reading and is never
+    /// written back as `reports_as`.
     ///
     /// A session parked by `session stop` reports `stopped: true` and
     /// `state: "stopped"`, and its pane is not probed — there is none.
@@ -1356,7 +1364,7 @@ fn render_session_detail(s: &SharedSession, hook: &crate::session::Assessment) -
             output::dash(s.parent_session_id.map(|id| id.to_string()).as_deref()),
         ),
     ];
-    if let Some(corroboration) = hook.corroboration {
+    if let Some(corroboration) = hook.corroboration.as_ref() {
         pairs.push((
             "pane",
             match hook.foreground_process.as_deref() {
@@ -1364,6 +1372,11 @@ fn render_session_detail(s: &SharedSession, hook: &crate::session::Assessment) -
                 None => corroboration.as_str().to_string(),
             },
         ));
+    }
+    // Named, never implied: an agent seen in the pane says which agent is
+    // there, and nothing at all about whether it is mid-turn.
+    if let Some(detected) = hook.detected_agent() {
+        pairs.push(("detected_agent", detected.to_string()));
     }
     let mut block = output::kv(&pairs);
     for w in &s.worktrees {
@@ -2000,11 +2013,10 @@ impl SessionFacts {
             .get(agent)
             .map(|d| d.command.clone())
             .unwrap_or_else(|| agent.to_string());
-        let known: Vec<String> = registry.agents.iter().map(|a| a.command.clone()).collect();
         let pane = crate::agent::tmux::pane_state(&s.id.to_string(), &s.name);
         hook.with_pane(
             &command,
-            &known,
+            registry,
             pane.foreground_process.as_deref(),
             pane.foreground_command.as_deref(),
             pane.dead,

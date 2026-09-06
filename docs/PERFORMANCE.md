@@ -796,6 +796,16 @@ fetch stuck for the process lifetime. Each is now a TTL, an in-flight marker, or
 generation counter. **If you add a cache to the loop, give it an age**; the review
 that found these is in the history, and they were one field each.
 
+`PaneProbe::known` — what holds each session's pane, which is what lets the
+interface say `running` instead of `idle` for an agent a harness launched — is a
+`PANE_PROBE_TTL` (2 s) cache under the same rule. It is also the case for
+**asking narrowly**: the answer costs one `display-message` plus one `ps`, so it
+is asked only about rows whose `hook_state` is null. A session whose agent
+reports for itself already has a better answer than a process listing can give,
+and probing it would put a subprocess per session on every refresh — which is
+the cost the interface declined by skipping the check altogether, at the price
+of the dot it then drew.
+
 An age can be a **generation key** rather than a clock, and then *which* key you
 pick is the whole of the correctness. `GitStats::known` caches `merged` — is this
 branch's work already on origin's default? — keyed on the **commit** it was

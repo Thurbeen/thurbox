@@ -118,6 +118,8 @@ fn snapshot(sessions: usize) -> Snapshot {
                 worktree_count: 1,
                 git: None,
                 hook_state: Some("idle".into()),
+                reports_as: None,
+                detected_agent: None,
                 shell_backend_id: None,
                 member_dirs: vec![format!("{repo}/worktrees/w{nth}").into()],
             }

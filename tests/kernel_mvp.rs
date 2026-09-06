@@ -117,6 +117,8 @@ fn row(name: &str, repo: &str, status: &str) -> SessionRow {
         git: None,
         stopped: false,
         hook_state: None,
+        reports_as: None,
+        detected_agent: None,
         shell_backend_id: None,
         member_dirs: Vec::new(),
     }
@@ -310,6 +312,47 @@ fn the_session_list_renders_real_snapshot_rows() {
     // the RIGHT side of the top border — it never spells out a count.
     assert!(screen.contains("Sessions"), "{screen}");
     assert!(!screen.contains("sessions · 4"), "{screen}");
+}
+
+/// R1 + R3, at the surface that had the bug. A session a driver launched an
+/// agent into reports nothing at all, and the interface drew the green hollow
+/// `idle` circle for it — "the agent says it is at rest" for an agent that was
+/// mid-turn. The three silences now each have their own glyph, and the agent
+/// found in the pane is named beside the one the row was created as.
+#[test]
+fn a_session_with_no_reported_status_never_draws_the_idle_dot() {
+    let host = host();
+    // What a foreign driver leaves behind: a row created as a bare shell, an
+    // agent running in its pane, and nothing wired to report a turn.
+    let mut driven = row("fm-worker", "thurbox", "idle");
+    driven.agent = "zsh".to_string();
+    driven.status = SessionState::Running;
+    driven.detected_agent = Some("claude".to_string());
+    // Wired to report nothing, and it has said nothing.
+    let mut uncovered = row("bare-shell", "thurbox", "idle");
+    uncovered.agent = "zsh".to_string();
+    uncovered.status = SessionState::Uncovered;
+    // Can report, and has not yet.
+    let mut unreported = row("just-spawned", "thurbox", "idle");
+    unreported.status = SessionState::Unreported;
+
+    publish(&host, &snapshot(vec![driven, uncovered, unreported]));
+    let screen = paint(&host, index_of(&host, "sessions"), 48, 12).join("\n");
+
+    // Not one row claims the agent said it is at rest.
+    assert!(!screen.contains('○'), "an idle dot survived:\n{screen}");
+    // An agent IS there (◍), and the two silences read as absences (◌).
+    assert!(screen.contains('◍'), "no running glyph in:\n{screen}");
+    assert!(screen.contains('◌'), "no silence glyph in:\n{screen}");
+    // And the row says which agent, without saying what it is doing.
+    assert!(screen.contains("claude"), "{screen}");
+    assert!(screen.contains("no status reported"), "{screen}");
+    assert!(!screen.contains("working"), "{screen}");
+
+    // The centre pane's title carries both names and the honest word.
+    let title = paint(&host, index_of(&host, "agent"), 90, 8).join("\n");
+    assert!(title.contains("zsh → claude"), "{title}");
+    assert!(title.contains("Running"), "{title}");
 }
 
 #[test]

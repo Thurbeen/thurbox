@@ -238,6 +238,7 @@ gone — and each one comes with what it takes to judge it:
 | `hook_coverage`, `hook_states_reportable` | what this agent can report at all |
 | `hook_blocked_is_heuristic` | whether its `blocked` is a text match on a notification body |
 | `hook_corroboration`, `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
+| `detected_agent` | which registered agent is in the pane, when it is not the row's own |
 | `state`, `state_source` | the best answer available, and where it came from |
 | `stopped` | whether the session is parked — `session stop`, no pane |
 | `reports_as` | the agent the hook fields were read against, when a driver declared one |
@@ -251,7 +252,16 @@ to report nothing), `stopped` (the session is parked) or `running` (an
 agent holds the pane and has not signalled — `session get`'s probe only).
 None of those four is a state an agent can signal, and `state_source` is
 null for the first three. The piped (TOON) `session list` shows this
-column.
+column, and so does the interface — its session list derives through the
+same `Assessment`, so a driver reconciling the screen with a `session
+get` never has to reconcile two vocabularies.
+
+`agent`, `reports_as` and `detected_agent` are three different facts and
+no two of them substitute for each other: what the row was created as,
+what a driver *declared* it runs, and what is observably in the pane
+right now. Detection is deliberately never written back as `reports_as`
+— a declaration is durable, an observation is not, and deriving one from
+the other would make a passing process permanent.
 
 A finished turn reads `done` until somebody looks at it and `idle`
 after: the interface stamps `seen_at` when focus moves off, and every

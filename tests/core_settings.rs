@@ -292,6 +292,8 @@ fn session_row() -> thurbox::kernel::snapshot::SessionRow {
         }),
         stopped: false,
         hook_state: None,
+        reports_as: None,
+        detected_agent: None,
         shell_backend_id: None,
         member_dirs: Vec::new(),
     }

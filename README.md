@@ -625,6 +625,7 @@ takes to judge it:
 | `hook_coverage` / `hook_states_reportable` | what this agent can report at all (`aider` can only ever say `blocked`) |
 | `hook_blocked_is_heuristic` | whether its `blocked` is a text match on a notification body |
 | `hook_corroboration` / `hook_state_contradicted` | what actually holds the pane, and whether it agrees |
+| `detected_agent` | which registered agent was found in the pane, when it is not the one the row was created with |
 | `state` / `state_source` | the best answer available, and whether it came from a hook or from the pane |
 | `stopped` | whether the session is parked (`session stop`) — no process at all |
 

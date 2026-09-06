@@ -96,6 +96,16 @@ local STATUS_GLYPHS = {
   idle = "○",
   error = "✗",
   unreachable = "⊘",
+  -- An agent holds the pane and has reported nothing. Filled, because
+  -- something IS there; not the working spinner, because no process listing
+  -- can tell a turn in flight from a prompt waiting for input.
+  running = "◍",
+  -- The two silences. Dotted, because the content of both is an absence: no
+  -- hooks are wired (`uncovered`), or none have fired yet (`unreported`).
+  -- Kept visibly apart from `idle`'s green hollow circle, which is a claim
+  -- that the agent said it is at rest.
+  uncovered = "◌",
+  unreported = "◌",
 }
 local STATUS_ROLES = {
   working = "status_working",
@@ -104,12 +114,21 @@ local STATUS_ROLES = {
   idle = "status_idle",
   error = "status_error",
   unreachable = "status_unreachable",
+  running = "status_running",
+  uncovered = "status_unknown",
+  unreported = "status_unknown",
 }
 
 --- Glyph and colour for a session status.
 ---
 --- Colour comes from the theme's own status roles, so a theme that recolours
 --- "blocked" recolours it here without this file changing.
+---
+--- The `idle` fallback is for a word this table has no row for — `stopped`,
+--- which is at rest by definition. It is deliberately NOT how the three
+--- silences are drawn: `running`, `uncovered` and `unreported` each have a row
+--- above, because falling through to `idle` is what made a working
+--- driver-launched agent draw the green "the agent says it is at rest" dot.
 ---@param name thurbox.Status
 ---@return { glyph: string, color: thurbox.Color? }
 function theme.status(name)

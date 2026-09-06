@@ -632,15 +632,31 @@ fn build_sessions(
 ) -> Result<Value, String> {
     let sessions = lua.create_table().map_err(|e| e.to_string())?;
     for (index, row) in snapshot.sessions.iter().enumerate() {
-        // Pre-sized: this row takes ~28 named fields, and a table grown one
+        // Pre-sized: this row takes ~30 named fields, and a table grown one
         // field at a time rehashes itself on the way there — per session,
         // per frame.
         let entry = lua
-            .create_table_with_capacity(0, 30)
+            .create_table_with_capacity(0, 32)
             .map_err(|e| e.to_string())?;
         set(&entry, "id", to_lua_string(lua, &row.id)?)?;
         set(&entry, "name", to_lua_string(lua, &row.name)?)?;
         set(&entry, "agent", to_lua_string(lua, &row.agent)?)?;
+        // Three names, three fields, because they are three different facts and
+        // no two of them can stand in for each other: what the row was created
+        // as, what a driver declared it runs (`session reports-as`), and what is
+        // observably in the pane right now. A row created as `zsh` with claude
+        // running in it is otherwise a session the interface can only call
+        // `zsh`.
+        set(
+            &entry,
+            "reports_as",
+            opt_lua_string(lua, row.reports_as.as_deref())?,
+        )?;
+        set(
+            &entry,
+            "detected_agent",
+            opt_lua_string(lua, row.detected_agent.as_deref())?,
+        )?;
         let attach_error = attach_errors.get(&row.id).map(String::as_str);
         set(
             &entry,

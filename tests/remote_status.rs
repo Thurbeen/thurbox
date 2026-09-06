@@ -70,7 +70,9 @@ fn status_of(store: &SnapshotStore, id: SessionId) -> String {
 #[test]
 fn a_remote_agents_report_reaches_its_session() {
     let (_home, mut store, id) = store_with_remote_session();
-    assert_eq!(status_of(&store, id), "idle");
+    // Not `idle`: nothing has reported for this row, and claude is wired to
+    // report — so the honest word before the first hook is `unreported`.
+    assert_eq!(status_of(&store, id), "unreported");
 
     let applied = store.apply_hook_states(
         vec![(
@@ -99,7 +101,7 @@ fn an_event_from_another_host_is_not_applied_here() {
         Instant::now(),
     );
     assert_eq!(applied, 0);
-    assert_eq!(status_of(&store, id), "idle");
+    assert_eq!(status_of(&store, id), "unreported");
 }
 
 #[test]
@@ -115,7 +117,7 @@ fn a_state_nobody_defines_is_ignored() {
         Instant::now(),
     );
     assert_eq!(applied, 0);
-    assert_eq!(status_of(&store, id), "idle");
+    assert_eq!(status_of(&store, id), "unreported");
 }
 
 #[test]
@@ -196,5 +198,5 @@ fn a_parked_event_is_eventually_given_up_on() {
     store.refresh();
     let applied = store.apply_hook_states(Vec::new(), early + Duration::from_secs(601));
     assert_eq!(applied, 0);
-    assert_eq!(status_of(&store, row.id), "idle");
+    assert_eq!(status_of(&store, row.id), "unreported");
 }

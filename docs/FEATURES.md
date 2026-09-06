@@ -82,14 +82,24 @@ persisted columns onto a `SessionState` once per tick:
 | `done` | blue | `●` | a turn just finished; shown until you switch away |
 | `idle` | green | `○` | acknowledged, never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host is down/offline; placeholder row awaiting reconnect |
+| `running` | accent | `◍` | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
+| `uncovered` | muted grey | `◌` | this agent is wired to report nothing, so its silence means nothing |
+| `unreported` | muted grey | `◌` | the agent *can* report and has not yet |
 
-`SessionState` carries four more words — `stopped`, `running`, `uncovered`,
-`unreported` — that the interface never has to draw, because it can always
-observe the park mark, the pane and the terminal. They are the answers a
-headless surface gives when one of those facts is out of its reach, and they
-are spelled apart from `idle` so "we cannot know" is never read as "the agent
-says it is at rest". One enum, so `session get`, `session list`,
-`thurbox-cli watch` and the session list cannot disagree about a row.
+Those last three are drawn apart from `idle` on purpose, and it took a bug to
+prove why: the interface derived its dot from the hook columns alone, so a
+session a harness had launched an agent into — nothing wired, nothing signalled
+— drew the green hollow circle while the agent worked. `idle` says *the agent
+reported that it is at rest*; none of the three does. `stopped` (parked by
+`session stop`) is the one word with no dot of its own, because a parked
+session is at rest by definition.
+
+One enum, so `session get`, `session list`, `thurbox-cli watch` and the session
+list cannot disagree about a row — and since the interface has to answer
+`running`, it probes what holds each unreported session's pane. That probe
+shells out, so it runs on a worker thread and only for rows whose agent has
+reported nothing (`kernel::snapshot::PaneProbe`); a session whose hooks work
+costs nothing.
 
 A `Done` session becomes `Idle` once you move focus off it (you've
 acknowledged it); a `working` session that goes quiet for 10 s is

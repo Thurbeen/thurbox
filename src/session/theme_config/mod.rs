@@ -29,6 +29,15 @@ pub struct ThemePalette {
     /// offline). Muted grey by default so a placeholder row reads as inert, not
     /// urgent.
     pub status_unreachable: Color,
+    /// Colour of the "running" status glyph: an agent demonstrably holds the
+    /// pane and has reported nothing. Deliberately **not** `status_working` —
+    /// the observation says an agent is there, never that a turn is in flight,
+    /// and wearing the working colour would make it a claim.
+    pub status_running: Color,
+    /// Colour of the "no signal" status glyph, shared by `uncovered` (this
+    /// agent is wired to report nothing) and `unreported` (it can report and
+    /// has not yet). Muted, because the honest content of both is an absence.
+    pub status_unknown: Color,
 
     pub text_primary: Color,
     pub text_secondary: Color,
@@ -450,6 +459,10 @@ pub struct CustomThemeDef {
     #[serde(default)]
     pub status_unreachable: Option<String>,
     #[serde(default)]
+    pub status_running: Option<String>,
+    #[serde(default)]
+    pub status_unknown: Option<String>,
+    #[serde(default)]
     pub text_primary: Option<String>,
     #[serde(default)]
     pub text_secondary: Option<String>,
@@ -531,7 +544,7 @@ impl CustomThemeDef {
     /// (`override_array_covers_every_color_field`) asserts it matches the
     /// struct's colour-field count, so a forgotten row can't silently make a
     /// colour un-overridable.
-    const COLOR_OVERRIDE_COUNT: usize = 31;
+    const COLOR_OVERRIDE_COUNT: usize = 33;
 
     /// Materialise the theme: base preset palette + overrides. Unparsable
     /// colours and an unknown base degrade to warnings, never to a hard
@@ -581,6 +594,16 @@ impl CustomThemeDef {
                 "status_unreachable",
                 &self.status_unreachable,
                 &mut palette.status_unreachable,
+            ),
+            (
+                "status_running",
+                &self.status_running,
+                &mut palette.status_running,
+            ),
+            (
+                "status_unknown",
+                &self.status_unknown,
+                &mut palette.status_unknown,
             ),
             (
                 "text_primary",
@@ -690,6 +713,8 @@ fn default_palette() -> ThemePalette {
         status_idle: Color::Green,
         status_error: Color::Red,
         status_unreachable: Color::DarkGray,
+        status_running: Color::Cyan,
+        status_unknown: Color::DarkGray,
 
         text_primary: Color::White,
         text_secondary: Color::Gray,
@@ -771,6 +796,11 @@ impl PaletteSlots {
             status_error: self.red,
             // Muted grey: an unreachable placeholder is inert, not urgent.
             status_unreachable: self.text_muted,
+            // The accent: an agent IS there, which is worth seeing — but not
+            // the working colour, which would claim a turn is running.
+            status_running: self.accent,
+            // Dimmest of all: "nothing reported" has no content to look at.
+            status_unknown: self.text_muted,
             text_primary: self.text_primary,
             text_secondary: self.text_secondary,
             text_muted: self.text_muted,

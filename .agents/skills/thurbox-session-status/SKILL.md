@@ -24,18 +24,28 @@ module exists to prevent:
 | `done` | blue | `●` (filled) | a turn just finished; shown until you switch away (hook) |
 | `idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host down/offline; the ordinary row, derived from a live attach failure, awaiting reconnect |
+| `running` | `status_running` (accent) | `◍` | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
+| `uncovered` | `status_unknown` (muted) | `◌` | this agent is wired to report nothing, so its silence means nothing |
+| `unreported` | `status_unknown` (muted) | `◌` | the agent *can* report and has not yet |
 | `stopped` | — | — | parked by `session stop`: no process at all, which is why it outranks whatever the hook columns still hold |
-| `running` | — | — | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
-| `uncovered` | — | — | this agent is wired to report nothing, so its silence means nothing |
-| `unreported` | — | — | the agent *can* report and has not yet |
 
-The last four carry no dot: the interface can always observe quiescence and
-reachability and knows the park mark from the row, so its rows resolve to the
-first five. The others are what a headless surface answers when a fact the
-interface has is one it cannot observe. The `Error` state v1 reserved for a
-crashed agent is gone with `SessionStatus`: it was never derived (process exit
-carries no failure signal), and a word no surface can produce is one more thing
-for a driver to handle for nothing.
+**Only `stopped` carries no dot**, because a parked session is at rest by
+definition and `idle` describes it without lying. The three above it each have
+one, and that is a correction: the interface used to derive its status from the
+hook columns alone (`derive_state`), so `hook_state = NULL` answered `Idle` and
+`theme.lua`'s `or STATUS_GLYPHS.idle` drew the green hollow circle — for a
+session a harness had launched an agent into, mid-turn, with nothing wired to
+report it. `idle` means *the agent said it is at rest*; none of these three
+does, and spelling them apart is the whole reason the vocabulary has nine words
+instead of five.
+
+The interface now derives through the same `Assessment` the CLI does
+(`kernel::snapshot::assess`), which is what makes `running` reachable there —
+and `running` needs the pane, so see **Reading the pane from the interface**
+below. The `Error` state v1 reserved for a crashed agent is gone with
+`SessionStatus`: it was never derived (process exit carries no failure signal),
+and a word no surface can produce is one more thing for a driver to handle for
+nothing.
 
 **Unreachable sessions.** A persisted **remote** session whose host cannot be
 reached **always appears in the list**, tagged `Unreachable`, rather than
@@ -74,8 +84,9 @@ the kernel's shared **animation tick** (`kernel::host::ANIMATION_HZ` = 8), which
 the loop advances **only while something is actually animating** — a free-running
 one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●`
 (Done) vs hollow `○` (Idle) pair reads done-vs-seen at a glance; the glyphs
-themselves live in `ui/lib/theme.lua`, so a state with no row in the table above
-simply draws the way `idle` does.
+themselves live in `ui/lib/theme.lua`, whose `or STATUS_GLYPHS.idle` fallback
+now catches only `stopped` — every other word in the table has a row of its
+own, which is the point.
 
 - **Reading it headlessly.** `session get`/`list --json` report the raw
   `hook_state` **plus what it takes to judge it**: `hook_state_at` /
@@ -112,9 +123,33 @@ simply draws the way `idle` does.
   `thurbox-cli session signal --state <s>` with **no arguments** (documented as
   a stable contract in `docs/CONFIG.md`); and failing that, a pane whose
   foreground is an agent the registry knows reports `state: "running"` /
-  `state_source: "process"` / `hook_corroboration: "foreign-agent"` —
-  deliberately coarse, since process inspection cannot say what an agent is
-  *doing*.
+  `state_source: "process"` / `hook_corroboration: "foreign-agent"` /
+  `detected_agent: "<name>"` — deliberately coarse, since process inspection
+  cannot say what an agent is *doing*.
+  **Three names, three fields.** `agent` is what the row was created as,
+  `reports_as` what a driver *declared* (`session reports-as`), and
+  `detected_agent` what is observably in the pane — the registry **name**, so
+  `antigravity` rather than the `agy` its argv spells. Detection is never
+  written back as `reports_as`: a declaration is durable and an observation is
+  not, and deriving one from the other would make a passing process permanent.
+  The interface publishes all three onto its session rows, and shows the third
+  as `zsh → claude` in the terminal pane's title and `claude · no status
+  reported` beside the row.
+  **Matching is in command position only** (`runs_program`): argv0, a shell's
+  `-c` operand or its script, and past `exec`/`env`/`VAR=value` prefixes. It
+  used to match a bare token *anywhere* in the command line, and the shape a
+  harness produces — a multi-kilobyte prose brief in argv, printed back by `ps`
+  as one long line — made `perl -e 'sleep 300' claude` a claude agent holding
+  the pane. A missed identity is a blank; a wrong one is on screen.
+- **Reading the pane from the interface.** The probe costs one
+  `display-message` plus one `ps`, which the render loop may not pay, so
+  `kernel::snapshot::PaneProbe` runs it on a worker thread and the verdict is
+  folded in when it lands (`Assessment::with_corroboration`). It is asked
+  **only** about rows whose `hook_state` is null, is cached for
+  `PANE_PROBE_TTL` (2 s), and a moved verdict forces the snapshot rebuild —
+  `PRAGMA data_version` cannot see a worker's answer. A session whose hooks
+  work costs nothing at all. See `docs/PERFORMANCE.md` → *Freshness is a
+  property of a cached answer*.
 - **The callback.** Agents report transitions with
   `thurbox-cli session signal --state <working|blocked|done|idle>`
   (`cli::sessions::Action::Signal`). Identity is the injected
@@ -131,7 +166,8 @@ simply draws the way `idle` does.
   `mark_session_seen` / `load_hook_states` (`storage/sessions.rs`).
   `upsert_session` deliberately **never** lists the hook columns, so the
   TUI's full-row write-back can't clobber a state a headless hook set. A
-  fresh spawn seeds **nothing** — a never-reported session is `Idle`, and the
+  fresh spawn seeds **nothing** — a never-reported session reads `unreported`
+  (or `running`, once the pane probe finds its agent), never `idle`, and the
   agent's hooks drive it from there (so an idle, just-booted agent doesn't look
   stuck working).
 - **A parked session takes no state.** `set_hook_state` returns `false` for a
@@ -157,6 +193,7 @@ simply draws the way `idle` does.
   | fold | input | who can supply it |
   |---|---|---|
   | `derive_state` (incl. the `done → idle` acknowledgment) | `hook_state`, `hook_state_at`, `seen_at` — all stored | everyone |
+  | `classify_foreground` → `Assessment::with_corroboration` | the pane's foreground process group | anyone who can run `ps` |
   | `with_output_quiescence` | terminal output age | the interface only |
   | `with_reachability` | a live attach error | the interface only |
 
@@ -198,7 +235,8 @@ simply draws the way `idle` does.
   group dot would restate what every member row shows. Status only recolors — it
   **never** reorders rows (the order is status-independent).
 - **Colours** are tunable theme fields: `status_working` / `status_blocked`
-  / `status_done` / `status_idle` / `status_unreachable`
+  / `status_done` / `status_idle` / `status_unreachable` / `status_running` /
+  `status_unknown`
   (`session::theme_config`, all 36 presets + custom-theme overrides), published
   to Lua as theme roles and read by the pane. `status_error` is a separate
   role (a failed *command*, e.g. `bands.rs`'s `Level::Error` — not a session
