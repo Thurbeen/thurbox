@@ -489,8 +489,10 @@ struct App {
     /// settings modal's Interface tab lists it too — one join per frame, read
     /// by both.
     inventory: Vec<thurbox::kernel::inventory::Row>,
-    /// Sessions already asked to relaunch, so a respawn is attempted once per
-    /// session per run rather than every frame its window is still missing.
+    /// Sessions with a relaunch in flight, so a respawn is dispatched once per
+    /// session rather than every frame its window is still missing. A failed
+    /// restart clears its entry, so a session still missing its agent is tried
+    /// again rather than stuck until thurbox restarts.
     respawned: std::collections::HashSet<String>,
     /// When the loop last asked the database for soft-deleted sessions whose
     /// undo window has closed, so their agents are let go rather than left

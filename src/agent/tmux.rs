@@ -999,7 +999,7 @@ impl TmuxBackend {
                 self.session,
                 self.socket()
             );
-            self.run_tmux(&[
+            if let Err(e) = self.run_tmux(&[
                 "new-session",
                 "-d",
                 "-s",
@@ -1008,8 +1008,23 @@ impl TmuxBackend {
                 "80",
                 "-y",
                 "24",
-            ])
-            .context("Failed to create tmux session")?;
+            ]) {
+                // The check above is not a lock, and after a reboot every
+                // session's relaunch runs it at once: one wins and the rest are
+                // told `duplicate session`. Failing them is how a machine came
+                // back with all but one of its agents missing — each loser
+                // aborted its whole respawn, kept the pane id the dead server
+                // had given it, and that id then named whichever window the
+                // winner got. The session we wanted exists either way, so ask
+                // rather than assume, and only report a failure that left none.
+                if !self.session_exists() {
+                    return Err(e).context("Failed to create tmux session");
+                }
+                debug!(
+                    "tmux session '{}' was created by a peer; continuing",
+                    self.session
+                );
+            }
             // Cheap defensiveness on Windows: poll until the freshly-created
             // session answers `has-session` before applying options. (The
             // `no server running on 'thurbox__thurbox'` failure that originally
