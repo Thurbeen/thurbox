@@ -699,11 +699,13 @@ requires_dir = "~/.config/opencode"  # skip when that agent isn't installed
 name = "claude"
 append_args = ["--settings", "{home}/claude.json"]
 
-[[config_merges]]               # reversibly deep-merge JSON into an agent's own
+[[config_merges]]               # reversibly deep-merge into an agent's own
 path = "~/.gemini/settings.json"  #   SHARED config file (never clobbered)
 source = "antigravity-hooks.json"  # objects recurse, arrays union; uninstall prunes
 requires_dir = "~/.gemini"      #   exactly our entries (by marker). no-op write
                                 #   when unchanged; malformed target soft-skipped
+# format = "toml"                # OPTIONAL; JSON by default. Set for a TOML
+                                #   shared config (agent::toml_merge via toml_edit)
 
 # runtime spec (ensured on activate, self-healed if deleted) -----------------
 [[sessions]]
