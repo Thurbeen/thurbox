@@ -355,6 +355,30 @@ fn a_session_with_no_reported_status_never_draws_the_idle_dot() {
     assert!(title.contains("Running"), "{title}");
 }
 
+/// The follow-up: an agent IS in the pane (status `running`), but two
+/// registered profiles share its executable, so `classify_foreground`
+/// publishes `detected_agent: None` rather than an arbitrary first match. The
+/// row must still say an agent is running — never fall silent the way an
+/// `unreported` row does — while naming no one.
+#[test]
+fn a_running_session_with_no_determined_agent_says_so_without_a_name() {
+    let host = host();
+    let mut ambiguous = row("fm-worker", "thurbox", "idle");
+    ambiguous.agent = "zsh".to_string();
+    ambiguous.status = SessionState::Running;
+    ambiguous.detected_agent = None;
+
+    publish(&host, &snapshot(vec![ambiguous]));
+    let screen = paint(&host, index_of(&host, "sessions"), 64, 12).join("\n");
+
+    assert!(!screen.contains('○'), "an idle dot survived:\n{screen}");
+    assert!(screen.contains('◍'), "no running glyph in:\n{screen}");
+    assert!(
+        screen.contains("agent running · no status reported"),
+        "{screen}"
+    );
+}
+
 #[test]
 fn each_status_paints_its_own_glyph() {
     let host = host();
