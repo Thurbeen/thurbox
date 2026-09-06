@@ -863,6 +863,116 @@ mod tests {
             .collect()
     }
 
+    // --- what the block matcher actually matches -----------------------------
+
+    /// A real `Notification` payload from Claude Code, verbatim, for the
+    /// notification that fires ~60s after a turn ends and nobody typed.
+    ///
+    /// It is the last hook a finished session ever fires, which is what makes a
+    /// false `blocked` here permanent: nothing comes after it to overwrite one.
+    #[cfg(unix)]
+    const IDLE_NOTIFICATION: &str = concat!(
+        r#"{"session_id":"d626fdf7","transcript_path":"/home/dev/.claude/projects/-srv-app/x.jsonl","#,
+        r#""cwd":"/srv/app","prompt_id":"7da65910","hook_event_name":"Notification","#,
+        r#""message":"Claude is waiting for your input","notification_type":"idle_prompt"}"#
+    );
+
+    /// The same, from a checkout whose own path carries one of the words the
+    /// matcher looks for. Nothing about the notification changed.
+    #[cfg(unix)]
+    const IDLE_NOTIFICATION_IN_A_PERMISSIONS_REPO: &str = concat!(
+        r#"{"session_id":"d626fdf7","transcript_path":"/home/dev/.claude/projects/-srv-permissions-service/x.jsonl","#,
+        r#""cwd":"/srv/permissions-service","prompt_id":"7da65910","hook_event_name":"Notification","#,
+        r#""message":"Claude is waiting for your input","notification_type":"idle_prompt"}"#
+    );
+
+    /// The notification that *is* a block: a tool waiting on approval.
+    #[cfg(unix)]
+    const PERMISSION_NOTIFICATION: &str = concat!(
+        r#"{"session_id":"5e3579cc","transcript_path":"/home/dev/.claude/projects/-srv-app/x.jsonl","#,
+        r#""cwd":"/srv/app","prompt_id":"bcf28ba6","hook_event_name":"Notification","#,
+        r#""message":"Claude needs your permission","notification_type":"permission_prompt"}"#
+    );
+
+    /// Run a payload's own `Notification` command against `stdin`, with the
+    /// signal call replaced by `echo` so the test observes the decision instead
+    /// of writing to a database.
+    ///
+    /// The shipped command, not a re-implementation of it: what is under test
+    /// is a shell glob against JSON, and the only honest way to check one is to
+    /// let a shell run it.
+    #[cfg(unix)]
+    fn signalled_state(payload: &str, kind: PayloadKind, stdin: &str) -> Option<String> {
+        use std::io::Write;
+
+        let doc: serde_json::Value = match kind {
+            PayloadKind::Json => serde_json::from_str(payload).expect("valid JSON"),
+            _ => unreachable!("only the JSON payloads carry a Notification hook"),
+        };
+        let command = json_hook_commands(&doc)
+            .into_iter()
+            .find(|c| c.contains("--state blocked"))
+            .expect("payload has a blocked command")
+            .replace(SIGNAL_MARKER, "echo ");
+
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(stdin.as_bytes())
+            .expect("write payload");
+        let out = child.wait_with_output().expect("run the hook command");
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!printed.is_empty()).then_some(printed)
+    }
+
+    /// The regression: the matcher globbed the **whole payload**, so anything
+    /// in it carrying one of the words signalled `blocked` — including the
+    /// `cwd` and `transcript_path`, which are the operator's own directory
+    /// names. A session checked out under a path with "permission" in it went
+    /// `blocked` on the idle notification that arrives a minute after every
+    /// turn ends, and stayed there, because that notification is the last hook
+    /// such a session ever fires.
+    ///
+    /// The words are matched against the notification's `message` — the
+    /// "notification body" the coverage table has always claimed they were.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_permission_notification_signals_blocked() {
+        for (agent, payload) in [
+            ("claude", CLAUDE_SETTINGS),
+            ("antigravity", ANTIGRAVITY_HOOKS),
+            ("grok", GROK_HOOKS),
+        ] {
+            assert_eq!(
+                signalled_state(payload, PayloadKind::Json, PERMISSION_NOTIFICATION).as_deref(),
+                Some("blocked"),
+                "{agent} stopped reporting a real permission prompt"
+            );
+            assert_eq!(
+                signalled_state(payload, PayloadKind::Json, IDLE_NOTIFICATION),
+                None,
+                "{agent} reports the idle notification as a block"
+            );
+            assert_eq!(
+                signalled_state(
+                    payload,
+                    PayloadKind::Json,
+                    IDLE_NOTIFICATION_IN_A_PERMISSIONS_REPO
+                ),
+                None,
+                "{agent} blocks on a directory name rather than on the notification"
+            );
+        }
+    }
+
     /// The one thing `session::hook_status`'s coverage table asserts about the
     /// world: that each agent's shipped payload really does signal exactly the
     /// states the table promises. A reader trusting `hook_states_reportable` is

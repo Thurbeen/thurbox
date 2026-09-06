@@ -341,8 +341,8 @@ fn a_session_with_no_reported_status_never_draws_the_idle_dot() {
 
     // Not one row claims the agent said it is at rest.
     assert!(!screen.contains('○'), "an idle dot survived:\n{screen}");
-    // An agent IS there (◍), and the two silences read as absences (◌).
-    assert!(screen.contains('◍'), "no running glyph in:\n{screen}");
+    // An agent IS there (◉), and the two silences read as absences (◌).
+    assert!(screen.contains('◉'), "no running glyph in:\n{screen}");
     assert!(screen.contains('◌'), "no silence glyph in:\n{screen}");
     // And the row says which agent, without saying what it is doing.
     assert!(screen.contains("claude"), "{screen}");
@@ -372,7 +372,7 @@ fn a_running_session_with_no_determined_agent_says_so_without_a_name() {
     let screen = paint(&host, index_of(&host, "sessions"), 64, 12).join("\n");
 
     assert!(!screen.contains('○'), "an idle dot survived:\n{screen}");
-    assert!(screen.contains('◍'), "no running glyph in:\n{screen}");
+    assert!(screen.contains('◉'), "no running glyph in:\n{screen}");
     assert!(
         screen.contains("agent running · no status reported"),
         "{screen}"

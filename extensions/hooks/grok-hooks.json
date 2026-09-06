@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if cat | grep -qiE 'permission|approval|approve'; then thurbox-cli session signal --state blocked ; fi; true",
+            "command": "if cat | sed -n 's/.*\"message\":\"\\([^\"]*\\)\".*/\\1/p' | grep -qiE 'permission|approval|approve'; then thurbox-cli session signal --state blocked ; fi; true",
             "timeout": 10
           }
         ]

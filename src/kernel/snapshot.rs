@@ -568,6 +568,14 @@ pub struct SnapshotStore {
     /// A focus request another process left, claimed during [`Self::refresh`]
     /// and handed out by [`Self::take_focus_request`].
     pending_focus: Option<String>,
+    /// When each row's `hook_state` was stamped, by session id.
+    ///
+    /// Beside the rows rather than on [`SessionRow`] because it is an input to
+    /// a fold, not something a pane draws: [`Self::apply_output_quiescence`]
+    /// needs the block edge to tell a standing block from one the pane has
+    /// since printed past, and every other consumer of that stamp already
+    /// reads it from the database.
+    hook_state_at: std::collections::HashMap<String, i64>,
 }
 
 /// A remote hook event waiting for the session it names to appear.
@@ -613,6 +621,7 @@ impl SnapshotStore {
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
+            hook_state_at: std::collections::HashMap::new(),
         };
         store.refresh();
         store
@@ -636,6 +645,7 @@ impl SnapshotStore {
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
+            hook_state_at: std::collections::HashMap::new(),
         };
         store.refresh();
         store
@@ -923,7 +933,9 @@ impl SnapshotStore {
             // is cleared here rather than left to that (absent) refresh, because
             // this path never reaches `assess` at all — it writes the row
             // directly, which is the one case its hook.state gate cannot cover.
-            row.status = derive_state(Some(&event.state), Some(now_ms()), None);
+            let stamped = now_ms();
+            self.hook_state_at.insert(row.id.clone(), stamped);
+            row.status = derive_state(Some(&event.state), Some(stamped), None);
             row.hook_state = Some(event.state);
             row.detected_agent = None;
             applied += 1;
@@ -934,8 +946,8 @@ impl SnapshotStore {
         applied
     }
 
-    /// Re-derive every `working` row against terminal quiescence, returning how
-    /// many rows changed.
+    /// Re-derive every `working` and `blocked` row against terminal quiescence,
+    /// returning how many rows changed.
     ///
     /// Called each tick rather than folded into `refresh`, because the answer
     /// moves with the agent's output and `refresh` runs on the database's
@@ -946,17 +958,42 @@ impl SnapshotStore {
     /// pass is idempotent and reverses itself: a session that goes quiet and
     /// then prints again is `working` once more without a database read.
     ///
-    /// `quiet_for` is asked only about the rows that are actually `working`, and
-    /// answers `None` for a session with no live pane. A closure rather than a
-    /// map because the answer is one atomic load and a map would allocate every
-    /// tick to carry the sessions nobody asked about (ADR-P10).
+    /// `blocked` is here for the opposite reason to `working` and on the same
+    /// evidence. It is never time-gated — a real block is quiet for as long as
+    /// it stands — but a block the pane has gone on printing past is over, and
+    /// this is the only surface that can see that: `state_at` alone cannot say
+    /// it, which is why the CLI still reports the latched word.
+    ///
+    /// `quiet_for` is asked only about the rows that are actually in one of
+    /// those two states, and answers `None` for a session with no live pane. A
+    /// closure rather than a map because the answer is one atomic load and a map
+    /// would allocate every tick to carry the sessions nobody asked about
+    /// (ADR-P10).
     pub fn apply_output_quiescence(&mut self, quiet_for: impl Fn(&str) -> Option<u64>) -> usize {
+        let now = crate::sync::current_time_millis() as i64;
         let mut changed = 0;
         for row in &mut self.current.sessions {
-            if row.hook_state.as_deref() != Some("working") {
+            // A parked session has no process to be working or blocked in, and
+            // `Stopped` outranks both — see `Assessment::state`. Its hook
+            // columns still hold whatever stood before `session stop`, so
+            // without this the pass would talk over the one state thurbox
+            // knows first-hand.
+            if row.stopped {
                 continue;
             }
-            let derived = with_output_quiescence(SessionState::Working, quiet_for(&row.id));
+            let Some(state) = row
+                .hook_state
+                .as_deref()
+                .and_then(SessionState::from_hook_state)
+                .filter(|s| matches!(s, SessionState::Working | SessionState::Blocked))
+            else {
+                continue;
+            };
+            let age = self
+                .hook_state_at
+                .get(&row.id)
+                .map(|at| u64::try_from((now - at).max(0)).unwrap_or(0));
+            let derived = with_output_quiescence(state, quiet_for(&row.id), age);
             if row.status != derived {
                 row.status = derived;
                 changed += 1;
@@ -1112,6 +1149,10 @@ impl SnapshotStore {
             }
         };
         let hooks = database.load_hook_states().unwrap_or_default();
+        self.hook_state_at = hooks
+            .iter()
+            .filter_map(|(id, row)| Some((id.to_string(), row.state_at?)))
+            .collect();
         let bases = database.load_base_branches().unwrap_or_default();
         let stopped = database.load_stopped_sessions().unwrap_or_default();
         // What a driver declared this row runs. Read here for the same reason
@@ -1666,6 +1707,85 @@ mod tests {
             None,
             "a row that now reports its own hook state must leave the probed cache"
         );
+    }
+
+    /// The captain's report, end to end on the surface he was looking at: a
+    /// session reading `blocked` long after its agent finished.
+    ///
+    /// Driven through the store rather than the pure fold because the part that
+    /// can be wrong is that the tick pass reaches `blocked` rows at all — it
+    /// used to filter to `working` and nothing else, so no amount of evidence
+    /// could retire a latched block.
+    #[test]
+    fn a_block_the_pane_printed_past_stops_being_drawn() {
+        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let database = Database::open(temp.path()).expect("open store connection");
+        let row = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "crewmate".into(),
+            agent: "zsh".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        database.upsert_session(&row).expect("upsert");
+        database.set_hook_state(row.id, "blocked").expect("signal");
+        let mut store = SnapshotStore::with_database(database);
+        store.refresh();
+        let id = row.id.to_string();
+        assert_eq!(status_of(&store, &id), SessionState::Blocked);
+
+        // A fresh block is quiet from its own edge, so nothing here moves it —
+        // however long the operator leaves it standing.
+        assert_eq!(store.apply_output_quiescence(|_| Some(60_000)), 0);
+        assert_eq!(status_of(&store, &id), SessionState::Blocked);
+
+        // Age the edge to what the captain saw: stamped 2547s ago, and the
+        // pane printed all the way to 17s ago.
+        let stamped = crate::sync::current_time_millis() as i64 - 2_547_000;
+        store.hook_state_at.insert(id.clone(), stamped);
+
+        assert_eq!(store.apply_output_quiescence(|_| Some(17_000)), 1);
+        assert_eq!(
+            status_of(&store, &id),
+            SessionState::Idle,
+            "an agent that printed for 42 minutes after the block edge was not waiting on anyone"
+        );
+        // The stored column is never touched: the fold is read-time, and the
+        // agent's own last word stays readable.
+        assert_eq!(
+            store
+                .current()
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .expect("row published")
+                .hook_state
+                .as_deref(),
+            Some("blocked")
+        );
+
+        // Reversible, like the `working` half: printing again is a turn.
+        assert_eq!(store.apply_output_quiescence(|_| Some(0)), 1);
+        assert_eq!(status_of(&store, &id), SessionState::Working);
+    }
+
+    fn status_of(store: &SnapshotStore, id: &str) -> SessionState {
+        store
+            .current()
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .expect("row published")
+            .status
     }
 
     /// The local path: an agent's own `thurbox-cli session signal` writes the

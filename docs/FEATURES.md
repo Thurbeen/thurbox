@@ -82,7 +82,7 @@ persisted columns onto a `SessionState` once per tick:
 | `done` | blue | `●` | a turn just finished; shown until you switch away |
 | `idle` | green | `○` | acknowledged, never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host is down/offline; placeholder row awaiting reconnect |
-| `running` | accent | `◍` | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
+| `running` | accent | `◉` | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
 | `uncovered` | muted grey | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | muted grey | `◌` | the agent *can* report and has not yet |
 
@@ -103,7 +103,14 @@ costs nothing.
 
 A `Done` session becomes `Idle` once you move focus off it (you've
 acknowledged it); a `working` session that goes quiet for 10 s is
-treated as `Idle` so an interrupted turn never spins forever. A remote
+treated as `Idle` so an interrupted turn never spins forever. A `blocked`
+session is never time-gated the same way — a standing request for input
+says nothing about output — but one the agent quietly resolved itself
+(no hook clears a heuristic `blocked`) is retired the same way once the
+pane is caught printing well past the block edge, so a finished turn does
+not read `blocked` for the rest of the session's life; see the
+`thurbox-session-status` skill's *Latched-`blocked` fallback* for the
+evidence this relies on. A remote
 session whose host is unreachable is shown as a **placeholder** tagged
 `Unreachable` — it never silently vanishes from the list, and the host
 is retried in the background (or on demand via restart) until the session
@@ -1957,8 +1964,13 @@ Uncommitted work went with the force delete and does not return.
 ### Saying which agent a pane actually runs
 
 A `--command` session is named after the command's file stem, so a driver that
-opens a shell and starts `claude` in it leaves thurbox reading hook coverage
-against `bash`. `session create --reports-as <agent>` and `session reports-as
+opens a shell and starts `claude` in it leaves thurbox with no declared agent to
+read hook coverage against. The pane probe answers when nothing else does —
+coverage then reads `presumed` with `hook_coverage_source: "detection"`, which
+is deliberately not `full`: seeing claude in a pane is evidence about the
+process, never about whether anything wired its hooks. Declaring it is still
+better, because a declaration is durable where a probe is a live reading.
+`session create --reports-as <agent>` and `session reports-as
 <ref> <agent>` (`--clear` to take it back) record which agent reports;
 `hook_coverage`, `hook_states_reportable`, `hook_delivery` and
 `hook_blocked_is_heuristic` are then read against it, and `reports_as` is

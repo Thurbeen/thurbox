@@ -413,10 +413,21 @@ genuinely impossible: a backend with no `hosts.toml` entry, or one whose
 
 `session create --command <exe>` makes a session *anything*, and the row is
 named after the command's file stem. A driver that opens a shell and then starts
-`claude` in it (the `agent launch-args claude` shape) leaves thurbox reading hook
-coverage against `bash`: `hook_coverage: "none"`, no reportable states, and —
-worst of all — `hook_blocked_is_heuristic: false`, asserting the block signal is
-structured when it is claude's text match on a notification body.
+`claude` in it (the `agent launch-args claude` shape) used to leave thurbox
+reading hook coverage against `bash`: `hook_coverage: "none"`, no reportable
+states, and — worst of all — `hook_blocked_is_heuristic: false`, asserting the
+block signal is structured when it is claude's text match on a notification
+body.
+
+When the pane probe has already named the agent, that name is now what coverage
+resolves against: `hook_coverage: "presumed"`, `hook_coverage_source:
+"detection"`, and the reportable states and heuristic flag of the agent actually
+in the pane. `presumed` is a fourth word rather than `full`, and the distinction
+is the point — coverage says what wiring *can* report, and seeing claude in a
+pane is evidence about the process, never about whether anything wired its
+hooks. It is also the one coverage answer that is a **live** reading, so it
+comes and goes with the probe (`--no-verify` leaves it `none`) and a declaration
+always outranks it.
 
 `session create --reports-as <agent>` and `session reports-as <ref> <agent>`
 (`--clear` to take it back) are how the driver says what is in there. The

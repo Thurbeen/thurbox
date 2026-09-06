@@ -125,7 +125,8 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         states: &["working", "blocked", "done", "idle"],
         delivery: HookDelivery::Args,
         hook_file: Some("claude.json"),
-        // `Notification` bodies are matched against *permission*/*approval*.
+        // A `Notification`'s `message` is matched against
+        // *permission*/*approval* — the words, not a structured event.
         blocked_is_heuristic: true,
     },
     AgentHookCoverage {
@@ -208,12 +209,34 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
 ];
 
 /// How an agent came to have (or not have) hook coverage.
+// The shared `By` prefix is the meaning, not noise: each variant names the
+// *route* the answer took, and the three routes are what a reader has to tell
+// apart — two declarations and one observation.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoverageSource {
     /// The agent's own name is one the hooks extension knows.
     ByName,
     /// A custom agent asserted the family with `hook_schema` in agents.toml.
     BySchema,
+    /// Neither name resolved, but the pane is observably held by an agent that
+    /// does have coverage — [`Corroboration::ForeignAgent`]'s payload.
+    ///
+    /// The only one of the three that is an **observation** rather than a
+    /// declaration, which is why it is spelled apart from them and why what it
+    /// yields is [`Coverage::Presumed`] rather than the row's own verdict.
+    ByDetection,
+}
+
+impl CoverageSource {
+    /// The stable word a record carries.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CoverageSource::ByName => "name",
+            CoverageSource::BySchema => "hook_schema",
+            CoverageSource::ByDetection => "detection",
+        }
+    }
 }
 
 /// The coverage of the agent named `agent`, resolved the way the hooks
@@ -242,10 +265,24 @@ pub fn coverage_for(
 ///
 /// `Partial` is the honest middle: `aider` reports `blocked` and nothing else,
 /// so its silence about `working` carries no information.
+///
+/// `Full` and `Partial` are both claims about wiring thurbox *declared* — the
+/// row's own agent, or the family a `hook_schema` asserted. `Presumed` is the
+/// fourth word for the one case where neither name answers and the pane does:
+/// see [`Coverage::presumed`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Coverage {
     Full,
     Partial,
+    /// The states below belong to an agent thurbox **observed** in the pane
+    /// rather than one the row declares, so they say what that agent's payload
+    /// *would* report — not that anything installed it.
+    ///
+    /// Deliberately not folded into `Full`/`Partial`: coverage answers "what
+    /// can this wiring report", and a detected identity is evidence about the
+    /// process, never about the wiring. Reporting a driver-launched claude as
+    /// `full` would promise a `done` that may never come.
+    Presumed,
     #[default]
     None,
 }
@@ -255,6 +292,7 @@ impl Coverage {
         match self {
             Coverage::Full => "full",
             Coverage::Partial => "partial",
+            Coverage::Presumed => "presumed",
             Coverage::None => "none",
         }
     }
@@ -267,6 +305,27 @@ impl Coverage {
             Some(_) => Coverage::Partial,
         }
     }
+
+    /// The verdict for a row whose coverage came from the pane rather than
+    /// from either name — always [`Coverage::Presumed`], whatever the found
+    /// agent's payload can do.
+    pub fn presumed(found: Option<&AgentHookCoverage>) -> Self {
+        match found {
+            None => Coverage::None,
+            Some(_) => Coverage::Presumed,
+        }
+    }
+}
+
+/// The coverage of the agent **observed** holding a pane.
+///
+/// Resolved by name alone, unlike [`coverage_for`]: the name in a
+/// [`Corroboration::ForeignAgent`] came from matching a process against the
+/// registry, and a `hook_schema` an entry asserts is a claim about the agent
+/// thurbox would *launch* under that name — not about a process a foreign
+/// driver started, which is all this has seen.
+pub fn coverage_of_detected(agent: &str) -> Option<&'static AgentHookCoverage> {
+    AGENT_HOOK_COVERAGE.iter().find(|c| c.agent == agent)
 }
 
 /// Seconds between `state_at` (epoch ms) and `now` (epoch ms).
@@ -782,7 +841,7 @@ pub fn derive_state(
 /// what the fallback exists to avoid.
 pub const WORKING_QUIET_MS: u64 = 10_000;
 
-/// Fold terminal quiescence into a `working` session's state.
+/// Fold terminal quiescence into a session's state.
 ///
 /// Agents fire no hook when a turn is **interrupted** (Esc / Ctrl+C) and none
 /// when they return to the idle prompt, so a `working` state can stand forever
@@ -794,18 +853,57 @@ pub const WORKING_QUIET_MS: u64 = 10_000;
 /// `quiet_for_ms` is `None` when the session has no live pane — nothing can be
 /// producing output, so that reads as quiet too. This is where v1's `exited →
 /// Idle` branch lands: a pane whose stream ended is dropped from the live set.
-/// Only `working` is time-gated; `blocked` is a standing request for input and
-/// says nothing about output.
+///
+/// `blocked` is **not** time-gated, and for the reason this fold used to say it
+/// was exempt altogether: a standing request for input says nothing about
+/// output, so a quiet blocked session is exactly what a real block looks like
+/// and no clock may end one. What ends one is [`outlived_by_output`] — evidence
+/// rather than a bound. A block that has been overtaken by output is folded
+/// through the `working` rule above, because the pane has been active since and
+/// the only remaining question is whether it still is.
 ///
 /// Only a caller with a live terminal can answer this, which is why it is a
 /// fold a surface opts into rather than part of [`derive_state`]: headless,
 /// there is nothing to ask, and guessing a bound would report a running turn
 /// as finished.
-pub fn with_output_quiescence(state: SessionState, quiet_for_ms: Option<u64>) -> SessionState {
+pub fn with_output_quiescence(
+    state: SessionState,
+    quiet_for_ms: Option<u64>,
+    state_age_ms: Option<u64>,
+) -> SessionState {
+    if state == SessionState::Blocked && outlived_by_output(quiet_for_ms, state_age_ms) {
+        return with_output_quiescence(SessionState::Working, quiet_for_ms, None);
+    }
     if state == SessionState::Working && quiet_for_ms.unwrap_or(u64::MAX) > WORKING_QUIET_MS {
         return SessionState::Idle;
     }
     state
+}
+
+/// Whether the pane went on printing well after the state was stamped.
+///
+/// The one fact that can retire a `blocked` without guessing a bound. An agent
+/// that is waiting for input is not writing to its pane, so the two clocks move
+/// together for a real block: the dialog draws at the block edge and the pane
+/// is quiet from that moment, leaving `quiet_for_ms` within measurement slop of
+/// `state_age_ms` however long the wait runs — an hour-long block stays
+/// `blocked`, which is the whole point.
+///
+/// A block the agent resolved by itself — claude's `blocked` is a text match on
+/// a `Notification` body, and the advisories an autonomous agent answers on its
+/// own fire the same hook — leaves the two clocks diverging instead, because
+/// the turn goes on printing. The margin is [`WORKING_QUIET_MS`] rather than a
+/// new constant, and it is the same claim that constant already makes: output
+/// this long after the edge is a turn animating, not a dialog that drew once.
+///
+/// Both `None`s are "cannot tell", never "stale": a session with no live pane
+/// has nothing that could have printed, and a state with no stamp has no edge
+/// to have printed after.
+pub fn outlived_by_output(quiet_for_ms: Option<u64>, state_age_ms: Option<u64>) -> bool {
+    let (Some(quiet), Some(age)) = (quiet_for_ms, state_age_ms) else {
+        return false;
+    };
+    age.saturating_sub(quiet) > WORKING_QUIET_MS
 }
 
 /// Fold what the terminal store knows about the host into a session's state.
@@ -1042,6 +1140,7 @@ impl Assessment {
     /// the argv it was read from is not carried back.
     pub fn with_corroboration(mut self, corroboration: Corroboration) -> Self {
         self.contradicted = Some(contradicts(self.hook_state.as_deref(), &corroboration));
+        self.adopt_detected_coverage(&corroboration);
         if let Some((state, source)) = best_state(
             self.hook_state.as_deref(),
             self.state_at,
@@ -1061,6 +1160,39 @@ impl Assessment {
     pub fn pane_unavailable(mut self) -> Self {
         self.corroboration = Some(Corroboration::Unavailable);
         self
+    }
+
+    /// Take the coverage of the agent the pane was found running, for a row
+    /// whose **own** name resolved to none.
+    ///
+    /// The row's `agent` is a durable declaration and this is a live
+    /// observation, so the metadata it yields can change under a reader
+    /// between calls. That is accepted here, and narrowly: every other field
+    /// this same fold writes (`corroboration`, `contradicted`, and `state`
+    /// itself when nothing reported) has exactly that lifetime already, the
+    /// record says which it is through [`CoverageSource::ByDetection`], and a
+    /// driver that wants a durable answer has `session reports-as` — which is
+    /// consulted first and is never overridden here.
+    ///
+    /// Only ever *adds*: a row that already resolved coverage by name or by
+    /// schema keeps it, because a declaration outranks an observation. What it
+    /// fixes is the inversion in the other direction — a shell row running a
+    /// detected `claude` reported `blocked_is_heuristic: false`, the default
+    /// for "no coverage row", which reads as an authoritative block on the one
+    /// agent whose block edge is a text match.
+    fn adopt_detected_coverage(&mut self, corroboration: &Corroboration) {
+        if self.covered.is_some() {
+            return;
+        }
+        let Some(found) = corroboration
+            .detected_agent()
+            .and_then(coverage_of_detected)
+        else {
+            return;
+        };
+        self.covered = Some(found);
+        self.coverage = Coverage::presumed(Some(found));
+        self.coverage_source = Some(CoverageSource::ByDetection);
     }
 
     /// Record that the session is parked — `session stop` killed its pane and
@@ -1155,7 +1287,7 @@ mod tests {
         // Agents fire no hook on interrupt, so without this a cancelled turn
         // would spin forever. v1 guards the same way, on the same signal.
         assert_eq!(
-            with_output_quiescence(SessionState::Working, Some(WORKING_QUIET_MS + 1)),
+            with_output_quiescence(SessionState::Working, Some(WORKING_QUIET_MS + 1), None),
             SessionState::Idle
         );
     }
@@ -1163,11 +1295,11 @@ mod tests {
     #[test]
     fn a_printing_working_session_stays_working() {
         assert_eq!(
-            with_output_quiescence(SessionState::Working, Some(0)),
+            with_output_quiescence(SessionState::Working, Some(0), None),
             SessionState::Working
         );
         assert_eq!(
-            with_output_quiescence(SessionState::Working, Some(WORKING_QUIET_MS)),
+            with_output_quiescence(SessionState::Working, Some(WORKING_QUIET_MS), None),
             SessionState::Working
         );
     }
@@ -1177,7 +1309,7 @@ mod tests {
         // Nothing can be producing output, which is where v1's exited → Idle
         // branch lands: a pane whose stream ended leaves the live set.
         assert_eq!(
-            with_output_quiescence(SessionState::Working, None),
+            with_output_quiescence(SessionState::Working, None, None),
             SessionState::Idle
         );
     }
@@ -1190,13 +1322,125 @@ mod tests {
         );
         // A session waiting on you produces no output while it waits.
         assert_eq!(
-            with_output_quiescence(SessionState::Blocked, None),
+            with_output_quiescence(SessionState::Blocked, None, None),
             SessionState::Blocked
         );
         assert_eq!(
-            with_output_quiescence(SessionState::Done, Some(WORKING_QUIET_MS * 10)),
+            with_output_quiescence(SessionState::Done, Some(WORKING_QUIET_MS * 10), None),
             SessionState::Done
         );
+    }
+
+    /// The captain's report: a session whose agent finished minutes ago still
+    /// reading `blocked`. The block edge is 42 minutes old and the pane printed
+    /// throughout, so the wait it claims never happened.
+    #[test]
+    fn a_block_the_pane_printed_past_is_over() {
+        // Quiet for 17s, stamped 2547s ago — the agent worked for the whole
+        // gap between the two and has just stopped.
+        assert_eq!(
+            with_output_quiescence(SessionState::Blocked, Some(17_000), Some(2_547_000)),
+            SessionState::Idle
+        );
+        // Still printing: it is a turn, not a wait. The word comes from the
+        // same rule `working` is held to, not from the latched column.
+        assert_eq!(
+            with_output_quiescence(SessionState::Blocked, Some(0), Some(2_547_000)),
+            SessionState::Working
+        );
+    }
+
+    /// The case the fold must not touch, and the reason it is not a timeout: an
+    /// agent waiting on a permission prompt is quiet for exactly as long as it
+    /// has been waiting, however long that runs.
+    #[test]
+    fn a_standing_block_survives_any_age() {
+        for age in [30_000u64, 600_000, 3_600_000, 86_400_000] {
+            // The dialog drew at the edge and nothing has printed since, so the
+            // two clocks move together — bar the slop between a hook's stamp
+            // and the pane's own reckoning.
+            assert_eq!(
+                with_output_quiescence(SessionState::Blocked, Some(age - 200), Some(age)),
+                SessionState::Blocked,
+                "a {age}ms block went stale on measurement slop"
+            );
+        }
+    }
+
+    /// Both silences are "cannot tell", never "stale".
+    #[test]
+    fn a_block_with_nothing_to_compare_stands() {
+        // No live pane: nothing could have printed past the edge.
+        assert_eq!(
+            with_output_quiescence(SessionState::Blocked, None, Some(2_547_000)),
+            SessionState::Blocked
+        );
+        // No stamp: no edge to have printed after.
+        assert_eq!(
+            with_output_quiescence(SessionState::Blocked, Some(17_000), None),
+            SessionState::Blocked
+        );
+    }
+
+    /// Defect the captain's record showed twice over: a `shell` row whose pane
+    /// is observably claude reported `hook_coverage: none`, an empty reportable
+    /// list, and — the inversion — `blocked_is_heuristic: false`, the default
+    /// for a row with no coverage at all, on the one agent whose block edge is
+    /// a text match.
+    #[test]
+    fn coverage_falls_back_to_the_agent_the_pane_is_running() {
+        let registry = registry(vec![agent("shell", "zsh", None)]);
+        let bare = Assessment::from_hooks(&registry, "shell", Some("blocked"), Some(0), None, NOW);
+        assert_eq!(bare.coverage, Coverage::None);
+        assert!(!bare.blocked_is_heuristic());
+        assert!(bare.states_reportable().is_empty());
+
+        let seen = bare.with_corroboration(Corroboration::ForeignAgent(Some("claude".into())));
+        assert_eq!(seen.coverage_source, Some(CoverageSource::ByDetection));
+        assert!(
+            seen.blocked_is_heuristic(),
+            "claude's block edge is a Notification text match, whoever launched it"
+        );
+        assert!(seen.states_reportable().contains(&"done"));
+    }
+
+    /// Coverage describes what wiring *can* report, and a detected identity is
+    /// evidence about the process rather than about the wiring — so it never
+    /// promises the `full` that a declared claude does.
+    #[test]
+    fn detected_coverage_is_never_full() {
+        let registry = registry(vec![agent("shell", "zsh", None)]);
+        let seen = Assessment::from_hooks(&registry, "shell", Some("blocked"), Some(0), None, NOW)
+            .with_corroboration(Corroboration::ForeignAgent(Some("claude".into())));
+        assert_eq!(seen.coverage, Coverage::Presumed);
+        assert_eq!(seen.coverage.as_str(), "presumed");
+
+        // Declared, the same agent is the real thing.
+        let declared =
+            Assessment::from_hooks(&registry, "claude", Some("blocked"), Some(0), None, NOW);
+        assert_eq!(declared.coverage, Coverage::Full);
+    }
+
+    /// A declaration outranks an observation: `reports_as` already resolved the
+    /// coverage, and a passing process must not redraw it.
+    #[test]
+    fn a_declared_agent_keeps_its_own_coverage() {
+        let registry = registry(vec![agent("aider", "aider", None)]);
+        let seen = Assessment::from_hooks(&registry, "aider", Some("blocked"), Some(0), None, NOW)
+            .with_corroboration(Corroboration::ForeignAgent(Some("claude".into())));
+        assert_eq!(seen.coverage_source, Some(CoverageSource::ByName));
+        assert_eq!(seen.states_reportable(), &["blocked"]);
+    }
+
+    /// The `ForeignAgent` that names nobody — one executable several profiles
+    /// share — resolves nothing, exactly as before.
+    #[test]
+    fn an_unnamed_foreign_agent_adds_no_coverage() {
+        let registry = registry(vec![agent("shell", "zsh", None)]);
+        let seen = Assessment::from_hooks(&registry, "shell", Some("blocked"), Some(0), None, NOW)
+            .with_corroboration(Corroboration::ForeignAgent(None));
+        assert_eq!(seen.coverage, Coverage::None);
+        assert_eq!(seen.coverage_source, None);
     }
 
     #[test]
@@ -1307,7 +1551,7 @@ mod tests {
 
     #[test]
     fn claude_and_antigravity_are_flagged_as_matching_notification_text() {
-        // These grep the notification body for *permission*/*approval*, so a
+        // These match a notification's `message` for *permission*/*approval*, so a
         // reworded upstream notification stops `blocked` silently. A consumer
         // has to be able to see that from the data. kimi is the counter-case
         // that makes the flag worth publishing: it has a real

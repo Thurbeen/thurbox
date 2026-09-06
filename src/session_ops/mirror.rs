@@ -154,10 +154,7 @@ pub fn session_to_json_assessed(
     put("hook_coverage", json!(hook.coverage.as_str()));
     put(
         "hook_coverage_source",
-        json!(hook.coverage_source.map(|s| match s {
-            crate::session::CoverageSource::ByName => "name",
-            crate::session::CoverageSource::BySchema => "hook_schema",
-        })),
+        json!(hook.coverage_source.map(|s| s.as_str())),
     );
     put("hook_states_reportable", json!(hook.states_reportable()));
     put("hook_delivery", json!(hook.delivery().map(|d| d.as_str())));
