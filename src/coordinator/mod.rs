@@ -529,8 +529,12 @@ impl App {
     /// v1's `respawn_stale_session`, reached differently. v1 asks the question
     /// once, synchronously, during restore; here discovery is a worker, so the
     /// answer arrives a moment later and the question is asked each frame until
-    /// it can be answered. Once per session per run either way — a session that
-    /// cannot be relaunched must not be relaunched forever.
+    /// it can be answered. At most one dispatch in flight per session either
+    /// way — `self.respawned` is what stops every frame from redispatching a
+    /// restart that has not resolved yet. It is not a lifetime cap: a restart
+    /// that fails clears its entry (`report_finished_commands`), so a session
+    /// still missing its agent gets tried again next time it is seen, rather
+    /// than sitting frozen until thurbox restarts.
     ///
     /// It goes through `restart`, which is exactly a respawn once killing a
     /// window that is not there stopped being an error: same session id, same

@@ -90,6 +90,12 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   window, a teardown spares a live namesake's companion shell, and a teardown
   never brings a tmux server into being (the `ensure_ready` side effect this
   path must not trigger).
+- **`tests/concurrent_respawn.rs`** — six sessions relaunching onto a tmux
+  server that does not exist yet, against a *real* tmux on a throwaway socket
+  (skipped when tmux is absent): every worker's `ensure_session_configured`
+  sees "no session" and races `new-session`, and the regression this pins is
+  that a loser must not abort its whole respawn over tmux's `duplicate
+  session` — it has to notice the winner's session and continue.
 - **`tests/session_state_agreement.rs`** — one row, four independent readers
   (`session get`, `session list`, `watch --initial` via the real binary, and
   `SnapshotStore` in-process): all four must answer the same `SessionState`.
