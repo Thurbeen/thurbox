@@ -129,9 +129,10 @@ pub struct SessionRow {
     /// A live reading with a short life (see `PANE_PROBE_TTL`) and no claim
     /// about what the agent is *doing* — that is `status`, which stays
     /// [`SessionState::Running`] precisely because no process inspection can
-    /// tell a turn in flight from a prompt waiting for input. Dropped the
-    /// moment the row starts reporting its own hook state, since the agent is
-    /// then speaking for itself and an inspected pane has nothing left to add.
+    /// tell a turn in flight from a prompt waiting for input. Published only
+    /// for a row nothing has reported for (`assess`'s gate on `hook.state`),
+    /// so it is never attached to a row that is already speaking for itself,
+    /// regardless of what a stale probe answer still says.
     pub detected_agent: Option<String>,
 }
 
@@ -509,9 +510,14 @@ impl PaneProbe {
         self.known.get(session).map(|probe| &probe.corroboration)
     }
 
-    /// Forget every session this poll is not currently asking about, so a
-    /// verdict can only be published for a row thurbox is still actively
-    /// observing.
+    /// Forget every session this poll is not currently asking about.
+    ///
+    /// Hygiene rather than the correctness guard: this cache tracking a set it
+    /// has stopped asking about would keep answering a question nobody put to
+    /// it, and re-requesting one that never left would waste a subprocess.
+    /// What stops a stale verdict from *publishing* is `assess`'s own gate on
+    /// `hook.state`, which does not depend on this eviction's timing relative
+    /// to a refresh.
     fn retain(&mut self, probed: &std::collections::HashSet<&str>) {
         self.known.retain(|id, _| probed.contains(id.as_str()));
     }
@@ -907,7 +913,10 @@ impl SnapshotStore {
             }
             // Corrected in place for the same reason `acknowledge` does it: this
             // is our own connection, so `PRAGMA data_version` will not move and a
-            // refresh would re-derive from the row we just wrote.
+            // refresh would re-derive from the row we just wrote. `detected_agent`
+            // is cleared here rather than left to that (absent) refresh, because
+            // this path never reaches `assess` at all — it writes the row
+            // directly, which is the one case its hook.state gate cannot cover.
             row.status = derive_state(Some(&event.state), Some(now_ms()), None);
             row.hook_state = Some(event.state);
             row.detected_agent = None;
@@ -1325,9 +1334,17 @@ fn assess(
     if crate::session::is_remote_backend(backend) {
         return assessment.pane_unavailable();
     }
+    // An observation is published only for a row nothing has reported for.
+    // `best_state` already answers from the hook columns whenever they hold
+    // anything, so this changes nothing about the derived status — it only
+    // stops a pane verdict, cached before the hook onset and not yet evicted
+    // by that onset's own poll, from being attached to a row that now speaks
+    // for itself.
     match pane {
-        Some(corroboration) => assessment.with_corroboration(corroboration.clone()),
-        None => assessment,
+        Some(corroboration) if !assessment.reported => {
+            assessment.with_corroboration(corroboration.clone())
+        }
+        _ => assessment,
     }
 }
 
@@ -1642,6 +1659,89 @@ mod tests {
             store.panes.get(&row.id.to_string()),
             None,
             "a row that now reports its own hook state must leave the probed cache"
+        );
+    }
+
+    /// The local path: an agent's own `thurbox-cli session signal` writes the
+    /// hook state through a second connection, never through
+    /// `apply_hook_states`, so only `refresh_if_due`'s normal DB-read cadence
+    /// ever sees it. Driven exactly as the coordinator drives it — no
+    /// hand-rolled `poll_pane_probes`/`refresh` call — because the ordering
+    /// between that cadence and the pane-probe cache is the thing under test.
+    #[test]
+    fn a_local_hook_report_does_not_resurrect_a_stale_detected_agent() {
+        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let path = temp.path();
+
+        let database = Database::open(path).expect("open store connection");
+        let row = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "shell".into(),
+            agent: "zsh".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        database.upsert_session(&row).expect("upsert");
+        let mut store = SnapshotStore::with_database(database);
+
+        store.panes.known.insert(
+            row.id.to_string(),
+            Probe {
+                corroboration: Corroboration::ForeignAgent("claude".into()),
+                at: Instant::now(),
+            },
+        );
+        store.refresh();
+        let published = store
+            .current()
+            .sessions
+            .iter()
+            .find(|s| s.id == row.id.to_string())
+            .expect("row published");
+        assert_eq!(published.detected_agent.as_deref(), Some("claude"));
+
+        let driver = Database::open(path).expect("open a second connection");
+        driver
+            .set_hook_state(row.id, "working")
+            .expect("write the hook state through the other connection");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            store.refresh_if_due();
+            let seen = store
+                .current()
+                .sessions
+                .iter()
+                .find(|s| s.id == row.id.to_string())
+                .expect("row published")
+                .hook_state
+                .clone();
+            if seen.as_deref() == Some("working") || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let published = store
+            .current()
+            .sessions
+            .iter()
+            .find(|s| s.id == row.id.to_string())
+            .expect("row published");
+        assert_eq!(published.hook_state.as_deref(), Some("working"));
+        assert_eq!(
+            published.detected_agent, None,
+            "a pane verdict cached before a hook onset seen through another \
+             connection must not publish once the row reports for itself"
         );
     }
 }

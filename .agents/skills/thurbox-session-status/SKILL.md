@@ -148,11 +148,14 @@ own, which is the point.
   **only** about rows whose `hook_state` is null, is cached for
   `PANE_PROBE_TTL` (2 s), and a moved verdict forces the snapshot rebuild —
   `PRAGMA data_version` cannot see a worker's answer. A session whose hooks
-  work costs nothing at all. Once one starts reporting, the cached verdict
-  and the row's published `detected_agent` are both dropped at that same
-  moment — the former by `poll_pane_probes` retaining only the still-probed
-  ids, the latter by `apply_hook_states` clearing it in place, since that
-  write is on our own connection and no refresh follows it to do so instead.
+  work costs nothing at all. **A pane verdict is published only for a row
+  nothing has reported for**: `kernel::snapshot::assess` folds one in only
+  when `hook.state` is `None`, so a verdict cached before the hook onset
+  cannot reach the screen even if it races a rebuild and outlives the poll
+  that would otherwise have evicted it. `poll_pane_probes` retaining just the
+  still-probed ids and `apply_hook_states` clearing `detected_agent` in place
+  are the supporting hygiene, not the guarantee — the latter is load-bearing
+  only because that path corrects its row directly and never reaches `assess`.
   See `docs/PERFORMANCE.md` → *Freshness is a property of a cached answer*.
 - **The callback.** Agents report transitions with
   `thurbox-cli session signal --state <working|blocked|done|idle>`

@@ -806,14 +806,25 @@ and probing it would put a subprocess per session on every refresh — which is
 the cost the interface declined by skipping the check altogether, at the price
 of the dot it then drew.
 
-Its eviction is a generation key on top of that TTL: `retain` is handed the
-exact id set `poll_pane_probes` is about to ask about, not "every session in
-the snapshot", so a row whose `hook_state` turns `Some` drops its cached
-verdict the moment it leaves that set rather than carrying it forward. The
-published `detected_agent` gets the same treatment at the source: a hook write
-lands through this process's own connection, so `PRAGMA data_version` will not
-move to trigger a refresh — `apply_hook_states` clears `detected_agent` on the
-row it just patched rather than waiting on one.
+A cached verdict cannot be trusted to publish, though, because eviction and a
+rebuild race: a hook state read fresh off the database can reach `assess`
+*before* the poll that would have evicted the now-stale entry catches up (the
+cache is invalidated by the row set `poll_pane_probes` last computed, one tick
+behind the read that just changed `hook.state`). So the actual invariant lives
+in `assess` itself: a pane verdict is folded in only when `hook.state` is
+`None`, never unconditionally. `best_state` already answers from the hook
+columns whenever they hold anything, so this changes nothing about the derived
+status — it only stops a verdict cached before the hook onset from being
+attached to a row that now speaks for itself.
+
+`retain` and the in-place `apply_hook_states` clear stay, but as the weaker
+guarantees they actually are: `retain` is hygiene (a cache that outlives the
+question it answers wastes a subprocess re-asking it, `assess`'s gate is what
+keeps a stale answer off the screen), and `apply_hook_states` clears
+`detected_agent` because that path corrects its row directly and never reaches
+`assess` at all — a hook write landing through this process's own connection
+never moves `PRAGMA data_version`, so no refresh, and no `assess` call, ever
+follows it.
 
 An age can be a **generation key** rather than a clock, and then *which* key you
 pick is the whole of the correctness. `GitStats::known` caches `merged` — is this
