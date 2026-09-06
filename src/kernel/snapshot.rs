@@ -507,10 +507,11 @@ impl PaneProbe {
         self.known.get(session).map(|probe| &probe.corroboration)
     }
 
-    /// Forget sessions that are no longer in the snapshot, so the cache tracks
-    /// what exists rather than everything that ever did.
-    fn retain(&mut self, present: &std::collections::HashSet<&str>) {
-        self.known.retain(|id, _| present.contains(id.as_str()));
+    /// Forget every session this poll is not currently asking about, so a
+    /// verdict can only be published for a row thurbox is still actively
+    /// observing.
+    fn retain(&mut self, probed: &std::collections::HashSet<&str>) {
+        self.known.retain(|id, _| probed.contains(id.as_str()));
     }
 }
 
@@ -718,13 +719,6 @@ impl SnapshotStore {
     /// else already has a better answer than a process listing can give.
     fn poll_pane_probes(&mut self) -> bool {
         let moved = self.panes.drain();
-        let present: std::collections::HashSet<&str> = self
-            .current
-            .sessions
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect();
-        self.panes.retain(&present);
 
         let wanted: Vec<(String, String, String)> = self
             .current
@@ -748,6 +742,11 @@ impl SnapshotStore {
                 (row.id.clone(), row.name.clone(), command)
             })
             .collect();
+
+        let probed: std::collections::HashSet<&str> =
+            wanted.iter().map(|(id, _, _)| id.as_str()).collect();
+        self.panes.retain(&probed);
+
         for (id, name, command) in wanted {
             self.panes.request(&id, &name, command, &self.registry);
         }
@@ -1549,6 +1548,72 @@ mod tests {
                 PathBuf::from("/worktrees/b"),
                 PathBuf::from("/reference"),
             ]
+        );
+    }
+
+    #[test]
+    fn a_hook_report_evicts_a_stale_pane_probe() {
+        let database = Database::open_in_memory().expect("in-memory database opens");
+        let row = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "shell".into(),
+            agent: "zsh".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        database.upsert_session(&row).expect("upsert");
+        let mut store = SnapshotStore::with_database(database);
+
+        // A firstmate-style pane probe found a foreign agent holding what was
+        // launched as a bare shell.
+        store.panes.known.insert(
+            row.id.to_string(),
+            Probe {
+                corroboration: Corroboration::ForeignAgent("claude".into()),
+                at: Instant::now(),
+            },
+        );
+        store.refresh();
+        let published = store
+            .current()
+            .sessions
+            .iter()
+            .find(|s| s.id == row.id.to_string())
+            .expect("row published");
+        assert_eq!(published.detected_agent.as_deref(), Some("claude"));
+        assert!(published.hook_state.is_none());
+
+        // The same pane starts delivering real hook events.
+        store.apply_hook_states(
+            vec![(
+                "local-tmux".to_string(),
+                "%7".to_string(),
+                "working".to_string(),
+            )],
+            Instant::now(),
+        );
+        store.poll_pane_probes();
+        store.refresh();
+
+        let published = store
+            .current()
+            .sessions
+            .iter()
+            .find(|s| s.id == row.id.to_string())
+            .expect("row published");
+        assert_eq!(published.hook_state.as_deref(), Some("working"));
+        assert_eq!(
+            published.detected_agent, None,
+            "a pane verdict cached before the hook onset must not survive it"
         );
     }
 }
