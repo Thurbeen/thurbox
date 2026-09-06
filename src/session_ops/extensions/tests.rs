@@ -747,8 +747,9 @@ requires_dir = '{agent_dir}'
             "{name}: nothing may be applied to a file we could not read"
         );
 
-        // And the user's file is untouched — the thing that matters.
-        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // And the user's file is untouched — the thing that matters. Restore
+        // owner-only access (not world-readable) so cleanup can read it back.
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(
             std::fs::read_to_string(&config).unwrap(),
             users_own,
