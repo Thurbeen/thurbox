@@ -200,11 +200,11 @@ embedded hook assets live in
     own `~/.grok/trusted_folders.toml` (or a `--trust` launch flag, which would
     only cover sessions thurbox itself launches). grok is Claude-Code-compatible,
     so the mapping mirrors claude: SessionStart→idle,
-    UserPromptSubmit/PreToolUse/PostToolUse→working, Notification (payload
+    UserPromptSubmit/PreToolUse/PostToolUse→working, Notification (its `message`
     matched to permission/approval)→blocked, Stop→done. Every command is
     deliberately `$`-free: a `$VAR` reference without an inline `:-default` makes
     grok silently refuse to load the whole hook file, so the blocked edge pipes
-    stdin through `grep` instead of reusing claude's `case "$(cat)"` (a test pins
+    the extracted message through `grep` instead of claude's `case` (a test pins
     it). *Experimental.*
   - `omp`: a TypeScript extension at `~/.omp/agent/extensions/thurbox-status.ts`,
     mirroring pi's but mapping OMP's structured user-question tool — named `ask`
