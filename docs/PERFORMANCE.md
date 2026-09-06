@@ -806,6 +806,15 @@ and probing it would put a subprocess per session on every refresh — which is
 the cost the interface declined by skipping the check altogether, at the price
 of the dot it then drew.
 
+Its eviction is a generation key on top of that TTL: `retain` is handed the
+exact id set `poll_pane_probes` is about to ask about, not "every session in
+the snapshot", so a row whose `hook_state` turns `Some` drops its cached
+verdict the moment it leaves that set rather than carrying it forward. The
+published `detected_agent` gets the same treatment at the source: a hook write
+lands through this process's own connection, so `PRAGMA data_version` will not
+move to trigger a refresh — `apply_hook_states` clears `detected_agent` on the
+row it just patched rather than waiting on one.
+
 An age can be a **generation key** rather than a clock, and then *which* key you
 pick is the whole of the correctness. `GitStats::known` caches `merged` — is this
 branch's work already on origin's default? — keyed on the **commit** it was

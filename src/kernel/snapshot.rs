@@ -129,7 +129,9 @@ pub struct SessionRow {
     /// A live reading with a short life (see `PANE_PROBE_TTL`) and no claim
     /// about what the agent is *doing* — that is `status`, which stays
     /// [`SessionState::Running`] precisely because no process inspection can
-    /// tell a turn in flight from a prompt waiting for input.
+    /// tell a turn in flight from a prompt waiting for input. Dropped the
+    /// moment the row starts reporting its own hook state, since the agent is
+    /// then speaking for itself and an inspected pane has nothing left to add.
     pub detected_agent: Option<String>,
 }
 
@@ -908,6 +910,7 @@ impl SnapshotStore {
             // refresh would re-derive from the row we just wrote.
             row.status = derive_state(Some(&event.state), Some(now_ms()), None);
             row.hook_state = Some(event.state);
+            row.detected_agent = None;
             applied += 1;
         }
         if applied > 0 {
@@ -1551,8 +1554,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_hook_report_evicts_a_stale_pane_probe() {
+    /// Seed an in-memory store with one session whose pane probe already found
+    /// a foreign agent, so `detected_agent` is published for it — the
+    /// "firstmate" scenario: a bare shell with a real agent running in it.
+    fn store_with_a_detected_agent() -> (SnapshotStore, crate::sync::SharedSession) {
         let database = Database::open_in_memory().expect("in-memory database opens");
         let row = crate::sync::SharedSession {
             id: SessionId::default(),
@@ -1572,9 +1577,6 @@ mod tests {
         };
         database.upsert_session(&row).expect("upsert");
         let mut store = SnapshotStore::with_database(database);
-
-        // A firstmate-style pane probe found a foreign agent holding what was
-        // launched as a bare shell.
         store.panes.known.insert(
             row.id.to_string(),
             Probe {
@@ -1591,8 +1593,15 @@ mod tests {
             .expect("row published");
         assert_eq!(published.detected_agent.as_deref(), Some("claude"));
         assert!(published.hook_state.is_none());
+        (store, row)
+    }
 
-        // The same pane starts delivering real hook events.
+    #[test]
+    fn a_hook_report_clears_its_row_detected_agent_at_once() {
+        let (mut store, row) = store_with_a_detected_agent();
+
+        // The same pane starts delivering real hook events — through the exact
+        // entry point production code uses, with nothing else run in between.
         store.apply_hook_states(
             vec![(
                 "local-tmux".to_string(),
@@ -1601,8 +1610,6 @@ mod tests {
             )],
             Instant::now(),
         );
-        store.poll_pane_probes();
-        store.refresh();
 
         let published = store
             .current()
@@ -1613,7 +1620,28 @@ mod tests {
         assert_eq!(published.hook_state.as_deref(), Some("working"));
         assert_eq!(
             published.detected_agent, None,
-            "a pane verdict cached before the hook onset must not survive it"
+            "a pane verdict published before the hook onset must not survive it"
+        );
+    }
+
+    #[test]
+    fn a_hook_report_evicts_a_stale_pane_probe() {
+        let (mut store, row) = store_with_a_detected_agent();
+
+        store.apply_hook_states(
+            vec![(
+                "local-tmux".to_string(),
+                "%7".to_string(),
+                "working".to_string(),
+            )],
+            Instant::now(),
+        );
+        store.poll_pane_probes();
+
+        assert_eq!(
+            store.panes.get(&row.id.to_string()),
+            None,
+            "a row that now reports its own hook state must leave the probed cache"
         );
     }
 }
