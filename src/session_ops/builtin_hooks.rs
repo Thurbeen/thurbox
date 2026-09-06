@@ -870,6 +870,7 @@ mod tests {
     ///
     /// It is the last hook a finished session ever fires, which is what makes a
     /// false `blocked` here permanent: nothing comes after it to overwrite one.
+    #[cfg(unix)]
     const IDLE_NOTIFICATION: &str = concat!(
         r#"{"session_id":"d626fdf7","transcript_path":"/home/dev/.claude/projects/-srv-app/x.jsonl","#,
         r#""cwd":"/srv/app","prompt_id":"7da65910","hook_event_name":"Notification","#,
@@ -878,6 +879,7 @@ mod tests {
 
     /// The same, from a checkout whose own path carries one of the words the
     /// matcher looks for. Nothing about the notification changed.
+    #[cfg(unix)]
     const IDLE_NOTIFICATION_IN_A_PERMISSIONS_REPO: &str = concat!(
         r#"{"session_id":"d626fdf7","transcript_path":"/home/dev/.claude/projects/-srv-permissions-service/x.jsonl","#,
         r#""cwd":"/srv/permissions-service","prompt_id":"7da65910","hook_event_name":"Notification","#,
@@ -885,6 +887,7 @@ mod tests {
     );
 
     /// The notification that *is* a block: a tool waiting on approval.
+    #[cfg(unix)]
     const PERMISSION_NOTIFICATION: &str = concat!(
         r#"{"session_id":"5e3579cc","transcript_path":"/home/dev/.claude/projects/-srv-app/x.jsonl","#,
         r#""cwd":"/srv/app","prompt_id":"bcf28ba6","hook_event_name":"Notification","#,
