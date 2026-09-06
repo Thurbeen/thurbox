@@ -188,8 +188,8 @@ requires_dir = "~/.gemini"
 # Stop → done.
 # The blocked command deliberately contains no `$` — a `$VAR` reference in a
 # grok hook command must carry an inline `:-default` or grok silently refuses to
-# load the whole hook file — so it pipes stdin through `grep` instead of
-# claude's `case "$(cat)"`.
+# load the whole hook file — so it pipes the extracted message through `grep`
+# instead of claude's `case`.
 #
 # EXPERIMENTAL: the event names are grok's documented set; if a future grok
 # renames them, edit grok-hooks.json (no code change).
