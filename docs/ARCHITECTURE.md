@@ -1009,16 +1009,26 @@ guarded by `requires_dir` so it's skipped when that agent isn't installed);
 `[[agent_patches]]` appends args to an **existing** agent in
 agents.toml (`apply_agent_patches` via `toml_edit`, reversible — uninstall
 removes exactly the injected subsequence); and `[[config_merges]]`
-**reversibly deep-merges** shipped JSON into an agent's own *shared* config
-file (`{path, source, requires_dir}`) — for agents whose hooks live in a
-file that would be clobbered by `[[external_files]]` (antigravity's
-`settings.json`). The merge (`agent::json_merge`) recurses objects, unions
-arrays by deep-equality, and leaves a user's conflicting value untouched;
-uninstall **prunes by marker** (every shipped hook command contains
-`thurbox-cli session signal`), so removal stays correct even after the
-payload's schema changes across an update — no orphans. Writes are skipped
-when unchanged (it re-runs every startup + heartbeat tick). All three are
-honoured by `session_ops::install_extension` / `session_ops::uninstall_extension`.
+**reversibly deep-merges** a shipped document into an agent's own *shared*
+config file (`{path, source, requires_dir}`) — for agents whose hooks live in
+a file that would be clobbered by `[[external_files]]` (antigravity's
+`settings.json`). JSON by default (`agent::json_merge`); `format = "toml"`
+selects `agent::toml_merge` (`toml_edit`, preserving the user's comments and
+key order) for an agent whose shared config is TOML (kimi's
+`~/.kimi-code/config.toml`). Either way the merge recurses objects/tables,
+unions arrays by deep-equality, and leaves a user's conflicting value
+untouched; uninstall **prunes by marker**, but the two formats mark
+differently. JSON matches a marker in the entry's *content* (every shipped
+hook command contains `thurbox-cli session signal`) — the only handle a
+format without comments offers. TOML marks *ownership* with a comment on the
+entry (`agent::toml_merge`), which a content match cannot do: it tells our
+entry from a user hook that calls `session signal` itself, and still
+recognises ours after its event or command changes. So the TOML install
+prunes-then-merges, replacing our previous entries rather than accumulating
+beside them — no orphans either way, and no collateral. Writes are
+skipped when unchanged (it re-runs every startup + heartbeat tick). All
+three are honoured by `session_ops::install_extension` /
+`session_ops::uninstall_extension`.
 
 `thurbox-cli extension install <name|url|dir> [--home <dir>] [--force]`
 (`session_ops::install_extension`) is the one-command installer: it

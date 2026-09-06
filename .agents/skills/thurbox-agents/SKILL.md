@@ -115,9 +115,10 @@ uninstall reverse) fans each `[[agent_patches]]` out to the built-in named
 claude.json` claude gets — and, because the remote rewrite
 (`session_ops::spawn::adapt_agent_args_for_remote`) keys off the `--settings`
 arg rather than the agent name, remote/WSL wiring follows for free. Only the
-per-arg-patch families (claude, aider) need it; codex/opencode/antigravity/vibe/
-copilot wire through their own config dir, so a rebrand sharing that dir already
-reports. thurbox bakes in no agent knowledge — the *user* asserts the family.
+per-arg-patch families (claude, aider) need it; the config-dir agents
+(codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own
+config dir, so a rebrand sharing that dir already reports. thurbox bakes in no
+agent knowledge — the *user* asserts the family.
 
 ### Multi-repo sessions (symlink workspace)
 

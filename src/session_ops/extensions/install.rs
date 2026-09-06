@@ -11,7 +11,7 @@ use crate::storage::Database;
 
 use super::fs::{
     ensure_safe_relative, guard_removable_dir, is_user_modified, make_symlink,
-    remove_dir_all_resilient, safe_join, set_executable,
+    remove_dir_all_resilient, safe_join, set_executable, MANAGED_MARKER,
 };
 use super::lifecycle::{activate_extension, deactivate_extension, DeactivateReport, EnsureReport};
 
@@ -310,24 +310,40 @@ fn install_external_file(
 /// rewritten form's [`crate::session::REMOTE_HOOK_STATE_OPTION`] marker.
 pub(crate) const HOOK_SIGNAL_MARKER: &str = "thurbox-cli session signal";
 
-/// Read the JSON config at `path` (or `{}` when absent), parsed. A malformed
-/// file is an error rather than a silent overwrite — we never clobber config we
-/// can't safely round-trip.
+/// Read the JSON config at `path` (or `{}` when it does not exist), parsed.
+///
+/// Only a **missing** file is an empty document. A file that exists but cannot
+/// be read or parsed is an error the caller soft-skips, because the merged
+/// result is written straight back: treating an unreadable file as empty would
+/// replace the user's whole config with our hook entries alone. A file we cannot
+/// read is not an empty file, and the only safe answer is to refuse and say so.
 fn read_json_or_empty(path: &Path) -> Result<serde_json::Value, String> {
     match std::fs::read_to_string(path) {
         Ok(s) if s.trim().is_empty() => Ok(serde_json::json!({})),
         Ok(s) => serde_json::from_str(&s).map_err(|e| format!("parse {}: {e}", path.display())),
-        Err(_) => Ok(serde_json::json!({})),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(e) => Err(format!("read {}: {e}", path.display())),
     }
 }
 
-/// Write `value` as pretty JSON to `path` only when it differs from the current
-/// contents (the merge runs every startup + heartbeat tick, so a no-op write
-/// would be churn). Returns whether it wrote.
-fn write_json_if_changed(path: &Path, value: &serde_json::Value) -> Result<bool, String> {
-    let content = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("serialize {}: {e}", path.display()))?;
-    if file_has_content(path, &content) {
+/// [`read_json_or_empty`] for a TOML target, with the same rule: absent is an
+/// empty document, present-but-unreadable refuses.
+fn read_toml_or_empty(path: &Path) -> Result<toml_edit::DocumentMut, String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) if s.trim().is_empty() => Ok(toml_edit::DocumentMut::new()),
+        Ok(s) => s
+            .parse()
+            .map_err(|e| format!("parse {}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml_edit::DocumentMut::new()),
+        Err(e) => Err(format!("read {}: {e}", path.display())),
+    }
+}
+
+/// Write `content` to `path` only when it differs from the current contents (the
+/// merge runs every startup + heartbeat tick, so a no-op write would be churn).
+/// Returns whether it wrote.
+fn write_if_changed(path: &Path, content: &str) -> Result<bool, String> {
+    if file_has_content(path, content) {
         return Ok(false);
     }
     if let Some(parent) = path.parent() {
@@ -353,28 +369,61 @@ fn install_config_merge(
         }
     }
     let dest = crate::agent::extension_config::expand_tilde(&m.path);
-    let to_merge: serde_json::Value = serde_json::from_str(
-        &crate::agent::extension_config::fetch_file(source, m.source_path())?,
-    )
-    .map_err(|e| format!("parse merge source {}: {e}", m.source_path()))?;
+    let source_text = crate::agent::extension_config::fetch_file(source, m.source_path())?;
     // A user's malformed target must NOT abort the whole install: this runs every
     // startup + heartbeat tick, so one broken file would degrade every agent's
     // wiring. Soft-skip it (mirroring the `requires_dir` guard) and carry on.
-    let mut doc = match read_json_or_empty(&dest) {
-        Ok(doc) => doc,
+    let merged = match merged_config(m.format, &dest, &source_text, m.source_path()) {
+        Ok(merged) => merged,
         Err(e) => {
             tracing::warn!("skipping config merge into {}: {e}", dest.display());
             report.config_merges_skipped.push(m.path.clone());
             return Ok(());
         }
     };
-    crate::agent::json_merge::merge(&mut doc, &to_merge);
-    if write_json_if_changed(&dest, &doc)? {
+    if write_if_changed(&dest, &merged)? {
         report.config_merges_applied.push(m.path.clone());
     } else {
         report.config_merges_skipped.push(m.path.clone());
     }
     Ok(())
+}
+
+/// The full text `dest` should hold once `source_text` is merged into it, in
+/// whichever encoding this merge declares. A parse failure of the *source* is a
+/// hard error (thurbox shipped it); one of the *target* is the user's file and
+/// is reported for the soft-skip above.
+fn merged_config(
+    format: crate::session::ConfigMergeFormat,
+    dest: &Path,
+    source_text: &str,
+    source_name: &str,
+) -> Result<String, String> {
+    match format {
+        crate::session::ConfigMergeFormat::Json => {
+            let to_merge: serde_json::Value = serde_json::from_str(source_text)
+                .map_err(|e| format!("parse merge source {source_name}: {e}"))?;
+            let mut doc = read_json_or_empty(dest)?;
+            crate::agent::json_merge::merge(&mut doc, &to_merge);
+            serde_json::to_string_pretty(&doc)
+                .map_err(|e| format!("serialize {}: {e}", dest.display()))
+        }
+        crate::session::ConfigMergeFormat::Toml => {
+            let to_merge: toml_edit::DocumentMut = source_text
+                .parse()
+                .map_err(|e| format!("parse merge source {source_name}: {e}"))?;
+            let mut doc = read_toml_or_empty(dest)?;
+            // Prune, then merge. Our entries are identified by an ownership
+            // comment rather than by their content, so a payload that renamed an
+            // event or edited a command replaces the entry already on disk
+            // instead of stacking a second copy beside it. (The JSON sibling
+            // cannot do this: a content match would delete a user hook it never
+            // wrote and then not put it back.)
+            crate::agent::toml_merge::prune_owned(&mut doc, MANAGED_MARKER);
+            crate::agent::toml_merge::merge(&mut doc, &to_merge);
+            Ok(doc.to_string())
+        }
+    }
 }
 
 /// Reverse an [`install_config_merge`]: prune our marked hook entries out of the
@@ -387,15 +436,30 @@ fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> 
     }
     // A malformed target can't be safely pruned; leave it rather than abort the
     // rest of the uninstall (consistent with the install soft-skip).
-    let mut doc = match read_json_or_empty(&dest) {
-        Ok(doc) => doc,
+    let pruned = match m.format {
+        crate::session::ConfigMergeFormat::Json => match read_json_or_empty(&dest) {
+            Ok(mut doc) => {
+                crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
+                serde_json::to_string_pretty(&doc)
+                    .map_err(|e| format!("serialize {}: {e}", dest.display()))
+            }
+            Err(e) => Err(e),
+        },
+        crate::session::ConfigMergeFormat::Toml => match read_toml_or_empty(&dest) {
+            Ok(mut doc) => {
+                crate::agent::toml_merge::prune_owned(&mut doc, MANAGED_MARKER);
+                Ok(doc.to_string())
+            }
+            Err(e) => Err(e),
+        },
+    };
+    match pruned {
+        Ok(pruned) => write_if_changed(&dest, &pruned),
         Err(e) => {
             tracing::warn!("skipping config-merge revert in {}: {e}", dest.display());
-            return Ok(false);
+            Ok(false)
         }
-    };
-    crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
-    write_json_if_changed(&dest, &doc)
+    }
 }
 
 /// Create one symlink under the home dir, replacing an existing symlink but

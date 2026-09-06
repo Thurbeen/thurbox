@@ -14,7 +14,7 @@
 name = "hooks"
 description = "Report each agent's lifecycle state (working/blocked/done) to thurbox via agent hooks."
 config_version = 1
-version = "1.7.0"  # v1.7: omp (Oh My Pi) status extension (ask/ask_user_question → blocked); v1.6: vibe hooks rewritten to vibe 2.21.0's real schema (pre_tool/post_agent); v1.5: pi (pi.dev) status extension
+version = "1.8.0"  # v1.8: grok (global ~/.grok/hooks drop) + kimi (TOML merge into ~/.kimi-code/config.toml) status hooks; v1.7: omp (Oh My Pi) status extension (ask/ask_user_question → blocked); v1.6: vibe hooks rewritten to vibe 2.21.0's real schema (pre_tool/post_agent); v1.5: pi (pi.dev) status extension
 # Default home; the auto-activation path overrides this with *this build's*
 # resolved config dir (`~/.config/thurbox` or `~/.config/thurbox-dev`) so dev and
 # release installs stay isolated. See `session_ops::builtin_hooks::hooks_home`.
@@ -162,3 +162,50 @@ requires_dir = "~/.copilot"
 path = "~/.gemini/settings.json"
 source = "antigravity-hooks.json"
 requires_dir = "~/.gemini"
+
+# grok (xAI's Grok Build CLI) loads hooks from ~/.grok/hooks/*.json, each file
+# read on its own, so we drop a managed standalone file in rather than touching
+# any file the user owns. Guarded by requires_dir so it's a no-op when grok isn't
+# installed. Global hooks are ALWAYS trusted and load on first launch, which is
+# why this is the global dir and not <project>/.grok/hooks — the project scope
+# additionally needs the folder granted trust in grok's own
+# ~/.grok/trusted_folders.toml (or a `--trust` launch flag, which would only
+# cover sessions thurbox itself launches).
+#
+# Grok is Claude-Code-compatible, so the mapping mirrors claude.json:
+# SessionStart → idle, UserPromptSubmit/PreToolUse/PostToolUse → working,
+# Notification (payload matched to permission/approval) → blocked, Stop → done.
+# The blocked command deliberately contains no `$` — a `$VAR` reference in a
+# grok hook command must carry an inline `:-default` or grok silently refuses to
+# load the whole hook file — so it pipes stdin through `grep` instead of
+# claude's `case "$(cat)"`.
+#
+# EXPERIMENTAL: the event names are grok's documented set; if a future grok
+# renames them, edit grok-hooks.json (no code change).
+[[external_files]]
+path = "~/.grok/hooks/thurbox-status.json"
+source = "grok-hooks.json"
+requires_dir = "~/.grok"
+
+# kimi (Kimi Code CLI) reads hooks from a `[[hooks]]` array in ONE shared file,
+# ~/.kimi-code/config.toml — there is no drop-in hooks dir, and that file holds
+# the user's whole configuration, so a managed external_file would clobber it.
+# It is merged instead, exactly like codex/antigravity, with `format = "toml"`
+# selecting `agent::toml_merge` (toml_edit, so the user's comments and key order
+# survive); uninstall prunes exactly our entries by the `session signal` marker.
+#
+# Events: SessionStart → idle, UserPromptSubmit/PreToolUse/PostToolUse →
+# working, PermissionRequest → blocked, PermissionResult → working, Stop → done.
+# Unlike claude/antigravity the block edge is STRUCTURED (a real
+# permission-request event, not a text match on a notification body) and has a
+# real clearing event, so it neither false-fires nor latches.
+#
+# EXPERIMENTAL: kimi accepts exactly four keys per hook entry
+# (event/command/matcher/timeout) and refuses to load the whole config file on a
+# fifth, so kimi-hooks.toml must never grow one. If a future kimi renames the
+# events, edit kimi-hooks.toml (no code change).
+[[config_merges]]
+path = "~/.kimi-code/config.toml"
+source = "kimi-hooks.toml"
+requires_dir = "~/.kimi-code"
+format = "toml"

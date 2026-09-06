@@ -160,10 +160,9 @@ the `thurbox-agents` skill for the `resume_latest` semantics.
 by name. Set `hook_schema = "claude"` on a **rebranded** agent (one whose
 `command` runs `claude` under a different `name`) and it inherits claude's hook
 wiring — the `--settings` patch locally, and the same rewrite on a remote/WSL
-host. It names the *family* to imitate, not a boolean; today the useful value is
-`"claude"` (the only family wired via a per-agent arg patch — codex/opencode/
-antigravity/vibe/copilot are wired through their own config dir, so a rebrand
-sharing that dir already reports status).
+host. It names the *family* to imitate, not a boolean; see
+[AGENTS.md](AGENTS.md#hook_schema-custom-rebrands-only) for which family is
+actually useful today and why.
 
 The seeded file also ships two commented, copy-pasteable templates
 below the built-ins — **Add your own agent** (every field annotated)
@@ -699,11 +698,15 @@ requires_dir = "~/.config/opencode"  # skip when that agent isn't installed
 name = "claude"
 append_args = ["--settings", "{home}/claude.json"]
 
-[[config_merges]]               # reversibly deep-merge JSON into an agent's own
+[[config_merges]]               # reversibly deep-merge into an agent's own
 path = "~/.gemini/settings.json"  #   SHARED config file (never clobbered)
 source = "antigravity-hooks.json"  # objects recurse, arrays union; uninstall prunes
 requires_dir = "~/.gemini"      #   exactly our entries (by marker). no-op write
                                 #   when unchanged; malformed target soft-skipped
+# format = "toml"                # OPTIONAL; JSON by default. Set for a TOML
+                                #   shared config (agent::toml_merge via toml_edit).
+                                #   TOML owns its entries by a comment on each, so
+                                #   the payload must stamp every one of them
 
 # runtime spec (ensured on activate, self-healed if deleted) -----------------
 [[sessions]]

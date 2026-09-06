@@ -89,6 +89,35 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   Both `bash` and `powershell` commands are shipped, so status works on Windows
   too. **Caveat:** if a future `copilot` changes the hook schema, edit
   `copilot-hooks.json` (no code change).
+- **grok** *(experimental)* — xAI's Grok Build CLI loads every `*.json` in
+  `~/.grok/hooks/` on its own, so we drop a managed standalone file in (an
+  `[[external_files]]`, guarded by `requires_dir`, only when grok is installed)
+  and never touch a hook file you wrote. It is the **global** dir on purpose:
+  those hooks are always trusted and load on first launch, while
+  `<project>/.grok/hooks` additionally needs the folder granted trust in grok's
+  own `~/.grok/trusted_folders.toml`. grok is Claude-Code-compatible, so the
+  mapping mirrors claude: `SessionStart` → idle,
+  `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → working, `Notification` →
+  blocked **only for permission/approval prompts** (the payload is matched, so
+  an idle nudge doesn't flip the dot red), `Stop` → done. Every command here is
+  `$`-free: grok silently refuses to load a whole hook file whose command
+  references `$VAR` without an inline `:-default`, so the blocked edge pipes
+  stdin through `grep` rather than reusing claude's `case "$(cat)"`. **Caveat:**
+  if a future grok renames its events, edit `grok-hooks.json` (no code change).
+- **kimi** *(experimental)* — Kimi Code CLI reads hooks from a `[[hooks]]` array
+  in `~/.kimi-code/config.toml`. That one file is your whole kimi configuration
+  and there is no drop-in hooks dir, so a managed file would clobber it — we
+  **merge** our entries in instead (a `[[config_merges]]` with `format = "toml"`,
+  guarded by `requires_dir`); `toml_edit` keeps your comments and key order, and
+  uninstall prunes exactly ours back out. Events: `SessionStart` → idle,
+  `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → working, `PermissionRequest` →
+  blocked, `PermissionResult` → working, `Stop` → done. This is the one agent
+  here whose block edge is structured on **both** sides — a real permission
+  request and a real permission result — so `blocked` neither false-fires on an
+  idle notification nor latches until the next tool call. **Caveat:** kimi
+  accepts exactly four keys per hook entry (`event`/`command`/`matcher`/
+  `timeout`) and refuses to load the entire config file if it sees a fifth, so
+  `kimi-hooks.toml` must never grow one.
 - **antigravity** — antigravity (the `agy` CLI, the Gemini CLI successor) loads
   hooks only from its shared `~/.gemini/settings.json`, so we **JSON-merge** our
   entries in (a `[[config_merges]]`, guarded by `requires_dir`) without clobbering
@@ -133,6 +162,24 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   Verified against OMP 17.0.6; if a future `omp` renames its events, edit
   `omp-status.ts` (no code change).
 
+## Agents this extension does not wire
+
+Two agents have a hook surface none of the three mechanisms can reach, so they
+are left out rather than given a payload that never fires — `session get` keeps
+saying `hook_coverage: "none"`, which is the truth:
+
+- **cursor** (`cursor-agent`) — the only scope its CLI is known to load
+  `stop`/`sessionStart` from is per-project `<repo>/.cursor/hooks.json`, and only
+  when launched with `--trust`. That is a per-repo file plus a launch flag, so it
+  would cover nothing an outside driver starts. User-scope `~/.cursor/hooks.json`
+  is documented for the IDE; in the CLI it is reported to run only the
+  shell/MCP/file-edit hooks — none of which can say `done`, so wiring it there
+  would latch a session at `working` forever.
+- **muse** (Muse Code) — its hooks exist only as capabilities of a native plugin
+  that must be installed *and approved* with `muse plugins install` / `muse
+  plugins approve`; a dropped-in config file is silently ignored. An extension
+  manifest writes files, it does not run an agent's commands.
+
 ## Custom agents (`hook_schema`)
 
 The wiring above is keyed to the built-in agent **names**, so a **custom** agent
@@ -152,9 +199,21 @@ thurbox then applies the `claude` `[[agent_patches]]` to `fleet` as well, so it
 reports working/blocked/done exactly like `claude` (locally and on a remote/WSL
 host). `hook_schema` names the *family* to imitate; today `"claude"` is the
 useful value — it's the family wired via a per-agent arg patch. The
-config-dir-wired families (codex/opencode/antigravity/vibe/copilot) don't need
-it: a rebrand that runs the same CLI reads the same `~/.<agent>/…` hook file and
-already reports.
+config-dir-wired families (codex/opencode/antigravity/vibe/copilot/grok/kimi)
+don't need it: a rebrand that runs the same CLI reads the same `~/.<agent>/…`
+hook file and already reports.
+
+**grok and kimi are wired without being built-in agents.** thurbox ships no
+`agents.toml` entry for either, but their payloads land in their own config dirs
+all the same — so a grok or kimi started from a `--command` shell, from your own
+`agents.toml` entry, or by an outside driver reports state like any built-in.
+Tell thurbox which agent the pane is really running so the row resolves that
+coverage:
+
+```bash
+thurbox-cli session create --name x --repo-path … --agent shell --reports-as grok
+thurbox-cli session reports-as <ref> kimi     # or --clear to take it back
+```
 
 ## Where the config lives
 
@@ -176,6 +235,8 @@ other agents are wired by a reversible merge into — or a managed file dropped 
 | copilot | `~/.copilot/hooks/thurbox-status.json` | managed standalone file (`requires_dir`) |
 | antigravity | `~/.gemini/settings.json` | reversible JSON-merge of our entries |
 | pi | `~/.pi/agent/extensions/thurbox-status.ts` | managed extension file (`requires_dir`) |
+| grok | `~/.grok/hooks/thurbox-status.json` | managed standalone file (`requires_dir`) |
+| kimi | `~/.kimi-code/config.toml` | reversible TOML-merge of our entries |
 | omp | `~/.omp/agent/extensions/thurbox-status.ts` | managed extension file (`requires_dir`) |
 
 The home dir is `~/.config/thurbox/hooks` for a release build and
@@ -238,13 +299,20 @@ This extension exercises two extension-manifest capabilities (see
   (reversible; uninstall removes exactly the injected subsequence).
 - `[[external_files]]` — place a file into an agent's **own** config dir
   (outside the extension home), guarded by `requires_dir`.
-- `[[config_merges]]` — **reversibly deep-merge** shipped JSON into an agent's
-  own *shared* config file (antigravity's `~/.gemini/settings.json`) without clobbering the
-  user's other settings: objects recurse, arrays union, and uninstall prunes
-  exactly the entries we shipped (matched by the `session signal` marker, so it
-  stays correct across payload changes). Guarded by `requires_dir`; no-op when
-  the merge is already present. A merge whose target is malformed JSON is
-  soft-skipped (logged, never aborts the rest of the install).
+- `[[config_merges]]` — **reversibly deep-merge** a shipped document into an
+  agent's own *shared* config file (antigravity's `~/.gemini/settings.json`,
+  kimi's `~/.kimi-code/config.toml`) without clobbering the
+  user's other settings: objects/tables recurse, arrays union, and uninstall prunes
+  exactly the entries we shipped. JSON recognises them by the `session signal`
+  marker in their content; TOML by an ownership comment stamped on each entry,
+  which is stricter in both directions — a hook *you* wrote that calls `session
+  signal` is not ours and survives uninstall, and an entry of ours whose event or
+  command changed in a later payload is still ours and gets replaced rather than
+  duplicated. Guarded by `requires_dir`; no-op when
+  the merge is already present. A merge whose target is malformed is
+  soft-skipped (logged, never aborts the rest of the install). JSON by default;
+  `format = "toml"` picks the TOML merge (`agent::toml_merge`, on `toml_edit`,
+  so the user's comments and key order survive).
 
   Note: on the **first** merge, thurbox rewrites `settings.json` with normalized
   formatting (alphabetized keys, 2-space indent). This is one-time and lossless —
@@ -260,13 +328,15 @@ control-mode connection. Delivery per agent, at spawn time:
 - **claude** — the `--settings` hooks file is copied to the host (rewritten)
   and the arg substituted.
 - **aider** — its literal `--notifications-command` arg is rewritten in place.
-- **codex / antigravity / opencode / vibe / copilot** — the rewritten payload
+- **codex / antigravity / opencode / vibe / copilot / grok / kimi** — the rewritten payload
   is provisioned into the host's agent config dir
   (`session_ops::remote_hooks`), with the same safety rules as the local
   install: skipped when the agent isn't installed there (`requires_dir` probed
-  over ssh), deep-merge-not-clobber for shared JSON (prune-then-merge on both
-  the `session signal` and `@thurbox_state` markers, so upgrades replace
-  rather than accumulate), managed-marker guard for standalone files, and
+  over ssh), deep-merge-not-clobber for a shared config (prune-then-merge so
+  upgrades replace rather than accumulate — JSON on either the `session
+  signal` or `@thurbox_state` marker in an entry's content, TOML on the same
+  ownership comment used locally, which recognises a stale entry under either
+  command form), managed-marker guard for standalone files, and
   compare-before-write.
 
 The local TUI receives the state over its persistent control-mode connection;

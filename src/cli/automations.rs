@@ -776,6 +776,19 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let db = Database::open_in_memory().unwrap();
+        // The tick self-heals the built-in extensions, whose outside-reaching
+        // payloads resolve against `$HOME` — which `TestPathGuard` does not
+        // redirect, because they target the *agent's* config dir rather than
+        // thurbox's. Without opting out, running the test suite installs hook
+        // files into the developer's own `~/.codex`, `~/.grok`, … Opt both
+        // built-ins out: this test is about what `tick` reports, not about
+        // what an install does.
+        for name in [
+            crate::session_ops::builtin_hooks::HOOKS_EXTENSION_NAME,
+            crate::session_ops::builtin_ui_skill::UI_SKILL_EXTENSION_NAME,
+        ] {
+            db.set_builtin_extension_optout(name, true).unwrap();
+        }
         let v = tick(&db).unwrap();
         assert_eq!(v["fired"], json!([]));
         assert_eq!(v["skipped"], json!([]));

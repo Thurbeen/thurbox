@@ -1,0 +1,53 @@
+# Kimi Code CLI status hooks, merged into the user's own ~/.kimi-code/config.toml.
+#
+# The comment above each entry is its ownership record, not decoration: it is how
+# uninstall tells these entries from a hook the user wrote themselves (which may
+# legitimately call `thurbox-cli session signal` too), and how an update
+# recognises an entry of ours whose event or command has since changed. Every
+# entry must carry it — see `agent::toml_merge`.
+#
+# Kimi accepts exactly four keys per entry (event/command/matcher/timeout) and
+# refuses to load the whole config file when it sees a fifth, which is why
+# ownership lives in a comment rather than in a field.
+
+# managed by thurbox `extension install` — do not edit
+[[hooks]]
+event = "SessionStart"
+command = "thurbox-cli session signal --state idle || true"
+timeout = 10
+
+# managed by thurbox `extension install` — do not edit
+[[hooks]]
+event = "UserPromptSubmit"
+command = "thurbox-cli session signal --state working || true"
+timeout = 10
+
+# managed by thurbox `extension install` — do not edit
+[[hooks]]
+event = "PreToolUse"
+command = "thurbox-cli session signal --state working || true"
+timeout = 10
+
+# managed by thurbox `extension install` — do not edit
+[[hooks]]
+event = "PostToolUse"
+command = "thurbox-cli session signal --state working || true"
+timeout = 10
+
+# managed by thurbox `extension install` — do not edit
+[[hooks]]
+event = "PermissionRequest"
+command = "thurbox-cli session signal --state blocked || true"
+timeout = 10
+
+# managed by thurbox `extension install` — do not edit
+[[hooks]]
+event = "PermissionResult"
+command = "thurbox-cli session signal --state working || true"
+timeout = 10
+
+# managed by thurbox `extension install` — do not edit
+[[hooks]]
+event = "Stop"
+command = "thurbox-cli session signal --state done || true"
+timeout = 10

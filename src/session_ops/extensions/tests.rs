@@ -480,6 +480,148 @@ requires_dir = '{missing}'
     );
 }
 
+/// The whole point of a TOML `[[config_merges]]`: kimi's hooks live in the same
+/// file as the rest of the user's configuration, and thurbox's entries have to
+/// come back out without taking anything of theirs with them — including a hook
+/// they wired to `thurbox-cli session signal` themselves, which
+/// `extensions/hooks/README.md` tells them to do for an agent thurbox does not
+/// instrument. Identifying our entries by that command's presence deleted it.
+#[test]
+fn toml_config_merge_uninstall_keeps_a_user_hook_that_calls_the_signal_command() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+
+    let agent_dir = temp.path().join("dotkimi");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let config = agent_dir.join("config.toml");
+    let users_own = "# my config\n\
+                     model = \"kimi-code/k3\"\n\n\
+                     [[hooks]]\n\
+                     event = \"Stop\"\n\
+                     command = \"thurbox-cli session signal --state done || true\"\n";
+    std::fs::write(&config, users_own).unwrap();
+    let home = temp.path().join("hookshome");
+
+    let src = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        src.path().join("extension.toml"),
+        format!(
+            r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{config}'
+source = "kimi-hooks.toml"
+requires_dir = '{agent_dir}'
+format = "toml"
+"#,
+            home = home.display(),
+            config = config.display(),
+            agent_dir = agent_dir.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        src.path().join("kimi-hooks.toml"),
+        "# managed by thurbox `extension install`\n\
+         [[hooks]]\n\
+         event = \"SessionStart\"\n\
+         command = \"thurbox-cli session signal --state idle || true\"\n",
+    )
+    .unwrap();
+
+    let target = src.path().to_string_lossy().to_string();
+    let report = install_extension(&db, &target, None, false).unwrap();
+    assert_eq!(report.config_merges_applied, [config.to_string_lossy()]);
+    let merged = std::fs::read_to_string(&config).unwrap();
+    assert!(merged.contains("--state idle"), "ours merged in: {merged}");
+    assert!(merged.contains("--state done"), "theirs still there");
+
+    // Uninstall takes exactly ours back out and restores their file verbatim.
+    let un = uninstall_extension(&db, "hooks", false).unwrap();
+    assert_eq!(un.config_merges_reverted, [config.to_string_lossy()]);
+    let restored = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(
+        restored, users_own,
+        "the user's own signal hook and settings must survive verbatim"
+    );
+}
+
+/// An update whose payload renames an event or edits a command must replace our
+/// entry, not stack a second copy beside it: nothing in the new entry's content
+/// matches the one already on disk, so only ownership can recognise it.
+#[test]
+fn toml_config_merge_update_replaces_our_entry_instead_of_accumulating() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+
+    let agent_dir = temp.path().join("dotkimi");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let config = agent_dir.join("config.toml");
+    std::fs::write(&config, "model = \"kimi-code/k3\"\n").unwrap();
+    let home = temp.path().join("hookshome");
+
+    let src = tempfile::TempDir::new().unwrap();
+    let manifest = format!(
+        r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{config}'
+source = "kimi-hooks.toml"
+requires_dir = '{agent_dir}'
+format = "toml"
+"#,
+        home = home.display(),
+        config = config.display(),
+        agent_dir = agent_dir.display(),
+    );
+    std::fs::write(src.path().join("extension.toml"), &manifest).unwrap();
+    let payload = |event: &str, state: &str, timeout: u32| {
+        format!(
+            "# managed by thurbox `extension install`\n\
+             [[hooks]]\nevent = \"{event}\"\n\
+             command = \"thurbox-cli session signal --state {state} || true\"\n\
+             timeout = {timeout}\n"
+        )
+    };
+    std::fs::write(
+        src.path().join("kimi-hooks.toml"),
+        payload("Stop", "done", 10),
+    )
+    .unwrap();
+
+    let target = src.path().to_string_lossy().to_string();
+    install_extension(&db, &target, None, false).unwrap();
+
+    // A later version of the payload renames the event and retimes it.
+    std::fs::write(
+        src.path().join("kimi-hooks.toml"),
+        payload("SessionEnd", "idle", 30),
+    )
+    .unwrap();
+    let report = install_extension(&db, &target, None, false).unwrap();
+    assert_eq!(report.config_merges_applied, [config.to_string_lossy()]);
+
+    let updated = std::fs::read_to_string(&config).unwrap();
+    let doc: toml::Value = toml::from_str(&updated).expect("still valid TOML");
+    assert_eq!(
+        doc["hooks"].as_array().unwrap().len(),
+        1,
+        "the stale entry must be gone, not sitting beside the new one: {updated}"
+    );
+    assert!(!updated.contains("--state done"));
+    assert!(updated.contains("--state idle") && updated.contains("timeout = 30"));
+    assert!(updated.contains("model = \"kimi-code/k3\""));
+
+    // Re-installing the same payload writes nothing (no churn on every tick).
+    let again = install_extension(&db, &target, None, false).unwrap();
+    assert!(again.config_merges_applied.is_empty());
+    assert_eq!(again.config_merges_skipped, [config.to_string_lossy()]);
+}
+
 #[test]
 fn config_merge_soft_skips_a_malformed_user_target() {
     let temp = tempfile::TempDir::new().unwrap();
@@ -524,6 +666,96 @@ requires_dir = '{agent_dir}'
         std::fs::read_to_string(&settings).unwrap(),
         "{ this is not valid json"
     );
+}
+
+/// A config file that exists but cannot be **read** is not an empty config.
+/// Treating it as one merged our hooks into `{}` and wrote that back, replacing
+/// everything the user had. The merged result goes straight to disk, so the only
+/// safe response to an unreadable-but-present file is to refuse and say so.
+///
+/// Runs for both encodings: the JSON and TOML readers share the rule.
+#[cfg(unix)]
+#[test]
+fn config_merge_refuses_an_unreadable_target_instead_of_overwriting_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for (name, file, source, payload, format) in [
+        (
+            "json",
+            "settings.json",
+            "gemini-hooks.json",
+            r#"{"hooks":{"Stop":[{"command":"thurbox-cli session signal --state done"}]}}"#,
+            "",
+        ),
+        (
+            "toml",
+            "config.toml",
+            "kimi-hooks.toml",
+            "# managed by thurbox `extension install`\n[[hooks]]\nevent = \"Stop\"\n\
+             command = \"thurbox-cli session signal --state done\"\n",
+            "format = \"toml\"",
+        ),
+    ] {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        let agent_dir = temp.path().join("agentdir");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let config = agent_dir.join(file);
+        let users_own = "EVERYTHING THE USER CONFIGURED";
+        std::fs::write(&config, users_own).unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Running as root ignores the mode bits, so there is nothing to prove.
+        if std::fs::read_to_string(&config).is_ok() {
+            continue;
+        }
+
+        let home = temp.path().join("hookshome");
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("extension.toml"),
+            format!(
+                r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{config}'
+source = "{source}"
+requires_dir = '{agent_dir}'
+{format}
+"#,
+                home = home.display(),
+                config = config.display(),
+                agent_dir = agent_dir.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::write(src.path().join(source), payload).unwrap();
+
+        // The install still succeeds (it runs every startup + tick) but the
+        // merge is refused rather than applied.
+        let target = src.path().to_string_lossy().to_string();
+        let report = install_extension(&db, &target, None, false).unwrap();
+        assert_eq!(
+            report.config_merges_skipped,
+            [config.to_string_lossy()],
+            "{name}: an unreadable target must be soft-skipped"
+        );
+        assert!(
+            report.config_merges_applied.is_empty(),
+            "{name}: nothing may be applied to a file we could not read"
+        );
+
+        // And the user's file is untouched — the thing that matters. Restore
+        // owner-only access (not world-readable) so cleanup can read it back.
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            users_own,
+            "{name}: the user's configuration was overwritten"
+        );
+    }
 }
 
 #[test]

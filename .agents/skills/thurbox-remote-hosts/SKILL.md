@@ -176,11 +176,13 @@ session), never on the loop, ADR-P12).
   pane id, or identity inside a pane (the psmux form bakes in
   `-L <socket>`). Delivery per agent: claude's hooks file travels via its
   `--settings` arg; agents wired through their **own config dir** (codex,
-  antigravity, opencode, vibe, copilot) are provisioned at spawn time by
+  antigravity, opencode, vibe, copilot, grok, kimi) are provisioned at spawn time by
   `session_ops::remote_hooks::provision_agent_hooks_on_host` — the rewritten
   payload shipped into the host's agent config dir with the local installer's
-  safety rules (`requires_dir` probe over ssh, prune-then-merge for shared JSON,
-  managed-marker guard for standalone files, compare-before-write; cached per
+  safety rules (`requires_dir` probe over ssh, prune-then-merge for a shared
+  config — JSON on a content marker, TOML (kimi) on the same ownership comment
+  used locally, see `thurbox-extensions`), managed-marker guard for standalone
+  files, compare-before-write; cached per
   `(backend, agent)`, best-effort, never fails the spawn; remote **cleanup** is a
   documented leave-behind). The local TUI's persistent control-mode connection
   subscribes once per connection (`refresh-client -B
