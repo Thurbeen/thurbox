@@ -129,7 +129,19 @@ own, which is the point.
   **Three names, three fields.** `agent` is what the row was created as,
   `reports_as` what a driver *declared* (`session reports-as`), and
   `detected_agent` what is observably in the pane — the registry **name**, so
-  `antigravity` rather than the `agy` its argv spells. Detection is never
+  `antigravity` rather than the `agy` its argv spells.
+  **Only when the observation determines one.** `ps` reports the executable,
+  not the profile, so an executable that more than one registered profile
+  claims yields no name at all — `hook_corroboration` still reads
+  `foreign-agent` and the state still reads `running`, because the *presence*
+  is observed, but `detected_agent` is null. This is a live shape, not a
+  theoretical one: the shipped `agents.toml` walks the user through building it
+  ("Pin a model" adds `claude-opus` on the same `command` as `claude`). Taking
+  the first matching entry published whichever the file happened to list first
+  — a confident name nothing had determined, and worse on screen than the bare
+  `shell` label this vocabulary exists to improve on, because a specific name
+  invites trust. Deliberately not resolved by a tie-break on argv either: the
+  worth of the field is that it is never wrong. Detection is never
   written back as `reports_as`: a declaration is durable and an observation is
   not, and deriving one from the other would make a passing process permanent.
   The interface publishes all three onto its session rows, and shows the third

@@ -278,7 +278,16 @@ pub enum Corroboration {
     /// answer used to be computed and thrown away, leaving every surface to
     /// say "some agent" about a pane thurbox could name. Not `Copy` for it,
     /// which is the price of the payload and is paid once here.
-    ForeignAgent(String),
+    ///
+    /// `None` when the executable is one **several** registered profiles
+    /// share, which is a shape the shipped `agents.toml` walks the user
+    /// through: pinning a model means a second entry on the same `command`
+    /// (`claude-opus` beside `claude`). A process listing sees the executable,
+    /// not the profile, so there is no answer to publish — and the variant
+    /// still says an agent is *present*, which is observed, while leaving the
+    /// identity blank, which is not. A plausible-but-arbitrary name is worse
+    /// than none: it invites exactly the trust it has not earned.
+    ForeignAgent(Option<String>),
     /// A bare interactive shell holds the pane. For a session whose agent was
     /// launched into that pane, this means the agent is gone.
     Shell,
@@ -318,7 +327,7 @@ impl Corroboration {
     /// pane permanent.
     pub fn detected_agent(&self) -> Option<&str> {
         match self {
-            Corroboration::ForeignAgent(name) => Some(name.as_str()),
+            Corroboration::ForeignAgent(name) => name.as_deref(),
             _ => None,
         }
     }
@@ -544,7 +553,13 @@ pub fn classify_foreground(
     if own_is_agent && (name == own || runs_program(line, own)) {
         return Corroboration::Agent;
     }
-    let foreign = registry
+    // Every registry profile whose executable this pane could be running —
+    // walked rather than `find`-ed, because the *first* match is not an answer.
+    // Several profiles may share one executable, and the shipped `agents.toml`
+    // walks the user through creating exactly that: pinning a model means a
+    // second entry on the same `command` (`claude-opus` beside `claude`).
+    // Taking the first would publish whichever the file happens to list first.
+    let mut found = registry
         .agents
         .iter()
         .map(|def| (def, executable_name(&def.command)))
@@ -552,9 +567,18 @@ pub fn classify_foreground(
         // A registry entry that *is* a shell (the bare-shell agent an external
         // driver asks for) must not make every shell look like an agent.
         .filter(|(_, c)| !SHELLS.contains(c))
-        .find(|(_, c)| name == *c || runs_program(line, c));
-    if let Some((def, _)) = foreign {
-        return Corroboration::ForeignAgent(def.name.clone());
+        .filter(|(_, c)| name == *c || runs_program(line, c))
+        .map(|(def, _)| def.name.as_str());
+    if let Some(first) = found.next() {
+        // Presence is observed; identity may not be. `ps` reports the
+        // executable, and two profiles that share one are indistinguishable
+        // through it — so the presence is reported and the name is left blank
+        // rather than guessed. Deliberately not broken by a tie-break on argv:
+        // a heuristic that is usually right is the failure this whole change
+        // set out to remove, and a confident wrong name is worse on screen
+        // than the bare `shell` label it replaced.
+        let names_one_agent = found.all(|other| other == first);
+        return Corroboration::ForeignAgent(names_one_agent.then(|| first.to_string()));
     }
     if SHELLS.contains(&name) {
         return Corroboration::Shell;
@@ -1374,7 +1398,7 @@ mod tests {
             Some("claude --permission-mode acceptEdits"),
             Some(false),
         );
-        assert_eq!(seen, Corroboration::ForeignAgent("claude".into()));
+        assert_eq!(seen, Corroboration::ForeignAgent(Some("claude".into())));
         assert_eq!(seen.detected_agent(), Some("claude"));
         assert_eq!(seen.agent_present(), Some(true));
         assert_eq!(
@@ -1462,10 +1486,76 @@ mod tests {
             let seen = classify_foreground("zsh", &known, Some("sh"), Some(line), Some(false));
             assert_eq!(
                 seen,
-                Corroboration::ForeignAgent("claude".into()),
+                Corroboration::ForeignAgent(Some("claude".into())),
                 "should have found claude in {line}"
             );
         }
+    }
+
+    /// One executable, several registered profiles: an agent is demonstrably
+    /// there, and *which* one is not something a process listing can say.
+    ///
+    /// This is not a theoretical registry. The shipped `agents.toml` walks the
+    /// user through building it: pinning a model means a second entry on the
+    /// same `command`, `claude-opus` beside `claude`. Taking the first match
+    /// published whichever profile the file happened to list first — a
+    /// confident name the observation never determined, which is worse on
+    /// screen than the bare `shell` label this vocabulary set out to improve
+    /// on, because a specific name invites trust.
+    #[test]
+    fn an_executable_several_profiles_share_names_no_agent() {
+        // Exactly the shape the shipped config's "Pin a model" section builds.
+        let shared = registry(vec![
+            agent("shell", "zsh", None),
+            agent("claude", "claude", Some("claude")),
+            agent("claude-opus", "claude", Some("claude")),
+        ]);
+        let seen = classify_foreground(
+            "zsh",
+            &shared,
+            Some("claude"),
+            Some("claude --model opus"),
+            Some(false),
+        );
+
+        // An agent IS running here — that much is observed, and the status
+        // must not lose it.
+        assert_eq!(seen, Corroboration::ForeignAgent(None));
+        assert_eq!(seen.agent_present(), Some(true));
+        assert_eq!(
+            best_state(None, None, None, Some(&seen)),
+            Some((SessionState::Running, StateSource::Process))
+        );
+        // But nothing may be published about WHICH, in either order — the
+        // answer must not depend on how the file happens to be sorted.
+        assert_eq!(seen.detected_agent(), None);
+        let reversed = registry(vec![
+            agent("shell", "zsh", None),
+            agent("claude-opus", "claude", Some("claude")),
+            agent("claude", "claude", Some("claude")),
+        ]);
+        assert_eq!(
+            classify_foreground("zsh", &reversed, Some("claude"), None, Some(false)),
+            Corroboration::ForeignAgent(None)
+        );
+
+        // And the blank reaches the assessment as a blank, beside a status
+        // that still says something is running.
+        let assessment = Assessment::from_hooks(&shared, "shell", None, None, None, NOW)
+            .with_corroboration(seen);
+        assert_eq!(assessment.detected_agent(), None);
+        assert_eq!(assessment.state(), SessionState::Running);
+
+        // The single-profile case is untouched: one profile owning the
+        // executable is still named, or the guard would have cost the feature.
+        let sole = registry(vec![
+            agent("shell", "zsh", None),
+            agent("claude", "claude", Some("claude")),
+        ]);
+        assert_eq!(
+            classify_foreground("zsh", &sole, Some("claude"), None, Some(false)).detected_agent(),
+            Some("claude")
+        );
     }
 
     /// R3. The detector resolved *which* agent holds the pane and then dropped
@@ -1480,7 +1570,10 @@ mod tests {
             agent("antigravity", "agy", Some("antigravity")),
         ]);
         let seen = classify_foreground("zsh", &known, Some("agy"), Some("agy"), Some(false));
-        assert_eq!(seen, Corroboration::ForeignAgent("antigravity".into()));
+        assert_eq!(
+            seen,
+            Corroboration::ForeignAgent(Some("antigravity".into()))
+        );
         assert_eq!(seen.detected_agent(), Some("antigravity"));
 
         // And it reaches the assessment, beside — never instead of — the agent

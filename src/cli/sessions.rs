@@ -79,6 +79,13 @@ pub enum Action {
     /// this what is observably running. It is a live reading and is never
     /// written back as `reports_as`.
     ///
+    /// It is `null` whenever the observation does not determine one profile:
+    /// `ps` reports the executable, so an executable that several registered
+    /// agents share (pinning a model puts `claude-opus` on `claude`'s command)
+    /// answers `hook_corroboration: "foreign-agent"` and `state: "running"`
+    /// with no name — an agent is there, and which one is not knowable from
+    /// the process listing.
+    ///
     /// A session parked by `session stop` reports `stopped: true` and
     /// `state: "stopped"`, and its pane is not probed — there is none.
     /// `backend_id` still names the window it had: it is what the row records,

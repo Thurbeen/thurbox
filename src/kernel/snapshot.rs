@@ -133,6 +133,12 @@ pub struct SessionRow {
     /// for a row nothing has reported for (`assess`'s gate on `hook.state`),
     /// so it is never attached to a row that is already speaking for itself,
     /// regardless of what a stale probe answer still says.
+    ///
+    /// `None` also when an agent is demonstrably in the pane but *which* one
+    /// is not determined — several registered profiles sharing one executable,
+    /// which the shipped `agents.toml` teaches the user to create. The status
+    /// still reads [`SessionState::Running`], because presence is observed;
+    /// only the name is withheld. See [`crate::session::Corroboration`].
     pub detected_agent: Option<String>,
 }
 
@@ -1597,7 +1603,7 @@ mod tests {
         store.panes.known.insert(
             row.id.to_string(),
             Probe {
-                corroboration: Corroboration::ForeignAgent("claude".into()),
+                corroboration: Corroboration::ForeignAgent(Some("claude".into())),
                 at: Instant::now(),
             },
         );
@@ -1696,7 +1702,7 @@ mod tests {
         store.panes.known.insert(
             row.id.to_string(),
             Probe {
-                corroboration: Corroboration::ForeignAgent("claude".into()),
+                corroboration: Corroboration::ForeignAgent(Some("claude".into())),
                 at: Instant::now(),
             },
         );

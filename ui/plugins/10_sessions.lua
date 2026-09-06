@@ -98,6 +98,13 @@ local function agent_status_text(session)
   if session.status == "unreported" then
     return "no status reported"
   end
+  -- An agent is demonstrably in the pane and could not be named: several
+  -- registered profiles share its executable, so `ps` sees the command and not
+  -- the profile. The row says what is actually known rather than falling
+  -- silent, and it never guesses which profile.
+  if session.status == "running" then
+    return "agent running · no status reported"
+  end
   return nil
 end
 

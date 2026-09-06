@@ -430,7 +430,12 @@ when the row reports as itself).
 **`detected_agent` is the third name and a different fact.** `get`/`doctor`
 (and `list --verify`) also publish which registered agent was found *in the
 pane*, under its registry name — `antigravity`, not the `agy` its argv spells —
-whenever that is not the agent the row was created with. `agent` is what the
+whenever that is not the agent the row was created with **and the observation
+determines which profile it is**. An executable that several registered
+profiles share (the shipped `agents.toml` builds exactly that when it shows you
+how to pin a model) publishes `detected_agent: null` beside
+`hook_corroboration: "foreign-agent"` and `state: "running"`: an agent is
+demonstrably there, and `ps` cannot say which profile. `agent` is what the
 row was created as, `reports_as` what a driver declared, `detected_agent` what
 is observably running; null on an unprobed listing means **not checked**, the
 same as every other pane field. It is deliberately never written back as
