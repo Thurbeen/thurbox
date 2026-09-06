@@ -584,24 +584,16 @@ mod tests {
 
         let stored = session(None, None);
         db.upsert_session(&stored).unwrap();
-        assert!(matches!(
-            record_pane(&db, &stored, "%1"),
-            Recorded::Stored
-        ));
+        assert!(matches!(record_pane(&db, &stored, "%1"), Recorded::Stored));
 
         let gone = session(None, None);
         db.upsert_session(&gone).unwrap();
         db.soft_delete_session(gone.id).unwrap();
-        assert!(matches!(
-            record_pane(&db, &gone, "%2"),
-            Recorded::RowGone
-        ));
+        assert!(matches!(record_pane(&db, &gone, "%2"), Recorded::RowGone));
 
         let live = session(None, None);
         db.upsert_session(&live).unwrap();
-        db.conn_ref()
-            .execute_batch("DROP TABLE sessions")
-            .unwrap();
+        db.conn_ref().execute_batch("DROP TABLE sessions").unwrap();
         assert!(matches!(
             record_pane(&db, &live, "%3"),
             Recorded::WriteFailed(_)
