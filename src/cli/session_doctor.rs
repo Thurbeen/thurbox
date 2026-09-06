@@ -800,7 +800,13 @@ mod tests {
         let hook = Assessment::from_hooks(&registry(), "bash", None, None, None, 0)
             .with_corroboration(Corroboration::ForeignAgent(Some("claude".into())));
         assert_eq!(hook.coverage, Coverage::Presumed);
-        let report = diagnose(&row("s", "bash", "local-tmux"), false, &hook, true, Some("/x"));
+        let report = diagnose(
+            &row("s", "bash", "local-tmux"),
+            false,
+            &hook,
+            true,
+            Some("/x"),
+        );
         assert_eq!(level_of(&report, "coverage"), Level::Ok);
         let detail = &report
             .findings
