@@ -202,7 +202,7 @@ fn fake_agent(bin: &std::path::Path, name: &str) -> std::path::PathBuf {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     }
     path
 }

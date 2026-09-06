@@ -406,45 +406,90 @@ fn runs_program(command_line: &str, program: &str) -> bool {
             continue;
         }
         if expect_command {
-            if COMMAND_PREFIXES.contains(&token) || is_assignment(token) {
-                continue;
+            match command_position_token(token, program) {
+                CommandPositionToken::Prefix => {}
+                CommandPositionToken::Match => return true,
+                CommandPositionToken::Other { is_shell } => {
+                    expect_command = false;
+                    scanning_shell_options = is_shell;
+                }
             }
-            let name = executable_name(token);
-            if name == program {
-                return true;
-            }
-            expect_command = false;
-            scanning_shell_options = SHELLS.contains(&name);
             continue;
         }
         if !scanning_shell_options {
             continue;
         }
-        match token.strip_prefix('-') {
-            // `--` ends the option list; the next token is the operand.
-            Some("-") => {
+        match shell_option_token(token, program) {
+            ShellOptionToken::Match => return true,
+            ShellOptionToken::EndsOptions { next_is_command } => {
                 scanning_shell_options = false;
-                expect_command = true;
+                expect_command = next_is_command;
             }
-            // A cluster like `-lc`, whose operand is a whole command line.
-            Some(flags) if !flags.starts_with('-') => {
-                if flags.contains('c') {
-                    scanning_shell_options = false;
-                    expect_command = true;
-                }
-            }
-            // Any other long option: no shell takes one that runs a command.
-            Some(_) => {}
-            // The first operand — the script the shell runs, and so a command.
-            None => {
-                scanning_shell_options = false;
-                if executable_name(token) == program {
-                    return true;
-                }
-            }
+            ShellOptionToken::StillScanning => {}
         }
     }
     false
+}
+
+/// What a token means while `runs_program` still expects the command itself.
+enum CommandPositionToken {
+    /// A prefix (`exec`, `env`, `FOO=1`, …): the command is still ahead.
+    Prefix,
+    /// Resolves to `program` in command position.
+    Match,
+    /// Some other command; `is_shell` says whether its own options follow.
+    Other { is_shell: bool },
+}
+
+fn command_position_token(token: &str, program: &str) -> CommandPositionToken {
+    if COMMAND_PREFIXES.contains(&token) || is_assignment(token) {
+        return CommandPositionToken::Prefix;
+    }
+    let name = executable_name(token);
+    if name == program {
+        return CommandPositionToken::Match;
+    }
+    CommandPositionToken::Other {
+        is_shell: SHELLS.contains(&name),
+    }
+}
+
+/// What a token means while `runs_program` is walking a shell's own options.
+enum ShellOptionToken {
+    /// The shell's first operand resolves to `program`.
+    Match,
+    /// The option list ended here; `next_is_command` says whether the token
+    /// right after this one is a command (a script operand already consumed
+    /// its own answer, so it never is).
+    EndsOptions { next_is_command: bool },
+    /// Still an option; the shell's own options continue past it.
+    StillScanning,
+}
+
+fn shell_option_token(token: &str, program: &str) -> ShellOptionToken {
+    match token.strip_prefix('-') {
+        // `--` ends the option list; the next token is the operand.
+        Some("-") => ShellOptionToken::EndsOptions {
+            next_is_command: true,
+        },
+        // A cluster like `-lc`, whose operand is a whole command line.
+        Some(flags) if !flags.starts_with('-') => {
+            if flags.contains('c') {
+                ShellOptionToken::EndsOptions {
+                    next_is_command: true,
+                }
+            } else {
+                ShellOptionToken::StillScanning
+            }
+        }
+        // Any other long option: no shell takes one that runs a command.
+        Some(_) => ShellOptionToken::StillScanning,
+        // The first operand — the script the shell runs, and so a command.
+        None if executable_name(token) == program => ShellOptionToken::Match,
+        None => ShellOptionToken::EndsOptions {
+            next_is_command: false,
+        },
+    }
 }
 
 /// Commands that run another command: whatever follows one is still a command.
@@ -606,7 +651,7 @@ pub enum SessionState {
 impl SessionState {
     /// Every word, in the order a reader scans them — so a surface that counts
     /// or documents the vocabulary enumerates it rather than restating it.
-    pub const ALL: &'static [SessionState] = &[
+    pub const ALL: &[SessionState] = &[
         SessionState::Working,
         SessionState::Blocked,
         SessionState::Done,
