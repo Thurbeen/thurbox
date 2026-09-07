@@ -44,7 +44,7 @@ function modal.frame(title, opts)
   }
 end
 
---- v1's `key_hint_line` plus its `[ Done ]` / `[ Cancel ]` pills.
+--- v1's `key_hint_line` plus its confirm / `[ Cancel ]` pills.
 ---
 --- `hints` is a list of `{ key, description }` pairs; `primary` labels the
 --- confirm pill, or nil to offer no confirm at all (a list with nothing to act
@@ -53,7 +53,10 @@ end
 --- the dismiss pill's label (default "Cancel" — its key is always esc).
 ---
 --- The pills carry `key:` roles, so a click replays the very keystroke they
---- name — a button and its key cannot come to mean different things.
+--- name — a button and its key cannot come to mean different things. Which is
+--- why both labels are the CALLER's: a pane whose `enter` or `esc` means
+--- something different from step to step (the creation flow's does) has to say
+--- so here, or the pill names an action the key does not perform.
 ---
 --- Both pills carry a LEADING space and are measured from the string itself.
 ---
