@@ -336,13 +336,13 @@ session), never on the loop, ADR-P12).
   teardown instead of erroring: a fork minted here, a pre-ADR-24 row, or one a
   peer already deleted there all make the host answer "Session not found", and
   aborting left the local row active and attached. The fall-through is recorded
-  in `ForceDeleteReport.host_unknown`. A call that never reached the host at
-  all — a connection failure, not a reply (`host_never_answered` in
-  `session_ops::delete`) — falls through the same way, recorded in
-  `host_unreachable` instead: the row is still marked, and the local teardown
-  that runs in the host's place owes its own retry (`remote_teardown_owed`)
-  when it cannot reach the same down host either. Any *other* host error still
-  aborts — the session may still be running there.
+  in `ForceDeleteReport.host_unknown`. A call whose `host_cli::Reach` is not
+  `Answered` — `Unreached` or `Undetermined` — falls through the same way,
+  recorded in `host_unreachable` instead: the row is still marked, and the
+  local teardown that runs in the host's place owes its own retry
+  (`remote_teardown_owed`) when it cannot reach the same down host either.
+  Only `Answered` still aborts — the host heard the question and refused, and
+  the session may still be running there.
 - **Local e2e**: `scripts/dev/e2e/linux-container.sh up` spins a throwaway Podman
   container (sshd + tmux + git) and `… test` asserts a session lands on the
   `ssh:podman` backend (state under `target/`, never touches your real
