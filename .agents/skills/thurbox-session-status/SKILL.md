@@ -99,8 +99,7 @@ exactly one group. Only a surface holding the terminals can fill it, so a
 headless reader publishes none and `ui.status` falls back to the static answer —
 the same line the CLI already draws at the folds it cannot make.
 
- The frames are
-`theme.spinner` in `ui/lib/theme.lua` and the pane picks one from the elapsed
+The frames are `theme.spinner` in `ui/lib/theme.lua` and the pane picks one from the elapsed
 time it is handed (`status_glyph` in `10_sessions.lua`); the clock behind that is
 the kernel's shared **animation tick** (`kernel::host::ANIMATION_HZ` = 8), which
 the loop advances **only while something is actually animating** — a free-running

@@ -39,8 +39,12 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   session isn't shown as working), `UserPromptSubmit`/`PreToolUse`/`PostToolUse`
   → working, `Stop` → done. `Notification` → blocked **only for
   permission/approval prompts** — claude also fires `Notification` for its
-  "waiting for your input" idle nudge, which the hook ignores (parses the
-  payload) so an idle session doesn't flip to red. `PostToolUse` is what clears
+  "waiting for your input" idle nudge, which the hook ignores (matches the
+  notification's `message` field alone, not the whole payload — `cwd` and
+  `transcript_path` are the operator's own directory names, and globbing them
+  too false-fired `blocked` on that idle nudge whenever the checkout path
+  happened to contain a word like "permission") so an idle session doesn't
+  flip to red. `PostToolUse` is what clears
   that block: claude has no "permission granted" event, so the tool finishing is
   the first thing it reports after the prompt is answered — without it an
   approved session stayed red until the *next* tool call, or until `Stop` if the
@@ -98,11 +102,13 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   own `~/.grok/trusted_folders.toml`. grok is Claude-Code-compatible, so the
   mapping mirrors claude: `SessionStart` → idle,
   `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → working, `Notification` →
-  blocked **only for permission/approval prompts** (the payload is matched, so
-  an idle nudge doesn't flip the dot red), `Stop` → done. Every command here is
+  blocked **only for permission/approval prompts** (the `message` field alone
+  is matched, not the whole payload, so an idle nudge doesn't flip the dot
+  red), `Stop` → done. Every command here is
   `$`-free: grok silently refuses to load a whole hook file whose command
-  references `$VAR` without an inline `:-default`, so the blocked edge pipes
-  stdin through `grep` rather than reusing claude's `case "$(cat)"`. **Caveat:**
+  references `$VAR` without an inline `:-default`, so the blocked edge
+  extracts the message and pipes it through `grep` rather than reusing
+  claude's `case`. **Caveat:**
   if a future grok renames its events, edit `grok-hooks.json` (no code change).
 - **kimi** *(experimental)* — Kimi Code CLI reads hooks from a `[[hooks]]` array
   in `~/.kimi-code/config.toml`. That one file is your whole kimi configuration
@@ -124,8 +130,9 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   your settings; uninstall prunes exactly ours back out. `agy` adopted Claude
   Code's hook schema (verified against agy 1.0.9), so the mapping mirrors claude:
   `SessionStart` → idle, `PreToolUse`/`PostToolUse` → working, `Stop` → done, and
-  `Notification` → blocked **only for permission/approval prompts** (the payload
-  is parsed, same as claude, so an idle `Notification` doesn't flip the dot red);
+  `Notification` → blocked **only for permission/approval prompts** (the
+  `message` field alone is matched, same as claude, so an idle `Notification`
+  doesn't flip the dot red);
   `PostToolUse` clears the block, for claude's reason. It has no
   `UserPromptSubmit`, so working is signaled at the first tool call rather than on
   prompt submit. **Caveat:** if agy sanitizes the hook environment,
