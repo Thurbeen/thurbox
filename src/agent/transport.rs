@@ -129,6 +129,19 @@ impl TmuxTransport {
         }
     }
 
+    /// Whether the multiplexer is reached over `ssh`, and so whether ssh's own
+    /// exit conventions apply to a failed command.
+    ///
+    /// Read by the teardown's listing to tell "ssh could not deliver the
+    /// question" (exit 255, ssh's documented own-error code) from "the
+    /// multiplexer answered", which is the one distinction that decides
+    /// whether an empty result means there is nothing to kill. A WSL distro is
+    /// deliberately not included: `wsl.exe` has no such convention, and
+    /// claiming it does would be the guess this exists to avoid.
+    pub fn is_ssh(&self) -> bool {
+        matches!(self, TmuxTransport::Ssh { .. })
+    }
+
     /// Whether the multiplexer is psmux (the native-Windows tmux clone). psmux
     /// lacks tmux's `send-keys -H` hex flag, so the keystroke-encoding path
     /// branches on this — see [`crate::agent::control_mode::send_keys_commands`].

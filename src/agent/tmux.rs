@@ -642,8 +642,72 @@ pub fn local_window_index() -> Result<WindowIndex> {
 pub fn remote_window_index(host: &crate::session::HostDef) -> Result<WindowIndex> {
     known_host_socket(host)?;
     Ok(WindowIndex::from_listing(
-        TmuxBackend::from_host(host).discover()?,
+        TmuxBackend::from_host(host).discover_answered()?,
     ))
+}
+
+/// `ssh`'s own failure code — see [`crate::session_ops::host_cli::Reach`],
+/// which draws the same distinction one layer up.
+const SSH_ERROR_EXIT: i32 = 255;
+
+/// Whether a failed listing means the server genuinely holds nothing, given
+/// the layer that failed (`is_ssh` + the exit `code`) and what it said.
+///
+/// **Layer before text**, and the order is the point. `ssh` exits 255 for its
+/// own failures and passes a remote command's status through untouched
+/// (a remote `exit 7` exits 7), so 255 is ssh saying the question never
+/// arrived — no matter what the stderr underneath happens to resemble.
+/// Only once the transport is ruled out does the multiplexer's own answer get
+/// to speak, and then only in the exact words it is documented to use
+/// ([`mux_answered_absent`]).
+///
+/// Everything else is "could not tell", which the caller must treat as the
+/// unanswered question it is: an empty listing here means *there is nothing to
+/// kill*, and that is not a conclusion to reach by guessing.
+fn listing_is_absence(is_ssh: bool, code: Option<i32>, stderr: &str) -> bool {
+    match code {
+        // ssh's own error, so nothing on the host ever saw the question.
+        Some(SSH_ERROR_EXIT) if is_ssh => false,
+        // Killed by a signal: it did not finish, and whatever reached stderr
+        // before that is a fragment of an answer rather than one. There is no
+        // layer to reason from, so there is nothing to conclude.
+        None => false,
+        _ => mux_answered_absent(stderr),
+    }
+}
+
+/// Whether a multiplexer's stderr is its *own* answer that there is nothing to
+/// act on, rather than any of the ways a question can fail to be answered.
+///
+/// The distinction the remote teardown rests on, and the reason this list is
+/// as short as it is. Only the exact answers tmux and psmux are documented to
+/// give for "there is no server" and "there is no such session" count;
+/// everything else — including a failure whose wording merely resembles one —
+/// is unanswered. Over-reporting a live host as unanswered costs one cheap
+/// retry, while the reverse costs an orphaned agent nobody ever looks for
+/// again.
+///
+/// `error connecting to` is the trap and the reason this is not a prefix
+/// match: tmux prints it for a socket that is not there
+/// (`(No such file or directory)`) **and** for one it cannot open while a
+/// server is very much alive behind it — `(Permission denied)` on another
+/// user's socket, `(Connection refused)` on a stale one. Only the first is an
+/// answer; reading the others as absence is exactly the "reachable failure
+/// mistaken for absence" this whole path exists to stop. Widening this list to
+/// cover more wordings is the trap it looks like a fix: each new string makes
+/// the classifier more confidently wrong about the next one nobody anticipated.
+fn mux_answered_absent(error: &str) -> bool {
+    // The socket has no server behind it. tmux ≥ 3.4 words this as "error
+    // connecting to <path> (<reason>)", and only this reason means absence.
+    if error.contains("error connecting to") {
+        return error.contains("(No such file or directory)");
+    }
+    // tmux < 3.4's wording for the same thing, which carries no reason at all.
+    if error.contains("no server running on") {
+        return true;
+    }
+    // The server is up and holds no session by that name — tmux, then psmux.
+    error.contains("can't find session") || error.contains("session not found")
 }
 
 /// Whether the local multiplexer is psmux, which has no usable window options
@@ -851,6 +915,49 @@ impl TmuxBackend {
     fn tmux_run(&self, args: &[&str]) -> Result<()> {
         self.run_tmux(args)?;
         Ok(())
+    }
+
+    /// One `list-windows`, with an empty answer only when the multiplexer
+    /// itself said there is nothing to list.
+    ///
+    /// [`discover`](SessionBackend::discover) gates on `has-session` and reads
+    /// its failure as "no windows", which over a transport conflates the two
+    /// answers a teardown must never confuse: *the host says it holds nothing*
+    /// and *the host did not answer*. A force delete taken while a host was
+    /// briefly unreachable therefore reported nothing to kill, recorded no
+    /// error, and left the agent running there for good. Here an unrecognised
+    /// failure is an error, so the caller can say so and come back later.
+    ///
+    /// Also one round trip instead of two: `list-windows` on an absent server
+    /// gives exactly the refusal `has-session` was asked for.
+    fn discover_answered(&self) -> Result<Vec<DiscoveredSession>> {
+        let args = ["list-windows", "-t", &self.session, "-F", DISCOVER_FORMAT];
+        // Run it here rather than through `run_tmux`, which formats the
+        // failure into a message: the whole point is to keep the exit status,
+        // because that is the layer talking and the message is only text.
+        let output = self
+            .transport
+            .tmux_command(&self.socket(), &args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            // The launcher would not even start — no `ssh`/`wsl.exe`/`tmux` on
+            // this machine. Nothing was asked, so nothing was answered.
+            .context("Failed to run tmux command")?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(parse_discovered)
+                .collect());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if listing_is_absence(self.transport.is_ssh(), output.status.code(), stderr.trim()) {
+            return Ok(Vec::new());
+        }
+        // Plain stderr, as `run_tmux` reports it: `agent` may not reach into
+        // `git` (its stderr cleaner lives there), and the architecture test
+        // enforces that.
+        bail!("tmux {} failed: {}", args.join(" "), stderr.trim())
     }
 
     /// Kill a pane with a one-shot command rather than through control mode.
@@ -2760,8 +2867,10 @@ pub fn agent_window(
     };
     // A one-shot `list-windows`, and deliberately nothing more: `discover`
     // answers empty for a server that is not there, where starting control
-    // mode would bring one into being.
-    let index = WindowIndex::from_listing(backend.discover()?);
+    // mode would bring one into being. `discover_answered` (not `discover`)
+    // so an unreachable host surfaces as `Err`, not as an empty listing that
+    // reads the same as "no such window" — see `mux_answered_absent`.
+    let index = WindowIndex::from_listing(backend.discover_answered()?);
     Ok(index.live_agent_window(session_id, session_name))
 }
 
@@ -2876,7 +2985,7 @@ pub fn kill_remote_windows(
 ) -> Result<bool> {
     known_host_socket(host)?;
     let backend = TmuxBackend::from_host(host);
-    let index = WindowIndex::from_listing(backend.discover()?);
+    let index = WindowIndex::from_listing(backend.discover_answered()?);
     let killed = kill_located(
         &backend,
         index.agent_window(session_id, session_name),
@@ -3014,6 +3123,96 @@ mod tests {
     use crate::agent::control_mode::{
         decode_octal, format_send_keys, parse_notification, shell_escape, Notification,
     };
+
+    /// The one distinction the remote teardown rests on. Each answer below is
+    /// what tmux 3.5/3.7 actually printed when asked for a listing it could not
+    /// give (captured against the linux-container e2e host); each failure below
+    /// is a question that was never answered. Reading the second group as the
+    /// first is what let a force delete against a host that was down for a
+    /// minute report nothing to kill and leave the agent running there.
+    #[test]
+    fn only_the_multiplexers_own_refusal_counts_as_an_empty_answer() {
+        let answers = [
+            "error connecting to /tmp/tmux-0/thurbox (No such file or directory)",
+            "no server running on /tmp/tmux-0/thurbox",
+            "can't find session: thurbox",
+            "session not found: thurbox",
+        ];
+        for answer in answers {
+            assert!(
+                mux_answered_absent(answer),
+                "the multiplexer answered: {answer}"
+            );
+        }
+        let unanswered = [
+            "ssh: connect to host devbox port 22: Connection refused",
+            "ssh: connect to host devbox port 22: Operation timed out",
+            "Permission denied (publickey).",
+            "bash: line 1: tmux: command not found",
+            "Failed to run tmux command",
+        ];
+        for failure in unanswered {
+            assert!(!mux_answered_absent(failure), "nothing answered: {failure}");
+        }
+    }
+
+    /// The trap `error connecting to` sets, and the reason it is not a prefix
+    /// match. tmux prints it both for a socket that is not there and for one it
+    /// cannot open **while a server is alive behind it** — the `(Permission
+    /// denied)` line below is what a live server on another user's socket
+    /// actually prints (reproduced by chmod-ing a running server's socket dir).
+    /// Reading that as absence is a reachable failure mistaken for "nothing to
+    /// kill", which is the orphan this whole path exists to prevent.
+    #[test]
+    fn a_socket_that_cannot_be_opened_is_not_a_server_that_is_not_there() {
+        assert!(
+            mux_answered_absent(
+                "error connecting to /tmp/tmux-0/thurbox (No such file or directory)"
+            ),
+            "no socket at all is the one reason that means absence"
+        );
+        for live in [
+            "error connecting to /tmp/tmux-1000/thurbox (Permission denied)",
+            "error connecting to /tmp/tmux-1000/thurbox (Connection refused)",
+            "error connecting to /tmp/tmux-1000/thurbox (Connection reset by peer)",
+        ] {
+            assert!(
+                !mux_answered_absent(live),
+                "a server may be alive behind this socket: {live}"
+            );
+        }
+    }
+
+    /// Layer before text. `ssh` exits 255 for its own failures and passes a
+    /// remote command's status through untouched, so 255 means the question
+    /// never arrived — even when the bytes on stderr happen to read exactly
+    /// like tmux answering, which is the case no amount of message-matching
+    /// can get right on its own.
+    #[test]
+    fn ssh_failing_on_its_own_account_is_never_absence() {
+        let tmux_said_absent = "no server running on /tmp/tmux-0/thurbox";
+
+        assert!(
+            listing_is_absence(true, Some(1), tmux_said_absent),
+            "ssh passed through tmux's own answer"
+        );
+        assert!(
+            !listing_is_absence(true, Some(255), tmux_said_absent),
+            "255 is ssh's own failure; nothing on the host answered"
+        );
+        assert!(
+            listing_is_absence(false, Some(255), tmux_said_absent),
+            "without ssh in the path, 255 carries none of that meaning"
+        );
+        assert!(
+            !listing_is_absence(true, Some(127), "bash: tmux: command not found"),
+            "reached the host, but nothing there answered the question"
+        );
+        assert!(
+            !listing_is_absence(true, None, tmux_said_absent),
+            "killed by a signal: no status to reason from"
+        );
+    }
 
     // The control-mode primitives are re-exported through this module. Their
     // behavior is covered exhaustively in `control_mode`'s own test module;

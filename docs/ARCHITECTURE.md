@@ -1356,8 +1356,13 @@ follow from the host owning the record, none of which the first cut had:
   pre-ADR-24 row, and one a peer already deleted all answer "Session not
   found". Aborting on it left the local row active and attached. It falls
   through to the local teardown instead, recorded in the report's
-  `host_unknown`; any other host error still aborts, because the session may
-  still be running there.
+  `host_unknown`. A delegated call that never reached the host at all — a
+  transport failure, not a reply — falls through the same way, recorded in
+  `host_unreachable` instead: the alternative left the local row active with
+  nothing recorded for the owed-teardown sweep (below) to retry, the same
+  orphan that sweep exists to stop, reached through the delegated door instead
+  of the legacy one. Any *other* host error still aborts, because the session
+  may still be running there.
 - **A soft delete is reaped on the host.** Nothing reaps a soft-deleted row but
   the sweep (`session_ops::reap_overdue_soft_deletes`), and a host running only
   `thurbox-cli` runs it only on its heartbeat — so on a host with neither the
@@ -1368,6 +1373,86 @@ follow from the host owning the record, none of which the first cut had:
   teardown also never calls `ensure_ready`, which would *create* the server
   and the thurbox session on the host as a side effect of tearing one down,
   and acts only on a socket the host has vouched for (`known_host_socket`).
+- **A teardown that never reached its host is owed, not abandoned.** Killing
+  something on a machine you cannot reach is not a promise software can make,
+  and an unreachable host is often *why* someone force-deletes — so the delete
+  still goes through. What it stopped doing is writing the loss off at that
+  moment: schema v46's `sessions.teardown_owed` records it, and
+  `session_ops::retry_owed_remote_teardowns` — driven by the same two callers
+  as the reap — finishes the kill and the worktree removals when the host next
+  answers. Without it that one best-effort attempt was the only one anything
+  would ever make: every reaper skips a `force_deleted` row, and the tombstone
+  push above needs a shareable host with a usable CLI, so a host on the legacy
+  path kept the agent running for good. Force-deleted rows only — a
+  soft-deleted one is restorable and its windows are the reaper's to take at
+  the end of the undo window, and a second sweep killing them on its own
+  schedule would make the undo hand back a session with nothing running in it.
+  The mark is only ever set by an attempt that failed, never by a migration:
+  an upgraded database cannot say which of its past force deletes left
+  something behind, and inventing owed teardowns for all of them would send
+  the sweep after windows that are long gone.
+- **"The host holds nothing" and "the host did not answer" are different
+  answers.** `discover` gates its listing on `has-session` and reads its
+  failure as an empty server, but over a transport `ssh` exits non-zero for a
+  refused connection, a timeout and a rejected key alike. A force delete taken
+  while a host was briefly down therefore found nothing to kill, recorded *no
+  error at all*, and reported success — the leak above, with the operator told
+  nothing. `TmuxBackend::discover_answered` (used by `kill_remote_windows`,
+  `remote_window_index`, and `agent_window`) returns an empty listing only when
+  the multiplexer itself refused. It also replaces the `has-session` round
+  trip, since `list-windows` on an absent server gives exactly that refusal.
+  `agent_window` backs `agent_window_alive`, which
+  `restart_session`'s `--if-missing` path uses to decide whether the agent is
+  gone and needs relaunching — an unreachable host now aborts the relaunch
+  instead of reading as "no window", which used to start a second agent beside
+  the one still running once the host answered again.
+- **The layer that failed decides, not the words it used.** Both classifications
+  above began as substring matches over an error message, and a message is
+  written for a person: the first unanticipated wording lands in the wrong
+  branch, silently, in whichever direction happens to be worse. So the question
+  is asked of the layer instead. `ssh` exits **255** for its own failures and
+  passes a remote command's status through untouched (a remote `exit 7` exits
+  7), and `thurbox-cli` only ever exits 1, 2 or 3 — so 255 is ssh saying the
+  question never arrived, whatever the stderr underneath resembles
+  (`agent::tmux::listing_is_absence`, `session_ops::host_cli::classify_failure`).
+  `session_ops::host_cli::Reach` names the three answers a failed remote call
+  can have — `Unreached`, `Answered`, `Undetermined` — and `Undetermined` is
+  deliberately its own answer rather than being rounded to the nearest of the
+  other two. Where a substring test is still the only signal (tmux's own
+  refusals) it is narrowed to the exact answers the tool is documented to give;
+  widening that list is the trap it looks like a fix, since each new string
+  makes the classifier more confidently wrong about the next one nobody
+  anticipated. `wsl.exe` has no 255 convention, so a WSL host is never called
+  `Unreached` on a status alone — the honest limit rather than a guess, and a
+  cheap one, since `wsl.exe` runs on this machine.
+- **What an unclassifiable failure does depends on which branch destroys
+  nothing**, and that is not the same branch everywhere. For a listing,
+  "unanswered" must not become "the server holds nothing", so it is an error
+  and the teardown is recorded as owed. For a *delegated delete* it is the
+  reverse: aborting reaches nothing and records nothing, which is how a session
+  on a host with a broken CLI became undeletable, so `Undetermined` falls back
+  to the local teardown alongside `Unreached` — stamp-addressed, so on a host
+  that is up (exit 127, reached it and found no `thurbox-cli`) it still takes
+  exactly this session's windows, and on one that is not it records the owed
+  teardown. Only `Answered` aborts: the host is up, heard the question and
+  refused, so the session may still be running there. A host too old to write
+  the structured `{"error": …}` document is still read as having answered, from
+  its exit code being one of the CLI's own.
+- **Known limit: tmux's absence is a claim about the socket, not the machine.**
+  A tmux server with live panes whose socket file is moved or replaced reports
+  `error connecting to <path> (No such file or directory)` — verified against a
+  real host with two live processes still running behind it. thurbox addresses
+  sessions only through that socket, so there is no command it could issue to
+  reach those windows and no retry that would ever discharge such an owed
+  teardown; treating it as absence is therefore the right answer, but it is the
+  narrower claim *nothing is reachable through this socket*. Closing the gap
+  would need a way to identify a session's processes without the multiplexer —
+  a recorded OS pid per remote pane, or a scan by worktree cwd — which nothing
+  here has today. What the narrowing does buy is the case where a retry *does*
+  help: `(Permission denied)` / `(Connection refused)` / `(Connection reset by
+  peer)` behind that same `error connecting to` prefix are a server that may be
+  alive and reachable once the condition clears, and those are no longer read
+  as absence.
 
 ---
 
@@ -1445,7 +1530,12 @@ rather than through a column that is usually NULL.
 `deleted_at` is older than `UNDO_WINDOW` and that still owns a window by its
 ADR-25 stamp — and both drivers call it: the interface's loop on a slow cadence
 (`REAP_INTERVAL`, a `Command::Reap` that names no session) and `thurbox-cli`'s
-heartbeat on its tick. `Command::Reap` is the one command the bus keeps no
+heartbeat on its tick. `retry_owed_remote_teardowns` (ADR-24) rides the same two
+drivers and is deliberately a *separate* sweep rather than a branch inside this
+one: it asks a different durable question (`teardown_owed`, not
+`deleted_at + UNDO_WINDOW`) of a disjoint set of rows (force-deleted, which this
+sweep skips), and folding the two would put a kill that must not wait for the
+undo window in the same pass as one that must. `Command::Reap` is the one command the bus keeps no
 in-flight record of — it recurs forever with nobody waiting on it, and a row
 there is drawn, captioned and counted as activity (ADR-P22 in
 `docs/PERFORMANCE.md`). Alongside it, a caller that changes **one column** of a

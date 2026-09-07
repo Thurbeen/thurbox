@@ -393,7 +393,65 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, String> {
 /// *there*, which is what the caller needs to show: the host's stderr when it
 /// has any (a transport failure that never reached the CLI), otherwise the
 /// message from the structured error document the CLI prints on stdout.
-pub fn run(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Value, String> {
+/// How far a failed host CLI call actually got.
+///
+/// Decided by **which layer failed** — the launcher, the transport, or the CLI
+/// itself — never by what the message says. A message is written for a person
+/// and can say anything; a delete that has to choose between "nothing ran
+/// there" and "the host refused" cannot be deciding it by looking for
+/// substrings, because the first unanticipated wording lands in the wrong
+/// branch silently and in whichever direction happens to be worse.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Reach {
+    /// The question never arrived: the launcher would not start, or `ssh`
+    /// failed on its own account (exit 255 — its documented "an error
+    /// occurred", distinct from the remote command's status, which it passes
+    /// through). Nothing ran on the host, so nothing there acted on it.
+    Unreached,
+    /// `thurbox-cli` ran on the host and answered with an error of its own,
+    /// as the structured document every remote invocation asks for.
+    Answered,
+    /// Something in between failed and the layer cannot be told: no shell on
+    /// the host, a binary that is not there, output in a shape nothing
+    /// recognises. **Not** a synonym for either of the others — a caller must
+    /// treat it as the unanswered question it is, and pick whichever branch
+    /// destroys nothing.
+    Undetermined,
+}
+
+/// A failed [`run`], with the layer that failed alongside the message.
+#[derive(Clone, Debug)]
+pub struct RunFailure {
+    pub message: String,
+    pub reach: Reach,
+}
+
+impl RunFailure {
+    fn new(message: String, reach: Reach) -> Self {
+        Self { message, reach }
+    }
+}
+
+impl std::fmt::Display for RunFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<RunFailure> for String {
+    fn from(failure: RunFailure) -> Self {
+        failure.message
+    }
+}
+
+/// [`run`], keeping the layer that failed instead of flattening it to a
+/// message.
+///
+/// Only the delete path needs it, and it needs it badly: falling back to a
+/// local teardown is destructive when the host was in fact fine, and aborting
+/// leaves nothing recorded when the host was in fact gone. Which of those is
+/// safe depends entirely on whether the question arrived — see [`Reach`].
+pub fn run_classified(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Value, RunFailure> {
     #[cfg(test)]
     if let Some(answer) = fake::run_override(host, args) {
         return answer;
@@ -403,15 +461,24 @@ pub fn run(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Value, String
     } else {
         cli_script_posix(&cli.path, args)
     };
-    let stdout = run_script(host, &script, "thurbox-cli")?;
+    let stdout = run_script_classified(host, &script, "thurbox-cli")?;
     serde_json::from_str(&stdout).map_err(|e| {
-        format!(
-            "thurbox-cli on '{}' printed no JSON for `{}` ({e}): {}",
-            host.name,
-            args.join(" "),
-            stdout.trim()
+        // It ran and said something; that something is not what this build
+        // knows how to read. The host may well have done the thing.
+        RunFailure::new(
+            format!(
+                "thurbox-cli on '{}' printed no JSON for `{}` ({e}): {}",
+                host.name,
+                args.join(" "),
+                stdout.trim()
+            ),
+            Reach::Undetermined,
         )
     })
+}
+
+pub fn run(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Value, String> {
+    run_classified(host, cli, args).map_err(String::from)
 }
 
 /// The `sh` line for one CLI invocation. Every argument is POSIX-quoted, and
@@ -436,6 +503,32 @@ pub(crate) fn cli_script_windows(cli: &str, args: &[&str]) -> String {
 /// Run a script on the host in its own dialect and return stdout, with a
 /// failure carrying the host's cleaned stderr.
 fn run_script(host: &HostDef, script: &str, action: &str) -> Result<String, String> {
+    run_script_classified(host, script, action).map_err(String::from)
+}
+
+/// [`run_script`] keeping the layer that failed. See [`Reach`].
+///
+/// The classification is entirely structural:
+///
+/// - the launcher would not start at all — no `ssh`/`wsl.exe` on this machine,
+///   or it could not be executed — so nothing left this machine: `Unreached`.
+/// - `ssh` exited **255**, which is its documented code for "an error
+///   occurred" *in ssh*. It passes a remote command's own status through
+///   untouched (a remote `exit 7` exits 7), and `thurbox-cli` only ever exits
+///   1, 2 or 3 ([`crate::cli::EXIT_ERROR`] and friends), so 255 cannot be the
+///   host CLI answering: `Unreached`.
+/// - the host CLI answered on stdout with the structured `{"error": …}` every
+///   remote invocation asks for: `Answered`.
+/// - anything else — a shell that could not find the binary (127), a host
+///   running something that is not thurbox, stderr from a layer nobody here
+///   owns: `Undetermined`.
+///
+/// `wsl.exe` has no 255 convention of its own, so a WSL host is never
+/// classified `Unreached` by exit status — only by a launcher that would not
+/// start. That is the honest limit rather than a guess, and it costs little:
+/// `wsl.exe` runs on this machine, so "could not reach it" is a far narrower
+/// condition there than it is over a network.
+fn run_script_classified(host: &HostDef, script: &str, action: &str) -> Result<String, RunFailure> {
     let mut command = if host.is_windows() {
         crate::git::host_powershell_c(host, script)
     } else {
@@ -445,7 +538,12 @@ fn run_script(host: &HostDef, script: &str, action: &str) -> Result<String, Stri
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
-        .map_err(|e| format!("could not start {action} on '{}': {e}", host.name))?;
+        .map_err(|e| {
+            RunFailure::new(
+                format!("could not start {action} on '{}': {e}", host.name),
+                Reach::Unreached,
+            )
+        })?;
     if !output.status.success() {
         let stderr = crate::git::reportable_stderr(&output.stderr);
         let stderr = stderr
@@ -459,24 +557,70 @@ fn run_script(host: &HostDef, script: &str, action: &str) -> Result<String, Stri
         // value of delegating to the host in the first place. stderr is still
         // read first: a transport failure — ssh could not connect, the shell
         // could not find the binary — never reaches the CLI at all.
+        let answered = reported_error(&output.stdout);
         let reported = if stderr.is_empty() {
-            reported_error(&output.stdout)
+            answered.clone()
         } else {
             Some(stderr.to_string())
         };
-        return Err(reported.unwrap_or_else(|| {
-            format!(
-                "{action} on '{}' failed (exit {})",
-                host.name,
-                output
-                    .status
-                    .code()
-                    .map_or("?".to_string(), |c| c.to_string())
-            )
-        }));
+        let code = output.status.code();
+        let reach = classify_failure(host.is_wsl(), code, answered.is_some());
+        return Err(RunFailure::new(
+            reported.unwrap_or_else(|| {
+                format!(
+                    "{action} on '{}' failed (exit {})",
+                    host.name,
+                    code.map_or("?".to_string(), |c| c.to_string())
+                )
+            }),
+            reach,
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
+
+/// `ssh`'s own failure code. ssh(1): "exits with the exit status of the remote
+/// command or with 255 if an error occurred" — so this value, and only this
+/// value, is ssh saying the failure was its own rather than the host's.
+const SSH_ERROR_EXIT: i32 = 255;
+
+/// Which layer a failed remote invocation failed at, from the exit status and
+/// whether the host CLI wrote its structured answer. See [`Reach`].
+///
+/// Structural, in this order:
+///
+/// 1. only `ssh` owns 255, and `wsl.exe` has no such convention, so a WSL host
+///    is never called `Unreached` on a status alone;
+/// 2. the `{"error": …}` document is positive proof `thurbox-cli` ran;
+/// 3. failing that, an exit code that is one of the CLI's *own*
+///    ([`CLI_EXIT_CODES`]) still says something thurbox-shaped ran and refused
+///    — which matters because a host on an older build reported its failures
+///    on stderr rather than as that document, and reading such a refusal as
+///    "nothing answered" is what would let it be overridden.
+///
+/// Anything left over — 127 from a shell that could not find the binary, a
+/// host running something else entirely, no status at all — is
+/// [`Reach::Undetermined`]: its own answer, never rounded to the nearest of
+/// the other two.
+fn classify_failure(is_wsl: bool, code: Option<i32>, answered: bool) -> Reach {
+    if !is_wsl && code == Some(SSH_ERROR_EXIT) {
+        return Reach::Unreached;
+    }
+    if answered || code.is_some_and(|c| CLI_EXIT_CODES.contains(&c)) {
+        return Reach::Answered;
+    }
+    Reach::Undetermined
+}
+
+/// Every code `thurbox-cli` exits with of its own accord. A status outside
+/// this set did not come from the host's thurbox.
+///
+/// Spelled out rather than imported: `session_ops` may not reference `cli`
+/// (`tests/architecture_rules.rs`). These are `cli::EXIT_ERROR`,
+/// `cli::EXIT_USAGE` and `cli::EXIT_AMBIGUOUS`, and
+/// `cli::tests::host_cli_knows_every_exit_code_this_binary_uses` fails if they
+/// ever drift apart.
+pub(crate) const CLI_EXIT_CODES: [i32; 3] = [1, 2, 3];
 
 /// Pull the message out of a failed host CLI's stdout.
 ///
@@ -621,7 +765,7 @@ pub(crate) mod fake {
     use super::Usable;
     use crate::session::HostDef;
 
-    type Runner = Box<dyn Fn(&HostDef, &[String]) -> Result<Value, String>>;
+    type Runner = Box<dyn Fn(&HostDef, &[String]) -> Result<Value, super::RunFailure>>;
 
     thread_local! {
         static USABLE: RefCell<Option<Usable>> = const { RefCell::new(None) };
@@ -653,7 +797,26 @@ pub(crate) mod fake {
         USABLE.with(|u| u.borrow().clone())
     }
 
-    pub(super) fn run_override(host: &HostDef, args: &[&str]) -> Option<Result<Value, String>> {
+    /// A failure that never reached the host, as a test would script it.
+    pub fn unreached(message: &str) -> super::RunFailure {
+        super::RunFailure::new(message.to_string(), super::Reach::Unreached)
+    }
+
+    /// A failure the host itself answered with.
+    pub fn answered(message: &str) -> super::RunFailure {
+        super::RunFailure::new(message.to_string(), super::Reach::Answered)
+    }
+
+    /// A failure whose layer could not be told — the case a caller must never
+    /// quietly round to one of the other two.
+    pub fn undetermined(message: &str) -> super::RunFailure {
+        super::RunFailure::new(message.to_string(), super::Reach::Undetermined)
+    }
+
+    pub(super) fn run_override(
+        host: &HostDef,
+        args: &[&str],
+    ) -> Option<Result<Value, super::RunFailure>> {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
         RUNNER.with(|r| {
             let runner = r.borrow();
@@ -678,6 +841,53 @@ pub(crate) mod fake {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Which layer failed, decided from the exit status and whether the host
+    /// CLI wrote its own structured answer — never from the message. The two
+    /// wrong answers cost differently and both are silent: a transport failure
+    /// read as a reply leaves an orphaned agent nobody looks for again, and a
+    /// reply read as a transport failure authorises a destructive local
+    /// teardown against a host that was perfectly fine.
+    #[test]
+    fn a_failed_remote_call_is_classified_by_layer_not_by_message() {
+        // ssh's own code, and only ssh's: it passes a remote command's status
+        // through untouched, and thurbox-cli only ever exits 1, 2 or 3.
+        assert_eq!(
+            classify_failure(false, Some(SSH_ERROR_EXIT), false),
+            Reach::Unreached
+        );
+        // Even when the host CLI would have had something to say: nothing ran
+        // there to say it.
+        assert_eq!(
+            classify_failure(false, Some(SSH_ERROR_EXIT), true),
+            Reach::Unreached
+        );
+        // `wsl.exe` has no 255 convention, so the same status proves nothing.
+        assert_eq!(
+            classify_failure(true, Some(SSH_ERROR_EXIT), false),
+            Reach::Undetermined
+        );
+        // The structured `{"error": …}` document is positive proof the CLI ran.
+        assert_eq!(classify_failure(false, Some(1), true), Reach::Answered);
+        // An exit code of the CLI's own still says something thurbox-shaped
+        // refused, even on a build too old to write the structured document.
+        for code in [Some(1), Some(2), Some(3)] {
+            assert_eq!(
+                classify_failure(false, code, false),
+                Reach::Answered,
+                "exit {code:?} is one thurbox-cli gives of its own accord"
+            );
+        }
+        // A shell that could not find the binary (127), a host running
+        // something else, a signal: reached or not, nothing here can tell.
+        for code in [Some(127), Some(126), Some(9), None] {
+            assert_eq!(
+                classify_failure(false, code, false),
+                Reach::Undetermined,
+                "exit {code:?} says nothing about which layer failed"
+            );
+        }
+    }
 
     fn cli(version: &str, schema: Option<u32>) -> CliInfo {
         CliInfo {

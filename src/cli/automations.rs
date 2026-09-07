@@ -508,12 +508,19 @@ fn tick(db: &Database) -> Result<Value, String> {
     // A soft delete asked for headlessly — from a peer, or from this CLI —
     // has no interface here to reap it once the undo window has closed.
     let reaped = crate::session_ops::reap_overdue_soft_deletes(db);
+    // And a force delete whose teardown never reached its host: this is the
+    // pass that finishes it, so an agent orphaned by a machine that was down
+    // for a minute is collected rather than left running there for good.
+    // After the mirror above, which is what may just have taken the delete to
+    // a host that came back on its own.
+    let teardowns = crate::session_ops::retry_owed_remote_teardowns(db);
     Ok(json!({
         "fired": fired,
         "skipped": skipped,
         "healed": healed,
         "synced": synced,
         "reaped": reaped,
+        "teardowns": teardowns,
     }))
 }
 

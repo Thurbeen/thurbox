@@ -624,7 +624,10 @@ has the rationale; the shape:
   pushed to it on the next mirror pass, so the two converge instead of
   undoing each other. And a delete the host answers "no such session"
   to is taken from here rather than failing: a fork, a row from before
-  sharing, or one a peer already deleted there.
+  sharing, or one a peer already deleted there. A delete the host never
+  answers at all — a connection failure, not a reply — is also taken from
+  here, and a force delete owes a retry for what it could not reach either.
+  Any other host error still fails the delete outright.
 - **Windows hosts** share through the same path: the probe, the
   provisioning (the release zip) and every delegated command go
   through the PowerShell path the probes already use.

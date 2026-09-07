@@ -80,7 +80,7 @@ fn rig() -> Rig {
         match words.as_slice() {
             ["session", "create", rest @ ..] => {
                 if let Some(refusal) = host.refuse_create.take() {
-                    return Err(refusal);
+                    return Err(fake::answered(&refusal));
                 }
                 let name = rest
                     .windows(2)
@@ -108,7 +108,7 @@ fn rig() -> Rig {
                 if !host.active.iter().any(|s| s.id == id) {
                     // Word for word what the host's own resolver answers for a
                     // row it does not hold — see `cli::session_ref::resolve`.
-                    return Err(format!("Session not found: {id}"));
+                    return Err(fake::answered(&format!("Session not found: {id}")));
                 }
                 host.active.retain(|s| s.id != id);
                 let force = rest.contains(&"--force");
@@ -129,7 +129,10 @@ fn rig() -> Rig {
                 host.active.push(host_session(id, "back"));
                 Ok(json!({ "restored": true, "worktrees_wanted": 1, "worktrees_recovered": 1 }))
             }
-            other => Err(format!("unscripted host command: {}", other.join(" "))),
+            other => Err(fake::answered(&format!(
+                "unscripted host command: {}",
+                other.join(" ")
+            ))),
         }
     }));
     Rig {
@@ -423,7 +426,7 @@ fn any_other_refusal_from_the_host_still_aborts_the_delete() {
     let mut row = host_session(id, "wedged");
     row.backend_type = BACKEND.into();
     rig.db.upsert_session(&row).unwrap();
-    fake::install_runner(Box::new(|_, _| Err("worktree is locked".into())));
+    fake::install_runner(Box::new(|_, _| Err(fake::answered("worktree is locked"))));
 
     let err = super::delete_session_headless(&rig.db, id, true).unwrap_err();
     assert_eq!(err, "worktree is locked");

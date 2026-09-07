@@ -41,8 +41,15 @@ use rusqlite::Connection;
 /// live restore by comparing those two directly conflates two clocks that can
 /// be skewed against each other; comparing the host's new `updated_at`
 /// against this snapshot instead orders two readings of the *same* clock.
+/// v46 adds `teardown_owed` to `sessions`: a force delete whose remote
+/// teardown never reached its host still owes one. The kill and the worktree
+/// removals happen on the host, an unreachable host is an ordinary reason to
+/// force-delete, and a `force_deleted` row is skipped by every reaper — so the
+/// one-shot best-effort attempt was the only one that would ever be made, and
+/// the agent it failed to kill outlived the session forever. The mark is what
+/// lets the sweep come back for it.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 45;
+pub const SCHEMA_VERSION: u32 = 46;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -116,6 +123,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             stopped_at        INTEGER,
             reports_as        TEXT,
             host_updated_at   INTEGER,
+            teardown_owed     INTEGER NOT NULL DEFAULT 0,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -358,6 +366,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (43, migrate_v43_session_events),
         (44, migrate_v44_reports_as),
         (45, migrate_v45_host_updated_at),
+        (46, migrate_v46_teardown_owed),
     ];
 
     for &(target, step) in steps {
@@ -614,6 +623,46 @@ mod tests {
             .exists([])
             .unwrap();
         assert!(has_description, "description column should be added at v26");
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v45_adds_teardown_owed_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v45 state: a sessions table without the teardown_owed column.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '45');
+             CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER);
+             INSERT INTO sessions (id, name, created_at, updated_at, deleted_at)
+                VALUES ('a', 'old', 0, 0, 1);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        // An upgraded database cannot say which of its past force deletes left
+        // something running on a host, so none of them owe a teardown: the
+        // sweep must not go hunting windows that have long since gone.
+        let owed: i64 = conn
+            .query_row(
+                "SELECT teardown_owed FROM sessions WHERE id = 'a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owed, 0, "existing rows owe nothing at v46");
 
         let version: String = conn
             .query_row(

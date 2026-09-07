@@ -915,3 +915,17 @@ pub(super) fn migrate_v44_reports_as(conn: &Connection) -> rusqlite::Result<()> 
 pub(super) fn migrate_v45_host_updated_at(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_absent(conn, "sessions", "host_updated_at", "INTEGER")
 }
+
+/// See [`super::SCHEMA_VERSION`] v46: a force delete whose remote teardown
+/// never reached its host still owes one. `0` on every existing row — a
+/// database upgraded from v45 cannot say which of its past force deletes left
+/// something running on a host, and inventing an owed teardown for all of them
+/// would send the sweep after windows that are long gone.
+pub(super) fn migrate_v46_teardown_owed(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(
+        conn,
+        "sessions",
+        "teardown_owed",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+}

@@ -213,6 +213,145 @@ shared_sessions_probe() {
   fi
 }
 
+# The remote-teardown half of the e2e: a force delete taken while the host is
+# unreachable must still finish the kill once the host answers. Sharing is
+# turned off for this probe so the delete takes the LEGACY teardown path — the
+# one with no host CLI to delegate to and no mirror to push a tombstone, i.e.
+# the one where a one-shot best-effort attempt was the only attempt anything
+# would ever make. Runs inside cmd_test's isolated XDG home, and puts
+# `hosts.toml` back exactly as it found it on the way out.
+remote_teardown_probe() {
+  log "asserting an owed remote teardown is finished when the host comes back"
+  local hosts="$XDG_CONFIG_HOME/thurbox-dev/hosts.toml"
+  local shared up down
+  shared="$(cat "$hosts")"
+  # Every exit path, including the early `return`s below, must leave
+  # hosts.toml as it found it — a probe that dies partway through must not
+  # cascade a patched host into shared_sessions_probe right after it.
+  trap 'printf "%s\n" "$shared" > "$hosts"' RETURN
+  # The same host with sharing off, reachable and not. Sharing stays off for
+  # the whole probe: with it on, a host whose CLI has vouched for no socket is
+  # refused outright by `known_host_socket`, which is a different (deliberate)
+  # behaviour and would hide the one under test.
+  up="$(printf '%s\n' "$shared" \
+    | sed 's/^name = "podman"$/name = "podman"\nshare_sessions = false/')"
+  down="$(printf '%s\n' "$up" | sed "s/\"$PORT\"/\"59999\"/")"
+  printf '%s\n' "$up" > "$hosts"
+
+  local id
+  id="$(e2e_cli session create --name e2e-teardown --host podman --repo-path "$REMOTE_REPO" \
+    --agent shell --worktree-branch test/e2e-teardown --base-branch main | json_field id)"
+  [ -n "$id" ] || { bad "could not create the session for the teardown probe"; return; }
+
+  # The pane pid of the session's OWN window: killing the window has to reap
+  # what was running in it, which is what the captain's "processes" means. The
+  # tmux session's initial `bash` window is server furniture and not this
+  # session's to take.
+  local pid
+  pid="$(ssh_remote 'tmux -L thurbox-dev list-panes -a -F "#{window_name} #{pane_pid}" 2>/dev/null' \
+    | sed -n 's/^tb-e2e-teardown //p' | head -n1)"
+  if [ -n "$pid" ] && ssh_remote "kill -0 $pid 2>/dev/null"; then
+    ok "the agent process ($pid) is running on the container"
+  else
+    bad "no agent process found for the teardown probe"
+    return
+  fi
+
+  # The host goes away, and the operator force-deletes anyway — which is the
+  # ordinary reason to force-delete, and must keep working.
+  printf '%s\n' "$down" > "$hosts"
+  local out
+  if out="$(e2e_cli session delete "$id" --force)"; then
+    ok "force-delete still works against a host that is down"
+  else
+    bad "force-delete failed against a down host (it must not)"
+  fi
+  case "$out" in
+    *'"remote_teardown_owed":true'*) ok "the delete says the teardown is owed, not merely failed" ;;
+    *) bad "the delete did not record an owed teardown (got: $out)" ;;
+  esac
+  # The classification, proven against a real transport rather than a mocked
+  # string: ssh exited 255 on its own account, so the empty listing that came
+  # back must NOT have been read as "the server holds nothing". Claiming a kill
+  # here — or simply moving on — is the reachable-failure-mistaken-for-absence
+  # bug, and the window still standing is what makes the difference visible.
+  case "$out" in
+    *'"killed_window":true'*) bad "the delete claimed a kill it could not have made" ;;
+    *) ok "no kill was claimed for a question the host never received" ;;
+  esac
+  if ssh_remote "kill -0 $pid 2>/dev/null"; then
+    ok "the agent is still running, and thurbox knows it has unfinished business"
+  else
+    bad "the agent died without thurbox ever reaching the host"
+  fi
+
+  # The host comes back. The sweep the heartbeat drives is what finishes it.
+  printf '%s\n' "$up" > "$hosts"
+  e2e_cli automation tick >/dev/null || die "automation tick failed"
+
+  local windows
+  windows="$(ssh_remote 'tmux -L thurbox-dev list-windows -a -F "#{window_name}" 2>/dev/null' \
+    | grep -c '^tb-e2e-teardown$' || true)"
+  if [ "$windows" = "0" ]; then
+    ok "the orphaned window was killed once the host answered"
+  else
+    bad "the window survived the delete ($windows still there)"
+  fi
+  if ssh_remote "kill -0 $pid 2>/dev/null"; then
+    bad "the agent process $pid survived the delete"
+  else
+    ok "and the agent process it was running is gone"
+  fi
+  case "$(e2e_cli session list --deleted)" in
+    *'"teardown_owed":true'*) bad "the row still owes a teardown after the sweep" ;;
+    *) ok "the row no longer owes a teardown" ;;
+  esac
+}
+
+# `session restart --if-missing` must refuse rather than relaunch when the
+# host cannot be reached at the moment it checks: an unreachable host and a
+# host that genuinely holds no such window read identically as an empty
+# `list-windows`, and treating the former as the latter starts a second agent
+# beside the one still running once the host answers again. Runs inside
+# cmd_test's isolated XDG home, and puts `hosts.toml` back on every exit.
+restart_if_missing_probe() {
+  log "asserting --if-missing refuses to relaunch when the host cannot be reached"
+  local hosts="$XDG_CONFIG_HOME/thurbox-dev/hosts.toml"
+  local shared up down
+  shared="$(cat "$hosts")"
+  trap 'printf "%s\n" "$shared" > "$hosts"' RETURN
+  up="$(printf '%s\n' "$shared" \
+    | sed 's/^name = "podman"$/name = "podman"\nshare_sessions = false/')"
+  down="$(printf '%s\n' "$up" | sed "s/\"$PORT\"/\"59999\"/")"
+  printf '%s\n' "$up" > "$hosts"
+
+  local id
+  id="$(e2e_cli session create --name e2e-ifmissing --host podman --repo-path "$REMOTE_REPO" \
+    --agent shell --worktree-branch test/e2e-ifmissing --base-branch main | json_field id)"
+  [ -n "$id" ] || { bad "could not create the session for the if-missing probe"; return; }
+
+  printf '%s\n' "$down" > "$hosts"
+  if e2e_cli session restart "$id" --if-missing >/dev/null 2>&1; then
+    bad "restart --if-missing succeeded against a host it could not reach"
+  else
+    ok "restart --if-missing refuses rather than guessing when the host is unreachable"
+  fi
+
+  # The host answers again: exactly the one window from the original spawn,
+  # never a second one started while the host looked absent.
+  printf '%s\n' "$up" > "$hosts"
+  local windows
+  windows="$(ssh_remote 'tmux -L thurbox-dev list-windows -a -F "#{window_name}" 2>/dev/null' \
+    | grep -c '^tb-e2e-ifmissing$' || true)"
+  if [ "$windows" = "1" ]; then
+    ok "no second agent window was started while the host looked unreachable"
+  else
+    bad "expected exactly one tb-e2e-ifmissing window, found ${windows:-0}"
+  fi
+
+  e2e_cli session delete "$id" --force >/dev/null || true
+}
+
 cmd_test() {
   command -v cargo >/dev/null || die "cargo not found"
   ssh_remote true 2>/dev/null || die "container not reachable — run '$0 up' first"
@@ -327,10 +466,12 @@ EOF
     *) bad "hook_state lost after a steady-state tick" ;;
   esac
 
+  remote_teardown_probe
+  restart_if_missing_probe
   shared_sessions_probe
 
   if [ "$FAILS" -gt 0 ]; then
-    fail "remote hook provisioning / shared sessions checks failed ($FAILS)"
+    fail "remote hook provisioning / shared sessions / teardown checks failed ($FAILS)"
     return 1
   fi
   e2e_assert "ssh:podman" "$backend" "$remote_window" "$remote_wt" \

@@ -238,13 +238,16 @@ pub enum Command {
     Theme {
         name: String,
     },
-    /// Let the agents of every session soft-deleted past its undo window go.
+    /// Let the agents of every session soft-deleted past its undo window go,
+    /// and finish the teardowns owed on hosts that were unreachable when a
+    /// force delete was taken.
     ///
     /// Names no session: the question is asked of the database
-    /// (`deleted_at + UNDO_WINDOW`), not of a list the loop kept. Issued by the
-    /// loop on a slow cadence rather than by a plugin — it is a consequence of
-    /// time passing, not of anything anyone pressed. Worktrees are left alone —
-    /// they are what makes the undo lossless.
+    /// (`deleted_at + UNDO_WINDOW`, and the owed-teardown mark), not of a list
+    /// the loop kept. Issued by the loop on a slow cadence rather than by a
+    /// plugin — it is a consequence of time passing, not of anything anyone
+    /// pressed. A soft delete's worktrees are left alone — they are what makes
+    /// the undo lossless.
     Reap,
     /// Write the user's settings back to `settings.toml`.
     ///
