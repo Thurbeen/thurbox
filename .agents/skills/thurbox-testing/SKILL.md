@@ -89,7 +89,12 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   force delete and reap both collect the companion shell alongside the agent's
   window, a teardown spares a live namesake's companion shell, and a teardown
   never brings a tmux server into being (the `ensure_ready` side effect this
-  path must not trigger).
+  path must not trigger). The owed-teardown sweep
+  (`retry_owed_remote_teardowns`) is unit-tested against `host_cli::fake` in
+  `session_ops::delete` — that a failed remote teardown is written onto the
+  row, that a soft-deleted row is never on its worklist (the undo window), and
+  that a silent host is asked once per pass — and proven end to end on a real
+  process by `linux-container.sh`'s `remote_teardown_probe`.
 - **`tests/concurrent_respawn.rs`** — six sessions relaunching onto a tmux
   server that does not exist yet, against a *real* tmux on a throwaway socket
   (skipped when tmux is absent): every worker's `ensure_session_configured`

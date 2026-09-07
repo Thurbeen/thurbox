@@ -85,6 +85,12 @@ pub struct DeletedSessionInfo {
     /// rather than created (`created_by_thurbox`, schema v42): the teardown
     /// skipped every one, so nothing was lost and the restore is not refused.
     pub force_deleted: bool,
+    /// Whether this row's teardown never reached the host it was owed on
+    /// (schema v46), so the sweep must come back for it. Only a remote session
+    /// can owe one: the kill and the worktree removals happen on the host, and
+    /// a host that was down at delete time is the whole reason the attempt
+    /// failed. Cleared the moment the host answers.
+    pub teardown_owed: bool,
     pub worktrees: Vec<SharedWorktree>,
 }
 
@@ -286,6 +292,38 @@ impl Database {
         tx.commit()
     }
 
+    /// Record whether a deleted row still owes a teardown on the host it lived
+    /// on (schema v46).
+    ///
+    /// Set when a force delete could not reach that host, cleared when a later
+    /// attempt does. No session event: this is bookkeeping about a delete that
+    /// already happened and was already announced, not a change of what the
+    /// session *is* — a watcher told the session went away twice would have to
+    /// decide which telling was the real one.
+    pub fn set_teardown_owed(&self, id: SessionId, owed: bool) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET teardown_owed = ?2 WHERE id = ?1",
+            params![id.to_string(), i64::from(owed)],
+        )?;
+        Ok(())
+    }
+
+    /// The force-deleted rows whose teardown never reached their host, oldest
+    /// delete first — the sweep's worklist.
+    ///
+    /// Force-deleted only, and that is the safety property rather than an
+    /// optimisation: a *soft*-deleted row is restorable for its undo window and
+    /// its windows are the reaper's to take at the end of it, so a second sweep
+    /// killing them on its own schedule would turn undo into a lie.
+    pub fn list_owed_teardowns(&self) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
+        let mut rows = self.query_deleted_sessions(
+            "s.deleted_at IS NOT NULL AND s.force_deleted = 1 AND s.teardown_owed = 1",
+            [],
+        )?;
+        rows.reverse();
+        Ok(rows)
+    }
+
     /// Upgrade an **already-deleted** row to force-deleted: its window and
     /// worktrees turned out to be gone after all (a mirror pass learning what
     /// the owning host did). A row that is not deleted, or already marked, is
@@ -321,8 +359,11 @@ impl Database {
 
         // Clear `force_deleted` defensively — the app layer blocks restoring a
         // force-deleted row, so this only matters if a future caller revives one.
+        // `teardown_owed` goes with it: a row that is alive again has no orphan
+        // for the sweep to collect, and its windows are not the sweep's to kill.
         let restored = self.conn.execute(
-            "UPDATE sessions SET deleted_at = NULL, force_deleted = 0, updated_at = ?1 WHERE id = ?2 AND deleted_at IS NOT NULL",
+            "UPDATE sessions SET deleted_at = NULL, force_deleted = 0, teardown_owed = 0, \
+             updated_at = ?1 WHERE id = ?2 AND deleted_at IS NOT NULL",
             params![now, id_str],
         )?;
 
@@ -786,7 +827,7 @@ impl Database {
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
              s.force_deleted, s.backend_id, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox, \
-             s.host_updated_at \
+             s.host_updated_at, s.teardown_owed \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
              WHERE {condition} \
@@ -810,6 +851,7 @@ impl Database {
             let wt_branch: Option<String> = row.get(13)?;
             let wt_mine: Option<bool> = row.get(14)?;
             let host_updated_at: Option<i64> = row.get(15)?;
+            let teardown_owed: i64 = row.get(16)?;
 
             let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch, wt_mine);
 
@@ -827,6 +869,7 @@ impl Database {
                     deleted_at: deleted_at as u64,
                     host_updated_at: host_updated_at.map(|at| at as u64),
                     force_deleted: force_deleted != 0,
+                    teardown_owed: teardown_owed != 0,
                     worktrees: Vec::new(),
                 },
                 worktree,

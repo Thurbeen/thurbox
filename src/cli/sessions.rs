@@ -1223,6 +1223,7 @@ fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutpu
             "worktree_errors": report.worktree_errors,
             "disabled_automations": report.disabled_automations,
             "remote_teardown_error": report.remote_teardown_error,
+            "remote_teardown_owed": report.remote_teardown_owed,
             "host_unknown": report.host_unknown,
             "hook_failures": report.hook_failures,
         }),
@@ -1256,6 +1257,15 @@ fn force_delete_detail(
     }
     if let Some(err) = &report.remote_teardown_error {
         detail.push(("remote teardown error", err.clone()));
+    }
+    // Said whenever it is true, including for a teardown whose only casualty
+    // was a worktree: "could not reach the host" on its own reads as work
+    // abandoned, and the whole point of the mark is that it is not.
+    if report.remote_teardown_owed {
+        detail.push((
+            "remote teardown",
+            "owed — retried on the host whenever it next answers".to_string(),
+        ));
     }
     detail
 }
@@ -2142,6 +2152,7 @@ fn deleted_session_to_json(r: &crate::storage::DeletedSessionInfo) -> Value {
         "parent_session_id": r.parent_session_id.map(|id| id.to_string()),
         "deleted_at": r.deleted_at,
         "force_deleted": r.force_deleted,
+        "teardown_owed": r.teardown_owed,
         "worktrees": r.worktrees.iter().map(|w| json!({
             "repo_path": w.repo_path.display().to_string(),
             "worktree_path": w.worktree_path.display().to_string(),

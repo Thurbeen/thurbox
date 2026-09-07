@@ -642,8 +642,32 @@ pub fn local_window_index() -> Result<WindowIndex> {
 pub fn remote_window_index(host: &crate::session::HostDef) -> Result<WindowIndex> {
     known_host_socket(host)?;
     Ok(WindowIndex::from_listing(
-        TmuxBackend::from_host(host).discover()?,
+        TmuxBackend::from_host(host).discover_answered()?,
     ))
+}
+
+/// Whether a failed one-shot mux command is the multiplexer's *own* answer that
+/// there is nothing to act on, rather than the transport failing to deliver the
+/// question at all.
+///
+/// The distinction the remote teardown rests on. `ssh` exits non-zero for a
+/// refused connection, a timeout and a rejected key alike, and a caller that
+/// reads any of those as "the server holds no windows" concludes there is
+/// nothing to kill on a host it never reached. So only tmux's and psmux's own
+/// refusals count as an answer, and everything else is an error:
+/// over-reporting a live host as unanswered costs one cheap retry, while the
+/// reverse costs an orphaned agent nobody ever looks for again.
+fn mux_answered_absent(error: &str) -> bool {
+    const REFUSALS: [&str; 4] = [
+        // tmux/psmux: the socket has no server behind it.
+        "error connecting to",
+        // tmux < 3.4 phrasing for the same thing.
+        "no server running on",
+        // The server is up but holds no session by that name.
+        "can't find session",
+        "session not found",
+    ];
+    REFUSALS.iter().any(|refusal| error.contains(refusal))
 }
 
 /// Whether the local multiplexer is psmux, which has no usable window options
@@ -851,6 +875,30 @@ impl TmuxBackend {
     fn tmux_run(&self, args: &[&str]) -> Result<()> {
         self.run_tmux(args)?;
         Ok(())
+    }
+
+    /// One `list-windows`, with an empty answer only when the multiplexer
+    /// itself said there is nothing to list.
+    ///
+    /// [`discover`](SessionBackend::discover) gates on `has-session` and reads
+    /// its failure as "no windows", which over a transport conflates the two
+    /// answers a teardown must never confuse: *the host says it holds nothing*
+    /// and *the host did not answer*. A force delete taken while a host was
+    /// briefly unreachable therefore reported nothing to kill, recorded no
+    /// error, and left the agent running there for good. Here an unrecognised
+    /// failure is an error, so the caller can say so and come back later.
+    ///
+    /// Also one round trip instead of two: `list-windows` on an absent server
+    /// gives exactly the refusal `has-session` was asked for.
+    fn discover_answered(&self) -> Result<Vec<DiscoveredSession>> {
+        match self.run_tmux(&["list-windows", "-t", &self.session, "-F", DISCOVER_FORMAT]) {
+            Ok(output) => Ok(String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(parse_discovered)
+                .collect()),
+            Err(e) if mux_answered_absent(&format!("{e:#}")) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Kill a pane with a one-shot command rather than through control mode.
@@ -2876,7 +2924,7 @@ pub fn kill_remote_windows(
 ) -> Result<bool> {
     known_host_socket(host)?;
     let backend = TmuxBackend::from_host(host);
-    let index = WindowIndex::from_listing(backend.discover()?);
+    let index = WindowIndex::from_listing(backend.discover_answered()?);
     let killed = kill_located(
         &backend,
         index.agent_window(session_id, session_name),
@@ -3014,6 +3062,43 @@ mod tests {
     use crate::agent::control_mode::{
         decode_octal, format_send_keys, parse_notification, shell_escape, Notification,
     };
+
+    /// The one distinction the remote teardown rests on. Each refusal below is
+    /// what tmux 3.5/3.7 actually printed when asked for a listing it could not
+    /// give (captured against the linux-container e2e host); each failure below
+    /// is the transport never delivering the question. Reading the second group
+    /// as the first is what let a force delete against a host that was down for
+    /// a minute report nothing to kill and leave the agent running there.
+    #[test]
+    fn only_the_multiplexers_own_refusal_counts_as_an_empty_answer() {
+        let answers = [
+            "error connecting to /tmp/tmux-0/thurbox (No such file or directory)",
+            "no server running on /tmp/tmux-0/thurbox",
+            "can't find session: thurbox",
+            "session not found: thurbox",
+        ];
+        for answer in answers {
+            let error = format!("tmux list-windows failed: {answer}");
+            assert!(
+                mux_answered_absent(&error),
+                "the multiplexer answered: {error}"
+            );
+        }
+        let unanswered = [
+            "ssh: connect to host devbox port 22: Connection refused",
+            "ssh: connect to host devbox port 22: Operation timed out",
+            "Permission denied (publickey).",
+            "bash: line 1: tmux: command not found",
+        ];
+        for failure in unanswered {
+            let error = format!("tmux list-windows failed: {failure}");
+            assert!(!mux_answered_absent(&error), "nothing answered: {error}");
+        }
+        assert!(
+            !mux_answered_absent("Failed to run tmux command"),
+            "not even the launch succeeded"
+        );
+    }
 
     // The control-mode primitives are re-exported through this module. Their
     // behavior is covered exhaustively in `control_mode`'s own test module;

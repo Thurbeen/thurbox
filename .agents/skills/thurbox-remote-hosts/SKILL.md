@@ -218,13 +218,46 @@ session), never on the loop, ADR-P12).
   Every kill is resolved from the window's own `@thurbox_session` stamp, not the
   row's pane id or its name (ADR-25) — the host's tmux server reissues pane ids
   when it restarts, so a remembered `%N` there can be a live namesake's pane; the
-  `SessionPanes` argument is the psmux fallback only. Best-effort: an
-  unreachable host or a missing `hosts.toml` entry is recorded in
+  `SessionPanes` argument is the psmux fallback only. An unreachable host or a
+  missing `hosts.toml` entry is recorded in
   `ForceDeleteReport.remote_teardown_error` (surfaced in the CLI JSON) and the
-  row is still soft-/force-deleted. Like local force-delete it removes the
-  worktree *directory* only, leaving the branch. `wsl.exe`'s exact arg-passing
-  isn't verified in CI (no WSL runner); the construction is unit-tested
-  (`transport::tests::wsl_*`, `git_command_wsl_*`).
+  row is still soft-/force-deleted — a host that is down is often *why* someone
+  force-deletes, and refusing there would be the worse answer. Like local
+  force-delete it removes the worktree *directory* only, leaving the branch.
+  `wsl.exe`'s exact arg-passing isn't verified in CI (no WSL runner); the
+  construction is unit-tested (`transport::tests::wsl_*`, `git_command_wsl_*`).
+- **A remote teardown that never reached its host is owed, not abandoned.**
+  Recording the failure used to be the end of it, and for a `force_deleted`
+  row that meant forever: every reaper skips such a row, and the mirror's
+  tombstone push needs a shareable host with a usable CLI — so on the legacy
+  path the agent, its window and its worktree survived the session for good.
+  `finish_locally_with` now writes the failure onto the row (schema v46's
+  `sessions.teardown_owed`, `ForceDeleteReport.remote_teardown_owed`,
+  `session list --deleted`'s `teardown_owed`) and
+  `session_ops::retry_owed_remote_teardowns` finishes the kill and the worktree
+  removals when the host next answers — delegating `session delete --force` to
+  a host that runs its own thurbox, killing through the stamp otherwise, and
+  falling through to the direct kill when the host answers "Session not found".
+  Driven beside `reap_overdue_soft_deletes` (`automation tick` and the
+  interface's `Command::Reap`), reading `hosts.toml` afresh so adding the
+  missing entry is enough to make the job possible again, and asking a silent
+  host **once per pass** so a machine that is still down costs one connect
+  timeout rather than one per orphan. Force-deleted rows only: a soft-deleted
+  one is restorable and its windows are the reaper's at the end of the undo
+  window — ADR-24, ADR-26.
+- **"The host holds nothing" and "the host did not answer" are different
+  answers**, and the teardown is where confusing them costs the most.
+  `discover` gates on `has-session` and reads its failure as an empty server,
+  but `ssh` exits non-zero for a refused connection, a timeout and a rejected
+  key alike — so a force delete taken while a host was briefly down found
+  nothing to kill and recorded *no error at all*. `TmuxBackend::
+  discover_answered` (used by `kill_remote_windows` and `remote_window_index`)
+  answers empty only on the multiplexer's own refusal — tmux's `error
+  connecting to` / `no server running on` / `can't find session`, psmux's
+  `session not found` (`mux_answered_absent`) — and errors otherwise. An
+  unrecognised failure counts as unanswered on purpose. It also drops the
+  `has-session` round trip: `list-windows` on an absent server gives exactly
+  that refusal.
 - **A session owns two windows**, and every teardown takes both: the agent
   (`tb-`) and the companion shell (`tbs-`). The shell is found by its stamp
   (`@thurbox_role = shell`) rather than by `sessions.shell_backend_id`, which is
@@ -276,5 +309,11 @@ session), never on the loop, ADR-P12).
 - **Local e2e**: `scripts/dev/e2e/linux-container.sh up` spins a throwaway Podman
   container (sshd + tmux + git) and `… test` asserts a session lands on the
   `ssh:podman` backend (state under `target/`, never touches your real
-  `~/.ssh`/`~/.config`).
+  `~/.ssh`/`~/.config`). Its `remote_teardown_probe` is where the owed teardown
+  is proven end to end on a real process: create a session on the container,
+  point `hosts.toml` at a dead port, force-delete (which must still work),
+  bring the host back, and assert the tick's sweep killed the window *and*
+  reaped the pid it was running. It keeps sharing off throughout — with it on,
+  a host whose CLI has vouched for no socket is refused by
+  `known_host_socket`, which is a different behaviour and would hide this one.
 

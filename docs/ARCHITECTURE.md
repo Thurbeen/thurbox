@@ -1368,6 +1368,38 @@ follow from the host owning the record, none of which the first cut had:
   teardown also never calls `ensure_ready`, which would *create* the server
   and the thurbox session on the host as a side effect of tearing one down,
   and acts only on a socket the host has vouched for (`known_host_socket`).
+- **A teardown that never reached its host is owed, not abandoned.** Killing
+  something on a machine you cannot reach is not a promise software can make,
+  and an unreachable host is often *why* someone force-deletes — so the delete
+  still goes through. What it stopped doing is writing the loss off at that
+  moment: schema v46's `sessions.teardown_owed` records it, and
+  `session_ops::retry_owed_remote_teardowns` — driven by the same two callers
+  as the reap — finishes the kill and the worktree removals when the host next
+  answers. Without it that one best-effort attempt was the only one anything
+  would ever make: every reaper skips a `force_deleted` row, and the tombstone
+  push above needs a shareable host with a usable CLI, so a host on the legacy
+  path kept the agent running for good. Force-deleted rows only — a
+  soft-deleted one is restorable and its windows are the reaper's to take at
+  the end of the undo window, and a second sweep killing them on its own
+  schedule would make the undo hand back a session with nothing running in it.
+  The mark is only ever set by an attempt that failed, never by a migration:
+  an upgraded database cannot say which of its past force deletes left
+  something behind, and inventing owed teardowns for all of them would send
+  the sweep after windows that are long gone.
+- **"The host holds nothing" and "the host did not answer" are different
+  answers.** `discover` gates its listing on `has-session` and reads its
+  failure as an empty server, but over a transport `ssh` exits non-zero for a
+  refused connection, a timeout and a rejected key alike. A force delete taken
+  while a host was briefly down therefore found nothing to kill, recorded *no
+  error at all*, and reported success — the leak above, with the operator told
+  nothing. `TmuxBackend::discover_answered` (used by `kill_remote_windows` and
+  `remote_window_index`) returns an empty listing only when the multiplexer
+  itself refused — tmux's `error connecting to` / `no server running on` /
+  `can't find session`, psmux's `session not found` — and an error otherwise.
+  An unrecognised failure counts as *unanswered* on purpose: over-reporting a
+  live host costs one cheap retry, while the reverse costs an orphaned agent
+  nobody ever looks for again. It also replaces the `has-session` round trip,
+  since `list-windows` on an absent server gives exactly that refusal.
 
 ---
 
@@ -1445,7 +1477,12 @@ rather than through a column that is usually NULL.
 `deleted_at` is older than `UNDO_WINDOW` and that still owns a window by its
 ADR-25 stamp — and both drivers call it: the interface's loop on a slow cadence
 (`REAP_INTERVAL`, a `Command::Reap` that names no session) and `thurbox-cli`'s
-heartbeat on its tick. `Command::Reap` is the one command the bus keeps no
+heartbeat on its tick. `retry_owed_remote_teardowns` (ADR-24) rides the same two
+drivers and is deliberately a *separate* sweep rather than a branch inside this
+one: it asks a different durable question (`teardown_owed`, not
+`deleted_at + UNDO_WINDOW`) of a disjoint set of rows (force-deleted, which this
+sweep skips), and folding the two would put a kill that must not wait for the
+undo window in the same pass as one that must. `Command::Reap` is the one command the bus keeps no
 in-flight record of — it recurs forever with nobody waiting on it, and a row
 there is drawn, captioned and counted as activity (ADR-P22 in
 `docs/PERFORMANCE.md`). Alongside it, a caller that changes **one column** of a

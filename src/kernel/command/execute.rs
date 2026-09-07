@@ -65,11 +65,15 @@ pub(super) fn execute(
     }
 
     // Asked of the database rather than of a session: the sweep finds every row
-    // whose undo window has closed.
+    // whose undo window has closed, and every force delete still owing a
+    // teardown on a host that was unreachable when it was taken.
     if matches!(command, Command::Reap) {
         let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
         let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
         crate::session_ops::reap_overdue_soft_deletes(&db);
+        // The same sweep's other half: force deletes whose teardown never
+        // reached the host they were owed on.
+        crate::session_ops::retry_owed_remote_teardowns(&db);
         return Ok(());
     }
 

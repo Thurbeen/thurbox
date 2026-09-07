@@ -19,10 +19,18 @@ pub struct ForceDeleteReport {
     pub disabled_automations: usize,
     /// Set when the session lived on a remote host (SSH/WSL) and its window
     /// could not be torn down there: the host is unreachable, has no
-    /// `hosts.toml` entry, or the session carries no pane id. Best-effort — an
-    /// unreachable host is expected (that's often *why* someone force-deletes),
-    /// so this is recorded rather than aborting the delete.
+    /// `hosts.toml` entry, or does not vouch for a socket. An unreachable host
+    /// is expected — that's often *why* someone force-deletes — so this is
+    /// recorded rather than aborting the delete.
     pub remote_teardown_error: Option<String>,
+    /// Whether that failure was written down on the row, so the sweep will
+    /// come back and finish the teardown once the host answers
+    /// ([`retry_owed_remote_teardowns`]).
+    ///
+    /// The honest half of the sentence above: "could not reach the host" on its
+    /// own reads as work abandoned, and for a `force_deleted` row — which every
+    /// reaper skips — that is exactly what it used to be.
+    pub remote_teardown_owed: bool,
     /// Set when the host was asked to delete the session and answered that it
     /// has no such row — a fork minted here, a row from before ADR-24, or one
     /// a peer already deleted there. The delete is then taken from here
@@ -95,6 +103,10 @@ pub fn delete_session_headless(
             report.removed_worktrees = string_list(&answer, "removed_worktrees");
             report.kept_worktrees = string_list(&answer, "kept_worktrees");
             report.worktree_errors = string_list(&answer, "worktree_errors");
+            // Reported, not adopted: a teardown the *host* could not finish is
+            // owed on the host's own row, and its sweep is the one that can
+            // finish it. Taking the mark here would send this machine after
+            // windows on a third machine it may not even have an entry for.
             report.remote_teardown_error = answer
                 .get("remote_teardown_error")
                 .and_then(serde_json::Value::as_str)
@@ -146,6 +158,21 @@ fn finish_locally_with(
 
     if force {
         teardown(session, &mut report);
+        // What the teardown could not reach is written down rather than
+        // reported and dropped. A `force_deleted` row is skipped by every
+        // reaper, so this one attempt was the only one anything would ever
+        // make: without the mark, a delete taken while a host was down left
+        // that host running the agent for good. Cleared on the same statement
+        // when the teardown did land, so a row force-deleted twice cannot
+        // inherit an owed teardown from the first time.
+        report.remote_teardown_owed = owes_remote_teardown(session, &report);
+        if let Err(e) = db.set_teardown_owed(session.id, report.remote_teardown_owed) {
+            tracing::warn!(
+                "could not record the owed teardown of '{}': {e}",
+                session.name
+            );
+            report.remote_teardown_owed = false;
+        }
         report.disabled_automations = db
             .disable_send_automations_for_session(session.id)
             .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
@@ -248,6 +275,147 @@ pub fn teardown_runtime_resources(
             tracing::warn!("remove_workspace({asid}) failed: {e}");
         }
     }
+}
+
+/// Whether `report` describes a remote teardown that did not finish, and so
+/// leaves something running on a host for the sweep to collect.
+///
+/// A local session never owes one: its windows are on this machine's server,
+/// which either answered or is not there at all. Worktree failures count
+/// alongside the window kill because both are asked of the same host over the
+/// same connection — the usual reason either fails is that nothing reached it.
+fn owes_remote_teardown(session: &crate::sync::SharedSession, report: &ForceDeleteReport) -> bool {
+    crate::session::is_remote_backend(&session.backend_type)
+        && (report.remote_teardown_error.is_some() || !report.worktree_errors.is_empty())
+}
+
+/// Finish the teardowns that never reached their host: kill the windows a
+/// force-deleted session still owns there and remove the worktrees it left.
+/// Returns the ids finished.
+///
+/// The other half of [`delete_session_headless`]'s best-effort teardown, and
+/// the reason that teardown is allowed to be best-effort at all. A host that is
+/// down is an ordinary reason to force-delete a session, and killing something
+/// on a machine you cannot reach is not a thing software can promise — but
+/// giving up at that moment is a choice, and it was the wrong one: a
+/// `force_deleted` row is skipped by [`reap_overdue_soft_deletes`] and by
+/// [`reap_soft_deleted`], and a host on the legacy path (sharing off, or no
+/// usable CLI) gets no tombstone pushed to it by
+/// [`mirror`](super::mirror) either, so nothing came back. The agent kept
+/// running, kept holding its worktree, and re-creating the name put a second
+/// one beside it.
+///
+/// Driven by the same two callers as the reap — the interface's slow cadence
+/// and the headless heartbeat — so it needs no interface either.
+///
+/// Force-deleted rows only: a soft-deleted one is restorable for its undo
+/// window and belongs to [`reap_overdue_soft_deletes`], which waits that window
+/// out. Killing its windows on this sweep's schedule instead would make the
+/// undo hand back a session with nothing running in it.
+///
+/// One attempt per host per pass: the first row whose host does not answer
+/// takes that host's remaining rows out of the pass, so a machine that is still
+/// down costs one connect timeout rather than one per orphan.
+pub fn retry_owed_remote_teardowns(db: &Database) -> Vec<String> {
+    let Ok(rows) = db.list_owed_teardowns() else {
+        return Vec::new();
+    };
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    // Read afresh rather than through `resolve_host`'s process-lifetime cache:
+    // this sweep is the one caller that wants a `hosts.toml` edit to take
+    // effect, since adding the missing entry for a host is one of the two ways
+    // an owed teardown becomes possible again (the other being the machine
+    // coming back). One read, and only once something is actually owed.
+    let registry = crate::agent::host_config::load_all();
+    let mut finished = Vec::new();
+    let mut silent: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for row in rows {
+        if silent.contains(&row.backend_type) {
+            continue;
+        }
+        // Not in `hosts.toml` (any more): there is no machine to aim at, and
+        // the mark keeps the job on the books for whenever the entry is back.
+        let Some(host) = registry.get_by_backend(&row.backend_type) else {
+            continue;
+        };
+        match finish_remote_teardown(host, &row) {
+            Ok(()) => match db.set_teardown_owed(row.id, false) {
+                Ok(()) => finished.push(row.id.to_string()),
+                Err(e) => {
+                    tracing::warn!("could not clear the owed teardown of '{}': {e}", row.name)
+                }
+            },
+            Err(e) => {
+                tracing::debug!(
+                    "'{}' still owes a teardown on '{}': {e}",
+                    row.name,
+                    host.name
+                );
+                silent.insert(row.backend_type.clone());
+            }
+        }
+    }
+    finished
+}
+
+/// One owed teardown, taken on the host it is owed on. `Err` only when the host
+/// did not answer — the one condition that keeps the row on the books.
+///
+/// Delegated when the host runs a thurbox of its own, exactly as [`reap_remote`]
+/// delegates: the host owns its own row and its own windows, and forcing the
+/// delete there is how both go at once. A host that does not know the id has
+/// nothing to delete but may still be holding the windows, so that answer falls
+/// through to the direct kill rather than counting as done.
+///
+/// Worktree removals are attempted but do not decide the outcome. Once the
+/// window listing has come back the host is reachable by construction, so a
+/// `git worktree remove` that still fails is failing on its own merits — a
+/// checkout someone else's process is holding, a repo that moved — and retrying
+/// that on every sweep forever would never converge. It is logged and the mark
+/// comes off.
+fn finish_remote_teardown(
+    host: &crate::session::HostDef,
+    row: &DeletedSessionInfo,
+) -> Result<(), String> {
+    let id = row.id.to_string();
+    if let Some(cli) = super::host_cli::delegated(host) {
+        match super::host_cli::run(host, &cli, &["session", "delete", &id, "--force"]) {
+            Ok(_) => return Ok(()),
+            Err(e) if is_unknown_session(&e) => {
+                tracing::debug!("'{}' is unknown on '{}': {e}", row.name, host.name);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    let panes = crate::agent::tmux::SessionPanes {
+        agent: row.backend_id.trim(),
+        shell: row
+            .shell_backend_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default(),
+    };
+    crate::agent::tmux::kill_remote_windows(host, &id, &row.name, panes)
+        .map_err(|e| format!("{e:#}"))?;
+
+    for wt in &row.worktrees {
+        if !wt.created_by_thurbox {
+            continue;
+        }
+        if let Err(e) = crate::git::remove_worktree_on(Some(host), &wt.repo_path, &wt.worktree_path)
+        {
+            tracing::warn!(
+                "'{}': {} was not removed on '{}': {e:#}",
+                row.name,
+                wt.worktree_path.display(),
+                host.name
+            );
+        }
+    }
+    Ok(())
 }
 
 /// How long a soft-deleted session keeps its agent, so the delete can still be
@@ -841,6 +1009,246 @@ mod tests {
             "got {err}"
         );
         assert!(db.get_session_by_id(id).unwrap().is_none());
+    }
+
+    /// The leak this whole path exists to stop, at the seam a unit test can
+    /// see: a force delete whose host could not be reached must leave the job
+    /// on the books. Nothing else would ever come back for it — every reaper
+    /// skips a `force_deleted` row, and a host on the legacy path gets no
+    /// tombstone pushed to it either.
+    #[test]
+    fn a_force_delete_that_could_not_reach_its_host_owes_a_teardown() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+
+        let report = delete_session_headless(&db, id, true).unwrap();
+
+        assert!(report.remote_teardown_error.is_some());
+        assert!(
+            report.remote_teardown_owed,
+            "the caller is told the teardown is owed, not merely that it failed"
+        );
+        assert!(
+            db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .teardown_owed,
+            "and it is written down on the row, so it survives this process"
+        );
+        let owed = db.list_owed_teardowns().unwrap();
+        assert_eq!(owed.len(), 1, "the sweep's worklist has it");
+        assert_eq!(owed[0].id, id);
+    }
+
+    #[test]
+    fn a_local_force_delete_owes_nothing_and_clears_a_stale_mark() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session(&db, "local");
+        // A mark left by an earlier delete of this row: force-deleting again
+        // must not inherit it, or the sweep would chase windows long gone.
+        db.set_teardown_owed(id, true).unwrap();
+
+        let report = delete_session_headless(&db, id, true).unwrap();
+
+        assert!(!report.remote_teardown_owed);
+        assert!(
+            !db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .teardown_owed
+        );
+        assert!(db.list_owed_teardowns().unwrap().is_empty());
+    }
+
+    /// The undo window is lossless by design, and this sweep must not be the
+    /// thing that breaks it: a soft-deleted row is restorable and its windows
+    /// belong to [`reap_overdue_soft_deletes`], which waits the window out.
+    #[test]
+    fn the_owed_worklist_never_includes_a_soft_deleted_row() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+
+        delete_session_headless(&db, id, false).unwrap();
+        // Even marked by hand, a restorable row is not this sweep's to take.
+        db.set_teardown_owed(id, true).unwrap();
+
+        assert!(
+            db.list_owed_teardowns().unwrap().is_empty(),
+            "a session that can still come back keeps its agent until it cannot"
+        );
+        assert!(
+            retry_owed_remote_teardowns(&db).is_empty(),
+            "and the sweep finishes nothing on it"
+        );
+    }
+
+    /// A row that is alive again has no orphan to collect. Left set, the mark
+    /// would be inherited by whatever the row's next delete is, and a *soft*
+    /// one would then have its windows taken without the undo window being
+    /// waited out.
+    #[test]
+    fn restoring_a_row_clears_the_teardown_it_owed() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+        delete_session_headless(&db, id, true).unwrap();
+        assert!(
+            db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .teardown_owed
+        );
+
+        db.restore_session(id).unwrap();
+        db.soft_delete_session(id).unwrap();
+
+        assert!(
+            !db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .teardown_owed,
+            "the mark did not survive the restore"
+        );
+        assert!(db.list_owed_teardowns().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_owed_teardown_whose_host_is_not_configured_stays_on_the_books() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+        delete_session_headless(&db, id, true).unwrap();
+
+        // (cfg(test) sandboxes the config dir, so hosts.toml is empty and
+        // nothing dials.) There is no machine to aim at — and no reason to
+        // forget the job either.
+        assert!(retry_owed_remote_teardowns(&db).is_empty());
+        assert!(
+            db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .teardown_owed
+        );
+    }
+
+    /// The point of the mark: a host that comes back gets the teardown it
+    /// missed, and the row stops owing one.
+    #[test]
+    fn the_sweep_finishes_an_owed_teardown_when_the_host_answers() {
+        let _guard = configured_host();
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+
+        // The delete itself finds no CLI, so it takes the legacy teardown and
+        // records what it could not reach.
+        crate::session_ops::host_cli::fake::force_usable(crate::session_ops::host_cli::Usable::No(
+            "no cli".into(),
+        ));
+        delete_session_headless(&db, id, true).unwrap();
+
+        // By the time the sweep runs the host is answering again, and owns the
+        // row: the delete is forced there, which takes its windows with it.
+        crate::session_ops::host_cli::fake::force_usable(
+            crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
+        );
+        crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
+            Ok(serde_json::json!({ "deleted": true }))
+        }));
+
+        let finished = retry_owed_remote_teardowns(&db);
+
+        let calls = crate::session_ops::host_cli::fake::calls();
+        crate::session_ops::host_cli::fake::clear();
+        assert_eq!(finished, vec![id.to_string()]);
+        assert_eq!(
+            calls,
+            vec![vec![
+                "session".to_string(),
+                "delete".to_string(),
+                id.to_string(),
+                "--force".to_string(),
+            ]],
+            "the host is asked to force the delete, so its row and its windows go together"
+        );
+        assert!(
+            !db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .teardown_owed,
+            "and the row stops owing one"
+        );
+    }
+
+    #[test]
+    fn the_sweep_keeps_the_mark_when_the_host_still_does_not_answer() {
+        let _guard = configured_host();
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+        crate::session_ops::host_cli::fake::force_usable(crate::session_ops::host_cli::Usable::No(
+            "no cli".into(),
+        ));
+        delete_session_headless(&db, id, true).unwrap();
+
+        crate::session_ops::host_cli::fake::force_usable(
+            crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
+        );
+        crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
+            Err("ssh: connect to host devbox port 22: Connection refused".into())
+        }));
+
+        let finished = retry_owed_remote_teardowns(&db);
+        crate::session_ops::host_cli::fake::clear();
+
+        assert!(finished.is_empty());
+        assert!(
+            db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .teardown_owed,
+            "a host that is still down keeps the job on the books"
+        );
+    }
+
+    /// A host that was down for two of this machine's sessions costs one
+    /// connect timeout on a pass, not one per orphan.
+    #[test]
+    fn the_sweep_asks_a_silent_host_once_per_pass() {
+        let _guard = configured_host();
+        let db = Database::open_in_memory().unwrap();
+        crate::session_ops::host_cli::fake::force_usable(crate::session_ops::host_cli::Usable::No(
+            "no cli".into(),
+        ));
+        for name in ["one", "two", "three"] {
+            let id = insert_session_on(&db, name, "ssh:devbox", "%3");
+            delete_session_headless(&db, id, true).unwrap();
+        }
+        assert_eq!(db.list_owed_teardowns().unwrap().len(), 3);
+
+        crate::session_ops::host_cli::fake::force_usable(
+            crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
+        );
+        crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
+            Err("ssh: connect to host devbox port 22: Connection refused".into())
+        }));
+
+        assert!(retry_owed_remote_teardowns(&db).is_empty());
+        let calls = crate::session_ops::host_cli::fake::calls();
+        crate::session_ops::host_cli::fake::clear();
+        assert_eq!(calls.len(), 1, "one attempt, not one per row: {calls:?}");
+    }
+
+    /// A `hosts.toml` with one SSH host, for the sweep tests. The caller binds
+    /// the pair for the length of the test: the guard points the config dir at
+    /// the temp dir, and the temp dir has to outlive it.
+    fn configured_host() -> (tempfile::TempDir, crate::paths::TestPathGuard) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let guard = crate::paths::TestPathGuard::new(temp.path());
+        let path = crate::agent::host_config::hosts_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[[hosts]]\nname = \"devbox\"\ndestination = \"me@devbox\"\n",
+        )
+        .unwrap();
+        (temp, guard)
     }
 
     #[test]

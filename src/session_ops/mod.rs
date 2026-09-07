@@ -23,8 +23,8 @@ pub mod spawn;
 pub use builtin::{builtin_extension, ensure_builtin_extensions, Builtin};
 pub use builtin_hooks::hooks_enabled;
 pub use delete::{
-    delete_session_headless, reap_overdue_soft_deletes, reap_soft_deleted, ForceDeleteReport,
-    UNDO_WINDOW,
+    delete_session_headless, reap_overdue_soft_deletes, reap_soft_deleted,
+    retry_owed_remote_teardowns, ForceDeleteReport, UNDO_WINDOW,
 };
 pub use extensions::{
     activate_extension, deactivate_extension, ensure_extension, extension_health,
