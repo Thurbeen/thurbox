@@ -245,7 +245,7 @@ pub struct AdoptedSession {
     /// live pane activity (0 when there was none to replay). The reader loop
     /// uses it to hold `last_output_at` back for exactly that many bytes, so a
     /// scrollback replay can't masquerade as fresh output — see
-    /// [`Session::reader_loop`].
+    /// `Session::reader_loop`.
     pub seed_len: usize,
 }
 
