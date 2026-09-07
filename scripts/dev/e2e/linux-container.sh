@@ -225,6 +225,10 @@ remote_teardown_probe() {
   local hosts="$XDG_CONFIG_HOME/thurbox-dev/hosts.toml"
   local shared up down
   shared="$(cat "$hosts")"
+  # Every exit path, including the early `return`s below, must leave
+  # hosts.toml as it found it — a probe that dies partway through must not
+  # cascade a patched host into shared_sessions_probe right after it.
+  trap 'printf "%s\n" "$shared" > "$hosts"' RETURN
   # The same host with sharing off, reachable and not. Sharing stays off for
   # the whole probe: with it on, a host whose CLI has vouched for no socket is
   # refused outright by `known_host_socket`, which is a different (deliberate)
@@ -288,7 +292,50 @@ remote_teardown_probe() {
     *'"teardown_owed":true'*) bad "the row still owes a teardown after the sweep" ;;
     *) ok "the row no longer owes a teardown" ;;
   esac
-  printf '%s\n' "$shared" > "$hosts"
+}
+
+# `session restart --if-missing` must refuse rather than relaunch when the
+# host cannot be reached at the moment it checks: an unreachable host and a
+# host that genuinely holds no such window read identically as an empty
+# `list-windows`, and treating the former as the latter starts a second agent
+# beside the one still running once the host answers again. Runs inside
+# cmd_test's isolated XDG home, and puts `hosts.toml` back on every exit.
+restart_if_missing_probe() {
+  log "asserting --if-missing refuses to relaunch when the host cannot be reached"
+  local hosts="$XDG_CONFIG_HOME/thurbox-dev/hosts.toml"
+  local shared up down
+  shared="$(cat "$hosts")"
+  trap 'printf "%s\n" "$shared" > "$hosts"' RETURN
+  up="$(printf '%s\n' "$shared" \
+    | sed 's/^name = "podman"$/name = "podman"\nshare_sessions = false/')"
+  down="$(printf '%s\n' "$up" | sed "s/\"$PORT\"/\"59999\"/")"
+  printf '%s\n' "$up" > "$hosts"
+
+  local id
+  id="$(e2e_cli session create --name e2e-ifmissing --host podman --repo-path "$REMOTE_REPO" \
+    --agent shell --worktree-branch test/e2e-ifmissing --base-branch main | json_field id)"
+  [ -n "$id" ] || { bad "could not create the session for the if-missing probe"; return; }
+
+  printf '%s\n' "$down" > "$hosts"
+  if e2e_cli session restart "$id" --if-missing >/dev/null 2>&1; then
+    bad "restart --if-missing succeeded against a host it could not reach"
+  else
+    ok "restart --if-missing refuses rather than guessing when the host is unreachable"
+  fi
+
+  # The host answers again: exactly the one window from the original spawn,
+  # never a second one started while the host looked absent.
+  printf '%s\n' "$up" > "$hosts"
+  local windows
+  windows="$(ssh_remote 'tmux -L thurbox-dev list-windows -a -F "#{window_name}" 2>/dev/null' \
+    | grep -c '^tb-e2e-ifmissing$' || true)"
+  if [ "$windows" = "1" ]; then
+    ok "no second agent window was started while the host looked unreachable"
+  else
+    bad "expected exactly one tb-e2e-ifmissing window, found ${windows:-0}"
+  fi
+
+  e2e_cli session delete "$id" --force >/dev/null || true
 }
 
 cmd_test() {
@@ -406,6 +453,7 @@ EOF
   esac
 
   remote_teardown_probe
+  restart_if_missing_probe
   shared_sessions_probe
 
   if [ "$FAILS" -gt 0 ]; then

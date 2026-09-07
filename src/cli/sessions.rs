@@ -1205,6 +1205,9 @@ fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutpu
     if let Some(note) = &report.host_unknown {
         human.push_str(&format!("\n  {note}"));
     }
+    if let Some(note) = &report.host_unreachable {
+        human.push_str(&format!("\n  {note}"));
+    }
     if force {
         for line in output::kv(&force_delete_detail(&report)).lines() {
             human.push_str(&format!("\n  {line}"));
@@ -1225,6 +1228,7 @@ fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutpu
             "remote_teardown_error": report.remote_teardown_error,
             "remote_teardown_owed": report.remote_teardown_owed,
             "host_unknown": report.host_unknown,
+            "host_unreachable": report.host_unreachable,
             "hook_failures": report.hook_failures,
         }),
         human,

@@ -2808,8 +2808,10 @@ pub fn agent_window(
     };
     // A one-shot `list-windows`, and deliberately nothing more: `discover`
     // answers empty for a server that is not there, where starting control
-    // mode would bring one into being.
-    let index = WindowIndex::from_listing(backend.discover()?);
+    // mode would bring one into being. `discover_answered` (not `discover`)
+    // so an unreachable host surfaces as `Err`, not as an empty listing that
+    // reads the same as "no such window" — see `mux_answered_absent`.
+    let index = WindowIndex::from_listing(backend.discover_answered()?);
     Ok(index.live_agent_window(session_id, session_name))
 }
 
