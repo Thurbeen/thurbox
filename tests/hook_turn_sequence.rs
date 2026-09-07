@@ -156,7 +156,11 @@ fn fire(payload: &serde_json::Value, dir: &Path, event: &str, body: &str) {
             .expect("stdin")
             .write_all(body.as_bytes())
         {
-            assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe, "write body: {err}");
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::BrokenPipe,
+                "write body: {err}"
+            );
         }
         assert!(
             child.wait().expect("wait hook").success(),
