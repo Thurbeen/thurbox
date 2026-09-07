@@ -407,6 +407,16 @@ local function repo_row(entry, selected, flow, is_cursor)
   return spans
 end
 
+--- Does `enter` spawn straight away, with nothing left to ask?
+---
+--- A fork inherits its source's agent, and one agent is not a question — both
+--- of those commit directly (see `after_name`, which is what actually decides
+--- it). Shared by the repo list's worktree row and the name/branch fields so
+--- their pills and `after_name` cannot drift apart.
+local function spawns_directly(flow)
+  return flow.fork ~= nil or #agents() <= 1
+end
+
 local function render_repo(flow)
   local entries = rows_for(flow)
   local total = #(bookmarks().rows or {})
@@ -594,10 +604,12 @@ local function render_repo(flow)
       { "d", "forget" },
       { "tab", "input" },
     }
-    -- An existing worktree is not a selection to gather but a thing to open, so
-    -- `enter` on one leaves this step behind rather than carrying it forward.
+    -- An existing worktree is not a selection to gather but a thing to open —
+    -- but `enter` only spawns straight from here when nothing is left to ask
+    -- (see `spawns_directly`); otherwise it advances to the agent step same as
+    -- every other row.
     local entry = entries[widgets.clamp(flow.cursor, #entries)]
-    primary = (entry and entry.row.is_worktree) and "Open" or "Next"
+    primary = (entry and entry.row.is_worktree and spawns_directly(flow)) and "Open" or "Next"
   elseif flow.focus == "search" then
     hints = { { "esc", "clear" } }
     primary = "Keep filter"
@@ -683,7 +695,7 @@ local function field_creates(flow)
   if flow.step == "name" and flow.base then
     return false
   end
-  return flow.fork ~= nil or #agents() <= 1
+  return spawns_directly(flow)
 end
 
 local function render_field(title, label, field, flow, placeholder)

@@ -1515,7 +1515,10 @@ fn a_listing_that_has_not_arrived_offers_no_pill_to_press() {
 
 #[test]
 fn an_existing_worktree_row_offers_to_open_it() {
-    // The one row in this list that is not a thing to tick.
+    // The one row in this list that is not a thing to tick — but `enter` only
+    // opens it straight away when nothing is left to ask; with 2+ agents
+    // configured it still has the agent step ahead of it, same as every other
+    // row.
     let h = host();
     let mut world = World::default();
     world.repos.set_worktrees_for_test(
@@ -1529,6 +1532,31 @@ fn an_existing_worktree_row_offers_to_open_it() {
     open(&h, &world);
     world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
     assert!(drawn(&h, &world).contains("[ Next ]"), "on the repo row");
+    press(&h, &world, "down");
+    let screen = drawn(&h, &world);
+    assert!(
+        screen.contains("[ Next ]"),
+        "an agent is still to come with 2+ agents configured: {screen}"
+    );
+}
+
+#[test]
+fn an_existing_worktree_row_offers_to_open_it_directly_with_one_agent() {
+    // With only one agent configured there is nothing left to ask, so `enter`
+    // on the worktree row spawns straight away.
+    let h = host();
+    let mut world = World::default();
+    world.snapshot.agents.truncate(1);
+    world.repos.set_worktrees_for_test(
+        "",
+        "/src/thurbox",
+        Worktrees::Ready(vec![ExistingWorktree {
+            path: "/src/thurbox/.worktrees/dynamic-tooltips".into(),
+            branch: "feat/dynamic-tooltips".into(),
+        }]),
+    );
+    open(&h, &world);
+    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
     press(&h, &world, "down");
     let screen = drawn(&h, &world);
     assert!(screen.contains("[ Open ]"), "{screen}");
