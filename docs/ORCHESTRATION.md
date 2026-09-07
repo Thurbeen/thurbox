@@ -403,41 +403,63 @@ Fetch and fast-forward before `session create`, and verify
 
 ## The reference implementation
 
-Everything above, as a public GitHub template you fork with **"Use this
-template"**: <https://github.com/Thurbeen/fleet>
+Everything above, as a public GitHub template: **the `fleet` repository**,
+<https://github.com/Thurbeen/fleet>. It is also the worked example of a
+thurbox extension — the one the rest of the documentation points at, since
+`extensions/` in the thurbox repo holds only the two built-ins.
 
 ```text
 registry/
-  owners.txt                 GitHub owners to index, one per line
-  repos.generated.yaml       generated; never hand-edited
+  owners.example.txt         copy to owners.txt; GitHub owners to index
+  repos.generated.yaml       generated and gitignored; never hand-edited
   context/_TEMPLATE.md       copy this to add a project
 orchestration/
   playbooks/_TEMPLATE.md     copy this to add a recipe
   runs/_TEMPLATE.md          copy this per run
+  session-profiles.yaml      the session shapes a run may ask for
 scripts/
   sync-registry.sh           regenerate the index via `gh`
   sync-checkout.sh           fast-forward main when that is safe
   install-extension.sh       render extension.toml, then install
+  update-from-template.sh    pull the template's changes into your clone
 extension.toml.in            manifest template (rendered at install time)
 FLEET.md                     standing context for the long-lived session
 CLAUDE.md                    how an agent works inside the control plane
 ```
 
-Edit `registry/owners.txt` — your GitHub username plus any orgs — then:
+**Clone it — do not use "Use this template", and do not fork.** A control
+plane is private *and* has to be updatable, and only a clone gives both:
+a generated-from-template repo shares no history with its source, so there
+is nothing to merge, and GitHub refuses to make a public fork private.
 
 ```sh
+git clone https://github.com/Thurbeen/fleet.git my-control-plane
+cd my-control-plane
+git remote rename origin template   # the template you later update FROM
+gh repo create my-control-plane --private --source=. --remote=origin --push
+```
+
+Then open the clone in your agent CLI and run its `/fleet-onboarding`
+skill, which does the setup rather than instructing you through it. By
+hand it is the two scripts that skill calls:
+
+```sh
+cp registry/owners.example.txt registry/owners.txt   # then edit: you + your orgs
 ./scripts/sync-registry.sh
 ./scripts/install-extension.sh
 ```
+
+It needs `gh` (authenticated), `jq`, and **thurbox 2.19.0 or newer** —
+`extension.toml.in` records why the floor sits exactly there.
 
 That leaves you with a working control-plane session, and a manifest
 that registers exactly two things: a `fleet` agent in `agents.toml`, and
 one long-lived `fleet` session opened on the checkout.
 
 It is a template, not a thurbox feature: nothing in thurbox knows it
-exists, and a fork is yours to diverge from immediately. The part worth
-copying is the arrangement, not the files. Two of its choices are that
-arrangement rather than its own taste.
+exists, and your clone is yours to diverge from immediately. The part
+worth copying is the arrangement, not the files. Two of its choices are
+that arrangement rather than its own taste.
 
 **The lead's job description is a payload file, not a prompt.** The
 manifest's `[[files]]` lays down `FLEET.md` in the extension home and
@@ -457,6 +479,7 @@ substituted, but it resolves to the extension home
 exists on one machine, so it ships a `__REPO_PATH__` placeholder that
 `install-extension.sh` renders from `git rev-parse --show-toplevel`
 before calling `extension install`. A leading `~` *is* expanded there
-(`resolved_for_home`), but only since 0.174.2 — so a manifest declaring
-an older `min_thurbox_version`, as this one does, cannot lean on it
-either.
+(`resolved_for_home`) since 0.174.2, and the manifest's floor is well past
+that — but expansion would not help anyway: `~` names a home directory, not
+a clone, so the placeholder is the permanent answer rather than a
+workaround for an old binary.

@@ -717,9 +717,9 @@ timeout_secs = 300</code></pre>
             tag, a
             <code>--body</code>
             , and optional sender/task provenance &mdash; instead of scraping its rendered
-            terminal. It is the channel extensions use for agent&harr;agent coordination (the
-            <a href="extension-flow.html">flow extension</a>
-            's clarify&rarr;plan&rarr;build relay is the first consumer).
+            terminal. It is the channel extensions use for agent&harr;agent coordination &mdash;
+            an orchestration lead collecting its workers' questions, plans and results is the shape
+            it was built for.
           </p>
           <ul>
             <li>
@@ -1159,8 +1159,8 @@ thurbox-cli session exec reviewer -- git status --porcelain  # run in its dir, n
 thurbox-cli session meta set reviewer fm.task_id T-1043      # your own key/value space
 thurbox-cli agent launch-args claude                         # what to run so its hooks report
 thurbox-cli watch --json --initial                           # one event per line, no polling
-thurbox-cli message send --to flow --kind questions --task 5 --body "scope?"
-thurbox-cli message inbox --for flow --claim</code></pre>
+thurbox-cli message send --to lead --kind questions --task 5 --body "scope?"
+thurbox-cli message inbox --for lead --claim</code></pre>
           <p>
             <strong>Every session verb takes a name, a UUID, or a unique id prefix.</strong>
             They resolve in that order, and a reference matching
@@ -1576,9 +1576,8 @@ thurbox-cli message inbox --for flow --claim</code></pre>
               <code>send</code>
               enqueues and, by default, wakes the recipient;
               <code>inbox --claim</code>
-              drains it exactly once. The
-              <a href="extension-flow.html">flow extension</a>
-              is its first consumer.
+              drains it exactly once. An orchestration lead collecting its workers' answers is
+              the shape it was built for.
             </li>
             <li>
               <strong>task</strong>

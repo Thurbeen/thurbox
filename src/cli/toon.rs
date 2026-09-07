@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! sessions[2]{name,agent,status}:
-//!   flow,claude,working
+//!   fleet,claude,working
 //!   worker-1,codex,idle
 //! ```
 //!

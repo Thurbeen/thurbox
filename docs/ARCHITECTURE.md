@@ -927,13 +927,11 @@ database.
 ## ADR-20: Agent-agnostic extensions in `extensions/`
 
 **Choice**: Opt-in workflows that *compose* thurbox (rather than
-extend the binary) live in `extensions/<name>/` as data + shell:
-a plain-markdown behavior spec, portable scripts built on
-`thurbox-cli` + `jq`, and a curl-able, idempotent `install.sh` —
-the same distribution model as `scripts/install.sh` and
-`packaging/`. The first extension is **flow** (an experimental
-focus-protecting triage agent; see FEATURES.md). Extensions reach
-agents only through `agents.toml` **aliases** (e.g. `flow-worker`)
+extend the binary) live outside it as data + shell: a
+plain-markdown behavior spec, portable scripts built on
+`thurbox-cli` + `jq`, and an idempotent installer — the same
+distribution model as `scripts/install.sh` and `packaging/`.
+Extensions reach agents only through `agents.toml` **aliases**
 that the user maps to any CLI, and surface their spec through
 context-file symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → the
 spec), so no vendor is named anywhere.
@@ -951,12 +949,24 @@ load-bearing contract.
 - *Vendor plugin formats* (e.g. a Claude Code plugin) — couples
   the workflow to one agent's ecosystem; the same agent brain must
   be runnable by codex, antigravity, opencode, vibe, ….
-- *A `thurbox-cli flow init` subcommand with embedded assets* —
-  puts one opinionated workflow inside the agent-neutral core and
+- *A `thurbox-cli <workflow> init` subcommand with embedded assets*
+  — puts one opinionated workflow inside the agent-neutral core and
   ties spec iteration to the release cycle.
-- *A separate repository* — the extension scripts against
-  `thurbox-cli`'s JSON surface and should version and CI alongside
-  it.
+- *A separate repository* — rejected at the time, on the grounds
+  that an extension scripts against `thurbox-cli`'s JSON surface
+  and should version and CI alongside it. **Since reversed.** The
+  four opt-in extensions that lived in `extensions/` (`flow`,
+  `forge`, `ci-shepherd`, `renovate`) were deleted, unused, and the
+  one extension the docs now present —
+  [fleet](https://github.com/Thurbeen/fleet) — is a template you
+  clone, which a control plane has to be: it is the user's own
+  private repo, not a directory in ours. What the original
+  reasoning was really protecting is the CLI's JSON surface being a
+  tested contract, and that is guarded by its own tests either way.
+  `extensions/` now holds only the two built-ins (`hooks`,
+  `ui-skill`), whose assets the binary `include_str!`s, and
+  `install` grew the `git+<repo>` source form (ADR-21) so an
+  out-of-repo extension is an ordinary install.
 
 ## ADR-21: Declarative extension manifests + first-class lifecycle
 
@@ -974,7 +984,10 @@ writes the home-resolved manifest to the discovery dir, and activates.
 Active extensions are recorded in SQLite `metadata` and **self-healed**
 (missing sessions/automations recreated) at TUI startup and on every
 `automation tick`. The core still knows the *format*, never a specific
-extension; flow's `install.sh` becomes a thin shim over the CLI.
+extension, so an extension's own `install.sh` is a thin shim over the CLI.
+The bare-name registry (`OFFICIAL_EXTENSIONS`) is empty today — nothing
+ships under a bare name — and the resolver is unchanged: an extension
+installs from a path, an `http(s)://` base, or a repository.
 
 **Why**: ADR-20 left each extension to reimplement bootstrap in bespoke
 shell, and gave no way to recover from a half-removed extension. Folding
@@ -1043,15 +1056,16 @@ existing entries), writes the home-resolved manifest to the discovery dir, and
 activates. A `substitute` file the user edited (managed marker removed) is not
 clobbered on reinstall unless `--force`. A **bare-name** install that can't fetch
 its manifest becomes a discovery error
-(`agent::extension_config::unknown_extension_help`: names `OFFICIAL_EXTENSIONS`,
-offers a Levenshtein "did you mean?", points at `extension available`).
+(`agent::extension_config::unknown_extension_help`: names `OFFICIAL_EXTENSIONS`
+and offers a Levenshtein "did you mean?" when that registry has entries; while it
+is empty, it names the URL / path / `git+` forms that do resolve instead).
 `uninstall <name> [--purge]` reverses install: tear down session + automation,
 remove the extension's agents (`remove_agents_from_toml`, text-edit to preserve
 comments), delete the manifest, `--purge` also the home dir. `reinstall <name>
 [--purge]` (`session_ops::reinstall_extension`) is the clean-slate hammer —
 uninstall + fresh `install --force` from the recorded source (rewriting even
 user-edited seed/`substitute` files) — heavier than `update --force`, which only
-refreshes payload files in place. Flow's
+refreshes payload files in place. An extension's own
 `install.sh` is a thin shim over `install`.
 
 `thurbox-cli extension` (alias `ext`) — `install` / `uninstall <name>
@@ -1099,8 +1113,8 @@ heartbeat keeper). Consequence: while an extension is active, deleting its
 session/automation is a no-op — they're recreated (a startup toast says so);
 `extension deactivate` is the real off-switch. Headless healing requires
 `[features] automations = true` (the heartbeat); with it off, healing happens only
-at TUI startup. The flow installer delegates its bootstrap to `extension activate
-flow` (with an inline fallback for older thurbox).
+at TUI startup. An extension's own installer delegates its bootstrap to
+`extension activate <name>` rather than reimplementing it.
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: thurbox-extensions
-description: Thurbox extensions: the shipped opt-in ones (flow, forge, ci-shepherd, renovate, ui-skill), the declarative extension.toml manifest format with its install and runtime halves, the three outside-reaching payload kinds, built-in embedded extensions and their opt-out, and the self-heal contract that recreates an active extension's sessions and automations. Use when writing, installing, debugging or removing an extension, or when a deleted session keeps coming back.
+description: Thurbox extensions: the declarative extension.toml manifest format with its install and runtime halves, the three outside-reaching payload kinds, the two built-in embedded extensions (hooks, ui-skill) and their opt-out, the fleet control plane as the worked out-of-repo example, and the self-heal contract that recreates an active extension's sessions and automations. Use when writing, installing, debugging or removing an extension, or when a deleted session keeps coming back.
 ---
 
 # Thurbox extensions
@@ -9,96 +9,28 @@ description: Thurbox extensions: the shipped opt-in ones (flow, forge, ci-shephe
 
 ## Extensions
 
-`extensions/` holds opt-in, **agent-agnostic** add-ons that build on
-`thurbox-cli` without touching the core binary. Each ships an
-`extension.toml` manifest installed via `thurbox-cli extension install
-<name>` (with a thin curl-able `install.sh` shim over it).
+An extension is an opt-in, **agent-agnostic** add-on that builds on
+`thurbox-cli` without touching the core binary: an `extension.toml` manifest
+plus whatever files it lays down, installed with `thurbox-cli extension install
+<url|dir|git+repo|name>`.
 
-- **`extensions/flow/`** *(experimental — new and under active testing)* — a
-  focus-protecting triage agent: brain-dumps become thurbox tasks, dispatchable
-  ones spawn worker sessions (on `flow/<slug>` worktree branches, agents
-  `flow-worker`/`flow-worker-heavy` mapped in `agents.toml` to any CLI), a
-  dedicated `flow` session monitors them, and every reply ends with the single
-  next thing to focus on. Dispatch is **plan-first**: `scripts/create-task.sh`
-  owns the worker prompt and injects a mandatory clarify → plan → build phase (≥3
-  clarifying questions, then a written plan gated on user approval, then
-  implement; seeded from `--accept`) so each worker plans before it codes. A dump
-  spanning several `repos.md` repos becomes one **multi-repo** task:
-  `create-task.sh` forwards `--add-repo PATH@origin/<base>` (own isolated
-  worktree per repo) / `--add-dir PATH` to `task create`, and the worker opens a
-  **separate PR per repo it changes** (its `result` carries `pr_urls`).
-  Worker↔flow coordination is **event-driven over the
-  [inter-session message queue](#inter-session-messages-mailbox-queue)**: a
-  worker pushes `message send --to flow --kind questions|plan|result` (waking
-  flow) with **no ids** (thurbox stamps sender + task from the injected
-  `THURBOX_SESSION`/`THURBOX_TASK`); flow drains its inbox (`message inbox
-  --claim`), surfaces the questions/plan under "Needs you", and relays the user's
-  answer with `message reply <message_id>` — routed to that message's sender, so
-  flow never maps a task to a session id (`flow-snapshot.sh` name-parsing is now
-  human-board only). The worker drains its own inbox on the resulting `inbox`
-  wake. Flow ships **no scheduled automation** — a **manual** `tick` is the
-  janitor/safety-net (drain missed wakes, reset stale tasks, dispatch). The
-  behavior spec is `FLOW.md`, surfaced to whichever CLI runs it via context-file
-  symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). See
-  `extensions/flow/README.md`.
-- **`extensions/forge/`** *(experimental)* — a workflow analyst that mines
-  your tasks/sessions/automations (and their run history) for **recurring
-  patterns** and writes ready-to-apply `thurbox-cli automation` proposals. It
-  **proposes, never imposes**: a scan (driven by a weekly `forge-scan`
-  automation on the `forge` session) only reads state and writes
-  `proposals.jsonl` (rendered to `proposals.md`); nothing is created until you
-  `apply <slug>` — and `proposals.sh apply` refuses any command not starting
-  with `thurbox-cli`. Spec: `FORGE.md`.
-- **`extensions/ci-shepherd/`** *(experimental)* — watches your open change
-  requests (GitHub PRs / GitLab MRs / Bitbucket PRs; repos in `repos.md`) and
-  dispatches a `shepherd-worker` fixer for each one with **failing CI**, a
-  **changes-requested review**, or a branch that is **behind its target**
-  (needs rebase — the normalized `rebase` signal from `provider.sh`, surfaced
-  as the `REBASE` action flag by `scripts/classify.sh`; `dispatch-fix.sh
-  --rebase` makes the worker rebase onto the base and force-push before fixing).
-  When **several PRs in one repo** are all REBASE-only, `classify.sh`
-  **serializes** them — only the lowest-numbered keeps the live `REBASE` flag,
-  the rest become `REBASE-QUEUED (behind #n)` — so the shepherd rebases one at a
-  time (each merge advances the base for the next), clearing the stack in O(n)
-  rebases instead of the O(n²) of force-pushing N mutually-invalidating branches.
-  A `shepherd` session monitors via a `shepherd-tick` automation; fixers are
-  thurbox **tasks** (`fix #<n>: …`) that self-report with the same `===RESULT===`
-  sentinel as flow. It is **forge-agnostic**: only **git** is baked in; *how* to
-  talk to a repo's host is decided by the shepherd agent each tick — built-in
-  **fast paths** (github `gh`/gitlab `glab`/bitbucket REST via
-  `scripts/provider.sh`) plus an **agent-driven** path for any other forge
-  (`provider.sh describe` hands the agent the remote + installed clients; it
-  lists the repo itself and passes `--branch`/`--checkout-cmd`/`--feedback-cmd`/
-  `--comment-cmd` to `dispatch-fix.sh`). Because thurbox's `--worktree` always
-  runs `git worktree add -b` (which fails on an existing branch),
-  `dispatch-fix.sh` adopts the request branch itself into a shepherd-owned
-  worktree. It is also **session-aware**: the snapshot joins each request's head
-  branch against the live `thurbox-cli session list` (`scripts/link-sessions.sh`,
-  pure + bats-tested). A request whose branch already has a **non-fixer** thurbox
-  session (someone working it by hand) is **not** dispatched (two worktrees would
-  force-push the same branch) but is **monitored and folded into the merge
-  ordering** — that live session counts as the repo's active worker, so the other
-  same-repo requests queue behind it. While such a request stays actionable the
-  shepherd **nudges the live session** over the message queue (`thurbox-cli
-  message send`) to do the rebase/merge — once per pending ask (guarded by
-  peeking its unread inbox), not every tick — so the slot actually clears.
-  Spec: `SHEPHERD.md`.
-- **`extensions/renovate/`** *(experimental)* — keeps local repos on up-to-date
-  dependencies. A `renovate` session sweeps a `repos.md` watch list on a weekly
-  `renovate-tick` automation and dispatches a `renovate-worker` per eligible
-  repo; the worker runs **Renovate's `local` platform only**
-  (`scripts/renovate-run.sh` hard-codes `--platform=local` — no hosted bot, no
-  token, no Renovate-opened PR), tests the result, commits to a fresh
-  `renovate/updates-<ts>` branch, and opens a review PR. Updaters are thurbox
-  **tasks** (`update <repo> deps …`) that self-report with the same
-  `===RESULT===` sentinel as flow. Unlike ci-shepherd it starts a *new* branch,
-  so `scripts/dispatch-update.sh` uses thurbox's native `--worktree` (no branch
-  adoption). Version strategy is per-repo (`strategy` column: `patch`/`minor`/
-  `major`/`all`, layered as a `RENOVATE_CONFIG` overlay) plus a global
-  `renovate-config.json`. Spec: `RENOVATE.md`.
-- **`extensions/ui-skill/`** *(built-in, on by default)* — the odd one out: it
-  ships no session, no automation and no agent. It installs a single **agent
-  skill**, `thurbox-ui`, into each coding CLI's *personal* skill directory
+`extensions/` in this repo holds **only the two built-ins**, `hooks` and
+`ui-skill`. Both ship embedded in the binary and auto-activate, so neither is
+something a user installs by name — which is why
+`agent::extension_config::OFFICIAL_EXTENSIONS`, the bare-name registry behind
+`extension available` and the typo hints, is currently **empty**. The mechanism
+is intact; there is simply nothing that resolves by bare name. Anything else
+installs from a URL, a local path, or a repository (`git+https://...`).
+
+- **`extensions/hooks/`** *(built-in, on by default)* — status-hook delivery for
+  the built-in agents, so the default agent's session status works with zero
+  setup. Its assets are `include_str!`d by `session_ops::builtin_hooks`, so
+  **the directory is load-bearing: delete a file and the binary stops
+  compiling.** Which hook mechanism each agent gets, and the states each can
+  report, is per-agent in `docs/AGENTS.md` → "Status hook mechanisms".
+- **`extensions/ui-skill/`** *(built-in, on by default)* — it ships no session,
+  no automation and no agent. It installs a single **agent skill**,
+  `thurbox-ui`, into each coding CLI's *personal* skill directory
   (`~/.claude/skills/`, `~/.codex/skills/`, `~/.config/opencode/skills/`,
   `~/.copilot/skills/`, `~/.agents/skills/` — each guarded by `requires_dir`, so
   a CLI the user does not have is skipped), so an agent in **any** session knows
@@ -116,14 +48,32 @@ description: Thurbox extensions: the shipped opt-in ones (flow, forge, ci-shephe
   act on thurbox's own copies and leave one the user has taken ownership of alone
   (drop the `Managed by` line and it is theirs), while `reinstall` and `install
   --force` overwrite as they do everywhere else.
-> **Removed.** Four per-provider task-integration extensions
-> (`github-issues`, `gitlab-issues`, `linear`, `jira`) lived here and were deleted:
-> four near-identical trees, each carrying a provider's API shape, for a job that is
-> a `curl` and an `upsert`. What made them possible is still in the binary and is
+
+### fleet — the worked example of a real extension
+
+The one extension the docs present to a user lives in **another repo**:
+[Thurbeen/fleet](https://github.com/Thurbeen/fleet), a control-plane template
+you clone. It is the reference for what a manifest looks like in practice —
+`[[agents]]`, one `[[files]]` payload, three `[[symlinks]]` surfacing it as
+`CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, one long-lived `[[sessions]]`, and
+deliberately no `[[automations]]` — and it ships its manifest as
+`extension.toml.in` with a `__REPO_PATH__` placeholder its
+`scripts/install-extension.sh` renders, because `{home}` resolves to the
+extension home and no token spells "my clone". `docs/ORCHESTRATION.md` → "The
+reference implementation" owns that story; nothing in thurbox knows fleet
+exists.
+
+> **Removed.** Four opt-in extensions (`flow`, `forge`, `ci-shepherd`,
+> `renovate`) lived under `extensions/` and were deleted, unused. Earlier still,
+> four per-provider task-integration extensions (`github-issues`,
+> `gitlab-issues`, `linear`, `jira`) went the same way: four near-identical
+> trees, each carrying a provider's API shape, for a job that is a `curl` and an
+> `upsert`. What made all of them possible is still in the binary and is
 > deliberately provider-neutral (ADR-20 — no provider name in the binary): the
-> `task --source/--external-id/--external-url` flags, `get_task_by_external_id`,
-> the `idx_tasks_external` index, and the `Exec` automation action. A scheduled
-> `Exec` running a script of your own does what they did.
+> manifest format below, the `task --source/--external-id/--external-url` flags,
+> `get_task_by_external_id`, the `idx_tasks_external` index, the `Exec`
+> automation action, and the inter-session message queue. A scheduled `Exec`
+> running a script of your own does what they did.
 
 ### Extension manifests + self-heal (`thurbox-cli extension`)
 
@@ -171,10 +121,14 @@ format is chosen so `hooks` keeps producing the `builtin_hooks_optout` row it
 wrote before there was more than one built-in); `activate`/`install <name>`
 clears it.
 
-`thurbox-cli extension` (alias `ext`) — `install <name|url|dir>` / `uninstall` /
-`reinstall` / `list` / `available` (alias `search`) / `update [--all] [--force]` /
-`activate` / `deactivate` / `status`. A bare name resolves to the official source
-**pinned to the binary's release tag**, so a fetched extension matches the binary.
+`thurbox-cli extension` (alias `ext`) — `install <url|dir|git+repo|name>` /
+`uninstall` / `reinstall` / `list` / `available` (alias `search`) / `update
+[--all] [--force]` / `activate` / `deactivate` / `status`. A bare name resolves
+to the official source **pinned to the binary's release tag**, so a fetched
+extension matches the binary — which is the reason the mechanism stays even with
+`OFFICIAL_EXTENSIONS` empty. With nothing to list, `available` and a failed
+bare-name install both name the three forms that do work instead
+(`extension_config::NO_BARE_NAME_HELP`).
 
 **Self-heal**: `session_ops::heal_active_extensions` re-ensures every active
 extension at TUI startup (before session restore) and at the top of the headless

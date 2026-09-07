@@ -127,12 +127,14 @@ jobs:
           # A forced `workflow_dispatch` version skips this gate entirely (the
           # `if:` above): an explicit human cut is always honoured.
           #
-          # `extensions/` and `examples/panes/` are in the list although no binary
-          # carries them: a bare-name install resolves against the release TAG
+          # `examples/panes/` is in the list although no binary carries it: a
+          # bare-name install resolves against the release TAG
           # (`official_set_base`), so a change that is never tagged is one nobody
           # can install.
-          # `ui/` and `examples/lua/` are here for the same reason, and more
-          # directly: both are `include_str!`d into the binary, so they are
+          # `extensions/`, `ui/` and `examples/lua/` are here for the same reason
+          # and, more directly, because all three are `include_str!`d into the
+          # binary — `extensions/` now holds only the two built-ins, whose assets
+          # `session_ops::builtin_hooks`/`builtin_ui_skill` embed — so they are
           # bytes a user installs. A releasable span confined to a pane fix would
           # otherwise be suppressed as "no shipped artifact changed" — no tag, no
           # binaries, no channel pushes — and the `ui` commit scope cannot separate

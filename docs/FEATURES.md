@@ -1454,104 +1454,84 @@ relinks).
 
 ---
 
-## Flow Extension (experimental)
+## Extensions
 
-> **Status:** brand-new and under active testing — the spec, scripts,
-> and installer are all expected to change between releases.
+Opt-in, agent-agnostic add-ons that build on `thurbox-cli` without
+touching the core binary. An extension is **data, not code** (ADR-20):
+an `extension.toml` manifest declares the agents to register, the files
+to lay down, and the sessions and automations to keep alive, and
+`thurbox-cli extension install` reads it. thurbox knows the format,
+never a specific extension. The format, the lifecycle commands and the
+self-heal contract are in `docs/CONFIG.md` → `extensions/`.
 
-An opt-in add-on (`extensions/flow/`) that composes the task list,
-sessions, worktrees, and automations into a **focus-protecting triage
-workflow**: a dedicated cheap *flow session* captures brain-dumps into
-tasks, dispatches the dispatchable ones to worker sessions, monitors
-them, grooms the backlog, and ends every reply with the single next
-thing to focus on (`🎯 Next: …`).
+### What ships in the repo
 
-### Agent-agnostic by construction
+`extensions/` holds the **two built-ins**, and only those. Both are
+embedded in the binary and auto-activated, because what they wire up has
+to be there before a user knows to ask for it:
 
-Nothing in the extension names a vendor:
+- **`hooks`** — status-hook delivery for the built-in agents, so session
+  status works with no setup. Per-agent detail is in `docs/AGENTS.md` →
+  "Status hook mechanisms".
+- **`ui-skill`** — it ships no session, no automation and no agent. It
+  installs a single **agent skill**, `thurbox-ui`, into each coding CLI's
+  personal skill directory (`~/.claude/skills/`,
+  `~/.codex/skills/`, `~/.config/opencode/skills/`, `~/.copilot/skills/`,
+  `~/.agents/skills/`, each guarded so a CLI you do not have is skipped),
+  so an agent in **any** session knows how to change thurbox's own
+  interface — where it lives, how to check an edit, and what the sandbox
+  withholds. It replaces attaching the interface directory to every
+  session as an extra repo: a skill loads only when the request is about
+  the TUI. Someone who does not already know the interface is editable
+  will not go looking for the extension that says so.
 
-- The behavior is a plain context file, `FLOW.md`, installed into the
-  flow home (`~/.config/thurbox/extensions/flow`) and surfaced to whichever CLI runs the session
-  via symlinks to each CLI's context convention
-  (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`).
-- The triager and workers are **agents.toml aliases** — `flow`,
-  `flow-worker` (default), `flow-worker-heavy` (long/hard work) — that
-  the installer seeds with defaults and the user remaps freely.
-- All orchestration goes through `thurbox-cli` (`task create/run`,
-  `session capture/send`, `automation create`) plus `jq`; the core
-  binary has no flow-specific code.
+Turn either off with `thurbox-cli extension deactivate <name>`.
 
-### Dispatch model
+Nothing else installs by **bare name**. The bare-name registry
+(`OFFICIAL_EXTENSIONS`) is empty and the resolver stays as it is, so
+`extension available` and a mistyped install both point at the three
+forms that do work: an `http(s)://` base URL, a local directory, or a
+repository (`git+https://…`).
 
-Dispatch is **eager**: capture creates the task *and* spawns its
-worker in one atomic helper call (`create-task.sh`); workers push a
-`result` message back to the flow session when they finish so a freed
-capacity slot dispatches the next task immediately. Flow is purely
-event-driven — there is no scheduled automation; a manual `tick`
-remains the safety net that catches crashed workers and stale state.
-Workers always get a
-`flow/<task-slug>` worktree branch on git repos, so they never dirty
-the main checkout and parallelize per repo. Completion is detected by
-task status (workers self-mark done) with an orchestrate-style
-`===RESULT===` JSON sentinel as the fallback, parsed from
-`session capture` output.
+### The worked example: fleet
 
-### Install
+The extension the documentation presents lives in **its own repository**:
+[Thurbeen/fleet](https://github.com/Thurbeen/fleet), a control-plane
+template you clone and repoint. Its manifest is the format in practice —
+one `[[agents]]` entry, one `[[files]]` payload (`FLEET.md`), three
+`[[symlinks]]` surfacing it as `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, one
+long-lived `[[sessions]]`, and deliberately no `[[automations]]` because
+the only scheduled candidate pushes to `main`. It ships as
+`extension.toml.in` with a `__REPO_PATH__` placeholder that
+`scripts/install-extension.sh` renders from `git rev-parse
+--show-toplevel`, because `{home}` resolves to the extension home and no
+token spells "my clone".
 
-Flow installs with the generic extension installer —
-`thurbox-cli extension install flow` — which reads flow's
-`extension.toml` manifest: it lays down the flow home, registers the
-agents.toml aliases, creates the dedicated `flow` session, and marks
-the extension active so it **self-heals** if deleted. `extension
-uninstall flow [--purge]` reverses it. The
-`extensions/flow/install.sh` curl one-liner is now a thin shim over the
-CLI. See the generic mechanism (manifest format, lifecycle commands,
-self-heal) in `docs/CONFIG.md` and `extensions/flow/README.md`.
+Nothing in thurbox knows fleet exists, and that is the point — it is a
+template, not a feature. `docs/ORCHESTRATION.md` → "The reference
+implementation" owns the full walkthrough.
 
-### Sibling extensions
+### Removed
 
-Two more ship in `extensions/`, both built the same agent-agnostic way
-(manifest + scripts + a dedicated session/automation that self-heals):
+Four opt-in extensions — `flow` (a triage agent), `forge` (an automation
+proposer), `ci-shepherd` (a PR/MR fixer) and `renovate` (a dependency
+updater) — shipped under `extensions/` and were deleted, unused. Every
+capability they were built on is still in the binary and still
+provider-neutral: the manifest format above, tasks and worktree
+dispatch, the `Exec` automation action, and the inter-session message
+queue. What went was four consumers of that machinery, not the
+machinery.
 
-- **`forge`** — a workflow analyst. A weekly `forge-scan` mines your
-  tasks/sessions/automations for **recurring patterns** and writes
-  ready-to-apply `thurbox-cli automation` proposals; it *proposes, never
-  imposes* (nothing is created until you `apply <slug>`, and apply refuses
-  any non-`thurbox-cli` command). `thurbox-cli extension install forge`.
-- **`ci-shepherd`** — watches your open change requests (GitHub PRs /
-  GitLab MRs / Bitbucket PRs and **any other git forge**, decided by the
-  agent at runtime) and dispatches a `shepherd-worker` fixer for each with
-  **failing CI** or a **changes-requested review**.
-  `thurbox-cli extension install ci-shepherd`.
-- **`renovate`** — keeps local repos on up-to-date dependencies. A weekly
-  `renovate-tick` dispatches a `renovate-worker` per watched repo that runs
-  **Renovate's local platform only** (`--platform=local`, no bot/token/PR),
-  tests the bumps, commits to a fresh `renovate/updates-<ts>` branch, and
-  opens a review PR. Per-repo `strategy` (patch/minor/major/all) layers onto a
-  global `renovate-config.json`. `thurbox-cli extension install renovate`.
-- **`ui-skill`** *(built-in, on by default)* — the only one that ships no
-  session, no automation and no agent. It installs a single **agent skill**,
-  `thurbox-ui`, into each coding CLI's personal skill directory
-  (`~/.claude/skills/`, `~/.codex/skills/`, `~/.config/opencode/skills/`,
-  `~/.copilot/skills/`, `~/.agents/skills/`, each guarded so a CLI you do not
-  have is skipped), so an agent in **any** session knows how to change thurbox's
-  own interface — where it lives, how to check an edit, and what the sandbox
-  withholds. It replaces attaching the interface directory to every session as
-  an extra repo: a skill loads only when the request is about the TUI. Like
-  `hooks` it is embedded in the binary and auto-activated, because someone who
-  does not already know the interface is editable will not go looking for the
-  extension that says so. `thurbox-cli extension deactivate ui-skill` turns it
-  off.
-- **Tracker import** — no longer an extension. Four per-provider trees
-  (`github-issues`, `gitlab-issues`, `linear`, `jira`) were removed: they were
-  near-identical, each carrying one provider's API shape, for a job that is a
-  `curl` and an upsert. The support that made them work is generic and stays —
-  `task --source/--external-id/--external-url`, `get_task_by_external_id`, the
-  `idx_tasks_external` index, and the `Exec` automation action — so a scheduled
-  `Exec` running your own script does the same thing. Dedup is on
-  `(source, external_id)` and only open-vs-done is authoritative on the way in, so
-  a local `in_progress` is never clobbered. No provider name is in the binary, by
-  design (ADR-20).
+Four **tracker-import** extensions (`github-issues`, `gitlab-issues`,
+`linear`, `jira`) went earlier, for the same reason twice over: they were
+near-identical, each carrying one provider's API shape, for a job that is
+a `curl` and an upsert. Their support is generic and stays —
+`task --source/--external-id/--external-url`,
+`get_task_by_external_id`, the `idx_tasks_external` index, and the
+`Exec` automation action — so a scheduled `Exec` running your own script
+does the same thing. Dedup is on `(source, external_id)` and only
+open-vs-done is authoritative on the way in, so a local `in_progress` is
+never clobbered. No provider name is in the binary, by design (ADR-20).
 
 ---
 
@@ -2153,8 +2133,9 @@ A general, agent-neutral message queue (`session_messages` table, schema
 v32; `thurbox-cli message`) lets one session hand another a **structured
 payload** — addressed to a session, with a free-form `kind` tag, a `body`,
 and optional `from_session_id`/`from_task_id` provenance. It is the channel
-extensions use for agent↔agent coordination; flow's clarify→plan→build
-relay is the first consumer.
+extensions use for agent↔agent coordination — an orchestration lead
+collecting its workers' questions, plans and results is the shape it was
+built for.
 
 ### Identity-aware, no ids to pass
 

@@ -338,11 +338,9 @@ The shape that follows from that:
   is wide and the useful part is narrow. Force a format with `--json`
   (compact), `--pretty` (indented), `--toon`, or `--text`.
 - **`--json` is unchanged** — every field, exactly the bytes it always
-  produced. It is the format scripts parse, and every in-repo consumer (each
-  extension's `*-snapshot.sh`, `flow-summary.sh`, `link-sessions.sh` and the
-  `dispatch-*` scripts) already passes it explicitly — the snapshot scripts
-  with a bats file beside them pinning it. A pipeline that relied on the
-  *auto* JSON has to spell the flag out.
+  produced. It is the format scripts parse, so a script must pass it
+  explicitly. A pipeline that relied on the *auto* JSON has to spell the flag
+  out.
 - **A bare `thurbox-cli` prints live state**, not a usage dump: every session
   with the `state` its hooks last reported — the same word and the same key
   `session list` publishes — the calling session's unread mail,
@@ -675,8 +673,9 @@ turned off. Parent/child nesting is unaffected: it is not a repo property.
 
 A general, agent-neutral **message queue** lets one session hand another a
 **structured payload** without scraping its rendered terminal — the channel
-extensions use for agent↔agent coordination (flow's clarify→plan→build relay is
-the first consumer). A message is addressed **to** a session and carries a
+extensions use for agent↔agent coordination (an orchestration lead collecting its
+workers' questions, plans and results is the shape it was built for). A message
+is addressed **to** a session and carries a
 free-form `kind` tag (`questions`/`plan`/`result`/… are conventions, not an enum),
 a `body`, and optional provenance. Storage is the `session_messages` table (schema
 **v32**, CRUD in `storage/messages.rs`); `Database::claim_messages` is a single

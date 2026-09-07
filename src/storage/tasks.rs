@@ -337,9 +337,9 @@ mod tests {
         let new = NewTask {
             action: Some(AutomationAction::Spawn {
                 repo_path: PathBuf::from("/tmp/primary"),
-                worktree_branch: Some("flow/multi".into()),
+                worktree_branch: Some("fleet/multi".into()),
                 base_branch: Some("main".into()),
-                agent: Some("flow-worker".into()),
+                agent: Some("fleet-worker".into()),
                 extra_repos: vec![
                     ExtraRepo {
                         repo_path: PathBuf::from("/tmp/extra-wt"),

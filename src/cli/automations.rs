@@ -430,7 +430,7 @@ fn render_tick(v: &Value) -> String {
 /// run alongside the TUI and other tickers), perform the action, record the run.
 fn tick(db: &Database) -> Result<Value, String> {
     // Self-heal active extensions before firing: this runs from the tmux
-    // heartbeat keeper every 60s, so a deleted flow session/automation is
+    // heartbeat keeper every 60s, so an extension's deleted session/automation is
     // recreated even with the TUI closed. Best-effort — heal messages are
     // reported but never abort the due-automation pass below.
     let healed = crate::session_ops::heal_active_extensions(db);

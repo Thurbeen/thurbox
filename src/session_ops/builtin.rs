@@ -212,7 +212,7 @@ mod tests {
     fn builtin_extension_looks_up_by_name() {
         assert!(builtin_extension("hooks").is_some());
         assert!(builtin_extension("ui-skill").is_some());
-        assert!(builtin_extension("flow").is_none());
+        assert!(builtin_extension("not-a-builtin").is_none());
     }
 
     #[test]

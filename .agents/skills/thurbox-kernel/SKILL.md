@@ -243,8 +243,8 @@ reference, and **`AGENTS.md`** is the operational half a coding CLI loads as con
 without being asked — which is what stops "install this plugin" being read as a
 package-manager request rather than `thurbox-cli plugin install`. `CLAUDE.md` and
 `GEMINI.md` beside it are one-line pointers, not copies, so there is one file to
-keep true; the `flow` extension surfaces its own spec the same way, as symlinks it
-can make because it copies its own files.
+keep true; an extension surfaces its own spec the same way, as symlinks it can
+make because it copies its own files.
 
 Two rules pick the directory: `THURBOX_UI_DIR` if set, otherwise the user's copy
 (`~/.config/thurbox/ui/`, materialised from the embedded interface on first run,

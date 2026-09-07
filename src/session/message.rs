@@ -1,12 +1,13 @@
 //! Inter-session messages — a small, general mailbox so one session can hand a
 //! structured payload to another without scraping its rendered terminal.
 //!
-//! A worker (e.g. a `flow` worker) enqueues a message addressed **to** another
+//! A worker session enqueues a message addressed **to** another
 //! session (the monitor): a free-form `kind` tag (`"questions"`, `"plan"`,
 //! `"result"`, …), a `body`, and optional provenance (`from_session_id`,
 //! `from_task_id`). The recipient drains its inbox — chronologically, exactly
 //! once — instead of grepping a vt100 pane. The queue is agent-neutral and
-//! reusable by any extension; `flow` is just its first consumer.
+//! reusable by any extension — an orchestration lead collecting its workers'
+//! answers is the shape it was built for.
 //!
 //! This module is pure data (no local crate imports beyond `super`), matching
 //! the architecture rule for `session`. Persistence + delivery semantics live in

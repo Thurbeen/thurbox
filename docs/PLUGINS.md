@@ -8,9 +8,9 @@
 > `thurbox-cli plugin check` after an upgrade.
 >
 > **Plugins are trusted code.** They run in-process with whatever capabilities
-> the kernel grants, exactly like the shell extensions under `extensions/`.
-> Install one the way you would install a shell script from a stranger — which
-> is to say, read it first.
+> the kernel grants, exactly like an extension's shell scripts. Install one the
+> way you would install a shell script from a stranger — which is to say, read
+> it first.
 
 A plugin is one `.lua` file. Drop it in your plugin directory and it loads on the
 next save; there is no build step and no restart.
@@ -1352,9 +1352,12 @@ pin  = "v2.1.0"                 # omit to take the newest at install time
 TOML because that is what every hand-edited registry here is, and because a bad
 edit is a parse error naming its line rather than a nil three frames later. A bare
 name resolves to `examples/panes/<name>` in the thurbox repository at **this binary's
-release tag**, exactly as an extension name resolves to `extensions/<name>` — a
-pane reads `thurbox.*`, which is a contract that moves, so what a bare name fetches
-matches the binary asking for it. Bare names reach the *examples*; anything you
+release tag**, the same rule `extension install <name>` follows against
+`extensions/<name>` — a pane reads `thurbox.*`, which is a contract that moves, so
+what a bare name fetches matches the binary asking for it. (For extensions the
+rule currently resolves to nothing: `extensions/` holds only the two built-ins,
+which install themselves. Panes are where bare names still have something to
+reach.) Bare names reach the *examples*; anything you
 actually depend on is better named by a URL, a path, or a repository you control.
 
 That tag is also why a bare name can stop resolving: the examples lived under
