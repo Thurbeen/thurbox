@@ -97,8 +97,10 @@ local STATUS_GLYPHS = {
   error = "✗",
   unreachable = "⊘",
   -- An agent holds the pane and has reported nothing. Filled, because
-  -- something IS there; not the working spinner, because no process listing
-  -- can tell a turn in flight from a prompt waiting for input.
+  -- something IS there. This is the STATIC half: a process listing cannot tell
+  -- a turn in flight from a prompt waiting for input, so the dot only moves
+  -- when `ui.status` is handed the one thing that can — `thurbox.printing`,
+  -- saying that pane is producing output right now. Quiet, it stays this glyph.
   --
   -- FISHEYE rather than CIRCLE WITH VERTICAL FILL (U+25CD), which is rare
   -- enough that monospace fonts routinely have no glyph for it and draw a

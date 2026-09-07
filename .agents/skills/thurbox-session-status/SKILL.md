@@ -24,7 +24,7 @@ module exists to prevent:
 | `done` | blue | `●` (filled) | a turn just finished; shown until you switch away (hook) |
 | `idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host down/offline; the ordinary row, derived from a live attach failure, awaiting reconnect |
-| `running` | `status_running` (accent) | `◉` | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
+| `running` | `status_running` (accent) | `◉`, animated while its pane prints | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
 | `uncovered` | `status_unknown` (muted) | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | `status_unknown` (muted) | `◌` | the agent *can* report and has not yet |
 | `stopped` | — | — | parked by `session stop`: no process at all, which is why it outranks whatever the hook columns still hold |
@@ -77,7 +77,29 @@ connection; both sets are appended after the user's `ssh_opts`, whose first
 occurrence wins), which stops a broken host
 from prompting for a password on the TUI's terminal or hanging the render loop.
 
-The live session list **animates** the `Working` spinner. The frames are
+The live session list **animates** the `Working` spinner, and `Running` too —
+but only on evidence. `running` says an agent holds the pane and has not
+signalled, which cannot by itself distinguish a turn in flight from a prompt
+waiting for input, so a spinner there would assert what the observation cannot
+support. Terminal output can tell them apart, and it is the same signal the
+stuck-`working` fallback trusts in the other direction: a `running` session
+whose pane printed within `WORKING_QUIET_MS` animates, and one that has gone
+quiet falls back to the static `◉`. `uncovered` and `unreported` are absences
+and never animate, whatever their pane is doing.
+
+That evidence reaches Lua as `thurbox.printing`, a set of session ids filled by
+`Terminals::sync_printing` and published in **a group of its own**
+(`epoch.printing`, `Terminals::printing_version`, which moves only when the set
+gains or loses a member). Its own group because the `sessions` group is the
+largest one published — a table per session with ~30 named fields — and what is
+printing moves with an agent's output: gating those rows on it would rebuild all
+of them many times a second, which is the cost ADR-P16's gating exists to
+prevent. `tests/kernel_frame_cost.rs` pins that a printing change rebuilds
+exactly one group. Only a surface holding the terminals can fill it, so a
+headless reader publishes none and `ui.status` falls back to the static answer —
+the same line the CLI already draws at the folds it cannot make.
+
+ The frames are
 `theme.spinner` in `ui/lib/theme.lua` and the pane picks one from the elapsed
 time it is handed (`status_glyph` in `10_sessions.lua`); the clock behind that is
 the kernel's shared **animation tick** (`kernel::host::ANIMATION_HZ` = 8), which

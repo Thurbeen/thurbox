@@ -82,6 +82,7 @@ fn publish(host: &LuaHost, registry: &Registry) {
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 }

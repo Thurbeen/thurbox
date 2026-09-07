@@ -57,6 +57,7 @@ impl LuaHost {
             settings,
             repos: repo_store,
             wants,
+            printing,
         } = world;
 
         let table = self.lua.create_table().map_err(|e| e.to_string())?;
@@ -84,6 +85,26 @@ impl LuaHost {
         }
 
         set(&table, "sessions", sessions)?;
+
+        // Which sessions are producing output, as a set keyed by session id.
+        //
+        // A group of its own, and a deliberately tiny one: the answer moves
+        // with an agent's output, so gating the `sessions` group on it would
+        // rebuild a ~30-field table per session every time a pane started or
+        // stopped printing. One id per printing session is the whole payload,
+        // and it is the only thing that lets a pane animate `running` on
+        // evidence rather than assert a turn it cannot see.
+        let printing_value = self.group("printing", [epoch.printing, 0, 0, 0], || {
+            let table = self
+                .lua
+                .create_table_with_capacity(0, printing.len())
+                .map_err(|e| e.to_string())?;
+            for session in printing.iter() {
+                set(&table, session.as_str(), true)?;
+            }
+            Ok(Value::Table(table))
+        })?;
+        set(&table, "printing", printing_value)?;
 
         // What a creation flow can choose among. Reads, so picking is plugin
         // state and only committing is a command.

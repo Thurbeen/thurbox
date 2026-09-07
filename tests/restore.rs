@@ -111,6 +111,7 @@ fn publish_with(host: &LuaHost, snapshot: &Snapshot, registry: Registry) {
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 }

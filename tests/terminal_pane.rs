@@ -99,6 +99,7 @@ fn publish(host: &LuaHost) {
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 }

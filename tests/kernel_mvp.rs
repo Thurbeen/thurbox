@@ -38,12 +38,30 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
     publish_with(host, snapshot, &Default::default(), &[]);
 }
 
+/// [`publish`], naming the sessions whose panes are producing output — the
+/// evidence a `running` indicator animates on.
+fn publish_printing(host: &LuaHost, snapshot: &Snapshot, printing: &[&str]) {
+    let printing: std::collections::HashSet<String> =
+        printing.iter().map(|s| (*s).to_string()).collect();
+    publish_full(host, snapshot, &Default::default(), &[], &printing);
+}
+
 /// Publish with attach errors and in-flight commands spelled out.
 fn publish_with(
     host: &LuaHost,
     snapshot: &Snapshot,
     attach_errors: &std::collections::HashMap<String, String>,
     inflight: &[thurbox::kernel::command::InFlight],
+) {
+    publish_full(host, snapshot, attach_errors, inflight, &Default::default());
+}
+
+fn publish_full(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    attach_errors: &std::collections::HashMap<String, String>,
+    inflight: &[thurbox::kernel::command::InFlight],
+    printing: &std::collections::HashSet<String>,
 ) {
     let themes = themes();
     let registry = registry(host);
@@ -70,6 +88,7 @@ fn publish_with(
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing,
     })
     .expect("publish");
 }
@@ -353,6 +372,101 @@ fn a_session_with_no_reported_status_never_draws_the_idle_dot() {
     let title = paint(&host, index_of(&host, "agent"), 90, 8).join("\n");
     assert!(title.contains("zsh → claude"), "{title}");
     assert!(title.contains("Running"), "{title}");
+}
+
+/// A `running` indicator moves only on proof that something is moving.
+///
+/// The distinction the whole state exists to keep: no process listing can tell
+/// a turn in flight from a prompt waiting for input, so `running` on its own
+/// may not claim a spinner. Terminal output can tell them apart, and it is the
+/// same signal the stuck-`working` fallback already trusts — so the dot
+/// animates exactly while the pane is printing and is static the moment it
+/// stops.
+#[test]
+fn a_running_session_animates_only_while_its_pane_prints() {
+    let host = host();
+    let mut driven = row("fm-worker", "thurbox", "idle");
+    driven.agent = "zsh".to_string();
+    driven.status = SessionState::Running;
+    let id = driven.id.clone();
+    let rows = snapshot(vec![driven]);
+
+    // Nothing is printing: the static fisheye, and not a spinner frame.
+    publish_printing(&host, &rows, &[]);
+    let quiet = paint(&host, index_of(&host, "sessions"), 48, 12).join("\n");
+    assert!(quiet.contains('◉'), "no static running glyph in:\n{quiet}");
+    assert!(
+        !quiet.chars().any(is_spinner_frame),
+        "a quiet pane animated, which claims a turn nobody observed:\n{quiet}"
+    );
+
+    // The same row, with its pane producing output: the spinner, and the
+    // static glyph gone.
+    publish_printing(&host, &rows, &[&id]);
+    let busy = paint(&host, index_of(&host, "sessions"), 48, 12).join("\n");
+    assert!(
+        busy.chars().any(is_spinner_frame),
+        "a printing pane stayed static:\n{busy}"
+    );
+    assert!(!busy.contains('◉'), "the static glyph survived:\n{busy}");
+}
+
+/// The blast radius of the evidence, checked at its edges: `running` is the
+/// only status output can set in motion.
+///
+/// `uncovered` and `unreported` are absences — one agent reports nothing, the
+/// other has not reported yet — and an absence that spun would be asserting
+/// exactly the knowledge it lacks. A pane can print under either (a shell
+/// echoing, a session still booting), so the printing set alone must not move
+/// them.
+#[test]
+fn output_animates_running_and_nothing_else() {
+    let host = host();
+    let mut uncovered = row("bare-shell", "thurbox", "idle");
+    uncovered.agent = "zsh".to_string();
+    uncovered.status = SessionState::Uncovered;
+    let mut unreported = row("just-spawned", "thurbox", "idle");
+    unreported.status = SessionState::Unreported;
+    let mut resting = row("finished", "thurbox", "idle");
+    resting.status = SessionState::Idle;
+    let ids: Vec<String> = [&uncovered, &unreported, &resting]
+        .iter()
+        .map(|r| r.id.clone())
+        .collect();
+    let rows = snapshot(vec![uncovered, unreported, resting]);
+
+    // Every one of them printing, and not one of them animating.
+    let printing: Vec<&str> = ids.iter().map(String::as_str).collect();
+    publish_printing(&host, &rows, &printing);
+    let screen = paint(&host, index_of(&host, "sessions"), 48, 12).join("\n");
+    assert!(
+        !screen.chars().any(is_spinner_frame),
+        "output set a status other than `running` in motion:\n{screen}"
+    );
+    assert!(screen.contains('◌'), "no silence glyph in:\n{screen}");
+    assert!(screen.contains('○'), "no idle glyph in:\n{screen}");
+}
+
+/// `working` is the agent's own report that a turn is running, so it animates
+/// whatever the pane is doing — the half that must not regress while `running`
+/// gains its own, narrower rule.
+#[test]
+fn a_working_session_animates_without_needing_the_pane() {
+    let host = host();
+    let working = row("mid-turn", "thurbox", "working");
+    let rows = snapshot(vec![working]);
+
+    publish_printing(&host, &rows, &[]);
+    let screen = paint(&host, index_of(&host, "sessions"), 48, 12).join("\n");
+    assert!(
+        screen.chars().any(is_spinner_frame),
+        "a working row stopped animating:\n{screen}"
+    );
+}
+
+/// One frame of `theme.spinner`, whichever the elapsed clock landed on.
+fn is_spinner_frame(c: char) -> bool {
+    "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".contains(c)
 }
 
 /// The follow-up: an agent IS in the pane (status `running`), but two

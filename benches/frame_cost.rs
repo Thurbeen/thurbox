@@ -184,6 +184,7 @@ impl World {
             wants: &Default::default(),
             focus: None,
             hovered: None,
+            printing: &Default::default(),
         })
         .expect("publish");
     }

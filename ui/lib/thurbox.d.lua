@@ -625,6 +625,7 @@
 ---@field diffs table<string, thurbox.Diff>
 ---@field links table<string, thurbox.Link[]>
 ---@field content table<string, string> Served while `store.want_content` asks.
+---@field printing table<string, boolean> Sessions whose pane is producing output right now, keyed by id. The evidence `running` animates on — see `ui.status`.
 ---@field runs table<string, thurbox.Run> Answers to THIS plugin's runs.
 ---@field granted thurbox.Granted
 ---@field metrics thurbox.Metrics

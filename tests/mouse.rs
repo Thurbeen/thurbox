@@ -94,6 +94,7 @@ fn hits_of(plugin: &str, width: u16, height: u16) -> Vec<Hit> {
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 
@@ -554,6 +555,7 @@ fn clicking_a_session_row_selects_that_session() {
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 

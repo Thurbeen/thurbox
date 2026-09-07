@@ -82,7 +82,7 @@ persisted columns onto a `SessionState` once per tick:
 | `done` | blue | `●` | a turn just finished; shown until you switch away |
 | `idle` | green | `○` | acknowledged, never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host is down/offline; placeholder row awaiting reconnect |
-| `running` | accent | `◉` | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
+| `running` | accent | `◉`, spinner while its pane prints | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
 | `uncovered` | muted grey | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | muted grey | `◌` | the agent *can* report and has not yet |
 

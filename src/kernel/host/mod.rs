@@ -464,6 +464,16 @@ pub struct Epoch {
     /// neither its groups nor its panes; a clock that never stops makes that
     /// impossible to satisfy.
     pub animation: u64,
+    /// `Terminals::printing_version` — moves only when the set of sessions
+    /// producing output gains or loses a member.
+    ///
+    /// Its own slot rather than a field on the session rows: what is printing
+    /// changes with an agent's output, and the `sessions` group is the largest
+    /// one published. Gating that group on this would rebuild a table per
+    /// session on every change of output, which is the cost the gating exists
+    /// to prevent — so the fact travels in a group of its own that costs one
+    /// small table.
+    pub printing: u64,
 }
 
 /// The versions one group is built from, compared exactly.
@@ -566,6 +576,7 @@ impl Epoch {
             failed: n,
             data: n,
             animation: n,
+            printing: n,
         }
     }
 }
@@ -577,6 +588,13 @@ pub struct Published<'a> {
     pub snapshot: &'a Snapshot,
     /// Why a session's terminal is not live, keyed by session.
     pub attach_errors: &'a std::collections::HashMap<String, String>,
+    /// The sessions whose pane is producing output right now.
+    ///
+    /// The evidence a `running` session's indicator animates on: process
+    /// inspection alone cannot tell a turn in flight from a prompt waiting for
+    /// input, and this can. Only a surface holding the terminals can answer it,
+    /// which is why it is published rather than derived in a pane.
+    pub printing: &'a std::collections::HashSet<String>,
     pub inflight: &'a [InFlight],
     pub themes: &'a Themes,
     pub registry: &'a Registry,

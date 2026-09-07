@@ -102,6 +102,7 @@ fn publish_with(host: &LuaHost, content: &std::collections::HashMap<String, Stri
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 }
@@ -520,6 +521,7 @@ fn every_match_still_paints_when_the_results_fill_the_strip() {
             wants: &Default::default(),
             focus: None,
             hovered: None,
+            printing: &Default::default(),
         })
         .expect("publish");
 

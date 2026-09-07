@@ -923,16 +923,26 @@ the work wasted only after paying for it.
 
 - **Signals** live with the mutation, never with the caller:
   `SnapshotStore::version`, `Themes::version`, `Registry::version`,
-  `Terminals::meta_version` and `failed_version`, plus one loop-side
-  `data_epoch` fed by the `changed` flag each worker store's `poll` already
-  returns. Deriving that last one from an existing return value means it cannot
-  drift from it.
+  `Terminals::meta_version`, `failed_version` and `printing_version`, plus one
+  loop-side `data_epoch` fed by the `changed` flag each worker store's `poll`
+  already returns. Deriving that last one from an existing return value means it
+  cannot drift from it. `printing_version` shows what a signal must be careful
+  to measure: what a pane is doing changes on every byte of output, so it counts
+  **set membership** — which sessions are printing — rather than the output
+  clock itself, since a group gated on the clock would rebuild on every frame
+  under a working agent and be worth nothing.
 - **Gated publish**: each `thurbox.*` group names the versions it is built from
   and is rebuilt only when one moves. The outer table is still assembled fresh
   every frame, so a gating mistake can produce a stale *group* but never a torn
   table. Keys are compared exactly (`[u64; 4]`), not hashed — a collision here
   would serve a stale group, and "astronomically unlikely" is the wrong
-  guarantee for a wrong answer nobody can see.
+  guarantee for a wrong answer nobody can see. A signal that moves fast belongs
+  in a group **sized to it**: `printing` is one id per printing session, and it
+  is separate from `sessions` (a table per session with ~30 named fields)
+  precisely so the fast signal never rebuilds the slow rows.
+  `tests/kernel_frame_cost.rs` pins that a printing change rebuilds exactly one
+  group, counted against a control rather than a literal so it survives the next
+  group anyone adds.
 - **Pure panes**: a pane may declare `pure = true`, asserting its render is a
   function of the published tables and its context. The kernel then reuses the
   tree it last returned, keyed on the epoch, the rect, focus, an animation tick

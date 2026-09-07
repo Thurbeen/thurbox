@@ -319,6 +319,7 @@ fn a_plugin_can_read_the_platform_it_is_running_on() {
         wants: &Default::default(),
         focus: Some("probe"),
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 

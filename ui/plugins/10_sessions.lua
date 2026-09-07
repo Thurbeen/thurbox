@@ -161,7 +161,7 @@ end
 --- the bar speaks for all of them.
 local function session_line(item, width, elapsed, is_selected, work, search)
   local session = item.session
-  local spec = ui.status(session.status, elapsed)
+  local spec = ui.status(session.status, elapsed, ui.printing(session.id))
   local glyph, glyph_color = spec.glyph, spec.color
   -- A blocked row's text is an attention message, so it keeps the dot's colour;
   -- plain activity is muted, leaving the name the row's visual anchor. v1 draws
@@ -596,6 +596,8 @@ return {
       -- them a border cell, so none costs a row.
       overlay_right = ui.dots(items, ctx.elapsed, function(item)
         return item.kind == "session" and item.session.status or nil
+      end, function(item)
+        return item.kind == "session" and item.session.id or nil
       end),
       body = ui.list({
         items = items,
