@@ -111,7 +111,8 @@ pub fn delete_session_headless(
                 // session may still be running there — that still aborts.
                 Err(e) if host_never_answered(&e) => {
                     report.host_unreachable = Some(format!(
-                        "could not reach '{}' ({e}); deleted from here", host.name
+                        "could not reach '{}' ({e}); deleted from here",
+                        host.name
                     ));
                     return finish_locally(db, &session, force, report, &hook_ctx);
                 }
