@@ -1405,3 +1405,228 @@ fn the_arrows_still_move_the_list_while_a_field_has_focus() {
         "and off the first: {picked}"
     );
 }
+
+// ── What the confirm pill says ─────────────────────────────────────────────
+//
+// The pills replay `enter` and `esc`, so their labels are claims about what
+// those keys do. Both keys mean something different in nearly every state of
+// this flow, and a fixed pair of labels made most of those claims false.
+
+#[test]
+fn the_repository_list_offers_the_next_step_rather_than_done() {
+    // `enter` on the list carries the ticked repositories into the next
+    // question; it does not finish anything, and there are three more steps
+    // behind it.
+    let h = host();
+    let world = World::default();
+    open(&h, &world);
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("[ Next ]"), "{screen}");
+}
+
+#[test]
+fn the_typed_path_field_offers_to_add_the_repository() {
+    // `enter` here adds what was typed to memory and leaves the flow on this
+    // very step — the one place the old label read most like "finish". An empty
+    // field has nothing to add, so it offers no pill rather than an inert one.
+    let h = host();
+    let world = World::default();
+    open(&h, &world);
+    press(&h, &world, "tab");
+    let empty = drawn(&h, &world);
+    assert!(
+        !empty.contains("[ Add repo ]"),
+        "nothing typed yet: {empty}"
+    );
+    assert!(!empty.contains("[ Next ]"), "{empty}");
+
+    type_text(&h, &world, "/srv/thing");
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("[ Add repo ]"), "{screen}");
+}
+
+#[test]
+fn the_search_pills_name_the_filter_they_act_on() {
+    // With the search focused `esc` clears the filter rather than closing the
+    // flow, so the dismiss pill must not claim to cancel.
+    let h = host();
+    let world = World::default();
+    open(&h, &world);
+    press(&h, &world, "/");
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("[ Keep filter ]"), "{screen}");
+    assert!(screen.contains("[ Clear ]"), "{screen}");
+    assert!(!screen.contains("[ Cancel ]"), "{screen}");
+}
+
+#[test]
+fn the_browse_pill_follows_the_row_the_dropdown_is_on() {
+    // "open/pick" is two actions: a repository is remembered, a plain directory
+    // is descended into. And `esc` closes the dropdown, not the flow.
+    let h = host();
+    let mut world = World::default();
+    world.repos.set_listing_for_test(
+        "",
+        "/srv",
+        Listing::Ready(vec![
+            BrowseEntry {
+                name: "repos".into(),
+                is_git: false,
+            },
+            BrowseEntry {
+                name: "thing".into(),
+                is_git: true,
+            },
+        ]),
+    );
+    world.wants.browse = Some((String::new(), "/srv".into()));
+    open(&h, &world);
+    press(&h, &world, "tab");
+    type_text(&h, &world, "/srv/");
+    press(&h, &world, "tab");
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("[ Open ]"), "a plain directory: {screen}");
+    assert!(screen.contains("[ Close ]"), "{screen}");
+    assert!(!screen.contains("[ Cancel ]"), "{screen}");
+
+    press(&h, &world, "down");
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("[ Add repo ]"), "a repository: {screen}");
+}
+
+#[test]
+fn a_listing_that_has_not_arrived_offers_no_pill_to_press() {
+    let h = host();
+    let mut world = World::default();
+    world
+        .repos
+        .set_listing_for_test("", "/srv", Listing::Pending);
+    world.wants.browse = Some((String::new(), "/srv".into()));
+    open(&h, &world);
+    press(&h, &world, "tab");
+    type_text(&h, &world, "/srv/");
+    press(&h, &world, "tab");
+    let screen = drawn(&h, &world);
+    assert!(
+        !screen.contains("[ Open ]") && !screen.contains("[ Add repo ]"),
+        "there is no row to act on yet: {screen}"
+    );
+}
+
+#[test]
+fn an_existing_worktree_row_offers_to_open_it() {
+    // The one row in this list that is not a thing to tick.
+    let h = host();
+    let mut world = World::default();
+    world.repos.set_worktrees_for_test(
+        "",
+        "/src/thurbox",
+        Worktrees::Ready(vec![ExistingWorktree {
+            path: "/src/thurbox/.worktrees/dynamic-tooltips".into(),
+            branch: "feat/dynamic-tooltips".into(),
+        }]),
+    );
+    open(&h, &world);
+    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
+    assert!(drawn(&h, &world).contains("[ Next ]"), "on the repo row");
+    press(&h, &world, "down");
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("[ Open ]"), "{screen}");
+}
+
+#[test]
+fn the_branch_step_offers_nothing_to_select_while_it_is_still_fetching() {
+    let h = host();
+    let mut world = World::default();
+    world
+        .repos
+        .set_branches_for_test("", "/src/thurbox", Branches::Pending);
+    open(&h, &world);
+    press(&h, &world, "space");
+    press(&h, &world, "w");
+    press(&h, &world, "enter");
+    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
+    let screen = drawn(&h, &world);
+    assert!(
+        !screen.contains("[ Select ]"),
+        "a pill here would do nothing when pressed: {screen}"
+    );
+
+    world.repos.set_branches_for_test(
+        "",
+        "/src/thurbox",
+        Branches::Ready(vec!["origin/main".into(), "main".into()]),
+    );
+    let screen = drawn(&h, &world);
+    assert!(
+        screen.contains("[ Select ]"),
+        "once there is a list: {screen}"
+    );
+}
+
+#[test]
+fn the_last_question_says_that_answering_it_creates_the_session() {
+    // The agent step spawns on `enter`; it does not merely settle the agent.
+    let h = host();
+    let world = World::default();
+    open(&h, &world);
+    press(&h, &world, "space");
+    press(&h, &world, "enter");
+    let named = drawn(&h, &world);
+    assert!(
+        named.contains("Session Name") && named.contains("[ Next ]"),
+        "the agent is still to come: {named}"
+    );
+    type_text(&h, &world, "x");
+    press(&h, &world, "enter");
+    let screen = drawn(&h, &world);
+    assert!(
+        screen.contains("Coding Agent") && screen.contains("[ Create ]"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_name_that_is_the_last_question_says_so_too() {
+    // One agent is not a question, so `enter` on the name field spawns.
+    let h = host();
+    let mut world = World::default();
+    world.snapshot.agents.truncate(1);
+    open(&h, &world);
+    press(&h, &world, "space");
+    press(&h, &world, "enter");
+    let screen = drawn(&h, &world);
+    assert!(
+        screen.contains("Session Name") && screen.contains("[ Create ]"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn the_branch_name_is_not_the_last_question_when_an_agent_is_still_to_come() {
+    let h = host();
+    let mut world = World::default();
+    world.repos.set_branches_for_test(
+        "",
+        "/src/thurbox",
+        Branches::Ready(vec!["origin/main".into()]),
+    );
+    open(&h, &world);
+    press(&h, &world, "space");
+    press(&h, &world, "w");
+    press(&h, &world, "enter");
+    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
+    press(&h, &world, "enter");
+    let screen = drawn(&h, &world);
+    assert!(
+        screen.contains("Session Name") && screen.contains("[ Next ]"),
+        "the branch name comes after the session name: {screen}"
+    );
+    type_text(&h, &world, "x");
+    press(&h, &world, "enter");
+    let screen = drawn(&h, &world);
+    assert!(
+        screen.contains("Branch Name") && screen.contains("[ Next ]"),
+        "{screen}"
+    );
+}

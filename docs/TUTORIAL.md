@@ -134,7 +134,7 @@ Then the agent. This is the list from `~/.config/thurbox/agents.toml` — the
 built-ins thurbox seeds, plus any CLI you have described yourself. (With only
 one agent defined, this step is skipped.)
 
-![The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp](../media/tutorial/10-agent-picker.png)
+![The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp, shell](../media/tutorial/10-agent-picker.png)
 
 `Enter` creates everything: the worktree, the tmux window, and the agent
 running inside it.

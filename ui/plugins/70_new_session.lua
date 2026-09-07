@@ -573,7 +573,18 @@ local function render_repo(flow)
 
   -- v1's footer, which says something different per focus — the keys really are
   -- different, and a hint that named them all would name most of them wrongly.
-  local hints
+  -- The two pills are subject to that as much as the hints: they REPLAY `enter`
+  -- and `esc`, so a fixed pair of labels ("Done", "Cancel") would name four
+  -- different actions each, and would name them wrongly in three focuses out of
+  -- four. `enter` in particular never finishes this flow: it adds the typed
+  -- path, or picks a browsed one, or keeps the filter, or moves on to the next
+  -- question.
+  --
+  -- Which is why `enter` is not in the hints as well: the pill beside them now
+  -- carries its action word for word, and the strip is 58 columns wide — the
+  -- repetition cost `alt+p` its description entirely, and that one is the only
+  -- place a folder import is offered at all.
+  local hints, primary, cancel
   if flow.focus == "list" then
     hints = {
       { "j/k", "nav" },
@@ -583,24 +594,41 @@ local function render_repo(flow)
       { "d", "forget" },
       { "tab", "input" },
     }
+    -- An existing worktree is not a selection to gather but a thing to open, so
+    -- `enter` on one leaves this step behind rather than carrying it forward.
+    local entry = entries[widgets.clamp(flow.cursor, #entries)]
+    primary = (entry and entry.row.is_worktree) and "Open" or "Next"
   elseif flow.focus == "search" then
-    hints = { { "enter", "keep filter" }, { "esc", "clear" } }
+    hints = { { "esc", "clear" } }
+    primary = "Keep filter"
+    cancel = "Clear"
   elseif dropdown then
     hints = {
       { "↑/↓", "select" },
-      { "enter", "open/pick" },
       { "s-tab", "list" },
       { "esc", "close" },
     }
+    -- "open/pick" is two actions, and which one it is depends on the row: a
+    -- repository is committed to memory, a plain directory is descended into.
+    -- No row at all — still listing, or a directory that refused — is no pill,
+    -- rather than one that would do nothing when pressed.
+    local shown = browse_entries(flow)
+    local entry = shown[widgets.clamp(flow.browse_index, #shown)]
+    primary = entry and (entry.is_git and "Add repo" or "Open") or nil
+    cancel = "Close"
   else
     hints = {
       { "tab", suggestion ~= "" and "complete" or "browse" },
-      { "enter", "add repo" },
       { "alt+p", "import parent" },
       { "s-tab", "list" },
     }
+    -- An empty field is nothing to add — including straight after an add, which
+    -- clears it and leaves the focus here so several paths can be typed in a
+    -- row. Trimmed as `enter` trims it, so a field holding only spaces reads as
+    -- the nothing it is.
+    primary = ((flow.input.value or ""):match("^%s*(.-)%s*$") ~= "") and "Add repo" or nil
   end
-  children[#children + 1] = modal.footer(hints, "Done")
+  children[#children + 1] = modal.footer(hints, primary, { cancel = cancel })
 
   -- The height is the sum of what was actually built, plus the two border rows.
   -- Deriving it from the children rather than recomputing the layout means the
@@ -627,7 +655,9 @@ local function render_branch(flow)
         },
       },
       message_row(flow),
-      modal.footer({ { "esc", "cancel" } }, "Select"),
+      -- No confirm pill: there is nothing to select yet, and one offered here
+      -- would be a button that does nothing when pressed.
+      modal.footer({ { "esc", "cancel" } }, nil),
     }, flow)
   end
   local height = math.min(#names, REPO_LIST_MAX)
@@ -642,6 +672,20 @@ local function render_branch(flow)
   }, flow)
 end
 
+--- Does `enter` on this field end the flow?
+---
+--- The name is the last question only sometimes: the worktree flow asks for a
+--- branch name after it, and a name followed by a choice of agent is not the
+--- end either. A fork inherits its source's agent, and one agent is not a
+--- question — both of those spawn straight from the field. Mirrors
+--- `after_name`, which is what actually decides it.
+local function field_creates(flow)
+  if flow.step == "name" and flow.base then
+    return false
+  end
+  return flow.fork ~= nil or #agents() <= 1
+end
+
 local function render_field(title, label, field, flow, placeholder)
   return frame(title, 7, {
     textinput.node(field, {
@@ -650,7 +694,10 @@ local function render_field(title, label, field, flow, placeholder)
       placeholder = placeholder,
     }),
     message_row(flow),
-    modal.footer({ { "enter", "confirm" }, { "esc", "cancel" } }, "OK"),
+    modal.footer(
+      { { "enter", "confirm" }, { "esc", "cancel" } },
+      field_creates(flow) and "Create" or "Next"
+    ),
   }, flow)
 end
 
@@ -670,7 +717,9 @@ local function render_agent(flow)
       children = selector_rows(labels, widgets.clamp(flow.agent_index, #labels), height),
     },
     message_row(flow),
-    modal.footer({ { "j/k", "navigate" } }, "Select"),
+    -- The last question: `enter` here spawns the session rather than merely
+    -- settling the agent, and the pill that replays it says so.
+    modal.footer({ { "j/k", "navigate" } }, "Create"),
   })
 end
 
