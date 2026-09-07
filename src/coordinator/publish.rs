@@ -14,6 +14,10 @@ impl App {
     /// Called just before a paint and before dispatching input — the only two
     /// moments Lua runs — rather than once per loop iteration.
     pub(crate) fn republish(&mut self) {
+        // Before `advance_animation`, which asks whether a printing `running`
+        // session is on screen — a stale set there would freeze the very
+        // spinner it gates.
+        self.terminals.sync_printing();
         self.advance_animation();
         let sessions: Vec<String> = self
             .snapshots
@@ -75,9 +79,11 @@ impl App {
                 failed: self.terminals.failed_version(),
                 data: self.data_epoch,
                 animation: self.animation_tick,
+                printing: self.terminals.printing_version(),
             },
             snapshot: self.snapshots.current(),
             attach_errors: &attach_errors,
+            printing: self.terminals.printing(),
             inflight: &inflight,
             themes: &self.themes,
             registry: &self.registry,

@@ -331,6 +331,7 @@ fn publish_with(host: &thurbox::kernel::host::LuaHost, settings: &Settings) {
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 }

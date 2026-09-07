@@ -64,6 +64,7 @@ fn chip_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<(String, 
         wants: &Default::default(),
         focus: Some("agent"),
         hovered,
+        printing: &Default::default(),
     })
     .expect("publish");
 
@@ -290,6 +291,7 @@ fn a_hovered_row_is_banded_and_keeps_its_own_colours() {
             wants: &Default::default(),
             focus: Some("sessions"),
             hovered,
+            printing: &Default::default(),
         })
         .expect("publish");
         let index = host

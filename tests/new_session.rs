@@ -171,6 +171,7 @@ fn publish(host: &LuaHost, world: &World) {
         wants: &world.wants,
         focus: None,
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 }

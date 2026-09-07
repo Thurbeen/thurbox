@@ -231,12 +231,20 @@ impl App {
     /// costs one cache miss, while saying "not animating" when something is
     /// would freeze it on screen.
     pub(crate) fn advance_animation(&mut self) {
+        let printing = self.terminals.printing();
         let animating = self
             .snapshots
             .current()
             .sessions
             .iter()
-            .any(|row| row.status == thurbox::session::SessionState::Working)
+            .any(|row| {
+                row.status == thurbox::session::SessionState::Working
+                    // A `running` session animates only while its pane is
+                    // printing, so the clock has to run for that case too —
+                    // otherwise the spinner it gates freezes mid-turn.
+                    || (row.status == thurbox::session::SessionState::Running
+                        && printing.contains(&row.id))
+            })
             || self.commands.has_inflight()
             // The creation flow spins over the repo store's reads too, and it
             // is a pure pane: without the clock its "listing…"/"fetching…"

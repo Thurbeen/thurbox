@@ -31,6 +31,7 @@ use tui_term::widget::PseudoTerminal;
 
 use super::paint::SurfaceProvider;
 use super::snapshot::Snapshot;
+use crate::session::WORKING_QUIET_MS;
 
 pub mod links;
 mod programs;
@@ -312,6 +313,22 @@ pub struct Terminals {
     /// Moves whenever the set of attach failures does. Published on each
     /// session row, so it gates that group alongside `meta_version`.
     failed_version: u64,
+    /// The sessions whose pane is **currently producing output**, refreshed by
+    /// [`Self::sync_printing`] once per publish.
+    ///
+    /// Membership only, and deliberately nothing else: it is the single fact
+    /// the interface needs to animate a `running` session on evidence rather
+    /// than on assumption, and it is published in a group of its own because
+    /// the answer moves with the agent's output while the session rows do not
+    /// (see `kernel::host::publish`).
+    printing: std::collections::HashSet<String>,
+    /// Moves only when [`Self::printing`] gains or loses a session.
+    ///
+    /// The reason this is a set-membership version rather than the raw output
+    /// clock: `millis_since_output` changes on every byte, and gating a group
+    /// on that would rebuild it on every frame under a printing agent — the
+    /// exact cost the group gating exists to avoid.
+    printing_version: u64,
     /// Attaches running on workers: session id → the backend it is on.
     ///
     /// Attaching is the one thing here that blocks for a *long* time — an ssh
@@ -370,6 +387,8 @@ impl Terminals {
             meta: HashMap::new(),
             meta_version: 0,
             failed_version: 0,
+            printing: std::collections::HashSet::new(),
+            printing_version: 0,
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
             adopted: Vec::new(),
@@ -1375,6 +1394,41 @@ impl Terminals {
         self.live
             .get(session)
             .map(|live| live.session.millis_since_last_output())
+    }
+
+    /// Recompute which sessions are producing output, bumping
+    /// [`Self::printing_version`] only when the *set* changes.
+    ///
+    /// The same signal and the same bound the stuck-`working` fallback uses
+    /// ([`WORKING_QUIET_MS`]), for the same reason: a TUI agent animates its
+    /// in-progress line while a turn runs, so "printed within the window" is
+    /// what separates a turn in flight from a prompt waiting for input. No
+    /// process listing can make that distinction, which is why an interface
+    /// may animate a `running` session and a headless reader may not.
+    ///
+    /// Only live panes are considered — a session thurbox has not attached
+    /// cannot be observed printing, so it is simply absent and draws static.
+    pub fn sync_printing(&mut self) {
+        let printing: std::collections::HashSet<String> = self
+            .live
+            .iter()
+            .filter(|(_, live)| live.session.millis_since_last_output() <= WORKING_QUIET_MS)
+            .map(|(session, _)| session.clone())
+            .collect();
+        if printing != self.printing {
+            self.printing = printing;
+            self.printing_version = self.printing_version.wrapping_add(1);
+        }
+    }
+
+    /// The sessions producing output as of the last [`Self::sync_printing`].
+    pub fn printing(&self) -> &std::collections::HashSet<String> {
+        &self.printing
+    }
+
+    /// Moves only when [`Self::printing`]'s membership does.
+    pub fn printing_version(&self) -> u64 {
+        self.printing_version
     }
 
     /// The activity text and attention notification each live agent last

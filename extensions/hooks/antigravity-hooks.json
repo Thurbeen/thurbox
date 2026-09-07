@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"$(cat)\" in *permission*|*Permission*|*approval*|*approve*) thurbox-cli session signal --state blocked ;; esac; true"
+            "command": "case \"$(cat | sed -n 's/.*\"message\":\"\\([^\"]*\\)\".*/\\1/p')\" in *permission*|*Permission*|*approval*|*approve*) thurbox-cli session signal --state blocked ;; esac; true"
           }
         ]
       }

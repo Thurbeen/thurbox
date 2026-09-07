@@ -165,7 +165,8 @@ to `widgets` for the piece it does not cover.
 | `ui.empty{title, width, hint, hint_action}` | the one empty state — a blank line, the sentence centred, and the chord that fixes it, shown only while something is bound to it |
 | `ui.modal{title, cols, children, crumbs, border}` | a float sized from what is in it |
 | `ui.footer{actions, primary, cancel}` | key hints resolved **from the registry**, plus the confirm/dismiss pills |
-| `ui.status(name, elapsed)` / `ui.dots(items, elapsed, status_of)` | a status glyph, spinner included; and the strip of them a panel puts on its border |
+| `ui.status(name, elapsed, printing)` / `ui.dots(items, elapsed, status_of, id_of)` | a status glyph, spinner included; and the strip of them a panel puts on its border. `working` always animates; `running` animates only while `printing` says its pane is producing output |
+| `ui.printing(session_id)` | whether that session's pane is producing output, from `thurbox.printing` |
 | `ui.rule(label, width)` | `── label ────`, the group heading |
 | `ui.chord(action)` / `ui.describe(action)` / `ui.follow(key, id)` / `ui.reset(key)` | the registry lookups, and a cursor addressed without holding one |
 

@@ -103,6 +103,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 }

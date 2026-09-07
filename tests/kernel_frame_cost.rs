@@ -196,6 +196,17 @@ fn publish_at_with(
     themes: &Themes,
     inflight: &[thurbox::kernel::command::InFlight],
 ) {
+    publish_at_printing(host, epoch, snapshot, themes, inflight, &Default::default());
+}
+
+fn publish_at_printing(
+    host: &LuaHost,
+    epoch: Epoch,
+    snapshot: &Snapshot,
+    themes: &Themes,
+    inflight: &[thurbox::kernel::command::InFlight],
+    printing: &std::collections::HashSet<String>,
+) {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
@@ -222,6 +233,7 @@ fn publish_at_with(
         wants: &Default::default(),
         focus: None,
         hovered: None,
+        printing,
     })
     .expect("publish");
 }
@@ -242,6 +254,56 @@ fn probe(host: &LuaHost) -> String {
         .expect("render")
         .node;
     format!("{node:?}")
+}
+
+/// What is printing changes with an agent's output, and the session rows must
+/// not move with it.
+///
+/// This is the cost that decided the shape: the `sessions` group is a table per
+/// session with ~30 named fields, so gating it on the printing set would rebuild
+/// all of that every time a pane started or stopped producing output — many
+/// times a second under a working agent. The fact travels in a group of its own
+/// instead, and this pins that it stayed one group wide.
+///
+/// Counted against a control rather than against a literal, so the assertion
+/// survives the next group anyone adds: a republish at an unchanged epoch reuses
+/// everything, and bumping `printing` may reuse exactly one fewer.
+#[test]
+fn a_change_of_what_is_printing_rebuilds_one_group_and_no_others() {
+    let (_dir, host) = interface();
+    let themes = Themes::load(None);
+    let rows = Snapshot {
+        sessions: vec![row("s1", "one"), row("s2", "two")],
+        ..Snapshot::default()
+    };
+    let epoch = Epoch::always_fresh();
+
+    // Warm every group at this epoch.
+    publish_at(&host, epoch, &rows, &themes);
+
+    // Control: the same epoch again reuses all of them.
+    let before = host.reused_groups();
+    publish_at(&host, epoch, &rows, &themes);
+    let all_groups = host.reused_groups() - before;
+    assert!(
+        all_groups > 1,
+        "expected several gated groups, saw {all_groups}"
+    );
+
+    // The printing set moves and nothing else does.
+    let printing: std::collections::HashSet<String> = ["s1".to_string()].into_iter().collect();
+    let mut moved = epoch;
+    moved.printing = epoch.printing.wrapping_add(1);
+    let before = host.reused_groups();
+    publish_at_printing(&host, moved, &rows, &themes, &[], &printing);
+    let reused = host.reused_groups() - before;
+
+    assert_eq!(
+        reused,
+        all_groups - 1,
+        "a printing change rebuilt {} groups; it may rebuild only its own",
+        all_groups - reused
+    );
 }
 
 #[test]

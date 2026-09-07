@@ -39,36 +39,69 @@ local ui = {}
 
 -- ── Status ──────────────────────────────────────────────────────────────────
 
---- Glyph and colour for a session status, with `working` animated.
+--- Glyph and colour for a session status, with the moving ones animated.
 ---
---- `theme.status` answers the static half; the spinner is the one status whose
---- glyph depends on the frame, and every pane that draws a status was choosing
---- between the two itself.
+--- `theme.status` answers the static half; the spinner is for the statuses
+--- whose glyph depends on the frame, and every pane that draws a status was
+--- choosing between the two itself.
+---
+--- Two statuses animate, on different evidence. `working` is the agent's own
+--- report that a turn is running. `running` is thurbox's observation that an
+--- agent holds the pane and has said nothing — which on its own cannot tell a
+--- turn in flight from a prompt waiting for input, so it animates only while
+--- `printing` says that pane is actually producing output. That is the same
+--- signal `with_output_quiescence` trusts in the other direction, and it is
+--- what keeps the spinner a report rather than a guess: quiet, it falls back
+--- to the static glyph.
+---
+--- `printing` comes from `thurbox.printing`, which only a surface holding the
+--- terminals can fill. A caller that passes nothing gets the static answer,
+--- which is the honest one when nobody looked.
 ---@param name thurbox.Status
 ---@param elapsed number?
+---@param printing boolean?
 ---@return { glyph: string, color: thurbox.Color? }
-function ui.status(name, elapsed)
+function ui.status(name, elapsed, printing)
   local spec = theme.status(name)
-  if name == "working" then
+  if name == "working" or (name == "running" and printing) then
     return { glyph = theme.spinner_frame(elapsed), color = spec.color }
   end
   return spec
 end
 
+--- Whether `session_id`'s pane is producing output right now.
+---
+--- The published set is keyed by session id, so a missing entry is "not
+--- printing" and an absent table (a surface that publishes none) is the same
+--- answer — never an error.
+---@param session_id string?
+---@return boolean
+function ui.printing(session_id)
+  if not session_id then
+    return false
+  end
+  local set = thurbox and thurbox.printing
+  return set ~= nil and set[session_id] == true
+end
+
 --- One status glyph per item, in render order — a panel's border strip.
 ---
 --- `status_of` returns the status to draw, or nil for an item the strip skips
---- (work in flight has no status of its own yet).
+--- (work in flight has no status of its own yet). `id_of` names the session a
+--- row stands for, so a `running` dot animates on the same evidence its row
+--- does; a strip whose items are not sessions omits it and draws static.
 ---@param items table[]
 ---@param elapsed number?
 ---@param status_of fun(item: table): string?
+---@param id_of (fun(item: table): string?)?
 ---@return thurbox.Span[]
-function ui.dots(items, elapsed, status_of)
+function ui.dots(items, elapsed, status_of, id_of)
   local runs = {}
   for _, item in ipairs(items) do
     local status = status_of(item)
     if status then
-      local spec = ui.status(status, elapsed)
+      local printing = id_of ~= nil and ui.printing(id_of(item)) or false
+      local spec = ui.status(status, elapsed, printing)
       runs[#runs + 1] = { text = spec.glyph, style = { fg = spec.color } }
     end
   end

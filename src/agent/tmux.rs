@@ -1347,6 +1347,7 @@ impl TmuxBackend {
         Ok(AdoptedSession {
             output: Box::new(reader),
             input: Box::new(writer),
+            seed_len: 0,
         })
     }
 
@@ -1598,10 +1599,15 @@ impl SessionBackend for TmuxBackend {
             return Ok(connected);
         }
         // Prepend the captured history to the live stream — the reader loop
-        // feeds it into the parser first, populating the UI scrollback.
+        // feeds it into the parser first, populating the UI scrollback. It
+        // must not be mistaken for live activity either, which is what
+        // `seed_len` tells the reader loop to guard against (see
+        // `Session::reader_loop`).
+        let seed_len = seed.len();
         Ok(AdoptedSession {
             output: Box::new(Cursor::new(seed).chain(connected.output)),
             input: connected.input,
+            seed_len,
         })
     }
 

@@ -319,6 +319,13 @@ globals:
   # frame.
   thurbox.content:
     property: read-only
+  # Which sessions are producing output right now, keyed by session id. Its own
+  # tiny group rather than a field on each session row: the answer moves with an
+  # agent's output, and the rows must not be rebuilt at that rate. It is what
+  # lets a `running` dot animate on evidence instead of asserting a turn no
+  # process listing can see.
+  thurbox.printing:
+    property: read-only
   # Answers to the programs THIS plugin asked to be run. Set per plugin as it is
   # entered, so a pane reads its own and no other's.
   thurbox.runs:

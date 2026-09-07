@@ -109,6 +109,7 @@ fn session_list_of(host: &LuaHost, registry: &Registry, sessions: Vec<SessionRow
         wants: &Default::default(),
         focus: Some("sessions"),
         hovered: None,
+        printing: &Default::default(),
     })
     .expect("publish");
 

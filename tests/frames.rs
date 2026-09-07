@@ -118,6 +118,7 @@ fn publish_inner(
         wants: &Default::default(),
         focus: None,
         hovered,
+        printing: &Default::default(),
     })
     .expect("publish");
 }

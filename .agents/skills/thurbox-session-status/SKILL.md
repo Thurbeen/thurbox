@@ -24,7 +24,7 @@ module exists to prevent:
 | `done` | blue | `●` (filled) | a turn just finished; shown until you switch away (hook) |
 | `idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host down/offline; the ordinary row, derived from a live attach failure, awaiting reconnect |
-| `running` | `status_running` (accent) | `◍` | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
+| `running` | `status_running` (accent) | `◉`, animated while its pane prints | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
 | `uncovered` | `status_unknown` (muted) | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | `status_unknown` (muted) | `◌` | the agent *can* report and has not yet |
 | `stopped` | — | — | parked by `session stop`: no process at all, which is why it outranks whatever the hook columns still hold |
@@ -77,8 +77,29 @@ connection; both sets are appended after the user's `ssh_opts`, whose first
 occurrence wins), which stops a broken host
 from prompting for a password on the TUI's terminal or hanging the render loop.
 
-The live session list **animates** the `Working` spinner. The frames are
-`theme.spinner` in `ui/lib/theme.lua` and the pane picks one from the elapsed
+The live session list **animates** the `Working` spinner, and `Running` too —
+but only on evidence. `running` says an agent holds the pane and has not
+signalled, which cannot by itself distinguish a turn in flight from a prompt
+waiting for input, so a spinner there would assert what the observation cannot
+support. Terminal output can tell them apart, and it is the same signal the
+stuck-`working` fallback trusts in the other direction: a `running` session
+whose pane printed within `WORKING_QUIET_MS` animates, and one that has gone
+quiet falls back to the static `◉`. `uncovered` and `unreported` are absences
+and never animate, whatever their pane is doing.
+
+That evidence reaches Lua as `thurbox.printing`, a set of session ids filled by
+`Terminals::sync_printing` and published in **a group of its own**
+(`epoch.printing`, `Terminals::printing_version`, which moves only when the set
+gains or loses a member). Its own group because the `sessions` group is the
+largest one published — a table per session with ~30 named fields — and what is
+printing moves with an agent's output: gating those rows on it would rebuild all
+of them many times a second, which is the cost ADR-P16's gating exists to
+prevent. `tests/kernel_frame_cost.rs` pins that a printing change rebuilds
+exactly one group. Only a surface holding the terminals can fill it, so a
+headless reader publishes none and `ui.status` falls back to the static answer —
+the same line the CLI already draws at the folds it cannot make.
+
+The frames are `theme.spinner` in `ui/lib/theme.lua` and the pane picks one from the elapsed
 time it is handed (`status_glyph` in `10_sessions.lua`); the clock behind that is
 the kernel's shared **animation tick** (`kernel::host::ANIMATION_HZ` = 8), which
 the loop advances **only while something is actually animating** — a free-running
@@ -213,7 +234,7 @@ own, which is the point.
   |---|---|---|
   | `derive_state` (incl. the `done → idle` acknowledgment) | `hook_state`, `hook_state_at`, `seen_at` — all stored | everyone |
   | `classify_foreground` → `Assessment::with_corroboration` | the pane's foreground process group | anyone who can run `ps` |
-  | `with_output_quiescence` | terminal output age | the interface only |
+  | `with_output_quiescence` (incl. the latched-`blocked` fold) | terminal output age, against `hook_state_at` | the interface only |
   | `with_reachability` | a live attach error | the interface only |
 
   `seen_at` being a **stored fact** rather than a timeout is why the CLI applies
@@ -248,6 +269,25 @@ own, which is the point.
   (whose cadence is the database's) and re-derived from `hook_state` each pass,
   so it reverses itself when output resumes. The DB row is left untouched — the
   override is purely per-tick derivation.
+- **Latched-`blocked` fallback.** `blocked` is still never time-gated: a session
+  waiting on you is quiet for exactly as long as it waits, so no clock may end
+  one and an hour-long block stays `blocked`. What ends one is evidence —
+  `session::outlived_by_output`, in the same tick pass. A block edge stops the
+  pane printing, so a real block keeps `millis_since_output` within measurement
+  slop of `hook_state_age`; a block the agent resolved by itself leaves the two
+  diverging, because the turn goes on printing. When the pane has printed more
+  than `WORKING_QUIET_MS` past the edge the block is over, and what is left runs
+  through the `working` rule above: still printing reads `working`, gone quiet
+  reads `idle`. The margin is `WORKING_QUIET_MS` rather than a new constant
+  because it is the same claim that one already makes. Why it is needed at all:
+  claude's `blocked` is a **text match on a `Notification` body**
+  (`blocked_is_heuristic`), that hook also fires for advisories an autonomous
+  agent answers on its own, and — unlike kimi's `PermissionRequest` /
+  `PermissionResult` pair — nothing in the payload clears it. A false block that
+  landed as the newest word therefore stood for the rest of the session's life.
+  Only the interface can apply this: `session get` has no terminal to ask and
+  keeps reporting the latched word, which is the same line the CLI already draws
+  at the two folds it cannot make.
 - **Per-session only.** Status renders on the session's own row (and in the
   ` Sessions ` panel border title, one dot per session). Repo-group headers
   (`group_header_line` in `10_sessions.lua`) carry **no** status — a rolled-up
