@@ -1399,17 +1399,60 @@ follow from the host owning the record, none of which the first cut had:
   error at all*, and reported success — the leak above, with the operator told
   nothing. `TmuxBackend::discover_answered` (used by `kill_remote_windows`,
   `remote_window_index`, and `agent_window`) returns an empty listing only when
-  the multiplexer itself refused — tmux's `error connecting to` / `no server
-  running on` / `can't find session`, psmux's `session not found` — and an
-  error otherwise. An unrecognised failure counts as *unanswered* on purpose:
-  over-reporting a live host costs one cheap retry, while the reverse costs an
-  orphaned agent nobody ever looks for again. It also replaces the
-  `has-session` round trip, since `list-windows` on an absent server gives
-  exactly that refusal. `agent_window` backs `agent_window_alive`, which
+  the multiplexer itself refused. It also replaces the `has-session` round
+  trip, since `list-windows` on an absent server gives exactly that refusal.
+  `agent_window` backs `agent_window_alive`, which
   `restart_session`'s `--if-missing` path uses to decide whether the agent is
   gone and needs relaunching — an unreachable host now aborts the relaunch
   instead of reading as "no window", which used to start a second agent beside
   the one still running once the host answered again.
+- **The layer that failed decides, not the words it used.** Both classifications
+  above began as substring matches over an error message, and a message is
+  written for a person: the first unanticipated wording lands in the wrong
+  branch, silently, in whichever direction happens to be worse. So the question
+  is asked of the layer instead. `ssh` exits **255** for its own failures and
+  passes a remote command's status through untouched (a remote `exit 7` exits
+  7), and `thurbox-cli` only ever exits 1, 2 or 3 — so 255 is ssh saying the
+  question never arrived, whatever the stderr underneath resembles
+  (`agent::tmux::listing_is_absence`, `session_ops::host_cli::classify_failure`).
+  `session_ops::host_cli::Reach` names the three answers a failed remote call
+  can have — `Unreached`, `Answered`, `Undetermined` — and `Undetermined` is
+  deliberately its own answer rather than being rounded to the nearest of the
+  other two. Where a substring test is still the only signal (tmux's own
+  refusals) it is narrowed to the exact answers the tool is documented to give;
+  widening that list is the trap it looks like a fix, since each new string
+  makes the classifier more confidently wrong about the next one nobody
+  anticipated. `wsl.exe` has no 255 convention, so a WSL host is never called
+  `Unreached` on a status alone — the honest limit rather than a guess, and a
+  cheap one, since `wsl.exe` runs on this machine.
+- **What an unclassifiable failure does depends on which branch destroys
+  nothing**, and that is not the same branch everywhere. For a listing,
+  "unanswered" must not become "the server holds nothing", so it is an error
+  and the teardown is recorded as owed. For a *delegated delete* it is the
+  reverse: aborting reaches nothing and records nothing, which is how a session
+  on a host with a broken CLI became undeletable, so `Undetermined` falls back
+  to the local teardown alongside `Unreached` — stamp-addressed, so on a host
+  that is up (exit 127, reached it and found no `thurbox-cli`) it still takes
+  exactly this session's windows, and on one that is not it records the owed
+  teardown. Only `Answered` aborts: the host is up, heard the question and
+  refused, so the session may still be running there. A host too old to write
+  the structured `{"error": …}` document is still read as having answered, from
+  its exit code being one of the CLI's own.
+- **Known limit: tmux's absence is a claim about the socket, not the machine.**
+  A tmux server with live panes whose socket file is moved or replaced reports
+  `error connecting to <path> (No such file or directory)` — verified against a
+  real host with two live processes still running behind it. thurbox addresses
+  sessions only through that socket, so there is no command it could issue to
+  reach those windows and no retry that would ever discharge such an owed
+  teardown; treating it as absence is therefore the right answer, but it is the
+  narrower claim *nothing is reachable through this socket*. Closing the gap
+  would need a way to identify a session's processes without the multiplexer —
+  a recorded OS pid per remote pane, or a scan by worktree cwd — which nothing
+  here has today. What the narrowing does buy is the case where a retry *does*
+  help: `(Permission denied)` / `(Connection refused)` / `(Connection reset by
+  peer)` behind that same `error connecting to` prefix are a server that may be
+  alive and reachable once the condition clears, and those are no longer read
+  as absence.
 
 ---
 

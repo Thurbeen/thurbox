@@ -974,3 +974,26 @@ fn command_arguments_may_start_with_a_dash() {
     assert_eq!(command.as_deref(), Some("/bin/sh"));
     assert_eq!(arg, vec!["-c", "while :; do sleep 1; done"]);
 }
+
+/// The host-CLI classifier decides that a remote failure was *the host's own
+/// thurbox answering* partly from the exit code being one this binary uses.
+/// `session_ops` may not reference `cli` (`tests/architecture_rules.rs`), so it
+/// spells those codes out — and this is the pin that keeps the two copies from
+/// drifting into a classifier that reads a real refusal as "nothing answered".
+#[test]
+fn host_cli_knows_every_exit_code_this_binary_uses() {
+    use crate::session_ops::host_cli::CLI_EXIT_CODES;
+
+    for code in [EXIT_ERROR, EXIT_USAGE, EXIT_AMBIGUOUS] {
+        assert!(
+            CLI_EXIT_CODES.contains(&code),
+            "exit {code} is one thurbox-cli gives, and the remote classifier \
+             has to recognise it as the host answering"
+        );
+    }
+    assert_eq!(
+        CLI_EXIT_CODES.len(),
+        3,
+        "a new exit code needs adding to CLI_EXIT_CODES too"
+    );
+}

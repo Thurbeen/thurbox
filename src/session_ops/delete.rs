@@ -87,36 +87,58 @@ pub fn delete_session_headless(
             if force {
                 args.push("--force");
             }
-            let answer = match super::host_cli::run(&host, &cli, &args) {
+            let answer = match super::host_cli::run_classified(&host, &cli, &args) {
                 Ok(answer) => answer,
                 // The host does not know this row, so there is nothing there to
                 // delegate to — but the row here is real and the caller asked
                 // for it to go. Take the delete from here instead: the teardown
                 // is addressed by uuid, so it still reaches exactly this
                 // session's windows on that host if they are there at all.
-                Err(e) if is_unknown_session(&e) => {
+                Err(e) if is_unknown_session(&e.message) => {
                     report.host_unknown = Some(format!(
                         "'{}' does not know this session ({e}); deleted from here",
                         host.name
                     ));
                     return finish_locally(db, &session, force, report, &hook_ctx);
                 }
-                // The host never got the question — a transport failure, not a
-                // reply — so there is nothing there to have deleted. Taken from
+                // The question never arrived — the launcher would not start,
+                // or ssh failed on its own account — so nothing there acted on
+                // it and there is nothing there to have deleted. Taken from
                 // here instead, exactly as the legacy (non-delegated) path
                 // already does for the same host being down: the row is marked
                 // and, on a force delete, `owes_remote_teardown` records what
                 // the local teardown could not reach for the sweep to retry.
-                // Any other error is the host answering with one, and the
-                // session may still be running there — that still aborts.
-                Err(e) if host_never_answered(&e) => {
+                //
+                // Decided by which layer failed, never by reading the message
+                // (`host_cli::Reach`): the two branches here are "delete it
+                // from here anyway" and "leave it alone", and choosing between
+                // them by matching substrings of somebody else's error text
+                // gets the first unanticipated wording wrong, silently.
+                //
+                // `Undetermined` comes here with `Unreached` on purpose. An
+                // error whose layer cannot be told is an unanswered question,
+                // and the one thing an unanswered question must not do is
+                // stand in for the host saying no — which is what aborting
+                // would make it. Falling back is also the branch that still
+                // *does* something about the processes: the teardown is
+                // addressed by the window's own stamp, so on a host that is up
+                // (exit 127 — reached it, found no thurbox-cli there) it
+                // reaches exactly this session's windows, and on one that is
+                // not it records the owed teardown for the sweep. Aborting
+                // reaches nothing and records nothing, which is how a session
+                // on a host with a broken CLI became undeletable.
+                Err(e) if e.reach != crate::session_ops::host_cli::Reach::Answered => {
                     report.host_unreachable = Some(format!(
-                        "could not reach '{}' ({e}); deleted from here",
+                        "'{}' did not answer the delete ({e}); deleted from here",
                         host.name
                     ));
                     return finish_locally(db, &session, force, report, &hook_ctx);
                 }
-                Err(e) => return Err(e),
+                // The host itself refused — a locked database, a worktree it
+                // could not release. It is up, it heard the question, and the
+                // session may still be running there, so this still aborts and
+                // the row is left exactly as it was.
+                Err(e) => return Err(e.message),
             };
             report.killed_window = answer
                 .get("killed_window")
@@ -212,34 +234,6 @@ fn finish_locally_with(
 /// which are cases where the local row still has to go.
 fn is_unknown_session(error: &str) -> bool {
     error.contains("Session not found")
-}
-
-/// Whether a [`super::host_cli::run`] failure means the host was never
-/// reached, rather than answering with an error of its own.
-///
-/// `run_script` (`session_ops::host_cli`) reads stderr before the host CLI's
-/// own structured answer precisely because a transport failure — ssh could
-/// not connect, the remote shell could not exec the binary — never reaches
-/// thurbox-cli at all and so never produces a real `Err`. The signatures below
-/// are what that stderr carries in each case; the same distinction
-/// `agent::tmux::mux_answered_absent` draws for tmux, applied to ssh instead.
-/// Reading "we could not reach it" as "it said no" is what would leave a
-/// force-delete against a host that is merely down erroring out with nothing
-/// recorded for the sweep to retry.
-fn host_never_answered(error: &str) -> bool {
-    const TRANSPORT_FAILURES: [&str; 9] = [
-        "could not start ",
-        "connection refused",
-        "connection timed out",
-        "operation timed out",
-        "could not resolve hostname",
-        "no route to host",
-        "permission denied",
-        "host key verification failed",
-        "kex_exchange_identification",
-    ];
-    let lower = error.to_lowercase();
-    TRANSPORT_FAILURES.iter().any(|f| lower.contains(f))
 }
 
 /// Mark the row gone. A force delete says so in the same statement rather than
@@ -908,35 +902,6 @@ mod tests {
     }
 
     #[test]
-    fn host_never_answered_tells_a_transport_failure_from_a_reply() {
-        for failure in [
-            "could not start thurbox-cli on 'devbox': No such file or directory",
-            "ssh: connect to host devbox port 22: Connection refused",
-            "ssh: connect to host devbox port 22: Operation timed out",
-            "Permission denied (publickey).",
-            "Could not resolve hostname devbox: Name or service not known",
-            "No route to host",
-            "Host key verification failed.",
-            "kex_exchange_identification: read: Connection reset by peer",
-        ] {
-            assert!(
-                super::host_never_answered(failure),
-                "nothing answered: {failure}"
-            );
-        }
-        for answered in [
-            "thurbox-cli on 'devbox' failed (exit 1): database is locked",
-            "Session not found: devbox",
-            "thurbox-cli on 'devbox' printed no JSON for `session delete` (EOF): ",
-        ] {
-            assert!(
-                !super::host_never_answered(answered),
-                "the host answered: {answered}"
-            );
-        }
-    }
-
-    #[test]
     fn soft_delete_without_force_leaves_no_side_effects() {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session(&db, "demo");
@@ -1223,7 +1188,9 @@ mod tests {
             crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
         );
         crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
-            Err("ssh: connect to host devbox port 22: Connection refused".into())
+            Err(crate::session_ops::host_cli::fake::unreached(
+                "ssh: connect to host devbox port 22: Connection refused",
+            ))
         }));
 
         let report = delete_session_headless(&db, id, true).unwrap();
@@ -1251,6 +1218,47 @@ mod tests {
         );
     }
 
+    /// A failure whose layer cannot be told must side with the unanswered
+    /// question, not with the host having refused. Aborting would let "I could
+    /// not tell" stand in for "the host said no", which is how a session on a
+    /// host with a broken CLI became undeletable — and it reaches nothing and
+    /// records nothing, while the fallback is stamp-addressed and records what
+    /// it could not finish.
+    #[test]
+    fn a_delegated_delete_falls_back_on_a_failure_it_cannot_classify() {
+        let _guard = configured_host();
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+
+        crate::session_ops::host_cli::fake::force_usable(
+            crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
+        );
+        // Reached the host; nothing thurbox-shaped ran there (exit 127). Its
+        // wording deliberately reads like a connection failure — the point is
+        // that the wording no longer decides anything.
+        crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
+            Err(crate::session_ops::host_cli::fake::undetermined(
+                "bash: line 1: thurbox-cli: command not found (connection refused?)",
+            ))
+        }));
+
+        let report = delete_session_headless(&db, id, true).unwrap();
+        crate::session_ops::host_cli::fake::clear();
+
+        assert!(
+            report.host_unreachable.is_some(),
+            "the caller is told the delete was taken from here"
+        );
+        assert!(
+            db.get_session_by_id(id).unwrap().is_none(),
+            "the row is marked gone rather than the delete failing outright"
+        );
+        assert!(
+            report.remote_teardown_owed,
+            "and what the local teardown could not reach is left for the sweep"
+        );
+    }
+
     /// The counterpart to the test above: any OTHER error the host answers
     /// with — the session may still be running there — must keep aborting the
     /// delete outright, exactly as before. Only a transport failure falls
@@ -1265,7 +1273,9 @@ mod tests {
             crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
         );
         crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
-            Err("thurbox-cli on 'devbox' failed (exit 1): database is locked".into())
+            Err(crate::session_ops::host_cli::fake::answered(
+                "thurbox-cli on 'devbox' failed (exit 1): database is locked",
+            ))
         }));
 
         let err = delete_session_headless(&db, id, true).unwrap_err();
@@ -1340,7 +1350,9 @@ mod tests {
             crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
         );
         crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
-            Err("ssh: connect to host devbox port 22: Connection refused".into())
+            Err(crate::session_ops::host_cli::fake::unreached(
+                "ssh: connect to host devbox port 22: Connection refused",
+            ))
         }));
 
         let finished = retry_owed_remote_teardowns(&db);
@@ -1375,7 +1387,9 @@ mod tests {
             crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
         );
         crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
-            Err("ssh: connect to host devbox port 22: Connection refused".into())
+            Err(crate::session_ops::host_cli::fake::unreached(
+                "ssh: connect to host devbox port 22: Connection refused",
+            ))
         }));
 
         assert!(retry_owed_remote_teardowns(&db).is_empty());

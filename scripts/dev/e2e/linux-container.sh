@@ -270,6 +270,20 @@ remote_teardown_probe() {
     *'"remote_teardown_owed":true'*) ok "the delete says the teardown is owed, not merely failed" ;;
     *) bad "the delete did not record an owed teardown (got: $out)" ;;
   esac
+  # The classification, proven against a real transport rather than a mocked
+  # string: ssh exited 255 on its own account, so the empty listing that came
+  # back must NOT have been read as "the server holds nothing". Claiming a kill
+  # here — or simply moving on — is the reachable-failure-mistaken-for-absence
+  # bug, and the window still standing is what makes the difference visible.
+  case "$out" in
+    *'"killed_window":true'*) bad "the delete claimed a kill it could not have made" ;;
+    *) ok "no kill was claimed for a question the host never received" ;;
+  esac
+  if ssh_remote "kill -0 $pid 2>/dev/null"; then
+    ok "the agent is still running, and thurbox knows it has unfinished business"
+  else
+    bad "the agent died without thurbox ever reaching the host"
+  fi
 
   # The host comes back. The sweep the heartbeat drives is what finishes it.
   printf '%s\n' "$up" > "$hosts"

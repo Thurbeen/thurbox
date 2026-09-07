@@ -248,20 +248,48 @@ session), never on the loop, ADR-P12).
 - **"The host holds nothing" and "the host did not answer" are different
   answers**, and the teardown is where confusing them costs the most.
   `discover` gates on `has-session` and reads its failure as an empty server,
-  but `ssh` exits non-zero for a refused connection, a timeout and a rejected
-  key alike — so a force delete taken while a host was briefly down found
-  nothing to kill and recorded *no error at all*. `TmuxBackend::
-  discover_answered` (used by `kill_remote_windows`, `remote_window_index`,
-  and `agent_window`) answers empty only on the multiplexer's own refusal —
-  tmux's `error connecting to` / `no server running on` / `can't find
-  session`, psmux's `session not found` (`mux_answered_absent`) — and errors
-  otherwise. An unrecognised failure counts as unanswered on purpose. It also
-  drops the `has-session` round trip: `list-windows` on an absent server gives
-  exactly that refusal. `agent_window` backs `agent_window_alive`, which
-  `restart --if-missing` uses to decide whether to relaunch after a reboot —
-  an unreachable host now aborts the relaunch instead of reading as "no
-  window", which used to start a second agent beside the one still running
+  so a force delete taken while a host was briefly down found nothing to kill
+  and recorded *no error at all*. `TmuxBackend::discover_answered` (used by
+  `kill_remote_windows`, `remote_window_index` and `agent_window`) answers
+  empty only on the multiplexer's own refusal, and drops the `has-session`
+  round trip while it is there. `agent_window` backs `agent_window_alive`,
+  which `restart --if-missing` uses to decide whether to relaunch after a
+  reboot — an unreachable host now aborts the relaunch instead of reading as
+  "no window", which used to start a second agent beside the one still running
   once the host answered again (`restart_if_missing_probe`).
+- **The layer decides, not the wording.** Both classifiers started as substring
+  matches, which is the same conflation one level down: the first unanticipated
+  message lands in the wrong branch silently. `ssh` exits **255** for its own
+  failures and passes a remote command's status through untouched, and
+  `thurbox-cli` only ever exits 1/2/3 — so 255 means the question never
+  arrived, whatever stderr says (`listing_is_absence`,
+  `host_cli::classify_failure`). `host_cli::Reach` names the three answers —
+  `Unreached` / `Answered` / `Undetermined` — and the third is its own answer,
+  never rounded to the nearest of the other two. `wsl.exe` has no 255
+  convention, so a WSL host is never `Unreached` on a status alone.
+  **Do not widen `mux_answered_absent`**: it is narrowed to the exact answers
+  tmux and psmux are documented to give, and each extra string makes it more
+  confidently wrong about the next one nobody anticipated. In particular
+  `error connecting to` is not a prefix match — only `(No such file or
+  directory)` is absence; `(Permission denied)` / `(Connection refused)` /
+  `(Connection reset by peer)` are a server that may be alive behind a socket
+  that cannot be opened right now.
+- **An unclassifiable failure takes whichever branch destroys nothing**, which
+  is not the same branch in both places. A listing must not turn "unanswered"
+  into "holds nothing", so it errors and the teardown is owed. A *delegated
+  delete* is the reverse — aborting reaches nothing and records nothing, which
+  made a session on a host with a broken CLI undeletable — so `Undetermined`
+  falls back to the local teardown beside `Unreached`, and only `Answered`
+  aborts (the host heard the question and refused; the session may still be
+  running there). An older host that reports failures on stderr rather than as
+  the structured document still reads as `Answered`, from its exit code.
+- **Known limit**: tmux's absence is a claim about the *socket*, not the
+  machine — a server with live panes whose socket is moved reports `(No such
+  file or directory)`, verified against a real host with two processes still
+  running. thurbox reaches sessions only through that socket, so no retry could
+  ever discharge such an owed teardown; closing it would need a session's
+  processes to be identifiable without the multiplexer (a recorded OS pid per
+  remote pane, or a scan by worktree cwd), which nothing here has today.
 - **A session owns two windows**, and every teardown takes both: the agent
   (`tb-`) and the companion shell (`tbs-`). The shell is found by its stamp
   (`@thurbox_role = shell`) rather than by `sessions.shell_backend_id`, which is
