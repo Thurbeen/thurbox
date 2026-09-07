@@ -199,10 +199,13 @@ colours, so a pane you write looks right under all thirty-six.
 - **[Inter-session messages](#messages-alias-msg)** — an agent-neutral mailbox
   queue for agent↔agent coordination, with atomic exactly-once `--claim` drains.
   Agents pass no ids; thurbox injects a stable identity.
-- **[Extensions](https://thurbeen.github.io/thurbox/docs/extensions.html)**
-  *(experimental)* — opt-in, agent-agnostic add-ons that are data, not code:
-  `flow`, `forge`, `ci-shepherd`, `renovate`. One command installs, activates
-  and self-heals each.
+- **[Extensions](https://thurbeen.github.io/thurbox/docs/extensions.html)** —
+  opt-in, agent-agnostic add-ons that are data, not code: a manifest declares
+  the agents, files, sessions and automations it wants, and one command
+  installs, activates and self-heals them. Two built-ins ship with thurbox
+  (`hooks`, `ui-skill`); [fleet](https://github.com/Thurbeen/fleet), a
+  control-plane template you clone, is the worked example of one you install
+  yourself.
 - **[Session lifecycle hooks](docs/CONFIG.md#hookstoml)** — your own commands,
   run before and after a session is created, deleted, restarted or restored
   (`hooks.toml`). A pre-hook can refuse the operation.
@@ -744,9 +747,9 @@ coding agent like an automation.
 ### Messages (alias `msg`)
 
 ```bash
-thurbox-cli message send --to flow --kind questions --body "scope?"
+thurbox-cli message send --to lead --kind questions --body "scope?"
 thurbox-cli message reply <message_id> --body "go ahead"
-thurbox-cli message inbox --for flow --claim   # atomic, exactly-once drain
+thurbox-cli message inbox --for lead --claim   # atomic, exactly-once drain
 thurbox-cli message prune --older-than-days 14
 ```
 

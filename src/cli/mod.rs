@@ -247,7 +247,7 @@ pub enum Command {
         #[command(subcommand)]
         action: config::Action,
     },
-    /// Activate/deactivate opt-in extensions (e.g. flow).
+    /// Install, activate and deactivate opt-in extensions.
     #[command(alias = "ext")]
     Extension {
         #[command(subcommand)]

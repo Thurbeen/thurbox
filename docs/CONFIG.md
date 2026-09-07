@@ -648,33 +648,40 @@ Maps `Action` names to one or more chord strings:
 
 ## extensions/
 
-Each opt-in extension (see `extensions/<name>/`) is described by a single
-`extension.toml` manifest. `thurbox-cli extension install` writes the
-home-resolved copy to `~/.config/thurbox/extensions/<name>.toml` (thurbox
-never seeds this dir). The install **home** (where payload files land and the
-session runs) defaults to `~/.config/thurbox/extensions/<name>/` — a sibling dir
-of that manifest — unless the manifest pins a `home` or you pass `--home`. The
-manifest has two halves — an **install** spec and a **runtime** spec:
+Each opt-in extension is described by a single `extension.toml` manifest.
+`thurbox-cli extension install` writes the home-resolved copy to
+`~/.config/thurbox/extensions/<name>.toml` (thurbox never seeds this dir). The
+install **home** (where payload files land and the session runs) defaults to
+`~/.config/thurbox/extensions/<name>/` — a sibling dir of that manifest —
+unless the manifest pins a `home` or you pass `--home`. The manifest has two
+halves — an **install** spec and a **runtime** spec.
+
+The example below is modelled on
+[fleet](https://github.com/Thurbeen/fleet), the control-plane template that is
+the worked example of an installable extension (`docs/ORCHESTRATION.md`). Its
+real manifest uses `[[agents]]`, one `[[files]]`, three `[[symlinks]]` and one
+`[[sessions]]`; the other entries here are illustrative, so every field the
+format supports is shown once:
 
 ```toml
-name = "flow"
-description = "Focus-protecting triage agent"
+name = "fleet"
+description = "Control-plane session: the repo map and thurbox orchestration"
 config_version = 1              # manifest *format* version (for migrations)
 version = "1.0.0"              # the extension's own version (bumped by its author)
-min_thurbox_version = "0.113.0" # minimum thurbox; older binaries get a warning
-# home = "~/flow"               # OPTIONAL; default is <config>/extensions/<name>.
+min_thurbox_version = "2.19.0"  # minimum thurbox; older binaries get a warning
+# home = "~/fleet"              # OPTIONAL; default is <config>/extensions/<name>.
                                 # {home} is substituted everywhere it appears
 
 # install spec ---------------------------------------------------------------
 [[agents]]                      # registered in agents.toml (existing kept)
-name = "flow"
+name = "fleet"
 command = "claude"
 args = ["--model", "claude-haiku-4-5"]
 
 [[files]]                       # fetched from the source, written under home
-path = "FLOW.md"
+path = "FLEET.md"
 [[files]]
-path = "scripts/create-task.sh"
+path = "scripts/sync-registry.sh"
 executable = true               # chmod +x
 [[files]]
 path = "repos.md"
@@ -686,7 +693,7 @@ substitute = true               # replace {home} in the content
 
 [[symlinks]]                    # never clobbers a real file at `link`
 link = "CLAUDE.md"
-target = "FLOW.md"
+target = "FLEET.md"
 
 # Reaching OUTSIDE the extension home (used by the built-in hooks extension):
 [[external_files]]              # write a file into an agent's OWN config dir
@@ -710,26 +717,31 @@ requires_dir = "~/.gemini"      #   exactly our entries (by marker). no-op write
 
 # runtime spec (ensured on activate, self-healed if deleted) -----------------
 [[sessions]]
-name = "flow"
-agent = "flow"
+name = "fleet"
+agent = "fleet"
 repo_path = "{home}"            # absolute, `~`-relative, or `{home}`; resolved
-                                #   to an absolute path at install
+                                #   to an absolute path at install. `{home}` is
+                                #   the extension home, so an extension whose
+                                #   session must open the USER's checkout ships
+                                #   a placeholder its installer renders instead
 
-# [[automations]] is an OPTIONAL runtime resource (flow itself ships none —
-# it is purely event-driven). An extension that wants a scheduled tick declares:
+# [[automations]] is an OPTIONAL runtime resource (fleet ships none on purpose —
+# its only scheduled candidate pushes to `main`). An extension that wants a
+# scheduled tick declares:
 [[automations]]
 name = "example-tick"
 trigger = "cron:*/10 * * * *"   # same grammar as `automation create --trigger`
-session_ref = "flow"           # must match a [[sessions]] name above
+session_ref = "fleet"          # must match a [[sessions]] name above
 prompt = "tick"
 ```
 
 Manage extensions with the CLI:
 
 ```bash
-thurbox-cli extension install flow         # fetch + lay files + agents + activate
-thurbox-cli extension install ./extensions/flow   # from a local dir
+thurbox-cli extension install ./my-ext     # from a local dir: fetch + lay files
+                                           #   + agents + activate
 thurbox-cli extension install <url> --home ~/x    # from a URL, custom home
+thurbox-cli extension install git+https://github.com/you/my-ext  # clone a repo
 thurbox-cli extension uninstall <name>     # reverse install (keep home dir)
 thurbox-cli extension uninstall <name> --purge    # also delete the home dir
 thurbox-cli extension list                 # installed + active/healthy + version/stale
@@ -745,8 +757,13 @@ thurbox-cli extension status [<name>]      # per-resource presence + version/sta
 A bare name installs from the official source
 (`raw.githubusercontent.com/Thurbeen/thurbox/<ref>/extensions/<name>`,
 fetched via curl/wget) — `<ref>` is the running binary's release tag
-(`main` for dev builds), so a fetched extension matches your binary. A
-path or `http(s)://` URL installs from there instead. Payload paths are
+(`main` for dev builds), so a fetched extension matches your binary.
+**No extension ships under a bare name today**: `extensions/` holds only the
+two built-ins (`hooks`, `ui-skill`), which are embedded in the binary and
+activate themselves, so `extension available` lists nothing and every install
+is a path, an `http(s)://` URL, or a repository (`git+https://…`, or a URL
+ending in `.git`, or the scp-like `git@host:path` — recognised explicitly, so a
+bare `https://` URL keeps meaning "a base to fetch files from"). Payload paths are
 validated against traversal (no absolute paths or `..`), and a
 `substitute` file you've edited isn't overwritten on reinstall (use
 `--force`). Payload files are fetched as **text** (specs/scripts/JSON),
@@ -772,7 +789,7 @@ into the discovery-dir copy so staleness can be detected:
 | `installed_with` | stamped on install | the thurbox version that installed it |
 | `source` | stamped on install | the target it was installed from |
 
-A **bare-name** install (`extension install flow`) fetches from the
+A **bare-name** install (`extension install <name>`) fetches from the
 official source **pinned to the running binary's release tag**, so the
 extension you get always matches your thurbox. When you later **upgrade
 thurbox**, the on-disk copy is now older than the binary — thurbox
@@ -791,8 +808,9 @@ self-heal emit a compatibility warning so the mismatch is visible.
 checks — their version doesn't order against release tags.
 
 **Rollback.** There's no version snapshot store: to roll an extension
-back, pin a specific thurbox tag — `extension install
-https://raw.githubusercontent.com/Thurbeen/thurbox/v0.112.0/extensions/flow`
+back, install from a URL or repository that names the version you want —
+for a bare-name extension that is a specific thurbox tag, `extension install
+https://raw.githubusercontent.com/Thurbeen/thurbox/v0.112.0/extensions/<name>`
 — or downgrade the binary and run `extension update`, which re-resolves
 the bare name to that older tag.
 

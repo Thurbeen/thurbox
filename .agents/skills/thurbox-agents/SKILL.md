@@ -151,6 +151,7 @@ additional dirs and `resolve_launch_cwd` mirrors the TUI's `resolve_process_cwd`
 `task create` via repeatable `--add-repo PATH[@BASE]` (worktree) and `--add-dir
 PATH` (as-is); `AutomationAction::Spawn` persists the list as JSON in the
 `action_extra_repos` column (schema v33, on both `tasks` and `automations`;
-`NULL`/empty = single-repo, so old rows are byte-identical). The flow extension's
-`create-task.sh` forwards these flags (see `extensions/flow/FLOW.md`).
+`NULL`/empty = single-repo, so old rows are byte-identical). A dispatcher that
+splits one brief across several repos forwards these flags per task — the
+[fleet](https://github.com/Thurbeen/fleet) control plane is the worked example.
 

@@ -85,29 +85,21 @@ pub struct OfficialExtension {
 
 /// The official extensions shipped in `extensions/<name>/` of the thurbox repo.
 ///
-/// **Source of truth for discovery + typo suggestions.** Keep in sync when an
-/// extension is added/removed under `extensions/` (descriptions mirror each
-/// `extension.toml`'s `description`). This is intentionally a small static list
-/// rather than a remote index so `extension available` works offline and a typo
-/// can be caught without a network round-trip.
-pub const OFFICIAL_EXTENSIONS: &[OfficialExtension] = &[
-    OfficialExtension {
-        name: "flow",
-        description: "Focus-protecting triage agent",
-    },
-    OfficialExtension {
-        name: "forge",
-        description: "Workflow analyst that proposes new automations",
-    },
-    OfficialExtension {
-        name: "ci-shepherd",
-        description: "Watches change requests (PR/MR) and dispatches CI/review fixers",
-    },
-    OfficialExtension {
-        name: "renovate",
-        description: "Keeps local repos on up-to-date dependencies via Renovate's local platform",
-    },
-];
+/// **Source of truth for discovery + typo suggestions**, and deliberately
+/// **empty**: what `extensions/` still holds is the two built-ins (`hooks`,
+/// `ui-skill`), which ship embedded in the binary and auto-activate, so no bare
+/// name resolves to anything. An extension living in its own repository — the
+/// `fleet` control plane is the worked example, see `docs/ORCHESTRATION.md` —
+/// installs by URL, path or `git+<repo>` instead, which needs no entry here.
+///
+/// The list and the discovery/typo machinery reading it stay because the
+/// mechanism is the contract, not its current contents: a new extension under
+/// `extensions/` becomes installable by bare name again by appending one row
+/// (descriptions mirror each `extension.toml`'s `description`). It is
+/// intentionally a small static list rather than a remote index so `extension
+/// available` works offline and a typo can be caught without a network
+/// round-trip.
+pub const OFFICIAL_EXTENSIONS: &[OfficialExtension] = &[];
 
 /// Whether an install `target` is a **bare name** (not a URL or path) — i.e. it
 /// resolves against the official source. Mirrors the branch in [`resolve_source`].
@@ -123,12 +115,19 @@ pub fn is_bare_name(target: &str) -> bool {
 /// Suggest the closest official extension name to `name` (for a "did you mean?"
 /// hint), within a small edit-distance budget so unrelated typos suggest nothing.
 pub fn suggest_extension(name: &str) -> Option<&'static str> {
+    suggest_among(name, OFFICIAL_EXTENSIONS)
+}
+
+/// [`suggest_extension`] against an explicit list of candidates. Split out so the
+/// matching budget keeps real test coverage while [`OFFICIAL_EXTENSIONS`] is
+/// empty — otherwise the only thing left to assert is that nothing matches.
+fn suggest_among(name: &str, known: &[OfficialExtension]) -> Option<&'static str> {
     let name = name.trim().to_lowercase();
     // Budget scales a little with length: tolerate a couple of edits for short
     // names (a transposition is 2), more for longer ones, but never so loose that
     // everything matches.
     let budget = (name.len() / 3).clamp(2, 3);
-    OFFICIAL_EXTENSIONS
+    known
         .iter()
         .map(|e| (e.name, levenshtein(&name, e.name)))
         .filter(|(_, d)| *d <= budget)
@@ -144,15 +143,30 @@ pub fn unknown_extension_help(name: &str, cause: &str) -> String {
     if let Some(suggestion) = suggest_extension(name) {
         msg.push_str(&format!("\nDid you mean '{suggestion}'?\n"));
     }
-    msg.push_str("\nKnown official extensions:\n");
-    for ext in OFFICIAL_EXTENSIONS {
-        msg.push_str(&format!("  {:<12} {}\n", ext.name, ext.description));
+    match OFFICIAL_EXTENSIONS {
+        // Nothing ships under a bare name today, so listing "known official
+        // extensions" and then printing none would read as a lookup failure.
+        [] => msg.push_str(NO_BARE_NAME_HELP),
+        known => {
+            msg.push_str("\nKnown official extensions:\n");
+            for ext in known {
+                msg.push_str(&format!("  {:<12} {}\n", ext.name, ext.description));
+            }
+            msg.push_str(
+                "\nRun `thurbox-cli extension available` to list them, or pass a URL / local path.",
+            );
+        }
     }
-    msg.push_str(
-        "\nRun `thurbox-cli extension available` to list them, or pass a URL / local path.",
-    );
     msg
 }
+
+/// What to say instead of a discovery list while [`OFFICIAL_EXTENSIONS`] is
+/// empty. Shared by the failed-install help and `extension available`, so both
+/// point at the same three install forms.
+pub const NO_BARE_NAME_HELP: &str =
+    "\nNo extension installs by bare name: thurbox ships the built-in \
+     `hooks` and `ui-skill`, which activate themselves. Install any other extension from an \
+     `http(s)://` base URL, a local directory, or a repository (`git+https://...`).";
 
 /// Classic Levenshtein edit distance (two-row DP). Small inputs only.
 fn levenshtein(a: &str, b: &str) -> usize {
@@ -189,7 +203,7 @@ pub fn manifest_path(name: &str) -> Option<PathBuf> {
 }
 
 /// Default install home for an extension: `<extensions_dir>/<name>/` (a sibling
-/// dir of its `<name>.toml` manifest, e.g. `~/.config/thurbox/extensions/flow`).
+/// dir of its `<name>.toml` manifest, e.g. `~/.config/thurbox/extensions/fleet`).
 /// Used when neither `--home` nor a manifest `home` is given. Discovery
 /// (`list_manifests_with_warnings`) only reads `*.toml`, so this dir is ignored.
 pub fn default_home(name: &str) -> Option<PathBuf> {
@@ -309,7 +323,7 @@ pub enum ExtensionSource {
 /// Resolve an install target into a source:
 /// - `http(s)://…` → that base URL,
 /// - a path-like target (`/abs`, `./rel`, `~/x`, anything with a `/`) → local dir,
-/// - a bare name (`flow`) → the official remote `<official_base()>/<name>`.
+/// - a bare name (`hooks`) → the official remote `<official_base()>/<name>`.
 pub fn resolve_source(target: &str) -> ExtensionSource {
     resolve_source_in(target, "extensions")
 }
@@ -532,7 +546,7 @@ pub fn ensure_agents_registered(agents: &[AgentDef]) -> Result<Vec<String>, Stri
 ///
 /// Caveat: removal is by name, so an agent a user re-pointed at a different CLI
 /// but kept the name is still removed. Names are namespaced per extension
-/// (`flow`, `flow-worker`, …) to make collisions unlikely.
+/// (`fleet`, `fleet-worker`, …) to make collisions unlikely.
 pub fn remove_agents_from_toml(names: &[String]) -> Result<Vec<String>, String> {
     if names.is_empty() {
         return Ok(Vec::new());
@@ -880,44 +894,56 @@ mod tests {
 
     #[test]
     fn is_bare_name_only_for_plain_names() {
-        assert!(is_bare_name("flow"));
-        assert!(is_bare_name("ci-shepherd"));
-        assert!(!is_bare_name("https://example.com/flow"));
-        assert!(!is_bare_name("./flow"));
-        assert!(!is_bare_name("~/flow"));
-        assert!(!is_bare_name("/abs/flow"));
+        assert!(is_bare_name("hooks"));
+        assert!(is_bare_name("ui-skill"));
+        assert!(!is_bare_name("https://example.com/hooks"));
+        assert!(!is_bare_name("./hooks"));
+        assert!(!is_bare_name("~/hooks"));
+        assert!(!is_bare_name("/abs/hooks"));
         assert!(!is_bare_name("a/b"));
     }
 
+    /// The candidate list is a fixture, not [`OFFICIAL_EXTENSIONS`]: that one is
+    /// empty today, so testing the matcher through it would assert nothing about
+    /// the edit-distance budget the moment a real entry comes back.
     #[test]
-    fn suggest_extension_catches_typos_but_not_noise() {
-        assert_eq!(suggest_extension("flwo"), Some("flow"));
-        assert_eq!(suggest_extension("forge"), Some("forge"));
-        assert_eq!(suggest_extension("renovat"), Some("renovate"));
-        assert_eq!(suggest_extension("ci-shepard"), Some("ci-shepherd"));
+    fn suggest_among_catches_typos_but_not_noise() {
+        const KNOWN: &[OfficialExtension] = &[
+            OfficialExtension {
+                name: "hooks",
+                description: "Status hooks",
+            },
+            OfficialExtension {
+                name: "ui-skill",
+                description: "Interface-editing skill",
+            },
+        ];
+        assert_eq!(suggest_among("hoosk", KNOWN), Some("hooks"));
+        assert_eq!(suggest_among("ui-skil", KNOWN), Some("ui-skill"));
         // Unrelated input shouldn't map to anything.
-        assert_eq!(suggest_extension("zzzzzzzzzz"), None);
+        assert_eq!(suggest_among("zzzzzzzzzz", KNOWN), None);
+        // An empty registry has nothing to suggest, however close the input.
+        assert_eq!(suggest_among("hoosk", &[]), None);
     }
 
+    /// With no bare-name extension to list, the help has to explain the install
+    /// forms that do work instead of heading an empty list "Known official
+    /// extensions".
     #[test]
-    fn unknown_extension_help_lists_known_and_suggests() {
+    fn unknown_extension_help_explains_the_install_forms_that_work() {
         let msg = unknown_extension_help("flwo", "curl: HTTP 404");
         assert!(msg.contains("could not install extension 'flwo'"));
         assert!(msg.contains("curl: HTTP 404"));
-        assert!(msg.contains("Did you mean 'flow'?"));
-        // Every official extension is listed for discovery.
-        for ext in OFFICIAL_EXTENSIONS {
-            assert!(msg.contains(ext.name), "missing {}", ext.name);
-        }
-        assert!(msg.contains("extension available"));
+        assert!(!msg.contains("Known official extensions"), "{msg}");
+        assert!(msg.contains("git+https://"), "{msg}");
     }
 
     #[test]
     fn levenshtein_basics() {
         assert_eq!(levenshtein("", "abc"), 3);
         assert_eq!(levenshtein("abc", ""), 3);
-        assert_eq!(levenshtein("flow", "flow"), 0);
-        assert_eq!(levenshtein("flwo", "flow"), 2);
+        assert_eq!(levenshtein("hooks", "hooks"), 0);
+        assert_eq!(levenshtein("hoosk", "hooks"), 2);
         assert_eq!(levenshtein("kitten", "sitting"), 3);
     }
 
@@ -993,8 +1019,8 @@ mod tests {
     #[test]
     fn resolve_source_distinguishes_name_url_and_path() {
         assert_eq!(
-            resolve_source("flow"),
-            ExtensionSource::Remote(format!("{}/flow", official_base()))
+            resolve_source("hooks"),
+            ExtensionSource::Remote(format!("{}/hooks", official_base()))
         );
         // Official base is pinned to a concrete ref (a tag or main), never bare.
         assert!(official_base().starts_with(OFFICIAL_REPO_RAW));
@@ -1004,12 +1030,12 @@ mod tests {
             ExtensionSource::Remote("https://example.com/ext/foo".into())
         );
         assert_eq!(
-            resolve_source("./extensions/flow"),
-            ExtensionSource::Local(PathBuf::from("./extensions/flow"))
+            resolve_source("./extensions/hooks"),
+            ExtensionSource::Local(PathBuf::from("./extensions/hooks"))
         );
         assert_eq!(
-            resolve_source("/abs/flow"),
-            ExtensionSource::Local(PathBuf::from("/abs/flow"))
+            resolve_source("/abs/hooks"),
+            ExtensionSource::Local(PathBuf::from("/abs/hooks"))
         );
     }
 

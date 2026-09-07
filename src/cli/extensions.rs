@@ -19,8 +19,9 @@ pub enum Action {
     /// Install an extension from a name, URL, or local directory: fetch it, lay
     /// down its files, register its agents, and activate it. Idempotent.
     Install {
-        /// What to install: a bare name (`flow`, from the official source), an
-        /// `http(s)://` base URL, or a path to a local extension directory.
+        /// What to install: an `http(s)://` base URL, a path to a local
+        /// extension directory, a repository (`git+https://...`), or a bare name
+        /// resolved against the official source.
         target: String,
         /// Override the install home directory (default: the manifest's `home`).
         #[arg(long)]
@@ -414,14 +415,34 @@ fn load_manifest(name: &str) -> Result<ExtensionDef, String> {
 /// Build the `extension available` result: every official extension with its
 /// description, whether it's already installed, and the install command.
 fn available_to_json(query: Option<&str>) -> Value {
-    let q = query.map(|s| s.trim().to_lowercase());
     let installed: std::collections::HashSet<String> =
         crate::agent::extension_config::list_manifests()
             .into_iter()
             .map(|d| d.name)
             .collect();
+    let out = available_entries(
+        query,
+        crate::agent::extension_config::OFFICIAL_EXTENSIONS,
+        &installed,
+    );
+    json!({
+        "ok": true,
+        "summary": format!("{} official extension(s) available", out.len()),
+        "available": out,
+    })
+}
+
+/// The rows of [`available_to_json`], over an explicit registry. Split out so
+/// the query filter and the per-row shape stay covered while
+/// `OFFICIAL_EXTENSIONS` is empty.
+fn available_entries(
+    query: Option<&str>,
+    known: &[crate::agent::extension_config::OfficialExtension],
+    installed: &std::collections::HashSet<String>,
+) -> Vec<Value> {
+    let q = query.map(|s| s.trim().to_lowercase());
     let mut out = Vec::new();
-    for ext in crate::agent::extension_config::OFFICIAL_EXTENSIONS {
+    for ext in known {
         if let Some(q) = &q {
             if !ext.name.to_lowercase().contains(q) && !ext.description.to_lowercase().contains(q) {
                 continue;
@@ -434,11 +455,7 @@ fn available_to_json(query: Option<&str>) -> Value {
             "install_command": format!("thurbox-cli extension install {}", ext.name),
         }));
     }
-    json!({
-        "ok": true,
-        "summary": format!("{} official extension(s) available", out.len()),
-        "available": out,
-    })
+    out
 }
 
 /// `extension available`: the JSON above plus a human table (NAME / INSTALLED /
@@ -465,7 +482,12 @@ fn available_output(query: Option<&str>) -> CommandOutput {
                 .collect();
             output::table(&["NAME", "INSTALLED", "DESCRIPTION"], &rows)
         }
-        _ => "No matching extensions.".to_string(),
+        _ if query.is_some() => "No matching extensions.".to_string(),
+        // Nothing to list and nothing filtered out: say how an extension is
+        // installed instead of printing an empty table.
+        _ => crate::agent::extension_config::NO_BARE_NAME_HELP
+            .trim_start()
+            .to_string(),
     };
     CommandOutput::new(json, human)
 }
@@ -586,40 +608,67 @@ fn update_report_to_json(report: &crate::session_ops::UpdateReport) -> Value {
 mod tests {
     use super::*;
 
+    // Fully-qualified rather than a `use`: the architecture rules let `cli`
+    // reach `agent` by path only.
+    const KNOWN: &[crate::agent::extension_config::OfficialExtension] = &[
+        crate::agent::extension_config::OfficialExtension {
+            name: "hooks",
+            description: "Status hooks for the built-in agents",
+        },
+        crate::agent::extension_config::OfficialExtension {
+            name: "ui-skill",
+            description: "Teaches a coding CLI to edit the interface",
+        },
+    ];
+
+    /// Over a fixture registry, not [`OFFICIAL_EXTENSIONS`]: that is empty today,
+    /// so the row shape would go untested through the real one.
     #[test]
-    fn available_lists_official_extensions_with_install_commands() {
+    fn available_entries_carry_an_install_command_and_installed_flag() {
+        let installed: std::collections::HashSet<String> = ["hooks".to_string()].into();
+        let list = available_entries(None, KNOWN, &installed);
+
+        let names: Vec<&str> = list.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["hooks", "ui-skill"]);
+        assert_eq!(list[0]["installed"], true);
+        assert_eq!(list[1]["installed"], false);
+        assert_eq!(
+            list[1]["install_command"],
+            "thurbox-cli extension install ui-skill"
+        );
+    }
+
+    #[test]
+    fn available_entries_filter_by_name_or_description() {
+        let installed = std::collections::HashSet::new();
+
+        // Matches the ui-skill description ("interface").
+        let list = available_entries(Some("interface"), KNOWN, &installed);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["name"], "ui-skill");
+
+        // A query matching nothing yields an empty list (not an error).
+        assert!(available_entries(Some("nonexistent-xyz"), KNOWN, &installed).is_empty());
+    }
+
+    /// Nothing resolves by bare name today, so an unfiltered `available` has to
+    /// name the install forms that do work rather than print an empty table.
+    #[test]
+    fn available_says_how_to_install_when_the_registry_is_empty() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
 
         let out = available_to_json(None);
         assert_eq!(out["ok"], true);
-        let list = out["available"].as_array().unwrap();
-        // Every official extension shows up, none installed in a fresh dir.
-        let names: Vec<&str> = list.iter().map(|e| e["name"].as_str().unwrap()).collect();
-        for ext in crate::agent::extension_config::OFFICIAL_EXTENSIONS {
-            assert!(names.contains(&ext.name), "missing {}", ext.name);
-        }
-        let flow = list.iter().find(|e| e["name"] == "flow").unwrap();
-        assert_eq!(flow["installed"], false);
-        assert_eq!(
-            flow["install_command"],
-            "thurbox-cli extension install flow"
-        );
-    }
-
-    #[test]
-    fn available_query_filters_by_name_or_description() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-
-        // Matches the renovate description ("dependencies").
-        let out = available_to_json(Some("dependencies"));
-        let list = out["available"].as_array().unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0]["name"], "renovate");
-
-        // A query matching nothing yields an empty list (not an error).
-        let out = available_to_json(Some("nonexistent-xyz"));
         assert!(out["available"].as_array().unwrap().is_empty());
+
+        let human = available_output(None).human;
+        assert!(human.contains("git+https://"), "{human}");
+
+        // A query still reports a miss as a miss.
+        assert_eq!(
+            available_output(Some("xyz")).human,
+            "No matching extensions."
+        );
     }
 }

@@ -53,20 +53,13 @@ breadcrumb: 'Extensions'
           </ul>
           <div class="info-box">
             <p>
-              <strong>
-                Four extensions ship today:
-                <a href="extension-flow.html">flow</a>
-                ,
-                <a href="extension-forge.html">forge</a>
-                ,
-                <a href="extension-ci-shepherd.html">ci-shepherd</a>
-                , and
-                <a href="extension-renovate.html">renovate</a>
-                .
-              </strong>
-              Each has its own page (see
+              <strong>Two extensions ship with Thurbox, and both are built in.</strong>
+              Everything else you install yourself, from a URL, a local directory, or a git
+              repository. The worked example is
+              <a href="https://github.com/Thurbeen/fleet" target="_blank" rel="noopener">fleet</a>
+              , a control-plane template you clone &mdash; see
               <a href="#catalog">Available extensions</a>
-              ). The commands and manifest fields below are generic; the examples use flow.
+              . The commands and manifest fields below are generic; the examples use fleet.
             </p>
           </div>
           <div class="info-box">
@@ -92,8 +85,9 @@ breadcrumb: 'Extensions'
             Install
             <a href="#install" class="heading-anchor">#</a>
           </h2>
-          <p>Install an extension by name from the official source:</p>
-          <pre><code class="language-bash">thurbox-cli extension install flow</code></pre>
+          <p>Install an extension from a directory, a URL, or a git repository:</p>
+          <pre data-wrap><code class="language-bash">thurbox-cli extension install ./my-extension
+thurbox-cli extension install git+https://github.com/you/my-extension</code></pre>
           <p>
             That single command is the whole installer. It resolves the source, fetches the manifest
             and payload, writes them under the extension home (
@@ -105,15 +99,6 @@ breadcrumb: 'Extensions'
             , and activates it. It is idempotent &mdash; re-running refreshes shipped files while
             keeping your own data (seeded files you've edited, agent tweaks).
           </p>
-          <div class="info-box warning">
-            <p>
-              <strong>Heads up:</strong>
-              The flow extension is
-              <strong>experimental</strong>
-              and under active testing &mdash; its behavior, spec, and manifest may change between
-              releases.
-            </p>
-          </div>
 
           <h2 id="lifecycle">
             Lifecycle commands
@@ -135,7 +120,7 @@ breadcrumb: 'Extensions'
             </thead>
             <tbody>
               <tr>
-                <td><code>install &lt;name|url|dir&gt;</code></td>
+                <td><code>install &lt;url|dir|git+repo|name&gt;</code></td>
                 <td>Fetch + lay down files, register agents, write manifest, and activate.</td>
               </tr>
               <tr>
@@ -187,24 +172,12 @@ breadcrumb: 'Extensions'
             Sources &amp; versioning
             <a href="#sources" class="heading-anchor">#</a>
           </h2>
-          <p>The install target can be three things:</p>
+          <p>The install target can be four things:</p>
           <ul>
-            <li>
-              <strong>A bare name</strong>
-              (
-              <code>flow</code>
-              ) &mdash; fetched from the official source over
-              <code>curl</code>
-              /
-              <code>wget</code>
-              , pinned to your binary's release tag (dev builds track
-              <code>main</code>
-              ), so a fetched extension always matches the binary reading it.
-            </li>
             <li>
               <strong>A local directory</strong>
               (
-              <code>./extensions/flow</code>
+              <code>./my-extension</code>
               ) &mdash; installs from a checkout.
             </li>
             <li>
@@ -213,11 +186,37 @@ breadcrumb: 'Extensions'
                 <code>http(s)://</code>
                 base URL
               </strong>
-              &mdash; installs from your own source.
+              &mdash; installs from your own source, fetching each manifest-named file.
+            </li>
+            <li>
+              <strong>A git repository</strong>
+              (
+              <code>git+https://&hellip;</code>
+              , a URL ending in
+              <code>.git</code>
+              , or
+              <code>git@host:path</code>
+              ) &mdash; cloned as a working copy, which is how an extension that lives in its own
+              repo installs. Recognised explicitly, so a plain
+              <code>https://</code>
+              URL keeps meaning &ldquo;a base to fetch files from&rdquo;.
+            </li>
+            <li>
+              <strong>A bare name</strong>
+              &mdash; fetched from the official source over
+              <code>curl</code>
+              /
+              <code>wget</code>
+              , pinned to your binary's release tag (dev builds track
+              <code>main</code>
+              ), so a fetched extension always matches the binary reading it.
+              <strong>Nothing ships under a bare name today:</strong>
+              the only extensions in the Thurbox repository are the two built-ins, which install
+              themselves.
             </li>
           </ul>
-          <pre data-wrap><code class="language-bash">thurbox-cli extension install ./extensions/flow
-thurbox-cli extension install https://example.com/ext/flow --home ~/work/flow</code></pre>
+          <pre data-wrap><code class="language-bash">thurbox-cli extension install ./my-extension
+thurbox-cli extension install https://example.com/ext/my-extension --home ~/work/ext</code></pre>
           <div class="info-box">
             <p>
               <strong>Safety:</strong>
@@ -276,22 +275,33 @@ thurbox-cli extension install https://example.com/ext/flow --home ~/work/flow</c
             <code>{home}</code>
             token is substituted with the resolved home directory.
           </p>
-          <pre data-title="extension.toml"><code class="language-toml">name = "flow"
-description = "Focus-protecting triage agent"
+          <p>
+            The example below is modelled on fleet. Its real manifest uses
+            <code>[[agents]]</code>
+            , one
+            <code>[[files]]</code>
+            , three
+            <code>[[symlinks]]</code>
+            and one
+            <code>[[sessions]]</code>
+            ; the rest is illustrative, so every field the format supports appears once.
+          </p>
+          <pre data-title="extension.toml"><code class="language-toml">name = "fleet"
+description = "Control-plane session: the repo map and thurbox orchestration"
 config_version = 1
-# home = "~/flow"               # OPTIONAL; default is under the config dir
+# home = "~/fleet"              # OPTIONAL; default is under the config dir
                                 # ({home} is substituted everywhere it appears)
 
 # install spec ---------------------------------------------------------------
 [[agents]]                      # registered in agents.toml (existing kept)
-name = "flow"
+name = "fleet"
 command = "claude"
 args = ["--model", "claude-haiku-4-5"]
 
 [[files]]                       # fetched from the source, written under home
-path = "FLOW.md"
+path = "FLEET.md"
 [[files]]
-path = "scripts/create-task.sh"
+path = "scripts/sync-registry.sh"
 executable = true               # chmod +x
 [[files]]
 path = "repos.md"
@@ -303,20 +313,24 @@ substitute = true               # replace {home} in the content
 
 [[symlinks]]                    # never clobbers a real file at `link`
 link = "CLAUDE.md"
-target = "FLOW.md"
+target = "FLEET.md"
 
 # runtime spec (ensured on activate, self-healed if deleted) -----------------
 [[sessions]]
-name = "flow"
-agent = "flow"
-repo_path = "{home}"            # resolved to the absolute home at install
+name = "fleet"
+agent = "fleet"
+repo_path = "{home}"            # resolved to the absolute home at install.
+                                # {home} is the EXTENSION home, so an extension
+                                # whose session must open your own checkout ships
+                                # a placeholder its installer renders instead
 
-# [[automations]] is an OPTIONAL runtime resource (flow itself ships none —
-# it is purely event-driven). An extension that wants a scheduled tick declares:
+# [[automations]] is an OPTIONAL runtime resource (fleet ships none on purpose —
+# its only scheduled candidate pushes to `main`). An extension that wants a
+# scheduled tick declares:
 [[automations]]
 name = "example-tick"
 trigger = "cron:*/10 * * * *"   # same grammar as `automation create --trigger`
-session_ref = "flow"            # must match a [[sessions]] name above
+session_ref = "fleet"           # must match a [[sessions]] name above
 prompt = "tick"</code></pre>
           <table>
             <thead>
@@ -409,11 +423,9 @@ prompt = "tick"</code></pre>
             <li>
               Test locally with
               <code>thurbox-cli extension install ./your-ext</code>
-              , then publish the directory (e.g. under
-              <code>extensions/&lt;name&gt;/</code>
-              ) so
-              <code>install &lt;name&gt;</code>
-              can fetch it.
+              , then publish it &mdash; a git repository is the usual home, and
+              <code>install git+https://&hellip;</code>
+              clones it.
             </li>
           </ol>
           <p>
@@ -434,8 +446,7 @@ prompt = "tick"</code></pre>
             <a href="#catalog" class="heading-anchor">#</a>
           </h2>
           <p>
-            Each extension has its own page with what it does, how to install it, and how to use it.
-            They are grouped by what they do:
+            Two ship with Thurbox and are on by default; anything else you install yourself.
           </p>
 
           <h3 class="docs-hub-category" id="cat-built-in">Built in</h3>
@@ -454,57 +465,47 @@ prompt = "tick"</code></pre>
                 </p>
               </div>
             </a>
+            <a href="interface.html#ask-the-agent" class="docs-hub-card">
+              <div class="card">
+                <div class="card-icon" aria-hidden="true">&#x270E;</div>
+                <h3>ui-skill <span class="badge badge-green">built in</span></h3>
+                <p>
+                  Installs a
+                  <code>thurbox-ui</code>
+                  skill into whichever coding CLIs you have, so an agent in any session knows how
+                  to edit the interface. Embedded and on by default.
+                </p>
+              </div>
+            </a>
           </div>
 
-          <h3 class="docs-hub-category" id="cat-triage">Triage &amp; workflow</h3>
+          <h3 class="docs-hub-category" id="cat-control-plane">Install it yourself</h3>
           <p class="docs-hub-category-desc">
-            Agents that decide what to work on next and surface patterns in how you work.
+            Lives in its own repository, installs through the same manifest machinery.
           </p>
           <div class="docs-hub-grid">
-            <a href="extension-flow.html" class="docs-hub-card">
+            <a
+              href="https://github.com/Thurbeen/fleet"
+              class="docs-hub-card"
+              target="_blank"
+              rel="noopener"
+            >
               <div class="card">
                 <div class="card-icon" aria-hidden="true">&#x2316;</div>
-                <h3>flow</h3>
+                <h3>fleet <span class="badge">template</span></h3>
                 <p>
-                  A focus-protecting triage agent: brain-dump tasks, auto-dispatch workers, and get
-                  the single next thing to focus on.
-                </p>
-              </div>
-            </a>
-            <a href="extension-forge.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2692;</div>
-                <h3>forge</h3>
-                <p>
-                  A workflow analyst that mines your usage for recurring patterns and proposes
-                  ready-to-apply automations &mdash; it proposes, never imposes.
-                </p>
-              </div>
-            </a>
-          </div>
-
-          <h3 class="docs-hub-category" id="cat-repo-automation">Repository automation</h3>
-          <p class="docs-hub-category-desc">
-            Workers that keep your repos green and up to date by opening review PRs.
-          </p>
-          <div class="docs-hub-grid">
-            <a href="extension-ci-shepherd.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x25C8;</div>
-                <h3>ci-shepherd</h3>
-                <p>
-                  Watches open change requests (PRs/MRs on any git forge) and dispatches a worker to
-                  fix failing CI or a changes-requested review.
-                </p>
-              </div>
-            </a>
-            <a href="extension-renovate.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x21BB;</div>
-                <h3>renovate</h3>
-                <p>
-                  Keeps local repos on up-to-date dependencies: a worker runs Renovate's local
-                  platform, tests the bumps, and opens a review PR.
+                  A control plane for your work across GitHub: one repo holding the map of your
+                  projects and the orchestration of agent sessions run against them. Clone it, run
+                  its installer, and its manifest registers one long-lived
+                  <code>fleet</code>
+                  session. The
+                  <a
+                    href="https://github.com/Thurbeen/thurbox/blob/main/docs/ORCHESTRATION.md"
+                    target="_blank"
+                    rel="noopener"
+                    >orchestration guide</a
+                  >
+                  walks through it.
                 </p>
               </div>
             </a>

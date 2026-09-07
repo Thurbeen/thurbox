@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn shipped_manifests_parse_and_their_payloads_exist() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions");
-        let mut checked = 0;
+        let mut checked: Vec<String> = Vec::new();
         for entry in std::fs::read_dir(&root).expect("read extensions/") {
             let dir = entry.expect("dir entry").path();
             let manifest = dir.join("extension.toml");
@@ -548,12 +548,13 @@ mod tests {
                     link.target
                 );
             }
-            checked += 1;
+            checked.push(named.to_string());
         }
-        assert!(
-            checked >= 5,
-            "expected every shipped extension, saw {checked}"
-        );
+        // The exact set, not a count: it also pins that the walk found the real
+        // tree, and that the two built-ins — the only extensions thurbox ships,
+        // and the ones `session_ops::builtin` embeds — are both still there.
+        checked.sort();
+        assert_eq!(checked, ["hooks", "ui-skill"]);
     }
 
     #[test]

@@ -242,19 +242,17 @@ event loop are in the `thurbox-kernel` skill.
 
 ## Pre-commit Hooks
 
-20 hooks run automatically via `prek` (Rust-based pre-commit
+19 hooks run automatically via `prek` (Rust-based pre-commit
 framework). Install with `prek install`. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
 - **pre-commit**: fmt, clippy, check, nextest, architecture,
-  deny, doc, bats (install script + the extensions' shell scripts,
-  one hook each), shellcheck, rumdl, selene, stylua, prettier,
-  htmlhint, stylelint, eslint
+  deny, doc, bats (the install script), shellcheck, rumdl, selene,
+  stylua, prettier, htmlhint, stylelint, eslint
 - **pre-push**: commit history check (`cog check`)
 
-Each bats hook has a CI twin (`install-script`,
-`extension-script-tests`), so a suite that guards a script is
-actually run rather than merely present.
+The bats hook has a CI twin (`install-script`), so the suite that
+guards that script is actually run rather than merely present.
 
 Shell scripts are linted with **shellcheck** (config in
 `.shellcheckrc`); install it from your package manager (it is not a

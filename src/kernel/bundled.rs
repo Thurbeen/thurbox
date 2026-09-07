@@ -38,9 +38,9 @@ pub const BUNDLED: &[(&str, &str)] = &[
     // context without being told to — which is what stops "install this plugin"
     // being read as a package-manager request. `CLAUDE.md` and `GEMINI.md` are
     // pointers rather than copies: two files saying the same thing drift, and the
-    // stale one is the one somebody reads. The `flow` extension surfaces its spec
-    // the same way, as symlinks — which it can do because it copies its own files,
-    // and delivery here writes contents.
+    // stale one is the one somebody reads. An extension surfaces its own spec the
+    // same way, as symlinks — which it can do because it copies its own files, and
+    // delivery here writes contents.
     ("AGENTS.md", include_str!("../../ui/AGENTS.md")),
     ("CLAUDE.md", include_str!("../../ui/CLAUDE.md")),
     ("GEMINI.md", include_str!("../../ui/GEMINI.md")),
