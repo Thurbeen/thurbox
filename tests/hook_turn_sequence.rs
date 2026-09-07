@@ -145,12 +145,19 @@ fn fire(payload: &serde_json::Value, dir: &Path, event: &str, body: &str) {
             .stdout(Stdio::null())
             .spawn()
             .expect("spawn hook");
-        child
+        // Most of these commands (everything but `Notification`) never read
+        // stdin at all, so the child can exit and close its end of the pipe
+        // before this write lands — a race that's more likely to lose under
+        // the CPU contention of a full parallel test run. That's not a real
+        // failure: the write was never going to be consumed either way.
+        if let Err(err) = child
             .stdin
             .take()
             .expect("stdin")
             .write_all(body.as_bytes())
-            .expect("write body");
+        {
+            assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe, "write body: {err}");
+        }
         assert!(
             child.wait().expect("wait hook").success(),
             "{event} hook failed"
