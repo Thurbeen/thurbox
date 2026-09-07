@@ -241,6 +241,12 @@ pub struct AdoptedSession {
     pub output: Box<dyn Read + Send>,
     /// Input write handle to send bytes to the session.
     pub input: Box<dyn Write + Send>,
+    /// Bytes at the front of `output` that are replayed history rather than
+    /// live pane activity (0 when there was none to replay). The reader loop
+    /// uses it to hold `last_output_at` back for exactly that many bytes, so a
+    /// scrollback replay can't masquerade as fresh output — see
+    /// [`Session::reader_loop`].
+    pub seed_len: usize,
 }
 
 /// Trait that all session backends implement. The app layer interacts only through this trait.
@@ -408,6 +414,9 @@ struct SessionIo {
     backend_id: String,
     /// Whether these handles came from a fresh spawn or an adopt.
     mode: WireMode,
+    /// Replayed-history bytes at the front of `output`, from
+    /// [`AdoptedSession::seed_len`] (always 0 for a spawn).
+    seed_len: usize,
 }
 
 /// Whether we are wiring a freshly-spawned process or reconnecting to an
@@ -617,6 +626,7 @@ impl ProgramPane {
                 input: spawned.input,
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
+                seed_len: 0,
             },
             "Program",
         );
@@ -646,6 +656,7 @@ impl ProgramPane {
                 input: adopted.input,
                 backend_id: backend_id.to_string(),
                 mode: WireMode::Adopt,
+                seed_len: adopted.seed_len,
             },
             "Program",
         );
@@ -776,6 +787,7 @@ impl Session {
                 input: spawned.input,
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
+                seed_len: 0,
             },
             backend,
             provider,
@@ -820,6 +832,7 @@ impl Session {
                 input: adopted.input,
                 backend_id: backend_id.to_string(),
                 mode: WireMode::Adopt,
+                seed_len: adopted.seed_len,
             },
             backend,
             provider,
@@ -856,8 +869,9 @@ impl Session {
         let parser_clone = Arc::clone(&parser);
         let exited_clone = Arc::clone(&exited);
         let last_output_clone = Arc::clone(&last_output_at);
+        let seed_len = io.seed_len;
         tokio::task::spawn_blocking(move || {
-            Self::reader_loop(io.output, parser_clone, exited_clone, last_output_clone);
+            Self::reader_loop(io.output, parser_clone, exited_clone, last_output_clone, seed_len);
         });
 
         let wired = WiredPane {
@@ -970,11 +984,21 @@ impl Session {
     /// `kill()`/`detach()` so the backend unregisters the pane and this
     /// thread sees EOF — a silent drop leaks the thread (blocked in a read)
     /// for the process lifetime.
+    ///
+    /// `seed_len` is the number of bytes at the front of `reader` that are
+    /// replayed history (an adopt's scrollback seed, chained ahead of the
+    /// live stream — see [`crate::agent::tmux::TmuxBackend::adopt`]) rather
+    /// than genuine pane activity. Those bytes still reach the parser, but
+    /// must not stamp `last_output_at`: a restart/reattach replaying hours of
+    /// scrollback would otherwise look identical to the agent having just
+    /// printed, defeating [`initial_output_at`]'s deliberate staleness for
+    /// `WireMode::Adopt` the instant the reader's first bytes arrive.
     fn reader_loop(
         mut reader: Box<dyn Read + Send>,
         parser: Arc<Mutex<SessionParser>>,
         exited: Arc<AtomicBool>,
         last_output_at: Arc<AtomicU64>,
+        mut seed_len: usize,
     ) {
         let mut buf = [0u8; 4096];
         // Bytes of a trailing, not-yet-complete UTF-8 character held back from
@@ -992,7 +1016,12 @@ impl Session {
                     break;
                 }
                 Ok(n) => {
-                    last_output_at.store(now_millis(), Ordering::Relaxed);
+                    // Bytes beyond the seed boundary are live activity; a chunk
+                    // that is entirely within the seed is not.
+                    if seed_len < n {
+                        last_output_at.store(now_millis(), Ordering::Relaxed);
+                    }
+                    seed_len = seed_len.saturating_sub(n);
                     let mut data = std::mem::take(&mut carry);
                     data.extend_from_slice(&buf[..n]);
                     let ready = utf8_ready_prefix_len(&data);
@@ -1188,6 +1217,7 @@ impl Session {
                 input: spawned.input,
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
+                seed_len: 0,
             },
             "Session",
         );
@@ -1270,6 +1300,7 @@ impl Session {
                 input: spawned.input,
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
+                seed_len: 0,
             },
             "Shell",
         );
@@ -1299,6 +1330,7 @@ impl Session {
                 input: adopted.input,
                 backend_id: backend_id.to_string(),
                 mode: WireMode::Adopt,
+                seed_len: adopted.seed_len,
             },
             "Shell",
         );
@@ -1392,6 +1424,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
 
     #[test]
@@ -1628,6 +1662,105 @@ mod tests {
         // Spawn: "now" so a fresh process counts as active → busy.
         let spawn = initial_output_at(WireMode::Spawn);
         assert!(now_millis().saturating_sub(spawn) <= ACTIVITY_TIMEOUT_MS);
+    }
+
+    /// The staleness `wire_mode_adopt_starts_stale_spawn_starts_fresh` sets up
+    /// used to be destroyed the instant the reader thread's first read landed,
+    /// because that read is the replayed scrollback seed on an adopt — see
+    /// [`Session::reader_loop`]'s `seed_len` doc. Replaying only the seed must
+    /// leave `last_output_at` untouched.
+    #[test]
+    fn reader_loop_does_not_stamp_output_for_replayed_scrollback() {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            TermSignals::default(),
+        )));
+        let exited = Arc::new(AtomicBool::new(false));
+        let last_output_at = Arc::new(AtomicU64::new(initial_output_at(WireMode::Adopt)));
+
+        let seed = b"replayed history\r\n$ ".to_vec();
+        let seed_len = seed.len();
+        Session::reader_loop(
+            Box::new(Cursor::new(seed)),
+            Arc::clone(&parser),
+            Arc::clone(&exited),
+            Arc::clone(&last_output_at),
+            seed_len,
+        );
+
+        assert_eq!(
+            last_output_at.load(Ordering::Relaxed),
+            initial_output_at(WireMode::Adopt),
+            "scrollback replay alone must not read as activity"
+        );
+    }
+
+    /// The other half: once the seed is exhausted, genuinely live bytes still
+    /// stamp `last_output_at` normally.
+    #[test]
+    fn reader_loop_stamps_output_for_live_bytes_after_the_seed() {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            TermSignals::default(),
+        )));
+        let exited = Arc::new(AtomicBool::new(false));
+        let last_output_at = Arc::new(AtomicU64::new(initial_output_at(WireMode::Adopt)));
+
+        let seed = b"replayed history\r\n$ ".to_vec();
+        let seed_len = seed.len();
+        let reader = Cursor::new(seed).chain(Cursor::new(b"fresh agent output\r\n".to_vec()));
+        Session::reader_loop(
+            Box::new(reader),
+            Arc::clone(&parser),
+            Arc::clone(&exited),
+            Arc::clone(&last_output_at),
+            seed_len,
+        );
+
+        let stamped = last_output_at.load(Ordering::Relaxed);
+        assert!(
+            now_millis().saturating_sub(stamped) < 5_000,
+            "live output past the seed boundary must stamp fresh activity"
+        );
+    }
+
+    /// The fold-level consequence of the two tests above: a session that has
+    /// genuinely been `blocked` for hours must still read `blocked` after a
+    /// restart/reattach replays its scrollback with no new live output —
+    /// composing the reader-loop fix with `with_output_quiescence` the way
+    /// `Terminals::sync_printing`'s consumer (`apply_output_quiescence`) does.
+    /// Before the fix, the seed replay stamped `last_output_at` to "now",
+    /// making the pane look quiet for ~0ms against an hours-old `hook_state_at`
+    /// and folding `Blocked` into `Working`/`Idle`.
+    #[test]
+    fn adopted_scrollback_replay_does_not_outlive_a_standing_blocked_state() {
+        use crate::session::{with_output_quiescence, SessionState};
+
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            TermSignals::default(),
+        )));
+        let exited = Arc::new(AtomicBool::new(false));
+        let last_output_at = Arc::new(AtomicU64::new(initial_output_at(WireMode::Adopt)));
+
+        let seed = b"...\r\nPermission needed to run `rm -rf build`\r\n".to_vec();
+        let seed_len = seed.len();
+        Session::reader_loop(Box::new(Cursor::new(seed)), parser, exited, Arc::clone(&last_output_at), seed_len);
+
+        let quiet_for_ms = now_millis().saturating_sub(last_output_at.load(Ordering::Relaxed));
+        let state_age_ms = 3 * 60 * 60 * 1000; // hook_state_at stamped 3 hours ago
+
+        assert_eq!(
+            with_output_quiescence(SessionState::Blocked, Some(quiet_for_ms), Some(state_age_ms)),
+            SessionState::Blocked,
+            "a restart replaying scrollback must not make a genuinely blocked session look done"
+        );
     }
 
     #[test]
