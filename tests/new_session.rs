@@ -1658,3 +1658,123 @@ fn the_branch_name_is_not_the_last_question_when_an_agent_is_still_to_come() {
         "{screen}"
     );
 }
+
+#[test]
+fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
+    // `enter` carries the ticked rows, and with none ticked on a host
+    // `after_repos` refuses: there is no local home to stand in for a
+    // repository that has to exist on the other machine. An empty memory on a
+    // host is that state permanently, until a path is added.
+    let h = host();
+    let mut world = World::default();
+    world.snapshot.hosts = vec![HostRow {
+        name: "devbox".into(),
+        detail: "me@devbox".into(),
+        backend: "ssh:devbox".into(),
+    }];
+    world.repos.set_bookmarks_for_test("ssh:devbox", Vec::new());
+    open(&h, &world);
+    press(&h, &world, "j"); // local → devbox
+    press(&h, &world, "enter");
+    world.wants.bookmarks = Some("ssh:devbox".into());
+
+    let empty = drawn(&h, &world);
+    assert!(empty.contains("No bookmarks"), "the list is empty: {empty}");
+    assert!(
+        !empty.contains("[ Next ]"),
+        "nothing to advance to on a host: {empty}"
+    );
+
+    // The same refusal with rows on screen but none of them ticked, and the
+    // pill arriving the moment one is.
+    world
+        .repos
+        .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
+    let listed = drawn(&h, &world);
+    assert!(
+        !listed.contains("[ Next ]"),
+        "listed but nothing ticked is the same refusal: {listed}"
+    );
+    press(&h, &world, "space");
+    let ticked = drawn(&h, &world);
+    assert!(ticked.contains("[ Next ]"), "{ticked}");
+}
+
+#[test]
+fn nothing_ticked_locally_still_offers_the_next_step() {
+    // The local half of the rule above: `after_repos` falls back to the home
+    // directory, so `enter` really does advance and the pill must stay.
+    let h = host();
+    let world = World::default();
+    open(&h, &world);
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("[ Next ]"), "{screen}");
+}
+
+#[test]
+fn a_name_with_no_default_to_fall_back_on_offers_no_pill() {
+    // Nothing selected locally, so the flow names the home directory — which is
+    // no kind of session name, leaving the field with an empty value AND an
+    // empty placeholder. `enter` is refused there, so nothing is offered.
+    let h = host();
+    let world = World::default();
+    open(&h, &world);
+    press(&h, &world, "enter");
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("Session Name"), "{screen}");
+    assert!(
+        !screen.contains("[ Create ]") && !screen.contains("[ Next ]"),
+        "validation would refuse this: {screen}"
+    );
+
+    // Two agents in this world, so the agent step is still ahead of it.
+    type_text(&h, &world, "x");
+    let typed = drawn(&h, &world);
+    assert!(typed.contains("[ Next ]"), "{typed}");
+}
+
+#[test]
+fn a_name_the_repository_can_answer_for_keeps_its_pill() {
+    // The other side of it: an untouched field whose placeholder IS the answer
+    // `enter` takes, so the pill is honest about the empty field.
+    let h = host();
+    let world = World::default();
+    open(&h, &world);
+    press(&h, &world, "space");
+    press(&h, &world, "enter");
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("thurbox"), "the suggestion shows: {screen}");
+    assert!(screen.contains("[ Next ]"), "{screen}");
+}
+
+#[test]
+fn a_branch_name_that_prefilled_to_nothing_offers_no_pill() {
+    // The branch field has no suggestion behind it, and a session name of pure
+    // punctuation leaves `branch_from_name` nothing to prefill it with.
+    let h = host();
+    let mut world = World::default();
+    world.repos.set_branches_for_test(
+        "",
+        "/src/thurbox",
+        Branches::Ready(vec!["origin/main".into()]),
+    );
+    open(&h, &world);
+    press(&h, &world, "space");
+    press(&h, &world, "w");
+    press(&h, &world, "enter");
+    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
+    press(&h, &world, "enter");
+    type_text(&h, &world, "!!!");
+    press(&h, &world, "enter");
+
+    let screen = drawn(&h, &world);
+    assert!(screen.contains("Branch Name"), "{screen}");
+    assert!(
+        !screen.contains("[ Create ]") && !screen.contains("[ Next ]"),
+        "nothing prefilled and no default: {screen}"
+    );
+
+    type_text(&h, &world, "b");
+    let typed = drawn(&h, &world);
+    assert!(typed.contains("[ Next ]"), "{typed}");
+}

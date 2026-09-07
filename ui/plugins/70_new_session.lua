@@ -604,12 +604,29 @@ local function render_repo(flow)
       { "d", "forget" },
       { "tab", "input" },
     }
-    -- An existing worktree is not a selection to gather but a thing to open —
-    -- but `enter` only spawns straight from here when nothing is left to ask
-    -- (see `spawns_directly`); otherwise it advances to the agent step same as
-    -- every other row.
     local entry = entries[widgets.clamp(flow.cursor, #entries)]
-    primary = (entry and entry.row.is_worktree and spawns_directly(flow)) and "Open" or "Next"
+    if entry and entry.row.is_worktree then
+      -- An existing worktree is not a selection to gather but a thing to open —
+      -- but `enter` only spawns straight from here when nothing is left to ask
+      -- (see `spawns_directly`); otherwise it advances to the agent step same as
+      -- every other row.
+      primary = spawns_directly(flow) and "Open" or "Next"
+    else
+      -- `enter` carries the TICKED rows, not the row under the cursor, and with
+      -- none ticked on a host `after_repos` refuses and stays here: a remote
+      -- target has no local home to stand in for a repository. So there is
+      -- nothing to advance to and nothing is offered — which on a host whose
+      -- memory is still empty is the whole of that step until a path is added.
+      -- Spelled as an `if`: `cond and nil or "Next"` is always "Next", because
+      -- `and` yielding nil falls through to the `or`.
+      local worktrees, plain = chosen(flow)
+      local nothing_to_carry = #worktrees == 0 and #plain == 0
+      if nothing_to_carry and (flow.host or "") ~= "" then
+        primary = nil
+      else
+        primary = "Next"
+      end
+    end
   elseif flow.focus == "search" then
     hints = { { "esc", "clear" } }
     primary = "Keep filter"
@@ -699,6 +716,18 @@ local function field_creates(flow)
 end
 
 local function render_field(title, label, field, flow, placeholder)
+  -- What `enter` would actually take: the typed value, or the placeholder
+  -- standing in for it. The name step's suggestion is a real answer — `on_key`
+  -- takes it from an untouched field — while the branch step has no such
+  -- default, and neither has a repository whose leaf is no kind of name (the
+  -- home directory the flow falls back to). When that resolves to nothing,
+  -- `enter` is refused with "cannot be empty", so no pill is offered until
+  -- there is something to confirm. The field is where that gets fixed, and it
+  -- already has the caret in it.
+  local resolved = (field.value or ""):match("^%s*(.-)%s*$")
+  if resolved == "" then
+    resolved = placeholder or ""
+  end
   return frame(title, 7, {
     textinput.node(field, {
       label = label,
@@ -708,7 +737,7 @@ local function render_field(title, label, field, flow, placeholder)
     message_row(flow),
     modal.footer(
       { { "enter", "confirm" }, { "esc", "cancel" } },
-      field_creates(flow) and "Create" or "Next"
+      resolved ~= "" and (field_creates(flow) and "Create" or "Next") or nil
     ),
   }, flow)
 end
