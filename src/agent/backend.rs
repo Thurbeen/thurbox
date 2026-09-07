@@ -871,7 +871,13 @@ impl Session {
         let last_output_clone = Arc::clone(&last_output_at);
         let seed_len = io.seed_len;
         tokio::task::spawn_blocking(move || {
-            Self::reader_loop(io.output, parser_clone, exited_clone, last_output_clone, seed_len);
+            Self::reader_loop(
+                io.output,
+                parser_clone,
+                exited_clone,
+                last_output_clone,
+                seed_len,
+            );
         });
 
         let wired = WiredPane {
@@ -1751,13 +1757,23 @@ mod tests {
 
         let seed = b"...\r\nPermission needed to run `rm -rf build`\r\n".to_vec();
         let seed_len = seed.len();
-        Session::reader_loop(Box::new(Cursor::new(seed)), parser, exited, Arc::clone(&last_output_at), seed_len);
+        Session::reader_loop(
+            Box::new(Cursor::new(seed)),
+            parser,
+            exited,
+            Arc::clone(&last_output_at),
+            seed_len,
+        );
 
         let quiet_for_ms = now_millis().saturating_sub(last_output_at.load(Ordering::Relaxed));
         let state_age_ms = 3 * 60 * 60 * 1000; // hook_state_at stamped 3 hours ago
 
         assert_eq!(
-            with_output_quiescence(SessionState::Blocked, Some(quiet_for_ms), Some(state_age_ms)),
+            with_output_quiescence(
+                SessionState::Blocked,
+                Some(quiet_for_ms),
+                Some(state_age_ms)
+            ),
             SessionState::Blocked,
             "a restart replaying scrollback must not make a genuinely blocked session look done"
         );
