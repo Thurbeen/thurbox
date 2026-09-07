@@ -1356,8 +1356,13 @@ follow from the host owning the record, none of which the first cut had:
   pre-ADR-24 row, and one a peer already deleted all answer "Session not
   found". Aborting on it left the local row active and attached. It falls
   through to the local teardown instead, recorded in the report's
-  `host_unknown`; any other host error still aborts, because the session may
-  still be running there.
+  `host_unknown`. A delegated call that never reached the host at all — a
+  transport failure, not a reply — falls through the same way, recorded in
+  `host_unreachable` instead: the alternative left the local row active with
+  nothing recorded for the owed-teardown sweep (below) to retry, the same
+  orphan that sweep exists to stop, reached through the delegated door instead
+  of the legacy one. Any *other* host error still aborts, because the session
+  may still be running there.
 - **A soft delete is reaped on the host.** Nothing reaps a soft-deleted row but
   the sweep (`session_ops::reap_overdue_soft_deletes`), and a host running only
   `thurbox-cli` runs it only on its heartbeat — so on a host with neither the
@@ -1392,14 +1397,19 @@ follow from the host owning the record, none of which the first cut had:
   refused connection, a timeout and a rejected key alike. A force delete taken
   while a host was briefly down therefore found nothing to kill, recorded *no
   error at all*, and reported success — the leak above, with the operator told
-  nothing. `TmuxBackend::discover_answered` (used by `kill_remote_windows` and
-  `remote_window_index`) returns an empty listing only when the multiplexer
-  itself refused — tmux's `error connecting to` / `no server running on` /
-  `can't find session`, psmux's `session not found` — and an error otherwise.
-  An unrecognised failure counts as *unanswered* on purpose: over-reporting a
-  live host costs one cheap retry, while the reverse costs an orphaned agent
-  nobody ever looks for again. It also replaces the `has-session` round trip,
-  since `list-windows` on an absent server gives exactly that refusal.
+  nothing. `TmuxBackend::discover_answered` (used by `kill_remote_windows`,
+  `remote_window_index`, and `agent_window`) returns an empty listing only when
+  the multiplexer itself refused — tmux's `error connecting to` / `no server
+  running on` / `can't find session`, psmux's `session not found` — and an
+  error otherwise. An unrecognised failure counts as *unanswered* on purpose:
+  over-reporting a live host costs one cheap retry, while the reverse costs an
+  orphaned agent nobody ever looks for again. It also replaces the
+  `has-session` round trip, since `list-windows` on an absent server gives
+  exactly that refusal. `agent_window` backs `agent_window_alive`, which
+  `restart_session`'s `--if-missing` path uses to decide whether the agent is
+  gone and needs relaunching — an unreachable host now aborts the relaunch
+  instead of reading as "no window", which used to start a second agent beside
+  the one still running once the host answered again.
 
 ---
 

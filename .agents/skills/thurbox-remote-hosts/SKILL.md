@@ -251,13 +251,17 @@ session), never on the loop, ADR-P12).
   but `ssh` exits non-zero for a refused connection, a timeout and a rejected
   key alike — so a force delete taken while a host was briefly down found
   nothing to kill and recorded *no error at all*. `TmuxBackend::
-  discover_answered` (used by `kill_remote_windows` and `remote_window_index`)
-  answers empty only on the multiplexer's own refusal — tmux's `error
-  connecting to` / `no server running on` / `can't find session`, psmux's
-  `session not found` (`mux_answered_absent`) — and errors otherwise. An
-  unrecognised failure counts as unanswered on purpose. It also drops the
-  `has-session` round trip: `list-windows` on an absent server gives exactly
-  that refusal.
+  discover_answered` (used by `kill_remote_windows`, `remote_window_index`,
+  and `agent_window`) answers empty only on the multiplexer's own refusal —
+  tmux's `error connecting to` / `no server running on` / `can't find
+  session`, psmux's `session not found` (`mux_answered_absent`) — and errors
+  otherwise. An unrecognised failure counts as unanswered on purpose. It also
+  drops the `has-session` round trip: `list-windows` on an absent server gives
+  exactly that refusal. `agent_window` backs `agent_window_alive`, which
+  `restart --if-missing` uses to decide whether to relaunch after a reboot —
+  an unreachable host now aborts the relaunch instead of reading as "no
+  window", which used to start a second agent beside the one still running
+  once the host answered again (`restart_if_missing_probe`).
 - **A session owns two windows**, and every teardown takes both: the agent
   (`tb-`) and the companion shell (`tbs-`). The shell is found by its stamp
   (`@thurbox_role = shell`) rather than by `sessions.shell_backend_id`, which is
@@ -269,7 +273,7 @@ session), never on the loop, ADR-P12).
   multiplexer server *and* the thurbox session as a side effect, so a one-shot
   `thurbox-cli` tearing a session down used to leave an empty server on the
   host. `kill_remote_windows` / `remote_window_index` / `agent_window` read one
-  `list-windows` (guarded by `has-session`) and kill with a one-shot
+  `list-windows` (`discover_answered`, above) and kill with a one-shot
   `kill-pane`. And they only act on a socket the host has vouched for:
   `known_host_socket` takes `hosts.toml`'s `socket`, else what the host's own
   CLI reported (`learn_host_socket`), else — for a host with `share_sessions =
@@ -304,8 +308,13 @@ session), never on the loop, ADR-P12).
   teardown instead of erroring: a fork minted here, a pre-ADR-24 row, or one a
   peer already deleted there all make the host answer "Session not found", and
   aborting left the local row active and attached. The fall-through is recorded
-  in `ForceDeleteReport.host_unknown`. Any *other* host error still aborts — the
-  session may still be running there.
+  in `ForceDeleteReport.host_unknown`. A call that never reached the host at
+  all — a connection failure, not a reply (`host_never_answered` in
+  `session_ops::delete`) — falls through the same way, recorded in
+  `host_unreachable` instead: the row is still marked, and the local teardown
+  that runs in the host's place owes its own retry (`remote_teardown_owed`)
+  when it cannot reach the same down host either. Any *other* host error still
+  aborts — the session may still be running there.
 - **Local e2e**: `scripts/dev/e2e/linux-container.sh up` spins a throwaway Podman
   container (sshd + tmux + git) and `… test` asserts a session lands on the
   `ssh:podman` backend (state under `target/`, never touches your real
@@ -316,4 +325,9 @@ session), never on the loop, ADR-P12).
   reaped the pid it was running. It keeps sharing off throughout — with it on,
   a host whose CLI has vouched for no socket is refused by
   `known_host_socket`, which is a different behaviour and would hide this one.
+  `restart_if_missing_probe` covers the sibling fix: create a session, point
+  `hosts.toml` at a dead port, assert `restart --if-missing` refuses rather
+  than relaunching against a host it cannot reach, then bring the host back
+  and assert exactly one agent window exists — never a second one started
+  while the host looked absent.
 

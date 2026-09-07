@@ -94,7 +94,12 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   `session_ops::delete` — that a failed remote teardown is written onto the
   row, that a soft-deleted row is never on its worklist (the undo window), and
   that a silent host is asked once per pass — and proven end to end on a real
-  process by `linux-container.sh`'s `remote_teardown_probe`.
+  process by `linux-container.sh`'s `remote_teardown_probe`. The same file
+  covers a delegated delete whose host never answers at all: it falls back to
+  the local teardown and owes a retry, while any *other* host error still
+  aborts. `restart --if-missing` refusing to relaunch against an unreachable
+  host (rather than reading it as "no window" and starting a second agent) is
+  proven end to end by `linux-container.sh`'s `restart_if_missing_probe`.
 - **`tests/concurrent_respawn.rs`** — six sessions relaunching onto a tmux
   server that does not exist yet, against a *real* tmux on a throwaway socket
   (skipped when tmux is absent): every worker's `ensure_session_configured`
