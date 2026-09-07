@@ -401,10 +401,10 @@ Fetch and fast-forward before `session create`, and verify
 
 ---
 
-## The template
+## The reference implementation
 
-A working, public implementation of everything above:
-<https://github.com/Thurbeen/fleet-template>
+Everything above, as a public GitHub template you fork with **"Use this
+template"**: <https://github.com/Thurbeen/fleet>
 
 ```text
 registry/
@@ -416,24 +416,47 @@ orchestration/
   runs/_TEMPLATE.md          copy this per run
 scripts/
   sync-registry.sh           regenerate the index via `gh`
+  sync-checkout.sh           fast-forward main when that is safe
   install-extension.sh       render extension.toml, then install
 extension.toml.in            manifest template (rendered at install time)
 FLEET.md                     standing context for the long-lived session
+CLAUDE.md                    how an agent works inside the control plane
 ```
 
-Click **"Use this template"**, edit `registry/owners.txt`, then:
+Edit `registry/owners.txt` — your GitHub username plus any orgs — then:
 
 ```sh
 ./scripts/sync-registry.sh
 ./scripts/install-extension.sh
 ```
 
-That leaves you with a working control-plane session.
+That leaves you with a working control-plane session, and a manifest
+that registers exactly two things: a `fleet` agent in `agents.toml`, and
+one long-lived `fleet` session opened on the checkout.
 
-**Why `extension.toml.in` and not `extension.toml`?** A `[[sessions]]`
-entry needs an absolute `repo_path`, and `resolved_for_home` substitutes
-only the `{home}` token — it does not expand `~`, so a tilde is taken
-literally and the session lands in a directory named `~`. A template
-cannot hardcode a path that exists on one machine, so it ships a
-`__REPO_PATH__` placeholder that `install-extension.sh` renders from
-`git rev-parse --show-toplevel` before calling `extension install`.
+It is a template, not a thurbox feature: nothing in thurbox knows it
+exists, and a fork is yours to diverge from immediately. The part worth
+copying is the arrangement, not the files. Two of its choices are that
+arrangement rather than its own taste.
+
+**The lead's job description is a payload file, not a prompt.** The
+manifest's `[[files]]` lays down `FLEET.md` in the extension home and
+three `[[symlinks]]` surface it as `CLAUDE.md`, `AGENTS.md` and
+`GEMINI.md`, so the lead reads what it is *for* whichever CLI is behind
+it. That text is deliberately not the repo's own `CLAUDE.md`: one says
+what the session is for — hold the plan and the log, never the branches
+— and the other says how to work inside the checkout. A lead whose
+invariant lives only in the conversation that stated it keeps that
+invariant exactly as long as the conversation.
+
+**The manifest ships as `extension.toml.in` because no token spells "my
+clone".** `[[sessions]] repo_path` has to name the checkout — that is
+where `registry/` and `orchestration/` are — and `{home}` is
+substituted, but it resolves to the extension home
+(`<config>/extensions/<name>/`). A template cannot hardcode a path that
+exists on one machine, so it ships a `__REPO_PATH__` placeholder that
+`install-extension.sh` renders from `git rev-parse --show-toplevel`
+before calling `extension install`. A leading `~` *is* expanded there
+(`resolved_for_home`), but only since 0.174.2 — so a manifest declaring
+an older `min_thurbox_version`, as this one does, cannot lean on it
+either.

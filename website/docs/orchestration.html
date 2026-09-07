@@ -160,9 +160,11 @@ orchestration/
   runs/_TEMPLATE.md          copy this per run
 scripts/
   sync-registry.sh           regenerate the index via `gh`
+  sync-checkout.sh           fast-forward main when that is safe
   install-extension.sh       render extension.toml, then install
 extension.toml.in            manifest template (rendered at install time)
-FLEET.md                     standing context for the long-lived session</code></pre>
+FLEET.md                     standing context for the long-lived session
+CLAUDE.md                    how an agent works inside the control plane</code></pre>
 
 <h2 id="loop">
   The run loop
@@ -456,38 +458,79 @@ git -C "$REPO" merge --ff-only origin/main
 git -C "$REPO" rev-list --count main..origin/main   # expect 0</code></pre>
 
 <h2 id="template">
-  Start from the template
+  The reference implementation
   <a href="#template" class="heading-anchor">#</a>
 </h2>
 <p>
-  A working, public implementation of everything above lives at
-  <a href="https://github.com/Thurbeen/fleet-template">Thurbeen/fleet-template</a>
-  . Click
+  Everything above, as a public GitHub template you fork with
   <strong>"Use this template"</strong>
-  , edit
+  :
+  <a href="https://github.com/Thurbeen/fleet">Thurbeen/fleet</a>
+  . Edit
   <code>registry/owners.txt</code>
-  , and run:
+  &mdash; your GitHub username plus any orgs &mdash; then run:
 </p>
 <pre><code class="language-bash">./scripts/sync-registry.sh      # regenerate the repo index via `gh`
 ./scripts/install-extension.sh  # render the manifest, then install it</code></pre>
-<p>That leaves you with a working control-plane session.</p>
 <p>
-  <strong>Why does the manifest ship as</strong>
+  That leaves you with a working control-plane session, and a manifest that registers exactly two
+  things: a
+  <code>fleet</code>
+  agent in
+  <code>agents.toml</code>
+  , and one long-lived
+  <code>fleet</code>
+  session opened on the checkout.
+</p>
+<p>
+  It is a template, not a Thurbox feature: nothing in Thurbox knows it exists, and a fork is yours
+  to diverge from immediately. The part worth copying is the arrangement, not the files. Two of its
+  choices are that arrangement rather than its own taste.
+</p>
+<p>
+  <strong>The lead's job description is a payload file, not a prompt.</strong>
+  The manifest's
+  <code>[[files]]</code>
+  lays down
+  <code>FLEET.md</code>
+  in the extension home, and three
+  <code>[[symlinks]]</code>
+  surface it as
+  <code>CLAUDE.md</code>
+  ,
+  <code>AGENTS.md</code>
+  and
+  <code>GEMINI.md</code>
+  , so the lead reads what it is
+  <em>for</em>
+  whichever CLI is behind it. That text is deliberately not the repo's own
+  <code>CLAUDE.md</code>
+  : one says what the session is for &mdash; hold the plan and the log, never the branches &mdash;
+  and the other says how to work inside the checkout. A lead whose invariant lives only in the
+  conversation that stated it keeps that invariant exactly as long as the conversation.
+</p>
+<p>
+  <strong>The manifest ships as</strong>
   <code>extension.toml.in</code>
-  <strong>?</strong>
-  A
-  <code>[[sessions]]</code>
-  entry needs an absolute
-  <code>repo_path</code>
-  , and Thurbox does not expand
-  <code>~</code>
-  there &mdash; a tilde is taken literally and the session lands in a directory named
-  <code>~</code>
-  . A template cannot hardcode a path that exists on one machine, so it ships a
+  <strong>because no token spells "my clone".</strong>
+  <code>[[sessions]] repo_path</code>
+  has to name the checkout &mdash; that is where
+  <code>registry/</code>
+  and
+  <code>orchestration/</code>
+  are &mdash; and
+  <code>{home}</code>
+  is substituted, but it resolves to the extension home. A template cannot hardcode a path that
+  exists on one machine, so it ships a
   <code>__REPO_PATH__</code>
   placeholder that
   <code>install-extension.sh</code>
   renders from
   <code>git rev-parse --show-toplevel</code>
-  before installing.
+  before installing. A leading
+  <code>~</code>
+  <em>is</em>
+  expanded there, but only since 0.174.2 &mdash; so a manifest declaring an older
+  <code>min_thurbox_version</code>
+  , as this one does, cannot lean on it either.
 </p>
