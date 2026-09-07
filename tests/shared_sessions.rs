@@ -6,6 +6,7 @@
 //! faked, so the tests stop where a host would be needed.
 
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
 
 use serde_json::json;
 use thurbox::cli::sessions::{run, Action};
@@ -16,6 +17,18 @@ use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
 const BACKEND: &str = "ssh:devbox";
+
+/// `register` shells out to list windows on this machine's tmux server, so
+/// the refusal it gives only exercises "no live window" where a `tmux`
+/// binary exists to ask; on a runner without one (Windows CI) the call fails
+/// before it gets that far, the same gate other tmux-backed tests use.
+fn have_tmux() -> bool {
+    ProcessCommand::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
 
 fn row(id: SessionId, name: &str, backend: &str) -> SharedSession {
     SharedSession {
@@ -103,6 +116,10 @@ fn register_records_only_a_window_that_is_running() {
     // No tmux server is reachable from a test, so the one answer `register`
     // can give is the refusal — which is the property: it records, it never
     // launches, and it will not invent a row for a window that is not there.
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
     let db = Database::open_in_memory().unwrap();
     let id = SessionId::default();
     let body = mirror::session_to_json(&row(id, "elsewhere", "local-tmux"), None, None, None);
