@@ -36,11 +36,18 @@ Support could not tell whether a locked-out user had tried at all. The
 request was "log every attempt, not only successes".
 ```
 
+Then **Interface delta**, before every other `##`. It names what the change
+did to the system's public surfaces and what capability that adds or
+removes, so the reviewer gets their first question answered without
+reconstructing it from the diff. It is required: when no surface moved, the
+section says that, which is a finding of its own. What earns an entry, how
+added, changed and removed are kept apart, and what to write when nothing
+moved are in [Interface delta](interface-delta.md).
+
 Then fewer than five further sections when practical. Pick those that fit:
 
 - requirements
 - design
-- interface change
 - lifecycle or data flow
 - state or storage
 - testing evidence

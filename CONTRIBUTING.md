@@ -69,10 +69,12 @@ by a **relative symlink** from that CLI's own directory (`.claude/skills/<name>`
 `.agents/skills/` and symlinked, never the other way round. opencode
 auto-discovers `.claude/skills/`, so those symlinks serve it too — don't mirror
 anything under `.opencode/skills/`, which would double-register it. `thurview`
-is additionally vendored, not authored here: its body is verbatim from
+is additionally vendored rather than originated here: its body came from
 [Thurbeen/thurview](https://github.com/Thurbeen/thurview) and `skills-lock.json`
-pins the source repo, skill path and content hash so it can be verified and
-refreshed later. Slash
+pins the source repo, skill path and content hash of what was vendored. It has
+since diverged locally, so treat the lock as the record of that origin rather
+than a claim the copy still matches — a refresh from upstream has to merge the
+local edits rather than overwrite them. Slash
 commands are the one kind opencode does **not** auto-discover, so a new one goes
 in both `.claude/commands/` and `.opencode/commands/`, kept in sync by hand.
 A minimal [`opencode.json`](opencode.json) declares the `$schema` for editor

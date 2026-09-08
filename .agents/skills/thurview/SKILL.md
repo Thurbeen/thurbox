@@ -53,6 +53,8 @@ conflict.
 `thurview scaffold` lists the ones it found under `guidance`.
 
 Read [Document authoring](references/document-authoring.md) before you write.
+Read [Interface delta](references/interface-delta.md) before you write the
+section that says what the change did to the system's public surfaces.
 Read [Components](references/components.md) before you edit `data.yaml` or add
 a fenced component. Read [Lifecycle](references/lifecycle.md) for statuses,
 storage and thread rules. Read [Software map](references/software-map.md)
@@ -108,14 +110,29 @@ gap is the most valuable finding.
 Read every range you anchor from the pinned commit, not the working tree:
 `git show <head>:<path>` or `git show <base>:<path>`.
 
-### 4. Author the document
+### 4. Derive the interface delta
+
+Sweep the diff once per surface kind — exported symbols, command line,
+routes and message kinds, formats and schemas, configuration, extension
+points, packaging — and collect every named surface that base and head
+disagree about. Keep the ones a consumer outside the changed unit binds to
+by name; drop the rest. Anchor each one at the surface itself: at head for
+an addition or a change, at base for a removal.
+
+That becomes the document's `Interface delta` section, which is required
+and sits above every other section. When no surface moved, the section says
+so — that is a finding, not a gap to fill. Read
+[Interface delta](references/interface-delta.md) for the inclusion test,
+the three groups, and what to write when nothing moved.
+
+### 5. Author the document
 
 Edit `review.md` and `data.yaml` in the review directory following
 [Document authoring](references/document-authoring.md). Keep it short.
 Default to anchor links for evidence; use an inline peek only when the reader
 must see the code to follow the main claim.
 
-### 5. Theme the review after the project
+### 6. Theme the review after the project
 
 Read [Theme](references/theme.md). Decide the look in its order: what the
 user asked for, then the reviewed project's own design system read from its
@@ -123,7 +140,7 @@ files at head, then the default skin. Write `theme.yaml` in the review
 directory when steps 1 or 2 yield tokens; leave it empty otherwise. Say
 which source you used when you hand over the review.
 
-### 6. Author the map
+### 7. Author the map
 
 Dispatch one sub-agent to write `map.yaml` per
 [Software map](references/software-map.md) while you write the document, with
@@ -147,7 +164,7 @@ report the errors you could not fix.
 Without a sub-agent facility, write the map yourself after the document, or
 leave `nodes: []` and say the map is not published.
 
-### 7. Publish
+### 8. Publish
 
 ```sh
 thurview publish --review <id>
@@ -155,7 +172,7 @@ thurview publish --review <id>
 
 Read every row of `diagnostics`. Fix each `error` and publish again. A
 `warning` does not block. `publish` refuses (code `THREADS_OPEN`) when a
-submitted comment thread is still open (see step 9). On success `published`
+submitted comment thread is still open (see step 10). On success `published`
 carries `rev` and `url`; the status becomes `awaiting-review`.
 
 Then open it for the reader:
@@ -166,7 +183,7 @@ thurview open --review <id>            # prints url; --view files|commits|map
 
 Give the user the `url` from the output.
 
-### 8. Wait for the reader
+### 9. Wait for the reader
 
 ```sh
 thurview wait --review <id>
@@ -180,13 +197,13 @@ threads that need you:
   not change the document for a question. Wait again.
 - `awaiting-agent-updates`: the reader submitted with "Request changes".
   `threads` lists what to address and `wait.decision` the summary. Go to
-  step 9.
+  step 10.
 - `accepted`: approved. Report and stop.
 - `review-dismissed` or `review-deleted`: stop.
 - error `TIMEOUT` (exit code 1, after `--timeout` seconds, default 3600):
   wait again, or report that the reader has not responded.
 
-### 9. Address requested changes
+### 10. Address requested changes
 
 For each thread in `thurview threads list --review <id> --open`:
 
@@ -199,7 +216,7 @@ For each thread in `thurview threads list --review <id> --open`:
 - `thurview threads resolve <threadId> --review <id>` once the requested
   change is present. Do not resolve a thread you did not address.
 
-Then publish again (step 7), and wait again (step 8). A republish requires
+Then publish again (step 8), and wait again (step 9). A republish requires
 zero open submitted comment threads; questions do not block.
 
 ## Architecture reviews
@@ -214,6 +231,7 @@ other steps are the same; the Files tab shows any file at head on request.
 Report completion only when all of these hold:
 
 - The reader has the URL of a published revision.
+- The interface delta names every surface that moved, or says none did.
 - Every `error` diagnostic is resolved.
 - The map is published, or you said why it is not.
 - The review is waiting on the reader, accepted, dismissed or deleted.
