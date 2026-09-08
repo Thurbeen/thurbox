@@ -369,6 +369,62 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/V2-KERNEL.md">docs/V2-KERNEL.md</a>.
 </p>
 
+<h2 id="when-a-pane-breaks">
+  When a pane breaks the interface
+  <a href="#when-a-pane-breaks" class="heading-anchor">#</a>
+</h2>
+<p>
+  Editing the thing you are looking at means it can break, so the way back is
+  <em>chrome</em> rather than a pane:
+  <kbd>Ctrl</kbd>+<kbd>,</kbd> then
+  <kbd>]</kbd>
+  is the settings Interface tab, and nothing in the directory can edit it away. A file that failed
+  to load sorts to the top of that list with its error underneath.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>The file</th>
+      <th>The way back</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>a pane thurbox ships, edited or deleted</td>
+      <td><kbd>r</kbd> &mdash; the shipped copy comes out of the binary</td>
+    </tr>
+    <tr>
+      <td>a pane <strong>you</strong> wrote</td>
+      <td>
+        <kbd>space</kbd> &mdash; off, untouched on disk, and the interface loads without it
+      </td>
+    </tr>
+    <tr>
+      <td>an installed pane (<code>from &lt;src&gt;</code>)</td>
+      <td><code>thurbox-cli plugin sync</code></td>
+    </tr>
+    <tr>
+      <td>the whole directory</td>
+      <td>
+        it never loaded, so the embedded copies are running &mdash; fix the file from inside them
+      </td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  <kbd>r</kbd>
+  cannot restore a file thurbox never shipped, and says so instead of guessing.
+  <kbd>space</kbd>
+  is also the key for bisecting which of several files is at fault. Both reload immediately. With
+  no terminal to trust,
+  <code>thurbox-cli plugin check</code>
+  reports the same failure and exits non-zero. Full detail:
+  <a
+    href="https://github.com/Thurbeen/thurbox/blob/main/docs/PLUGINS.md#when-something-goes-wrong"
+    >docs/PLUGINS.md &rarr; When something goes wrong</a
+  >.
+</p>
+
 <h2 id="installable-panes">
   Panes you install
   <a href="#installable-panes" class="heading-anchor">#</a>

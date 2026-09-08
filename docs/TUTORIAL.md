@@ -32,8 +32,8 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 ```
 
 Windows is `irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex`;
-Homebrew, AUR, winget and Chocolatey are in the
-[README](../README.md#installation).
+Homebrew, AUR, winget and Chocolatey are on the
+[Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
 
 You also need:
 
@@ -245,7 +245,7 @@ and `thurbox-cli --help` lists the rest (`automation`, `task`, `message`,
   agent in any session to change it, or read
   [docs/PLUGINS.md](PLUGINS.md). `Ctrl+,` then `]` lists every pane and turns
   one off; `F10` reloads.
-- **Run a fleet** — [Recipe: provision a monorepo headless](../README.md#recipe-provision-a-monorepo-headless)
+- **Run a fleet** — [Recipe: provision a monorepo headless](https://thurbox.thurbeen.eu/docs/recipes.html#monorepo)
   and [docs/ORCHESTRATION.md](ORCHESTRATION.md).
 - **Work on another machine** — declare an SSH host or a WSL distro in
   `~/.config/thurbox/hosts.toml` and sessions run there while the TUI stays
