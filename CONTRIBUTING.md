@@ -60,7 +60,7 @@ there is deliberately no `AGENTS.md` duplicating it).
 
 The skills are checked in under `.agents/skills/`: eleven per-subsystem
 working references (`thurbox-testing`, `thurbox-kernel`, `thurbox-remote-hosts`,
-… — `CLAUDE.md` indexes them) plus `ui-review` and `thurview`. They carry the
+… — `CLAUDE.md` indexes them) plus `ui-review`. They carry the
 detail that used to sit in `CLAUDE.md`, so it stays an index and an agent loads
 only the subject it is working on. `.agents/skills/` is the agent-neutral home —
 the body of every skill lives there once, and each is exposed to a specific CLI
@@ -68,11 +68,9 @@ by a **relative symlink** from that CLI's own directory (`.claude/skills/<name>`
 → `../../.agents/skills/<name>` today). A new skill is authored in
 `.agents/skills/` and symlinked, never the other way round. opencode
 auto-discovers `.claude/skills/`, so those symlinks serve it too — don't mirror
-anything under `.opencode/skills/`, which would double-register it. `thurview`
-is additionally vendored, not authored here: its body is verbatim from
-[Thurbeen/thurview](https://github.com/Thurbeen/thurview) and `skills-lock.json`
-pins the source repo, skill path and content hash so it can be verified and
-refreshed later. Slash
+anything under `.opencode/skills/`, which would double-register it.
+[thurview](https://github.com/Thurbeen/thurview), the guided-review publisher,
+is maintained in its own repository and is not vendored here. Slash
 commands are the one kind opencode does **not** auto-discover, so a new one goes
 in both `.claude/commands/` and `.opencode/commands/`, kept in sync by hand.
 A minimal [`opencode.json`](opencode.json) declares the `$schema` for editor

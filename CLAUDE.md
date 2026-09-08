@@ -93,11 +93,9 @@ that names it. Read the one your change touches:
 | `thurbox-ui-surfaces` | Keybindings · Themes · Settings panel · Global search · Code review |
 | `thurbox-demo-media` | Demo Video |
 
-Three more are unrelated to this split and predate it: `ui-review` (screenshot
-the TUI and critique it), `thurbox-ui` (edit the *running* interface's Lua,
-installed by the `ui-skill` extension into each coding CLI), and `thurview`
-(publish a guided review of a branch/PR/commit range; vendored from an
-upstream repo — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for how).
+Two more are unrelated to this split and predate it: `ui-review` (screenshot
+the TUI and critique it) and `thurbox-ui` (edit the *running* interface's Lua,
+installed by the `ui-skill` extension into each coding CLI).
 
 A skill is a working reference, not an owner: the docs under `docs/` still own
 the rationale, and the **Rule** at the bottom of this file applies to a skill
