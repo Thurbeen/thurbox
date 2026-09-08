@@ -643,8 +643,9 @@ Maps `Action` names to one or more chord strings:
   action to a key that isn't a bare `Ctrl+<letter>` makes it work in the
   terminal too. Navigation/quit chords (`Ctrl+H/J/K/L`, `Ctrl+Q`, `Ctrl+N`) are
   **never** forwarded — they're how you leave the terminal.
-- Action names and defaults: see the table in CLAUDE.md / README, or
-  `src/session/keybindings.rs`.
+- Action names and defaults: see the
+  [Keybindings page](https://thurbox.thurbeen.eu/docs/keybindings.html), the
+  live `F1` registry, or `src/session/keybindings.rs`.
 
 ## extensions/
 
