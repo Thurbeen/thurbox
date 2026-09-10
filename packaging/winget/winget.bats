@@ -77,34 +77,67 @@ decide() { # <throttle-days> <prs-json>
   [ "$status" -ne 0 ]
 }
 
-# `classify` decides green-with-a-warning vs red. The moderated-channel shapes
-# are deferrable; anything else must stay visible.
-@test "classify: a GitHub rate limit is deferrable" {
-  run bash -c "echo 'API rate limit exceeded for user ID 1234.' | python3 '${DIR}/submit-decision.py' classify"
-  [ "$status" -eq 0 ]
-  [ "$(echo "$output" | jq -r .deferrable)" = "true" ]
+# `after-submit` turns a finished `wingetcreate submit` into the three things the
+# workflow needs: did it open a PR (`opened`, which gates the cleanup step), may
+# the job exit green (`deferrable`), must it fail (`fail`).
+after_submit() { # <exit-code> <submit output>
+  echo "$2" | python3 "${DIR}/submit-decision.py" after-submit --exit-code "$1"
 }
 
-@test "classify: an already-submitted version is deferrable" {
-  run bash -c "echo 'A pull request for this version has already been submitted.' | python3 '${DIR}/submit-decision.py' classify"
+@test "after-submit: a successful submit opened a PR" {
+  run after_submit 0 "Pull request created: https://github.com/microsoft/winget-pkgs/pull/999"
   [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .opened)" = "true" ]
+  [ "$(echo "$output" | jq -r .fail)" = "false" ]
+}
+
+# The regression this file exists to prevent. A deferred submission exits green
+# having opened NOTHING, so cleanup must not run: closing the pending PR behind
+# a submission that never happened leaves winget-pkgs with no thurbox PR at all
+# and the version silently never ships.
+@test "after-submit: a deferred submit reports it opened nothing" {
+  run after_submit 1 "API rate limit exceeded for user ID 1234."
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .opened)" = "false" ]
+  [ "$(echo "$output" | jq -r .deferrable)" = "true" ]
+  [ "$(echo "$output" | jq -r .fail)" = "false" ]
+}
+
+@test "after-submit: an already-submitted version is deferrable and opened nothing" {
+  run after_submit 1 "A pull request for this version has already been submitted."
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .opened)" = "false" ]
   [ "$(echo "$output" | jq -r .deferrable)" = "true" ]
 }
 
 # Run 34381951096's exact failure. Now that the job syncs the fork before
 # submitting, seeing this again means the sync did not work — that must stay a
 # red job, not a warning nobody reads.
-@test "classify: the stale-fork failure is NOT deferrable" {
+@test "after-submit: the stale-fork failure fails the job" {
   msg='The forked repository could not be synced with the upstream commits. Sync your fork manually and try again.'
-  run bash -c "echo '$msg' | python3 '${DIR}/submit-decision.py' classify"
+  run after_submit 1 "$msg"
   [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .opened)" = "false" ]
   [ "$(echo "$output" | jq -r .deferrable)" = "false" ]
+  [ "$(echo "$output" | jq -r .fail)" = "true" ]
 }
 
-@test "classify: a manifest validation failure is NOT deferrable" {
-  run bash -c "echo 'Manifest validation failed: InstallerSha256 mismatch' | python3 '${DIR}/submit-decision.py' classify"
+@test "after-submit: a manifest validation failure fails the job" {
+  run after_submit 1 "Manifest validation failed: InstallerSha256 mismatch"
   [ "$status" -eq 0 ]
-  [ "$(echo "$output" | jq -r .deferrable)" = "false" ]
+  [ "$(echo "$output" | jq -r .fail)" = "true" ]
+  [ "$(echo "$output" | jq -r .opened)" = "false" ]
+}
+
+# No path may report both: cleanup keys off `opened`, and a job that failed
+# must never look like it opened a PR.
+@test "after-submit: opened and fail are never both true" {
+  for code_and_output in "0|created" "1|API rate limit exceeded" "1|Manifest validation failed"; do
+    code="${code_and_output%%|*}"
+    text="${code_and_output#*|}"
+    result="$(after_submit "$code" "$text")"
+    [ "$(echo "$result" | jq -r '.opened and .fail')" = "false" ]
+  done
 }
 
 # bump-manifests.py against a recorded release checksums.txt.

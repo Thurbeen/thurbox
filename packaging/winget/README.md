@@ -126,9 +126,16 @@ Homebrew templates.
 > **When `submit` fails.** A rejection from the channel itself (GitHub rate
 > limit, version already pending) warns and exits green — the same shape as the
 > Chocolatey push's 403/409 handling, with the classification in
-> `submit-decision.py classify`. Anything else fails the job, but the job carries
-> `continue-on-error: true`, so a broken winget channel can never turn the
-> Release run red once the binaries are on GitHub Releases.
+> `submit-decision.py after-submit`. Anything else fails the job, but the job
+> carries `continue-on-error: true`, so a broken winget channel can never turn
+> the Release run red once the binaries are on GitHub Releases.
+>
+> That same call also reports whether a PR was actually **opened**, and the
+> cleanup step is gated on *that* rather than on the pre-submit decision. The
+> distinction matters: a deferred submission exits green having opened nothing,
+> so cleanup keyed off the decision would close the pending thurbox PR and put
+> nothing in its place, leaving winget-pkgs with no PR at all and the version
+> silently unshipped — the very failure this job exists to prevent.
 >
 > **Tested without cutting a release.** `bats packaging/winget/winget.bats`
 > (CI job *winget Packaging Tests*, or `just test-scripts`) runs

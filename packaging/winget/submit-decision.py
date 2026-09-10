@@ -2,7 +2,7 @@
 """The winget channel's two decisions, out of the workflow so they are testable.
 
 Usage: submit-decision.py decide --throttle-days N [--now ISO8601] [PRS_JSON]
-       submit-decision.py classify [OUTPUT_FILE]
+       submit-decision.py after-submit --exit-code N [OUTPUT_FILE]
 
 `decide` reads `gh pr list --json number,state,createdAt,title` output (stdin by
 default) and prints `{"should_submit": bool, "reason": str}`. Two things stop a
@@ -13,11 +13,21 @@ no "update the pending PR" mode), and a last submission younger than
 is the Chocolatey-parity cadence: attempt every release, let the moderation
 queue itself set the pace.
 
-`classify` reads a failed `wingetcreate submit`'s output and prints
-`{"deferrable": bool, "reason": str}` — the winget analog of the Chocolatey
-job's 403/409 test. Deferrable means "the channel pushed back": warn, exit
-green, retry next release. Everything else stays a red job, including the stale
--fork failure, which the sync step ahead of `submit` is there to prevent.
+`after-submit` reads a finished `wingetcreate submit` — its exit code, plus its
+output (stdin by default) — and prints `{"opened": bool, "deferrable": bool,
+"fail": bool, "reason": str}`. `deferrable` is the winget analog of the
+Chocolatey job's 403/409 test: the channel pushed back, so warn, exit green and
+retry next release. Everything else is a red job, including the stale-fork
+failure the sync step ahead of `submit` exists to prevent.
+
+`opened` is what gates the close-superseded-PRs step, and it is true only when
+`submit` actually opened a PR. Gating that cleanup on the *pre-submit* decision
+instead is a trap worth naming: a deferred submission exits green having opened
+nothing, and cleanup would then close the pending thurbox PR on winget-pkgs and
+put nothing in its place — leaving the channel with no PR at all, so the version
+silently never ships. That is the failure this whole job exists to prevent, only
+worse, which is why `opened` and `fail` are computed here and tested rather than
+inferred in the workflow.
 
 Exercised by winget.bats.
 """
@@ -77,11 +87,23 @@ def decide(prs, throttle_days: int, now: datetime) -> dict:
     }
 
 
-def classify(output: str) -> dict:
+def after_submit(exit_code: int, output: str) -> dict:
+    if exit_code == 0:
+        return {
+            "opened": True,
+            "deferrable": False,
+            "fail": False,
+            "reason": "wingetcreate submit opened a pull request on winget-pkgs",
+        }
     for pattern, why in DEFERRABLE:
         if re.search(pattern, output):
-            return {"deferrable": True, "reason": why}
-    return {"deferrable": False, "reason": "not a known moderated-channel rejection"}
+            return {"opened": False, "deferrable": True, "fail": False, "reason": why}
+    return {
+        "opened": False,
+        "deferrable": False,
+        "fail": True,
+        "reason": "not a known moderated-channel rejection",
+    }
 
 
 def main() -> int:
@@ -93,8 +115,9 @@ def main() -> int:
     d.add_argument("--throttle-days", type=int, required=True)
     d.add_argument("--now", default=None, help="ISO-8601 instant to age against (default: now)")
 
-    c = sub.add_parser("classify")
-    c.add_argument("output", nargs="?", default="-", help="wingetcreate output, or - for stdin")
+    a = sub.add_parser("after-submit")
+    a.add_argument("output", nargs="?", default="-", help="wingetcreate output, or - for stdin")
+    a.add_argument("--exit-code", type=int, required=True, help="wingetcreate submit's exit code")
 
     args = parser.parse_args()
     path = args.prs if args.command == "decide" else args.output
@@ -107,7 +130,7 @@ def main() -> int:
         now = parse_iso(args.now) if args.now else datetime.now(timezone.utc)
         result = decide(json.loads(source), args.throttle_days, now)
     else:
-        result = classify(source)
+        result = after_submit(args.exit_code, source)
 
     print(json.dumps(result))
     return 0

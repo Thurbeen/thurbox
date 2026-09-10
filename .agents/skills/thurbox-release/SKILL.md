@@ -136,7 +136,11 @@ package channels (each gated on its secret, skipped on forks):
   submission staging area (each submission gets its own branch), so a reset
   destroys neither work nor an open PR.
   A `submit` rejected *by the channel* (rate limit, version already pending)
-  warns and exits green via `submit-decision.py classify`; anything else fails
+  warns and exits green via `submit-decision.py after-submit`, which also reports
+  whether a PR was **opened** — the flag the close-superseded-PRs step is gated
+  on, because a deferred submission exits green having opened none and cleanup
+  keyed off the *pre-submit* decision would close the pending PR and leave the
+  channel with nothing. Anything else fails
   the job — but **`continue-on-error` is on the job**, so winget can never redden
   the Release run. (It was on the cleanup step alone before, which is why
   v2.19.6's failure did.) `bats packaging/winget/winget.bats` covers both
