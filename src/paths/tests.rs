@@ -16,25 +16,91 @@ fn display_path_uses_basename() {
     );
 }
 
-#[test]
-fn which_on_path_finds_present_and_rejects_absent() {
-    let dir = tempfile::TempDir::new().unwrap();
-    // `which_on_path` checks for the file verbatim (no `.exe` munging), so a
-    // plain marker filename resolves identically on every platform.
-    let marker = "tbx_which_probe_marker";
-    std::fs::write(dir.path().join(marker), b"").unwrap();
+/// Write an executable marker file, the way a `PATH` lookup expects to find one.
+fn executable_marker(dir: &Path, name: &str) -> PathBuf {
+    let p = dir.join(name);
+    std::fs::write(&p, b"#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    p
+}
 
+/// Run `f` with `PATH` set to `dir`, restoring whatever was there before.
+fn with_path<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
     let saved = std::env::var_os("PATH");
-    std::env::set_var("PATH", dir.path());
-    let found = which_on_path(marker);
-    let missing = which_on_path("tbx_which_probe_absent");
+    std::env::set_var("PATH", dir);
+    let out = f();
     match saved {
         Some(v) => std::env::set_var("PATH", v),
         None => std::env::remove_var("PATH"),
     }
+    out
+}
+
+#[test]
+fn which_on_path_finds_present_and_rejects_absent() {
+    let dir = tempfile::TempDir::new().unwrap();
+    // The lookup is verbatim (no `.exe` munging), so a plain marker filename
+    // resolves identically on every platform.
+    let marker = "tbx_which_probe_marker";
+    executable_marker(dir.path(), marker);
+
+    let (found, missing) = with_path(dir.path(), || {
+        (
+            which_on_path(marker),
+            which_on_path("tbx_which_probe_absent"),
+        )
+    });
 
     assert!(found, "marker on PATH should be found");
     assert!(!missing, "a name not on PATH should not be found");
+}
+
+#[test]
+fn resolve_on_path_answers_with_the_absolute_path() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let marker = "tbx_resolve_probe_marker";
+    let expected = executable_marker(dir.path(), marker);
+
+    let found = with_path(dir.path(), || resolve_on_path(marker));
+
+    assert_eq!(found.as_deref(), Some(expected.as_path()));
+}
+
+#[test]
+fn resolve_on_path_declines_a_name_that_is_already_a_path() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let marker = "tbx_resolve_relative_marker";
+    executable_marker(dir.path(), marker);
+
+    // A caller-supplied path is the caller's decision: re-resolving `./x`
+    // against PATH would name a different file.
+    let found = with_path(dir.path(), || resolve_on_path(&format!("./{marker}")));
+
+    assert_eq!(found, None);
+}
+
+/// A directory named like the binary, or a file nobody can execute, is not what
+/// `execvp` would have picked — so neither is what this may answer with.
+#[test]
+#[cfg(unix)]
+fn resolve_on_path_skips_what_cannot_be_executed() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(dir.path().join("tbx_dir_probe")).unwrap();
+    std::fs::write(dir.path().join("tbx_plain_probe"), b"").unwrap();
+
+    let (as_dir, as_plain) = with_path(dir.path(), || {
+        (
+            resolve_on_path("tbx_dir_probe"),
+            resolve_on_path("tbx_plain_probe"),
+        )
+    });
+
+    assert_eq!(as_dir, None, "a directory is not the binary");
+    assert_eq!(as_plain, None, "a non-executable file is not the binary");
 }
 
 #[test]

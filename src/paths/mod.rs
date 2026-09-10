@@ -65,10 +65,49 @@ pub fn home_dir() -> Option<PathBuf> {
 /// `which` crate for a one-off probe (used to detect optional helper binaries
 /// like `wsl.exe` / `powershell.exe`); cheap PATH scan, no process spawn.
 pub fn which_on_path(exe: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else {
+    resolve_on_path(exe).is_some()
+}
+
+/// Where `exe` resolves on `PATH`, as a path a caller can hand to something
+/// that does *not* share this process's `PATH` — `agent::tmux`'s
+/// `resolve_local_program`, which hands a local window command to the
+/// multiplexer, is why this exists rather than [`which_on_path`] alone.
+///
+/// `None` when nothing matches, and also when `exe` already carries a path
+/// separator: a caller-supplied path is the caller's decision, and re-resolving
+/// it against `PATH` would be wrong (`./agent` is not `bin/./agent`).
+///
+/// The match is the file being **executable** on Unix, not merely present: a
+/// directory named `claude` on `PATH` is not the agent, and a mode-644 file is
+/// not something `execvp` will run. Verbatim, with no `.exe`/`PATHEXT` munging
+/// — the same lookup `which_on_path` has always done.
+pub fn resolve_on_path(exe: &str) -> Option<PathBuf> {
+    if exe.is_empty() || exe.contains(std::path::MAIN_SEPARATOR) || exe.contains('/') {
+        return None;
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(exe))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+/// Whether `p` is a file this process could `exec`.
+fn is_executable_file(p: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(p) else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| dir.join(exe).exists())
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// Base directory for config files. `$XDG_CONFIG_HOME` wins on every platform
