@@ -591,9 +591,10 @@ WSL needs no credentials at all.
   our own rows back and rewrote each `backend_type` to `wsl:<us>`, after
   which every attach, diff and delete went out through `wsl.exe` at the
   machine it started on.
-- **The name `wsl:<us>` can be claimed, and then it is unreadable.** A
-  configured host that merely *registers* under it while pointing
-  elsewhere (`HostDef::shadows_current_wsl_distro`) is left **exactly as
+- **A spelling another host claims is unreadable, and is left alone.**
+  The clearest case is a configured host that merely *registers* under
+  `wsl:<us>` while pointing elsewhere
+  (`HostDef::shadows_current_wsl_distro`): it is left **exactly as
   written** — it works, and renaming or dropping it would strand or
   misroute its sessions. What it costs is the one-time repair, for that
   one name: the rows under it are two populations at once, local rows
@@ -601,10 +602,13 @@ WSL needs no credentials at all.
   rows written after, and nothing in the database tells them apart.
   Relabelling them all local sends the sibling's sessions at this
   machine; moving them all onto the sibling sends this machine's at the
-  sibling. So the repair skips the name entirely and warns. The residue
-  is the pre-existing corruption left unhealed, not damage the change
-  does, and it is the only outcome that never operates on the wrong
-  machine.
+  sibling. So the repair skips the name entirely and warns. The same
+  rule covers a *dropped loopback's own* backend name, which is a free
+  label and can be a live sibling's: dropping the entry hands the name
+  back to auto-discovery, so the real distro re-registers under exactly
+  that spelling. The residue is the pre-existing corruption left
+  unhealed, not damage the change does, and it is the only outcome that
+  never operates on the wrong machine.
 - **The one-time repair**: rows a released build already relabelled are
   put back by `session_ops::repair_wsl_loopback_rows`, not by the
   migration — schema v47 only marks it **owed**, and every startup that
@@ -613,17 +617,26 @@ WSL needs no credentials at all.
   database first and a headless install need never launch the
   interface). `storage` may reference `session` but not `agent`, so the
   migration cannot decide what to rewrite: that is
-  `agent::host_config::wsl_repair_plan`, from the same pass that settles
-  the registry, so the two cannot disagree about who owns `wsl:<us>`.
-  `to_local` = `wsl:<us>` plus every dropped loopback's own backend name
-  (a hand-written `name = "self"` wrote `wsl:self`), minus every
-  spelling a shadow entry claims. A `hosts.toml` that cannot be parsed
-  is not an answer, so the pass leaves the mark set and comes back
-  rather than reading the silence as "nothing claims `wsl:<us>`". The
-  bookmark half resolves colliding readings of one path on recency
-  (`(host, repo_path)` is the key, so only one can survive) and the
-  survivor inherits the group's `is_parent`/`parent_path`, so a healed
-  parent keeps the mark its children hang off.
+  `agent::host_config::wsl_repair_plan`, which settles the registry and
+  augments it with discovery in the same order the loader does, so what
+  it rewrites and what a session resolves against cannot disagree about
+  who owns a spelling. Candidates = `wsl:<us>` plus every dropped
+  loopback's own backend name (a hand-written `name = "self"` wrote
+  `wsl:self`); each one a served host registers under goes to
+  `withheld` instead of `to_local`, matched on the whole backend name
+  since that is what a row resolves through.
+- **Only an answer retires the repair.** A `hosts.toml` that cannot be
+  parsed, WSL distros that cannot be enumerated, and a name still
+  claimed are all "could not say", not "nothing to do": the pass leaves
+  the owed mark set and settles those names on a later start once the
+  claim is gone. Enumeration failing reads as *claimed* — silence must
+  never read as "nothing claims it" — while a machine with no `wsl.exe`
+  at all is a definite "no distros" (interop puts `wsl.exe` on `PATH`
+  inside a distro, so the two cases do not overlap). The bookmark half
+  resolves colliding readings of one path on recency (`(host,
+  repo_path)` is the key, so only one can survive) and the survivor
+  inherits the group's `is_parent`/`parent_path`, so a healed parent
+  keeps the mark its children hang off.
 - **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>`
   or `None`); `is_remote_backend` covers both. The TUI shows a host
   picker as the first new-session step (skipped when none configured/

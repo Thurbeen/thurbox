@@ -80,17 +80,22 @@ fn is_current_wsl_distro(distro: &str) -> bool {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WslRepairPlan {
     /// Backend names whose rows are this machine's own local rows, recorded as
-    /// remote by a loopback host.
-    ///
-    /// A spelling a configured [shadow](HostDef::shadows_current_wsl_distro)
-    /// claims is **not** among them: under such a name the bug's local rows
-    /// and that host's own sibling rows are indistinguishable, so the repair
-    /// leaves every one of them where it found it.
+    /// remote by a loopback host, and which no host the registry serves claims.
     pub to_local: Vec<String>,
+    /// Candidate backend names left alone because a host the registry still
+    /// serves registers under one of them, so the rows there cannot be told
+    /// apart from that host's own.
+    ///
+    /// Distinct from an empty [`to_local`](Self::to_local): "nothing to do" is
+    /// an answer and retires the repair, "could not say" is not, so while this
+    /// is non-empty `session_ops::repair_wsl_loopback_rows` keeps the owed mark
+    /// and settles those names on a later start once nothing claims them.
+    pub withheld: Vec<String>,
 }
 
 impl WslRepairPlan {
-    /// Whether there is nothing to rewrite.
+    /// Whether there are no rows to rewrite. Says nothing about
+    /// [`withheld`](Self::withheld) — a plan can be empty *and* unfinished.
     pub fn is_empty(&self) -> bool {
         self.to_local.is_empty()
     }
@@ -246,10 +251,14 @@ impl HostDef {
     /// written after — and nothing in the database tells them apart.
     /// Relabelling them all local would send the sibling's sessions at this
     /// machine; moving them all onto the sibling would send this machine's at
-    /// the sibling. So the repair skips the name entirely
-    /// ([`WslRepairPlan::to_local`] subtracts it) and any mislabelled local
-    /// row under it stays mislabelled. That residue is the pre-existing
+    /// the sibling. So the repair skips the name entirely and any mislabelled
+    /// local row under it stays mislabelled. That residue is the pre-existing
     /// corruption left unhealed, not damage the repair does.
+    ///
+    /// This predicate is only the *warning*: what withholds the name is the
+    /// general rule that a candidate claimed by a host the registry serves
+    /// goes to [`WslRepairPlan::withheld`], and such an entry claims
+    /// `wsl:<us>` like any other host claims its own backend name.
     pub fn shadows_current_wsl_distro(&self) -> bool {
         self.is_wsl() && !self.is_wsl_loopback() && is_current_wsl_distro(&self.name)
     }

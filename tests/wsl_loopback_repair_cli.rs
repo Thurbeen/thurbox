@@ -105,12 +105,22 @@ fn a_cli_invocation_repairs_the_rows_a_loopback_host_relabelled() {
     plant_a_relabelled_session(&env.db_path(), "wsl:MagicDebian");
 
     // No TUI in sight: the next CLI invocation is what has to put it back.
-    let rows = sessions(&env.run(&["session", "list", "--json"]));
+    let out = env.run(&["session", "list", "--json"]);
+    let rows = sessions(&out);
 
     assert_eq!(
         backend_of(&rows, "relabelled"),
         "local-tmux",
         "a session on the distro thurbox runs in is local to it"
+    );
+    // The rewrite is one-shot and clears its own mark, so this notice is the
+    // only record the user ever gets that persisted rows changed. The CLI
+    // logger filters to WARN, so an `info!` here would be swallowed on
+    // precisely the headless installs this path exists for.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("restored them as local"),
+        "the repair notice reaches stderr: {stderr}"
     );
 }
 

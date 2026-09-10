@@ -2,9 +2,9 @@
 //!
 //! Two halves live apart on purpose. Schema v47 only *marks* the repair as
 //! owed, because what to rewrite is decided by the host registry — which
-//! backend names a loopback entry can have written, and which one spelling a
-//! host merely *named* after the current distro puts out of reach — and
-//! `storage` may not read `hosts.toml`. The plan is built by
+//! backend names a loopback entry can have written, and which of those a host
+//! thurbox still serves claims — and `storage` may not read `hosts.toml`. The
+//! plan is built by
 //! `agent::host_config::wsl_repair_plan` and handed to
 //! [`Database::apply_wsl_repair_plan`] by
 //! `session_ops::repair_wsl_loopback_rows`. What stays here is the SQL, which
@@ -219,6 +219,7 @@ mod tests {
     fn to_local(names: &[&str]) -> WslRepairPlan {
         WslRepairPlan {
             to_local: names.iter().map(|n| n.to_string()).collect(),
+            withheld: Vec::new(),
         }
     }
 

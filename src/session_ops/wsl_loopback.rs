@@ -2,8 +2,8 @@
 //!
 //! Schema v47 only marks the repair as owed. It has to: what to rewrite is
 //! decided by the *registry* — which names a loopback entry can have written,
-//! and which one spelling a host merely named after the current distro puts
-//! out of reach — and `storage` may not read `hosts.toml`. This is the layer
+//! and which of those a host thurbox still serves claims — and `storage` may
+//! not read `hosts.toml` or run `wsl.exe`. This is the layer
 //! that sees both, so this is where the two halves meet: the plan from
 //! [`crate::agent::host_config::wsl_repair_plan`], the SQL from
 //! [`crate::storage::Database::apply_wsl_repair_plan`].
@@ -20,10 +20,11 @@ use crate::storage::Database;
 ///
 /// Runs at most once per database, and the mark is what guarantees it: read
 /// first so an invocation with nothing to do pays a single query, and cleared
-/// only once a pass has completed. Anything that leaves the outcome unknown —
-/// an unreadable `hosts.toml`, a failed write — keeps the mark instead, so the
-/// repair comes back rather than being lost. Best-effort throughout: a
-/// database that cannot be repaired must still open.
+/// only once a pass has answered for **every** candidate spelling. Anything
+/// that leaves an outcome unknown — an unreadable `hosts.toml`, distros that
+/// could not be enumerated, a name a live host still claims, a failed write —
+/// keeps the mark instead, so the repair comes back rather than being lost.
+/// Best-effort throughout: a database that cannot be repaired must still open.
 pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
     match db.wsl_loopback_repair_owed() {
         Ok(false) => return Vec::new(),
@@ -35,8 +36,8 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
     }
 
     // A `hosts.toml` that cannot be read is not "no hosts configured": what
-    // keeps a shadow host's rows out of the heal is that entry being *seen*,
-    // and losing it would relabel a live sibling session as local.
+    // keeps a live host's rows out of the heal is that entry being *seen*, and
+    // losing it would relabel a sibling's live sessions as local.
     let plan = match crate::agent::host_config::wsl_repair_plan() {
         Ok(plan) => plan,
         Err(e) => {
@@ -55,11 +56,22 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
             return Vec::new();
         }
     };
-    if let Err(e) = db.clear_wsl_loopback_repair_owed() {
-        tracing::warn!("WSL row repair ran but its mark could not be cleared: {e}");
+    if plan.withheld.is_empty() {
+        if let Err(e) = db.clear_wsl_loopback_repair_owed() {
+            tracing::warn!("WSL row repair ran but its mark could not be cleared: {e}");
+        }
     }
 
     let mut notices = Vec::new();
+    if !plan.withheld.is_empty() {
+        notices.push(format!(
+            "sessions recorded on {} were left as they are: a host thurbox still \
+             serves registers under that name, so a mislabelled local session there \
+             cannot be told from one of its own. Thurbox will settle them if nothing \
+             claims the name any more",
+            plan.withheld.join(", ")
+        ));
+    }
     if report.sessions_local > 0 || report.bookmarks_local > 0 {
         notices.push(format!(
             "{} session(s) and {} repo bookmark(s) were recorded on the WSL distro \
@@ -188,7 +200,8 @@ mod tests {
     /// bug wrote, and nothing tells the two apart — so the repair leaves every
     /// row under that name exactly as it found it, in both directions: no
     /// sibling session is relabelled local, and no local one is moved onto the
-    /// sibling.
+    /// sibling. Withheld, not answered: the mark stays so a later start can
+    /// settle those rows once no host claims the name.
     #[test]
     fn a_shadow_configs_rows_are_left_exactly_as_they_are() {
         with_wsl_distro(Some("MagicDebian"), || {
@@ -208,9 +221,38 @@ mod tests {
 
             assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
             assert_eq!(bookmark_hosts(&rig.db), ["wsl:MagicDebian"]);
-            assert!(notices.is_empty(), "nothing was rewritten: {notices:?}");
-            // Still a one-shot: there is nothing further a later start could
-            // learn about those rows.
+            assert!(
+                notices
+                    .iter()
+                    .any(|n| n.contains("wsl:MagicDebian") && n.contains("left as they are")),
+                "the deferral names the spelling it did not touch: {notices:?}"
+            );
+            assert!(
+                rig.db.wsl_loopback_repair_owed().unwrap(),
+                "withheld is not answered: the mark survives for a later start"
+            );
+        });
+    }
+
+    /// The claim is what withholds, so removing it settles the rows — the
+    /// recovery the deferral promises. Nothing else can do it: the entry is
+    /// gone by then, so only the surviving mark carries the work forward.
+    #[test]
+    fn removing_the_claiming_entry_lets_a_later_start_heal_the_rows() {
+        with_wsl_distro(Some("MagicDebian"), || {
+            let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
+                 distro = \"MagicDebianPerso\"\n");
+            session(&rig.db, "a", "wsl:MagicDebian");
+
+            repair_wsl_loopback_rows(&rig.db);
+            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+
+            let path = crate::agent::host_config::hosts_config_path().unwrap();
+            std::fs::write(&path, "").unwrap();
+
+            repair_wsl_loopback_rows(&rig.db);
+
+            assert_eq!(backend(&rig.db, "a"), "local-tmux");
             assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
         });
     }
