@@ -378,15 +378,30 @@ mod tests {
 
     #[test]
     fn the_search_phrase_summarizes_a_long_path_instead_of_printing_it() {
-        let many: Vec<String> = (0..20).map(|i| format!("/opt/dir{i}")).collect();
-        let phrase = crate::paths::with_path(many.join(":"), || searched("tmux"));
-        assert!(phrase.contains("/opt/dir0"), "{phrase}");
+        // Built with the platform's own absolute-path shape and joined with
+        // `env::join_paths` rather than a hardcoded `/opt/dirN` + `:`: on
+        // Windows neither holds (the separator is `;`, and a prefix-less
+        // `/opt/dirN` is not `Path::is_absolute`), so `path_dirs()` would
+        // filter every entry out and this test would exercise the "PATH is
+        // unset" branch instead of the one it's named for.
+        let many: Vec<std::path::PathBuf> = (0..20)
+            .map(|i| {
+                if cfg!(windows) {
+                    std::path::PathBuf::from(format!("C:\\dir{i}"))
+                } else {
+                    std::path::PathBuf::from(format!("/opt/dir{i}"))
+                }
+            })
+            .collect();
+        let path = std::env::join_paths(&many).unwrap();
+        let phrase = crate::paths::with_path(path, || searched("tmux"));
+        assert!(phrase.contains(&many[0].display().to_string()), "{phrase}");
         assert!(
             phrase.contains(&format!("and {} more", 20 - DIRS_IN_A_MESSAGE)),
             "{phrase}"
         );
         assert!(
-            !phrase.contains("/opt/dir19"),
+            !phrase.contains(&many[19].display().to_string()),
             "the whole PATH landed in a one-line message: {phrase}"
         );
     }
