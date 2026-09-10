@@ -20,11 +20,22 @@ use crate::storage::Database;
 ///
 /// Runs at most once per database, and the mark is what guarantees it: read
 /// first so an invocation with nothing to do pays a single query, and cleared
-/// only once a pass has answered for **every** candidate spelling. Anything
-/// that leaves an outcome unknown — an unreadable `hosts.toml`, distros that
-/// could not be enumerated, a name a live host still claims, a failed write —
-/// keeps the mark instead, so the repair comes back rather than being lost.
-/// Best-effort throughout: a database that cannot be repaired must still open.
+/// once a pass has an **answer**.
+///
+/// A withheld spelling is an answer, and the distinction matters because the
+/// opposite reading looks reasonable. Rows under a name a live host claims are
+/// permanently indistinguishable — that host's own remote rows and the local
+/// rows an older release mislabelled look identical — so no later start can
+/// classify them better than this one. Keeping the mark until the claim
+/// disappears would not settle them; it would rewrite them once the evidence
+/// was merely *gone*, relabelling a live sibling's sessions local, which is
+/// the misassignment the withholding exists to prevent. So the pass applies
+/// what it can and retires.
+///
+/// Only a question that could not be *asked* keeps the mark: an unreadable
+/// `hosts.toml`, distros that could not be enumerated, a failed write. Those
+/// are transient, and the answer is still out there. Best-effort throughout: a
+/// database that cannot be repaired must still open.
 pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
     match db.wsl_loopback_repair_owed() {
         Ok(false) => return Vec::new(),
@@ -35,15 +46,15 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
         }
     }
 
-    // A `hosts.toml` that cannot be read is not "no hosts configured": what
+    // A registry that could not be read is not "no hosts configured": what
     // keeps a live host's rows out of the heal is that entry being *seen*, and
     // losing it would relabel a sibling's live sessions as local.
     let plan = match crate::agent::host_config::wsl_repair_plan() {
         Ok(plan) => plan,
         Err(e) => {
             tracing::warn!(
-                "WSL row repair deferred — hosts.toml could not be read ({e}); \
-                 it stays owed and runs once the file parses"
+                "WSL row repair deferred — the host registry could not be settled \
+                 ({e}); it stays owed and runs once that is answerable"
             );
             return Vec::new();
         }
@@ -56,19 +67,17 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
             return Vec::new();
         }
     };
-    if plan.withheld.is_empty() {
-        if let Err(e) = db.clear_wsl_loopback_repair_owed() {
-            tracing::warn!("WSL row repair ran but its mark could not be cleared: {e}");
-        }
+    if let Err(e) = db.clear_wsl_loopback_repair_owed() {
+        tracing::warn!("WSL row repair ran but its mark could not be cleared: {e}");
     }
 
     let mut notices = Vec::new();
     if !plan.withheld.is_empty() {
         notices.push(format!(
-            "sessions recorded on {} were left as they are: a host thurbox still \
-             serves registers under that name, so a mislabelled local session there \
-             cannot be told from one of its own. Thurbox will settle them if nothing \
-             claims the name any more",
+            "sessions recorded on {} were left as they are, for good: a host thurbox \
+             serves registers under that name, so a local session an older release \
+             mislabelled there cannot be told from one of that host's own, and \
+             guessing either way would operate on the wrong machine",
             plan.withheld.join(", ")
         ));
     }
@@ -92,7 +101,17 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::host_config::with_discovered_wsl;
     use crate::session::host_def::with_wsl_distro;
+    use crate::session::HostDef;
+
+    /// A discovery stub that fails if it is consulted at all: the repair must
+    /// reach its answer without `wsl.exe` whenever no candidate is spelled
+    /// after another distro, and a stubbed failure is a transient one, so any
+    /// test using this would heal nothing if the narrowing regressed.
+    fn discovery_is_not_consulted() -> Result<Vec<HostDef>, String> {
+        Err("wsl.exe must not be consulted here".to_string())
+    }
 
     struct Rig {
         _temp: tempfile::TempDir,
@@ -157,23 +176,25 @@ mod tests {
     #[test]
     fn the_discovered_loopbacks_rows_are_healed_and_a_siblings_are_not() {
         with_wsl_distro(Some("MagicDebian"), || {
-            let rig = rig("");
-            session(&rig.db, "a", "wsl:MagicDebian");
-            session(&rig.db, "b", "wsl:MagicDebianPerso");
-            session(&rig.db, "c", "ssh:devbox");
+            with_discovered_wsl(discovery_is_not_consulted(), || {
+                let rig = rig("");
+                session(&rig.db, "a", "wsl:MagicDebian");
+                session(&rig.db, "b", "wsl:MagicDebianPerso");
+                session(&rig.db, "c", "ssh:devbox");
 
-            let notices = repair_wsl_loopback_rows(&rig.db);
+                let notices = repair_wsl_loopback_rows(&rig.db);
 
-            assert_eq!(backend(&rig.db, "a"), "local-tmux");
-            assert_eq!(backend(&rig.db, "b"), "wsl:MagicDebianPerso");
-            assert_eq!(backend(&rig.db, "c"), "ssh:devbox");
-            assert!(
-                notices.iter().any(|n| n.contains("restored them as local")),
-                "the repair reports what it moved: {notices:?}"
-            );
-            assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
-            // Owed once: a second pass finds nothing to do and says nothing.
-            assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
+                assert_eq!(backend(&rig.db, "a"), "local-tmux");
+                assert_eq!(backend(&rig.db, "b"), "wsl:MagicDebianPerso");
+                assert_eq!(backend(&rig.db, "c"), "ssh:devbox");
+                assert!(
+                    notices.iter().any(|n| n.contains("restored them as local")),
+                    "the repair reports what it moved: {notices:?}"
+                );
+                assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+                // Owed once: a second pass finds nothing to do and says nothing.
+                assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
+            });
         });
     }
 
@@ -183,16 +204,21 @@ mod tests {
     #[test]
     fn a_differently_named_loopbacks_rows_are_healed_too() {
         with_wsl_distro(Some("MagicDebian"), || {
-            let rig = rig("[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n");
-            session(&rig.db, "a", "wsl:self");
-            session(&rig.db, "b", "wsl:MagicDebian");
-            session(&rig.db, "c", "wsl:MagicDebianPerso");
+            // `wsl:self` is spelled after no distro this machine has, so the
+            // list is what says nothing claims it.
+            with_discovered_wsl(Ok(vec![HostDef::wsl("MagicDebianPerso")]), || {
+                let rig =
+                    rig("[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n");
+                session(&rig.db, "a", "wsl:self");
+                session(&rig.db, "b", "wsl:MagicDebian");
+                session(&rig.db, "c", "wsl:MagicDebianPerso");
 
-            repair_wsl_loopback_rows(&rig.db);
+                repair_wsl_loopback_rows(&rig.db);
 
-            assert_eq!(backend(&rig.db, "a"), "local-tmux");
-            assert_eq!(backend(&rig.db, "b"), "local-tmux");
-            assert_eq!(backend(&rig.db, "c"), "wsl:MagicDebianPerso");
+                assert_eq!(backend(&rig.db, "a"), "local-tmux");
+                assert_eq!(backend(&rig.db, "b"), "local-tmux");
+                assert_eq!(backend(&rig.db, "c"), "wsl:MagicDebianPerso");
+            });
         });
     }
 
@@ -200,60 +226,100 @@ mod tests {
     /// bug wrote, and nothing tells the two apart — so the repair leaves every
     /// row under that name exactly as it found it, in both directions: no
     /// sibling session is relabelled local, and no local one is moved onto the
-    /// sibling. Withheld, not answered: the mark stays so a later start can
-    /// settle those rows once no host claims the name.
+    /// sibling. That is the answer for those rows, so the repair retires.
     #[test]
     fn a_shadow_configs_rows_are_left_exactly_as_they_are() {
         with_wsl_distro(Some("MagicDebian"), || {
-            let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
-                 distro = \"MagicDebianPerso\"\n");
-            session(&rig.db, "a", "wsl:MagicDebian");
-            rig.db
-                .conn_ref()
-                .execute(
-                    "INSERT INTO repo_bookmarks (host, repo_path, last_used_at) \
-                     VALUES ('wsl:MagicDebian', '/repo', 1)",
-                    [],
-                )
-                .unwrap();
+            with_discovered_wsl(discovery_is_not_consulted(), || {
+                let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
+                     distro = \"MagicDebianPerso\"\n");
+                session(&rig.db, "a", "wsl:MagicDebian");
+                rig.db
+                    .conn_ref()
+                    .execute(
+                        "INSERT INTO repo_bookmarks (host, repo_path, last_used_at) \
+                         VALUES ('wsl:MagicDebian', '/repo', 1)",
+                        [],
+                    )
+                    .unwrap();
 
-            let notices = repair_wsl_loopback_rows(&rig.db);
+                let notices = repair_wsl_loopback_rows(&rig.db);
 
-            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
-            assert_eq!(bookmark_hosts(&rig.db), ["wsl:MagicDebian"]);
-            assert!(
-                notices
-                    .iter()
-                    .any(|n| n.contains("wsl:MagicDebian") && n.contains("left as they are")),
-                "the deferral names the spelling it did not touch: {notices:?}"
-            );
-            assert!(
-                rig.db.wsl_loopback_repair_owed().unwrap(),
-                "withheld is not answered: the mark survives for a later start"
-            );
+                assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+                assert_eq!(bookmark_hosts(&rig.db), ["wsl:MagicDebian"]);
+                assert!(
+                    notices
+                        .iter()
+                        .any(|n| n.contains("wsl:MagicDebian") && n.contains("for good")),
+                    "the notice names the spelling and says it is final: {notices:?}"
+                );
+                assert!(
+                    !rig.db.wsl_loopback_repair_owed().unwrap(),
+                    "a withheld spelling is an answer, so the repair does not stay owed"
+                );
+            });
         });
     }
 
-    /// The claim is what withholds, so removing it settles the rows — the
-    /// recovery the deferral promises. Nothing else can do it: the entry is
-    /// gone by then, so only the surviving mark carries the work forward.
+    /// The regression the withheld-mark policy caused: a shadow's rows are
+    /// *genuinely remote*, and the claim disappearing does not make them
+    /// readable — it only removes the evidence. A repair still owed at that
+    /// point would relabel live sibling sessions local, so it must already be
+    /// retired.
     #[test]
-    fn removing_the_claiming_entry_lets_a_later_start_heal_the_rows() {
+    fn removing_the_claiming_entry_does_not_relabel_its_rows_later() {
         with_wsl_distro(Some("MagicDebian"), || {
-            let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
-                 distro = \"MagicDebianPerso\"\n");
-            session(&rig.db, "a", "wsl:MagicDebian");
+            with_discovered_wsl(discovery_is_not_consulted(), || {
+                let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
+                     distro = \"MagicDebianPerso\"\n");
+                session(&rig.db, "a", "wsl:MagicDebian");
 
-            repair_wsl_loopback_rows(&rig.db);
-            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+                repair_wsl_loopback_rows(&rig.db);
+                assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
 
-            let path = crate::agent::host_config::hosts_config_path().unwrap();
-            std::fs::write(&path, "").unwrap();
+                // The user acts on the warning and drops the entry.
+                let path = crate::agent::host_config::hosts_config_path().unwrap();
+                std::fs::write(&path, "").unwrap();
 
-            repair_wsl_loopback_rows(&rig.db);
+                assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
 
-            assert_eq!(backend(&rig.db, "a"), "local-tmux");
-            assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+                assert_eq!(
+                    backend(&rig.db, "a"),
+                    "wsl:MagicDebian",
+                    "its windows are in the sibling distro; local-tmux would be the \
+                     wrong machine"
+                );
+            });
+        });
+    }
+
+    /// Distros that could not be enumerated are a question that could not be
+    /// asked, not an answer: nothing is touched, the mark survives, and the
+    /// work completes once `wsl.exe` answers.
+    #[test]
+    fn an_unenumerable_wsl_keeps_the_mark_and_completes_later() {
+        with_wsl_distro(Some("MagicDebian"), || {
+            let toml = "[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n";
+            let rig = with_discovered_wsl(Err("wsl.exe -l -q failed".to_string()), || {
+                let rig = rig(toml);
+                session(&rig.db, "a", "wsl:self");
+
+                assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
+
+                assert_eq!(backend(&rig.db, "a"), "wsl:self");
+                assert!(
+                    rig.db.wsl_loopback_repair_owed().unwrap(),
+                    "the mark survives, so the repair is not lost"
+                );
+                rig
+            });
+
+            with_discovered_wsl(Ok(Vec::new()), || {
+                repair_wsl_loopback_rows(&rig.db);
+
+                assert_eq!(backend(&rig.db, "a"), "local-tmux");
+                assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+            });
         });
     }
 
@@ -262,16 +328,18 @@ mod tests {
     #[test]
     fn a_loopback_is_still_healed_alongside_a_shadow() {
         with_wsl_distro(Some("MagicDebian"), || {
-            let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
-                 distro = \"MagicDebianPerso\"\n\n\
-                 [[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n");
-            session(&rig.db, "a", "wsl:MagicDebian");
-            session(&rig.db, "b", "wsl:self");
+            with_discovered_wsl(Ok(vec![HostDef::wsl("MagicDebianPerso")]), || {
+                let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
+                     distro = \"MagicDebianPerso\"\n\n\
+                     [[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n");
+                session(&rig.db, "a", "wsl:MagicDebian");
+                session(&rig.db, "b", "wsl:self");
 
-            repair_wsl_loopback_rows(&rig.db);
+                repair_wsl_loopback_rows(&rig.db);
 
-            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
-            assert_eq!(backend(&rig.db, "b"), "local-tmux");
+                assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+                assert_eq!(backend(&rig.db, "b"), "local-tmux");
+            });
         });
     }
 
@@ -304,26 +372,29 @@ mod tests {
     #[test]
     fn two_case_variant_loopbacks_bookmarking_one_repo_do_not_fail() {
         with_wsl_distro(Some("Ubuntu"), || {
-            let rig = rig("[[hosts]]\nname = \"ubuntu\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n");
-            rig.db
-                .conn_ref()
-                .execute_batch(
-                    "INSERT INTO repo_bookmarks (host, repo_path, label, last_used_at) VALUES
+            with_discovered_wsl(discovery_is_not_consulted(), || {
+                let rig =
+                    rig("[[hosts]]\nname = \"ubuntu\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n");
+                rig.db
+                    .conn_ref()
+                    .execute_batch(
+                        "INSERT INTO repo_bookmarks (host, repo_path, label, last_used_at) VALUES
                         ('wsl:Ubuntu', '/repo', 'older', 100),
                         ('wsl:ubuntu', '/repo', 'newer', 200);",
-                )
-                .unwrap();
+                    )
+                    .unwrap();
 
-            repair_wsl_loopback_rows(&rig.db);
+                repair_wsl_loopback_rows(&rig.db);
 
-            assert_eq!(bookmark_hosts(&rig.db), [""], "one local row survives");
-            let label: String = rig
-                .db
-                .conn_ref()
-                .query_row("SELECT label FROM repo_bookmarks", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(label, "newer", "resolved on recency");
-            assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+                assert_eq!(bookmark_hosts(&rig.db), [""], "one local row survives");
+                let label: String = rig
+                    .db
+                    .conn_ref()
+                    .query_row("SELECT label FROM repo_bookmarks", [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(label, "newer", "resolved on recency");
+                assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+            });
         });
     }
 
@@ -334,23 +405,25 @@ mod tests {
     #[test]
     fn an_unparseable_hosts_toml_defers_the_repair_and_changes_nothing() {
         with_wsl_distro(Some("MagicDebian"), || {
-            let rig = rig("[[hosts]\nname = \"MagicDebian\"\n");
-            session(&rig.db, "a", "wsl:MagicDebian");
+            with_discovered_wsl(discovery_is_not_consulted(), || {
+                let rig = rig("[[hosts]\nname = \"MagicDebian\"\n");
+                session(&rig.db, "a", "wsl:MagicDebian");
 
-            assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
+                assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
 
-            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
-            assert!(
-                rig.db.wsl_loopback_repair_owed().unwrap(),
-                "the mark survives, so the repair is not lost"
-            );
+                assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+                assert!(
+                    rig.db.wsl_loopback_repair_owed().unwrap(),
+                    "the mark survives, so the repair is not lost"
+                );
 
-            // Once the file parses, the same call does the work.
-            let path = crate::agent::host_config::hosts_config_path().unwrap();
-            std::fs::write(&path, "").unwrap();
-            repair_wsl_loopback_rows(&rig.db);
-            assert_eq!(backend(&rig.db, "a"), "local-tmux");
-            assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+                // Once the file parses, the same call does the work.
+                let path = crate::agent::host_config::hosts_config_path().unwrap();
+                std::fs::write(&path, "").unwrap();
+                repair_wsl_loopback_rows(&rig.db);
+                assert_eq!(backend(&rig.db, "a"), "local-tmux");
+                assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+            });
         });
     }
 }

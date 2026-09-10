@@ -139,12 +139,19 @@ session), never on the loop, ADR-P12).
   - `to_local` = the candidates no served host registers under; `withheld` =
     the rest, matched on the whole backend name (an `ssh:` host named after a
     distro serves none of its rows, so it withholds nothing).
-  - Only an **answer** clears the owed mark. An unparseable `hosts.toml` is
-    `Err`, distros that cannot be enumerated are `Err`, and a `withheld` name is
-    unfinished business: each leaves the mark set so a later start settles it
-    once the claim is gone. Silence must never read as "no host claims this" —
-    though a machine with no `wsl.exe` at all is a definite "no distros", since
-    interop puts `wsl.exe` on `PATH` inside a distro.
+  - Only a question that could not be **asked** keeps the owed mark: an
+    unparseable `hosts.toml` and distros that could not be enumerated are both
+    `Err`, so nothing is touched and a later start retries. A `withheld` name
+    is an **answer** and clears it — those rows never become classifiable, so
+    waiting for the claim to disappear would just rewrite them once the
+    evidence was gone, relabelling a live sibling's sessions local. Silence
+    must never read as "no host claims this", though a machine with no
+    `wsl.exe` at all is a definite "no distros", since interop puts `wsl.exe`
+    on `PATH` inside a distro.
+  - Discovery is consulted **only** for a candidate it could decide — never for
+    `wsl:$WSL_DISTRO_NAME`, the spelling `wsl_hosts_from` filters out — so the
+    ordinary repair spawns no `wsl.exe`, and its outcome does not depend on the
+    machine having a working one. `with_discovered_wsl` pins the list in tests.
 
   `Database::apply_wsl_repair_plan` owns the SQL. `(host, repo_path)` is the
   bookmark key, so colliding readings of one path are resolved on recency —

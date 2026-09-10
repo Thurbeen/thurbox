@@ -86,16 +86,17 @@ pub struct WslRepairPlan {
     /// serves registers under one of them, so the rows there cannot be told
     /// apart from that host's own.
     ///
-    /// Distinct from an empty [`to_local`](Self::to_local): "nothing to do" is
-    /// an answer and retires the repair, "could not say" is not, so while this
-    /// is non-empty `session_ops::repair_wsl_loopback_rows` keeps the owed mark
-    /// and settles those names on a later start once nothing claims them.
+    /// A **final** verdict, reported only so the user can be told which rows
+    /// were left: those rows never become classifiable, so
+    /// `session_ops::repair_wsl_loopback_rows` retires the repair rather than
+    /// waiting for the claim to disappear — which would rewrite them on no
+    /// better evidence than this pass had.
     pub withheld: Vec<String>,
 }
 
 impl WslRepairPlan {
-    /// Whether there are no rows to rewrite. Says nothing about
-    /// [`withheld`](Self::withheld) — a plan can be empty *and* unfinished.
+    /// Whether there are no rows to rewrite — which a plan that
+    /// [withheld](Self::withheld) every candidate also satisfies.
     pub fn is_empty(&self) -> bool {
         self.to_local.is_empty()
     }

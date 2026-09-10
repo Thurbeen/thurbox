@@ -625,18 +625,26 @@ WSL needs no credentials at all.
   `wsl:self`); each one a served host registers under goes to
   `withheld` instead of `to_local`, matched on the whole backend name
   since that is what a row resolves through.
-- **Only an answer retires the repair.** A `hosts.toml` that cannot be
-  parsed, WSL distros that cannot be enumerated, and a name still
-  claimed are all "could not say", not "nothing to do": the pass leaves
-  the owed mark set and settles those names on a later start once the
-  claim is gone. Enumeration failing reads as *claimed* — silence must
-  never read as "nothing claims it" — while a machine with no `wsl.exe`
-  at all is a definite "no distros" (interop puts `wsl.exe` on `PATH`
-  inside a distro, so the two cases do not overlap). The bookmark half
-  resolves colliding readings of one path on recency (`(host,
-  repo_path)` is the key, so only one can survive) and the survivor
-  inherits the group's `is_parent`/`parent_path`, so a healed parent
-  keeps the mark its children hang off.
+- **A withheld name is an answer, and the repair retires on it.** Those
+  rows never become classifiable — the claiming host's own remote rows and
+  the ones the bug mislabelled are the same spelling — so waiting for the
+  claim to disappear would not settle them, it would rewrite them once
+  the *evidence* was gone and relabel a live sibling's sessions local.
+  The mark is therefore cleared, and dropping the entry afterwards leaves
+  those rows exactly where they are, under a name no host registers.
+  Only a question that could not be **asked** keeps the mark: a
+  `hosts.toml` that would not parse, distros that could not be
+  enumerated, a failed write. Enumeration failing reads as *claimed* —
+  silence must never read as "nothing claims it" — while a machine with
+  no `wsl.exe` at all is a definite "no distros" (interop puts `wsl.exe`
+  on `PATH` inside a distro, so the two cases do not overlap). And it is
+  asked at all only for a candidate discovery could decide: never for
+  `wsl:<us>`, the one spelling discovery filters out, so the ordinary
+  repair spawns no subprocess. The bookmark half resolves colliding
+  readings of one path on recency (`(host, repo_path)` is the key, so
+  only one can survive) and the survivor inherits the group's
+  `is_parent`/`parent_path`, so a healed parent keeps the mark its
+  children hang off.
 - **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>`
   or `None`); `is_remote_backend` covers both. The TUI shows a host
   picker as the first new-session step (skipped when none configured/
