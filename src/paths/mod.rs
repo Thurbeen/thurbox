@@ -81,14 +81,50 @@ pub fn which_on_path(exe: &str) -> bool {
 /// directory named `claude` on `PATH` is not the agent, and a mode-644 file is
 /// not something `execvp` will run. Verbatim, with no `.exe`/`PATHEXT` munging
 /// — the same lookup `which_on_path` has always done.
+///
+/// A `PATH` component that is not **absolute** is skipped, which includes the
+/// empty one POSIX reads as "the current directory" (`:/usr/bin`, or a stray
+/// trailing colon — an ordinary accident in a shell config). Whose current
+/// directory is the entire question: the answer here is handed to a consumer
+/// with a working directory of its own, so a relative one would be resolved
+/// there — reintroducing exactly the dependence this exists to remove, and
+/// letting a `claude` sitting in the repo being worked on shadow the real one.
+/// Skipping is also the safe half of that choice: declining leaves the caller
+/// with the command it already had, where honouring it would silently launch a
+/// different binary.
 pub fn resolve_on_path(exe: &str) -> Option<PathBuf> {
     if exe.is_empty() || exe.contains(std::path::MAIN_SEPARATOR) || exe.contains('/') {
         return None;
     }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(exe))
         .find(|candidate| is_executable_file(candidate))
+}
+
+/// Run `f` with `PATH` set to `path`, restoring what was there before.
+///
+/// Serialized on a process-wide lock, and the **only** way a test may set
+/// `PATH`: it is process state, and under plain `cargo test` the unit tests
+/// that need it run concurrently in one process, where interleaved writes make
+/// one test observe another's directory or restore a stale value. (`nextest`,
+/// the repo's gate, gives each test its own process — this is what keeps the
+/// other entry point honest.)
+#[cfg(test)]
+pub(crate) fn with_path<T>(path: impl AsRef<OsStr>, f: impl FnOnce() -> T) -> T {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A test that panicked while holding it poisoned the lock; the value is
+    // `()`, so there is nothing to protect against and the next test may run.
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = std::env::var_os("PATH");
+    std::env::set_var("PATH", path.as_ref());
+    let out = f();
+    match saved {
+        Some(v) => std::env::set_var("PATH", v),
+        None => std::env::remove_var("PATH"),
+    }
+    out
 }
 
 /// Whether `p` is a file this process could `exec`.

@@ -184,6 +184,12 @@ through verbatim, exactly as before. A **remote** (SSH/WSL) session is not
 resolved either — its `PATH` is the host's; its window command is wrapped in a
 login shell instead.
 
+Only **absolute** `PATH` entries are considered. That excludes the empty entry
+POSIX reads as "the current directory" (`:/usr/bin`, or a stray trailing colon),
+because the resolved path is handed to a process with a working directory of its
+own — honouring it would let a `claude` sitting in the repo you are working on
+shadow the real one, which is the dependence this removes rather than moves.
+
 `hook_schema` is optional. Custom agents are agent-neutral, so the built-in
 **hooks** extension normally wires status hooks only for the built-ins it knows
 by name. Set `hook_schema = "claude"` on a **rebranded** agent (one whose

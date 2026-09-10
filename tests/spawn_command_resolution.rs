@@ -1,14 +1,15 @@
 //! A local spawn must launch the agent **thurbox** resolved, not whatever the
 //! multiplexer's own `PATH` happens to resolve.
 //!
-//! thurbox hands tmux a bare command name (`claude`) and lets tmux resolve it.
-//! Which resolver runs, and with which `PATH`, is not thurbox's to choose:
-//! tmux copies the *client's* `PATH` into the new pane only for an **unattached**
-//! client (`spawn.c`: "the session one is replaced from the client ... only
-//! unattached clients"). thurbox's control-mode client is attached, so its
-//! windows get the `PATH` of whatever first started the tmux **server** — and a
-//! single-token command is handed to that server's `default-shell` rather than
-//! `execvp`, so the resolver can be a shell thurbox never chose.
+//! thurbox used to hand tmux a bare command name (`claude`) and let tmux
+//! resolve it. Which resolver ran, and with which `PATH`, was not thurbox's to
+//! choose: tmux copies the *client's* `PATH` into the new pane only for an
+//! **unattached** client (`spawn.c`: "the session one is replaced from the
+//! client ... only unattached clients"). thurbox's control-mode client is
+//! attached, so its windows got the `PATH` of whatever first started the tmux
+//! **server** — and a single-token command is handed to that server's
+//! `default-shell` rather than `execvp`, so the resolver could be a shell
+//! thurbox never chose.
 //!
 //! Under zsh/bash the two `PATH`s agree, because the interactive additions live
 //! in `~/.zshenv` / `~/.profile`, which any shell that starts a server sources.

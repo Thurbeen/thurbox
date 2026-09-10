@@ -28,18 +28,6 @@ fn executable_marker(dir: &Path, name: &str) -> PathBuf {
     p
 }
 
-/// Run `f` with `PATH` set to `dir`, restoring whatever was there before.
-fn with_path<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
-    let saved = std::env::var_os("PATH");
-    std::env::set_var("PATH", dir);
-    let out = f();
-    match saved {
-        Some(v) => std::env::set_var("PATH", v),
-        None => std::env::remove_var("PATH"),
-    }
-    out
-}
-
 #[test]
 fn which_on_path_finds_present_and_rejects_absent() {
     let dir = tempfile::TempDir::new().unwrap();

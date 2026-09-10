@@ -3373,22 +3373,22 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let expected = agent_only_thurbox_can_see(dir.path(), "tbx-spawn-probe");
 
-        let saved = std::env::var_os("PATH");
-        std::env::set_var("PATH", dir.path());
-        let local = TmuxBackend::local().program_for_window("tbx-spawn-probe");
-        let free = resolve_local_program("tbx-spawn-probe");
-        // A remote host's PATH is the host's, so its command is the host's to
-        // resolve — and it is login-wrapped instead.
-        let remote = TmuxBackend::from_host(&crate::session::HostDef {
-            name: "devbox".into(),
-            destination: "me@devbox".into(),
-            ..Default::default()
-        })
-        .program_for_window("tbx-spawn-probe");
-        match saved {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
+        // Through the shared helper: `PATH` is process state, and the unit
+        // tests that set it run concurrently under plain `cargo test`.
+        let (local, free, remote) = crate::paths::with_path(dir.path(), || {
+            (
+                TmuxBackend::local().program_for_window("tbx-spawn-probe"),
+                resolve_local_program("tbx-spawn-probe"),
+                // A remote host's PATH is the host's, so its command is the
+                // host's to resolve — and it is login-wrapped instead.
+                TmuxBackend::from_host(&crate::session::HostDef {
+                    name: "devbox".into(),
+                    destination: "me@devbox".into(),
+                    ..Default::default()
+                })
+                .program_for_window("tbx-spawn-probe"),
+            )
+        });
 
         assert_eq!(local, expected.to_string_lossy());
         assert_eq!(free, expected.to_string_lossy());
