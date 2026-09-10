@@ -106,6 +106,14 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   sees "no session" and races `new-session`, and the regression this pins is
   that a loser must not abort its whole respawn over tmux's `duplicate
   session` — it has to notice the winner's session and continue.
+- **`tests/spawn_command_resolution.rs`** (unix) — a local spawn against a *real*
+  tmux on a throwaway socket (skipped when tmux is absent): starts a server
+  whose own `PATH` lacks the agent, then spawns it through `TmuxBackend`'s
+  control-mode path with the agent only on thurbox's `PATH`. Pins the fix in
+  `resolve_local_program` (`docs/CONFIG.md` → How `command` is resolved): a
+  local window command used to be left for the multiplexer to resolve, which
+  sees the *server's* `PATH` (an attached client's is not copied in), not the
+  one thurbox itself was launched with.
 - **`tests/session_state_agreement.rs`** — one row, four independent readers
   (`session get`, `session list`, `watch --initial` via the real binary, and
   `SnapshotStore` in-process): all four must answer the same `SessionState`.
