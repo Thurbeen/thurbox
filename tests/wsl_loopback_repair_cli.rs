@@ -129,11 +129,12 @@ fn a_cli_invocation_leaves_a_sibling_distros_sessions_remote() {
     );
 }
 
-/// The rows a host *named* after the current distro wrote are remote — they
-/// run on the sibling it reaches — so the repair moves them onto that distro's
-/// backend name rather than relabelling them local, and the host follows.
+/// The rows under the name a host *named* after the current distro registers
+/// as are two populations at once — that host's own sibling sessions, and
+/// local ones an older thurbox mislabelled — so the repair leaves them alone
+/// rather than rewriting half of them onto the wrong machine.
 #[test]
-fn a_cli_invocation_moves_a_shadow_hosts_sessions_onto_its_real_distro() {
+fn a_cli_invocation_leaves_a_shadow_hosts_sessions_alone() {
     let env = Env::new();
     assert!(env.run(&["session", "list", "--json"]).status.success());
     std::fs::write(
@@ -147,7 +148,7 @@ fn a_cli_invocation_moves_a_shadow_hosts_sessions_onto_its_real_distro() {
 
     assert_eq!(
         backend_of(&rows, "relabelled"),
-        "wsl:MagicDebianPerso",
-        "the entry reached a sibling, so its sessions are that sibling's"
+        "wsl:MagicDebian",
+        "an entry claims that name, so nothing under it can be classified"
     );
 }

@@ -24,14 +24,12 @@ distro thurbox is running in: a **loopback** (`HostDef::is_wsl_loopback`, keyed
 on `$WSL_DISTRO_NAME`) is this machine, so sessions on it are local. It is
 dropped from both halves of the registry — discovered and configured (the
 configured one with a warning). A configured host that reaches a sibling but is
-*named* after the current distro (`shadows_current_wsl_distro`) would register
-as `wsl:<us>` and be indistinguishable from a loopback row, so it is
-**re-registered** under the distro it reaches (with a warning saying which name
-`--host` now takes) and the rows it already wrote move with it; if another entry
-already *reaches* that distro, it defers to that entry's backend name. Matching
-is on the distro, never the name: an unrelated host holding the sibling's name,
-or a second shadow sharing the one spelling, is dropped with no rename so the
-rows wait rather than being routed somewhere wrong. Rows a released build already
+*named* after the current distro (`shadows_current_wsl_distro`) registers as
+`wsl:<us>` and is therefore indistinguishable from a loopback row. It is kept
+**exactly as written** — it works — and what it costs instead is the repair, for
+that one name: the rows under it are the bug's local rows *and* the host's own
+sibling rows at once, so both rewrites are wrong for half of them and neither is
+attempted (a warning says so). Rows a released build already
 relabelled `wsl:<us>` (being shareable by default, the loopback was mirrored,
 and its "host" database was this database, so the pass rewrote our own local
 rows as remote) are put back by a one-time repair rather than by the migration:
@@ -121,31 +119,29 @@ session), never on the loop, ADR-P12).
   = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry
   wins), with every entry claiming the current distro settled first
   (`settle_wsl_self_hosts` / `wsl_hosts_from`): a loopback dropped, a
-  backend-name shadow re-registered under the distro it reaches.
+  backend-name shadow kept as written with its spelling withheld from the
+  repair.
 - **The one-time repair**: `session_ops::repair_wsl_loopback_rows`, guarded by
   the `wsl_loopback_repair_owed` mark schema v47 writes and it clears. Run from
   **both** startups that open the database (`coordinator::boot` and
   `bin/thurbox-cli`), because the mark is written by whichever gets there first.
   What it rewrites is a `session::WslRepairPlan` decided by the registry, not by
-  a spelling, and from *one* load (`agent::host_config::wsl_repair_plan`) so the
-  arms cannot disagree:
+  a spelling, and by the same pass that settles it
+  (`agent::host_config::wsl_repair_plan`) so the two cannot disagree:
   - `to_local` = `wsl:$WSL_DISTRO_NAME` **plus** each dropped loopback's own
     `backend_name()` (a hand-written `name = "self", distro = "<us>"` wrote
     `wsl:self`, and dropping the entry without healing those rows strands
-    them), **minus** anything in `renames`.
-  - `renames` = each re-registered shadow's `(old backend name, new one)`, so
-    its sessions follow the host instead of being read as local.
-  - `to_local` is applied **first**, and that order is load-bearing: a name it
-    heals is one the registry refuses from now on, while a rename's destination
-    is one the registry serves.
+    them), **minus** every spelling a shadow entry claims — keyed on the entry
+    existing, since that alone is what makes the name unreadable.
   - An unparseable `hosts.toml` is `Err`, not an empty registry: the pass leaves
     the mark set and returns, rather than reading silence as "no entry claims
     `wsl:<us>`" and relabelling a sibling's live sessions local.
 
   `Database::apply_wsl_repair_plan` owns the SQL. `(host, repo_path)` is the
   bookmark key, so colliding readings of one path are resolved on recency —
-  ties keep the row already at the destination — before the survivor is
-  rewritten.
+  ties keep the row that is already local — before the survivor is rewritten,
+  and the survivor inherits the group's `is_parent`/`parent_path` so a healed
+  parent keeps the mark its children hang off.
 - **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>` or `None`
   = local). The TUI new-session flow shows a **host picker** first (skipped when
   none configured/discovered); the chosen host runs git worktree creation +

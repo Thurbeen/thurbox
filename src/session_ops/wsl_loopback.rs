@@ -1,9 +1,10 @@
-//! The one-time repair of rows a WSL loopback or shadow host recorded wrong.
+//! The one-time repair of rows a WSL loopback host recorded as remote.
 //!
 //! Schema v47 only marks the repair as owed. It has to: what to rewrite is
-//! decided by the *registry* — which host claims `wsl:<us>`, and which distro
-//! it really reaches — and `storage` may not read `hosts.toml`. This is the
-//! layer that sees both, so this is where the two halves meet: the plan from
+//! decided by the *registry* — which names a loopback entry can have written,
+//! and which one spelling a host merely named after the current distro puts
+//! out of reach — and `storage` may not read `hosts.toml`. This is the layer
+//! that sees both, so this is where the two halves meet: the plan from
 //! [`crate::agent::host_config::wsl_repair_plan`], the SQL from
 //! [`crate::storage::Database::apply_wsl_repair_plan`].
 //!
@@ -33,9 +34,9 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
         }
     }
 
-    // A `hosts.toml` that cannot be read is not "no hosts configured": the
-    // plan's rename arm is the only thing that keeps a shadow host's rows
-    // remote, and losing it would relabel a live sibling session as local.
+    // A `hosts.toml` that cannot be read is not "no hosts configured": what
+    // keeps a shadow host's rows out of the heal is that entry being *seen*,
+    // and losing it would relabel a live sibling session as local.
     let plan = match crate::agent::host_config::wsl_repair_plan() {
         Ok(plan) => plan,
         Err(e) => {
@@ -64,17 +65,6 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
             "{} session(s) and {} repo bookmark(s) were recorded on the WSL distro \
              thurbox runs in, which is this machine; restored them as local",
             report.sessions_local, report.bookmarks_local
-        ));
-    }
-    if report.sessions_moved > 0 || report.bookmarks_moved > 0 {
-        let onto: Vec<&str> = plan.renames.iter().map(|(_, to)| to.as_str()).collect();
-        notices.push(format!(
-            "{} session(s) and {} repo bookmark(s) moved onto {}: the hosts.toml entry \
-             that recorded them was named after the WSL distro thurbox runs in, and now \
-             registers as the distro it reaches",
-            report.sessions_moved,
-            report.bookmarks_moved,
-            onto.join(", ")
         ));
     }
     if report.bookmarks_superseded > 0 {
@@ -194,12 +184,13 @@ mod tests {
         });
     }
 
-    /// A shadow entry reaches a real sibling: its sessions are genuinely
-    /// remote, so they must not be relabelled local — they move onto the
-    /// distro the entry reaches, under which the host now registers, and stay
-    /// resolvable there.
+    /// A shadow entry records its sessions under the same name the loopback
+    /// bug wrote, and nothing tells the two apart — so the repair leaves every
+    /// row under that name exactly as it found it, in both directions: no
+    /// sibling session is relabelled local, and no local one is moved onto the
+    /// sibling.
     #[test]
-    fn a_shadow_configs_rows_move_onto_the_distro_it_reaches() {
+    fn a_shadow_configs_rows_are_left_exactly_as_they_are() {
         with_wsl_distro(Some("MagicDebian"), || {
             let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
                  distro = \"MagicDebianPerso\"\n");
@@ -215,35 +206,30 @@ mod tests {
 
             let notices = repair_wsl_loopback_rows(&rig.db);
 
-            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebianPerso");
-            assert_eq!(bookmark_hosts(&rig.db), ["wsl:MagicDebianPerso"]);
-            assert!(
-                notices
-                    .iter()
-                    .any(|n| n.contains("moved onto wsl:MagicDebianPerso")),
-                "the repair names where the rows went: {notices:?}"
-            );
+            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+            assert_eq!(bookmark_hosts(&rig.db), ["wsl:MagicDebian"]);
+            assert!(notices.is_empty(), "nothing was rewritten: {notices:?}");
+            // Still a one-shot: there is nothing further a later start could
+            // learn about those rows.
             assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
         });
     }
 
-    /// The same shadow, but the distro it reaches is already described by
-    /// another entry. The rows still move onto it — one distro has one backend
-    /// name whichever entry ends up serving it (which one that is, and that no
-    /// duplicate is created, is settled in `agent::host_config`).
+    /// The shadow withholds its own spelling and nothing else: a loopback
+    /// alongside it is still healed under its own distinct name.
     #[test]
-    fn a_shadow_whose_distro_is_already_configured_moves_its_rows_there_too() {
+    fn a_loopback_is_still_healed_alongside_a_shadow() {
         with_wsl_distro(Some("MagicDebian"), || {
             let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
                  distro = \"MagicDebianPerso\"\n\n\
-                 [[hosts]]\nname = \"MagicDebianPerso\"\nkind = \"wsl\"\n");
+                 [[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n");
             session(&rig.db, "a", "wsl:MagicDebian");
-            session(&rig.db, "b", "wsl:MagicDebianPerso");
+            session(&rig.db, "b", "wsl:self");
 
             repair_wsl_loopback_rows(&rig.db);
 
-            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebianPerso");
-            assert_eq!(backend(&rig.db, "b"), "wsl:MagicDebianPerso");
+            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+            assert_eq!(backend(&rig.db, "b"), "local-tmux");
         });
     }
 

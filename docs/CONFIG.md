@@ -240,12 +240,13 @@ a default (e.g. `worktrees_dir`). Discovery also works from *inside* a
 distro (interop puts `wsl.exe` on `PATH` there), and excludes the distro
 thurbox is itself running in: that one is this machine, sessions on it
 are ordinary **local** sessions created with no `--host`. An entry whose
-`distro` is that one is ignored with a startup warning; an entry merely
-*named* after it — reaching a sibling — is re-registered under the
-distro it reaches, and its existing sessions move with it (a warning
-says which name `--host` now takes), unless another host already holds
-that name while reaching somewhere else, in which case it is ignored
-too and its sessions wait rather than being pointed at the wrong distro.
+`distro` is that one is ignored with a startup warning. An entry merely
+*named* after it — reaching a sibling — works as written and keeps its
+sessions, but it records them under the very name an older thurbox
+mislabelled *local* sessions with; the two are indistinguishable, so
+thurbox warns and leaves every row under that name alone (any local
+session still recorded there stays recorded there). Name such an entry
+after the distro it reaches and there is nothing to warn about.
 For both kinds, tmux, git, the agent,
 and worktrees all run **on the host / inside the distro** at native
 paths (a WSL distro's worktrees live in its own Linux filesystem, not on
