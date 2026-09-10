@@ -114,6 +114,13 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   local window command used to be left for the multiplexer to resolve, which
   sees the *server's* `PATH` (an attached client's is not copied in), not the
   one thurbox itself was launched with.
+- **`tests/path_resolution_absolute.rs`** (unix) — its own test binary because it
+  moves the process working directory, which a sibling test in the same binary
+  would see. Pins that `resolve_on_path` (`docs/CONFIG.md` → How `command` is
+  resolved) skips an empty `PATH` component rather than joining it as "the
+  current directory": that join used to answer with a bare relative name,
+  reintroducing the multiplexer-resolves-it dependence the function exists to
+  remove.
 - **`tests/session_state_agreement.rs`** — one row, four independent readers
   (`session get`, `session list`, `watch --initial` via the real binary, and
   `SnapshotStore` in-process): all four must answer the same `SessionState`.
