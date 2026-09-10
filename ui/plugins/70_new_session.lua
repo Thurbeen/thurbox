@@ -805,13 +805,17 @@ end
 local function render_agent(flow)
   -- v1's label: the name alone when the two are the same, else `name
   -- (command)`, so two entries wrapping the same CLI are distinguishable.
+  --
+  -- Local presence only, same as preflight_warning above: a remote host's
+  -- binaries live on the host and thurbox has not looked there.
+  local local_host = (flow.host or "") == ""
   local labels = {}
   for _, agent in ipairs(agents()) do
     local label = (agent.name == agent.command) and agent.name
       or (agent.name .. "  (" .. agent.command .. ")")
     -- Marked on the row rather than only in the warning below it, so the cost
     -- of each choice is visible while the cursor is moving over the others.
-    if agent.presence == "missing" then
+    if local_host and agent.presence == "missing" then
       label = label .. "  ⚠ not installed"
     end
     labels[#labels + 1] = label

@@ -1911,6 +1911,38 @@ fn a_remote_host_is_never_reported_as_missing_the_local_multiplexer() {
 }
 
 #[test]
+fn a_remote_agent_is_never_reported_as_missing_by_local_presence() {
+    // Presence is published from THIS machine's PATH — a remote host's binaries
+    // live on the host and were never looked at, and the agent row must say
+    // nothing rather than borrow the wrong machine's answer.
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = vec![HostRow {
+        name: "devbox".into(),
+        detail: "me@devbox".into(),
+        backend: "ssh:devbox".into(),
+    }];
+    world.snapshot.agents[1].presence = Presence::Missing;
+    world
+        .repos
+        .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
+    open(&host, &world);
+    press(&host, &world, "j"); // local → devbox
+    press(&host, &world, "enter");
+    world.wants.bookmarks = Some("ssh:devbox".into());
+    press(&host, &world, "space");
+    press(&host, &world, "enter");
+    type_text(&host, &world, "remote");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Coding Agent"), "{screen}");
+    assert!(
+        !screen.contains("not installed"),
+        "a remote host's agent was judged by the local machine's PATH: {screen}"
+    );
+}
+
+#[test]
 fn the_empty_session_list_says_the_multiplexer_is_missing() {
     // The one screen a first run always reaches. Absent on a machine that has
     // it, which is the normal case.
