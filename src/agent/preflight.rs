@@ -21,7 +21,7 @@
 //! being made, not a refusal: an agent `command` can be a shell function, an
 //! alias or something installed a second later, and treating "not on `PATH`"
 //! as fatal would turn an improvement into a new way to fail — the same rule
-//! [`crate::agent::tmux::resolve_local_program`] is written under.
+//! `crate::agent::tmux::resolve_local_program` is written under.
 
 use std::path::Path;
 
@@ -65,7 +65,7 @@ impl Presence {
 /// Windows: the same walk, but a bare name is also tried with each extension in
 /// `PATHEXT`, because that is how the loader finds `psmux.exe` given `psmux`.
 /// The *spawn* path deliberately has no such munging (see
-/// [`crate::agent::tmux::resolve_local_program`]) — this is detection, and a
+/// `crate::agent::tmux::resolve_local_program`) — this is detection, and a
 /// detector that called psmux missing on every Windows machine would be worse
 /// than no detector at all.
 ///

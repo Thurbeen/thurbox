@@ -243,7 +243,7 @@ pub struct AgentRow {
     /// commits: a missing agent binary leaves the multiplexer with a window
     /// whose pane exits instantly, which it reports as a successful create, so
     /// the answer never arrives on its own. Probed on a TTL, never per frame —
-    /// see [`SnapshotStore::poll_preflight`].
+    /// see `SnapshotStore::poll_preflight`.
     pub presence: crate::agent::preflight::Presence,
 }
 
