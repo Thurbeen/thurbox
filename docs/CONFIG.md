@@ -233,10 +233,23 @@ configured hosts, error shown.
 
 **SSH** auth comes entirely from your `~/.ssh/config`; thurbox never
 handles credentials. **WSL** distros are reached with
-`wsl.exe -d <distro>` and need no config entry at all — on Windows they
-are **auto-discovered** (`wsl.exe -l -q`) and appear in the host picker
+`wsl.exe -d <distro>` and need no config entry at all — they are
+**auto-discovered** (`wsl.exe -l -q`) and appear in the host picker
 and `--host` automatically; add a `kind = "wsl"` entry only to override
-a default (e.g. `worktrees_dir`). For both kinds, tmux, git, the agent,
+a default (e.g. `worktrees_dir`). Discovery also works from *inside* a
+distro (interop puts `wsl.exe` on `PATH` there), and excludes the distro
+thurbox is itself running in: that one is this machine, sessions on it
+are ordinary **local** sessions created with no `--host`. An entry whose
+`distro` is that one is ignored with a startup warning. An entry merely
+*named* after it — reaching a sibling — works as written and keeps its
+sessions, but it records them under the very name an older thurbox
+mislabelled *local* sessions with; the two are indistinguishable, so
+thurbox warns and leaves every row under that name alone (any local
+session still recorded there stays recorded there). Name a **new** entry
+after the distro it reaches and there is nothing to warn about; renaming
+an **existing** one moves no row, and leaves its recorded sessions
+behind under a name no host registers.
+For both kinds, tmux, git, the agent,
 and worktrees all run **on the host / inside the distro** at native
 paths (a WSL distro's worktrees live in its own Linux filesystem, not on
 `/mnt/c`); the distro needs `tmux` >= 3.2 and `git`. Host changes
@@ -879,6 +892,7 @@ User-set (read by thurbox):
 | `RUST_LOG` | log filter for `thurbox.log` |
 | `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, per-session `restore_adopt`/`adopt_split` lines, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/PERFORMANCE.md`. |
 | `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
+| `WSL_DISTRO_NAME` | set by WSL itself, not by you: it is how thurbox knows which distro it is running inside. That distro is *this machine*, so it is never offered as a host and a `hosts.toml` entry pointing at it is ignored — see [hosts.toml](#hoststoml) |
 
 Set **by** thurbox into every spawned agent process (not user-set;
 `session_ops::inject_thurbox_env` / `App::build_spawn_inputs`). An

@@ -31,8 +31,8 @@ pub use hook_status::{
     WORKING_QUIET_MS,
 };
 pub use host_def::{
-    is_remote_backend, is_ssh_backend, is_wsl_backend, HostDef, HostKind, HostRegistry,
-    SSH_BACKEND_PREFIX, WSL_BACKEND_PREFIX,
+    current_wsl_distro, is_remote_backend, is_ssh_backend, is_wsl_backend, HostDef, HostKind,
+    HostRegistry, WslRepairPlan, LOCAL_BACKEND_TYPE, SSH_BACKEND_PREFIX, WSL_BACKEND_PREFIX,
 };
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use message::SessionMessage;

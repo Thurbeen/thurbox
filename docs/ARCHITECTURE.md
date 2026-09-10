@@ -549,7 +549,7 @@ differs.
 
 Hosts are declared as data in `~/.config/thurbox/hosts.toml`
 (`session::HostDef { kind: HostKind {Ssh, Wsl}, … }`/`HostRegistry`),
-and WSL distros are additionally **auto-discovered** on Windows
+and WSL distros are additionally **auto-discovered**
 (`agent::host_config::discover_wsl_hosts` via `wsl.exe -l -q`). The
 combined set is loaded by `agent::host_config::load_all`, each
 registered as a backend named `ssh:<host>` / `wsl:<distro>` via
@@ -581,7 +581,76 @@ WSL needs no credentials at all.
 - **Auto-discovery**: WSL distros appear with zero config; an explicit
   `kind = "wsl"` entry of the same name wins (for overrides like
   `worktrees_dir`). `discover_wsl_hosts` decodes `wsl.exe`'s UTF-16LE
-  output and is a no-op off Windows / without `wsl.exe`.
+  output and is a no-op without `wsl.exe`. It runs inside a distro too
+  (interop exports `wsl.exe`), so a thurbox in one distro reaches its
+  siblings — but **never itself**: the distro named by `$WSL_DISTRO_NAME`
+  is a *loopback* (`HostDef::is_wsl_loopback`) and is dropped from both
+  halves of the registry. Registering one made every local session
+  remote, because a shareable host's own database is the record of its
+  sessions (ADR-24) and that database was this one: the mirror pass read
+  our own rows back and rewrote each `backend_type` to `wsl:<us>`, after
+  which every attach, diff and delete went out through `wsl.exe` at the
+  machine it started on.
+- **A spelling another host claims is unreadable, and is left alone.**
+  The clearest case is a configured host that merely *registers* under
+  `wsl:<us>` while pointing elsewhere
+  (`HostDef::shadows_current_wsl_distro`): it is left **exactly as
+  written** — it works, and renaming or dropping it would strand or
+  misroute its sessions. What it costs is the one-time repair, for that
+  one name: the rows under it are two populations at once, local rows
+  the bug relabelled before the entry existed and the host's own sibling
+  rows written after, and nothing in the database tells them apart.
+  Relabelling them all local sends the sibling's sessions at this
+  machine; moving them all onto the sibling sends this machine's at the
+  sibling. So the repair skips the name entirely, and says so when it
+  actually left rows behind — `rows_recorded_on` counts them, because a
+  host that claims the spelling but never wrote a row has nothing to be
+  told about, and this notice is the only one its owner would ever see.
+  The same rule covers a *dropped loopback's own* backend name, which is
+  a free label and can be a live sibling's: dropping the entry hands the
+  name back to auto-discovery, so the real distro re-registers under
+  exactly that spelling. The residue is the pre-existing corruption left
+  unhealed, not damage the change does, and it is the only outcome that
+  never operates on the wrong machine.
+- **The one-time repair**: rows a released build already relabelled are
+  put back by `session_ops::repair_wsl_loopback_rows`, not by the
+  migration — schema v47 only marks it **owed**, and every startup that
+  opens the database runs it (the TUI boot and the `thurbox-cli`
+  entrypoint, since the mark is written by whichever binary opens the
+  database first and a headless install need never launch the
+  interface). `storage` may reference `session` but not `agent`, so the
+  migration cannot decide what to rewrite: that is
+  `agent::host_config::wsl_repair_plan`, which settles the registry and
+  augments it with discovery in the same order the loader does, so what
+  it rewrites and what a session resolves against cannot disagree about
+  who owns a spelling. Candidates = `wsl:<us>` plus every dropped
+  loopback's own backend name (a hand-written `name = "self"` wrote
+  `wsl:self`); each one a served host registers under goes to
+  `withheld` instead of `to_local`, matched on the whole backend name
+  since that is what a row resolves through.
+- **A withheld name is an answer, and the repair retires on it.** Those
+  rows never become classifiable — the claiming host's own remote rows and
+  the ones the bug mislabelled are the same spelling — so waiting for the
+  claim to disappear would not settle them, it would rewrite them once
+  the *evidence* was gone and relabel a live sibling's sessions local.
+  The mark is therefore cleared, and dropping the entry afterwards leaves
+  those rows exactly where they are, under a name no host registers.
+  Only a question that could not be **asked** keeps the mark, and only
+  when the answer depended on it: a `hosts.toml` that would not parse,
+  distros that could not be enumerated, a failed write. Each is asked
+  solely where it can matter — `$WSL_DISTRO_NAME` is read first, so off
+  WSL nothing is owed whatever `hosts.toml` says (only a loopback wrote
+  these rows, and only a thurbox inside a distro can have one), and
+  enumeration is consulted only for a candidate discovery could
+  decide, never for `wsl:<us>`, the one spelling it filters out. So the
+  ordinary repair parses one file, spawns no subprocess, and retires.
+  Silence must never read as "nothing claims it", while a machine with
+  no `wsl.exe` at all is a definite "no distros" (interop puts `wsl.exe`
+  on `PATH` inside a distro, so the two cases do not overlap). The bookmark half resolves colliding
+  readings of one path on recency (`(host, repo_path)` is the key, so
+  only one can survive) and the survivor inherits the group's
+  `is_parent`/`parent_path`, so a healed parent keeps the mark its
+  children hang off.
 - **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>`
   or `None`); `is_remote_backend` covers both. The TUI shows a host
   picker as the first new-session step (skipped when none configured/
@@ -613,6 +682,19 @@ stalls. Worth the most manual testing.
 - *Embedded SSH library (russh, etc.)* — reimplements `~/.ssh/config`,
   agent forwarding, and multiplexing that the system `ssh` already
   provides.
+- *Re-registering a `wsl:<us>` shadow under the distro it reaches, and
+  moving its rows onto that name* — built and withdrawn, not merely
+  considered. It cannot be made correct: the shadow's backend name *is*
+  `wsl:$WSL_DISTRO_NAME`, so the rows under it are two populations at
+  once — local rows an older release mislabelled before the entry
+  existed, and the host's own remote rows written through it after — and
+  nothing in the database separates them. Renaming them all onto the
+  sibling misassigns the local ones; relabelling them all local
+  misassigns the sibling's. Narrowing *which* host the rename targets
+  does not help, because the ambiguity is in the rows, not the target.
+  Leaving every such row alone is the only outcome that never operates
+  on the wrong machine, so the entry stays exactly as written and the
+  repair withholds that one spelling. Do not reintroduce the rename.
 
 ### psmux divergences from tmux
 

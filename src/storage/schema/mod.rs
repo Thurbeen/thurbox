@@ -48,8 +48,18 @@ use rusqlite::Connection;
 /// one-shot best-effort attempt was the only one that would ever be made, and
 /// the agent it failed to kill outlived the session forever. The mark is what
 /// lets the sweep come back for it.
+/// v47 is not a schema change but a *mark*: a session recorded on a loopback
+/// WSL host is a local session that host relabelled, and the mark records that
+/// putting it back is owed. Auto-discovery offered the distro thurbox runs
+/// *inside* as a host; being shareable by default it was then mirrored, and its
+/// database is this database — so the pass rewrote our own local rows as remote
+/// and every operation on them went out through `wsl.exe`.
+/// `HostDef::is_wsl_loopback` stops the host being registered. Which backend
+/// names the bug can have written is decided by the host registry, which
+/// `storage` may not read, so `session_ops::repair_wsl_loopback_rows` performs
+/// the repair once and clears the mark.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 46;
+pub const SCHEMA_VERSION: u32 = 47;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -367,6 +377,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (44, migrate_v44_reports_as),
         (45, migrate_v45_host_updated_at),
         (46, migrate_v46_teardown_owed),
+        (47, migrate_v47_wsl_loopback_repair_owed),
     ];
 
     for &(target, step) in steps {
@@ -471,6 +482,7 @@ pub(super) fn rename_column_if_present(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
 
     #[test]
     fn initialize_sets_busy_timeout() {
@@ -672,6 +684,73 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    /// v47 does not relabel anything; it records that the repair is owed, for
+    /// `session_ops::repair_wsl_loopback_rows` to perform once from a layer
+    /// that can see the host registry. The rows themselves are left alone
+    /// here — including a `wsl:` one, which only the registry can classify.
+    #[test]
+    fn migrate_from_v46_marks_the_loopback_repair_owed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '46');
+             CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, backend_type TEXT NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER);
+             INSERT INTO sessions (id, name, backend_type, created_at, updated_at)
+                VALUES ('a', 'maybe-relabelled', 'wsl:MagicDebian', 0, 0);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let owed: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'wsl_loopback_repair_owed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owed, "1");
+
+        let backend: String = conn
+            .query_row(
+                "SELECT backend_type FROM sessions WHERE id = 'a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(backend, "wsl:MagicDebian");
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    /// A database created at the current version has no bug-written rows, so
+    /// nothing is owed and the repair never runs.
+    #[test]
+    fn a_fresh_database_owes_no_loopback_repair() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+
+        let owed: Option<String> = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'wsl_loopback_repair_owed'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(owed, None);
     }
 
     #[test]

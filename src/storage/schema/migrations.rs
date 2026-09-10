@@ -929,3 +929,36 @@ pub(super) fn migrate_v46_teardown_owed(conn: &Connection) -> rusqlite::Result<(
         "INTEGER NOT NULL DEFAULT 0",
     )
 }
+
+/// See [`super::SCHEMA_VERSION`] v47: record that the WSL-loopback repair is
+/// **owed**, without performing it.
+///
+/// Auto-discovery used to offer the WSL distro thurbox runs *inside* as a host
+/// like any other. Being shareable by default (ADR-24) it was then mirrored —
+/// and its database is *this* database, so the pass read our own local rows
+/// back and rewrote each one's `backend_type` to `wsl:<us>`. Every attach, diff
+/// and delete afterwards went out through `wsl.exe` at the machine it started
+/// on. [`crate::session::HostDef::is_wsl_loopback`] stops that host being
+/// registered; the rows it already wrote still say otherwise.
+///
+/// Putting them right is not a schema change and cannot be done from here:
+/// *which* backend names the bug can have written is decided by the host
+/// registry — a hand-written loopback registers under its own `name`, and a
+/// host merely *named* after the current distro reaches a sibling and must
+/// stay remote — and `storage` may reference `session` but not `agent`, so
+/// `hosts.toml` is out of reach. Guessing from the spelling `wsl:$WSL_DISTRO_NAME`
+/// is wrong in both directions. So this step only leaves a mark, and
+/// `session_ops::repair_wsl_loopback_rows` does the work once from a layer
+/// that sees both the registry and the database, clearing the mark when it has.
+///
+/// The mark is recorded unconditionally, including off WSL: whether anything is
+/// owed is exactly the question this layer cannot answer, and the repair
+/// resolves an empty set to a no-op.
+pub(super) fn migrate_v47_wsl_loopback_repair_owed(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES (?1, '1') \
+         ON CONFLICT(key) DO UPDATE SET value = '1'",
+        [crate::storage::wsl_repair::WSL_LOOPBACK_REPAIR_OWED_KEY],
+    )?;
+    Ok(())
+}

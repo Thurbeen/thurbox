@@ -103,6 +103,12 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     if let Some(db) = snapshots_db() {
         startup_notices.extend(thurbox::session_ops::heal_active_extensions(&db));
         startup_notices.extend(thurbox::session_ops::ensure_builtin_extensions(&db));
+        // The one-time repair schema v47 marked as owed: rows a loopback WSL
+        // host recorded as remote. Here because it needs both the host
+        // registry and the database, and the migration that marked it has only
+        // the second; `thurbox-cli` runs it too, since the mark is written by
+        // whichever binary opens the database first.
+        startup_notices.extend(thurbox::session_ops::repair_wsl_loopback_rows(&db));
         for notice in &startup_notices {
             tracing::info!("{notice}");
         }

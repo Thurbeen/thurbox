@@ -19,6 +19,7 @@ pub mod restore;
 #[cfg(test)]
 mod shared_tests;
 pub mod spawn;
+pub mod wsl_loopback;
 
 pub use builtin::{builtin_extension, ensure_builtin_extensions, Builtin};
 pub use builtin_hooks::hooks_enabled;
@@ -36,6 +37,7 @@ pub use lifecycle_hooks::{fire_post, fire_pre};
 pub use restart::{restart_session_headless, RestartReport};
 pub use restore::{restore_refusal, restore_session_headless, RestoreReport};
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
+pub use wsl_loopback::repair_wsl_loopback_rows;
 
 use std::collections::{BTreeMap, HashMap};
 
