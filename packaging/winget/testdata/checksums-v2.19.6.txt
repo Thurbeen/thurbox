@@ -1,0 +1,4 @@
+8ac13757c5bfe82613d69be670f15ce1e06a234026e4d7a804a7da1844566601  thurbox-v2.19.6-aarch64-apple-darwin.tar.gz
+e2b466dc4c9ecca2cac8351c1d4841c6c6961dab345e5d9ea7db16dc4d8167af  thurbox-v2.19.6-x86_64-unknown-linux-gnu.tar.gz
+630bad728fa4105ae342f437ac5a82d4317624b3366377f8460d15e6ad7f2abb  thurbox-v2.19.6-x86_64-unknown-linux-musl.tar.gz
+93e3fde8f2e16f50c9d4b23dfc0a257fc3461b82bad454bab352195016a40308  thurbox-v2.19.6-x86_64-pc-windows-msvc.zip

@@ -25,12 +25,13 @@ test:
 test-one NAME:
     cargo nextest run -E 'test({{NAME}})'
 
-# Run the bats suites: the install scripts and the commit-history checker. Not
-# part of `just test` (which is cargo's), and needs bats on PATH (the checker's
-# suite skips without `cog`).
+# Run the bats suites: the install scripts, the commit-history checker and the
+# winget packaging scripts. Not part of `just test` (which is cargo's), and
+# needs bats on PATH (the checker's suite skips without `cog`).
 test-scripts:
     bats scripts/install.bats
     bats scripts/ci/check-conventional-commits.bats
+    bats packaging/winget/winget.bats
 
 # Format Rust + website code.
 fmt:

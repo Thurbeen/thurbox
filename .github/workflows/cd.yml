@@ -665,88 +665,89 @@ jobs:
   # microsoft/winget-pkgs); skipped automatically if unset (e.g. on forks).
   # New versions go through winget-pkgs PR review before going live.
   #
-  # Like Chocolatey, winget-pkgs is a *manually moderated* repo that can't keep
-  # up with thurbox's per-`feat`/`fix`/`perf` cadence — each `submit` opens a PR
-  # a human has to review, so a release every few hours buries the maintainers
-  # (30 open PRs at once, flagged in microsoft/winget-pkgs#405639). So this job
-  # mirrors the Chocolatey throttle: it submits at most once per THROTTLE_DAYS
-  # window, coalescing the intervening patch releases into a single winget
-  # version (the latest binary still ships immediately via GitHub Releases +
-  # Homebrew/AUR, and Chocolatey on its own monthly window). When the window
-  # hasn't elapsed the job records a `::warning::` and exits green — a backed-up
-  # winget channel must never turn the whole release red. The
-  # close-superseded-PRs step below still runs as a second-line cleanup for any
-  # PRs that did stack (e.g. a manual dispatch inside the window).
+  # Cadence — the same shape as `publish-chocolatey`: attempt on every release,
+  # detect the moderated channel pushing back, warn, exit green, retry next
+  # release. winget-pkgs is *manually moderated* and its reviewers cannot absorb
+  # a PR per patch release (30 open at once, flagged in
+  # microsoft/winget-pkgs#405639), so what paces this is the queue itself rather
+  # than a calendar: while a thurbox PR is still **open** there, the decision
+  # step skips green instead of stacking a second one — `wingetcreate` has no
+  # mode that updates a pending PR (`--replace` only supersedes a *published*
+  # version). THROTTLE_DAYS remains as a knob on top of that, defaulted to 0 (no
+  # calendar throttle); set it to 30 to restore the old monthly cadence without
+  # a code change.
+  #
+  # Note `continue-on-error` on the JOB rather than a step. Once the binaries
+  # are on GitHub Releases, a downstream packaging channel must not turn the
+  # Release run red — the previous version of this job only *claimed* that. Its
+  # green paths were the throttle skips, `wingetcreate submit` had no guard at
+  # all, and the file's only `continue-on-error` sat on the cleanup step below,
+  # so v2.19.6's stale-fork failure failed the step, the job and the whole run
+  # (34381951096). The job itself still reports red in the run's job list, so a
+  # genuine break stays visible.
   publish-winget:
     name: Publish winget manifest
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
       && needs.check-release.outputs.newest == 'true'
     runs-on: windows-latest
+    continue-on-error: true
     # Hoisted so the steps can be skipped when the secret is unset
     # (the `secrets` context cannot be used directly in an `if` condition).
     env:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
-      # Minimum days between winget-pkgs submissions. One PR/month keeps thurbox
-      # well within what the winget moderators can review while still shipping a
-      # recent version. Mirrors the Chocolatey window; tune here.
-      THROTTLE_DAYS: "30"
+      # Minimum days between winget-pkgs submissions. 0 = attempt every release,
+      # matching Chocolatey's shape; the open-PR rule below is what keeps the
+      # moderation queue to one thurbox PR at a time. Raise it to re-throttle by
+      # calendar (30 was the old monthly window).
+      THROTTLE_DAYS: "0"
     steps:
       - name: Checkout code at tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.check-release.outputs.version }}
 
-      # Find the most recent thurbox PR we've submitted to winget-pkgs (merged
-      # = a version went live, or still-open = one is already awaiting review)
-      # and when it was raised. If that is younger than THROTTLE_DAYS, skip this
-      # release (green + warning) so patch releases coalesce into one monthly
-      # winget submission instead of flooding the moderation queue. This is the
-      # winget analog of the Chocolatey feed check (there the signal is the
-      # community feed's Published date; here it is our own last PR's date).
-      - name: Check throttle window
-        id: throttle
+      # Ask packaging/winget/submit-decision.py whether to submit, from our own
+      # thurbox PRs on winget-pkgs (any state). It skips green when one is still
+      # open, and when the newest is younger than THROTTLE_DAYS. The rules and
+      # their edge cases are covered by packaging/winget/winget.bats — the
+      # reason this is a script and not inline PowerShell.
+      - name: Decide whether to submit
+        id: decide
         if: env.WINGET_TOKEN != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
-          $throttleDays = [int]$env:THROTTLE_DAYS
-          $shouldPush = $true
+          $shouldSubmit = $true
           $reason = ""
           try {
-            # Newest thurbox PR from the token account in any state (merged or
-            # open) — its creation time is the last time we touched the channel.
             $prs = gh pr list --repo microsoft/winget-pkgs --author "@me" `
               --search "Thurbeen.thurbox in:title" --state all `
-              --json createdAt --limit 100 | ConvertFrom-Json
-            $last = $prs | Sort-Object { [datetime]$_.createdAt } -Descending | Select-Object -First 1
-            if (-not $last) {
-              $reason = "no prior thurbox PR on winget-pkgs — first submission"
-            } else {
-              $ageDays = ((Get-Date).ToUniversalTime() - ([datetime]$last.createdAt).ToUniversalTime()).TotalDays
-              if ($ageDays -lt $throttleDays) {
-                $shouldPush = $false
-                $reason = ("last winget submission was {0:N1} days ago (< {1}d throttle)" -f $ageDays, $throttleDays)
-              } else {
-                $reason = ("last winget submission was {0:N1} days ago (>= {1}d throttle)" -f $ageDays, $throttleDays)
-              }
-            }
+              --json number,state,createdAt,title --limit 100
+            if ($LASTEXITCODE -ne 0) { throw "gh pr list exited $LASTEXITCODE" }
+            $decision = $prs |
+              python packaging/winget/submit-decision.py decide --throttle-days $env:THROTTLE_DAYS |
+              ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw "submit-decision.py exited $LASTEXITCODE" }
+            $shouldSubmit = [bool]$decision.should_submit
+            $reason = $decision.reason
           } catch {
-            # A lookup hiccup must not block a legitimate release; err toward submitting.
-            $reason = "could not query winget-pkgs PRs ($($_.Exception.Message)); proceeding with submission"
+            # A lookup hiccup (or a malformed THROTTLE_DAYS) must not block a
+            # legitimate release; err toward submitting.
+            $reason = "could not read winget-pkgs PRs ($($_.Exception.Message)); proceeding with submission"
           }
-          "should_push=$($shouldPush.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          if ($shouldPush) {
-            Write-Host "winget throttle: SUBMIT — $reason"
+          "should_submit=$($shouldSubmit.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ($shouldSubmit) {
+            Write-Host "winget: SUBMIT — $reason"
           } else {
-            Write-Host "::warning title=winget submission throttled::Skipping this release — $reason. It will be coalesced into the next monthly winget submission."
-            "winget submission **throttled** (green): $reason." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            Write-Host "::warning title=winget submission skipped::$reason. The version stays on GitHub Releases and the next release retries."
+            "winget submission **skipped** (green): $reason." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
 
       - name: Download release checksums
-        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
+        if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
         shell: pwsh
         run: |
           $version = "${{ needs.check-release.outputs.version }}"
@@ -757,7 +758,7 @@ jobs:
           Get-Content checksums.txt
 
       - name: Bump manifests to the release version
-        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
+        if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
         shell: pwsh
         run: |
           python packaging/winget/bump-manifests.py `
@@ -767,40 +768,106 @@ jobs:
           Get-Content packaging/winget/manifests/Thurbeen.thurbox.installer.yaml
 
       - name: Install wingetcreate
-        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
+        if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
         shell: pwsh
         run: |
           Invoke-WebRequest -UseBasicParsing `
             -Uri https://aka.ms/wingetcreate/latest `
             -OutFile wingetcreate.exe
 
+      # `wingetcreate submit` pushes the manifest branch to the token account's
+      # fork of winget-pkgs, and its own auto-sync of that fork is fast-forward
+      # only. winget-pkgs merges hundreds of PRs a day, so a fork touched once a
+      # month is thousands of commits behind and the sync gives up with "The
+      # forked repository could not be synced with the upstream commits" — which
+      # is what failed v2.19.6. Sync it here instead, falling back to a hard
+      # reset when the default branch has diverged: this fork is a submission
+      # staging area, nothing of ours lives on its default branch, and each
+      # submission gets its own branch, so a reset cannot destroy work or an
+      # open PR.
+      - name: Sync the winget-pkgs fork
+        if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          $account = (gh api user --jq .login | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $account) {
+            Write-Host "::warning title=winget fork sync skipped::could not resolve the WINGET_TOKEN account; leaving the fork to wingetcreate."
+            exit 0
+          }
+          $fork = "$account/winget-pkgs"
+          gh repo view $fork --json name | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "No $fork yet — wingetcreate forks on first submit."
+            exit 0
+          }
+          $out = gh repo sync $fork --source microsoft/winget-pkgs 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Synced $fork from microsoft/winget-pkgs."
+            exit 0
+          }
+          # Not fast-forwardable: --force hard-resets the fork's default branch
+          # to upstream's, which is the only way back for a fork this far behind.
+          Write-Host "::warning title=winget fork hard-reset::$fork could not be fast-forwarded; resetting its default branch to microsoft/winget-pkgs."
+          gh repo sync $fork --source microsoft/winget-pkgs --force
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "could not sync $fork with microsoft/winget-pkgs — wingetcreate submit would fail on a stale fork."
+            exit 1
+          }
+
       # `submit` validates the bumped manifests and opens a PR against
-      # microsoft/winget-pkgs from a fork of the WINGET_TOKEN account. Works for
-      # both the first submission and every subsequent version from the same
-      # in-repo manifest set. WINGET_TOKEN MUST be a classic PAT with the
-      # `public_repo` scope — wingetcreate rejects fine-grained tokens as
-      # invalid (microsoft/winget-create#595). The token is passed via
+      # microsoft/winget-pkgs from the fork synced above. Works for both the
+      # first submission and every subsequent version from the same in-repo
+      # manifest set. WINGET_TOKEN MUST be a classic PAT with the `public_repo`
+      # scope — wingetcreate rejects fine-grained tokens as invalid
+      # (microsoft/winget-create#595). The token is passed via
       # WINGET_CREATE_GITHUB_TOKEN (Microsoft's recommended CI path) instead of
       # --token, which wingetcreate warns can leak the token into logs.
+      #
+      # A rejection from the channel itself (rate limit, version already
+      # pending) warns and exits green, mirroring the Chocolatey push's
+      # 403/409 handling; `classify` decides which is which, and everything else
+      # — including the stale-fork failure the step above exists to prevent —
+      # stays a red job.
       - name: Submit manifests to winget-pkgs
-        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
+        if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
         shell: pwsh
         env:
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
-          .\wingetcreate.exe submit packaging/winget/manifests
+          # The runner injects `$ErrorActionPreference = 'stop'`, which (with
+          # PSNativeCommandUseErrorActionPreference) can turn a native non-zero
+          # exit into a throw before the classification below ever runs.
+          $ErrorActionPreference = "Continue"
+          $out = .\wingetcreate.exe submit packaging/winget/manifests 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -eq 0) {
+            "winget submission **succeeded** — PR opened on microsoft/winget-pkgs, awaiting review." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            exit 0
+          }
+          $verdict = $out | python packaging/winget/submit-decision.py classify | ConvertFrom-Json
+          if ($verdict.deferrable) {
+            Write-Host "::warning title=winget submission deferred::rejected by the channel ($($verdict.reason)). Exiting green; the version stays on GitHub Releases and the next release retries."
+            "winget submission **deferred** (green): $($verdict.reason)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            exit 0
+          }
+          Write-Error "wingetcreate submit failed for a non-channel reason (see log above)."
+          exit 1
 
-      # Second-line cleanup behind the throttle above: even at one submission per
-      # window, a stray manual dispatch (or a race) can leave more than one open
-      # Thurbeen.thurbox PR. wingetcreate has no "supersede the previous open PR"
-      # mode (`--replace` only supersedes a *published* manifest version, not a
+      # Second-line cleanup behind the open-PR rule above: a stray manual
+      # dispatch (or a race) can still leave more than one open Thurbeen.thurbox
+      # PR. wingetcreate has no "supersede the previous open PR" mode
+      # (`--replace` only supersedes a *published* manifest version, not a
       # pending PR), so right after submitting the new version, close every
       # *older* still-open PR authored by the token account, keeping only the one
-      # just opened. Runs only when the throttle let us submit (so it never
-      # closes a pending PR we deliberately coalesced into). Best-effort: never
-      # fail the release on a cleanup hiccup.
+      # just opened. Runs only when we actually submitted (so it never closes a
+      # pending PR we deliberately deferred to). Best-effort: never fail the
+      # release on a cleanup hiccup.
       - name: Close superseded winget-pkgs PRs
-        if: env.WINGET_TOKEN != '' && steps.throttle.outputs.should_push == 'true'
+        if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
         shell: pwsh
         continue-on-error: true
         env:

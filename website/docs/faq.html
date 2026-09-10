@@ -53,7 +53,8 @@ breadcrumb: 'FAQ'
   or <code>thurbox-bin</code>), and on Windows via winget
   (<code>winget install Thurbeen.thurbox</code>) or Chocolatey
   (<code>choco install thurbox</code>). Both of those channels are moderated and
-  only get a new version every 30 days, so the PowerShell installer
+  lag behind the newest release — Chocolatey by up to 30 days, winget by however
+  long its manifest PR waits for review — so the PowerShell installer
   (<code>irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code>)
   is the recommended route on Windows. You can also build from source with
   <code>cargo build --release</code>. See
@@ -122,7 +123,7 @@ breadcrumb: 'FAQ'
         "name": "How do I install Thurbox?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "On Linux or macOS, run: curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh. It is also available via Homebrew (brew install thurbeen/thurbox/thurbox), the AUR (thurbox or thurbox-bin), and on Windows via winget (winget install Thurbeen.thurbox) or Chocolatey (choco install thurbox). Both of those channels are moderated and only get a new version every 30 days, so the PowerShell installer (irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex) is the recommended route on Windows. You can also build from source with cargo build --release."
+          "text": "On Linux or macOS, run: curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh. It is also available via Homebrew (brew install thurbeen/thurbox/thurbox), the AUR (thurbox or thurbox-bin), and on Windows via winget (winget install Thurbeen.thurbox) or Chocolatey (choco install thurbox). Both of those channels are moderated and lag behind the newest release - Chocolatey by up to 30 days, winget by however long its manifest PR waits for review - so the PowerShell installer (irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex) is the recommended route on Windows. You can also build from source with cargo build --release."
         }
       },
       {
