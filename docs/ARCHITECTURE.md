@@ -549,7 +549,7 @@ differs.
 
 Hosts are declared as data in `~/.config/thurbox/hosts.toml`
 (`session::HostDef { kind: HostKind {Ssh, Wsl}, … }`/`HostRegistry`),
-and WSL distros are additionally **auto-discovered** on Windows
+and WSL distros are additionally **auto-discovered**
 (`agent::host_config::discover_wsl_hosts` via `wsl.exe -l -q`). The
 combined set is loaded by `agent::host_config::load_all`, each
 registered as a backend named `ssh:<host>` / `wsl:<distro>` via
@@ -581,7 +581,17 @@ WSL needs no credentials at all.
 - **Auto-discovery**: WSL distros appear with zero config; an explicit
   `kind = "wsl"` entry of the same name wins (for overrides like
   `worktrees_dir`). `discover_wsl_hosts` decodes `wsl.exe`'s UTF-16LE
-  output and is a no-op off Windows / without `wsl.exe`.
+  output and is a no-op without `wsl.exe`. It runs inside a distro too
+  (interop exports `wsl.exe`), so a thurbox in one distro reaches its
+  siblings — but **never itself**: the distro named by `$WSL_DISTRO_NAME`
+  is a *loopback* (`HostDef::is_wsl_loopback`) and is dropped from both
+  halves of the registry. Registering it made every local session remote,
+  because a shareable host's own database is the record of its sessions
+  (ADR-24) and that database was this one: the mirror pass read our own
+  rows back and rewrote each `backend_type` to `wsl:<us>`, after which
+  every attach, diff and delete went out through `wsl.exe` at the machine
+  it started on. Schema v47 restores rows a released build had already
+  relabelled.
 - **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>`
   or `None`); `is_remote_backend` covers both. The TUI shows a host
   picker as the first new-session step (skipped when none configured/

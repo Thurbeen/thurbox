@@ -929,3 +929,53 @@ pub(super) fn migrate_v46_teardown_owed(conn: &Connection) -> rusqlite::Result<(
         "INTEGER NOT NULL DEFAULT 0",
     )
 }
+
+/// See [`super::SCHEMA_VERSION`] v47: a row stamped with the WSL distro thurbox
+/// is running inside is a **local** row that a loopback host relabelled, and
+/// this puts it back.
+///
+/// Auto-discovery used to offer the current distro as a host like any other.
+/// Being shareable by default (ADR-24), it was then mirrored — and its database
+/// is *this* database, so the pass read our own local rows back and rewrote
+/// each one's `backend_type` to `wsl:<us>`. Every attach, diff and delete
+/// afterwards went out through `wsl.exe` at the machine it started on.
+/// [`crate::session::HostDef::is_wsl_loopback`] stops that host being
+/// registered; the rows it already wrote need saying so.
+///
+/// Scoped to `wsl:$WSL_DISTRO_NAME` — the name auto-discovery used, which is
+/// the only way one of these was ever created. A hand-written `hosts.toml`
+/// entry may give a distro some other `name`, but `storage` cannot read that
+/// file (it may reference `session` and not `agent`), and such an entry is
+/// dropped with a warning rather than acted on. Nothing to do off WSL, and
+/// nothing to do to a **sibling** distro's rows: reaching one from inside
+/// another is an ordinary remote session.
+pub(super) fn migrate_v47_wsl_loopback_is_local(conn: &Connection) -> rusqlite::Result<()> {
+    let Some(distro) = crate::session::current_wsl_distro() else {
+        return Ok(());
+    };
+    let loopback = format!("{}{distro}", crate::session::WSL_BACKEND_PREFIX);
+    // Guarded per column, not per table: a `sessions` table without
+    // `backend_type` is only ever a hand-built test fixture, but a migration
+    // that assumes its shape aborts the whole upgrade before the version bump.
+    if column_exists(conn, "sessions", "backend_type")? {
+        let healed = conn.execute(
+            "UPDATE sessions SET backend_type = ?1 WHERE backend_type = ?2 COLLATE NOCASE",
+            [crate::session::LOCAL_BACKEND_TYPE, &loopback],
+        )?;
+        if healed > 0 {
+            tracing::info!(
+                "schema v47: {healed} session(s) were recorded on '{loopback}', the WSL distro \
+                 thurbox runs in; restored them as local"
+            );
+        }
+    }
+    if column_exists(conn, "repo_bookmarks", "host")? {
+        // `OR REPLACE`: the same path may already be bookmarked locally, and
+        // `(host, repo_path)` is the key — the local row is the one to keep.
+        conn.execute(
+            "UPDATE OR REPLACE repo_bookmarks SET host = '' WHERE host = ?1 COLLATE NOCASE",
+            [&loopback],
+        )?;
+    }
+    Ok(())
+}

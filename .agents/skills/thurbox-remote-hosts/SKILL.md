@@ -18,7 +18,15 @@ everything downstream of the launcher (control-mode protocol, POSIX quoting,
 worktree layout) is identical to the SSH path — no `wslpath` translation. Hosts
 are declared as data in `~/.config/thurbox/hosts.toml` (seeded commented-out;
 fresh install = zero SSH hosts, behaves as before), **plus WSL distros are
-auto-discovered on Windows** (`wsl.exe -l -q`) with no config. The seeded file
+auto-discovered** (`wsl.exe -l -q`) with no config — on Windows and, via
+interop, from inside a distro as well. What discovery never offers is the
+distro thurbox is running in: a **loopback** (`HostDef::is_wsl_loopback`, keyed
+on `$WSL_DISTRO_NAME`) is this machine, so sessions on it are local. It is
+dropped from both halves of the registry — discovered and configured (the
+configured one with a warning) — and schema v47 restores the rows a released
+build already relabelled `wsl:<us>`: being shareable by default, the loopback
+was mirrored, and its "host" database was this database, so the pass rewrote
+our own local rows as remote. Siblings stay ordinary hosts. The seeded file
 documents every field inline; the schema:
 
 ```toml
@@ -99,7 +107,8 @@ session), never on the loop, ADR-P12).
   `HostRegistry` (pure data, in `session/` so both `agent` and `git` can use
   it); backend-name helpers `is_ssh_backend`/`is_wsl_backend`/
   `is_remote_backend`. **Loading**: `agent::host_config::load_all{,_with_warnings}`
-  = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry wins).
+  = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry
+  wins), minus any loopback (`drop_wsl_loopback` / `wsl_hosts_from`).
 - **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>` or `None`
   = local). The TUI new-session flow shows a **host picker** first (skipped when
   none configured/discovered); the chosen host runs git worktree creation +

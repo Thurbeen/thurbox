@@ -233,10 +233,14 @@ configured hosts, error shown.
 
 **SSH** auth comes entirely from your `~/.ssh/config`; thurbox never
 handles credentials. **WSL** distros are reached with
-`wsl.exe -d <distro>` and need no config entry at all — on Windows they
-are **auto-discovered** (`wsl.exe -l -q`) and appear in the host picker
+`wsl.exe -d <distro>` and need no config entry at all — they are
+**auto-discovered** (`wsl.exe -l -q`) and appear in the host picker
 and `--host` automatically; add a `kind = "wsl"` entry only to override
-a default (e.g. `worktrees_dir`). For both kinds, tmux, git, the agent,
+a default (e.g. `worktrees_dir`). Discovery also works from *inside* a
+distro (interop puts `wsl.exe` on `PATH` there), and excludes the distro
+thurbox is itself running in: that one is this machine, sessions on it
+are ordinary **local** sessions created with no `--host`, and a
+`hosts.toml` entry naming it is ignored with a startup warning. For both kinds, tmux, git, the agent,
 and worktrees all run **on the host / inside the distro** at native
 paths (a WSL distro's worktrees live in its own Linux filesystem, not on
 `/mnt/c`); the distro needs `tmux` >= 3.2 and `git`. Host changes

@@ -480,8 +480,10 @@ remote machine over SSH, or inside a local **WSL distro**, while the
 TUI stays local. Hosts are declared in
 `~/.config/thurbox/hosts.toml` (seeded commented-out, so a fresh
 install has none and behaves exactly as before) — **and WSL distros
-are auto-discovered on Windows** (`wsl.exe -l -q`), so they need no
-entry at all:
+are auto-discovered** (`wsl.exe -l -q`), so they need no entry at all.
+Running thurbox *inside* a distro discovers its siblings but not the
+distro itself: that one is this machine, and its sessions are plain
+local ones.
 
 ```toml
 [[hosts]]

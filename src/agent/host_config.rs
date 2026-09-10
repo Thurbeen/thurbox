@@ -29,11 +29,15 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 # keys, and connection details all come from your ~/.ssh/config — thurbox never
 # handles credentials itself. The remote host needs `tmux` >= 3.2 and `git`.
 #
-# WSL distros are AUTO-DISCOVERED on Windows (via `wsl.exe -l -q`) and appear in
-# the host picker with NO config here — only add a [[hosts]] entry with
-# kind = "wsl" when you want to override defaults (e.g. worktrees_dir). The
-# distro needs `tmux` >= 3.2 and `git` installed inside it; worktrees live in
-# the distro's own Linux filesystem (fast), not on /mnt/c.
+# WSL distros are AUTO-DISCOVERED (via `wsl.exe -l -q`) and appear in the host
+# picker with NO config here — only add a [[hosts]] entry with kind = "wsl"
+# when you want to override defaults (e.g. worktrees_dir). The distro needs
+# `tmux` >= 3.2 and `git` installed inside it; worktrees live in the distro's
+# own Linux filesystem (fast), not on /mnt/c.
+#
+# Running thurbox INSIDE a distro discovers its siblings, but never the distro
+# itself: that one is this machine, and a session on it is a plain local
+# session (no --host). An entry naming it is ignored with a warning.
 #
 # This file starts empty (every entry below is commented out): a fresh install
 # registers zero SSH hosts (WSL distros still auto-discover) and otherwise
@@ -212,8 +216,14 @@ pub fn load_or_seed_with_warnings() -> (HostRegistry, Vec<String>) {
 /// headless `--host` resolver use so WSL distros are selectable with zero
 /// config; the discovered set never overrides an explicitly configured host of
 /// the same name.
+///
+/// Neither half may register a **loopback** — the WSL distro thurbox is running
+/// inside, which is this machine and not a host at all
+/// ([`HostDef::is_wsl_loopback`]). This is the one chokepoint every caller
+/// shares, so dropping it here is what keeps a local session local.
 pub fn load_all_with_warnings() -> (HostRegistry, Vec<String>) {
-    let (mut reg, warnings) = load_or_seed_with_warnings();
+    let (mut reg, mut warnings) = load_or_seed_with_warnings();
+    warnings.extend(drop_wsl_loopback(&mut reg));
     augment_with_wsl(&mut reg);
     (reg, warnings)
 }
@@ -251,6 +261,32 @@ pub fn cached_registry() -> &'static (HostRegistry, Vec<String>) {
 /// Append auto-discovered WSL distros to `reg`, skipping any whose name already
 /// matches a configured host (so a hand-written `hosts.toml` entry for a distro
 /// — e.g. with a custom `worktrees_dir` — wins over the bare discovered one).
+/// Drop a configured host that names the WSL distro thurbox is running inside,
+/// returning one warning per entry removed.
+///
+/// Such an entry is a loopback ([`HostDef::is_wsl_loopback`]) and cannot work:
+/// it describes this very machine as somewhere else. Auto-discovery never
+/// offers one — [`discover_wsl_hosts`] filters it — so the only way to get one
+/// is by hand, and a warning naming it is better than either honouring it or
+/// removing it in silence.
+fn drop_wsl_loopback(reg: &mut HostRegistry) -> Vec<String> {
+    let mut warnings = Vec::new();
+    reg.hosts.retain(|h| {
+        if !h.is_wsl_loopback() {
+            return true;
+        }
+        warnings.push(format!(
+            "hosts.toml: ignoring host '{}' — it names the WSL distro thurbox \
+             is running in ('{}'), so sessions on it are local, not remote. \
+             Create them with no --host.",
+            h.name,
+            h.distro_name()
+        ));
+        false
+    });
+    warnings
+}
+
 fn augment_with_wsl(reg: &mut HostRegistry) {
     let configured: HashSet<&str> = reg.hosts.iter().map(|h| h.name.as_str()).collect();
     let discovered: Vec<HostDef> = discover_wsl_hosts()
@@ -270,6 +306,11 @@ const WSL_INFRA_DISTROS: &[&str] = &["docker-desktop", "docker-desktop-data"];
 /// Runs `wsl.exe -l -q` and parses its output. Returns empty when `wsl.exe`
 /// isn't available (any non-Windows host, or Windows without WSL) or the
 /// command fails — discovery is strictly best-effort and never blocks startup.
+///
+/// The distro thurbox is itself running inside is **not** among them: `wsl.exe`
+/// lists it like any other, but it is this machine
+/// ([`HostDef::is_wsl_loopback`] argues what registering it cost). Its siblings
+/// are still discovered, so a thurbox inside one distro reaches the rest.
 pub(crate) fn discover_wsl_hosts() -> Vec<HostDef> {
     if !wsl_exe_available() {
         return Vec::new();
@@ -288,9 +329,17 @@ pub(crate) fn discover_wsl_hosts() -> Vec<HostDef> {
             return Vec::new();
         }
     };
-    parse_wsl_distros(&output.stdout)
+    wsl_hosts_from(parse_wsl_distros(&output.stdout))
+}
+
+/// The discoverable hosts among `distros`: one [`HostDef::wsl`] each, minus the
+/// loopback. Split out from [`discover_wsl_hosts`] so the exclusion is testable
+/// without a live `wsl.exe`.
+fn wsl_hosts_from(distros: Vec<String>) -> Vec<HostDef> {
+    distros
         .into_iter()
         .map(HostDef::wsl)
+        .filter(|h| !h.is_wsl_loopback())
         .collect()
 }
 
@@ -397,6 +446,57 @@ mod tests {
             Some("/custom/wt")
         );
         assert!(reg.hosts.len() >= before);
+    }
+
+    #[test]
+    fn discovery_offers_every_distro_but_the_one_we_are_in() {
+        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+            let hosts = wsl_hosts_from(vec![
+                "Ubuntu".to_string(),
+                "MagicDebian".to_string(),
+                "MagicDebianPerso".to_string(),
+            ]);
+            assert_eq!(
+                hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+                ["Ubuntu", "MagicDebianPerso"],
+                "the current distro is this machine; a sibling is a real host"
+            );
+        });
+        // Off WSL there is nothing to exclude.
+        crate::session::host_def::with_wsl_distro(None, || {
+            assert_eq!(wsl_hosts_from(vec!["Ubuntu".to_string()]).len(), 1);
+        });
+    }
+
+    #[test]
+    fn a_configured_loopback_is_dropped_with_a_warning() {
+        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+            let mut reg = HostRegistry {
+                config_version: None,
+                hosts: vec![
+                    HostDef {
+                        name: "self".into(),
+                        kind: crate::session::HostKind::Wsl,
+                        distro: Some("MagicDebian".into()),
+                        ..Default::default()
+                    },
+                    HostDef::wsl("Ubuntu"),
+                    HostDef {
+                        name: "devbox".into(),
+                        destination: "me@devbox".into(),
+                        ..Default::default()
+                    },
+                ],
+            };
+            let warnings = drop_wsl_loopback(&mut reg);
+            assert_eq!(reg.names(), ["Ubuntu", "devbox"]);
+            assert_eq!(warnings.len(), 1);
+            assert!(
+                warnings[0].contains("'self'") && warnings[0].contains("MagicDebian"),
+                "the warning must name the entry and the distro: {}",
+                warnings[0]
+            );
+        });
     }
 
     #[test]

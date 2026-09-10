@@ -16,6 +16,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The backend name a local session is registered under — this machine's own
+/// tmux server, no launch prefix. Re-exported as
+/// `session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE`, which is the spelling most
+/// call sites use; it lives here so `storage` (which may reference `session`
+/// and not `session_ops`) can name the value a migration writes.
+pub const LOCAL_BACKEND_TYPE: &str = "local-tmux";
+
 /// The backend-name prefix for SSH hosts. A host named `devbox` is registered
 /// (and persisted in `backend_type`) as `ssh:devbox`.
 pub const SSH_BACKEND_PREFIX: &str = "ssh:";
@@ -39,6 +46,29 @@ pub fn is_wsl_backend(backend_name: &str) -> bool {
 /// local filesystem. Local backends (`""`, `tmux`, `local-tmux`) are not.
 pub fn is_remote_backend(backend_name: &str) -> bool {
     is_ssh_backend(backend_name) || is_wsl_backend(backend_name)
+}
+
+/// The environment variable every WSL2 distro's init sets to that distro's own
+/// name. Present only *inside* a distro — not on Windows, not on a plain Linux
+/// or macOS host.
+pub const WSL_DISTRO_NAME_VAR: &str = "WSL_DISTRO_NAME";
+
+/// The WSL distro thurbox is itself running inside, if any.
+///
+/// Read from the environment rather than probed for: `wsl.exe` is on `PATH`
+/// inside a distro (interop), so its presence says a distro is *reachable* and
+/// never which one we are already in.
+pub fn current_wsl_distro() -> Option<String> {
+    std::env::var(WSL_DISTRO_NAME_VAR)
+        .ok()
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+}
+
+/// Whether `distro` is the one [`current_wsl_distro`] reports, compared the way
+/// `wsl.exe -d` matches a distro name — case-insensitively.
+pub fn is_current_wsl_distro(distro: &str) -> bool {
+    current_wsl_distro().is_some_and(|d| d.eq_ignore_ascii_case(distro))
 }
 
 /// How thurbox reaches a host: over SSH, or into a local WSL distro.
@@ -155,6 +185,26 @@ impl HostDef {
         self.distro.clone().unwrap_or_else(|| self.name.clone())
     }
 
+    /// Whether this host is a **loopback**: the WSL distro thurbox is itself
+    /// running inside.
+    ///
+    /// `wsl.exe -d <us>` from inside `<us>` lands back on this same machine —
+    /// the same tmux server, the same worktrees, the same thurbox database — so
+    /// such a host is not off-local at all, and registering one made every
+    /// LOCAL session on this machine remote. A shareable host's own database is
+    /// the record of the sessions on it (ADR-24), and here that database *is*
+    /// ours: the mirror pass read our own rows back and rewrote each one's
+    /// `backend_type` to `wsl:<us>`, after which every attach, diff and delete
+    /// went out through `wsl.exe` and failed against the machine it started on.
+    ///
+    /// So a loopback is dropped at the registry — the one chokepoint every
+    /// caller shares — rather than guarded for at each use. A *sibling* distro
+    /// stays an ordinary host: reaching one from inside another is supported
+    /// (see `shell::wsl_command`), and only self-reference is the bug.
+    pub fn is_wsl_loopback(&self) -> bool {
+        self.is_wsl() && is_current_wsl_distro(&self.distro_name())
+    }
+
     /// The backend name this host registers under: `ssh:<name>` or
     /// `wsl:<name>`.
     pub fn backend_name(&self) -> String {
@@ -257,6 +307,32 @@ impl HostRegistry {
     pub fn is_empty(&self) -> bool {
         self.hosts.is_empty()
     }
+}
+
+/// Run `f` with [`WSL_DISTRO_NAME_VAR`] set to `distro` (or unset, for
+/// `None`), restoring what was there before.
+///
+/// Serialized on a process-wide lock, and the **only** way a test may set it:
+/// it is process state, and under plain `cargo test` the unit tests that need
+/// it run concurrently in one process, where interleaved writes make one test
+/// observe another's distro. (`nextest`, the repo's gate, gives each test its
+/// own process — this is what keeps the other entry point honest.) Mirrors
+/// `paths::with_path`, which `session` may not reach.
+#[cfg(test)]
+pub(crate) fn with_wsl_distro<T>(distro: Option<&str>, f: impl FnOnce() -> T) -> T {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = std::env::var_os(WSL_DISTRO_NAME_VAR);
+    match distro {
+        Some(d) => std::env::set_var(WSL_DISTRO_NAME_VAR, d),
+        None => std::env::remove_var(WSL_DISTRO_NAME_VAR),
+    }
+    let out = f();
+    match saved {
+        Some(v) => std::env::set_var(WSL_DISTRO_NAME_VAR, v),
+        None => std::env::remove_var(WSL_DISTRO_NAME_VAR),
+    }
+    out
 }
 
 #[cfg(test)]
@@ -482,5 +558,52 @@ worktrees_dir = "/home/me/wt"
         assert_eq!(full.socket.as_deref(), Some("tb2"));
         assert_eq!(full.ssh_opts, ["-o", "ControlMaster=auto"]);
         assert_eq!(full.worktrees_dir.as_deref(), Some("/home/me/wt"));
+    }
+
+    #[test]
+    fn the_distro_we_run_in_is_a_loopback_and_its_siblings_are_not() {
+        with_wsl_distro(Some("Ubuntu"), || {
+            assert!(HostDef::wsl("Ubuntu").is_wsl_loopback());
+            // wsl.exe matches a distro name case-insensitively; so does this.
+            assert!(HostDef::wsl("ubuntu").is_wsl_loopback());
+            assert!(!HostDef::wsl("Debian").is_wsl_loopback());
+            // A prefix is a different distro, not us.
+            assert!(!HostDef::wsl("Ubuntu-22.04").is_wsl_loopback());
+            // The `distro` field is what wsl.exe is handed, so it — not the
+            // host's own name — decides.
+            assert!(HostDef {
+                name: "work".into(),
+                kind: HostKind::Wsl,
+                distro: Some("Ubuntu".into()),
+                ..Default::default()
+            }
+            .is_wsl_loopback());
+            // An SSH host is never one, whatever it is called.
+            assert!(!HostDef {
+                name: "Ubuntu".into(),
+                destination: "me@ubuntu".into(),
+                ..Default::default()
+            }
+            .is_wsl_loopback());
+        });
+    }
+
+    #[test]
+    fn off_wsl_nothing_is_a_loopback() {
+        with_wsl_distro(None, || {
+            assert_eq!(current_wsl_distro(), None);
+            assert!(!HostDef::wsl("Ubuntu").is_wsl_loopback());
+        });
+        // A distro that set the variable empty is no distro at all.
+        with_wsl_distro(Some("  "), || {
+            assert_eq!(current_wsl_distro(), None);
+            assert!(!HostDef::wsl("Ubuntu").is_wsl_loopback());
+        });
+    }
+
+    #[test]
+    fn local_backend_type_is_the_one_spawn_publishes() {
+        assert_eq!(LOCAL_BACKEND_TYPE, "local-tmux");
+        assert!(!is_remote_backend(LOCAL_BACKEND_TYPE));
     }
 }
