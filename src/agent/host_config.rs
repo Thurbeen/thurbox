@@ -245,7 +245,8 @@ pub fn load_all() -> HostRegistry {
 /// [`load_all_with_warnings`], resolved once and held for the process lifetime.
 ///
 /// Loading is not just a file read: WSL discovery walks `$PATH` for `wsl.exe`
-/// and, on Windows, runs `wsl.exe -l -q` — and the callers on the TUI's hot
+/// and runs `wsl.exe -l -q` wherever it finds one — on Windows, and inside a
+/// distro, where interop puts it on `PATH` — and the callers on the TUI's hot
 /// paths (the snapshot rebuild, `session_ops::resolve_host` per diff request,
 /// the metrics/usage sampler, the command drain) were each paying that per
 /// call. The same reasoning as `git::remote::remote_home_cache`: `hosts.toml`

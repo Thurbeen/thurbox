@@ -29,10 +29,11 @@ configured one with a warning). A configured host that reaches a sibling but is
 **exactly as written** — it works — and what it costs instead is the repair, for
 that one name: the rows under it are the bug's local rows *and* the host's own
 sibling rows at once, so both rewrites are wrong for half of them and neither is
-attempted (a warning says so). That is one case of a general rule — the repair
-never rewrites a spelling a host it still serves registers under, including a
-dropped loopback's own free-label `name`, which auto-discovery may hand
-straight to a real sibling. Rows a released build already
+attempted (a notice says so, counted with `rows_recorded_on` and skipped when
+the claimed spelling holds no row). That is one case of a general rule — the
+repair never rewrites a spelling a host it still serves registers under,
+including a dropped loopback's own free-label `name`, which auto-discovery may
+hand straight to a real sibling. Rows a released build already
 relabelled `wsl:<us>` (being shareable by default, the loopback was mirrored,
 and its "host" database was this database, so the pass rewrote our own local
 rows as remote) are put back by a one-time repair rather than by the migration:

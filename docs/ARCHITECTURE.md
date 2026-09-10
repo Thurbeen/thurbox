@@ -602,11 +602,14 @@ WSL needs no credentials at all.
   rows written after, and nothing in the database tells them apart.
   Relabelling them all local sends the sibling's sessions at this
   machine; moving them all onto the sibling sends this machine's at the
-  sibling. So the repair skips the name entirely and warns. The same
-  rule covers a *dropped loopback's own* backend name, which is a free
-  label and can be a live sibling's: dropping the entry hands the name
-  back to auto-discovery, so the real distro re-registers under exactly
-  that spelling. The residue is the pre-existing corruption left
+  sibling. So the repair skips the name entirely, and says so when it
+  actually left rows behind — `rows_recorded_on` counts them, because a
+  host that claims the spelling but never wrote a row has nothing to be
+  told about, and this notice is the only one its owner would ever see.
+  The same rule covers a *dropped loopback's own* backend name, which is
+  a free label and can be a live sibling's: dropping the entry hands the
+  name back to auto-discovery, so the real distro re-registers under
+  exactly that spelling. The residue is the pre-existing corruption left
   unhealed, not damage the change does, and it is the only outcome that
   never operates on the wrong machine.
 - **The one-time repair**: rows a released build already relabelled are
