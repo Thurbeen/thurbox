@@ -37,9 +37,10 @@ winget is Microsoft's first-party Windows package manager, bundled with Windows
 Thurbeen.thurbox` with nothing else installed, whereas Chocolatey must be set up
 first. Both are published from the same release and neither replaces the other.
 Both are also *manually moderated* channels that can't keep pace with thurbox's
-release cadence, so **both attempt every release and back off when the channel
-pushes back** (see [Automated publishing](#automated-publishing-ci)); the newest
-binary always ships immediately via GitHub Releases regardless.
+release cadence. winget **attempts every release and backs off when the
+channel pushes back** (see [Automated publishing](#automated-publishing-ci));
+Chocolatey is throttled to one publish per 30 days instead. The newest binary
+always ships immediately via GitHub Releases regardless.
 
 ## Supported platforms
 
