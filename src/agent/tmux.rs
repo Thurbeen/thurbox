@@ -1181,6 +1181,18 @@ impl TmuxBackend {
         }
     }
 
+    /// The program a **local** window should launch: the agent's command,
+    /// resolved against thurbox's own `PATH` — see [`resolve_local_program`].
+    /// A remote/WSL backend passes through: its `PATH` is the *host's*, and its
+    /// window command is login-wrapped instead
+    /// ([`login_wrap_for_remote`](Self::login_wrap_for_remote)).
+    fn program_for_window(&self, command: &str) -> String {
+        if self.transport.is_remote() {
+            return command.to_string();
+        }
+        resolve_local_program(command)
+    }
+
     /// Build the shell command string to pass to tmux new-window.
     ///
     /// The whole string is interpreted by the multiplexer server's shell, so
@@ -1203,10 +1215,16 @@ impl TmuxBackend {
     /// non-login shell skips those files, so the agent binary isn't found, the
     /// window command exits 1, and the pane dies instantly — the remote session
     /// appears to "not launch". `exec` replaces the wrapper so no extra process
-    /// lingers. Local backends already inherit the user's interactive `PATH`, so
-    /// they pass through unchanged — and so does a **psmux** remote (a Windows
-    /// SSH host), which has no `/bin/sh` to wrap with (psmux windows are built by
+    /// lingers. A **psmux** remote (a Windows SSH host) passes through: it has
+    /// no `/bin/sh` to wrap with (psmux windows are built by
     /// [`psmux_window_command`] instead).
+    ///
+    /// Local backends pass through too, but **not** because they inherit the
+    /// user's interactive `PATH` — that claim used to stand here and was wrong
+    /// (see [`resolve_local_program`], which is what makes them safe now). They
+    /// are not wrapped because thurbox can resolve a local command itself, and
+    /// an absolute path needs no shell's `PATH` at all; a wrap would only add a
+    /// second shell whose own quoting rules could differ.
     ///
     /// Done here — not via tmux `default-command` — because that value round-trips
     /// through the remote transport's per-arg shell-quoting, where a `-l` flag's
@@ -1616,7 +1634,8 @@ impl SessionBackend for TmuxBackend {
         } else if is_remote_shell_pane {
             self.remote_shell_pane_command()
         } else {
-            self.login_wrap_for_remote(&Self::build_shell_command(command, args))
+            let program = self.program_for_window(command);
+            self.login_wrap_for_remote(&Self::build_shell_command(&program, args))
         };
 
         // psmux's tokenizer can't read POSIX `'\''` escapes (see
@@ -2698,6 +2717,50 @@ const SESSION_OPTS: &[(&str, &str)] = &[
     ("window-size", "manual"),
 ];
 
+/// The agent's command as an **absolute path**, resolved against thurbox's own
+/// `PATH`, so the multiplexer never has to resolve it.
+///
+/// thurbox used to hand tmux a bare name (`claude`) and let tmux find it. Which
+/// resolver ran, and with which `PATH`, was not thurbox's to choose:
+///
+/// - tmux copies the *client's* `PATH` into the new pane only for an
+///   **unattached** client (`spawn.c`: "the session one is replaced from the
+///   client … only unattached clients"). thurbox's control-mode client is
+///   attached, so [`TmuxBackend::spawn`] — a restart, a plugin program, the
+///   shell pane — got the `PATH` of whatever first started the tmux **server**.
+/// - tmux runs a window command given as a **single** argument through its
+///   `default-shell` (`spawn.c`: `execl(shell, argv0, "-c", cmd)`), and only a
+///   multi-argument one through `execvp`. So an agent with no args was launched
+///   by a shell thurbox never chose, under that shell's quoting and `PATH`.
+///
+/// Both are why a fish user saw a spawn fail where a zsh user did not. zsh and
+/// bash put their `PATH` additions in `~/.zshenv` / `~/.profile`, which any
+/// shell that starts a tmux server sources, so the server's `PATH` and the
+/// interactive one agree. fish's `fish_add_path` writes `fish_user_paths`, which
+/// **only fish** applies — so a server started from anything else never sees
+/// them, for the life of that server. And the exit status tells you which
+/// resolver spoke: `execvp` failing makes the pane exit **1**, a shell that
+/// cannot find the command exits **127**.
+///
+/// An absolute path is immune to both: `execvp` and every shell take it as-is.
+///
+/// Best-effort by design — the command is returned **unchanged** when it is
+/// already a path, when nothing on `PATH` matches, or on Windows (psmux runs
+/// its own command model, and a bare name there wants `PATHEXT` semantics this
+/// deliberately does not have). A `command` that is a shell function, an alias,
+/// or a binary installed *after* this resolves therefore behaves exactly as it
+/// did before: resolution is an improvement where it succeeds, never a new way
+/// to fail.
+pub(crate) fn resolve_local_program(command: &str) -> String {
+    if cfg!(windows) {
+        return command.to_string();
+    }
+    match crate::paths::resolve_on_path(command) {
+        Some(path) => path.to_string_lossy().into_owned(),
+        None => command.to_string(),
+    }
+}
+
 /// Spawn a new tmux window running `command` with `args` in `cwd`.
 ///
 /// Thin helper for headless callers (CLI, MCP) that don't need PTY I/O
@@ -2748,8 +2811,14 @@ pub fn spawn_window(
             tmux.args(["-e", &format!("{k}={v}")]);
         }
         // Pass the command + args as a single argv list. tmux treats trailing
-        // args as the command to run inside the window.
-        tmux.arg(command);
+        // args as the command to run inside the window. Resolved here for the
+        // same reason the control-mode path resolves it (see
+        // `resolve_local_program`): this path happens to get thurbox's own
+        // `PATH` because its client is unattached, but a session must not
+        // launch differently depending on which of the two created it — a
+        // session created here and later restarted through control mode would
+        // otherwise resolve against two different environments.
+        tmux.arg(resolve_local_program(command));
         for a in args {
             tmux.arg(a);
         }
@@ -3280,6 +3349,65 @@ mod tests {
         let p = resolve_cli_binary();
         let name = p.file_name().unwrap().to_string_lossy();
         assert_eq!(name, format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX));
+    }
+
+    // --- local command resolution ---
+
+    /// An executable on a directory only *this process* has on `PATH` — the
+    /// shape an agent installed by `fish_add_path` is in.
+    #[cfg(unix)]
+    fn agent_only_thurbox_can_see(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(&p, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+        p
+    }
+
+    /// The whole point of the fix: what tmux is handed must not need tmux's own
+    /// `PATH` (nor the `PATH` of the shell tmux runs a single-token command
+    /// with) to be found.
+    #[test]
+    #[cfg(unix)]
+    fn a_local_window_command_is_an_absolute_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let expected = agent_only_thurbox_can_see(dir.path(), "tbx-spawn-probe");
+
+        // Through the shared helper: `PATH` is process state, and the unit
+        // tests that set it run concurrently under plain `cargo test`.
+        let (local, free, remote) = crate::paths::with_path(dir.path(), || {
+            (
+                TmuxBackend::local().program_for_window("tbx-spawn-probe"),
+                resolve_local_program("tbx-spawn-probe"),
+                // A remote host's PATH is the host's, so its command is the
+                // host's to resolve — and it is login-wrapped instead.
+                TmuxBackend::from_host(&crate::session::HostDef {
+                    name: "devbox".into(),
+                    destination: "me@devbox".into(),
+                    ..Default::default()
+                })
+                .program_for_window("tbx-spawn-probe"),
+            )
+        });
+
+        assert_eq!(local, expected.to_string_lossy());
+        assert_eq!(free, expected.to_string_lossy());
+        assert_eq!(remote, "tbx-spawn-probe");
+    }
+
+    /// Best-effort: a name nothing on `PATH` matches is passed through, so a
+    /// shell function, an alias, or a binary installed after this ran keeps
+    /// working exactly as it did before.
+    #[test]
+    fn an_unresolvable_local_command_is_passed_through() {
+        assert_eq!(
+            resolve_local_program("tbx-agent-that-is-not-installed"),
+            "tbx-agent-that-is-not-installed"
+        );
+        assert_eq!(
+            resolve_local_program("/opt/My Agents/codex"),
+            "/opt/My Agents/codex"
+        );
     }
 
     // --- build_shell_command tests ---

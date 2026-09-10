@@ -155,6 +155,41 @@ are emitted only when their driving value exists; precedence is
 fork > resume > new-session. See the seeded file's comments and
 the `thurbox-agents` skill for the `resume_latest` semantics.
 
+### How `command` is resolved
+
+For a **local** session, thurbox resolves a bare `command` against **its own
+`PATH`** and hands the multiplexer the absolute path it found. It does that
+because the multiplexer would otherwise resolve the name itself, in an
+environment thurbox neither chose nor can see:
+
+- tmux copies the *client's* `PATH` into a new pane only for an **unattached**
+  client, so a window created over thurbox's (attached) control-mode connection
+  — a restart, a plugin program, the companion shell pane — got the `PATH` of
+  whatever first started the tmux **server**.
+- a window command that reaches tmux as a **single** argument is run by tmux's
+  `default-shell`, not `execvp` — so an agent with no args was launched by a
+  shell thurbox never chose, under that shell's `PATH` and quoting.
+
+Under zsh/bash those `PATH`s agree, because the interactive additions live in
+`~/.zshenv` / `~/.profile`, which any shell that starts a tmux server sources.
+Under **fish** they do not: `fish_add_path` writes `fish_user_paths`, which only
+fish applies — so a server started from anything else never sees the agent, for
+the life of that server, and the spawn fails with a shell's `command not found`
+(exit **127**; an `execvp` failure is exit 1).
+
+Resolution is **best-effort and never a new way to fail**: a `command` that is
+already a path, that nothing on `PATH` matches (a shell function or alias, or a
+binary installed after thurbox started), or that runs on Windows is passed
+through verbatim, exactly as before. A **remote** (SSH/WSL) session is not
+resolved either — its `PATH` is the host's; its window command is wrapped in a
+login shell instead.
+
+Only **absolute** `PATH` entries are considered. That excludes the empty entry
+POSIX reads as "the current directory" (`:/usr/bin`, or a stray trailing colon),
+because the resolved path is handed to a process with a working directory of its
+own — honouring it would let a `claude` sitting in the repo you are working on
+shadow the real one, which is the dependence this removes rather than moves.
+
 `hook_schema` is optional. Custom agents are agent-neutral, so the built-in
 **hooks** extension normally wires status hooks only for the built-ins it knows
 by name. Set `hook_schema = "claude"` on a **rebranded** agent (one whose

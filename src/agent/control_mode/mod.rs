@@ -744,6 +744,21 @@ impl ControlMode {
             .take()
             .context("Failed to get control mode stdout")?;
 
+        // Consume tmux's implicit response to the `-C attach-session` command
+        // carried on argv — the one `%begin`/`%end` block tmux emits on
+        // connect that is not a reply to anything we send. This must happen
+        // synchronously, before the reader thread exists: `deliver_response`
+        // matches replies to waiters by queue position only, so if the
+        // reader thread instead raced a `send_command` no-op meant to drain
+        // this block — as this used to — whichever finished first decided
+        // whether that no-op's waiter received this block (harmless, since
+        // both are empty) or the *real* reply to the no-op did, silently
+        // shifting every later response one FIFO slot for the rest of the
+        // connection's life. Draining here, before any waiter can exist,
+        // makes that race impossible instead of merely unlikely.
+        let mut reader = BufReader::new(stdout);
+        Self::drain_implicit_attach_response(&mut reader)?;
+
         let stdin = Arc::new(Mutex::new(stdin));
         let pane_senders: PaneSendersMapShared =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -763,7 +778,7 @@ impl ControlMode {
             .name("tmux-control-reader".into())
             .spawn(move || {
                 Self::reader_thread(
-                    stdout,
+                    reader,
                     reader_stdin,
                     reader_pane_senders,
                     reader_queue,
@@ -782,12 +797,6 @@ impl ControlMode {
             reader_handle: Mutex::new(Some(reader_handle)),
             child: Mutex::new(child),
         };
-
-        // Drain the implicit attach response (%begin/%end) that tmux sends
-        // when a control mode client connects. We send a no-op command and
-        // wait for its response — this synchronizes with the reader thread
-        // and guarantees all prior unsolicited responses have been consumed.
-        control.send_command("refresh-client")?;
 
         // Enable flow control (pause-after=5 seconds of buffered output).
         control.send_command("refresh-client -f pause-after=5")?;
@@ -929,6 +938,34 @@ impl ControlMode {
         Some(String::from_utf8_lossy(line_buf).into_owned())
     }
 
+    /// Synchronously consume tmux's implicit `%begin`/`%end`(`%error`) reply
+    /// to the `-C attach-session` command carried on argv, before the reader
+    /// thread (and thus any `response_queue` waiter) exists — see the call
+    /// site in [`Self::start`] for why that ordering matters. Any notification
+    /// lines ahead of the block (tmux has been observed to send `%output` /
+    /// `%session-changed` first) are harmless to skip here: nothing is
+    /// registered to receive them yet.
+    fn drain_implicit_attach_response(
+        reader: &mut BufReader<std::process::ChildStdout>,
+    ) -> Result<()> {
+        let mut line_buf = Vec::new();
+        while let Some(line) = Self::next_control_line(reader, &mut line_buf) {
+            if !matches!(parse_notification(&line), Notification::Begin) {
+                continue;
+            }
+            while let Some(line) = Self::next_control_line(reader, &mut line_buf) {
+                if matches!(
+                    parse_notification(&line),
+                    Notification::End | Notification::Error
+                ) {
+                    return Ok(());
+                }
+            }
+            bail!("control mode closed mid-way through its implicit attach response");
+        }
+        bail!("control mode closed before sending its implicit attach response");
+    }
+
     /// Background thread that reads and dispatches control mode output.
     ///
     /// Responses arrive in FIFO order matching `send_command()` calls.
@@ -938,13 +975,12 @@ impl ControlMode {
     /// blocks, but no waiter is in the queue for them — those responses are
     /// simply discarded.
     fn reader_thread(
-        stdout: std::process::ChildStdout,
+        mut reader: BufReader<std::process::ChildStdout>,
         stdin: Arc<Mutex<ChildStdin>>,
         pane_senders: PaneSendersMapShared,
         response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
         sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
     ) {
-        let mut reader = BufReader::new(stdout);
         // Accumulates response lines for the current in-flight command.
         let mut collecting: Option<Vec<String>> = None;
         let mut line_buf = Vec::new();
