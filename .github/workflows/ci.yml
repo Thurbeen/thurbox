@@ -31,6 +31,7 @@ jobs:
       website: ${{ steps.filter.outputs.website }}
       install_sh: ${{ steps.filter.outputs.install_sh }}
       install_ps: ${{ steps.filter.outputs.install_ps }}
+      winget: ${{ steps.filter.outputs.winget }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -98,6 +99,11 @@ jobs:
             install_ps:
               - 'scripts/install.ps1'
               - 'scripts/install.Tests.ps1'
+              - '.github/workflows/ci.yml'
+            winget:
+              # The winget channel's testable half: the manifest bump and the
+              # submit/skip + deferrable decisions the release job asks for.
+              - 'packaging/winget/**'
               - '.github/workflows/ci.yml'
 
   # No `check` job. `clippy --all-targets -D warnings` below type-checks the
@@ -326,6 +332,21 @@ jobs:
           $cfg.Output.Verbosity = 'Detailed'
           Invoke-Pester -Configuration $cfg
 
+  winget-packaging:
+    name: winget Packaging Tests
+    needs: changes
+    if: needs.changes.outputs.winget == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install bats-core
+        run: sudo apt-get update && sudo apt-get install -y bats
+      # The release job's winget steps are Windows-only, but the two scripts
+      # they call are plain Python, so their decisions are checkable here
+      # without cutting a release.
+      - name: Run winget packaging tests
+        run: bats packaging/winget/winget.bats
+
   shellcheck:
     name: ShellCheck
     needs: changes
@@ -488,6 +509,7 @@ jobs:
       - markdown-lint
       - install-script
       - install-script-ps
+      - winget-packaging
       - shellcheck
       - lua
       - website-lint

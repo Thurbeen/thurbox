@@ -11,10 +11,11 @@ winget install Thurbeen.thurbox
 
 > **Status: live.** The package is published on
 > [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs), so
-> `winget install Thurbeen.thurbox` resolves. Each *new version* still goes
-> through PR review there, and submissions are throttled to one per 30 days (see
-> [Automated publishing](#automated-publishing-ci) below) — so the winget
-> channel trails the newest release. For the latest build immediately, use
+> `winget install Thurbeen.thurbox` resolves. Every release attempts a
+> submission (see [Automated publishing](#automated-publishing-ci) below), but
+> each *new version* goes through PR review there and only one thurbox PR is in
+> flight at a time — so the winget channel trails the newest release by however
+> long that review takes. For the latest build immediately, use
 > [`scripts/install.ps1`](../../scripts/install.ps1)
 > (`irm … | iex`) or the GitHub Release zip.
 
@@ -36,9 +37,10 @@ winget is Microsoft's first-party Windows package manager, bundled with Windows
 Thurbeen.thurbox` with nothing else installed, whereas Chocolatey must be set up
 first. Both are published from the same release and neither replaces the other.
 Both are also *manually moderated* channels that can't keep pace with thurbox's
-release cadence, so **both are throttled to one submission per 30 days** (see
-[Automated publishing](#automated-publishing-ci)); the newest binary always
-ships immediately via GitHub Releases regardless.
+release cadence. winget **attempts every release and backs off when the
+channel pushes back** (see [Automated publishing](#automated-publishing-ci));
+Chocolatey is throttled to one publish per 30 days instead. The newest binary
+always ships immediately via GitHub Releases regardless.
 
 ## Supported platforms
 
@@ -67,8 +69,8 @@ are documented in the package `Description` rather than auto-installed:
 Every release submits to winget-pkgs **automatically** — including the first.
 The `publish-winget` job in
 [`.github/workflows/cd.yml`](../../.github/workflows/cd.yml) runs on
-`windows-latest` after the GitHub Release is created and, **when the throttle
-window has elapsed** (below):
+`windows-latest` after the GitHub Release is created and, **when
+[`submit-decision.py`](submit-decision.py) says to submit** (below):
 
 1. downloads the release `thurbox-<version>-checksums.txt`,
 2. runs [`bump-manifests.py`](bump-manifests.py) to set `PackageVersion` across
@@ -76,11 +78,12 @@ window has elapsed** (below):
    (uppercased, as winget-pkgs expects) plus the locale `ReleaseNotesUrl` from
    those checksums,
 3. downloads `wingetcreate` (`https://aka.ms/wingetcreate/latest`),
-4. `wingetcreate submit`s the manifest set, which validates it and opens a PR
+4. syncs the token account's `winget-pkgs` fork from upstream (below),
+5. `wingetcreate submit`s the manifest set, which validates it and opens a PR
    against [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs),
    then
-5. closes any *older* still-open `Thurbeen.thurbox` PR from the token account,
-   keeping only the one just opened (second-line cleanup behind the throttle).
+6. closes any *older* still-open `Thurbeen.thurbox` PR from the token account,
+   keeping only the one just opened (second-line cleanup).
 
 The job needs a `WINGET_TOKEN` secret — a classic PAT with the `public_repo`
 scope on the account that owns a fork of `microsoft/winget-pkgs` (wingetcreate
@@ -89,23 +92,58 @@ where the secret is absent (e.g. on forks). The committed template files are not
 modified by CI — they stay as last-known-good, exactly like the Chocolatey /
 Homebrew templates.
 
-> **Throttled to one submission per `THROTTLE_DAYS` (30 days)**, mirroring
-> Chocolatey. winget-pkgs is a *manually moderated* repo — each `submit` opens a
-> PR a human must review — so it can't absorb thurbox's per-`feat`/`fix`/`perf`
-> release cadence: a release every few hours buries the maintainers under stale
-> version-bump PRs (30 open at once, flagged in
+> **Cadence: every release, paced by the queue rather than a calendar.**
+> winget-pkgs is a *manually moderated* repo — each `submit` opens a PR a human
+> must review — and thurbox's per-`feat`/`fix`/`perf` cadence can bury the
+> maintainers under stale version-bump PRs (30 open at once, flagged in
 > [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
-> So the job first reads our own last thurbox PR on winget-pkgs (via `gh pr list`,
-> merged or open) for its age — the winget analog of the Chocolatey feed's
-> Published date. If it is younger than `THROTTLE_DAYS` the job **skips the
-> submission and exits green** with a `::warning::`, coalescing the intervening
-> patch releases into the next monthly winget PR. The binary itself always ships
-> immediately via GitHub Releases (and Homebrew/AUR); only the winget channel
-> lags. Tune the cadence via the `THROTTLE_DAYS` env in the job. When the window
-> *has* elapsed and a submission goes out, the follow-up cleanup step closes any
-> older still-open PR (best-effort, never fails the release) — since
-> `wingetcreate` has no supersede-pending-PR mode (`--replace` only affects a
-> *published* manifest version).
+> The rule that prevents that is **one thurbox PR in flight**, not a monthly
+> window: the job lists our own thurbox PRs on winget-pkgs (`gh pr list`, any
+> state) and hands them to [`submit-decision.py`](submit-decision.py), which
+> **skips the submission and exits green** with a `::warning::` while one is
+> still open — `wingetcreate` cannot update a pending PR, so a second one would
+> only lengthen the queue. The next release retries; the binary itself always
+> ships immediately via GitHub Releases (and Homebrew/AUR), so only the winget
+> channel lags.
+>
+> `THROTTLE_DAYS` survives as a knob on top of that, now **defaulted to `0`** —
+> no calendar throttle, so winget ships as often as Chocolatey attempts to. Set
+> it to `30` in the job to restore the old monthly window without a code change:
+> a submission younger than that many days also skips green.
+>
+> **Fork sync.** `wingetcreate submit` pushes the manifest branch to the token
+> account's fork of winget-pkgs and its own auto-sync of that fork is
+> fast-forward only. winget-pkgs merges hundreds of PRs a day, so a fork touched
+> rarely falls thousands of commits behind and the submit dies with *"The forked
+> repository could not be synced with the upstream commits"* — which is what
+> failed v2.19.6. The job therefore runs `gh repo sync <account>/winget-pkgs
+> --source microsoft/winget-pkgs` first, retrying with `--force` (a hard reset of
+> the fork's default branch) when it cannot fast-forward. That is safe here
+> because the fork is a submission staging area: nothing of ours lives on its
+> default branch and every submission gets its own branch, so a reset destroys
+> neither work nor an open PR.
+>
+> **When `submit` fails.** A rejection from the channel itself (GitHub rate
+> limit, version already pending) warns and exits green — the same shape as the
+> Chocolatey push's 403/409 handling, with the classification in
+> `submit-decision.py after-submit`. Anything else fails the job, but the job
+> carries `continue-on-error: true`, so a broken winget channel can never turn
+> the Release run red once the binaries are on GitHub Releases.
+>
+> That same call also reports whether a PR was actually **opened**, and the
+> cleanup step is gated on *that* rather than on the pre-submit decision. The
+> distinction matters: a deferred submission exits green having opened nothing,
+> so cleanup keyed off the decision would close the pending thurbox PR and put
+> nothing in its place, leaving winget-pkgs with no PR at all and the version
+> silently unshipped — the very failure this job exists to prevent.
+>
+> **Tested without cutting a release.** `bats packaging/winget/winget.bats`
+> (CI job *winget Packaging Tests*, or `just test-scripts`) runs
+> `bump-manifests.py` against a recorded `checksums.txt` and pins every
+> submit/skip and deferrable/red decision — including that the stale-fork
+> message is *not* treated as deferrable, since the sync step exists to prevent
+> it. The Windows-only halves (`wingetcreate`, `gh repo sync` against a real
+> diverged fork) are not covered.
 >
 > **Review (winget-pkgs side, not CI).** microsoft/winget-pkgs runs automated
 > validation (manifest schema, installer hash, a sandbox install/uninstall

@@ -136,6 +136,7 @@ ref already checked out, but from `v1.x` it tries to push that branch's tip onto
 - [ ] Installers handle its **absence**, so installing an older release still
       works (`scripts/install.bats` asserts this).
 - [ ] Adding to `BINARIES` was a deliberate decision, not a reflex.
-- [ ] Chocolatey and winget are throttled to one publish per 30 days, so those
-      channels can lag a month behind GitHub Releases. Do not treat a missing
-      package version as a failure.
+- [ ] Chocolatey is throttled to one publish per 30 days and winget attempts
+      every release but skips while its previous PR is still open, so both
+      channels can lag behind GitHub Releases. Do not treat a missing package
+      version as a failure.

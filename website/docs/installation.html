@@ -150,12 +150,11 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             <p>
               <strong>Release cadence.</strong>
               winget-pkgs is manually reviewed, so thurbox submits a new winget
-              version
-              <strong>at most once every 30 days</strong>
-              (intermediate releases are coalesced into the next submission), and
-              each submission waits on PR review before it goes live. The latest
-              build always ships immediately via the PowerShell installer above
-              and
+              version on every release, but skips a submission while its
+              previous one is still an open PR &mdash; wingetcreate can't update
+              a pending PR, and a submission waits on review before it goes
+              live. The latest build always ships immediately via the
+              PowerShell installer above and
               <a href="https://github.com/Thurbeen/thurbox/releases">GitHub Releases</a>
               , so
               <code>irm &hellip; install.ps1 | iex</code>
@@ -189,8 +188,8 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
           <div class="info-box">
             <p>
               <strong>Release cadence.</strong>
-              Like winget, the Chocolatey community repo is moderated and
-              rate-limited, so thurbox pushes a new Chocolatey version
+              Unlike winget, the Chocolatey community repo is rate-limited on
+              a calendar, so thurbox pushes a new Chocolatey version
               <strong>at most once every 30 days</strong>
               (intermediate releases are coalesced into the next push). The
               latest build always ships immediately via the PowerShell installer
