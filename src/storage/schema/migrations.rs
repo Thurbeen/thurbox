@@ -930,74 +930,35 @@ pub(super) fn migrate_v46_teardown_owed(conn: &Connection) -> rusqlite::Result<(
     )
 }
 
-/// See [`super::SCHEMA_VERSION`] v47: a row stamped with the WSL distro thurbox
-/// is running inside is a **local** row that a loopback host relabelled, and
-/// this puts it back.
+/// See [`super::SCHEMA_VERSION`] v47: record that the WSL-loopback repair is
+/// **owed**, without performing it.
 ///
-/// Auto-discovery used to offer the current distro as a host like any other.
-/// Being shareable by default (ADR-24), it was then mirrored — and its database
-/// is *this* database, so the pass read our own local rows back and rewrote
-/// each one's `backend_type` to `wsl:<us>`. Every attach, diff and delete
-/// afterwards went out through `wsl.exe` at the machine it started on.
-/// [`crate::session::HostDef::is_wsl_loopback`] stops that host being
-/// registered; the rows it already wrote need saying so.
+/// Auto-discovery used to offer the WSL distro thurbox runs *inside* as a host
+/// like any other. Being shareable by default (ADR-24) it was then mirrored —
+/// and its database is *this* database, so the pass read our own local rows
+/// back and rewrote each one's `backend_type` to `wsl:<us>`. Every attach, diff
+/// and delete afterwards went out through `wsl.exe` at the machine it started
+/// on. [`crate::session::HostDef::is_wsl_loopback`] stops that host being
+/// registered; the rows it already wrote still say otherwise.
 ///
-/// Scoped to `wsl:$WSL_DISTRO_NAME`, which `storage` can derive on its own
-/// (it may reference `session`, not `agent`, so `hosts.toml` is out of reach).
-/// That name is unambiguous because the registry keeps it so: auto-discovery
-/// never offers the loopback, and a hand-written entry that would *register*
-/// under it — whichever distro it actually points at — is dropped with a
-/// warning ([`crate::session::HostDef::shadows_current_wsl_distro`]). So a row
-/// spelled this way can only be one the bug wrote. Nothing to do off WSL, and
-/// nothing to do to a **sibling** distro's rows: reaching one from inside
-/// another is an ordinary remote session.
-pub(super) fn migrate_v47_wsl_loopback_is_local(conn: &Connection) -> rusqlite::Result<()> {
-    let Some(distro) = crate::session::current_wsl_distro() else {
-        return Ok(());
-    };
-    let loopback = format!("{}{distro}", crate::session::WSL_BACKEND_PREFIX);
-    // Guarded per column, not per table: a `sessions` table without
-    // `backend_type` is only ever a hand-built test fixture, but a migration
-    // that assumes its shape aborts the whole upgrade before the version bump.
-    if column_exists(conn, "sessions", "backend_type")? {
-        let healed = conn.execute(
-            "UPDATE sessions SET backend_type = ?1 WHERE backend_type = ?2 COLLATE NOCASE",
-            [crate::session::LOCAL_BACKEND_TYPE, &loopback],
-        )?;
-        if healed > 0 {
-            tracing::info!(
-                "schema v47: {healed} session(s) were recorded on '{loopback}', the WSL distro \
-                 thurbox runs in; restored them as local"
-            );
-        }
-    }
-    if column_exists(conn, "repo_bookmarks", "host")? {
-        // `(host, repo_path)` is the key, so a path bookmarked both before the
-        // bug and during it has two rows that the relabel would collide. Both
-        // record real local use, so the pair is resolved on recency and the
-        // staler row deleted first; `UPDATE OR REPLACE` would instead have
-        // silently dropped whichever row already existed, which is the local
-        // one — the opposite of what a heal should keep.
-        conn.execute(
-            "DELETE FROM repo_bookmarks AS local
-              WHERE local.host = ''
-                AND EXISTS (SELECT 1 FROM repo_bookmarks lb
-                             WHERE lb.host = ?1 COLLATE NOCASE
-                               AND lb.repo_path = local.repo_path
-                               AND lb.last_used_at > local.last_used_at)",
-            [&loopback],
-        )?;
-        conn.execute(
-            "DELETE FROM repo_bookmarks AS lb
-              WHERE lb.host = ?1 COLLATE NOCASE
-                AND EXISTS (SELECT 1 FROM repo_bookmarks local
-                             WHERE local.host = '' AND local.repo_path = lb.repo_path)",
-            [&loopback],
-        )?;
-        conn.execute(
-            "UPDATE repo_bookmarks SET host = '' WHERE host = ?1 COLLATE NOCASE",
-            [&loopback],
-        )?;
-    }
+/// Putting them right is not a schema change and cannot be done from here:
+/// *which* backend names the bug can have written is decided by the host
+/// registry — a hand-written loopback registers under its own `name`, and a
+/// host merely *named* after the current distro reaches a sibling and must
+/// stay remote — and `storage` may reference `session` but not `agent`, so
+/// `hosts.toml` is out of reach. Guessing from the spelling `wsl:$WSL_DISTRO_NAME`
+/// is wrong in both directions. So this step only leaves a mark, and
+/// `session_ops::repair_wsl_loopback_rows` does the work once from a layer
+/// that sees both the registry and the database, clearing the mark when it has.
+///
+/// The mark is recorded unconditionally, including off WSL: whether anything is
+/// owed is exactly the question this layer cannot answer, and the repair
+/// resolves an empty set to a no-op.
+pub(super) fn migrate_v47_wsl_loopback_repair_owed(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES (?1, '1') \
+         ON CONFLICT(key) DO UPDATE SET value = '1'",
+        [crate::storage::wsl_repair::WSL_LOOPBACK_REPAIR_OWED_KEY],
+    )?;
     Ok(())
 }

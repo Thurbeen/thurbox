@@ -27,6 +27,8 @@ pub use sessions::{DeletedSessionInfo, HookRow, SessionFacts};
 pub mod sync;
 pub mod tasks;
 mod worktrees;
+mod wsl_repair;
+pub use wsl_repair::WslLoopbackRepair;
 
 use std::path::{Path, PathBuf};
 

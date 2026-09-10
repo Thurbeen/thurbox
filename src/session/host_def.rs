@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// tmux server, no launch prefix. Re-exported as
 /// `session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE`, which is the spelling most
 /// call sites use; it lives here so `storage` (which may reference `session`
-/// and not `session_ops`) can name the value a migration writes.
+/// and not `session_ops`) can name the value the loopback repair writes.
 pub const LOCAL_BACKEND_TYPE: &str = "local-tmux";
 
 /// The backend-name prefix for SSH hosts. A host named `devbox` is registered
@@ -67,7 +67,7 @@ pub fn current_wsl_distro() -> Option<String> {
 
 /// Whether `distro` is the one [`current_wsl_distro`] reports, compared the way
 /// `wsl.exe -d` matches a distro name — case-insensitively.
-pub fn is_current_wsl_distro(distro: &str) -> bool {
+fn is_current_wsl_distro(distro: &str) -> bool {
     current_wsl_distro().is_some_and(|d| d.eq_ignore_ascii_case(distro))
 }
 
@@ -211,13 +211,15 @@ impl HostDef {
     /// A host is registered — and persisted in `sessions.backend_type` — under
     /// its [`name`](Self::name), not its [`distro`](Self::distro). So
     /// `name = "<us>"` with `distro = "<a sibling>"` is a working remote host
-    /// that writes rows spelled exactly like the ones the loopback bug wrote,
-    /// and the schema v47 heal keys on that spelling: it cannot tell the two
-    /// apart, and would relabel a genuinely remote session local.
-    ///
-    /// Dropping the entry — with a warning that says to rename it — is what
-    /// keeps `wsl:<us>` unambiguous. The sibling stays reachable under any
+    /// that writes rows spelled exactly like the ones the loopback bug wrote.
+    /// One spelling cannot mean both, and it is the *name* that is free to
+    /// change: dropping the entry — with a warning that says to rename it —
+    /// keeps `wsl:<us>` unambiguous, and the sibling stays reachable under any
     /// other name, so nothing is lost but the collision.
+    ///
+    /// While such an entry does exist, that spelling is remote, so
+    /// `agent::host_config::wsl_loopback_backend_names` subtracts it from the
+    /// set the one-time loopback repair relabels local.
     pub fn shadows_current_wsl_distro(&self) -> bool {
         self.is_wsl() && !self.is_wsl_loopback() && is_current_wsl_distro(&self.name)
     }
@@ -609,7 +611,7 @@ worktrees_dir = "/home/me/wt"
     fn a_host_named_after_our_distro_shadows_its_backend_name() {
         with_wsl_distro(Some("Ubuntu"), || {
             // Reaches a real sibling, but would register as `wsl:Ubuntu` —
-            // the very spelling the v47 heal reads as "this machine".
+            // the very spelling the loopback repair reads as "this machine".
             let shadow = HostDef {
                 name: "Ubuntu".into(),
                 kind: HostKind::Wsl,

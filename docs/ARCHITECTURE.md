@@ -593,8 +593,18 @@ WSL needs no credentials at all.
   (ADR-24) and that database was this one: the mirror pass read our own
   rows back and rewrote each `backend_type` to `wsl:<us>`, after which
   every attach, diff and delete went out through `wsl.exe` at the machine
-  it started on. Schema v47 restores rows a released build had already
-  relabelled.
+  it started on. Rows a released build already relabelled are put back by
+  a **one-time repair**, not by the migration: schema v47 only marks it
+  owed, and `session_ops::repair_wsl_loopback_rows` runs it once at
+  startup, from the one layer that sees both the registry and the
+  database. Which spellings it heals is decided by the registry rather
+  than guessed from the name
+  (`agent::host_config::wsl_loopback_backend_names`): `wsl:<us>`, plus
+  every refused loopback's own backend name (a hand-written
+  `name = "self"` wrote `wsl:self`), minus every refused shadow's (while
+  such an entry exists that spelling is genuinely remote). `storage`
+  may reference `session` but not `agent`, which is why the migration
+  cannot make that call itself.
 - **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>`
   or `None`); `is_remote_backend` covers both. The TUI shows a host
   picker as the first new-session step (skipped when none configured/

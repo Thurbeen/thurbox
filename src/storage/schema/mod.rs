@@ -48,13 +48,16 @@ use rusqlite::Connection;
 /// one-shot best-effort attempt was the only one that would ever be made, and
 /// the agent it failed to kill outlived the session forever. The mark is what
 /// lets the sweep come back for it.
-/// v47 is not a schema change but a repair: a session recorded on
-/// `wsl:$WSL_DISTRO_NAME` is a local session that a loopback WSL host
-/// relabelled, and it is restored as local. Auto-discovery offered the distro
-/// thurbox runs *inside* as a host; being shareable by default it was then
-/// mirrored, and its database is this database — so the pass rewrote our own
-/// local rows as remote and every operation on them went out through
-/// `wsl.exe`. `HostDef::is_wsl_loopback` stops the host being registered.
+/// v47 is not a schema change but a *mark*: a session recorded on a loopback
+/// WSL host is a local session that host relabelled, and the mark records that
+/// putting it back is owed. Auto-discovery offered the distro thurbox runs
+/// *inside* as a host; being shareable by default it was then mirrored, and its
+/// database is this database — so the pass rewrote our own local rows as remote
+/// and every operation on them went out through `wsl.exe`.
+/// `HostDef::is_wsl_loopback` stops the host being registered. Which backend
+/// names the bug can have written is decided by the host registry, which
+/// `storage` may not read, so `session_ops::repair_wsl_loopback_rows` performs
+/// the repair once and clears the mark.
 /// Gaps in the step table are fine (there is no v18 step either).
 pub const SCHEMA_VERSION: u32 = 47;
 
@@ -374,7 +377,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (44, migrate_v44_reports_as),
         (45, migrate_v45_host_updated_at),
         (46, migrate_v46_teardown_owed),
-        (47, migrate_v47_wsl_loopback_is_local),
+        (47, migrate_v47_wsl_loopback_repair_owed),
     ];
 
     for &(target, step) in steps {
@@ -479,6 +482,7 @@ pub(super) fn rename_column_if_present(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
 
     #[test]
     fn initialize_sets_busy_timeout() {
@@ -682,167 +686,71 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION.to_string());
     }
 
+    /// v47 does not relabel anything; it records that the repair is owed, for
+    /// `session_ops::repair_wsl_loopback_rows` to perform once from a layer
+    /// that can see the host registry. The rows themselves are left alone
+    /// here — including a `wsl:` one, which only the registry can classify.
     #[test]
-    fn migrate_from_v46_restores_loopback_rows_as_local() {
-        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
-            let conn = Connection::open_in_memory().unwrap();
-            conn.execute_batch(
-                "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                 INSERT INTO metadata (key, value) VALUES ('schema_version', '46');
-                 CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY, name TEXT NOT NULL, backend_type TEXT NOT NULL,
-                    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                    deleted_at INTEGER);
-                 INSERT INTO sessions (id, name, backend_type, created_at, updated_at)
-                    VALUES ('a', 'relabelled', 'wsl:MagicDebian', 0, 0),
-                           ('b', 'sibling', 'wsl:MagicDebianPerso', 0, 0),
-                           ('c', 'remote', 'ssh:devbox', 0, 0),
-                           ('d', 'local', 'local-tmux', 0, 0);
-                 CREATE TABLE repo_bookmarks (
-                    host TEXT NOT NULL DEFAULT '', repo_path TEXT NOT NULL,
-                    label TEXT, last_used_at INTEGER NOT NULL,
-                    use_count INTEGER NOT NULL DEFAULT 1,
-                    is_parent INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (host, repo_path));
-                 INSERT INTO repo_bookmarks (host, repo_path, last_used_at)
-                    VALUES ('wsl:MagicDebian', '/home/me/repo', 0);",
+    fn migrate_from_v46_marks_the_loopback_repair_owed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '46');
+             CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, backend_type TEXT NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER);
+             INSERT INTO sessions (id, name, backend_type, created_at, updated_at)
+                VALUES ('a', 'maybe-relabelled', 'wsl:MagicDebian', 0, 0);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let owed: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'wsl_loopback_repair_owed'",
+                [],
+                |r| r.get(0),
             )
             .unwrap();
+        assert_eq!(owed, "1");
 
-            migrate(&conn).unwrap();
+        let backend: String = conn
+            .query_row(
+                "SELECT backend_type FROM sessions WHERE id = 'a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(backend, "wsl:MagicDebian");
 
-            let backend = |id: &str| -> String {
-                conn.query_row(
-                    "SELECT backend_type FROM sessions WHERE id = ?1",
-                    [id],
-                    |r| r.get(0),
-                )
-                .unwrap()
-            };
-            // Only the loopback moves: a sibling distro and an SSH host are
-            // genuinely off-local, and the local row was never wrong.
-            assert_eq!(backend("a"), "local-tmux");
-            assert_eq!(backend("b"), "wsl:MagicDebianPerso");
-            assert_eq!(backend("c"), "ssh:devbox");
-            assert_eq!(backend("d"), "local-tmux");
-
-            let host: String = conn
-                .query_row("SELECT host FROM repo_bookmarks LIMIT 1", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(host, "", "a bookmark on the loopback is a local bookmark");
-
-            let version: String = conn
-                .query_row(
-                    "SELECT value FROM metadata WHERE key = 'schema_version'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(version, SCHEMA_VERSION.to_string());
-        });
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
     }
 
-    /// `(host, repo_path)` is the bookmark key, so a path bookmarked both
-    /// before the bug and during it collides on the relabel. The pair is one
-    /// path used locally twice, so the more recent reading survives — and a
-    /// tie keeps the local row rather than the artifact of the bug.
+    /// A database created at the current version has no bug-written rows, so
+    /// nothing is owed and the repair never runs.
     #[test]
-    fn migrate_from_v46_resolves_colliding_bookmarks_on_recency() {
-        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
-            let conn = Connection::open_in_memory().unwrap();
-            conn.execute_batch(
-                "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                 INSERT INTO metadata (key, value) VALUES ('schema_version', '46');
-                 CREATE TABLE repo_bookmarks (
-                    host TEXT NOT NULL DEFAULT '', repo_path TEXT NOT NULL,
-                    label TEXT, last_used_at INTEGER NOT NULL,
-                    use_count INTEGER NOT NULL DEFAULT 1,
-                    is_parent INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (host, repo_path));
-                 INSERT INTO repo_bookmarks (host, repo_path, label, last_used_at) VALUES
-                    ('',                '/local-newer',   'keep', 200),
-                    ('wsl:MagicDebian', '/local-newer',   'drop', 100),
-                    ('',                '/loopback-newer','drop', 100),
-                    ('wsl:MagicDebian', '/loopback-newer','keep', 200),
-                    ('',                '/tie',           'keep', 300),
-                    ('wsl:MagicDebian', '/tie',           'drop', 300),
-                    ('wsl:MagicDebian', '/only-loopback', 'keep', 100),
-                    ('ssh:devbox',      '/local-newer',   'keep', 100);",
+    fn a_fresh_database_owes_no_loopback_repair() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+
+        let owed: Option<String> = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'wsl_loopback_repair_owed'",
+                [],
+                |r| r.get(0),
             )
+            .optional()
             .unwrap();
-
-            migrate(&conn).unwrap();
-
-            let rows: Vec<(String, String, String)> = conn
-                .prepare(
-                    "SELECT host, repo_path, label FROM repo_bookmarks ORDER BY repo_path, host",
-                )
-                .unwrap()
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-                .unwrap()
-                .map(Result::unwrap)
-                .collect();
-
-            assert_eq!(
-                rows,
-                vec![
-                    (
-                        "".to_string(),
-                        "/local-newer".to_string(),
-                        "keep".to_string()
-                    ),
-                    // A genuinely remote bookmark for the same path is a
-                    // different key and never part of the collision.
-                    (
-                        "ssh:devbox".to_string(),
-                        "/local-newer".to_string(),
-                        "keep".to_string()
-                    ),
-                    (
-                        "".to_string(),
-                        "/loopback-newer".to_string(),
-                        "keep".to_string()
-                    ),
-                    (
-                        "".to_string(),
-                        "/only-loopback".to_string(),
-                        "keep".to_string()
-                    ),
-                    ("".to_string(), "/tie".to_string(), "keep".to_string()),
-                ]
-            );
-        });
-    }
-
-    #[test]
-    fn migrate_from_v46_off_wsl_touches_nothing() {
-        crate::session::host_def::with_wsl_distro(None, || {
-            let conn = Connection::open_in_memory().unwrap();
-            conn.execute_batch(
-                "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                 INSERT INTO metadata (key, value) VALUES ('schema_version', '46');
-                 CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY, name TEXT NOT NULL, backend_type TEXT NOT NULL,
-                    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                    deleted_at INTEGER);
-                 INSERT INTO sessions (id, name, backend_type, created_at, updated_at)
-                    VALUES ('a', 'remote', 'wsl:MagicDebian', 0, 0);",
-            )
-            .unwrap();
-
-            migrate(&conn).unwrap();
-
-            // A Windows (or plain Linux) thurbox driving that distro is the
-            // case the repair must not touch.
-            let backend: String = conn
-                .query_row(
-                    "SELECT backend_type FROM sessions WHERE id = 'a'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(backend, "wsl:MagicDebian");
-        });
+        assert_eq!(owed, None);
     }
 
     #[test]

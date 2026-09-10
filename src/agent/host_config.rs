@@ -221,7 +221,9 @@ pub fn load_or_seed_with_warnings() -> (HostRegistry, Vec<String>) {
 /// **loopback** ([`HostDef::is_wsl_loopback`] — this machine, and not a host at
 /// all) and not as a **shadow** of its backend name
 /// ([`HostDef::shadows_current_wsl_distro`]). This is the one chokepoint every
-/// caller shares, so dropping both here is what keeps a local session local.
+/// caller shares, so dropping both here is what keeps a local session local —
+/// and the same split decides which already-written rows the one-time repair
+/// puts back ([`wsl_loopback_backend_names`]).
 pub fn load_all_with_warnings() -> (HostRegistry, Vec<String>) {
     let (mut reg, mut warnings) = load_or_seed_with_warnings();
     warnings.extend(drop_wsl_loopback(&mut reg));
@@ -259,46 +261,113 @@ pub fn cached_registry() -> &'static (HostRegistry, Vec<String>) {
     CACHE.get_or_init(load_all_with_warnings)
 }
 
-/// Drop the two kinds of configured host that may not claim the current WSL
-/// distro, returning one warning per entry removed.
+/// The configured hosts that may not claim the current WSL distro, split by
+/// the rule that refused each.
+///
+/// Kept rather than discarded because the one-time repair of the rows they
+/// already wrote is decided by exactly this split — see
+/// [`wsl_loopback_backend_names`].
+#[derive(Debug, Default)]
+struct RefusedWslHosts {
+    /// Entries that point `wsl.exe` back at us. Their backend name is a
+    /// spelling this machine's own *local* rows may be recorded under.
+    loopbacks: Vec<HostDef>,
+    /// Entries that reach another distro while registering as `wsl:<us>`.
+    /// Their backend name is a *genuinely remote* one, whatever it looks like.
+    shadows: Vec<HostDef>,
+}
+
+/// Remove the two kinds of configured host that may not claim the current WSL
+/// distro, returning them classified.
 ///
 /// A [loopback](HostDef::is_wsl_loopback) points `wsl.exe` back at us and
 /// cannot work: it describes this very machine as somewhere else.
 /// A [shadow](HostDef::shadows_current_wsl_distro) reaches a real sibling but
-/// *registers* as `wsl:<us>`, so its rows are indistinguishable from the ones
-/// the loopback bug wrote and the schema v47 heal would relabel them local;
-/// renaming it costs nothing and keeps that backend name unambiguous.
+/// *registers* as `wsl:<us>`, so its rows are spelled like the ones the
+/// loopback bug wrote; renaming it costs nothing and keeps that backend name
+/// unambiguous.
 ///
 /// Auto-discovery can produce neither — it names a host after the distro it
 /// points at, and [`discover_wsl_hosts`] filters the loopback — so both come
-/// only from a hand-written entry, and a warning naming it is better than
-/// either honouring it or removing it in silence.
-fn drop_wsl_loopback(reg: &mut HostRegistry) -> Vec<String> {
-    let mut warnings = Vec::new();
+/// only from a hand-written entry.
+fn refuse_wsl_self_hosts(reg: &mut HostRegistry) -> RefusedWslHosts {
+    let mut refused = RefusedWslHosts::default();
     reg.hosts.retain(|h| {
         if h.is_wsl_loopback() {
-            warnings.push(format!(
-                "hosts.toml: ignoring host '{}' — it names the WSL distro thurbox \
-                 is running in ('{}'), so sessions on it are local, not remote. \
-                 Create them with no --host.",
-                h.name,
-                h.distro_name()
-            ));
+            refused.loopbacks.push(h.clone());
             return false;
         }
         if h.shadows_current_wsl_distro() {
-            warnings.push(format!(
-                "hosts.toml: ignoring host '{}' — it reaches distro '{}' but is \
-                 named after the one thurbox runs in, so its sessions would be \
-                 recorded as local. Rename the entry to keep it.",
-                h.name,
-                h.distro_name()
-            ));
+            refused.shadows.push(h.clone());
             return false;
         }
         true
     });
-    warnings
+    refused
+}
+
+/// [`refuse_wsl_self_hosts`], reported: one warning per entry removed, because
+/// naming it is better than either honouring it or dropping it in silence.
+fn drop_wsl_loopback(reg: &mut HostRegistry) -> Vec<String> {
+    let refused = refuse_wsl_self_hosts(reg);
+    let loopbacks = refused.loopbacks.iter().map(|h| {
+        format!(
+            "hosts.toml: ignoring host '{}' — it names the WSL distro thurbox \
+             is running in ('{}'), so sessions on it are local, not remote. \
+             Create them with no --host.",
+            h.name,
+            h.distro_name()
+        )
+    });
+    let shadows = refused.shadows.iter().map(|h| {
+        format!(
+            "hosts.toml: ignoring host '{}' — it reaches distro '{}' but is \
+             named after the one thurbox runs in, so its sessions would be \
+             recorded as local. Rename the entry to keep it.",
+            h.name,
+            h.distro_name()
+        )
+    });
+    loopbacks.chain(shadows).collect()
+}
+
+/// The `sessions.backend_type` / `repo_bookmarks.host` spellings on this
+/// machine that the WSL loopback bug can have written — the set
+/// `session_ops::repair_wsl_loopback_rows` relabels local, and the reason that
+/// repair does not live in the migration that records it as owed.
+///
+/// Decided by the registry, not by a spelling. A host is registered — and
+/// persisted — under its `name`, so the two do not coincide in either
+/// direction:
+///
+/// - `wsl:$WSL_DISTRO_NAME` is the base case: what auto-discovery offered
+///   before [`HostDef::is_wsl_loopback`] filtered it.
+/// - **plus** every refused loopback's own backend name: a hand-written
+///   `name = "self", distro = "<us>"` wrote `wsl:self`, and dropping the entry
+///   without healing those rows would strand them on a host `hosts.toml` no
+///   longer describes.
+/// - **minus** every refused shadow's backend name: when such an entry exists,
+///   that spelling reaches a *sibling* and its rows are genuinely remote, so
+///   relabelling them local would act on the wrong machine.
+///
+/// Subtraction is case-insensitive and wins, so an ambiguous pair of entries
+/// leaves the rows alone rather than guessing. Empty off WSL, where there is
+/// no loopback to have written anything.
+pub fn wsl_loopback_backend_names() -> Vec<String> {
+    let mut reg = load_or_seed_with_warnings().0;
+    let refused = refuse_wsl_self_hosts(&mut reg);
+    let discovered = crate::session::current_wsl_distro()
+        .map(|d| format!("{}{d}", crate::session::WSL_BACKEND_PREFIX));
+    let shadowed: Vec<String> = refused.shadows.iter().map(HostDef::backend_name).collect();
+
+    let mut names: Vec<String> = discovered
+        .into_iter()
+        .chain(refused.loopbacks.iter().map(HostDef::backend_name))
+        .filter(|n| !shadowed.iter().any(|s| s.eq_ignore_ascii_case(n)))
+        .collect();
+    names.sort_by_key(|n| n.to_ascii_lowercase());
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    names
 }
 
 /// Append auto-discovered WSL distros to `reg`, skipping any whose name already

@@ -26,10 +26,12 @@ dropped from both halves of the registry — discovered and configured (the
 configured one with a warning) — as is a configured host that reaches a sibling
 but is *named* after the current distro (`shadows_current_wsl_distro`): it would
 register as `wsl:<us>` and be indistinguishable from a loopback row, so it is
-dropped with a warning telling you to rename it. Schema v47 restores the rows a
-released build already relabelled `wsl:<us>`: being shareable by default, the
-loopback was mirrored, and its "host" database was this database, so the pass
-rewrote our own local rows as remote. Siblings stay ordinary hosts. The seeded file
+dropped with a warning telling you to rename it. Rows a released build already
+relabelled `wsl:<us>` (being shareable by default, the loopback was mirrored,
+and its "host" database was this database, so the pass rewrote our own local
+rows as remote) are put back by a one-time repair rather than by the migration:
+schema v47 only marks it **owed**, and `session_ops::repair_wsl_loopback_rows`
+runs it once at startup. Siblings stay ordinary hosts. The seeded file
 documents every field inline; the schema:
 
 ```toml
@@ -113,6 +115,18 @@ session), never on the loop, ADR-P12).
   = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry
   wins), minus any loopback or backend-name shadow of it (`drop_wsl_loopback`
   / `wsl_hosts_from`).
+- **The loopback repair**: `session_ops::repair_wsl_loopback_rows`, guarded by
+  the `wsl_loopback_repair_owed` mark schema v47 writes and clears when it runs.
+  The set it relabels local comes from the registry, not from a spelling
+  (`agent::host_config::wsl_loopback_backend_names`): `wsl:$WSL_DISTRO_NAME`,
+  **plus** each refused loopback's own `backend_name()` (a hand-written
+  `name = "self", distro = "<us>"` wrote `wsl:self`, and dropping the entry
+  without healing those rows strands them), **minus** each refused shadow's
+  (while that entry exists the spelling reaches a sibling and is genuinely
+  remote). `Database::relabel_wsl_loopback_rows` owns the SQL; `(host,
+  repo_path)` is the bookmark key, so colliding readings of one path are
+  resolved on recency — ties keep the local row — before the survivor is
+  relabelled.
 - **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>` or `None`
   = local). The TUI new-session flow shows a **host picker** first (skipped when
   none configured/discovered); the chosen host runs git worktree creation +
