@@ -585,7 +585,10 @@ WSL needs no credentials at all.
   (interop exports `wsl.exe`), so a thurbox in one distro reaches its
   siblings — but **never itself**: the distro named by `$WSL_DISTRO_NAME`
   is a *loopback* (`HostDef::is_wsl_loopback`) and is dropped from both
-  halves of the registry. Registering it made every local session remote,
+  halves of the registry, as is a configured host that merely *registers*
+  under `wsl:<us>` while pointing elsewhere
+  (`HostDef::shadows_current_wsl_distro`) — its rows would be spelled like
+  the bug's. Registering a loopback made every local session remote,
   because a shareable host's own database is the record of its sessions
   (ADR-24) and that database was this one: the mirror pass read our own
   rows back and rewrote each `backend_type` to `wsl:<us>`, after which

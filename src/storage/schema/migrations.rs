@@ -942,11 +942,13 @@ pub(super) fn migrate_v46_teardown_owed(conn: &Connection) -> rusqlite::Result<(
 /// [`crate::session::HostDef::is_wsl_loopback`] stops that host being
 /// registered; the rows it already wrote need saying so.
 ///
-/// Scoped to `wsl:$WSL_DISTRO_NAME` — the name auto-discovery used, which is
-/// the only way one of these was ever created. A hand-written `hosts.toml`
-/// entry may give a distro some other `name`, but `storage` cannot read that
-/// file (it may reference `session` and not `agent`), and such an entry is
-/// dropped with a warning rather than acted on. Nothing to do off WSL, and
+/// Scoped to `wsl:$WSL_DISTRO_NAME`, which `storage` can derive on its own
+/// (it may reference `session`, not `agent`, so `hosts.toml` is out of reach).
+/// That name is unambiguous because the registry keeps it so: auto-discovery
+/// never offers the loopback, and a hand-written entry that would *register*
+/// under it — whichever distro it actually points at — is dropped with a
+/// warning ([`crate::session::HostDef::shadows_current_wsl_distro`]). So a row
+/// spelled this way can only be one the bug wrote. Nothing to do off WSL, and
 /// nothing to do to a **sibling** distro's rows: reaching one from inside
 /// another is an ordinary remote session.
 pub(super) fn migrate_v47_wsl_loopback_is_local(conn: &Connection) -> rusqlite::Result<()> {
@@ -970,10 +972,30 @@ pub(super) fn migrate_v47_wsl_loopback_is_local(conn: &Connection) -> rusqlite::
         }
     }
     if column_exists(conn, "repo_bookmarks", "host")? {
-        // `OR REPLACE`: the same path may already be bookmarked locally, and
-        // `(host, repo_path)` is the key — the local row is the one to keep.
+        // `(host, repo_path)` is the key, so a path bookmarked both before the
+        // bug and during it has two rows that the relabel would collide. Both
+        // record real local use, so the pair is resolved on recency and the
+        // staler row deleted first; `UPDATE OR REPLACE` would instead have
+        // silently dropped whichever row already existed, which is the local
+        // one — the opposite of what a heal should keep.
         conn.execute(
-            "UPDATE OR REPLACE repo_bookmarks SET host = '' WHERE host = ?1 COLLATE NOCASE",
+            "DELETE FROM repo_bookmarks AS local
+              WHERE local.host = ''
+                AND EXISTS (SELECT 1 FROM repo_bookmarks lb
+                             WHERE lb.host = ?1 COLLATE NOCASE
+                               AND lb.repo_path = local.repo_path
+                               AND lb.last_used_at > local.last_used_at)",
+            [&loopback],
+        )?;
+        conn.execute(
+            "DELETE FROM repo_bookmarks AS lb
+              WHERE lb.host = ?1 COLLATE NOCASE
+                AND EXISTS (SELECT 1 FROM repo_bookmarks local
+                             WHERE local.host = '' AND local.repo_path = lb.repo_path)",
+            [&loopback],
+        )?;
+        conn.execute(
+            "UPDATE repo_bookmarks SET host = '' WHERE host = ?1 COLLATE NOCASE",
             [&loopback],
         )?;
     }

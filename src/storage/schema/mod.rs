@@ -742,6 +742,78 @@ mod tests {
         });
     }
 
+    /// `(host, repo_path)` is the bookmark key, so a path bookmarked both
+    /// before the bug and during it collides on the relabel. The pair is one
+    /// path used locally twice, so the more recent reading survives — and a
+    /// tie keeps the local row rather than the artifact of the bug.
+    #[test]
+    fn migrate_from_v46_resolves_colliding_bookmarks_on_recency() {
+        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO metadata (key, value) VALUES ('schema_version', '46');
+                 CREATE TABLE repo_bookmarks (
+                    host TEXT NOT NULL DEFAULT '', repo_path TEXT NOT NULL,
+                    label TEXT, last_used_at INTEGER NOT NULL,
+                    use_count INTEGER NOT NULL DEFAULT 1,
+                    is_parent INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (host, repo_path));
+                 INSERT INTO repo_bookmarks (host, repo_path, label, last_used_at) VALUES
+                    ('',                '/local-newer',   'keep', 200),
+                    ('wsl:MagicDebian', '/local-newer',   'drop', 100),
+                    ('',                '/loopback-newer','drop', 100),
+                    ('wsl:MagicDebian', '/loopback-newer','keep', 200),
+                    ('',                '/tie',           'keep', 300),
+                    ('wsl:MagicDebian', '/tie',           'drop', 300),
+                    ('wsl:MagicDebian', '/only-loopback', 'keep', 100),
+                    ('ssh:devbox',      '/local-newer',   'keep', 100);",
+            )
+            .unwrap();
+
+            migrate(&conn).unwrap();
+
+            let rows: Vec<(String, String, String)> = conn
+                .prepare(
+                    "SELECT host, repo_path, label FROM repo_bookmarks ORDER BY repo_path, host",
+                )
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+
+            assert_eq!(
+                rows,
+                vec![
+                    (
+                        "".to_string(),
+                        "/local-newer".to_string(),
+                        "keep".to_string()
+                    ),
+                    // A genuinely remote bookmark for the same path is a
+                    // different key and never part of the collision.
+                    (
+                        "ssh:devbox".to_string(),
+                        "/local-newer".to_string(),
+                        "keep".to_string()
+                    ),
+                    (
+                        "".to_string(),
+                        "/loopback-newer".to_string(),
+                        "keep".to_string()
+                    ),
+                    (
+                        "".to_string(),
+                        "/only-loopback".to_string(),
+                        "keep".to_string()
+                    ),
+                    ("".to_string(), "/tie".to_string(), "keep".to_string()),
+                ]
+            );
+        });
+    }
+
     #[test]
     fn migrate_from_v46_off_wsl_touches_nothing() {
         crate::session::host_def::with_wsl_distro(None, || {

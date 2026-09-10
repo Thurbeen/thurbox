@@ -217,10 +217,11 @@ pub fn load_or_seed_with_warnings() -> (HostRegistry, Vec<String>) {
 /// config; the discovered set never overrides an explicitly configured host of
 /// the same name.
 ///
-/// Neither half may register a **loopback** — the WSL distro thurbox is running
-/// inside, which is this machine and not a host at all
-/// ([`HostDef::is_wsl_loopback`]). This is the one chokepoint every caller
-/// shares, so dropping it here is what keeps a local session local.
+/// Neither half may claim the WSL distro thurbox is running inside: not as a
+/// **loopback** ([`HostDef::is_wsl_loopback`] — this machine, and not a host at
+/// all) and not as a **shadow** of its backend name
+/// ([`HostDef::shadows_current_wsl_distro`]). This is the one chokepoint every
+/// caller shares, so dropping both here is what keeps a local session local.
 pub fn load_all_with_warnings() -> (HostRegistry, Vec<String>) {
     let (mut reg, mut warnings) = load_or_seed_with_warnings();
     warnings.extend(drop_wsl_loopback(&mut reg));
@@ -258,35 +259,51 @@ pub fn cached_registry() -> &'static (HostRegistry, Vec<String>) {
     CACHE.get_or_init(load_all_with_warnings)
 }
 
-/// Append auto-discovered WSL distros to `reg`, skipping any whose name already
-/// matches a configured host (so a hand-written `hosts.toml` entry for a distro
-/// — e.g. with a custom `worktrees_dir` — wins over the bare discovered one).
-/// Drop a configured host that names the WSL distro thurbox is running inside,
-/// returning one warning per entry removed.
+/// Drop the two kinds of configured host that may not claim the current WSL
+/// distro, returning one warning per entry removed.
 ///
-/// Such an entry is a loopback ([`HostDef::is_wsl_loopback`]) and cannot work:
-/// it describes this very machine as somewhere else. Auto-discovery never
-/// offers one — [`discover_wsl_hosts`] filters it — so the only way to get one
-/// is by hand, and a warning naming it is better than either honouring it or
-/// removing it in silence.
+/// A [loopback](HostDef::is_wsl_loopback) points `wsl.exe` back at us and
+/// cannot work: it describes this very machine as somewhere else.
+/// A [shadow](HostDef::shadows_current_wsl_distro) reaches a real sibling but
+/// *registers* as `wsl:<us>`, so its rows are indistinguishable from the ones
+/// the loopback bug wrote and the schema v47 heal would relabel them local;
+/// renaming it costs nothing and keeps that backend name unambiguous.
+///
+/// Auto-discovery can produce neither — it names a host after the distro it
+/// points at, and [`discover_wsl_hosts`] filters the loopback — so both come
+/// only from a hand-written entry, and a warning naming it is better than
+/// either honouring it or removing it in silence.
 fn drop_wsl_loopback(reg: &mut HostRegistry) -> Vec<String> {
     let mut warnings = Vec::new();
     reg.hosts.retain(|h| {
-        if !h.is_wsl_loopback() {
-            return true;
+        if h.is_wsl_loopback() {
+            warnings.push(format!(
+                "hosts.toml: ignoring host '{}' — it names the WSL distro thurbox \
+                 is running in ('{}'), so sessions on it are local, not remote. \
+                 Create them with no --host.",
+                h.name,
+                h.distro_name()
+            ));
+            return false;
         }
-        warnings.push(format!(
-            "hosts.toml: ignoring host '{}' — it names the WSL distro thurbox \
-             is running in ('{}'), so sessions on it are local, not remote. \
-             Create them with no --host.",
-            h.name,
-            h.distro_name()
-        ));
-        false
+        if h.shadows_current_wsl_distro() {
+            warnings.push(format!(
+                "hosts.toml: ignoring host '{}' — it reaches distro '{}' but is \
+                 named after the one thurbox runs in, so its sessions would be \
+                 recorded as local. Rename the entry to keep it.",
+                h.name,
+                h.distro_name()
+            ));
+            return false;
+        }
+        true
     });
     warnings
 }
 
+/// Append auto-discovered WSL distros to `reg`, skipping any whose name already
+/// matches a configured host (so a hand-written `hosts.toml` entry for a distro
+/// — e.g. with a custom `worktrees_dir` — wins over the bare discovered one).
 fn augment_with_wsl(reg: &mut HostRegistry) {
     let configured: HashSet<&str> = reg.hosts.iter().map(|h| h.name.as_str()).collect();
     let discovered: Vec<HostDef> = discover_wsl_hosts()
@@ -494,6 +511,34 @@ mod tests {
             assert!(
                 warnings[0].contains("'self'") && warnings[0].contains("MagicDebian"),
                 "the warning must name the entry and the distro: {}",
+                warnings[0]
+            );
+        });
+    }
+
+    #[test]
+    fn a_configured_shadow_of_our_distro_is_dropped_with_its_own_warning() {
+        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+            let mut reg = HostRegistry {
+                config_version: None,
+                hosts: vec![
+                    // Reaches a genuine sibling, but registers as
+                    // `wsl:MagicDebian` — indistinguishable from a loopback row.
+                    HostDef {
+                        name: "MagicDebian".into(),
+                        kind: crate::session::HostKind::Wsl,
+                        distro: Some("MagicDebianPerso".into()),
+                        ..Default::default()
+                    },
+                    HostDef::wsl("Ubuntu"),
+                ],
+            };
+            let warnings = drop_wsl_loopback(&mut reg);
+            assert_eq!(reg.names(), ["Ubuntu"]);
+            assert_eq!(warnings.len(), 1);
+            assert!(
+                warnings[0].contains("MagicDebianPerso") && warnings[0].contains("Rename"),
+                "the warning must name the distro it reaches and say to rename: {}",
                 warnings[0]
             );
         });

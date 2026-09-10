@@ -205,6 +205,23 @@ impl HostDef {
         self.is_wsl() && is_current_wsl_distro(&self.distro_name())
     }
 
+    /// Whether this host would **register under the loopback's backend name**
+    /// (`wsl:<us>`) while pointing `wsl.exe` at some other distro.
+    ///
+    /// A host is registered — and persisted in `sessions.backend_type` — under
+    /// its [`name`](Self::name), not its [`distro`](Self::distro). So
+    /// `name = "<us>"` with `distro = "<a sibling>"` is a working remote host
+    /// that writes rows spelled exactly like the ones the loopback bug wrote,
+    /// and the schema v47 heal keys on that spelling: it cannot tell the two
+    /// apart, and would relabel a genuinely remote session local.
+    ///
+    /// Dropping the entry — with a warning that says to rename it — is what
+    /// keeps `wsl:<us>` unambiguous. The sibling stays reachable under any
+    /// other name, so nothing is lost but the collision.
+    pub fn shadows_current_wsl_distro(&self) -> bool {
+        self.is_wsl() && !self.is_wsl_loopback() && is_current_wsl_distro(&self.name)
+    }
+
     /// The backend name this host registers under: `ssh:<name>` or
     /// `wsl:<name>`.
     pub fn backend_name(&self) -> String {
@@ -589,10 +606,48 @@ worktrees_dir = "/home/me/wt"
     }
 
     #[test]
+    fn a_host_named_after_our_distro_shadows_its_backend_name() {
+        with_wsl_distro(Some("Ubuntu"), || {
+            // Reaches a real sibling, but would register as `wsl:Ubuntu` —
+            // the very spelling the v47 heal reads as "this machine".
+            let shadow = HostDef {
+                name: "Ubuntu".into(),
+                kind: HostKind::Wsl,
+                distro: Some("Debian".into()),
+                ..Default::default()
+            };
+            assert!(shadow.shadows_current_wsl_distro());
+            assert!(!shadow.is_wsl_loopback());
+            assert_eq!(shadow.backend_name(), "wsl:Ubuntu");
+
+            // A true loopback is not also a shadow: the two are reported
+            // separately so each gets the warning that fits it.
+            assert!(!HostDef::wsl("Ubuntu").shadows_current_wsl_distro());
+            // Renaming the entry is all it takes.
+            assert!(!HostDef {
+                name: "work".into(),
+                kind: HostKind::Wsl,
+                distro: Some("Debian".into()),
+                ..Default::default()
+            }
+            .shadows_current_wsl_distro());
+            // An SSH host named after the distro collides with nothing: it
+            // registers as `ssh:Ubuntu`.
+            assert!(!HostDef {
+                name: "Ubuntu".into(),
+                destination: "me@ubuntu".into(),
+                ..Default::default()
+            }
+            .shadows_current_wsl_distro());
+        });
+    }
+
+    #[test]
     fn off_wsl_nothing_is_a_loopback() {
         with_wsl_distro(None, || {
             assert_eq!(current_wsl_distro(), None);
             assert!(!HostDef::wsl("Ubuntu").is_wsl_loopback());
+            assert!(!HostDef::wsl("Ubuntu").shadows_current_wsl_distro());
         });
         // A distro that set the variable empty is no distro at all.
         with_wsl_distro(Some("  "), || {
