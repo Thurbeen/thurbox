@@ -634,13 +634,13 @@ WSL needs no credentials at all.
   those rows exactly where they are, under a name no host registers.
   Only a question that could not be **asked** keeps the mark: a
   `hosts.toml` that would not parse, distros that could not be
-  enumerated, a failed write. Enumeration failing reads as *claimed* —
-  silence must never read as "nothing claims it" — while a machine with
-  no `wsl.exe` at all is a definite "no distros" (interop puts `wsl.exe`
-  on `PATH` inside a distro, so the two cases do not overlap). And it is
-  asked at all only for a candidate discovery could decide: never for
-  `wsl:<us>`, the one spelling discovery filters out, so the ordinary
-  repair spawns no subprocess. The bookmark half resolves colliding
+  enumerated, a failed write. Silence must never read as "nothing claims
+  it", while a machine with no `wsl.exe` at all is a definite "no
+  distros" (interop puts `wsl.exe` on `PATH` inside a distro, so the two
+  cases do not overlap). Enumeration is asked at all only for a
+  candidate discovery could decide — never for `wsl:<us>`, the one
+  spelling discovery filters out — so the ordinary repair spawns no
+  subprocess. The bookmark half resolves colliding
   readings of one path on recency (`(host, repo_path)` is the key, so
   only one can survive) and the survivor inherits the group's
   `is_parent`/`parent_path`, so a healed parent keeps the mark its
@@ -676,6 +676,19 @@ stalls. Worth the most manual testing.
 - *Embedded SSH library (russh, etc.)* — reimplements `~/.ssh/config`,
   agent forwarding, and multiplexing that the system `ssh` already
   provides.
+- *Re-registering a `wsl:<us>` shadow under the distro it reaches, and
+  moving its rows onto that name* — built and withdrawn, not merely
+  considered. It cannot be made correct: the shadow's backend name *is*
+  `wsl:$WSL_DISTRO_NAME`, so the rows under it are two populations at
+  once — local rows an older release mislabelled before the entry
+  existed, and the host's own remote rows written through it after — and
+  nothing in the database separates them. Renaming them all onto the
+  sibling misassigns the local ones; relabelling them all local
+  misassigns the sibling's. Narrowing *which* host the rename targets
+  does not help, because the ambiguity is in the rows, not the target.
+  Leaving every such row alone is the only outcome that never operates
+  on the wrong machine, so the entry stays exactly as written and the
+  repair withholds that one spelling. Do not reintroduce the rename.
 
 ### psmux divergences from tmux
 

@@ -72,14 +72,20 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
     }
 
     let mut notices = Vec::new();
-    if !plan.withheld.is_empty() {
-        notices.push(format!(
-            "sessions recorded on {} were left as they are, for good: a host thurbox \
-             serves registers under that name, so a local session an older release \
-             mislabelled there cannot be told from one of that host's own, and \
-             guessing either way would operate on the wrong machine",
+    match db.rows_recorded_on(&plan.withheld) {
+        // Nothing was left alone, so there is nothing to report: an entry that
+        // claims the spelling but never wrote a row is ordinary, and this is
+        // the one notice its owner would ever see.
+        Ok((0, 0)) => {}
+        Ok((sessions, bookmarks)) => notices.push(format!(
+            "{sessions} session(s) and {bookmarks} repo bookmark(s) recorded on {} were \
+             left as they are, for good: a host thurbox serves registers under that \
+             name, so a local session an older release mislabelled there cannot be told \
+             from one of that host's own, and guessing either way would operate on the \
+             wrong machine",
             plan.withheld.join(", ")
-        ));
+        )),
+        Err(e) => tracing::warn!("could not count the rows the WSL repair withheld: {e}"),
     }
     if report.sessions_local > 0 || report.bookmarks_local > 0 {
         notices.push(format!(
@@ -101,7 +107,6 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::host_config::with_discovered_wsl;
     use crate::session::host_def::with_wsl_distro;
     use crate::session::HostDef;
 
@@ -176,7 +181,7 @@ mod tests {
     #[test]
     fn the_discovered_loopbacks_rows_are_healed_and_a_siblings_are_not() {
         with_wsl_distro(Some("MagicDebian"), || {
-            with_discovered_wsl(discovery_is_not_consulted(), || {
+            crate::agent::host_config::with_discovered_wsl(discovery_is_not_consulted(), || {
                 let rig = rig("");
                 session(&rig.db, "a", "wsl:MagicDebian");
                 session(&rig.db, "b", "wsl:MagicDebianPerso");
@@ -206,19 +211,23 @@ mod tests {
         with_wsl_distro(Some("MagicDebian"), || {
             // `wsl:self` is spelled after no distro this machine has, so the
             // list is what says nothing claims it.
-            with_discovered_wsl(Ok(vec![HostDef::wsl("MagicDebianPerso")]), || {
-                let rig =
-                    rig("[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n");
-                session(&rig.db, "a", "wsl:self");
-                session(&rig.db, "b", "wsl:MagicDebian");
-                session(&rig.db, "c", "wsl:MagicDebianPerso");
+            crate::agent::host_config::with_discovered_wsl(
+                Ok(vec![HostDef::wsl("MagicDebianPerso")]),
+                || {
+                    let rig = rig(
+                        "[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n",
+                    );
+                    session(&rig.db, "a", "wsl:self");
+                    session(&rig.db, "b", "wsl:MagicDebian");
+                    session(&rig.db, "c", "wsl:MagicDebianPerso");
 
-                repair_wsl_loopback_rows(&rig.db);
+                    repair_wsl_loopback_rows(&rig.db);
 
-                assert_eq!(backend(&rig.db, "a"), "local-tmux");
-                assert_eq!(backend(&rig.db, "b"), "local-tmux");
-                assert_eq!(backend(&rig.db, "c"), "wsl:MagicDebianPerso");
-            });
+                    assert_eq!(backend(&rig.db, "a"), "local-tmux");
+                    assert_eq!(backend(&rig.db, "b"), "local-tmux");
+                    assert_eq!(backend(&rig.db, "c"), "wsl:MagicDebianPerso");
+                },
+            );
         });
     }
 
@@ -230,7 +239,7 @@ mod tests {
     #[test]
     fn a_shadow_configs_rows_are_left_exactly_as_they_are() {
         with_wsl_distro(Some("MagicDebian"), || {
-            with_discovered_wsl(discovery_is_not_consulted(), || {
+            crate::agent::host_config::with_discovered_wsl(discovery_is_not_consulted(), || {
                 let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
                      distro = \"MagicDebianPerso\"\n");
                 session(&rig.db, "a", "wsl:MagicDebian");
@@ -261,6 +270,30 @@ mod tests {
         });
     }
 
+    /// An entry that claims the spelling but never wrote a row is an ordinary
+    /// config, and this notice is the only one its owner would ever see — so
+    /// telling them sessions were left alone, when there are none, is worse
+    /// than saying nothing.
+    #[test]
+    fn a_claimed_spelling_with_no_rows_is_not_reported() {
+        with_wsl_distro(Some("MagicDebian"), || {
+            crate::agent::host_config::with_discovered_wsl(discovery_is_not_consulted(), || {
+                let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
+                     distro = \"MagicDebianPerso\"\n");
+                session(&rig.db, "a", "wsl:MagicDebianPerso");
+
+                let notices = repair_wsl_loopback_rows(&rig.db);
+
+                assert!(
+                    notices.is_empty(),
+                    "nothing was withheld in practice: {notices:?}"
+                );
+                assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebianPerso");
+                assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+            });
+        });
+    }
+
     /// The regression the withheld-mark policy caused: a shadow's rows are
     /// *genuinely remote*, and the claim disappearing does not make them
     /// readable — it only removes the evidence. A repair still owed at that
@@ -269,7 +302,7 @@ mod tests {
     #[test]
     fn removing_the_claiming_entry_does_not_relabel_its_rows_later() {
         with_wsl_distro(Some("MagicDebian"), || {
-            with_discovered_wsl(discovery_is_not_consulted(), || {
+            crate::agent::host_config::with_discovered_wsl(discovery_is_not_consulted(), || {
                 let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
                      distro = \"MagicDebianPerso\"\n");
                 session(&rig.db, "a", "wsl:MagicDebian");
@@ -300,21 +333,24 @@ mod tests {
     fn an_unenumerable_wsl_keeps_the_mark_and_completes_later() {
         with_wsl_distro(Some("MagicDebian"), || {
             let toml = "[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n";
-            let rig = with_discovered_wsl(Err("wsl.exe -l -q failed".to_string()), || {
-                let rig = rig(toml);
-                session(&rig.db, "a", "wsl:self");
+            let rig = crate::agent::host_config::with_discovered_wsl(
+                Err("wsl.exe -l -q failed".to_string()),
+                || {
+                    let rig = rig(toml);
+                    session(&rig.db, "a", "wsl:self");
 
-                assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
+                    assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
 
-                assert_eq!(backend(&rig.db, "a"), "wsl:self");
-                assert!(
-                    rig.db.wsl_loopback_repair_owed().unwrap(),
-                    "the mark survives, so the repair is not lost"
-                );
-                rig
-            });
+                    assert_eq!(backend(&rig.db, "a"), "wsl:self");
+                    assert!(
+                        rig.db.wsl_loopback_repair_owed().unwrap(),
+                        "the mark survives, so the repair is not lost"
+                    );
+                    rig
+                },
+            );
 
-            with_discovered_wsl(Ok(Vec::new()), || {
+            crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
                 repair_wsl_loopback_rows(&rig.db);
 
                 assert_eq!(backend(&rig.db, "a"), "local-tmux");
@@ -328,18 +364,21 @@ mod tests {
     #[test]
     fn a_loopback_is_still_healed_alongside_a_shadow() {
         with_wsl_distro(Some("MagicDebian"), || {
-            with_discovered_wsl(Ok(vec![HostDef::wsl("MagicDebianPerso")]), || {
-                let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
+            crate::agent::host_config::with_discovered_wsl(
+                Ok(vec![HostDef::wsl("MagicDebianPerso")]),
+                || {
+                    let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
                      distro = \"MagicDebianPerso\"\n\n\
                      [[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"MagicDebian\"\n");
-                session(&rig.db, "a", "wsl:MagicDebian");
-                session(&rig.db, "b", "wsl:self");
+                    session(&rig.db, "a", "wsl:MagicDebian");
+                    session(&rig.db, "b", "wsl:self");
 
-                repair_wsl_loopback_rows(&rig.db);
+                    repair_wsl_loopback_rows(&rig.db);
 
-                assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
-                assert_eq!(backend(&rig.db, "b"), "local-tmux");
-            });
+                    assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+                    assert_eq!(backend(&rig.db, "b"), "local-tmux");
+                },
+            );
         });
     }
 
@@ -372,7 +411,7 @@ mod tests {
     #[test]
     fn two_case_variant_loopbacks_bookmarking_one_repo_do_not_fail() {
         with_wsl_distro(Some("Ubuntu"), || {
-            with_discovered_wsl(discovery_is_not_consulted(), || {
+            crate::agent::host_config::with_discovered_wsl(discovery_is_not_consulted(), || {
                 let rig =
                     rig("[[hosts]]\nname = \"ubuntu\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n");
                 rig.db
@@ -405,7 +444,7 @@ mod tests {
     #[test]
     fn an_unparseable_hosts_toml_defers_the_repair_and_changes_nothing() {
         with_wsl_distro(Some("MagicDebian"), || {
-            with_discovered_wsl(discovery_is_not_consulted(), || {
+            crate::agent::host_config::with_discovered_wsl(discovery_is_not_consulted(), || {
                 let rig = rig("[[hosts]\nname = \"MagicDebian\"\n");
                 session(&rig.db, "a", "wsl:MagicDebian");
 

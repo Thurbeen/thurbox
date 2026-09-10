@@ -182,6 +182,39 @@ impl Database {
         Ok(())
     }
 
+    /// How many sessions and repo bookmarks are recorded under any of
+    /// `backends`, matched case-insensitively the way the heal matches them.
+    ///
+    /// What the repair *withheld* is only worth telling the user about when
+    /// something is actually recorded there: an entry that claims a spelling
+    /// but never wrote a row is an ordinary config, and the notice is the one
+    /// message its owner would ever see.
+    pub fn rows_recorded_on(&self, backends: &[String]) -> rusqlite::Result<(usize, usize)> {
+        if backends.is_empty() {
+            return Ok((0, 0));
+        }
+        let list = std::iter::repeat("?")
+            .take(backends.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let count = |sql: String| -> rusqlite::Result<usize> {
+            let n: i64 =
+                self.conn
+                    .query_row(&sql, rusqlite::params_from_iter(backends.iter()), |row| {
+                        row.get(0)
+                    })?;
+            Ok(n as usize)
+        };
+        Ok((
+            count(format!(
+                "SELECT COUNT(*) FROM sessions WHERE backend_type COLLATE NOCASE IN ({list})"
+            ))?,
+            count(format!(
+                "SELECT COUNT(*) FROM repo_bookmarks WHERE host COLLATE NOCASE IN ({list})"
+            ))?,
+        ))
+    }
+
     /// Apply `plan`: rows recorded under a
     /// [`to_local`](WslRepairPlan::to_local) name become this machine's own
     /// (`backend_type` = [`LOCAL_BACKEND_TYPE`], bookmark `host` = `''`). One
