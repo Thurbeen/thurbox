@@ -3360,7 +3360,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let p = dir.join(name);
         std::fs::write(&p, b"#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
         p
     }
 

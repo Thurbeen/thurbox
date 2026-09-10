@@ -66,7 +66,7 @@ fn a_local_spawn_finds_the_agent_the_multiplexer_cannot() {
     .expect("write probe agent");
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     }
 
     // nextest runs one process per test, so process-wide env is safe here.
