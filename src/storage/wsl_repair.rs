@@ -1,28 +1,35 @@
-//! The one-time repair of rows the WSL loopback bug recorded as remote.
+//! The one-time repair of rows a WSL loopback or shadow host recorded wrong.
 //!
 //! Two halves live apart on purpose. Schema v47 only *marks* the repair as
-//! owed, because which backend names to heal is decided by the host registry
-//! (`hosts.toml` + WSL discovery) and `storage` may not read it; the set is
-//! computed by `agent::host_config::wsl_loopback_backend_names` and handed to
-//! [`Database::relabel_wsl_loopback_rows`] by
+//! owed, because what to rewrite is decided by the host registry — which entry
+//! claims `wsl:<us>`, and which distro it really reaches — and `storage` may
+//! not read `hosts.toml`. The plan is built by
+//! `agent::host_config::wsl_repair_plan` and handed to
+//! [`Database::apply_wsl_repair_plan`] by
 //! `session_ops::repair_wsl_loopback_rows`. What stays here is the SQL, which
 //! is this module's job whoever decides the policy.
 
 use rusqlite::{params, OptionalExtension};
 
+use crate::session::WslRepairPlan;
+
 use super::Database;
 
-/// Metadata key set by schema v47 to record that the loopback repair is owed,
-/// and cleared once it has run.
+/// Metadata key set by schema v47 to record that the repair is owed, and
+/// cleared once it has run.
 pub(super) const WSL_LOOPBACK_REPAIR_OWED_KEY: &str = "wsl_loopback_repair_owed";
 
 /// What one repair pass changed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct WslLoopbackRepair {
-    /// Sessions moved from a loopback backend name back to local.
-    pub sessions: usize,
-    /// Bookmarks relabelled from a loopback host to local.
-    pub bookmarks: usize,
+    /// Sessions restored as this machine's own.
+    pub sessions_local: usize,
+    /// Bookmarks restored as this machine's own.
+    pub bookmarks_local: usize,
+    /// Sessions moved onto the host that actually reaches their distro.
+    pub sessions_moved: usize,
+    /// Bookmarks moved onto that host.
+    pub bookmarks_moved: usize,
     /// Bookmarks deleted because another reading of the same path won on
     /// recency — `(host, repo_path)` is the key, so only one can survive.
     pub bookmarks_superseded: usize,
@@ -35,32 +42,100 @@ impl WslLoopbackRepair {
     }
 }
 
-/// One `repo_bookmarks` row, as the collision resolution below reads it.
-struct Bookmark {
-    host: String,
-    repo_path: String,
+/// A `repo_bookmarks` row in one move's collision group, as the resolution
+/// below reads it.
+struct Candidate<'a> {
+    host: &'a str,
     last_used_at: i64,
+    /// Whether this row already carries the host the move writes, so it needs
+    /// no rewrite and wins a tie.
+    at_destination: bool,
 }
 
-impl Bookmark {
-    fn is_local(&self) -> bool {
-        self.host.is_empty()
-    }
-
-    /// Descending sort key: most recent first, a tie kept by the local row,
-    /// and a tie between two loopback spellings broken by name so the outcome
-    /// does not depend on row order.
+impl Candidate<'_> {
+    /// Descending sort key: most recent first, a tie kept by the row already
+    /// at the destination, and a tie between two spellings of the source
+    /// broken by name so the outcome does not depend on row order.
     fn precedence(&self) -> (i64, bool, std::cmp::Reverse<&str>) {
         (
             self.last_used_at,
-            self.is_local(),
-            std::cmp::Reverse(self.host.as_str()),
+            self.at_destination,
+            std::cmp::Reverse(self.host),
         )
     }
 }
 
+/// Move every row recorded under `from` (matched case-insensitively, the way
+/// `wsl.exe -d` matches a distro name, so several spellings of one distro move
+/// together) to `session_to` / `bookmark_to`.
+///
+/// The bookmark half cannot be a bare `UPDATE`: `(host, repo_path)` is the
+/// primary key and it is BINARY, so `wsl:Ubuntu`, `wsl:ubuntu` and a row
+/// already at the destination can all hold the same `repo_path`, and the
+/// rewrite would collide. Every such group is one path reached one way, so it
+/// is resolved on recency — most recent reading wins, a tie keeps the row
+/// already at the destination — and the losers are deleted before the survivor
+/// is rewritten. A `use_count` merge was considered and rejected: this is an
+/// MRU hint.
+///
+/// Returns `(sessions, bookmarks, bookmarks_superseded)`.
+fn move_rows(
+    tx: &rusqlite::Transaction<'_>,
+    from: &str,
+    session_to: &str,
+    bookmark_to: &str,
+) -> rusqlite::Result<(usize, usize, usize)> {
+    let sessions = tx.execute(
+        "UPDATE sessions SET backend_type = ?1 WHERE backend_type = ?2 COLLATE NOCASE",
+        params![session_to, from],
+    )?;
+
+    let rows: Vec<(String, String, i64)> = tx
+        .prepare("SELECT host, repo_path, last_used_at FROM repo_bookmarks")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut by_path: std::collections::BTreeMap<&str, Vec<Candidate>> =
+        std::collections::BTreeMap::new();
+    for (host, repo_path, last_used_at) in &rows {
+        let at_destination = host == bookmark_to;
+        if at_destination || host.eq_ignore_ascii_case(from) {
+            by_path.entry(repo_path).or_default().push(Candidate {
+                host,
+                last_used_at: *last_used_at,
+                at_destination,
+            });
+        }
+    }
+
+    let mut moved = 0;
+    let mut superseded = 0;
+    for (repo_path, mut group) in by_path {
+        if !group.iter().any(|c| !c.at_destination) {
+            continue;
+        }
+        group.sort_by(|a, b| b.precedence().cmp(&a.precedence()));
+        let (winner, losers) = group.split_first().expect("group is never empty");
+        for loser in losers {
+            tx.execute(
+                "DELETE FROM repo_bookmarks WHERE host = ?1 AND repo_path = ?2",
+                params![loser.host, repo_path],
+            )?;
+            superseded += 1;
+        }
+        if !winner.at_destination {
+            tx.execute(
+                "UPDATE repo_bookmarks SET host = ?1 WHERE host = ?2 AND repo_path = ?3",
+                params![bookmark_to, winner.host, repo_path],
+            )?;
+            moved += 1;
+        }
+    }
+    Ok((sessions, moved, superseded))
+}
+
 impl Database {
-    /// Whether the WSL-loopback repair schema v47 recorded is still owed.
+    /// Whether the WSL repair schema v47 recorded is still owed.
     pub fn wsl_loopback_repair_owed(&self) -> rusqlite::Result<bool> {
         let raw: Option<String> = self
             .conn
@@ -83,79 +158,37 @@ impl Database {
         Ok(())
     }
 
-    /// Relabel every row recorded under one of `heal` as local: a session's
-    /// `backend_type` to [`crate::session::LOCAL_BACKEND_TYPE`], a bookmark's
-    /// `host` to `''`.
+    /// Apply `plan`: rows recorded under a
+    /// [`to_local`](WslRepairPlan::to_local) name become this machine's own
+    /// (`backend_type` = [`crate::session::LOCAL_BACKEND_TYPE`], bookmark
+    /// `host` = `''`), and each [`rename`](WslRepairPlan::renames) moves its
+    /// rows onto another host's backend name.
     ///
-    /// Matching is case-insensitive, the way `wsl.exe -d` matches a distro
-    /// name, so several spellings of one distro heal together. That is also
-    /// why the bookmark half cannot be a bare `UPDATE`: `(host, repo_path)` is
-    /// the primary key and it is BINARY, so `wsl:Ubuntu`, `wsl:ubuntu` and a
-    /// pre-bug local row can all hold the same `repo_path` and the relabel
-    /// would collide. Every such group is one path used locally, so it is
-    /// resolved on recency — most recent reading wins, a tie keeps the local
-    /// row — and the losers are deleted before the survivor is relabelled.
-    /// A `use_count` merge was considered and rejected: this is an MRU hint.
-    pub fn relabel_wsl_loopback_rows(
+    /// One transaction, and `to_local` first — the plan's own ordering rule,
+    /// which is what stops a renamed row being carried straight on to local
+    /// when a loopback happens to be named after the rename's destination.
+    pub fn apply_wsl_repair_plan(
         &self,
-        heal: &[String],
+        plan: &WslRepairPlan,
     ) -> rusqlite::Result<WslLoopbackRepair> {
         let mut report = WslLoopbackRepair::default();
-        if heal.is_empty() {
+        if plan.is_empty() {
             return Ok(report);
         }
-        let matches_heal = |host: &str| {
-            !host.is_empty() && heal.iter().any(|name| name.eq_ignore_ascii_case(host))
-        };
-
         let tx = self.write_transaction()?;
 
-        for name in heal {
-            report.sessions += tx.execute(
-                "UPDATE sessions SET backend_type = ?1 WHERE backend_type = ?2 COLLATE NOCASE",
-                params![crate::session::LOCAL_BACKEND_TYPE, name],
-            )?;
+        for from in &plan.to_local {
+            let (sessions, bookmarks, superseded) =
+                move_rows(&tx, from, crate::session::LOCAL_BACKEND_TYPE, "")?;
+            report.sessions_local += sessions;
+            report.bookmarks_local += bookmarks;
+            report.bookmarks_superseded += superseded;
         }
-
-        let rows: Vec<Bookmark> = tx
-            .prepare("SELECT host, repo_path, last_used_at FROM repo_bookmarks")?
-            .query_map([], |row| {
-                Ok(Bookmark {
-                    host: row.get(0)?,
-                    repo_path: row.get(1)?,
-                    last_used_at: row.get(2)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-
-        let mut by_path: std::collections::BTreeMap<&str, Vec<&Bookmark>> =
-            std::collections::BTreeMap::new();
-        for row in &rows {
-            if row.is_local() || matches_heal(&row.host) {
-                by_path.entry(&row.repo_path).or_default().push(row);
-            }
-        }
-
-        for (repo_path, mut group) in by_path {
-            if !group.iter().any(|b| matches_heal(&b.host)) {
-                continue;
-            }
-            group.sort_by(|a, b| b.precedence().cmp(&a.precedence()));
-            let (winner, superseded) = group.split_first().expect("group is never empty");
-            for loser in superseded {
-                tx.execute(
-                    "DELETE FROM repo_bookmarks WHERE host = ?1 AND repo_path = ?2",
-                    params![loser.host, repo_path],
-                )?;
-                report.bookmarks_superseded += 1;
-            }
-            if !winner.is_local() {
-                tx.execute(
-                    "UPDATE repo_bookmarks SET host = '' WHERE host = ?1 AND repo_path = ?2",
-                    params![winner.host, repo_path],
-                )?;
-                report.bookmarks += 1;
-            }
+        for (from, to) in &plan.renames {
+            let (sessions, bookmarks, superseded) = move_rows(&tx, from, to, to)?;
+            report.sessions_moved += sessions;
+            report.bookmarks_moved += bookmarks;
+            report.bookmarks_superseded += superseded;
         }
 
         tx.commit()?;
@@ -169,6 +202,13 @@ mod tests {
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    fn to_local(names: &[&str]) -> WslRepairPlan {
+        WslRepairPlan {
+            to_local: names.iter().map(|n| n.to_string()).collect(),
+            renames: Vec::new(),
+        }
     }
 
     fn bookmark(db: &Database, host: &str, repo_path: &str, label: &str, last_used_at: i64) {
@@ -221,10 +261,13 @@ mod tests {
         session(&db, "e", "local-tmux");
 
         let report = db
-            .relabel_wsl_loopback_rows(&["wsl:MagicDebian".to_string()])
+            .apply_wsl_repair_plan(&to_local(&["wsl:MagicDebian"]))
             .unwrap();
 
-        assert_eq!(report.sessions, 2, "a spelling variant is the same distro");
+        assert_eq!(
+            report.sessions_local, 2,
+            "a spelling variant is the same distro"
+        );
         assert_eq!(
             backends(&db),
             vec![
@@ -238,12 +281,15 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_set_changes_nothing() {
+    fn an_empty_plan_changes_nothing() {
         let db = db();
         session(&db, "a", "wsl:MagicDebian");
         bookmark(&db, "wsl:MagicDebian", "/repo", "keep", 1);
 
-        assert!(db.relabel_wsl_loopback_rows(&[]).unwrap().is_empty());
+        assert!(db
+            .apply_wsl_repair_plan(&WslRepairPlan::default())
+            .unwrap()
+            .is_empty());
 
         assert_eq!(backends(&db), vec![("a".into(), "wsl:MagicDebian".into())]);
         assert_eq!(
@@ -253,7 +299,7 @@ mod tests {
     }
 
     /// `(host, repo_path)` is the bookmark key, so a path bookmarked both
-    /// before the bug and during it collides on the relabel. The pair is one
+    /// before the bug and during it collides on the rewrite. The pair is one
     /// path used locally twice, so the more recent reading survives — and a
     /// tie keeps the local row rather than the artifact of the bug.
     #[test]
@@ -270,9 +316,9 @@ mod tests {
         bookmark(&db, "ssh:devbox", "/local-newer", "keep", 100);
 
         let report = db
-            .relabel_wsl_loopback_rows(&["wsl:MagicDebian".to_string()])
+            .apply_wsl_repair_plan(&to_local(&["wsl:MagicDebian"]))
             .unwrap();
-        assert_eq!(report.bookmarks, 2);
+        assert_eq!(report.bookmarks_local, 2);
         assert_eq!(report.bookmarks_superseded, 3);
 
         assert_eq!(
@@ -291,7 +337,7 @@ mod tests {
     }
 
     /// The failure mode this must rule out: two case-variant loopback
-    /// spellings bookmarking one repo both relabel to `host = ''`, which is
+    /// spellings bookmarking one repo both rewrite to `host = ''`, which is
     /// one BINARY primary key for two rows. Raising SQLITE_CONSTRAINT here
     /// would repeat on every start.
     #[test]
@@ -302,9 +348,9 @@ mod tests {
         bookmark(&db, "wsl:UBUNTU", "/other", "only", 100);
 
         let report = db
-            .relabel_wsl_loopback_rows(&["wsl:Ubuntu".to_string(), "wsl:ubuntu".to_string()])
+            .apply_wsl_repair_plan(&to_local(&["wsl:Ubuntu", "wsl:ubuntu"]))
             .unwrap();
-        assert_eq!(report.bookmarks, 2);
+        assert_eq!(report.bookmarks_local, 2);
         assert_eq!(report.bookmarks_superseded, 1);
 
         assert_eq!(
@@ -312,6 +358,82 @@ mod tests {
             vec![
                 ("".into(), "/other".into(), "only".into()),
                 ("".into(), "/repo".into(), "newer".into()),
+            ]
+        );
+    }
+
+    /// A rename carries the rows onto another host's backend name, and its
+    /// collisions resolve the same way — with the row already at the
+    /// destination playing the part the local row plays for a heal.
+    #[test]
+    fn a_rename_moves_rows_onto_the_destination_backend() {
+        let db = db();
+        session(&db, "a", "wsl:MagicDebian");
+        session(&db, "b", "local-tmux");
+        bookmark(&db, "wsl:MagicDebian", "/only-source", "keep", 100);
+        bookmark(&db, "wsl:MagicDebian", "/both", "keep", 200);
+        bookmark(&db, "wsl:MagicDebianPerso", "/both", "drop", 100);
+        bookmark(&db, "", "/both", "keep", 300);
+
+        let report = db
+            .apply_wsl_repair_plan(&WslRepairPlan {
+                to_local: Vec::new(),
+                renames: vec![(
+                    "wsl:MagicDebian".to_string(),
+                    "wsl:MagicDebianPerso".to_string(),
+                )],
+            })
+            .unwrap();
+
+        assert_eq!((report.sessions_moved, report.sessions_local), (1, 0));
+        assert_eq!(report.bookmarks_moved, 2);
+        assert_eq!(report.bookmarks_superseded, 1);
+        assert_eq!(
+            backends(&db),
+            vec![
+                ("a".into(), "wsl:MagicDebianPerso".into()),
+                ("b".into(), "local-tmux".into()),
+            ]
+        );
+        assert_eq!(
+            bookmarks(&db),
+            vec![
+                // The local row for the same path is a different key: a
+                // rename's destination is not local, so it is left alone.
+                ("".into(), "/both".into(), "keep".into()),
+                ("wsl:MagicDebianPerso".into(), "/both".into(), "keep".into()),
+                (
+                    "wsl:MagicDebianPerso".into(),
+                    "/only-source".into(),
+                    "keep".into()
+                ),
+            ]
+        );
+    }
+
+    /// `to_local` runs first, and that is what keeps the two arms from
+    /// disagreeing: a loopback named after a rename's destination sends its
+    /// own rows local without carrying the renamed ones along with them.
+    #[test]
+    fn a_heal_named_after_a_renames_destination_does_not_swallow_it() {
+        let db = db();
+        session(&db, "a", "wsl:MagicDebianPerso");
+        session(&db, "b", "wsl:MagicDebian");
+
+        db.apply_wsl_repair_plan(&WslRepairPlan {
+            to_local: vec!["wsl:MagicDebianPerso".to_string()],
+            renames: vec![(
+                "wsl:MagicDebian".to_string(),
+                "wsl:MagicDebianPerso".to_string(),
+            )],
+        })
+        .unwrap();
+
+        assert_eq!(
+            backends(&db),
+            vec![
+                ("a".into(), "local-tmux".into()),
+                ("b".into(), "wsl:MagicDebianPerso".into()),
             ]
         );
     }

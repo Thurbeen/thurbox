@@ -73,6 +73,17 @@ fn main() {
         ),
     };
 
+    // The one-time WSL row repair schema v47 marks as owed. Driven from here as
+    // well as from the TUI boot: the mark is written by whichever binary opens
+    // the database first, and a headless-driven install need never launch the
+    // interface — until the repair runs, a mislabelled row reads as remote, so
+    // the reap sweep refuses to kill windows it believes are elsewhere and
+    // leaks them. Costs one indexed lookup when nothing is owed, which is every
+    // invocation after the first.
+    for notice in thurbox::session_ops::repair_wsl_loopback_rows(&db) {
+        tracing::info!("{notice}");
+    }
+
     match cli::run(cli, &db) {
         Ok(cli::Outcome::Ok) => {}
         // The report is already on stdout and is the answer; only the verdict

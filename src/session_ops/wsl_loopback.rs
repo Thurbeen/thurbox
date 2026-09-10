@@ -1,58 +1,87 @@
-//! The one-time repair of rows a WSL loopback host recorded as remote.
+//! The one-time repair of rows a WSL loopback or shadow host recorded wrong.
 //!
-//! Schema v47 only marks the repair as owed. It has to: the rows to put back
-//! are the ones written under a backend name the *registry* refuses, and
-//! `storage` may not read `hosts.toml`. This is the layer that sees both, so
-//! this is where the two halves meet — the set from
-//! [`crate::agent::host_config::wsl_loopback_backend_names`], the SQL from
-//! [`crate::storage::Database::relabel_wsl_loopback_rows`].
+//! Schema v47 only marks the repair as owed. It has to: what to rewrite is
+//! decided by the *registry* — which host claims `wsl:<us>`, and which distro
+//! it really reaches — and `storage` may not read `hosts.toml`. This is the
+//! layer that sees both, so this is where the two halves meet: the plan from
+//! [`crate::agent::host_config::wsl_repair_plan`], the SQL from
+//! [`crate::storage::Database::apply_wsl_repair_plan`].
+//!
+//! Driven from **every** startup that opens the database — the TUI boot and
+//! the `thurbox-cli` entrypoint — because the mark is written by any binary
+//! that opens it, and a headless-driven install need never launch the
+//! interface. Until it runs, a mislabelled row reads as remote: a reap sweep
+//! refuses to kill windows it believes are on another machine, and leaks them.
 
 use crate::storage::Database;
 
-/// Perform the loopback repair if it is owed, returning startup notices.
+/// Perform the repair if it is owed, returning startup notices.
 ///
-/// Runs at most once per database: the mark is cleared on success and left in
-/// place on failure, so a transient error is retried on the next start rather
-/// than losing the repair. Best-effort throughout — a database that cannot be
-/// repaired must still open.
+/// Runs at most once per database, and the mark is what guarantees it: read
+/// first so an invocation with nothing to do pays a single query, and cleared
+/// only once a pass has completed. Anything that leaves the outcome unknown —
+/// an unreadable `hosts.toml`, a failed write — keeps the mark instead, so the
+/// repair comes back rather than being lost. Best-effort throughout: a
+/// database that cannot be repaired must still open.
 pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
     match db.wsl_loopback_repair_owed() {
         Ok(false) => return Vec::new(),
         Ok(true) => {}
         Err(e) => {
-            tracing::warn!("could not read the WSL loopback repair mark: {e}");
+            tracing::warn!("could not read the WSL repair mark: {e}");
             return Vec::new();
         }
     }
 
-    let heal = crate::agent::host_config::wsl_loopback_backend_names();
-    let report = match db.relabel_wsl_loopback_rows(&heal) {
+    // A `hosts.toml` that cannot be read is not "no hosts configured": the
+    // plan's rename arm is the only thing that keeps a shadow host's rows
+    // remote, and losing it would relabel a live sibling session as local.
+    let plan = match crate::agent::host_config::wsl_repair_plan() {
+        Ok(plan) => plan,
+        Err(e) => {
+            tracing::warn!(
+                "WSL row repair deferred — hosts.toml could not be read ({e}); \
+                 it stays owed and runs once the file parses"
+            );
+            return Vec::new();
+        }
+    };
+
+    let report = match db.apply_wsl_repair_plan(&plan) {
         Ok(report) => report,
         Err(e) => {
-            tracing::warn!("WSL loopback repair failed, will retry on next start: {e}");
+            tracing::warn!("WSL row repair failed, will retry on next start: {e}");
             return Vec::new();
         }
     };
     if let Err(e) = db.clear_wsl_loopback_repair_owed() {
-        tracing::warn!("WSL loopback repair ran but its mark could not be cleared: {e}");
+        tracing::warn!("WSL row repair ran but its mark could not be cleared: {e}");
     }
 
-    if report.is_empty() {
-        return Vec::new();
-    }
     let mut notices = Vec::new();
-    if report.sessions > 0 {
+    if report.sessions_local > 0 || report.bookmarks_local > 0 {
         notices.push(format!(
-            "{} session(s) were recorded on the WSL distro thurbox runs in, which is \
-             this machine; restored them as local",
-            report.sessions
+            "{} session(s) and {} repo bookmark(s) were recorded on the WSL distro \
+             thurbox runs in, which is this machine; restored them as local",
+            report.sessions_local, report.bookmarks_local
         ));
     }
-    if report.bookmarks > 0 || report.bookmarks_superseded > 0 {
+    if report.sessions_moved > 0 || report.bookmarks_moved > 0 {
+        let onto: Vec<&str> = plan.renames.iter().map(|(_, to)| to.as_str()).collect();
         notices.push(format!(
-            "{} repo bookmark(s) restored as local ({} superseded by a more recent \
-             reading of the same path)",
-            report.bookmarks, report.bookmarks_superseded
+            "{} session(s) and {} repo bookmark(s) moved onto {}: the hosts.toml entry \
+             that recorded them was named after the WSL distro thurbox runs in, and now \
+             registers as the distro it reaches",
+            report.sessions_moved,
+            report.bookmarks_moved,
+            onto.join(", ")
+        ));
+    }
+    if report.bookmarks_superseded > 0 {
+        notices.push(format!(
+            "{} repo bookmark(s) dropped as a staler reading of a path another row \
+             already records",
+            report.bookmarks_superseded
         ));
     }
     notices
@@ -146,9 +175,9 @@ mod tests {
         });
     }
 
-    /// The union arm. A hand-written loopback registers under its own `name`,
-    /// so its rows are spelled `wsl:self` and the base `wsl:<us>` would miss
-    /// them — stranding them on a host `hosts.toml` no longer describes.
+    /// A hand-written loopback registers under its own `name`, so its rows are
+    /// spelled `wsl:self` and the base `wsl:<us>` would miss them — stranding
+    /// them on a host `hosts.toml` no longer describes.
     #[test]
     fn a_differently_named_loopbacks_rows_are_healed_too() {
         with_wsl_distro(Some("MagicDebian"), || {
@@ -165,22 +194,56 @@ mod tests {
         });
     }
 
-    /// The subtraction arm. While a shadow entry exists, `wsl:<us>` reaches a
-    /// *sibling*: those sessions really are remote, and relabelling them local
-    /// would run every attach, diff and delete on the wrong machine.
+    /// A shadow entry reaches a real sibling: its sessions are genuinely
+    /// remote, so they must not be relabelled local — they move onto the
+    /// distro the entry reaches, under which the host now registers, and stay
+    /// resolvable there.
     #[test]
-    fn a_shadow_configs_remote_rows_are_left_alone() {
+    fn a_shadow_configs_rows_move_onto_the_distro_it_reaches() {
         with_wsl_distro(Some("MagicDebian"), || {
             let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
                  distro = \"MagicDebianPerso\"\n");
             session(&rig.db, "a", "wsl:MagicDebian");
+            rig.db
+                .conn_ref()
+                .execute(
+                    "INSERT INTO repo_bookmarks (host, repo_path, last_used_at) \
+                     VALUES ('wsl:MagicDebian', '/repo', 1)",
+                    [],
+                )
+                .unwrap();
 
             let notices = repair_wsl_loopback_rows(&rig.db);
 
-            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
-            assert!(notices.is_empty(), "nothing was owed: {notices:?}");
-            // The mark still clears, so the no-op is not retried forever.
+            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebianPerso");
+            assert_eq!(bookmark_hosts(&rig.db), ["wsl:MagicDebianPerso"]);
+            assert!(
+                notices
+                    .iter()
+                    .any(|n| n.contains("moved onto wsl:MagicDebianPerso")),
+                "the repair names where the rows went: {notices:?}"
+            );
             assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+        });
+    }
+
+    /// The same shadow, but the distro it reaches is already described by
+    /// another entry. The rows still move onto it — one distro has one backend
+    /// name whichever entry ends up serving it (which one that is, and that no
+    /// duplicate is created, is settled in `agent::host_config`).
+    #[test]
+    fn a_shadow_whose_distro_is_already_configured_moves_its_rows_there_too() {
+        with_wsl_distro(Some("MagicDebian"), || {
+            let rig = rig("[[hosts]]\nname = \"MagicDebian\"\nkind = \"wsl\"\n\
+                 distro = \"MagicDebianPerso\"\n\n\
+                 [[hosts]]\nname = \"MagicDebianPerso\"\nkind = \"wsl\"\n");
+            session(&rig.db, "a", "wsl:MagicDebian");
+            session(&rig.db, "b", "wsl:MagicDebianPerso");
+
+            repair_wsl_loopback_rows(&rig.db);
+
+            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebianPerso");
+            assert_eq!(backend(&rig.db, "b"), "wsl:MagicDebianPerso");
         });
     }
 
@@ -208,7 +271,7 @@ mod tests {
     }
 
     /// Two case-variant spellings of the loopback bookmarking one repo both
-    /// relabel to `host = ''`, which is one BINARY primary key for two rows.
+    /// rewrite to `host = ''`, which is one BINARY primary key for two rows.
     /// A SQLITE_CONSTRAINT here would repeat on every start.
     #[test]
     fn two_case_variant_loopbacks_bookmarking_one_repo_do_not_fail() {
@@ -232,6 +295,33 @@ mod tests {
                 .query_row("SELECT label FROM repo_bookmarks", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(label, "newer", "resolved on recency");
+            assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+        });
+    }
+
+    /// A `hosts.toml` that does not parse says nothing about who owns
+    /// `wsl:<us>`, and acting on that silence would relabel a shadow host's
+    /// live sibling sessions as local. So the pass changes nothing and stays
+    /// owed, and the next start — once the file parses — does the work.
+    #[test]
+    fn an_unparseable_hosts_toml_defers_the_repair_and_changes_nothing() {
+        with_wsl_distro(Some("MagicDebian"), || {
+            let rig = rig("[[hosts]\nname = \"MagicDebian\"\n");
+            session(&rig.db, "a", "wsl:MagicDebian");
+
+            assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
+
+            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+            assert!(
+                rig.db.wsl_loopback_repair_owed().unwrap(),
+                "the mark survives, so the repair is not lost"
+            );
+
+            // Once the file parses, the same call does the work.
+            let path = crate::agent::host_config::hosts_config_path().unwrap();
+            std::fs::write(&path, "").unwrap();
+            repair_wsl_loopback_rows(&rig.db);
+            assert_eq!(backend(&rig.db, "a"), "local-tmux");
             assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
         });
     }

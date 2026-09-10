@@ -585,26 +585,42 @@ WSL needs no credentials at all.
   (interop exports `wsl.exe`), so a thurbox in one distro reaches its
   siblings — but **never itself**: the distro named by `$WSL_DISTRO_NAME`
   is a *loopback* (`HostDef::is_wsl_loopback`) and is dropped from both
-  halves of the registry, as is a configured host that merely *registers*
-  under `wsl:<us>` while pointing elsewhere
-  (`HostDef::shadows_current_wsl_distro`) — its rows would be spelled like
-  the bug's. Registering a loopback made every local session remote,
-  because a shareable host's own database is the record of its sessions
-  (ADR-24) and that database was this one: the mirror pass read our own
-  rows back and rewrote each `backend_type` to `wsl:<us>`, after which
-  every attach, diff and delete went out through `wsl.exe` at the machine
-  it started on. Rows a released build already relabelled are put back by
-  a **one-time repair**, not by the migration: schema v47 only marks it
-  owed, and `session_ops::repair_wsl_loopback_rows` runs it once at
-  startup, from the one layer that sees both the registry and the
-  database. Which spellings it heals is decided by the registry rather
-  than guessed from the name
-  (`agent::host_config::wsl_loopback_backend_names`): `wsl:<us>`, plus
-  every refused loopback's own backend name (a hand-written
-  `name = "self"` wrote `wsl:self`), minus every refused shadow's (while
-  such an entry exists that spelling is genuinely remote). `storage`
-  may reference `session` but not `agent`, which is why the migration
-  cannot make that call itself.
+  halves of the registry. Registering one made every local session
+  remote, because a shareable host's own database is the record of its
+  sessions (ADR-24) and that database was this one: the mirror pass read
+  our own rows back and rewrote each `backend_type` to `wsl:<us>`, after
+  which every attach, diff and delete went out through `wsl.exe` at the
+  machine it started on.
+- **The name `wsl:<us>` is kept unambiguous**, because the repair below
+  has to be able to trust it. A configured host that merely *registers*
+  under it while pointing elsewhere
+  (`HostDef::shadows_current_wsl_distro`) is **re-registered** under the
+  distro it actually reaches, and the rows it already wrote are moved
+  onto that name with it — the host keeps working, its sessions keep
+  resolving, and one spelling keeps one meaning. It is not dropped:
+  dropping it would strand every session it had created, and telling the
+  user to rename it by hand would not move the rows. A shadow whose
+  distro another entry already describes defers to that entry, so one
+  distro keeps one backend.
+- **The one-time repair**: rows a released build already relabelled are
+  put back by `session_ops::repair_wsl_loopback_rows`, not by the
+  migration — schema v47 only marks it **owed**, and every startup that
+  opens the database runs it (the TUI boot and the `thurbox-cli`
+  entrypoint, since the mark is written by whichever binary opens the
+  database first and a headless install need never launch the
+  interface). `storage` may reference `session` but not `agent`, so the
+  migration cannot decide what to rewrite: that is
+  `agent::host_config::wsl_repair_plan`, from one registry load, so its
+  two arms cannot disagree about who owns `wsl:<us>`. `to_local` =
+  `wsl:<us>` plus every dropped loopback's own backend name (a
+  hand-written `name = "self"` wrote `wsl:self`), minus anything being
+  renamed; `renames` = each re-registered shadow's old name → its new
+  one. `to_local` is applied first, and the order is load-bearing: a
+  name it heals is one the registry refuses from now on, while a
+  rename's destination is one the registry serves. A `hosts.toml` that
+  cannot be parsed is not an answer, so the pass leaves the mark set and
+  comes back rather than reading the silence as "nothing claims
+  `wsl:<us>`".
 - **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>`
   or `None`); `is_remote_backend` covers both. The TUI shows a host
   picker as the first new-session step (skipped when none configured/

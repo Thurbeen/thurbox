@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::session::{HostDef, HostRegistry};
+use crate::session::{HostDef, HostRegistry, WslRepairPlan};
 
 /// Seed contents for `hosts.toml` on first run: full field documentation plus a
 /// commented-out example, but no active hosts.
@@ -162,53 +162,48 @@ pub fn load_or_seed() -> HostRegistry {
 /// [`load_or_seed`], also returning user-facing warnings for anything that
 /// silently degraded (parse error → no remote hosts, seed failure, …).
 pub fn load_or_seed_with_warnings() -> (HostRegistry, Vec<String>) {
+    match load_or_seed_result() {
+        Ok(loaded) => loaded,
+        Err(failure) => (HostRegistry::default(), vec![failure]),
+    }
+}
+
+/// [`load_or_seed_with_warnings`] before the degradation: `Err` is a
+/// `hosts.toml` whose contents could **not be established** — an unresolvable
+/// path, a seed that could not be written, an unreadable file, a parse error.
+/// The `Ok` warnings are the benign ones (an unknown key), where the registry
+/// still is what the file says.
+///
+/// Only one caller needs the distinction, and it needs it badly:
+/// [`wsl_repair_plan`] rewrites persisted rows according to what the file
+/// says, so reading "could not parse" as "describes no hosts" would relabel a
+/// genuinely remote session — silently, once, and unrecoverably. Everything
+/// else wants the degraded registry and a warning.
+fn load_or_seed_result() -> Result<(HostRegistry, Vec<String>), String> {
     let Some(path) = hosts_config_path() else {
-        return (
-            HostRegistry::default(),
-            vec!["Could not resolve hosts.toml path; no remote hosts".into()],
-        );
+        return Err("Could not resolve hosts.toml path; no remote hosts".into());
     };
 
     if !path.exists() {
         if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return (
-                    HostRegistry::default(),
-                    vec![format!("Failed to create config dir for hosts.toml: {e}")],
-                );
-            }
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config dir for hosts.toml: {e}"))?;
         }
-        if let Err(e) = std::fs::write(&path, SEED_HOSTS_TOML) {
-            return (
-                HostRegistry::default(),
-                vec![format!("Failed to seed hosts.toml: {e}")],
-            );
-        }
+        std::fs::write(&path, SEED_HOSTS_TOML)
+            .map_err(|e| format!("Failed to seed hosts.toml: {e}"))?;
         tracing::info!(path = %path.display(), "Seeded hosts.toml (no active hosts)");
-        return (HostRegistry::default(), Vec::new());
+        return Ok((HostRegistry::default(), Vec::new()));
     }
 
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            match super::agent_config::parse_toml_reporting_unknown::<HostRegistry>(
-                &contents,
-                "hosts.toml",
-            ) {
-                Ok((reg, warnings)) => (reg, warnings),
-                Err(e) => (
-                    HostRegistry::default(),
-                    vec![format!(
-                        "hosts.toml: {}; no remote hosts",
-                        super::agent_config::compact_toml_error(&e.to_string())
-                    )],
-                ),
-            }
-        }
-        Err(e) => (
-            HostRegistry::default(),
-            vec![format!("Failed to read hosts.toml: {e}")],
-        ),
-    }
+    let contents =
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read hosts.toml: {e}"))?;
+    super::agent_config::parse_toml_reporting_unknown::<HostRegistry>(&contents, "hosts.toml")
+        .map_err(|e| {
+            format!(
+                "hosts.toml: {}; no remote hosts",
+                super::agent_config::compact_toml_error(&e.to_string())
+            )
+        })
 }
 
 /// Load configured hosts (`hosts.toml`) and append auto-discovered local WSL
@@ -217,16 +212,17 @@ pub fn load_or_seed_with_warnings() -> (HostRegistry, Vec<String>) {
 /// config; the discovered set never overrides an explicitly configured host of
 /// the same name.
 ///
-/// Neither half may claim the WSL distro thurbox is running inside: not as a
-/// **loopback** ([`HostDef::is_wsl_loopback`] — this machine, and not a host at
-/// all) and not as a **shadow** of its backend name
-/// ([`HostDef::shadows_current_wsl_distro`]). This is the one chokepoint every
-/// caller shares, so dropping both here is what keeps a local session local —
-/// and the same split decides which already-written rows the one-time repair
-/// puts back ([`wsl_loopback_backend_names`]).
+/// Neither half may claim the WSL distro thurbox is running inside: a
+/// **loopback** ([`HostDef::is_wsl_loopback`]) is this machine and is dropped,
+/// and a **shadow** of its backend name
+/// ([`HostDef::shadows_current_wsl_distro`]) is re-registered under the distro
+/// it reaches. This is the one chokepoint every caller shares, so settling
+/// both here (`settle_wsl_self_hosts`) is what keeps a local session local —
+/// and the same pass decides what the one-time repair owes the rows they
+/// already wrote ([`wsl_repair_plan`]).
 pub fn load_all_with_warnings() -> (HostRegistry, Vec<String>) {
     let (mut reg, mut warnings) = load_or_seed_with_warnings();
-    warnings.extend(drop_wsl_loopback(&mut reg));
+    warnings.extend(settle_wsl_self_hosts(&mut reg).0);
     augment_with_wsl(&mut reg);
     (reg, warnings)
 }
@@ -261,113 +257,123 @@ pub fn cached_registry() -> &'static (HostRegistry, Vec<String>) {
     CACHE.get_or_init(load_all_with_warnings)
 }
 
-/// The configured hosts that may not claim the current WSL distro, split by
-/// the rule that refused each.
+/// Settle every configured entry that claims the WSL distro thurbox runs
+/// inside, in place, and report both the warnings it owes the user and the row
+/// rewrites it owes the database.
 ///
-/// Kept rather than discarded because the one-time repair of the rows they
-/// already wrote is decided by exactly this split — see
-/// [`wsl_loopback_backend_names`].
-#[derive(Debug, Default)]
-struct RefusedWslHosts {
-    /// Entries that point `wsl.exe` back at us. Their backend name is a
-    /// spelling this machine's own *local* rows may be recorded under.
-    loopbacks: Vec<HostDef>,
-    /// Entries that reach another distro while registering as `wsl:<us>`.
-    /// Their backend name is a *genuinely remote* one, whatever it looks like.
-    shadows: Vec<HostDef>,
-}
+/// Two rules, and they differ because only one of the entries can work:
+///
+/// - A [loopback](HostDef::is_wsl_loopback) points `wsl.exe` back at us. It
+///   describes this machine as somewhere else, so it is **dropped** — and the
+///   rows it wrote are this machine's own local rows, so they go to
+///   [`WslRepairPlan::to_local`].
+/// - A [shadow](HostDef::shadows_current_wsl_distro) reaches a real sibling
+///   but *registers* as `wsl:<us>`, the one spelling that has to keep meaning
+///   "this machine". The host itself is fine, so it is **re-registered** under
+///   the distro it reaches and its rows are moved onto that name with it
+///   ([`WslRepairPlan::renames`]). Dropping it instead would strand every
+///   session it had already created, and telling the user to rename it by hand
+///   would not move the rows.
+///
+/// A re-registered shadow **defers** to an entry that already carries the
+/// sibling's name: that is the same distro, so the rows still move onto it and
+/// the duplicate backend is never created. Auto-discovery needs no such
+/// handling — [`augment_with_wsl`] already skips a name that is configured.
+///
+/// Neither case can come from discovery ([`discover_wsl_hosts`] filters the
+/// loopback and names a host after the distro it points at), so both are
+/// hand-written entries and each gets a warning naming what happened.
+fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, WslRepairPlan) {
+    let mut warnings = Vec::new();
+    let mut plan = WslRepairPlan::default();
 
-/// Remove the two kinds of configured host that may not claim the current WSL
-/// distro, returning them classified.
-///
-/// A [loopback](HostDef::is_wsl_loopback) points `wsl.exe` back at us and
-/// cannot work: it describes this very machine as somewhere else.
-/// A [shadow](HostDef::shadows_current_wsl_distro) reaches a real sibling but
-/// *registers* as `wsl:<us>`, so its rows are spelled like the ones the
-/// loopback bug wrote; renaming it costs nothing and keeps that backend name
-/// unambiguous.
-///
-/// Auto-discovery can produce neither — it names a host after the distro it
-/// points at, and [`discover_wsl_hosts`] filters the loopback — so both come
-/// only from a hand-written entry.
-fn refuse_wsl_self_hosts(reg: &mut HostRegistry) -> RefusedWslHosts {
-    let mut refused = RefusedWslHosts::default();
-    reg.hosts.retain(|h| {
-        if h.is_wsl_loopback() {
-            refused.loopbacks.push(h.clone());
-            return false;
-        }
-        if h.shadows_current_wsl_distro() {
-            refused.shadows.push(h.clone());
-            return false;
-        }
-        true
-    });
-    refused
-}
+    // The base case, owed before any entry is read: the backend name
+    // auto-discovery offered for the current distro until it was filtered.
+    if let Some(distro) = crate::session::current_wsl_distro() {
+        plan.to_local
+            .push(format!("{}{distro}", crate::session::WSL_BACKEND_PREFIX));
+    }
 
-/// [`refuse_wsl_self_hosts`], reported: one warning per entry removed, because
-/// naming it is better than either honouring it or dropping it in silence.
-fn drop_wsl_loopback(reg: &mut HostRegistry) -> Vec<String> {
-    let refused = refuse_wsl_self_hosts(reg);
-    let loopbacks = refused.loopbacks.iter().map(|h| {
-        format!(
-            "hosts.toml: ignoring host '{}' — it names the WSL distro thurbox \
-             is running in ('{}'), so sessions on it are local, not remote. \
-             Create them with no --host.",
-            h.name,
-            h.distro_name()
-        )
-    });
-    let shadows = refused.shadows.iter().map(|h| {
-        format!(
-            "hosts.toml: ignoring host '{}' — it reaches distro '{}' but is \
-             named after the one thurbox runs in, so its sessions would be \
-             recorded as local. Rename the entry to keep it.",
-            h.name,
-            h.distro_name()
-        )
-    });
-    loopbacks.chain(shadows).collect()
-}
-
-/// The `sessions.backend_type` / `repo_bookmarks.host` spellings on this
-/// machine that the WSL loopback bug can have written — the set
-/// `session_ops::repair_wsl_loopback_rows` relabels local, and the reason that
-/// repair does not live in the migration that records it as owed.
-///
-/// Decided by the registry, not by a spelling. A host is registered — and
-/// persisted — under its `name`, so the two do not coincide in either
-/// direction:
-///
-/// - `wsl:$WSL_DISTRO_NAME` is the base case: what auto-discovery offered
-///   before [`HostDef::is_wsl_loopback`] filtered it.
-/// - **plus** every refused loopback's own backend name: a hand-written
-///   `name = "self", distro = "<us>"` wrote `wsl:self`, and dropping the entry
-///   without healing those rows would strand them on a host `hosts.toml` no
-///   longer describes.
-/// - **minus** every refused shadow's backend name: when such an entry exists,
-///   that spelling reaches a *sibling* and its rows are genuinely remote, so
-///   relabelling them local would act on the wrong machine.
-///
-/// Subtraction is case-insensitive and wins, so an ambiguous pair of entries
-/// leaves the rows alone rather than guessing. Empty off WSL, where there is
-/// no loopback to have written anything.
-pub fn wsl_loopback_backend_names() -> Vec<String> {
-    let mut reg = load_or_seed_with_warnings().0;
-    let refused = refuse_wsl_self_hosts(&mut reg);
-    let discovered = crate::session::current_wsl_distro()
-        .map(|d| format!("{}{d}", crate::session::WSL_BACKEND_PREFIX));
-    let shadowed: Vec<String> = refused.shadows.iter().map(HostDef::backend_name).collect();
-
-    let mut names: Vec<String> = discovered
-        .into_iter()
-        .chain(refused.loopbacks.iter().map(HostDef::backend_name))
-        .filter(|n| !shadowed.iter().any(|s| s.eq_ignore_ascii_case(n)))
+    // The names that will still be in force after this pass, so a shadow can
+    // tell "already described" from "described by an entry about to go".
+    let mut taken: HashSet<String> = reg
+        .hosts
+        .iter()
+        .filter(|h| !h.is_wsl_loopback() && !h.shadows_current_wsl_distro())
+        .map(|h| h.name.clone())
         .collect();
-    names.sort_by_key(|n| n.to_ascii_lowercase());
-    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-    names
+
+    let mut settled = Vec::with_capacity(reg.hosts.len());
+    for mut host in std::mem::take(&mut reg.hosts) {
+        if host.is_wsl_loopback() {
+            warnings.push(format!(
+                "hosts.toml: ignoring host '{}' — it names the WSL distro thurbox \
+                 is running in ('{}'), so sessions on it are local, not remote. \
+                 Create them with no --host.",
+                host.name,
+                host.distro_name()
+            ));
+            plan.to_local.push(host.backend_name());
+            continue;
+        }
+        if host.shadows_current_wsl_distro() {
+            let sibling = host.distro_name();
+            let from = host.backend_name();
+            let to = format!("{}{sibling}", crate::session::WSL_BACKEND_PREFIX);
+            plan.renames.push((from, to));
+            if taken.contains(&sibling) {
+                warnings.push(format!(
+                    "hosts.toml: ignoring host '{}' — it is named after the WSL distro \
+                     thurbox runs in, which has to keep meaning this machine, and host \
+                     '{sibling}' already describes the distro it reaches. Its sessions \
+                     have moved to that host: use --host {sibling}.",
+                    host.name
+                ));
+                continue;
+            }
+            warnings.push(format!(
+                "hosts.toml: host '{}' is named after the WSL distro thurbox runs in, \
+                 which has to keep meaning this machine, so it now registers as the \
+                 distro it reaches. Its sessions have moved with it: use --host \
+                 {sibling}.",
+                host.name
+            ));
+            taken.insert(sibling.clone());
+            host.name = sibling;
+            settled.push(host);
+            continue;
+        }
+        settled.push(host);
+    }
+    reg.hosts = settled;
+
+    // A name being renamed is not this machine's: while such an entry exists
+    // that spelling reaches a sibling, and its rows follow the rename instead.
+    plan.to_local.retain(|n| {
+        !plan
+            .renames
+            .iter()
+            .any(|(from, _)| from.eq_ignore_ascii_case(n))
+    });
+    plan.to_local.sort_by_key(|n| n.to_ascii_lowercase());
+    plan.to_local.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+
+    (warnings, plan)
+}
+
+/// The row rewrites the one-time WSL repair owes, or the reason `hosts.toml`
+/// could not be read.
+///
+/// `Err` is what keeps the repair honest: it is decided by what the file says,
+/// so a file that cannot be parsed is not "no hosts configured" — it is not an
+/// answer at all, and `session_ops::repair_wsl_loopback_rows` leaves the owed
+/// mark in place and comes back once the file parses.
+///
+/// Both arms come from the **same** load (`settle_wsl_self_hosts`), so they
+/// cannot disagree about who owns `wsl:<us>`.
+pub fn wsl_repair_plan() -> Result<WslRepairPlan, String> {
+    let (mut reg, _) = load_or_seed_result()?;
+    Ok(settle_wsl_self_hosts(&mut reg).1)
 }
 
 /// Append auto-discovered WSL distros to `reg`, skipping any whose name already
@@ -390,8 +396,8 @@ const WSL_INFRA_DISTROS: &[&str] = &["docker-desktop", "docker-desktop-data"];
 /// [`HostKind::Wsl`](crate::session::HostKind::Wsl)).
 ///
 /// Runs `wsl.exe -l -q` and parses its output. Returns empty when `wsl.exe`
-/// isn't available (any non-Windows host, or Windows without WSL) or the
-/// command fails — discovery is strictly best-effort and never blocks startup.
+/// isn't available (no `wsl.exe` on `PATH`, and not Windows) or the command
+/// fails — discovery is strictly best-effort and never blocks startup.
 ///
 /// The distro thurbox is itself running inside is **not** among them: `wsl.exe`
 /// lists it like any other, but it is this machine
@@ -554,27 +560,37 @@ mod tests {
         });
     }
 
+    fn wsl(name: &str, distro: &str) -> HostDef {
+        HostDef {
+            name: name.into(),
+            kind: crate::session::HostKind::Wsl,
+            distro: Some(distro.into()),
+            ..Default::default()
+        }
+    }
+
+    fn registry(hosts: Vec<HostDef>) -> HostRegistry {
+        HostRegistry {
+            config_version: None,
+            hosts,
+        }
+    }
+
     #[test]
-    fn a_configured_loopback_is_dropped_with_a_warning() {
+    fn a_configured_loopback_is_dropped_and_its_rows_owed_to_local() {
         crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
-            let mut reg = HostRegistry {
-                config_version: None,
-                hosts: vec![
-                    HostDef {
-                        name: "self".into(),
-                        kind: crate::session::HostKind::Wsl,
-                        distro: Some("MagicDebian".into()),
-                        ..Default::default()
-                    },
-                    HostDef::wsl("Ubuntu"),
-                    HostDef {
-                        name: "devbox".into(),
-                        destination: "me@devbox".into(),
-                        ..Default::default()
-                    },
-                ],
-            };
-            let warnings = drop_wsl_loopback(&mut reg);
+            let mut reg = registry(vec![
+                wsl("self", "MagicDebian"),
+                HostDef::wsl("Ubuntu"),
+                HostDef {
+                    name: "devbox".into(),
+                    destination: "me@devbox".into(),
+                    ..Default::default()
+                },
+            ]);
+
+            let (warnings, plan) = settle_wsl_self_hosts(&mut reg);
+
             assert_eq!(reg.names(), ["Ubuntu", "devbox"]);
             assert_eq!(warnings.len(), 1);
             assert!(
@@ -582,34 +598,154 @@ mod tests {
                 "the warning must name the entry and the distro: {}",
                 warnings[0]
             );
+            // Its own backend name as well as the discovered one: the rows it
+            // wrote are spelled `wsl:self`.
+            assert_eq!(plan.to_local, ["wsl:MagicDebian", "wsl:self"]);
+            assert!(plan.renames.is_empty());
+        });
+    }
+
+    /// A host named after the current distro reaches a real sibling, so it is
+    /// re-registered under that sibling rather than dropped — dropping it
+    /// would strand every session it had already created, and a hand rename
+    /// would leave those rows spelled after a host that no longer exists.
+    #[test]
+    fn a_configured_shadow_is_re_registered_under_the_distro_it_reaches() {
+        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+            let mut reg = registry(vec![
+                HostDef {
+                    worktrees_dir: Some("/srv/wt".into()),
+                    ..wsl("MagicDebian", "MagicDebianPerso")
+                },
+                HostDef::wsl("Ubuntu"),
+            ]);
+
+            let (warnings, plan) = settle_wsl_self_hosts(&mut reg);
+
+            assert_eq!(reg.names(), ["MagicDebianPerso", "Ubuntu"]);
+            assert_eq!(
+                reg.get("MagicDebianPerso")
+                    .unwrap()
+                    .worktrees_dir
+                    .as_deref(),
+                Some("/srv/wt"),
+                "the entry keeps working, overrides and all — only its name changed"
+            );
+            assert_eq!(
+                plan.renames,
+                [(
+                    "wsl:MagicDebian".to_string(),
+                    "wsl:MagicDebianPerso".to_string()
+                )]
+            );
+            // The subtraction arm: while that entry claims the spelling, it is
+            // a sibling's, so its rows must not be relabelled local.
+            assert!(plan.to_local.is_empty());
+            assert_eq!(warnings.len(), 1);
+            assert!(
+                warnings[0].contains("--host MagicDebianPerso"),
+                "the warning must say which name --host now takes: {}",
+                warnings[0]
+            );
+        });
+    }
+
+    /// One distro has one backend name, so a shadow whose sibling is already
+    /// described defers to that entry instead of duplicating it — and its rows
+    /// still move, because the host they now name reaches them.
+    #[test]
+    fn a_re_registered_shadow_defers_to_an_entry_that_already_holds_the_name() {
+        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+            let mut reg = registry(vec![
+                wsl("MagicDebian", "MagicDebianPerso"),
+                HostDef::wsl("MagicDebianPerso"),
+            ]);
+
+            let (warnings, plan) = settle_wsl_self_hosts(&mut reg);
+
+            assert_eq!(reg.names(), ["MagicDebianPerso"]);
+            assert_eq!(
+                plan.renames,
+                [(
+                    "wsl:MagicDebian".to_string(),
+                    "wsl:MagicDebianPerso".to_string()
+                )]
+            );
+            assert!(
+                warnings[0].contains("already describes")
+                    && warnings[0].contains("--host MagicDebianPerso"),
+                "the warning must say it deferred and to which name: {}",
+                warnings[0]
+            );
+        });
+    }
+
+    /// The two entries at their most confusing: one is a loopback *named*
+    /// after the sibling, the other a shadow reaching it. Each arm still
+    /// resolves on its own rule — the loopback's rows are this machine's, the
+    /// shadow's are the sibling's — and because the shadow frees the name the
+    /// loopback was squatting on, it re-registers there. `to_local` running
+    /// first is what keeps the arms from meeting: the loopback's rows go local
+    /// before the shadow's are carried onto the same spelling.
+    #[test]
+    fn a_loopback_and_a_shadow_together_keep_their_arms_apart() {
+        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+            let mut reg = registry(vec![
+                wsl("MagicDebianPerso", "MagicDebian"),
+                wsl("MagicDebian", "MagicDebianPerso"),
+            ]);
+
+            let (_, plan) = settle_wsl_self_hosts(&mut reg);
+
+            assert_eq!(reg.names(), ["MagicDebianPerso"]);
+            assert_eq!(
+                reg.get("MagicDebianPerso").unwrap().distro_name(),
+                "MagicDebianPerso",
+                "the name is held by the entry that actually reaches that distro"
+            );
+            assert_eq!(plan.to_local, ["wsl:MagicDebianPerso"]);
+            assert_eq!(
+                plan.renames,
+                [(
+                    "wsl:MagicDebian".to_string(),
+                    "wsl:MagicDebianPerso".to_string()
+                )]
+            );
         });
     }
 
     #[test]
-    fn a_configured_shadow_of_our_distro_is_dropped_with_its_own_warning() {
+    fn off_wsl_nothing_is_settled_and_nothing_is_owed() {
+        crate::session::host_def::with_wsl_distro(None, || {
+            let mut reg = registry(vec![HostDef::wsl("Ubuntu"), wsl("work", "Debian")]);
+
+            let (warnings, plan) = settle_wsl_self_hosts(&mut reg);
+
+            assert_eq!(reg.names(), ["Ubuntu", "work"]);
+            assert!(warnings.is_empty());
+            assert!(plan.is_empty());
+        });
+    }
+
+    /// The plan is decided by what `hosts.toml` says, so a file that cannot be
+    /// parsed is not an answer — it must not read as "no entry claims
+    /// `wsl:<us>`", which would relabel a shadow host's sibling sessions local.
+    #[test]
+    fn an_unparseable_hosts_toml_yields_no_plan_at_all() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let path = hosts_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[[hosts]\nname = \"MagicDebian\"\n").unwrap();
+
         crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
-            let mut reg = HostRegistry {
-                config_version: None,
-                hosts: vec![
-                    // Reaches a genuine sibling, but registers as
-                    // `wsl:MagicDebian` — indistinguishable from a loopback row.
-                    HostDef {
-                        name: "MagicDebian".into(),
-                        kind: crate::session::HostKind::Wsl,
-                        distro: Some("MagicDebianPerso".into()),
-                        ..Default::default()
-                    },
-                    HostDef::wsl("Ubuntu"),
-                ],
-            };
-            let warnings = drop_wsl_loopback(&mut reg);
-            assert_eq!(reg.names(), ["Ubuntu"]);
-            assert_eq!(warnings.len(), 1);
             assert!(
-                warnings[0].contains("MagicDebianPerso") && warnings[0].contains("Rename"),
-                "the warning must name the distro it reaches and say to rename: {}",
-                warnings[0]
+                wsl_repair_plan().is_err(),
+                "an unreadable file is a failure, not an empty registry"
             );
+            // The degrading loader still answers, for every other caller.
+            let (reg, warnings) = load_or_seed_with_warnings();
+            assert!(reg.is_empty() && !warnings.is_empty());
         });
     }
 

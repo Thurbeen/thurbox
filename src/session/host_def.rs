@@ -71,6 +71,37 @@ fn is_current_wsl_distro(distro: &str) -> bool {
     current_wsl_distro().is_some_and(|d| d.eq_ignore_ascii_case(distro))
 }
 
+/// The row rewrites the one-time WSL repair owes, decided from **one**
+/// registry load so its two arms cannot disagree about who owns `wsl:<us>`.
+///
+/// Pure data, and here rather than in `storage` or `agent` because both need
+/// to name it: `agent::host_config::wsl_repair_plan` decides it from
+/// `hosts.toml`, and `storage` applies it — and `storage` may reference
+/// `session` but not `agent`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WslRepairPlan {
+    /// Backend names whose rows are this machine's own local rows, recorded as
+    /// remote by a loopback host.
+    ///
+    /// Applied **before** [`renames`](Self::renames), and the order is
+    /// load-bearing: a name here is one the registry refuses from now on, so
+    /// nothing may be moved *onto* it, while a rename's destination is a name
+    /// the registry does serve. Reversing the two would send a renamed row
+    /// straight on to local.
+    pub to_local: Vec<String>,
+    /// `(from, to)`: backend names that move to another host's, because the
+    /// `hosts.toml` entry that wrote them was named after the current distro
+    /// and now registers under the distro it reaches.
+    pub renames: Vec<(String, String)>,
+}
+
+impl WslRepairPlan {
+    /// Whether there is nothing to rewrite.
+    pub fn is_empty(&self) -> bool {
+        self.to_local.is_empty() && self.renames.is_empty()
+    }
+}
+
 /// How thurbox reaches a host: over SSH, or into a local WSL distro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -213,13 +244,14 @@ impl HostDef {
     /// `name = "<us>"` with `distro = "<a sibling>"` is a working remote host
     /// that writes rows spelled exactly like the ones the loopback bug wrote.
     /// One spelling cannot mean both, and it is the *name* that is free to
-    /// change: dropping the entry — with a warning that says to rename it —
-    /// keeps `wsl:<us>` unambiguous, and the sibling stays reachable under any
-    /// other name, so nothing is lost but the collision.
+    /// change — so the registry changes it: such an entry is re-registered
+    /// under the distro it actually reaches, and the rows it already wrote are
+    /// moved onto that name with it ([`WslRepairPlan::renames`]). The host
+    /// keeps working, its sessions keep resolving, and `wsl:<us>` stays
+    /// unambiguous.
     ///
-    /// While such an entry does exist, that spelling is remote, so
-    /// `agent::host_config::wsl_loopback_backend_names` subtracts it from the
-    /// set the one-time loopback repair relabels local.
+    /// Renaming the entry by hand does *not* do this: the rows keep the old
+    /// spelling, and nothing in `hosts.toml` describes it any more.
     pub fn shadows_current_wsl_distro(&self) -> bool {
         self.is_wsl() && !self.is_wsl_loopback() && is_current_wsl_distro(&self.name)
     }
