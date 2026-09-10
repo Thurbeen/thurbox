@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 #
 # The winget channel's two decisions, exercised without cutting a release:
-# whether to submit at all (submit-decision.py `decide`), and whether a failed
-# `wingetcreate submit` is the moderated channel pushing back or a real break
-# (`classify`). Plus bump-manifests.py against a recorded `checksums.txt`.
+# whether to submit at all (submit-decision.py `decide`), and whether a
+# completed `wingetcreate submit` opened a PR, was pushed back by the
+# moderated channel, or failed for real (`after-submit`). Plus
+# bump-manifests.py against a recorded `checksums.txt`.
 
 setup() {
   DIR="${BATS_TEST_DIRNAME}"
