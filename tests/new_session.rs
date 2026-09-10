@@ -15,6 +15,7 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
+use thurbox::agent::preflight::Presence;
 use thurbox::git::ExistingWorktree;
 use thurbox::kernel::command::{BookmarkEdit, Command};
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
@@ -45,10 +46,12 @@ fn snapshot() -> Snapshot {
             AgentRow {
                 name: "claude".into(),
                 command: "claude".into(),
+                presence: Presence::Present,
             },
             AgentRow {
                 name: "codex".into(),
                 command: "codex".into(),
+                presence: Presence::Present,
             },
         ],
         agent_default: "claude".into(),
@@ -1202,6 +1205,7 @@ fn one_agent_is_not_a_question() {
     world.snapshot.agents = vec![AgentRow {
         name: "claude".into(),
         command: "claude".into(),
+        presence: Presence::Present,
     }];
     open(&host, &world);
     press(&host, &world, "space");
@@ -1777,4 +1781,159 @@ fn a_branch_name_that_prefilled_to_nothing_offers_no_pill() {
     type_text(&h, &world, "b");
     let typed = drawn(&h, &world);
     assert!(typed.contains("[ Next ]"), "{typed}");
+}
+
+// ── What is missing, said before the user commits ──────────────────────────
+
+/// Draw the sessions pane and return its screen.
+///
+/// The flow's own `drawn` renders the float; the first-run notice lives on the
+/// list behind it, which is the one screen a machine with no sessions reaches.
+fn sessions_screen(host: &LuaHost, world: &World, width: u16, height: u16) -> String {
+    publish(host, world);
+    let index = index_of(host, "sessions");
+    let rendered = host
+        .render(
+            index,
+            RenderContext {
+                width,
+                height,
+                focused: false,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render");
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            thurbox::kernel::paint::render_recording(
+                frame,
+                Rect::new(0, 0, width, height),
+                &rendered.node,
+                &thurbox::kernel::terminal::Terminals::new(),
+                &mut Vec::new(),
+            );
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A snapshot whose multiplexer is not installed.
+fn without_a_multiplexer(world: &mut World) {
+    world.snapshot.mux = thurbox::kernel::snapshot::MuxRow {
+        binary: "tmux".into(),
+        presence: Presence::Missing,
+        advice: "install tmux 3.2 or newer".into(),
+    };
+}
+
+#[test]
+fn a_missing_agent_is_marked_on_the_row_that_would_launch_it() {
+    // The whole point of publishing presence: the cost of the choice is on the
+    // choice, while the cursor is still moving over the alternatives — not in a
+    // pane that exits after the user has committed.
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.agents[1].presence = Presence::Missing;
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "enter");
+    type_text(&host, &world, "work");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Coding Agent"), "{screen}");
+    assert!(
+        screen.contains("not installed"),
+        "the agent that would fail is not marked: {screen}"
+    );
+}
+
+#[test]
+fn a_missing_agent_warns_only_once_it_is_the_question() {
+    // `codex` is missing, but the repository step is not where that is decided,
+    // and warning about an agent the user has not been offered yet reads as a
+    // refusal of the step they are on.
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.agents[1].presence = Presence::Missing;
+    open(&host, &world);
+    let screen = drawn(&host, &world);
+    assert!(
+        !screen.contains("pane will exit at once"),
+        "the repository step warned about an agent nobody has chosen: {screen}"
+    );
+}
+
+#[test]
+fn a_missing_multiplexer_is_stated_from_the_first_step_of_the_flow() {
+    // Nothing can be created without it, so it outranks every other warning and
+    // does not wait for a step the user may never reach.
+    let host = host();
+    let mut world = World::default();
+    without_a_multiplexer(&mut world);
+    open(&host, &world);
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("tmux is not installed"),
+        "the flow never says the multiplexer is missing: {screen}"
+    );
+}
+
+#[test]
+fn a_remote_host_is_never_reported_as_missing_the_local_multiplexer() {
+    // The local machine's tmux has nothing to do with a session that will run on
+    // a host — and `unknown` is not `missing`.
+    let host = host();
+    let mut world = World::default();
+    without_a_multiplexer(&mut world);
+    world.snapshot.hosts = vec![HostRow {
+        name: "devbox".into(),
+        detail: "me@devbox".into(),
+        backend: "ssh:devbox".into(),
+    }];
+    open(&host, &world);
+    press(&host, &world, "j");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(
+        !screen.contains("is not installed"),
+        "a remote flow reported the local machine's multiplexer: {screen}"
+    );
+}
+
+#[test]
+fn the_empty_session_list_says_the_multiplexer_is_missing() {
+    // The one screen a first run always reaches. Absent on a machine that has
+    // it, which is the normal case.
+    let host = host();
+    let mut world = World::default();
+    without_a_multiplexer(&mut world);
+    // The width a real sidebar has: the note must still be readable there, not
+    // truncated to its first clause.
+    let screen = sessions_screen(&host, &world, 28, 14);
+    assert!(screen.contains("No sessions yet"), "{screen}");
+    assert!(
+        screen.contains("tmux is not installed"),
+        "the first-run screen says nothing about the missing multiplexer: {screen}"
+    );
+    assert!(
+        screen.contains("thurbox-cli doctor"),
+        "the note names nowhere to get the whole answer: {screen}"
+    );
+
+    let quiet = World::default();
+    let screen = sessions_screen(&host, &quiet, 28, 14);
+    assert!(
+        !screen.contains("is not installed"),
+        "a machine that has everything was still warned: {screen}"
+    );
 }

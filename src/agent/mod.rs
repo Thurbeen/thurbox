@@ -8,6 +8,7 @@ pub mod host_config;
 pub mod input;
 pub mod json_merge;
 mod osc8;
+pub mod preflight;
 pub mod provider;
 pub mod registry;
 pub mod self_update;

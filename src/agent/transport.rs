@@ -129,6 +129,21 @@ impl TmuxTransport {
         }
     }
 
+    /// The program this transport actually executes on **this** machine.
+    ///
+    /// The multiplexer itself locally; the launcher (`ssh`, `wsl.exe`) for a
+    /// remote backend, whose own multiplexer runs on the host and cannot be
+    /// what failed to start here. Read by
+    /// [`crate::agent::preflight::launch_failure`], which has to name the
+    /// binary that is missing rather than the one it was on the way to.
+    pub fn launcher(&self) -> &str {
+        match self {
+            TmuxTransport::Local => DEFAULT_MUX,
+            TmuxTransport::Ssh { .. } => "ssh",
+            TmuxTransport::Wsl { .. } => "wsl.exe",
+        }
+    }
+
     /// Whether the multiplexer is reached over `ssh`, and so whether ssh's own
     /// exit conventions apply to a failed command.
     ///

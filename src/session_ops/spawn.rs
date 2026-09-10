@@ -118,6 +118,17 @@ pub struct SpawnResult {
     /// `session.post_create` hooks that failed. The session exists and is
     /// running regardless; these are for the caller's report.
     pub hook_failures: Vec<String>,
+    /// What was already known to be missing when this session was launched —
+    /// today, an agent command that resolves nowhere on `PATH`.
+    ///
+    /// A report, never a refusal. The multiplexer answers a `new-window` whose
+    /// pane exits instantly with a perfectly successful create, so without this
+    /// the caller is told the session exists and finds a row with no pane and
+    /// no reason. It is not an error because the command may still be
+    /// launchable — a shell function, or something installed a second later —
+    /// which is the same rule `agent::tmux::resolve_local_program` is written
+    /// under.
+    pub warnings: Vec<String>,
     /// Why this session on a remote host was **not** created by the host's own
     /// CLI — sharing is off for the host, or no `thurbox-cli` could be found
     /// or provisioned there — so it was driven from here the way every remote
@@ -351,6 +362,24 @@ pub fn spawn_session_headless_with_progress(
     report(SpawnPhase::Backend);
     let (command, args) = super::build_agent_invocation(&agent_def, &config);
 
+    // Asked before the launch rather than after it: this is the one moment
+    // thurbox knows both which binary it is about to ask for and that the user
+    // has committed. Only for a local session — a remote host's binaries are on
+    // the host, and `Presence::Unknown` is the honest answer about a machine
+    // this one has not looked at.
+    let mut warnings = Vec::new();
+    if host.is_none()
+        && crate::agent::preflight::look_up(&command) == crate::agent::preflight::Presence::Missing
+    {
+        warnings.push(
+            crate::agent::preflight::Dependency::Agent {
+                name: &agent_name,
+                command: &command,
+            }
+            .missing_message(),
+        );
+    }
+
     report(SpawnPhase::Launching);
     // The window is stamped with the row's id as it is created (ADR-25), which
     // is what every later lookup resolves: a window *name* is not unique (two
@@ -369,7 +398,14 @@ pub fn spawn_session_headless_with_progress(
             Some(&launch_cwd),
             &config.env,
         )
-        .map_err(|e| format!("Failed to spawn remote tmux window: {e:#}"))?,
+        .map_err(
+            |e| match crate::agent::preflight::is_missing_dependency(&e) {
+                // `ssh`/`wsl.exe` missing on *this* machine: already a sentence
+                // naming it, the search and the fix.
+                true => format!("{e}"),
+                false => format!("Failed to spawn remote tmux window: {e:#}"),
+            },
+        )?,
         None => crate::agent::tmux::spawn_window(
             &stamp,
             &req.name,
@@ -378,7 +414,14 @@ pub fn spawn_session_headless_with_progress(
             Some(&launch_cwd),
             &config.env,
         )
-        .map_err(|e| format!("Failed to spawn tmux window: {e}"))?,
+        .map_err(
+            |e| match crate::agent::preflight::is_missing_dependency(&e) {
+                // Already a sentence naming the binary, the search and the fix;
+                // a prefix in front of it only pushes the fix off the row.
+                true => format!("{e}"),
+                false => format!("Failed to spawn tmux window: {e:#}"),
+            },
+        )?,
     };
 
     report(SpawnPhase::Persisting);
@@ -496,6 +539,7 @@ pub fn spawn_session_headless_with_progress(
         worktrees,
         parent_session_id: req.parent_session_id,
         hook_failures,
+        warnings,
         sharing,
     })
 }
@@ -644,6 +688,9 @@ fn spawn_delegated(
         worktrees: row.worktrees,
         parent_session_id: row.parent_session_id,
         hook_failures,
+        // The host's own CLI ran the spawn, and its preflight is about the
+        // host's `PATH`, not this machine's — it reports there.
+        warnings: Vec::new(),
         sharing: None,
     })
 }

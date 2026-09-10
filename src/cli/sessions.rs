@@ -848,6 +848,12 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
         human.push_str(&format!("\n  {note}"));
     }
     push_hook_failures(&mut human, &res.hook_failures);
+    // Above the record rather than buried in it: the session was created, and
+    // the one thing the caller needs to know is that the binary it launched is
+    // not there.
+    for warning in &res.warnings {
+        human.push_str(&format!("\n  warning: {warning}"));
+    }
     Ok(CommandOutput::new(
         json!({
             "id": res.session_id.to_string(),
@@ -863,6 +869,7 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
             "cwd": res.cwd.display().to_string(),
             "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
             "hook_failures": res.hook_failures,
+            "warnings": res.warnings,
             "sharing": res.sharing,
             "reports_as": reports_as,
             // Present here only so `--on-existing adopt` can answer in

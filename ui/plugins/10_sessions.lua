@@ -108,6 +108,24 @@ local function agent_status_text(session)
   return nil
 end
 
+--- The multiplexer that is not installed, as short lines, or nil when it is.
+---
+--- Already an answer: the kernel probes on its own schedule behind a TTL, so
+--- this is a table lookup on the render path rather than a `which`.
+---
+--- Deliberately short, and deliberately not the advice itself: this is drawn in
+--- a sidebar around twenty-six cells wide, where the full sentence is truncated
+--- to its first clause and says less than nothing. The command it names prints
+--- the whole thing, with the search path — and the create-session flow, which
+--- has the width for it, states the advice in full.
+local function missing_multiplexer()
+  local mux = (thurbox and thurbox.preflight and thurbox.preflight.mux) or nil
+  if not mux or mux.presence ~= "missing" then
+    return nil
+  end
+  return { "⚠ " .. mux.binary .. " is not installed", "run: thurbox-cli doctor" }
+end
+
 --- The live search query, or nil when nothing is being searched.
 ---
 --- Read from `store` rather than handed over by the search pane: the pane
@@ -637,6 +655,12 @@ return {
           width = inner_width,
           hint = "Press %s to create one",
           hint_action = "new_session.open",
+          -- The empty list is the one screen a first run always reaches, and
+          -- the multiplexer is what a session's window is made of: saying it is
+          -- missing here is the difference between reading it now and finding
+          -- out from a pane that died. Nil on any machine that has it.
+          note = missing_multiplexer(),
+          note_colour = theme.bad,
         }),
       }),
     })

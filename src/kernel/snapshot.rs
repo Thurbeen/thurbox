@@ -24,6 +24,18 @@ use crate::storage::Database;
 /// determines how out of date the answer may be.
 pub const REFRESH_INTERVAL: Duration = Duration::from_millis(400);
 
+/// How long "is the multiplexer installed, does each agent's command resolve"
+/// is trusted before it is asked again.
+///
+/// Asking is a `stat` per absolute `PATH` entry per binary and no process
+/// spawn, so the answer is cheap — but it is not free, and doing it on the
+/// render path (a `which` per frame, per keystroke or per list row) is the
+/// regression this window exists to prevent. Ten seconds is short enough that a
+/// user who reads "install tmux", installs it, and comes back sees the flow
+/// agree without restarting thurbox, and long enough that an idle instance
+/// costs a few `stat`s a minute.
+const PREFLIGHT_TTL: Duration = Duration::from_secs(10);
+
 /// A session's git working tree, when it has been computed.
 ///
 /// `None` on a row means *not computed yet*, which is deliberately distinct
@@ -225,6 +237,39 @@ pub struct RepoRow {
 pub struct AgentRow {
     pub name: String,
     pub command: String,
+    /// Whether `command` resolves to something runnable right now.
+    ///
+    /// Published so the create-session flow can say it *before* the user
+    /// commits: a missing agent binary leaves the multiplexer with a window
+    /// whose pane exits instantly, which it reports as a successful create, so
+    /// the answer never arrives on its own. Probed on a TTL, never per frame —
+    /// see [`SnapshotStore::poll_preflight`].
+    pub presence: crate::agent::preflight::Presence,
+}
+
+/// The local multiplexer every session's window is created in.
+///
+/// One row rather than a bare flag because the name differs by platform
+/// (`psmux` on native Windows) and the fix differs with it: a Windows user
+/// told to install tmux has been sent to the wrong project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MuxRow {
+    pub binary: String,
+    pub presence: crate::agent::preflight::Presence,
+    /// What to do about it, empty when there is nothing to do.
+    pub advice: String,
+}
+
+impl Default for MuxRow {
+    /// What a snapshot with no store behind it reports: the binary this
+    /// platform would use, and no claim about whether it is there.
+    fn default() -> Self {
+        Self {
+            binary: crate::agent::preflight::local_multiplexer().to_string(),
+            presence: crate::agent::preflight::Presence::Unknown,
+            advice: String::new(),
+        }
+    }
 }
 
 /// A machine a session can be created on.
@@ -255,6 +300,9 @@ pub struct Snapshot {
     pub agent_default: String,
     /// Configured and discovered hosts; empty means local only.
     pub hosts: Vec<HostRow>,
+    /// Whether the local multiplexer is installed, for a flow that wants to
+    /// say so before the user commits to a session.
+    pub mux: MuxRow,
     pub tasks: Vec<TaskRow>,
     pub automations: Vec<AutomationRow>,
     /// Epoch milliseconds this snapshot represents. Readable by plugins so
@@ -547,6 +595,12 @@ pub struct SnapshotStore {
     agents: Vec<AgentRow>,
     agent_default: String,
     hosts: Vec<HostRow>,
+    /// Whether the local multiplexer is installed. Beside `agents` because it
+    /// is refreshed with them and for the same reason.
+    mux: MuxRow,
+    /// When the multiplexer and the agent commands were last looked for.
+    /// Gates [`Self::poll_preflight`]; see [`PREFLIGHT_TTL`].
+    preflight_at: Instant,
     current: Snapshot,
     last_refresh: Option<Instant>,
     /// `PRAGMA data_version` as of the last successful rebuild. `None` means
@@ -612,6 +666,8 @@ impl SnapshotStore {
             agent_default: registry.default_name().to_string(),
             registry,
             hosts: read_hosts(),
+            mux: read_mux(),
+            preflight_at: Instant::now(),
             current: Snapshot {
                 error,
                 ..Snapshot::default()
@@ -639,6 +695,8 @@ impl SnapshotStore {
             agent_default: registry.default_name().to_string(),
             registry,
             hosts: read_hosts(),
+            mux: read_mux(),
+            preflight_at: Instant::now(),
             current: Snapshot::default(),
             last_refresh: None,
             last_data_version: None,
@@ -693,6 +751,10 @@ impl SnapshotStore {
         // about them — and without asking on this path a verdict would be
         // requested once and never refreshed.
         let panes_moved = self.poll_pane_probes();
+        // Asked here rather than in `refresh`, which stops running altogether
+        // on a database nobody writes to — which is exactly the state thurbox
+        // is in while the user is off installing what was missing.
+        let preflight_moved = self.poll_preflight();
         if !panes_moved && self.rows_are_current() {
             self.last_refresh = Some(Instant::now());
             let stamp = taken_at_stamp();
@@ -703,7 +765,7 @@ impl SnapshotStore {
             // and dropping it without asking would have published a session's
             // new counts only on the next unrelated refresh.
             let git_moved = self.attach_git_stats();
-            if restamped || git_moved {
+            if restamped || git_moved || preflight_moved {
                 self.mark_changed();
             }
             return false;
@@ -1114,6 +1176,36 @@ impl SnapshotStore {
     ///
     /// A failed read keeps the previous rows and records the error, so a
     /// transient database lock degrades to stale data rather than a blank list.
+    /// Look for the multiplexer and each agent's command again, at most once
+    /// per [`PREFLIGHT_TTL`]. Returns whether any answer moved.
+    ///
+    /// The whole cost model of this feature lives here: the create-session flow
+    /// reads a *published* answer, so the probe happens on the kernel's
+    /// schedule and behind a window, never on a render, a keystroke or a row.
+    fn poll_preflight(&mut self) -> bool {
+        if self.preflight_at.elapsed() < PREFLIGHT_TTL {
+            return false;
+        }
+        self.preflight_at = Instant::now();
+        let mux = read_mux();
+        let mut moved = mux != self.mux;
+        self.mux = mux;
+        for row in &mut self.agents {
+            let presence = crate::agent::preflight::look_up(&row.command);
+            if presence != row.presence {
+                row.presence = presence;
+                moved = true;
+            }
+        }
+        if moved {
+            // `refresh` may not run for minutes on an idle database, and until
+            // it does `current` is what every reader sees.
+            self.current.mux = self.mux.clone();
+            self.current.agents = self.agents.clone();
+        }
+        moved
+    }
+
     pub fn refresh(&mut self) {
         self.last_refresh = Some(Instant::now());
         let taken_at_ms = taken_at_stamp();
@@ -1340,6 +1432,7 @@ impl SnapshotStore {
             agents: self.agents.clone(),
             agent_default: self.agent_default.clone(),
             hosts: self.hosts.clone(),
+            mux: self.mux.clone(),
             taken_at_ms,
             error: None,
         };
@@ -1413,8 +1506,23 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
         .map(|agent| AgentRow {
             name: agent.name.clone(),
             command: agent.command.clone(),
+            presence: crate::agent::preflight::look_up(&agent.command),
         })
         .collect()
+}
+
+/// Whether the local multiplexer is installed, and what to do when it is not.
+fn read_mux() -> MuxRow {
+    let binary = crate::agent::preflight::local_multiplexer();
+    let presence = crate::agent::preflight::look_up(binary);
+    MuxRow {
+        binary: binary.to_string(),
+        presence,
+        advice: match presence {
+            crate::agent::preflight::Presence::Present => String::new(),
+            _ => crate::agent::preflight::Dependency::LocalMultiplexer.fix(),
+        },
+    }
 }
 
 /// Configured and discovered hosts. Empty means local only, and the flow skips
@@ -1537,6 +1645,49 @@ mod tests {
         assert_eq!(repo_name(&cwd, Some(&repo)).as_deref(), Some("thurbox"));
         assert_eq!(repo_name(&cwd, None).as_deref(), Some("feature-x"));
         assert_eq!(repo_name(&None, None), None);
+    }
+
+    #[test]
+    fn the_preflight_answer_is_cached_rather_than_probed_on_every_tick() {
+        // The cost model of the whole feature. `refresh_if_due` runs on the
+        // event loop, so a probe there is a `PATH` walk per tick; the answer
+        // must come from the window instead. Removing the binary and finding
+        // the store still says `Present` is what proves nothing looked again.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mux = dir
+            .path()
+            .join(crate::agent::preflight::local_multiplexer());
+        std::fs::write(&mux, b"#!/bin/sh\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        }
+
+        crate::paths::with_path(dir.path(), || {
+            let database = Database::open_in_memory().expect("in-memory database opens");
+            let mut store = SnapshotStore::with_database(database);
+            assert_eq!(
+                store.current().mux.presence,
+                crate::agent::preflight::Presence::Present,
+                "the probe at construction must find the binary that is there"
+            );
+
+            std::fs::remove_file(&mux).expect("remove");
+            // Each tick has to clear REFRESH_INTERVAL, or `refresh_if_due`
+            // returns before reaching the probe at all and the assertion below
+            // would hold whether or not the window exists. Well inside
+            // PREFLIGHT_TTL, which is what is being pinned.
+            for _ in 0..3 {
+                std::thread::sleep(REFRESH_INTERVAL + Duration::from_millis(50));
+                store.refresh_if_due();
+            }
+            assert_eq!(
+                store.current().mux.presence,
+                crate::agent::preflight::Presence::Present,
+                "the answer moved inside the TTL, so something probed on the tick"
+            );
+        });
     }
 
     #[test]

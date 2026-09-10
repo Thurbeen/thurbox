@@ -209,6 +209,16 @@ fn local_mux_command(args: &[&str]) -> Command {
     cmd
 }
 
+/// What a **local** one-shot reports when the multiplexer will not start.
+///
+/// Every helper here bypasses the [`TmuxTransport`] seam because it is
+/// local-only, so the transport that failed is always the local one. See
+/// [`crate::agent::preflight::launch_failure`] for why a `NotFound` is answered
+/// with a sentence rather than with `os error 2`.
+fn local_launch_failure(context: &'static str, err: std::io::Error) -> anyhow::Error {
+    crate::agent::preflight::launch_failure(&TmuxTransport::Local, context, err)
+}
+
 /// Window-name prefix for thurbox-managed tmux windows. Combined with the
 /// sanitized session name (`{prefix}{sanitized_name}`) to form the tmux
 /// window target.
@@ -942,8 +952,15 @@ impl TmuxBackend {
             .stderr(Stdio::piped())
             .output()
             // The launcher would not even start — no `ssh`/`wsl.exe`/`tmux` on
-            // this machine. Nothing was asked, so nothing was answered.
-            .context("Failed to run tmux command")?;
+            // this machine. Nothing was asked, so nothing was answered, and
+            // `launch_failure` says which of the three is not there.
+            .map_err(|e| {
+                crate::agent::preflight::launch_failure(
+                    &self.transport,
+                    "Failed to run tmux command",
+                    e,
+                )
+            })?;
         if output.status.success() {
             return Ok(String::from_utf8_lossy(&output.stdout)
                 .lines()
@@ -984,7 +1001,13 @@ impl TmuxBackend {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .context("Failed to run tmux command")?;
+            .map_err(|e| {
+                crate::agent::preflight::launch_failure(
+                    &self.transport,
+                    "Failed to run tmux command",
+                    e,
+                )
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1125,6 +1148,13 @@ impl TmuxBackend {
                 // winner got. The session we wanted exists either way, so ask
                 // rather than assume, and only report a failure that left none.
                 if !self.session_exists() {
+                    // A launcher that never started is already the whole story
+                    // (`preflight::launch_failure`), and this context in front
+                    // of it costs the reader the part that names the binary and
+                    // the fix — a message row is one line wide.
+                    if crate::agent::preflight::is_missing_dependency(&e) {
+                        return Err(e);
+                    }
                     return Err(e).context("Failed to create tmux session");
                 }
                 debug!(
@@ -2411,7 +2441,7 @@ pub fn capture_pane_text(
     }
     let output = local_mux_command(&args)
         .output()
-        .context("Failed to run tmux capture-pane")?;
+        .map_err(|e| local_launch_failure("Failed to run tmux capture-pane", e))?;
     if !output.status.success() {
         bail!(
             "tmux capture-pane exited with status {}: {}",
@@ -2826,7 +2856,7 @@ pub fn spawn_window(
 
     let output = tmux
         .output()
-        .context("Failed to run tmux new-window for headless spawn")?;
+        .map_err(|e| local_launch_failure("Failed to run tmux new-window for headless spawn", e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(

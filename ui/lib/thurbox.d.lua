@@ -376,14 +376,32 @@
 ---@field path string
 ---@field name string
 
+---@alias thurbox.Presence
+---| "present"
+---| "missing"
+---| "unknown"
+
 ---@class (exact) thurbox.Agent
 ---@field name string
 ---@field command string
+---@field presence thurbox.Presence Whether `command` resolves to something runnable. `unknown` is not `missing`: it means nothing was looked at.
 
 ---@class (exact) thurbox.Host
 ---@field name string
 ---@field detail string
 ---@field backend string
+
+--- The local multiplexer every session's window is created in.
+---@class (exact) thurbox.Mux
+---@field binary string `tmux`, or `psmux` on native Windows.
+---@field presence thurbox.Presence
+---@field advice string What to do about it; empty when there is nothing to do.
+
+--- Whether the binaries a session needs are installed, as the kernel last
+--- looked. Probed on the kernel's schedule behind a TTL — reading it is a table
+--- lookup, never a `which`.
+---@class (exact) thurbox.Preflight
+---@field mux thurbox.Mux
 
 ---@class (exact) thurbox.Task
 ---@field id integer
@@ -619,6 +637,7 @@
 ---@field branches thurbox.Branches
 ---@field worktrees thurbox.Worktrees
 ---@field hosts thurbox.Host[]
+---@field preflight thurbox.Preflight
 ---@field tasks thurbox.Task[]
 ---@field automations thurbox.Automation[]
 ---@field commands thurbox.InFlight[]
