@@ -600,8 +600,13 @@ WSL needs no credentials at all.
   resolving, and one spelling keeps one meaning. It is not dropped:
   dropping it would strand every session it had created, and telling the
   user to rename it by hand would not move the rows. A shadow whose
-  distro another entry already describes defers to that entry, so one
-  distro keeps one backend.
+  distro another entry already **reaches** defers to that entry, so one
+  distro keeps one backend — the test is the distro, never the name,
+  since `name` is a free label and an unrelated host holding the
+  sibling's name would route the rows at the wrong distro. That
+  collision, and a second shadow sharing the one spelling, are dropped
+  with no rename instead: unresolved rows are recoverable by hand, a
+  silent misroute is not.
 - **The one-time repair**: rows a released build already relabelled are
   put back by `session_ops::repair_wsl_loopback_rows`, not by the
   migration — schema v47 only marks it **owed**, and every startup that

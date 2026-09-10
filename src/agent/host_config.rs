@@ -7,7 +7,7 @@
 //! and behaves exactly as before. If the file exists but cannot be read or
 //! parsed, we fall back to an empty registry rather than failing to start.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -37,7 +37,9 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #
 # Running thurbox INSIDE a distro discovers its siblings, but never the distro
 # itself: that one is this machine, and a session on it is a plain local
-# session (no --host). An entry naming it is ignored with a warning.
+# session (no --host). An entry whose `distro` is that one is ignored with a
+# startup warning; an entry merely *named* after it is re-registered under the
+# distro it reaches, and its existing sessions move with it.
 #
 # This file starts empty (every entry below is commented out): a fresh install
 # registers zero SSH hosts (WSL distros still auto-discover) and otherwise
@@ -275,10 +277,18 @@ pub fn cached_registry() -> &'static (HostRegistry, Vec<String>) {
 ///   session it had already created, and telling the user to rename it by hand
 ///   would not move the rows.
 ///
-/// A re-registered shadow **defers** to an entry that already carries the
-/// sibling's name: that is the same distro, so the rows still move onto it and
-/// the duplicate backend is never created. Auto-discovery needs no such
-/// handling — [`augment_with_wsl`] already skips a name that is configured.
+/// A re-registered shadow **defers** to an entry that already *reaches* the
+/// same distro: the rows move onto that entry's own backend name and the
+/// duplicate backend is never created. The test is the distro, never the name
+/// — `name` is a free label, so an unrelated host can hold the sibling's name
+/// while launching something else entirely, and renaming the rows onto it
+/// would route live sessions at the wrong distro (or, for an SSH entry, over
+/// ssh). That case is **dropped with no rename**: the rows keep their spelling
+/// and stay unresolvable until the collision is settled by hand, which is
+/// recoverable, where a silent misroute is not. Two shadows at once are
+/// refused the same way — they share one spelling, so nothing can say whose
+/// rows are whose. Auto-discovery needs no such handling
+/// ([`augment_with_wsl`] already skips a name that is configured).
 ///
 /// Neither case can come from discovery ([`discover_wsl_hosts`] filters the
 /// loopback and names a host after the distro it points at), so both are
@@ -294,14 +304,39 @@ fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, WslRepairPlan)
             .push(format!("{}{distro}", crate::session::WSL_BACKEND_PREFIX));
     }
 
-    // The names that will still be in force after this pass, so a shadow can
-    // tell "already described" from "described by an entry about to go".
+    // What will still be in force after this pass, so a shadow can tell
+    // "already described" from "described by an entry about to go". Names and
+    // distros are both matched the way `wsl.exe -d` matches one, so they are
+    // held folded.
+    let survives =
+        |h: &HostDef| -> bool { !h.is_wsl_loopback() && !h.shadows_current_wsl_distro() };
     let mut taken: HashSet<String> = reg
         .hosts
         .iter()
-        .filter(|h| !h.is_wsl_loopback() && !h.shadows_current_wsl_distro())
-        .map(|h| h.name.clone())
+        .filter(|h| survives(h))
+        .map(|h| h.name.to_ascii_lowercase())
         .collect();
+    // The distro an entry reaches -> the backend name it reaches it under.
+    // This, not `taken`, is what a shadow may defer to.
+    let mut reaching: HashMap<String, String> = reg
+        .hosts
+        .iter()
+        .filter(|h| h.is_wsl() && survives(h))
+        .map(|h| (h.distro_name().to_ascii_lowercase(), h.backend_name()))
+        .collect();
+
+    // Every spelling a shadow claims, whatever becomes of the entry. The
+    // subtraction below keys on this rather than on the renames, so a shadow
+    // that is dropped still keeps its genuinely remote rows off `to_local`.
+    let mut shadowed: Vec<String> = Vec::new();
+    // One spelling cannot rename two ways, so a second shadow makes both
+    // ambiguous rather than making the first one wrong.
+    let ambiguous = reg
+        .hosts
+        .iter()
+        .filter(|h| h.shadows_current_wsl_distro())
+        .count()
+        > 1;
 
     let mut settled = Vec::with_capacity(reg.hosts.len());
     for mut host in std::mem::take(&mut reg.hosts) {
@@ -319,18 +354,47 @@ fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, WslRepairPlan)
         if host.shadows_current_wsl_distro() {
             let sibling = host.distro_name();
             let from = host.backend_name();
-            let to = format!("{}{sibling}", crate::session::WSL_BACKEND_PREFIX);
-            plan.renames.push((from, to));
-            if taken.contains(&sibling) {
+            shadowed.push(from.clone());
+
+            if ambiguous {
                 warnings.push(format!(
-                    "hosts.toml: ignoring host '{}' — it is named after the WSL distro \
-                     thurbox runs in, which has to keep meaning this machine, and host \
-                     '{sibling}' already describes the distro it reaches. Its sessions \
-                     have moved to that host: use --host {sibling}.",
+                    "hosts.toml: ignoring host '{}' — more than one entry is named after \
+                     the WSL distro thurbox runs in, so they share one backend name and \
+                     nothing can say which sessions belong to which. Rename all but one \
+                     to keep them; their sessions are left as they are.",
                     host.name
                 ));
                 continue;
             }
+            if let Some(target) = reaching.get(&sibling.to_ascii_lowercase()) {
+                warnings.push(format!(
+                    "hosts.toml: ignoring host '{}' — it is named after the WSL distro \
+                     thurbox runs in, which has to keep meaning this machine, and \
+                     '{target}' already reaches the distro it points at ('{sibling}'). \
+                     Its sessions have moved to that host.",
+                    host.name
+                ));
+                if !target.eq_ignore_ascii_case(&from) {
+                    plan.renames.push((from, target.clone()));
+                }
+                continue;
+            }
+            if taken.contains(&sibling.to_ascii_lowercase()) {
+                // The name is held by a host that reaches somewhere else.
+                // Moving the rows onto it would point live sessions at the
+                // wrong distro, so they keep their spelling and wait.
+                warnings.push(format!(
+                    "hosts.toml: ignoring host '{}' — it is named after the WSL distro \
+                     thurbox runs in, which has to keep meaning this machine, and it \
+                     cannot re-register as '{sibling}' because another host already has \
+                     that name and reaches somewhere else. Rename one of the two; until \
+                     then its sessions stay recorded on '{from}' and will not resolve.",
+                    host.name
+                ));
+                continue;
+            }
+
+            let to = format!("{}{sibling}", crate::session::WSL_BACKEND_PREFIX);
             warnings.push(format!(
                 "hosts.toml: host '{}' is named after the WSL distro thurbox runs in, \
                  which has to keep meaning this machine, so it now registers as the \
@@ -338,7 +402,9 @@ fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, WslRepairPlan)
                  {sibling}.",
                 host.name
             ));
-            taken.insert(sibling.clone());
+            plan.renames.push((from, to.clone()));
+            taken.insert(sibling.to_ascii_lowercase());
+            reaching.insert(sibling.to_ascii_lowercase(), to);
             host.name = sibling;
             settled.push(host);
             continue;
@@ -347,14 +413,11 @@ fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, WslRepairPlan)
     }
     reg.hosts = settled;
 
-    // A name being renamed is not this machine's: while such an entry exists
-    // that spelling reaches a sibling, and its rows follow the rename instead.
-    plan.to_local.retain(|n| {
-        !plan
-            .renames
-            .iter()
-            .any(|(from, _)| from.eq_ignore_ascii_case(n))
-    });
+    // A spelling any shadow claims is not this machine's: while such an entry
+    // exists that spelling reaches a sibling, and its rows either follow the
+    // rename or stay put — never become local.
+    plan.to_local
+        .retain(|n| !shadowed.iter().any(|s| s.eq_ignore_ascii_case(n)));
     plan.to_local.sort_by_key(|n| n.to_ascii_lowercase());
     plan.to_local.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
 
@@ -650,32 +713,96 @@ mod tests {
         });
     }
 
-    /// One distro has one backend name, so a shadow whose sibling is already
-    /// described defers to that entry instead of duplicating it — and its rows
-    /// still move, because the host they now name reaches them.
+    /// One distro has one backend name, so a shadow whose sibling another
+    /// entry already reaches defers to that entry instead of duplicating it —
+    /// and its rows still move, because the host they now name reaches them.
+    /// The target is that entry's own backend name, which need not be spelled
+    /// like the distro at all.
     #[test]
-    fn a_re_registered_shadow_defers_to_an_entry_that_already_holds_the_name() {
+    fn a_re_registered_shadow_defers_to_the_entry_that_reaches_its_distro() {
         crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
             let mut reg = registry(vec![
                 wsl("MagicDebian", "MagicDebianPerso"),
-                HostDef::wsl("MagicDebianPerso"),
+                wsl("perso", "MagicDebianPerso"),
             ]);
 
             let (warnings, plan) = settle_wsl_self_hosts(&mut reg);
 
-            assert_eq!(reg.names(), ["MagicDebianPerso"]);
+            assert_eq!(reg.names(), ["perso"]);
             assert_eq!(
                 plan.renames,
-                [(
-                    "wsl:MagicDebian".to_string(),
-                    "wsl:MagicDebianPerso".to_string()
-                )]
+                [("wsl:MagicDebian".to_string(), "wsl:perso".to_string())],
+                "the rows move onto the backend name that actually reaches the distro"
             );
+            assert!(plan.to_local.is_empty());
             assert!(
-                warnings[0].contains("already describes")
-                    && warnings[0].contains("--host MagicDebianPerso"),
-                "the warning must say it deferred and to which name: {}",
+                warnings[0].contains("already reaches") && warnings[0].contains("'wsl:perso'"),
+                "the warning must say it deferred and to which host: {}",
                 warnings[0]
+            );
+        });
+    }
+
+    /// `name` is a free label, so a host can hold the sibling's name while
+    /// launching something else entirely. Deferring on the name alone would
+    /// rewrite live sessions onto a host that runs a different distro — or,
+    /// for an SSH entry, over ssh. The shadow is dropped with no rename
+    /// instead: rows that do not resolve are recoverable by hand, a silent
+    /// misroute is not.
+    #[test]
+    fn a_shadow_does_not_defer_to_an_unrelated_host_holding_the_name() {
+        for other in [
+            wsl("MagicDebianPerso", "Debian-12"),
+            HostDef {
+                name: "MagicDebianPerso".into(),
+                destination: "me@elsewhere".into(),
+                ..Default::default()
+            },
+        ] {
+            crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+                let mut reg = registry(vec![wsl("MagicDebian", "MagicDebianPerso"), other.clone()]);
+
+                let (warnings, plan) = settle_wsl_self_hosts(&mut reg);
+
+                assert_eq!(reg.names(), ["MagicDebianPerso"]);
+                assert!(
+                    plan.renames.is_empty(),
+                    "no rename may point rows at a host reaching somewhere else"
+                );
+                assert!(
+                    plan.to_local.is_empty(),
+                    "and they are not this machine's either — they wait"
+                );
+                assert_eq!(warnings.len(), 1);
+                assert!(
+                    warnings[0].contains("another host already has that name")
+                        && warnings[0].contains("'wsl:MagicDebian'"),
+                    "the warning must name the collision and the stranded spelling: {}",
+                    warnings[0]
+                );
+            });
+        }
+    }
+
+    /// Two shadows share the one spelling `wsl:<us>`, so nothing can say whose
+    /// rows are whose. Both are refused and neither set of rows is touched.
+    #[test]
+    fn two_shadows_are_ambiguous_and_neither_moves_any_row() {
+        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+            let mut reg = registry(vec![
+                wsl("MagicDebian", "MagicDebianPerso"),
+                wsl("MagicDebian", "Debian-12"),
+            ]);
+
+            let (warnings, plan) = settle_wsl_self_hosts(&mut reg);
+
+            assert!(reg.is_empty());
+            assert!(plan.renames.is_empty());
+            assert!(plan.to_local.is_empty());
+            assert_eq!(warnings.len(), 2);
+            assert!(
+                warnings.iter().all(|w| w.contains("more than one entry")),
+                "each warning must say why neither could be settled: {warnings:?}"
             );
         });
     }

@@ -243,7 +243,10 @@ are ordinary **local** sessions created with no `--host`. An entry whose
 `distro` is that one is ignored with a startup warning; an entry merely
 *named* after it — reaching a sibling — is re-registered under the
 distro it reaches, and its existing sessions move with it (a warning
-says which name `--host` now takes). For both kinds, tmux, git, the agent,
+says which name `--host` now takes), unless another host already holds
+that name while reaching somewhere else, in which case it is ignored
+too and its sessions wait rather than being pointed at the wrong distro.
+For both kinds, tmux, git, the agent,
 and worktrees all run **on the host / inside the distro** at native
 paths (a WSL distro's worktrees live in its own Linux filesystem, not on
 `/mnt/c`); the distro needs `tmux` >= 3.2 and `git`. Host changes

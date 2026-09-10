@@ -28,7 +28,10 @@ configured one with a warning). A configured host that reaches a sibling but is
 as `wsl:<us>` and be indistinguishable from a loopback row, so it is
 **re-registered** under the distro it reaches (with a warning saying which name
 `--host` now takes) and the rows it already wrote move with it; if another entry
-already describes that distro, it defers to it. Rows a released build already
+already *reaches* that distro, it defers to that entry's backend name. Matching
+is on the distro, never the name: an unrelated host holding the sibling's name,
+or a second shadow sharing the one spelling, is dropped with no rename so the
+rows wait rather than being routed somewhere wrong. Rows a released build already
 relabelled `wsl:<us>` (being shareable by default, the loopback was mirrored,
 and its "host" database was this database, so the pass rewrote our own local
 rows as remote) are put back by a one-time repair rather than by the migration:

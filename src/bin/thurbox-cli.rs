@@ -80,8 +80,12 @@ fn main() {
     // the reap sweep refuses to kill windows it believes are elsewhere and
     // leaks them. Costs one indexed lookup when nothing is owed, which is every
     // invocation after the first.
+    // `warn!`, not `info!`: the logger installed above filters to WARN with no
+    // `RUST_LOG` set, and this is the one record that a one-time rewrite of
+    // persisted rows happened — the owed mark is gone afterwards, so the TUI
+    // cannot report it later.
     for notice in thurbox::session_ops::repair_wsl_loopback_rows(&db) {
-        tracing::info!("{notice}");
+        tracing::warn!("{notice}");
     }
 
     match cli::run(cli, &db) {
