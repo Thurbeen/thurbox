@@ -402,6 +402,28 @@ mod tests {
             // case the repair must not touch.
             assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
             assert_eq!(bookmark_hosts(&rig.db), ["wsl:MagicDebian"]);
+            assert!(!rig.db.wsl_loopback_repair_owed().unwrap());
+        });
+    }
+
+    /// Off WSL the answer does not depend on `hosts.toml`: no loopback can
+    /// exist, so nothing is owed however the file reads. A typo in it while
+    /// adding an SSH host must therefore not defer the repair — which would
+    /// keep the mark set and re-parse the file on every hook-frequency
+    /// invocation, forever, on a machine the repair can never apply to.
+    #[test]
+    fn off_wsl_an_unparseable_hosts_toml_still_retires_the_repair() {
+        with_wsl_distro(None, || {
+            let rig = rig("[[hosts]\nname = \"devbox\"\n");
+            session(&rig.db, "a", "wsl:MagicDebian");
+
+            assert!(repair_wsl_loopback_rows(&rig.db).is_empty());
+
+            assert_eq!(backend(&rig.db, "a"), "wsl:MagicDebian");
+            assert!(
+                !rig.db.wsl_loopback_repair_owed().unwrap(),
+                "an answer that never depended on the file retires the repair"
+            );
         });
     }
 

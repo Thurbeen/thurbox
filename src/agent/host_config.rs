@@ -340,13 +340,17 @@ fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, Vec<String>) {
 /// [`load_all_with_warnings`] — so what the repair rewrites and what a session
 /// resolves against cannot disagree about who owns a spelling.
 pub fn wsl_repair_plan() -> Result<WslRepairPlan, String> {
-    let (mut reg, _) = load_or_seed_result()?;
-    let candidates = settle_wsl_self_hosts(&mut reg).1;
-    // Nothing to place, so nothing to ask `wsl.exe` about — which is every
-    // machine that is not inside a distro.
-    if candidates.is_empty() {
+    // Asked first, because it decides the answer on its own: only a loopback
+    // can have written one of these rows, and only a thurbox running *inside*
+    // a distro can have a loopback. So off WSL there is nothing to repair
+    // whatever `hosts.toml` says — and a failure only defers when the answer
+    // depends on what failed, or an unrelated typo in that file would defer
+    // this forever and re-parse it on every invocation.
+    if crate::session::current_wsl_distro().is_none() {
         return Ok(WslRepairPlan::default());
     }
+    let (mut reg, _) = load_or_seed_result()?;
+    let candidates = settle_wsl_self_hosts(&mut reg).1;
     if any_candidate_a_sibling_could_claim(&candidates) {
         augment_with(&mut reg, discover_wsl_hosts()?);
     }

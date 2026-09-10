@@ -632,15 +632,18 @@ WSL needs no credentials at all.
   the *evidence* was gone and relabel a live sibling's sessions local.
   The mark is therefore cleared, and dropping the entry afterwards leaves
   those rows exactly where they are, under a name no host registers.
-  Only a question that could not be **asked** keeps the mark: a
-  `hosts.toml` that would not parse, distros that could not be
-  enumerated, a failed write. Silence must never read as "nothing claims
-  it", while a machine with no `wsl.exe` at all is a definite "no
-  distros" (interop puts `wsl.exe` on `PATH` inside a distro, so the two
-  cases do not overlap). Enumeration is asked at all only for a
-  candidate discovery could decide — never for `wsl:<us>`, the one
-  spelling discovery filters out — so the ordinary repair spawns no
-  subprocess. The bookmark half resolves colliding
+  Only a question that could not be **asked** keeps the mark, and only
+  when the answer depended on it: a `hosts.toml` that would not parse,
+  distros that could not be enumerated, a failed write. Each is asked
+  solely where it can matter — `$WSL_DISTRO_NAME` is read first, so off
+  WSL nothing is owed whatever `hosts.toml` says (only a loopback wrote
+  these rows, and only a thurbox inside a distro can have one), and
+  enumeration is consulted only for a candidate discovery could
+  decide, never for `wsl:<us>`, the one spelling it filters out. So the
+  ordinary repair parses one file, spawns no subprocess, and retires.
+  Silence must never read as "nothing claims it", while a machine with
+  no `wsl.exe` at all is a definite "no distros" (interop puts `wsl.exe`
+  on `PATH` inside a distro, so the two cases do not overlap). The bookmark half resolves colliding
   readings of one path on recency (`(host, repo_path)` is the key, so
   only one can survive) and the survivor inherits the group's
   `is_parent`/`parent_path`, so a healed parent keeps the mark its

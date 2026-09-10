@@ -139,10 +139,13 @@ session), never on the loop, ADR-P12).
   - `to_local` = the candidates no served host registers under; `withheld` =
     the rest, matched on the whole backend name (an `ssh:` host named after a
     distro serves none of its rows, so it withholds nothing).
-  - Only a question that could not be **asked** keeps the owed mark: an
-    unparseable `hosts.toml` and distros that could not be enumerated are both
-    `Err`, so nothing is touched and a later start retries. A `withheld` name
-    is an **answer** and clears it — those rows never become classifiable, so
+  - Only a question that could not be **asked** keeps the owed mark, and only
+    where the answer depended on it: an unparseable `hosts.toml` and distros
+    that could not be enumerated are both `Err`, so nothing is touched and a
+    later start retries — but `$WSL_DISTRO_NAME` is checked before the file is
+    read, so off WSL the plan is empty however `hosts.toml` reads, and an
+    unrelated typo cannot defer a repair that has nothing to do. A `withheld`
+    name is an **answer** and clears it — those rows never become classifiable, so
     waiting for the claim to disappear would just rewrite them once the
     evidence was gone, relabelling a live sibling's sessions local. Silence
     must never read as "no host claims this", though a machine with no
