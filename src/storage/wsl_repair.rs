@@ -37,13 +37,6 @@ pub struct WslLoopbackRepair {
     pub bookmarks_superseded: usize,
 }
 
-impl WslLoopbackRepair {
-    /// Whether the pass changed anything worth telling the user about.
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
 /// A `repo_bookmarks` row in one heal's collision group, as the resolution
 /// below reads it.
 struct Candidate<'a> {
@@ -365,10 +358,10 @@ mod tests {
         session(&db, "a", "wsl:MagicDebian");
         bookmark(&db, "wsl:MagicDebian", "/repo", "keep", 1);
 
-        assert!(db
-            .apply_wsl_repair_plan(&WslRepairPlan::default())
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            db.apply_wsl_repair_plan(&WslRepairPlan::default()).unwrap(),
+            WslLoopbackRepair::default()
+        );
 
         assert_eq!(backends(&db), vec![("a".into(), "wsl:MagicDebian".into())]);
         assert_eq!(

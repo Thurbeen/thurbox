@@ -336,7 +336,7 @@ fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, Vec<String>) {
 /// part of it is [`withheld`](WslRepairPlan::withheld).
 ///
 /// Built from the registry as callers will *see* it — `settle_wsl_self_hosts`
-/// then [`augment_with`], the same two steps in the same order as
+/// then `augment_with`, the same two steps in the same order as
 /// [`load_all_with_warnings`] — so what the repair rewrites and what a session
 /// resolves against cannot disagree about who owns a spelling.
 pub fn wsl_repair_plan() -> Result<WslRepairPlan, String> {
