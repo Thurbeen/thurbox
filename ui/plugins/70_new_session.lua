@@ -464,6 +464,12 @@ preflight_warning = function(flow)
     end
     return sentence, theme.bad
   end
+  -- A fork's agent is the source session's, resolved server-side (see
+  -- `commit`) — flow.agent_index was never assigned to mean anything for one,
+  -- so there is nothing here to check.
+  if flow.fork then
+    return nil
+  end
   -- The agent is the last question, so it is only settled on that step; a flow
   -- with a single agent never asks, and the answer is settled from the start.
   if flow.step ~= "agent" and not spawns_directly(flow) then

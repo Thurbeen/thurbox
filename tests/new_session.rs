@@ -23,8 +23,9 @@ use thurbox::kernel::registry::Registry;
 use thurbox::kernel::repos::{
     BookmarkRow, Branches, BrowseEntry, Listing, RepoStore, Wants, Worktrees,
 };
-use thurbox::kernel::snapshot::{AgentRow, HostRow, Snapshot};
+use thurbox::kernel::snapshot::{AgentRow, HostRow, SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 const PLUGIN: &str = "new_session";
 
@@ -81,6 +82,36 @@ fn offered() -> BookmarkRow {
         label: Some("Thurbox interface — edit your panes".into()),
         offered: true,
         ..bookmark(INTERFACE_DIR, Some(false))
+    }
+}
+
+/// A session to fork — its own agent is what the fork would actually run,
+/// never the first row of `agents()`.
+fn source_session() -> SessionRow {
+    SessionRow {
+        id: "fix-osc52-0000-0000-0000-000000000000".into(),
+        name: "fix-osc52".into(),
+        agent: "aider".into(),
+        status: SessionState::Idle,
+        cwd: Some("/src/thurbox".into()),
+        repo: Some("thurbox".into()),
+        repos: Vec::new(),
+        member_dirs: Vec::new(),
+        branch: Some("feat/fix-osc52".into()),
+        base_branch: None,
+        backend: "local-tmux".into(),
+        backend_id: Some("%1".into()),
+        remote_host: None,
+        agent_session_id: None,
+        parent_id: None,
+        display_order: None,
+        worktree_count: 1,
+        git: None,
+        stopped: false,
+        hook_state: None,
+        reports_as: None,
+        detected_agent: None,
+        shell_backend_id: None,
     }
 }
 
@@ -1967,5 +1998,38 @@ fn the_empty_session_list_says_the_multiplexer_is_missing() {
     assert!(
         !screen.contains("is not installed"),
         "a machine that has everything was still warned: {screen}"
+    );
+}
+
+#[test]
+fn a_fork_never_warns_about_the_wrong_agent() {
+    // A fork's agent is the source session's, resolved server-side by the
+    // kernel — flow.agent_index is never assigned for one, so indexing
+    // agents() by it would read whichever agent happens to sort first in
+    // agents.toml, not the one the fork will actually run.
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.agents[0].presence = Presence::Missing;
+    world.snapshot.sessions = vec![source_session()];
+    publish(&host, &world);
+    // Rendering is what settles the cursor onto the session row.
+    host.render(
+        index_of(&host, "sessions"),
+        RenderContext {
+            width: 40,
+            height: 12,
+            focused: true,
+            elapsed: 1.0,
+            frame: 1,
+        },
+    )
+    .expect("render the sessions list");
+    host.on_action(index_of(&host, "sessions"), "sessions.fork")
+        .expect("sessions.fork");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Session Name"), "{screen}");
+    assert!(
+        !screen.contains("pane will exit at once"),
+        "the fork flow warned about an agent it was never asked to pick: {screen}"
     );
 }
