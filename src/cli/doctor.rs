@@ -282,7 +282,9 @@ mod tests {
         let finding = agent_finding(&agent);
         assert_eq!(finding.level, Level::Ok, "{}", finding.detail);
         assert!(
-            finding.detail.contains("resolved from the session's own directory"),
+            finding
+                .detail
+                .contains("resolved from the session's own directory"),
             "{}",
             finding.detail
         );
