@@ -275,11 +275,11 @@ impl App {
 
     /// Run the kernel's own clipboard actions, or report that this was not one.
     ///
-    /// `Some(false)` is the load-bearing answer: copy with **no selection**
-    /// declines the chord, so `Ctrl+C` falls through to the focused agent and
-    /// still interrupts a turn. That is the one case where thurbox wins the
-    /// chord back from the terminal, and it is decided per press rather than by
-    /// the binding — see [`thurbox::kernel::clipboard`].
+    /// `Some(false)` is the load-bearing answer, and both chords use it: copy
+    /// with **no selection** declines, so `Ctrl+C` falls through to the focused
+    /// agent and still interrupts a turn; paste with **nothing pasteable**
+    /// declines for the reason [`Self::paste_into_focused`] gives. Decided per
+    /// press rather than by the binding — see [`thurbox::kernel::clipboard`].
     pub(crate) fn run_clipboard_action(&mut self, action: &str) -> Option<bool> {
         match action {
             clipboard::COPY_ACTION => {
@@ -292,10 +292,7 @@ impl App {
                 self.copy_selection();
                 Some(true)
             }
-            clipboard::PASTE_ACTION => {
-                self.paste_into_focused();
-                Some(true)
-            }
+            clipboard::PASTE_ACTION => Some(self.paste_into_focused()),
             _ => None,
         }
     }
@@ -511,11 +508,17 @@ impl App {
                 return;
             }
             // Chosen by name rather than pressed, so a decline falls through to
-            // nothing and would look like a dead row: say why instead.
+            // nothing and would look like a dead row: say why instead. Both
+            // chords can decline and they decline for different reasons, so the
+            // message follows the action rather than assuming copy.
             match self.run_clipboard_action(action) {
                 Some(true) => return,
                 Some(false) => {
-                    self.toast("nothing to copy");
+                    self.toast(if action == thurbox::kernel::clipboard::PASTE_ACTION {
+                        "nothing to paste — the clipboard holds no text"
+                    } else {
+                        "nothing to copy"
+                    });
                     return;
                 }
                 None => {}
@@ -610,21 +613,109 @@ impl App {
         });
     }
 
-    /// Paste the clipboard into the focused session's terminal.
+    /// Paste the clipboard into the focused session's terminal, or decline the
+    /// chord when there is no text to paste.
     ///
     /// Sent as a bracketed paste, so a multi-line paste arrives as text rather
     /// than as a series of submissions — an agent prompt with newlines in it
     /// would otherwise fire on the first one.
-    pub(crate) fn paste_into_focused(&mut self) {
-        let Some(text) = thurbox::clipboard::paste(self.clipboard.as_mut()) else {
-            // No OSC 52 read fallback: terminals disable clipboard *reads* by
-            // default and probing for one can stall for seconds. The route that
-            // does work here is the terminal's own paste chord, which arrives as
-            // `Event::Paste` — so point at it rather than reporting a dead end.
+    ///
+    /// **A local clipboard holding no text is not an error, it is someone else's
+    /// paste.** An image is the case that matters: thurbox can only send text, so
+    /// swallowing `Ctrl+V` there means the press does nothing at all — which is
+    /// what "pasting a screenshot into claude through thurbox does nothing" was.
+    /// The agent in the pane does know how to fetch it: Claude Code reads the
+    /// clipboard itself when it sees `Ctrl+V`, shelling out to `xclip`/`wl-paste`
+    /// (and, under WSL, to PowerShell). Declining lets the press reach it.
+    ///
+    /// No clipboard **at all** — the SSH case — still gets the hint instead:
+    /// there is nothing on that machine for the agent to read either, and the
+    /// route that does work is the terminal's own paste chord, which arrives as
+    /// `Event::Paste`. There is no OSC 52 read fallback because terminals
+    /// disable clipboard *reads* by default and probing for one can stall for
+    /// seconds.
+    pub(crate) fn paste_into_focused(&mut self) -> bool {
+        // Inside WSL the local clipboard is not the one being copied into, so
+        // this press cannot be answered here at all: Windows has to be asked,
+        // and asking costs ~0.42 s. The press is claimed, the answer acts on it
+        // — [`Self::poll_image_probe`].
+        if thurbox::clipboard::ImageProbe::applies() {
+            self.image_probe.ask();
+            return true;
+        }
+        self.paste_text_or_decline()
+    }
+
+    /// Paste the clipboard's text, or decline the chord when there is none.
+    ///
+    /// Declining is what makes an image paste work at all. thurbox can only
+    /// send text, so swallowing the press there means it does nothing — which
+    /// is what "pasting a screenshot into claude through thurbox does nothing"
+    /// was. The agent in the pane *can* fetch an image, and does so on seeing
+    /// the paste chord itself, so the press is worth more to it than to us.
+    ///
+    /// No clipboard **at all** — the SSH case — is the one decline that would
+    /// help nobody: there is nothing on that machine for the agent to read
+    /// either. That gets the hint pointing at the terminal's own paste, which
+    /// arrives as `Event::Paste`. There is no OSC 52 read fallback, because
+    /// terminals disable clipboard *reads* by default and probing for one can
+    /// stall for seconds.
+    fn paste_text_or_decline(&mut self) -> bool {
+        if self.clipboard.is_none() {
             self.toast(thurbox::clipboard::PASTE_UNAVAILABLE_HINT);
-            return;
+            return true;
+        }
+        let Some(text) = thurbox::clipboard::paste(self.clipboard.as_mut()) else {
+            return false;
         };
         self.on_paste(text);
+        true
+    }
+
+    /// Act on what Windows said about its clipboard, one paste press ago.
+    ///
+    /// An image goes to the agent, which reads it itself; anything else is an
+    /// ordinary text paste. "Neither" — no image on the Windows side and no
+    /// text on ours — also goes to the agent: thurbox has nothing to offer and
+    /// the press is better spent on something that might.
+    ///
+    /// Focus is resolved now rather than remembered from the press: 0.42 s is
+    /// long enough to change panes, and a paste belongs in the pane the person
+    /// is looking at when it lands.
+    pub(crate) fn poll_image_probe(&mut self) {
+        let Some(has_image) = self.image_probe.poll() else {
+            return;
+        };
+        if has_image || !self.paste_text_or_decline() {
+            self.forward_paste_chord();
+        }
+    }
+
+    /// Send the paste chord itself to the focused terminal.
+    ///
+    /// `Ctrl+V` is one byte on the wire, and it is what Claude Code watches for
+    /// before reading the clipboard itself (`xclip`/`wl-paste`, or PowerShell
+    /// under WSL). Sent directly rather than by letting the chord fall through,
+    /// because by the time the answer arrives the key press is long gone.
+    fn forward_paste_chord(&mut self) {
+        const CTRL_V: u8 = 0x16;
+        // A modal or a float owns typed input while it is up, and a paste must
+        // never leak into the terminal behind the overlay — the same rule
+        // `on_paste` follows. There is nothing to hand an image to here (a name
+        // field cannot take one), so the press is dropped rather than routed.
+        if self.modals.is_open() || self.grabbed.is_some() {
+            return;
+        }
+        let Some(session) = self.focused_session.clone() else {
+            self.report(
+                "nothing to paste into — focus a session's terminal first",
+                Level::Error,
+            );
+            return;
+        };
+        if !self.terminals.send(&session, vec![CTRL_V]) {
+            self.toast("no live terminal to paste into");
+        }
     }
 }
 

@@ -52,6 +52,8 @@
 //! arrives as an ordinary bracketed paste.
 
 use std::io::Write;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 use base64::Engine as _;
 
@@ -238,9 +240,162 @@ pub fn paste(native: Option<&mut arboard::Clipboard>) -> Option<String> {
 pub const PASTE_UNAVAILABLE_HINT: &str =
     "No local clipboard — use your terminal's paste (Ctrl+Shift+V)";
 
+/// Whether the **Windows** clipboard holds an image, asked off the event loop.
+///
+/// ## Why Windows has to be asked at all
+///
+/// Inside WSL the X clipboard is not the clipboard the person is copying into.
+/// WSLg bridges **text only**: copy a screenshot in Windows and the X side is
+/// not updated at all — it still hands out whatever text was copied before
+/// (measured on WSLg, Ubuntu: `Clipboard::get_text` returned an IP address
+/// copied minutes earlier while Windows held a 1594x535 PNG). So `Ctrl+V` on a
+/// copied image does not paste nothing, it pastes something *stale*, which is
+/// worse. arboard cannot tell us either: thurbox builds it with
+/// `default-features = false`, which is the build without `get_image`.
+///
+/// ## Why the answer is worth waiting for
+///
+/// thurbox cannot paste an image — but the agent in the pane can fetch one
+/// itself when it sees the paste chord (Claude Code shells out to
+/// `xclip`/`wl-paste`, and under WSL to this same PowerShell). So the only
+/// thing the question decides is who handles the press, and getting it wrong
+/// silently corrupts a prompt.
+///
+/// ## Why it is a worker
+///
+/// Spawning `powershell.exe` costs ~0.42 s (measured, three runs: 0.42/0.41/
+/// 0.43). That is far too long to hold the event loop for, and it is paid on
+/// *every* paste, not just image ones. So this is the seventh instance of the
+/// worker pattern: ask, keep drawing, act when the answer arrives.
+#[derive(Default)]
+pub struct ImageProbe {
+    channel: Option<(Sender<bool>, Receiver<bool>)>,
+}
+
+/// How PowerShell is found. `powershell.exe` is on `PATH` inside a distro
+/// through WSL interop; the absolute path is the fallback for a `PATH` that
+/// interop did not reach, and is the one Claude Code itself falls back to.
+const POWERSHELL: &str = "powershell.exe";
+const POWERSHELL_FALLBACK: &str =
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+
+/// Asks only whether an image is there — deliberately not for the image. An
+/// exit code is all the caller needs, and not carrying pixels over the boundary
+/// keeps the call cheap.
+const CONTAINS_IMAGE: &str = "Add-Type -AssemblyName System.Windows.Forms;      if (-not [System.Windows.Forms.Clipboard]::ContainsImage()) { exit 1 }";
+
+impl ImageProbe {
+    /// Whether this machine is one where the question even arises.
+    ///
+    /// Only inside a WSL distro: everywhere else the local clipboard *is* the
+    /// one being copied into, so arboard's answer is the whole truth and no
+    /// subprocess is worth spawning.
+    pub fn applies() -> bool {
+        cfg!(unix) && crate::session::host_def::current_wsl_distro().is_some()
+    }
+
+    /// Ask Windows, on a thread. The answer arrives at a later [`Self::poll`].
+    ///
+    /// Repeated presses each ask: two pastes are two pastes, and the answers
+    /// come back in the order the threads finish, which for a question this
+    /// small is the order they were asked.
+    pub fn ask(&mut self) {
+        let tx = self.channel.get_or_insert_with(channel).0.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(windows_clipboard_has_image());
+        });
+    }
+
+    /// The answer to one earlier [`Self::ask`], if one has come back.
+    pub fn poll(&mut self) -> Option<bool> {
+        let (_, rx) = self.channel.as_ref()?;
+        rx.try_recv().ok()
+    }
+}
+
+/// One PowerShell round trip. `false` for "no image", and also for every way
+/// the question could not be put: a machine that cannot answer is one whose
+/// clipboard thurbox pastes as text, which is what it did before this existed.
+fn windows_clipboard_has_image() -> bool {
+    let ask = |exe: &str| {
+        Command::new(exe)
+            .args(["-NoProfile", "-NonInteractive", "-Sta", "-Command"])
+            .arg(CONTAINS_IMAGE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+    };
+    match ask(POWERSHELL) {
+        Ok(status) => status.success(),
+        Err(e) => {
+            tracing::debug!("{POWERSHELL} is not on PATH ({e}); trying the interop path");
+            ask(POWERSHELL_FALLBACK).is_ok_and(|status| status.success())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The probe fires inside a WSL distro and nowhere else.
+    ///
+    /// The gate is the whole cost control: every paste on a machine that asks
+    /// pays ~0.42 s for a `powershell.exe` that a plain Linux or macOS box has
+    /// no reason to run. A gate that answered "yes" everywhere would be a
+    /// third-of-a-second added to every `Ctrl+V` on every platform.
+    #[test]
+    fn only_a_wsl_distro_asks_windows() {
+        use crate::session::host_def::with_wsl_distro;
+
+        assert!(
+            with_wsl_distro(Some("Ubuntu"), ImageProbe::applies),
+            "inside a distro the X clipboard is not the one being copied into, \
+             so Windows has to be asked"
+        );
+        assert!(
+            !with_wsl_distro(None, ImageProbe::applies),
+            "off WSL the local clipboard is the whole truth — asking would only \
+             cost every paste a subprocess"
+        );
+    }
+
+    /// The PowerShell round trip reports what PowerShell itself reports.
+    ///
+    /// Run against the real Windows clipboard, because what is being tested is
+    /// the wiring — the argument list, `-Sta` (without it `Add-Type` throws and
+    /// every answer becomes "no image"), the `PATH`/interop fallback, and
+    /// reading the answer off the *exit code* rather than stdout. A helper
+    /// returning `false` would pass every test that stubbed this out.
+    ///
+    /// Skipped where it cannot discriminate: off WSL, with no PowerShell, or
+    /// with no image on the clipboard — in that last case both a working probe
+    /// and a broken one say "no". Nothing here writes to the clipboard: a test
+    /// suite that destroys what you copied is worse than a test that skips.
+    #[test]
+    fn the_windows_probe_agrees_with_powershell() {
+        if !ImageProbe::applies() {
+            eprintln!("skipping: not inside a WSL distro");
+            return;
+        }
+        let oracle = Command::new(POWERSHELL)
+            .args(["-NoProfile", "-NonInteractive", "-Sta", "-Command"])
+            .arg("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::ContainsImage()")
+            .output();
+        let Ok(oracle) = oracle else {
+            eprintln!("skipping: no powershell.exe on PATH");
+            return;
+        };
+        if !String::from_utf8_lossy(&oracle.stdout).trim().eq_ignore_ascii_case("true") {
+            eprintln!("skipping: no image on the Windows clipboard to recognise");
+            return;
+        }
+        assert!(
+            windows_clipboard_has_image(),
+            "PowerShell says the clipboard holds an image and the probe did not"
+        );
+    }
 
     #[test]
     fn osc52_sequence_is_bel_terminated_base64() {

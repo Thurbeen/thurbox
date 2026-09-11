@@ -2525,6 +2525,8 @@ confined to the active pane bounds.
   modal is open the paste is swallowed so it can never leak into the
   terminal in the pane behind the overlay; otherwise it pastes into
   the active PTY.
+- **`Ctrl+V` with an image on the clipboard**: handed to the agent in
+  the pane instead of pasted — see "Pasting images" below.
 - **`Ctrl+Shift+V`** (your terminal's paste): the way to paste when
   thurbox runs over SSH — see "Pasting over SSH" below.
 - **`Cmd+C` / `Cmd+V`** (macOS): the same two actions, declared beside the
@@ -2620,6 +2622,23 @@ for one can stall for seconds. When no local clipboard is reachable,
 `Ctrl+V` shows a hint pointing at your terminal's own paste
 (usually **`Ctrl+Shift+V`**), which delivers the text as an ordinary
 bracketed paste that thurbox routes exactly like `Ctrl+V`.
+
+### Pasting images
+
+thurbox pastes text. An image on the clipboard is handed to the **agent**
+instead: `Ctrl+V` is sent to the pane as-is, and a CLI that knows how to read
+the clipboard itself picks the image up from there (Claude Code shells out to
+`xclip`/`wl-paste`, or to PowerShell under WSL). Swallowing the press instead
+is what used to make pasting a screenshot do nothing at all.
+
+**Inside WSL this needs asking Windows.** WSLg bridges the clipboard's *text*
+only: copy a screenshot in Windows and the Linux side is not updated — it keeps
+handing out whatever text was copied before, so a paste inserts something stale
+rather than the image. thurbox therefore asks `powershell.exe` whether the
+Windows clipboard holds an image before deciding what `Ctrl+V` means. The call
+costs about 0.4 s, so it runs **on a worker**: the interface keeps drawing and
+the paste lands when the answer does. Nothing is asked off WSL, where the local
+clipboard is the one being copied into.
 
 ### Pasting on Windows
 

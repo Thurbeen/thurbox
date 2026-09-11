@@ -237,6 +237,12 @@ struct App {
     /// is exactly what happened while this field did not exist. v1 holds the
     /// same handle for the same reason.
     clipboard: Option<arboard::Clipboard>,
+    /// Whether the Windows clipboard holds an image, asked on a thread.
+    ///
+    /// Only ever used inside WSL, where [`Self::clipboard`] answers about the X
+    /// clipboard rather than the one being copied into — see
+    /// [`thurbox::clipboard::ImageProbe`].
+    image_probe: thurbox::clipboard::ImageProbe,
     notifier: Notifier,
     perf: Counters,
     /// Wall-clock stats, populated only while timing is active (ADR-P11).

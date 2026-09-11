@@ -351,6 +351,10 @@ impl App {
                 .dispatch(thurbox::kernel::command::Command::Reap);
         }
 
+        // What Windows said about its clipboard, for a paste press that could
+        // not be answered when it happened (WSL only — `clipboard::ImageProbe`).
+        self.poll_image_probe();
+
         // An update that replaced binaries is worth saying once; a check that
         // merely found a release shows up in the header instead.
         if let Some(message) = self.updates.poll() {

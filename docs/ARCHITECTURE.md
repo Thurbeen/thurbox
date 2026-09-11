@@ -129,6 +129,32 @@ are handled in one place.
   crossterm's internal byte representation doesn't match xterm
   sequences. Modifier keys, in particular, would break.
 
+### An image on the clipboard is the agent's paste, not ours
+
+thurbox's clipboard transport carries text (`clipboard::copy`/`paste`, and the
+OSC 52 leg by construction). An image therefore cannot be pasted here at all —
+but the CLI in the pane can fetch one itself when it sees the paste chord, so
+`Ctrl+V` is **handed to it** rather than swallowed. `kernel.paste` declines the
+chord, the same `Some(false)` answer `kernel.copy` uses when there is no
+selection, and the press falls through to the focused terminal.
+
+Inside WSL the decision cannot be made locally: WSLg bridges the clipboard's
+*text* only, so while Windows holds an image the X clipboard still hands out the
+last text copied — a paste there inserts something stale rather than nothing,
+which is worse. `clipboard::ImageProbe` asks `powershell.exe`
+(`Clipboard::ContainsImage`) instead. That costs ~0.42 s measured, which is why
+it is the seventh instance of the worker pattern rather than a call on the loop:
+the press is claimed immediately and acted on when the answer lands, by which
+time focus is re-resolved. Off WSL nothing is asked — the local clipboard is the
+one being copied into, and arboard's answer is the whole truth.
+
+**Rejected**: *a second chord for "give the paste to the agent"* — cheap and
+exact, but it leaves the ordinary `Ctrl+V` after copying an image still pasting
+stale text, which is the half of the bug that corrupts a prompt silently.
+*Detecting the image with arboard* — thurbox builds it with
+`default-features = false`, the build without `get_image`, and the X clipboard
+it would read does not carry the Windows image anyway.
+
 ### A paste on Windows arrives as keys, not as a paste
 
 `Event::Paste` is unix-only. crossterm's Windows source reads console
