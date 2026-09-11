@@ -356,11 +356,17 @@ fn what_is_already_on_screen_is_not_announced() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
-    // The freeze, and why detecting it does not work. `has_exited` is set when a
-    // session's output STREAM ends, and tmux control mode carries every pane on a
-    // backend down one connection — killing a pane leaves that stream open, so a
-    // restarted session looked alive while showing a pane that no longer existed.
-    // The restart has to *say* the pane is gone.
+    // The freeze, and the two ways out of it. `has_exited` is set when a
+    // session's output STREAM ends. Control mode carries every pane on a backend
+    // down one connection, so for a long time this fired only when the
+    // *connection* went and never when a single pane was killed — a restarted
+    // session looked alive while showing a pane that no longer existed. tmux does
+    // announce the death, by WINDOW rather than by pane, and the kernel now turns
+    // that into the reader's EOF, so the freeze heals on its own.
+    //
+    // `forget` is still the faster half and still tested below: a restart KNOWS
+    // the pane is gone, and saying so beats waiting for a notification and
+    // clears the retry backoff that would otherwise hold the next attach off.
     if std::process::Command::new("tmux")
         .arg("-V")
         .output()
@@ -409,17 +415,41 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
     assert!(terminals.is_attached("aaa"), "did not attach to begin with");
 
     // What a restart does: the window goes, a new one takes its name. The
-    // interface is still holding the old pane, and nothing about the stream says
-    // otherwise — which is exactly why it froze.
+    // interface now notices this by itself — a closing window is announced
+    // (`%unlinked-window-close`), the pane's reader gets its EOF, and
+    // `drop_lost_panes` lets go of a pane that has stopped. Measured on this
+    // path 2026-09-11: let go on the first sync after the kill, attached to the
+    // replacement about half a second later.
     let _ = std::process::Command::new("tmux")
         .args(socket)
         .args(["kill-window", "-t", "thurbox-dev:tb-demo"])
         .output();
     window("tb-demo");
-    terminals.sync(&rows, 24, 80);
+    let mut let_go = false;
+    for _ in 0..60 {
+        terminals.sync(&rows, 24, 80);
+        if !terminals.is_attached("aaa") {
+            let_go = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert!(
-        terminals.is_attached("aaa"),
-        "still holding the dead pane, which is the bug this closes"
+        let_go,
+        "holding a pane whose window is gone — the freeze this closes"
+    );
+    let mut healed = false;
+    for _ in 0..60 {
+        terminals.sync(&rows, 24, 80);
+        if terminals.is_attached("aaa") {
+            healed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        healed,
+        "and then attaching to the pane that replaced it, unprompted"
     );
 
     // Told, it lets go and re-attaches to the pane that is actually there.

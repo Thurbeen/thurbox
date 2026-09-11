@@ -420,6 +420,33 @@ impl WindowRole {
     }
 }
 
+/// Should a window of this name keep its pane's frame after the pane dies?
+///
+/// Yes for an agent (`tb-`) and no for everything else, and the difference is
+/// **how each one's death is noticed**:
+///
+/// - A session's liveness is read from a *listing* (`#{pane_dead}`, see
+///   [`WindowIndex`]), which a kept window answers truthfully. Keeping it is the
+///   point: the agent's last screen — the error it printed — stays attachable,
+///   and `live_agent_window` still refuses to call the corpse an agent.
+/// - A shell (`tbs-`) and a plugin's program (`tbp-`) are read from their pane's
+///   output *stream*, and tmux announces a pane's death only by closing its
+///   window. A kept window is therefore a death that is never announced: the
+///   pane paints a frozen grid, `start_program` answers "already running" for
+///   ever, and the editor cannot be reopened (measured on a live session
+///   2026-09-11).
+///
+/// Stated per window because `remain-on-exit` is a window option that cannot be
+/// set for a session (see [`SESSION_OPTS`]) — and stated even when the answer is
+/// tmux's own default, because the user's `~/.tmux.conf` is read on thurbox's
+/// socket too and may have turned it on globally.
+fn keeps_dead_pane(window_name: &str) -> bool {
+    matches!(
+        WindowRole::from_window_name(window_name),
+        Some(WindowRole::Agent)
+    )
+}
+
 /// Where a listing puts a session's window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
@@ -1101,6 +1128,14 @@ impl TmuxBackend {
             self.tmux_run(&["set-option", "-t", &self.session, key, val])?;
         }
 
+        // Window-level options — see `WINDOW_OPTS` for why these are global to
+        // the server and why failing to set one is not fatal.
+        for (key, val) in WINDOW_OPTS {
+            if let Err(e) = self.tmux_run(&["set-option", "-w", "-g", key, val]) {
+                debug!("window option {key}={val} not set: {e}");
+            }
+        }
+
         Ok(())
     }
 
@@ -1459,6 +1494,18 @@ impl TmuxBackend {
     /// Register a pane sender and return the corresponding reader.
     /// Multiple instances can register the same pane; output will be broadcast to all.
     fn register_pane(&self, pane_id: &str) -> Result<ControlModeReader> {
+        // Asked BEFORE the sender is registered, and best-effort: tmux announces
+        // a pane's death only by the window it was in (`%window-close @3`), and
+        // this round trip is the one chance to learn which that is — afterwards
+        // the pane is gone and nothing can be asked about it. A backend that
+        // cannot answer (psmux) simply keeps the old behaviour: no mapping, so
+        // no EOF from a window close. One round trip per pane attached, on a
+        // path that already spawns or adopts a window.
+        let window_id = self
+            .ctrl_command(&format!("display-message -t {pane_id} -p '#{{window_id}}'"))
+            .ok()
+            .map(|out| out.trim().to_string())
+            .filter(|id| !id.is_empty());
         let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
         self.with_control(|ctrl| {
             let mut senders = ctrl
@@ -1469,6 +1516,14 @@ impl TmuxBackend {
                 .entry(pane_id.to_string())
                 .or_insert_with(Vec::new)
                 .push(tx);
+            drop(senders);
+            if let Some(window_id) = window_id {
+                let mut windows = ctrl
+                    .pane_windows
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("pane_windows lock: {e}"))?;
+                windows.insert(pane_id.to_string(), window_id);
+            }
             Ok(())
         })?;
         Ok(ControlModeReader::new(rx))
@@ -1484,6 +1539,12 @@ impl TmuxBackend {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("pane_senders lock: {e}"))?;
             senders.remove(pane_id);
+            drop(senders);
+            let mut windows = ctrl
+                .pane_windows
+                .lock()
+                .map_err(|e| anyhow::anyhow!("pane_windows lock: {e}"))?;
+            windows.remove(pane_id);
             Ok(())
         })
     }
@@ -1729,6 +1790,26 @@ impl SessionBackend for TmuxBackend {
 
         debug!(pane_id = %pane_id, "tmux window created via control mode");
 
+        // The new window states, for itself, whether its pane's corpse is kept —
+        // see `keeps_dead_pane` for what the answer turns on. Said here because
+        // this is where the window's purpose is known, and because there is no
+        // session-level setting that could have said it (`SESSION_OPTS`).
+        //
+        // Best-effort: an option this fails to set costs the announcement or the
+        // last screen, not the pane, and psmux has no such option at all.
+        if !psmux {
+            let keep = if keeps_dead_pane(window_name) {
+                "on"
+            } else {
+                "off"
+            };
+            if let Err(e) = self.ctrl_command(&format!(
+                "set-window-option -t {pane_id} remain-on-exit {keep}"
+            )) {
+                debug!("could not set remain-on-exit={keep} for {window_name}: {e:#}");
+            }
+        }
+
         let connected = self.connect_pane(&pane_id, rows, cols)?;
 
         Ok(SpawnedSession {
@@ -1801,7 +1882,7 @@ impl SessionBackend for TmuxBackend {
         self.capture_history_seed(backend_id)
     }
 
-    fn find_window(&self, window_name: &str) -> Result<Option<String>> {
+    fn window_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>> {
         // A name lookup rather than an identity one: a program window carries no
         // session id to resolve, only its deterministic name. Matched exactly
         // rather than by prefix — tmux's own name matching is FNMATCH-ish, which
@@ -1813,17 +1894,21 @@ impl SessionBackend for TmuxBackend {
             "-F",
             "#{pane_id}|#{window_name}|#{pane_dead}",
         ])?;
+        let mut found = Vec::new();
         for line in listing.lines() {
             let parts: Vec<&str> = line.splitn(3, '|').collect();
             if parts.len() < 3 || parts[1] != window_name {
                 continue;
             }
-            if parse_pane_dead(parts[2]) || !control_mode::is_valid_pane_id(parts[0]) {
+            // An unparseable id is dropped rather than reported dead: the caller
+            // would try to kill it, and a target tmux cannot resolve is not a
+            // corpse, it is noise.
+            if !control_mode::is_valid_pane_id(parts[0]) {
                 continue;
             }
-            return Ok(Some(parts[0].to_string()));
+            found.push((parts[0].to_string(), parse_pane_dead(parts[2])));
         }
-        Ok(None)
+        Ok(found)
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
@@ -2763,16 +2848,31 @@ fn history_seed_bytes(mut raw: Vec<u8>) -> Vec<u8> {
 ///
 /// Single source of truth for both the TUI and headless paths — applied
 /// (alongside the server-wide options + `default-command`) by
-/// [`TmuxBackend::apply_session_config`]. In particular `remain-on-exit=on` is
-/// required so a failed agent process leaves its tmux window visible with the
-/// error instead of silently vanishing.
-const SESSION_OPTS: &[(&str, &str)] = &[
-    ("remain-on-exit", "on"),
-    ("status", "off"),
-    ("history-limit", "5000"),
-    // Allow each window to size independently of the smallest attached client.
-    ("window-size", "manual"),
-];
+/// [`TmuxBackend::apply_session_config`].
+///
+/// **Session options only.** `set-option -t <session> <key>` does not mean "for
+/// this session" when `<key>` is a *window* option: tmux resolves the target
+/// down to the session's CURRENT window and sets it there (measured, tmux
+/// 3.2a — the option is on `@0` and a window created a moment later does not
+/// have it). Since `apply_session_config` runs on every `ensure_ready`, which
+/// window ends up carrying such an option is an accident of timing. Window
+/// options therefore live in [`WINDOW_OPTS`], and the one that depends on what
+/// the window is *for* — `remain-on-exit` — is set per window by
+/// [`keeps_dead_pane`] at spawn.
+const SESSION_OPTS: &[(&str, &str)] = &[("status", "off"), ("history-limit", "5000")];
+
+/// Window options applied to **every** window on thurbox's own tmux server.
+///
+/// Set with `-w -g` rather than per session: a window option has no session
+/// scope to be set at (see [`SESSION_OPTS`]), and the alternative — setting it
+/// on each window as it is born — would miss any window thurbox did not create.
+/// The blast radius is thurbox's own socket, which holds nothing else.
+///
+/// Best-effort: `resize-window -x/-y` already flips `window-size` to `manual`
+/// for the window it resizes (measured, tmux 3.2a), and thurbox resizes every
+/// pane it paints — so this is the belt for a window not yet resized, not the
+/// mechanism, and a multiplexer that rejects the option loses nothing.
+const WINDOW_OPTS: &[(&str, &str)] = &[("window-size", "manual")];
 
 /// The agent's command as an **absolute path**, resolved against thurbox's own
 /// `PATH`, so the multiplexer never has to resolve it.
@@ -2906,6 +3006,20 @@ pub fn spawn_window(
         pane_id.clone()
     };
     stamp_local_window(&target, session_id, WindowRole::Agent);
+    // The same statement `TmuxBackend::spawn` makes for the window it creates:
+    // this is an agent's window, so its corpse is kept and stays readable. Said
+    // on both paths because a session restarted headlessly must not behave
+    // differently from one started by the interface. Best-effort, and skipped on
+    // psmux, which has no such option.
+    if !cfg!(windows) && keeps_dead_pane(&window_name) {
+        if let Err(e) =
+            local_mux_command(&["set-window-option", "-t", &target, "remain-on-exit", "on"])
+                .output()
+                .context("set remain-on-exit for a headless agent window")
+        {
+            debug!("could not set remain-on-exit for {window_name}: {e:#}");
+        }
+    }
     Ok(pane_id)
 }
 
@@ -4071,6 +4185,33 @@ mod tests {
         assert!(once.starts_with(PROGRAM_WINDOW_PREFIX));
         assert!(!once.starts_with(&format!("{WINDOW_PREFIX}a")));
         assert!(!once.starts_with(SHELL_WINDOW_PREFIX));
+    }
+
+    /// Only an agent's window keeps its corpse — and the answer is read off the
+    /// *name*, so it is pinned against the three name builders rather than
+    /// against hand-written prefixes that could drift from them.
+    #[test]
+    fn an_agent_window_keeps_its_corpse_and_the_other_two_do_not() {
+        assert!(keeps_dead_pane(&agent_window_name("Foo Bar")));
+        assert!(!keeps_dead_pane(&shell_window_name("Foo Bar")));
+        assert!(!keeps_dead_pane(&program_window_name("abcd1234", "watch")));
+        // A window thurbox did not create is not thurbox's to keep open either.
+        assert!(!keeps_dead_pane("zsh"));
+    }
+
+    /// `remain-on-exit` is a WINDOW option, and `window-size` is one too: neither
+    /// can be set for a session, so neither belongs in the session list. The
+    /// first is per role (`keeps_dead_pane`), the second is global to the server
+    /// (`WINDOW_OPTS`).
+    #[test]
+    fn the_session_option_list_holds_no_window_options() {
+        for (key, _) in SESSION_OPTS {
+            assert!(
+                !["remain-on-exit", "window-size"].contains(key),
+                "{key} is a window option and is silently applied to whichever \
+                 window happens to be current"
+            );
+        }
     }
 
     /// A listed window, as `discover` would have reported it.

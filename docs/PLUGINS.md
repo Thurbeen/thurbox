@@ -640,7 +640,8 @@ A pane used to learn that the world changed only by being rendered and diffing
 the snapshot itself. Declare what you listen for and the kernel calls you **once
 per change**, off the render path, with the tables current: a session appeared,
 disappeared, changed status, name or branch; the selection or the focused pane
-moved; a command a plugin issued finished or failed; the interface reloaded. The
+moved; a command a plugin issued finished or failed; a program you started
+ended; the interface reloaded. The
 whole list, with each payload, is `thurbox-cli plugin events` and the last
 section of `F1`.
 
@@ -659,6 +660,13 @@ veto, only write state and enqueue. It runs under the render's instruction
 budget, and one that throws costs its own subscription for that event: the other
 subscribers still run, your pane still draws, and the failure is reported once
 per event in the message band rather than painted into your rect every frame.
+
+**One event is addressed rather than broadcast.** `program.exited` goes only to
+the plugin whose pane it was. A program pane belongs to the plugin that started
+it and no other plugin can even name it, so the news that it ended has the same
+owner — and two plugins may both call their pane `editor`, which a broadcast
+would have each of them acting on. Every other event is about something every
+pane can already see in the snapshot, and is delivered to every subscriber.
 
 **A subscription to a name nothing emits refuses to load** (`plugin check` says
 which), because a handler that never fires is the one failure with no symptom.
@@ -802,6 +810,35 @@ map it necessarily already has. Cells have no per-line identity and do not need 
 thing that decided where every row went is the thing that receives the coordinate. That
 is what lets a side-by-side diff aim a click at the old or the new column with nothing
 added to the node catalog.
+
+### The right button
+
+A RIGHT press has its own hook, `on_context`, with the same `hit` payload:
+
+```lua
+on_context = function(hit)
+  if not hit.id then return false end
+  store.filemenu = { path = hit.id }   -- open a menu aimed at this row
+  return true
+end,
+```
+
+Its own hook rather than a button field on `hit`, because the two presses do not
+mean the same thing to anyone. Every `on_click` ever written reads "act on this
+row" — open the file, run the action — so a right press arriving there would do
+exactly that, in every pane, the moment the kernel began forwarding it. This way
+a pane that declares no `on_context` never hears a right press at all.
+
+It is a much shorter road than the left button's: no verb is resolved, no link
+is opened, no selection is begun, and **the focus does not move**. What a right
+press means is entirely the pane's to decide.
+
+Not every terminal sends one. The emulator may bind the right button to paste or
+to a menu of its own and never forward it, and nothing here can tell that apart
+from a button nobody pressed — it is the user's setting to make. To check a
+terminal, run `printf '\e[?1000h\e[?1006h'; cat -v` in it and right-click: a
+line like `^[[<2;12;7M` means the press is being forwarded. (`Ctrl-C`, then
+`printf '\e[?1000l\e[?1006l'` to put the terminal back.)
 
 ### Dragging
 
@@ -1059,6 +1096,57 @@ survive being concatenated into a command line.
 
 Give one up with `command("program", { text = "watch", action = "close" })`. A
 plugin that is removed, renamed or turned off has its panes released for it.
+
+**Telling a running program something.** Starting is idempotent, so asking again
+with different `args` does nothing — the pane is already there. To change what a
+long-lived program is showing, type at it:
+
+```lua
+command("program", { text = "editor", keys = ":e " .. path .. "\r" })
+```
+
+The bytes reach the program's stdin exactly as if they had been typed, so `\r`
+is Enter and `\27` is Escape; `text` names the pane and nothing is started. This
+is what makes an editor pane worth keeping: opening a second file is a line typed
+at the editor you have, not a second one paid for from scratch. It is refused,
+and reported, when no program of that name is running — and it needs the same
+`program` capability starting one does, since driving a live process is the same
+privilege as beginning it.
+
+**Type it, or start it.** Send `keys` *and* a program and the kernel picks: the
+keys go to a pane that is running, and a pane that is not is started from `repo`
+and `args` instead, which is expected to leave it in the state the keys were for.
+
+```lua
+command("program", {
+  text = "editor",
+  repo = "nvim",
+  args = { path },                    -- if it has to be started
+  keys = ":e " .. path .. "\r",       -- if it is already there
+})
+```
+
+Do not try to make this decision in the plugin. Whether a pane is alive is not in
+the snapshot, and a plugin that kept the answer in its own `state` would be wrong
+after an interface reload, which keeps panes but re-runs the file. The kernel is
+asking the pane. The keys are **not** sent to a program it just started: a process
+that has not begun reading yet would lose them.
+
+**Learning that it ended.** A program that exits leaves its pane holding a
+finished screen; the kernel does not reap it, because asking again is what
+restarts it. Subscribe to know:
+
+```lua
+events = { "program.exited" },
+
+on_event = function(name, payload)
+  if name == "program.exited" then       -- payload.name, payload.program
+    state.showing = nil                  -- draw something else, or move on
+  end
+end,
+```
+
+It fires once, on the transition, and only for **your** panes.
 
 **Why `thurbox.granted` and not `if not program then`.** A capability is normally
 withheld by *absence* — that is rule 4, and it is why `run` is simply not a

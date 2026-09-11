@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ratatui::layout::Rect;
+use tracing::debug;
 
 use super::Terminals;
 
@@ -231,12 +232,21 @@ impl Terminals {
         Ok(())
     }
 
-    /// A window of this exact name already running on `backend`, if there is one.
+    /// A *live* window of this exact name already running on `backend`, if there
+    /// is one — clearing any corpse that carries the same name on the way.
     ///
     /// This is the whole of re-adoption after a restart: the name is deterministic
     /// (`tmux::program_window_name`), so it is enough to look. Nothing is
     /// persisted, and therefore nothing can be stale — which is the failure a
     /// stored pane id invites and this repository has been bitten by before.
+    ///
+    /// A dead window is killed rather than skipped. A window whose program has
+    /// ended can outlive it (an older build left `remain-on-exit` on for these,
+    /// and a pane can also die while the interface is not running); skipping it
+    /// spawns a second window of the same name beside the corpse, so the name
+    /// stops addressing one window and the next lookup has to guess. Adopting it
+    /// is worse still — a pane that paints a frozen grid and swallows every
+    /// keystroke, which is what "the editor hung" looks like from the outside.
     ///
     /// A tmux round trip, so it is called when a pane is *started* and never per
     /// frame.
@@ -245,11 +255,21 @@ impl Terminals {
         backend: &Arc<dyn crate::agent::SessionBackend>,
         window: &str,
     ) -> Option<String> {
-        // `find_window`, not `discover`: a program window has no session id to
+        // `window_panes`, not `discover`: a program window has no session id to
         // resolve by, only its deterministic name. Discovery does list it, but
         // stamped `@thurbox_role=program` and unowned, so it can never be
         // adopted as a session's agent (ADR-25).
-        backend.find_window(window).ok().flatten()
+        let mut live = None;
+        for (backend_id, dead) in backend.window_panes(window).unwrap_or_default() {
+            if dead {
+                if let Err(e) = backend.kill(&backend_id) {
+                    debug!("could not clear the dead program window {window}: {e:#}");
+                }
+            } else if live.is_none() {
+                live = Some(backend_id);
+            }
+        }
+        live
     }
 
     /// The key a surface id names, by matching against the keys that generate
@@ -308,6 +328,20 @@ impl Terminals {
             return false;
         }
         slot.pane.send_input(bytes).is_ok()
+    }
+
+    /// Every program pane held right now, with what it runs and whether it has
+    /// ended.
+    ///
+    /// The loop's per-iteration read, so it can fire `program.exited` on the
+    /// transition. `has_exited` is an atomic the reader loop sets, so this is a
+    /// map walk and some atomic loads — no tmux round trip, and nothing that can
+    /// block the frame.
+    pub fn program_liveness(&self) -> Vec<(ProgramKey, String, bool)> {
+        self.programs
+            .iter()
+            .map(|(key, slot)| (key.clone(), slot.program.clone(), slot.pane.has_exited()))
+            .collect()
     }
 
     /// What is running in a pane, and whether it has ended — for a pane that wants

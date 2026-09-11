@@ -316,7 +316,8 @@ pub trait SessionBackend: Send + Sync {
         Ok(())
     }
 
-    /// The pane id of a live window with this **exact** name, if there is one.
+    /// The pane of every window carrying this **exact** name, and whether that
+    /// pane is dead.
     ///
     /// Deliberately separate from [`Self::discover`], which filters to agent
     /// windows (`tb-`) — by design, since it answers "which sessions are running".
@@ -325,10 +326,16 @@ pub trait SessionBackend: Send + Sync {
     /// to a prefix it does not have. That the shell prefix `tbs-` also fails
     /// `discover`'s filter is why shells persist a pane id instead.
     ///
+    /// Dead panes are **reported, not hidden**, and every window of the name is
+    /// reported rather than the first: a caller that cannot see a corpse cannot
+    /// clear it, and the name is meant to address exactly one window — so the one
+    /// caller there is ([`crate::kernel::terminal::Terminals::start_program`])
+    /// needs the whole picture to keep that true.
+    ///
     /// Default: nothing found, so a backend without a window concept simply always
     /// spawns fresh.
-    fn find_window(&self, _window_name: &str) -> Result<Option<String>> {
-        Ok(None)
+    fn window_panes(&self, _window_name: &str) -> Result<Vec<(String, bool)>> {
+        Ok(Vec::new())
     }
 
     /// Resize a session's terminal.

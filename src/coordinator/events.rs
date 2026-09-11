@@ -60,6 +60,12 @@ pub(crate) struct Events {
     /// every `session.status` is reported once per event rather than per
     /// delivery. Cleared on reload, since the plugin was rebuilt.
     reported: std::collections::HashSet<(String, String)>,
+    /// The program panes seen RUNNING on the last iteration, by surface id.
+    ///
+    /// The memo `program.exited` is derived from: an entry here that now reports
+    /// `has_exited` is the transition, and firing on the state instead would
+    /// re-fire every iteration until the slot was reaped.
+    programs: std::collections::HashSet<String>,
     /// Whether the cascade bound has been reported this dispatch.
     cascade_reported: bool,
     /// The selection and the focused pane as last observed, so a change is an
@@ -77,6 +83,7 @@ impl Events {
             reported: std::collections::HashSet::new(),
             cascade_reported: false,
             focus: None,
+            programs: std::collections::HashSet::new(),
         }
     }
 }
@@ -171,6 +178,42 @@ impl App {
                     }
                 }
             }
+        }
+
+        // Programs: which of a plugin's own panes have ended since the last
+        // look. The kernel has always known — `has_exited` is an atomic the
+        // reader loop sets — but nothing published it, so a pane could neither
+        // say that its program had finished nor move on from it.
+        //
+        // Derived here rather than fired where the process is reaped because
+        // nothing reaps it: `start_program` replaces a finished slot lazily, the
+        // next time the plugin asks. The transition is a map walk over at most
+        // four panes per plugin.
+        let liveness = self.terminals.program_liveness();
+        let mut ended = Vec::new();
+        let mut running = std::collections::HashSet::with_capacity(liveness.len());
+        for (key, program, exited) in liveness {
+            let surface = key.surface_id();
+            if exited {
+                // Only for a pane we had seen running. A slot already finished
+                // the first time we looked ended before this loop was watching —
+                // which is what a re-adopted window from a previous run of the
+                // interface looks like.
+                if self.events.programs.contains(&surface) {
+                    ended.push((key, program));
+                }
+            } else {
+                running.insert(surface);
+            }
+        }
+        self.events.programs = running;
+        for (key, program) in ended {
+            self.enqueue_event(
+                Event::new("program.exited")
+                    .to(key.plugin)
+                    .with("name", Some(key.name))
+                    .with("program", Some(program)),
+            );
         }
 
         // The snapshot: one integer compare while nothing moved.

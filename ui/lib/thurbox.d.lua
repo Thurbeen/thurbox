@@ -208,6 +208,7 @@
 ---| "focus.pane"
 ---| "command.done"
 ---| "command.failed"
+---| "program.exited"
 ---| "interface.reloaded"
 ---| string A `user.<name>` a plugin emits.
 
@@ -264,6 +265,7 @@
 ---@field on_key? fun(key: thurbox.Key): boolean
 ---@field on_action? fun(action: string): boolean
 ---@field on_click? fun(hit: thurbox.Hit): boolean
+---@field on_context? fun(hit: thurbox.Hit): boolean A RIGHT press on the same node.
 ---@field on_scroll? fun(wheel: thurbox.Wheel): boolean
 ---@field on_event? fun(name: string, payload: table<string, any>)
 
@@ -810,9 +812,13 @@ function require(name) end
 
 ---@class (exact) thurbox.cmd.Program
 ---@field text string This plugin's name for the pane.
----@field repo? string The program to run; required unless closing.
+---@field repo? string The program to run; required unless closing or typing.
 ---@field args? string[]
 ---@field action? "close"|"stop"
+---@field keys? string Type this into the program already running in the pane.
+--- The bytes reach its stdin as if typed, so `"\r"` is Enter and `"\27"` is
+--- Escape. Names the pane through `text` and starts nothing: it is how a
+--- long-lived program is told something rather than replaced.
 
 ---@class (exact) thurbox.cmd.Delete
 ---@field session string

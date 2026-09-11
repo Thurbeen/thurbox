@@ -430,7 +430,6 @@ bugs (#641, #2989), required 3 external deps in the data path
 
 **Configuration on init**:
 
-- `remain-on-exit on` — keeps panes alive after process exit
 - `status off` — no tmux status bar (thurbox renders its own)
 - `default-terminal xterm-256color` — standard terminal type
 - `history-limit 5000` — reasonable scrollback
@@ -439,8 +438,19 @@ bugs (#641, #2989), required 3 external deps in the data path
   (e.g. `pi`) probe for at startup; thurbox injects keys via `send-keys` so this
   only sets the reported format, not the bytes agents receive. Best-effort: the
   option is tmux 3.3+ while thurbox's floor is 3.2, so a 3.2 host silently skips it
-- `window-size manual` — windows size independently
+- `window-size manual` — each window sizes independently of the smallest
+  attached client. A *window* option, so it is set globally for thurbox's own
+  server (`WINDOW_OPTS`): `set-option -t <session>` on a window option lands on
+  the session's current window, not on the session (measured, tmux 3.2a)
 - `pause-after 5` — flow control (auto-resumed by reader)
+
+`remain-on-exit` is **not** set here: it is a window option whose right value
+depends on what the window is for, so each window states its own at spawn
+(`keeps_dead_pane`). An agent's window keeps its dead pane — its liveness is
+read from a listing (`#{pane_dead}`), and the corpse holds the error it printed.
+A companion shell's and a plugin's program's do not: those are read from their
+pane's output stream, and tmux announces a pane's death only by closing its
+window, so a kept window is an ending that is never announced.
 
 **Window naming**: `tb-<session-name>` prefix for discovery. The prefix is not
 identity — names are not unique, and a soft-deleted row keeps its name and its
