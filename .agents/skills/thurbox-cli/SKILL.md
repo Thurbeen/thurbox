@@ -110,8 +110,10 @@ Three rules it is written under, each of which a change here must keep:
   no knowledge of any agent's installer.
 
 `Presence` is three-valued on purpose: `unknown` is not `missing`. A remote
-host's binaries live on the host and were never looked at, and reporting one as
-the other is the conflation the module exists to end.
+host's binaries live on the host, and a relative `command` (e.g. `./bin/agent`)
+is resolved from the session's own directory rather than thurbox's — in both
+cases nothing was looked at, and reporting either as `missing` is the
+conflation the module exists to end (see `docs/CONFIG.md` for the full rule).
 
 A failure to *launch* the multiplexer goes through
 `preflight::launch_failure`, which turns only a `NotFound` into that sentence

@@ -262,3 +262,40 @@ fn version_suffix(mux: &str) -> String {
         None => String::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::AgentDef;
+
+    /// Before the `Presence::Unknown` fix, `look_up` answered a relative
+    /// `command` as `Missing` (checked against thurbox's own directory, not
+    /// the session's), so this row read as a `warn` telling the user to
+    /// install a CLI that was already there. Reproduces with `left: Warn`.
+    #[test]
+    fn a_relative_agent_command_is_reported_ok_not_a_warning() {
+        let agent = AgentDef {
+            name: "custom".into(),
+            command: "./bin/agent".into(),
+            ..Default::default()
+        };
+        let finding = agent_finding(&agent);
+        assert_eq!(finding.level, Level::Ok, "{}", finding.detail);
+        assert!(
+            finding.detail.contains("resolved from the session's own directory"),
+            "{}",
+            finding.detail
+        );
+    }
+
+    #[test]
+    fn a_missing_agent_command_is_still_a_warning() {
+        let agent = AgentDef {
+            name: "custom".into(),
+            command: "definitely-not-a-real-binary-xyz".into(),
+            ..Default::default()
+        };
+        let finding = agent_finding(&agent);
+        assert_eq!(finding.level, Level::Warn, "{}", finding.detail);
+    }
+}

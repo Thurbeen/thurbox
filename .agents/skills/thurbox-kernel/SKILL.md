@@ -310,7 +310,9 @@ lookup itself would be running a `PATH` walk per frame, per keystroke or per
 row — the regression the window exists to prevent; `kernel::snapshot::tests::
 the_preflight_answer_is_cached_rather_than_probed_on_every_tick` pins it.
 `presence` is three-valued (`present`/`missing`/`unknown`) because a remote
-host's binaries were never looked at, and `unknown` is not `missing`.
+host's binaries, and a relative `command`'s (resolved from the session's own
+directory), were never looked at, and `unknown` is not `missing` (see
+`docs/CONFIG.md`).
 
 **Panes are installable** (`kernel::packages`, `session::plugin_spec`). `plugins.toml`
 in the interface directory lists a `src` (a bare name resolving to `examples/panes/<name>`

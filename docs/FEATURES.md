@@ -366,8 +366,8 @@ the one screen a first run always reaches, and `thurbox-cli doctor` answers the
 whole question directly. See
 [CONFIG.md](CONFIG.md#what-happens-when-it-is-not-installed) for the cost model
 (a `stat` walk on the kernel's schedule behind a 10-second window — never on a
-render, a keystroke or a list row) and for why a remote host is reported as
-*unknown* rather than missing.
+render, a keystroke or a list row) and for why a remote host or a relative
+`command` is reported as *unknown* rather than missing.
 
 **Creating a session moves nothing — unless you ask it to.** By default the new
 row appears in the list and waits to be picked; the selection, the pane showing
