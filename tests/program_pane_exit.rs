@@ -119,8 +119,7 @@ async fn a_program_that_ends_reports_that_it_ended() {
     let backend = std::sync::Arc::new(TmuxBackend::local());
     if let Err(e) = backend.ensure_ready() {
         cleanup();
-        eprintln!("skipping: tmux control mode would not start: {e:#}");
-        return;
+        panic!("tmux control mode would not start: {e:#}");
     }
 
     // Prints, lives for a moment, then ends on its own — the shape of an editor
@@ -143,8 +142,10 @@ async fn a_program_that_ends_reports_that_it_ended() {
         Ok(pane) => pane,
         Err(e) => {
             cleanup();
-            eprintln!("skipping: tmux would not spawn a program pane: {e:#}");
-            return;
+            // Not a skip. The header already records what a skip here cost
+            // once: a spawn failing because the pane died too fast was read as
+            // a missing environment and passed, proving nothing at all.
+            panic!("the program pane could not be spawned: {e:#}");
         }
     };
 

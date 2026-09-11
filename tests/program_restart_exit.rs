@@ -71,8 +71,10 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
     let short = ["-c".to_string(), "printf started; sleep 1".to_string()];
     if let Err(e) = terminals.start_program(&key, "sh", &short, Some(dir.path()), 24, 80) {
         cleanup();
-        eprintln!("skipping: tmux would not start a program pane: {e}");
-        return;
+        // Not a skip: tmux is installed, so a pane that would not start is the
+        // path under test being broken — and a skip would pass it off as a
+        // machine without a multiplexer.
+        panic!("the program pane could not be started: {e}");
     }
 
     let exited = |terminals: &Terminals| {

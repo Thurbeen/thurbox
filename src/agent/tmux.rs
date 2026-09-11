@@ -981,42 +981,6 @@ impl TmuxBackend {
         Ok(())
     }
 
-    /// Give an **existing** pane's window the `remain-on-exit` its role wants.
-    ///
-    /// Spawning states it because that is where the window's purpose is known
-    /// ([`keeps_dead_pane`]); adopting has to state it again, because the window
-    /// being adopted was created by some *earlier* interface — possibly one that
-    /// set the option session-wide and landed it on whichever window happened to
-    /// be current (see [`SESSION_OPTS`]). An editor window carrying `on` from that
-    /// era is a pane whose exit can never be announced, so the first restart after
-    /// an upgrade would bring the corpse straight back with nothing to clear it.
-    ///
-    /// Two round trips on a path taken once per pane per run of the interface, and
-    /// best-effort throughout: what this can fail to do is cost the announcement
-    /// or the last screen, never the adoption itself. Skipped on psmux, which has
-    /// no window options at all (ADR-13).
-    fn normalise_remain_on_exit(&self, pane_id: &str) {
-        if self.transport.uses_psmux() {
-            return;
-        }
-        let window_name = match self.tmux_output(&["display-message", "-p", "-t", pane_id, "#{window_name}"])
-        {
-            Ok(name) if !name.is_empty() => name,
-            Ok(_) => return,
-            Err(e) => {
-                debug!("could not read the window name of {pane_id}: {e:#}");
-                return;
-            }
-        };
-        let keep = if keeps_dead_pane(&window_name) {
-            "on"
-        } else {
-            "off"
-        };
-        if let Err(e) = self.tmux_run(&["set-window-option", "-t", pane_id, "remain-on-exit", keep]) {
-            debug!("could not set remain-on-exit={keep} for {window_name}: {e:#}");
-        }
-    }
 
     /// One `list-windows`, with an empty answer only when the multiplexer
     /// itself said there is nothing to list.
@@ -1538,11 +1502,28 @@ impl TmuxBackend {
         // cannot answer (psmux) simply keeps the old behaviour: no mapping, so
         // no EOF from a window close. One round trip per pane attached, on a
         // path that already spawns or adopts a window.
-        let window_id = self
+        //
+        // Two ways to end up with no mapping, both of which cost this pane the
+        // ability to notice its own death, and neither of which used to leave a
+        // trace: the round trip failing (a reconnecting control mode, a
+        // multiplexer without `display-message`), and the pane dying inside the
+        // round trip — the window close then arrives before there is anything
+        // to match it against. The first is logged here. The second is narrow
+        // and deliberately not paid for: closing it means asking again after
+        // registering, which is a second round trip on every pane attached, to
+        // catch a program that died in the millisecond it took to ask once.
+        let window_id = match self
             .ctrl_command(&format!("display-message -t {pane_id} -p '#{{window_id}}'"))
-            .ok()
-            .map(|out| out.trim().to_string())
-            .filter(|id| !id.is_empty());
+        {
+            Ok(out) => Some(out.trim().to_string()).filter(|id| !id.is_empty()),
+            Err(e) => {
+                debug!(
+                    "could not learn which window {pane_id} is in ({e:#}); its exit \
+                     will not be announced"
+                );
+                None
+            }
+        };
         let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
         self.with_control(|ctrl| {
             let mut senders = ctrl
@@ -1867,9 +1848,6 @@ impl SessionBackend for TmuxBackend {
         if !control_mode::is_valid_pane_id(backend_id) {
             bail!("refusing to adopt invalid pane id: {backend_id:?}");
         }
-        // A window that already exists was created by an earlier interface,
-        // which may have given it the wrong answer — or none.
-        self.normalise_remain_on_exit(backend_id);
         // Opt-in split timing (THURBOX_PERF_LOG): the history capture is an
         // independent `tmux capture-pane` subprocess, while `connect_pane`
         // drives the serialized control-mode connection. Restore prefetches
@@ -1920,6 +1898,14 @@ impl SessionBackend for TmuxBackend {
             bail!("refusing to capture invalid pane id: {backend_id:?}");
         }
         self.capture_history_seed(backend_id)
+    }
+
+    fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()> {
+        if self.transport.uses_psmux() {
+            return Ok(());
+        }
+        let keep = if keep { "on" } else { "off" };
+        self.tmux_run(&["set-window-option", "-t", backend_id, "remain-on-exit", keep])
     }
 
     fn window_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>> {
@@ -2912,7 +2898,18 @@ const SESSION_OPTS: &[(&str, &str)] = &[("status", "off"), ("history-limit", "50
 /// for the window it resizes (measured, tmux 3.2a), and thurbox resizes every
 /// pane it paints — so this is the belt for a window not yet resized, not the
 /// mechanism, and a multiplexer that rejects the option loses nothing.
-const WINDOW_OPTS: &[(&str, &str)] = &[("window-size", "manual")];
+const WINDOW_OPTS: &[(&str, &str)] = &[
+    ("window-size", "manual"),
+    // The default a window is BORN with, so the one role that wants a corpse
+    // asks for it and nothing else inherits one. Set here as well as per window
+    // at spawn because the two cover different moments: the user's
+    // `~/.tmux.conf` is read on thurbox's socket too, and `set -g
+    // remain-on-exit on` there would have every window born keeping its corpse
+    // — including a program that dies in the round trip between `new-window`
+    // and the option being set on it, whose death would then never be
+    // announced.
+    ("remain-on-exit", "off"),
+];
 
 /// The agent's command as an **absolute path**, resolved against thurbox's own
 /// `PATH`, so the multiplexer never has to resolve it.

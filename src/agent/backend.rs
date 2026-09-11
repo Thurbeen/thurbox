@@ -338,6 +338,21 @@ pub trait SessionBackend: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Say whether the window holding `backend_id` keeps its pane's corpse.
+    ///
+    /// For a window that already existed: it was made by an **earlier**
+    /// interface, possibly one that set `remain-on-exit` for a whole session and
+    /// landed it on whichever window was current — and a program window left
+    /// carrying `on` is a pane whose exit can never be announced, which is the
+    /// state the first restart after an upgrade would otherwise inherit.
+    ///
+    /// Asked only where the answer is already known from the caller's own
+    /// naming, so this is one round trip and no lookup. Default: nothing to say,
+    /// for a backend with no window options at all.
+    fn set_pane_retention(&self, _backend_id: &str, _keep: bool) -> Result<()> {
+        Ok(())
+    }
+
     /// Resize a session's terminal.
     fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()>;
 

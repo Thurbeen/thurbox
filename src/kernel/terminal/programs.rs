@@ -207,6 +207,14 @@ impl Terminals {
         // the interface: the name is deterministic, so finding it IS the
         // re-adoption path — there is no stored pane id that could go stale.
         let existing = self.find_program_window(&backend, &window);
+        if existing.is_none() {
+            // Spawned here, so this loop knows it ran — which is what lets its
+            // ending be announced even if it dies before anything looks again.
+            // An *adopted* window is deliberately not recorded: it belongs to a
+            // previous run of the interface, and a corpse found on startup ended
+            // before there was anything to tell.
+            self.started_programs.push(key.clone());
+        }
         let pane = match existing {
             Some(backend_id) => crate::agent::backend::ProgramPane::adopt(
                 Arc::clone(&backend),
@@ -274,6 +282,18 @@ impl Terminals {
                     debug!("could not clear the dead program window {window}: {e:#}");
                 }
             } else if live.is_none() {
+                // Normalised on the way, not taken as found: this window was
+                // made by an earlier interface, possibly one that set
+                // `remain-on-exit` for a whole session and landed it on
+                // whichever window happened to be current. Left as it stood, a
+                // program window carrying `on` is a pane whose exit can never be
+                // announced — the corpse comes straight back on the first
+                // restart after an upgrade, which is the one moment this is
+                // about. One round trip, and only here, where the answer is
+                // known from the name we looked the window up by.
+                if let Err(e) = backend.set_pane_retention(&backend_id, false) {
+                    debug!("could not clear remain-on-exit on {window}: {e:#}");
+                }
                 live = Some(backend_id);
             }
         }
@@ -361,6 +381,16 @@ impl Terminals {
     /// and drained here, alongside that read.
     pub fn take_replaced_program_exits(&mut self) -> Vec<(ProgramKey, String)> {
         std::mem::take(&mut self.replaced_program_exits)
+    }
+
+    /// Program panes spawned since the last look, taken once.
+    ///
+    /// The loop's evidence that a pane ever ran. `program_liveness` cannot say
+    /// it: a program that starts and dies inside one iteration is only ever seen
+    /// dead, which is indistinguishable from a corpse adopted from a previous
+    /// run — and those two want opposite answers.
+    pub fn take_started_programs(&mut self) -> Vec<ProgramKey> {
+        std::mem::take(&mut self.started_programs)
     }
 
     /// What is running in a pane, and whether it has ended — for a pane that wants

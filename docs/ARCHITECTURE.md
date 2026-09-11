@@ -452,6 +452,17 @@ A companion shell's and a plugin's program's do not: those are read from their
 pane's output stream, and tmux announces a pane's death only by closing its
 window, so a kept window is an ending that is never announced.
 
+`off` is also in `WINDOW_OPTS`, which is not a duplicate of the per-window
+setting but the *birth* value: the user's `~/.tmux.conf` is read on thurbox's
+socket too, and a global `remain-on-exit on` there would have every window born
+keeping its corpse — including a program that dies in the round trip between
+`new-window` and its own option being set. The one role that wants a corpse
+asks for it; nothing inherits one. A window found again on restart is
+normalised where it is looked up by name (`find_program_window`), which is one
+round trip and knows the answer from the name it searched for — the generic
+adopt path stays free of it, since that path also carries every agent pane on
+every ssh host.
+
 **Window naming**: `tb-<session-name>` prefix for discovery. The prefix is not
 identity — names are not unique, and a soft-deleted row keeps its name and its
 remembered pane id until the reaper lets it go. Every caller that acts on a

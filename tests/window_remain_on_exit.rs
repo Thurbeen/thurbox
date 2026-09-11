@@ -99,8 +99,11 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
         Ok(pane) if !pane.is_empty() => pane,
         other => {
             cleanup();
-            eprintln!("skipping: tmux would not spawn an agent window: {other:?}");
-            return;
+            // Not a skip. tmux is installed — that was checked above — so a
+            // spawn that produced no pane is the spawn path being broken, which
+            // is half of what this file is about. A skip here would report the
+            // regression as a clean run on a machine without a multiplexer.
+            panic!("the agent window could not be spawned: {other:?}");
         }
     };
 
@@ -116,8 +119,7 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
         80,
     ) {
         cleanup();
-        eprintln!("skipping: tmux would not start a program pane: {e}");
-        return;
+        panic!("the program pane could not be started: {e}");
     }
     let program_pane = pane_of("tbp-");
 
@@ -170,13 +172,11 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
     let mut first = Terminals::new();
     if let Err(e) = first.start_program(&key, "sh", &args, Some(dir.path()), 24, 80) {
         cleanup();
-        eprintln!("skipping: tmux would not start a program pane: {e}");
-        return;
+        panic!("the program pane could not be started: {e}");
     }
     let Some(pane) = pane_of("tbp-") else {
         cleanup();
-        eprintln!("skipping: tmux reported no program window");
-        return;
+        panic!("the program pane was started and tmux lists no window for it");
     };
 
     // What an interface from before the per-window setting left behind.

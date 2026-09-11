@@ -668,6 +668,14 @@ owner — and two plugins may both call their pane `editor`, which a broadcast
 would have each of them acting on. Every other event is about something every
 pane can already see in the snapshot, and is delivered to every subscriber.
 
+`program.exited` fires for every program **this run of the interface started**,
+however it ended — including one that died before the loop looked at it again,
+and including twice in a row when a program was restarted and its replacement
+also ended before the next look (two programs really did end). What it does not
+announce is a corpse adopted from a *previous* run: that program stopped while
+nothing was watching, and reporting it at boot would tell a pane its editor had
+just closed.
+
 **A subscription to a name nothing emits refuses to load** (`plugin check` says
 which), because a handler that never fires is the one failure with no symptom.
 

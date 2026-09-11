@@ -125,8 +125,9 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
         80,
     ) {
         cleanup();
-        eprintln!("skipping: tmux would not start a program pane: {e}");
-        return;
+        // Not a skip: tmux is installed, so a pane that would not start is this
+        // path being broken rather than a machine without a multiplexer.
+        panic!("the program pane could not be started: {e}");
     }
     let (window, _pane, pid, _) = program_window().expect("the program window should exist");
 

@@ -373,6 +373,12 @@ pub struct Terminals {
     /// ended. Recorded here at the moment of replacement, so the exit survives
     /// its own slot ([`Self::take_replaced_program_exits`]).
     replaced_program_exits: Vec<(ProgramKey, String)>,
+    /// Program panes **spawned** since the last look — never adopted ones.
+    ///
+    /// Drained beside [`Self::replaced_program_exits`] and for the same reason:
+    /// the exit deriver compares against what it saw running, and a program that
+    /// starts and dies inside one iteration is never seen running at all.
+    started_programs: Vec<ProgramKey>,
 }
 
 impl Terminals {
@@ -410,6 +416,7 @@ impl Terminals {
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
             replaced_program_exits: Vec::new(),
+            started_programs: Vec::new(),
             rows_cache: RefCell::new(HashMap::new()),
         }
     }
