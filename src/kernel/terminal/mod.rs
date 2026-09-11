@@ -363,6 +363,16 @@ pub struct Terminals {
     /// paint seam, the redraw stamp, the rect memo — and `SurfaceProvider` has
     /// one implementor by design, so a second provider is not on the table.
     programs: HashMap<ProgramKey, ProgramSlot>,
+    /// Program panes that ended and were **replaced** before the transition
+    /// could be derived.
+    ///
+    /// `program.exited` is derived by comparing [`Self::program_liveness`]
+    /// against the previous look, and the loop applies commands before it
+    /// derives: a plugin asking to start its program on the frame after the
+    /// exit restarts the pane, and the map no longer remembers that anything
+    /// ended. Recorded here at the moment of replacement, so the exit survives
+    /// its own slot ([`Self::take_replaced_program_exits`]).
+    replaced_program_exits: Vec<(ProgramKey, String)>,
 }
 
 impl Terminals {
@@ -399,6 +409,7 @@ impl Terminals {
             mirror_rx: std::sync::mpsc::channel(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
+            replaced_program_exits: Vec::new(),
             rows_cache: RefCell::new(HashMap::new()),
         }
     }

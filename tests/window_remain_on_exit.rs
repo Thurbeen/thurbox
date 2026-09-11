@@ -137,3 +137,68 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
          never announced"
     );
 }
+
+/// A window adopted from an earlier run is normalised, not taken as found.
+///
+/// The restart path finds a program window by its deterministic name and
+/// reconnects to it. That window was created by some *earlier* interface —
+/// possibly one that set `remain-on-exit` session-wide and landed it on
+/// whichever window was current. Left as found, an editor window carrying `on`
+/// from that era is a pane whose exit can never be announced: the corpse comes
+/// straight back on the first restart after an upgrade, which is the one moment
+/// this whole change exists to fix.
+///
+/// Driven through the real adoption path rather than by calling the helper: the
+/// claim is that adopting *reaches* it.
+#[tokio::test(flavor = "multi_thread")]
+async fn adopting_a_program_window_normalises_what_it_finds() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", dir.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    thurbox::paths::set_test_dir(dir.path());
+
+    cleanup();
+
+    let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
+    let args = ["-c".to_string(), "sleep 300".to_string()];
+    let mut first = Terminals::new();
+    if let Err(e) = first.start_program(&key, "sh", &args, Some(dir.path()), 24, 80) {
+        cleanup();
+        eprintln!("skipping: tmux would not start a program pane: {e}");
+        return;
+    }
+    let Some(pane) = pane_of("tbp-") else {
+        cleanup();
+        eprintln!("skipping: tmux reported no program window");
+        return;
+    };
+
+    // What an interface from before the per-window setting left behind.
+    tmux(&["set-window-option", "-t", &pane, "remain-on-exit", "on"]);
+    assert_eq!(
+        remain_on_exit(&pane),
+        "on",
+        "the test could not stage the state it is about"
+    );
+
+    // A second interface over the same tmux: the window is found by name and
+    // adopted, exactly as a restart does.
+    drop(first);
+    let mut second = Terminals::new();
+    let started = second.start_program(&key, "sh", &args, Some(dir.path()), 24, 80);
+    let after = remain_on_exit(&pane);
+    cleanup();
+
+    assert!(started.is_ok(), "adoption failed: {started:?}");
+    assert_eq!(
+        after, "off",
+        "a program window adopted from an earlier run must be normalised, or its \
+         exit stays unannounceable for as long as that window lives"
+    );
+}

@@ -981,6 +981,43 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// Give an **existing** pane's window the `remain-on-exit` its role wants.
+    ///
+    /// Spawning states it because that is where the window's purpose is known
+    /// ([`keeps_dead_pane`]); adopting has to state it again, because the window
+    /// being adopted was created by some *earlier* interface — possibly one that
+    /// set the option session-wide and landed it on whichever window happened to
+    /// be current (see [`SESSION_OPTS`]). An editor window carrying `on` from that
+    /// era is a pane whose exit can never be announced, so the first restart after
+    /// an upgrade would bring the corpse straight back with nothing to clear it.
+    ///
+    /// Two round trips on a path taken once per pane per run of the interface, and
+    /// best-effort throughout: what this can fail to do is cost the announcement
+    /// or the last screen, never the adoption itself. Skipped on psmux, which has
+    /// no window options at all (ADR-13).
+    fn normalise_remain_on_exit(&self, pane_id: &str) {
+        if self.transport.uses_psmux() {
+            return;
+        }
+        let window_name = match self.tmux_output(&["display-message", "-p", "-t", pane_id, "#{window_name}"])
+        {
+            Ok(name) if !name.is_empty() => name,
+            Ok(_) => return,
+            Err(e) => {
+                debug!("could not read the window name of {pane_id}: {e:#}");
+                return;
+            }
+        };
+        let keep = if keeps_dead_pane(&window_name) {
+            "on"
+        } else {
+            "off"
+        };
+        if let Err(e) = self.tmux_run(&["set-window-option", "-t", pane_id, "remain-on-exit", keep]) {
+            debug!("could not set remain-on-exit={keep} for {window_name}: {e:#}");
+        }
+    }
+
     /// One `list-windows`, with an empty answer only when the multiplexer
     /// itself said there is nothing to list.
     ///
@@ -1830,6 +1867,9 @@ impl SessionBackend for TmuxBackend {
         if !control_mode::is_valid_pane_id(backend_id) {
             bail!("refusing to adopt invalid pane id: {backend_id:?}");
         }
+        // A window that already exists was created by an earlier interface,
+        // which may have given it the wrong answer — or none.
+        self.normalise_remain_on_exit(backend_id);
         // Opt-in split timing (THURBOX_PERF_LOG): the history capture is an
         // independent `tmux capture-pane` subprocess, while `connect_pane`
         // drives the serialized control-mode connection. Restore prefetches

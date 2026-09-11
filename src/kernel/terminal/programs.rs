@@ -172,6 +172,14 @@ impl Terminals {
             if !slot.pane.has_exited() {
                 return Ok(());
             }
+            // The exit has to be remembered before the slot that carries it is
+            // replaced: `program.exited` is derived by comparing the live set
+            // against the previous look, and the loop applies commands *before*
+            // it derives. A plugin asking to restart on the frame after its
+            // program died would otherwise hand the deriver a live pane under
+            // the same key, and the ending would never be announced.
+            self.replaced_program_exits
+                .push((key.clone(), slot.program.clone()));
             self.release_program(key);
         }
         admit_program(&key.plugin, self.program_count(&key.plugin), program)?;
@@ -342,6 +350,17 @@ impl Terminals {
             .iter()
             .map(|(key, slot)| (key.clone(), slot.program.clone(), slot.pane.has_exited()))
             .collect()
+    }
+
+    /// Program panes that ended and were restarted before the ending could be
+    /// derived, taken once.
+    ///
+    /// [`Self::program_liveness`] can only describe the panes that are *held*, so
+    /// a restart that replaces an exited slot within the same iteration hides the
+    /// ending from it entirely. Those endings are recorded as they are overwritten
+    /// and drained here, alongside that read.
+    pub fn take_replaced_program_exits(&mut self) -> Vec<(ProgramKey, String)> {
+        std::mem::take(&mut self.replaced_program_exits)
     }
 
     /// What is running in a pane, and whether it has ended — for a pane that wants

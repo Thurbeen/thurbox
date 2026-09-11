@@ -206,6 +206,19 @@ impl App {
                 running.insert(surface);
             }
         }
+        // Endings whose slot is already gone. `start_program` records them as it
+        // replaces a finished pane, because the loop applies commands before it
+        // gets here: a plugin that asks to restart on the frame after its
+        // program died leaves `program_liveness` describing a *live* pane under
+        // the same key, and the walk above sees no transition at all. Under the
+        // same memo rule as the walk — a pane never seen running ended before
+        // this loop was watching — and drained before the memo is replaced, so
+        // the restarted pane's own entry cannot make it fire twice.
+        for (key, program) in self.terminals.take_replaced_program_exits() {
+            if self.events.programs.contains(&key.surface_id()) {
+                ended.push((key, program));
+            }
+        }
         self.events.programs = running;
         for (key, program) in ended {
             self.enqueue_event(
