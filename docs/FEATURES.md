@@ -2637,8 +2637,12 @@ handing out whatever text was copied before, so a paste inserts something stale
 rather than the image. thurbox therefore asks `powershell.exe` whether the
 Windows clipboard holds an image before deciding what `Ctrl+V` means. The call
 costs about 0.4 s, so it runs **on a worker**: the interface keeps drawing and
-the paste lands when the answer does. Nothing is asked off WSL, where the local
-clipboard is the one being copied into.
+the paste lands when the answer does — in the pane the press was aimed at, not
+whichever one is focused by then. One question runs at a time (a held `Ctrl+V`
+would otherwise start a PowerShell per repeat), presses made while it is out are
+answered by a question of their own, and a question that has not come back in
+five seconds is abandoned and read as "no image". Nothing is asked off WSL,
+where the local clipboard is the one being copied into.
 
 ### Pasting on Windows
 

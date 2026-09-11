@@ -144,13 +144,30 @@ last text copied — a paste there inserts something stale rather than nothing,
 which is worse. `clipboard::ImageProbe` asks `powershell.exe`
 (`Clipboard::ContainsImage`) instead. That costs ~0.42 s measured, which is why
 it is the seventh instance of the worker pattern rather than a call on the loop:
-the press is claimed immediately and acted on when the answer lands, by which
-time focus is re-resolved. Off WSL nothing is asked — the local clipboard is the
-one being copied into, and arboard's answer is the whole truth.
+the press is claimed immediately and acted on when the answer lands. Off WSL
+nothing is asked — the local clipboard is the one being copied into, and
+arboard's answer is the whole truth.
+
+Three bounds make that latency safe. The **target** is the session the press was
+aimed at, taken at the press: 0.42 s is long enough to change panes, and a paste
+landing in a pane nobody aimed it at corrupts what is being typed there. **One
+question runs at a time** — key auto-repeat makes presses tens of times faster
+than the answer, and a `powershell.exe` per repeat is a held key bringing the
+machine down — with the presses that arrive while it is out kept (at most eight)
+and asked about separately, because an answer may only classify presses that
+predate it. And the child has a **five-second deadline**, after which it is
+killed and read as "no image": WSL interop can wedge outright, and the question
+after this one waits on its answer.
 
 **Rejected**: *a second chord for "give the paste to the agent"* — cheap and
 exact, but it leaves the ordinary `Ctrl+V` after copying an image still pasting
 stale text, which is the half of the bug that corrupts a prompt silently.
+*Resolving the focus when the answer lands* — it reads as "paste where the
+person is looking", but the intent belongs to the press, and a paste that
+arrives in a pane it was not aimed at is the same corruption seen from the other
+side. *Spending one answer on every press waiting behind it* — the clipboard can
+change while the question is out, and a press classified by what preceded it is
+exactly the stale paste this section is about.
 *Detecting the image with arboard* — thurbox builds it with
 `default-features = false`, the build without `get_image`, and the X clipboard
 it would read does not carry the Windows image anyway.
