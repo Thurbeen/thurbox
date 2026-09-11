@@ -725,38 +725,11 @@ fn resolve_dirs(
     req: &SpawnRequest,
     host: Option<&HostDef>,
 ) -> Result<(PathBuf, Vec<SharedWorktree>, Vec<PathBuf>), String> {
-    let mut additional_dirs: Vec<PathBuf> = Vec::new();
-
-    // Plan every worktree creation before running any, so a local multi-repo
-    // spawn can fan them out. Plan order is input order — primary first, then
-    // the extras — and each position holds its `(repo, base)` or the error the
-    // old serial loop surfaced when it *reached* that position, so the first
-    // failure in input order is still the one reported.
     let shared_branch = req.worktree_branch.as_deref();
-    let primary_base = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
-    let mut plans: Vec<WorktreePlan<'_>> = Vec::new();
     // An existing worktree is opened, never planned: it is already checked out,
     // so `git worktree add` would refuse the branch outright.
     let opening = req.existing_worktree.is_some();
-    if shared_branch.is_some() && !opening {
-        plans.push(Ok((req.repo_path.as_path(), primary_base)));
-    }
-    for extra in &req.extra_repos {
-        if extra.worktree {
-            plans.push(match shared_branch {
-                Some(_) => Ok((
-                    extra.repo_path.as_path(),
-                    extra.base_branch.as_deref().unwrap_or(primary_base),
-                )),
-                None => Err(
-                    "a worktree extra-repo requires --worktree-branch (the shared branch)"
-                        .to_string(),
-                ),
-            });
-        } else {
-            additional_dirs.push(extra.repo_path.clone());
-        }
-    }
+    let (plans, additional_dirs) = plan_members(req, shared_branch, opening);
 
     let branch = shared_branch.unwrap_or_default();
     let created = create_worktrees(host, branch, &plans)?;
@@ -815,6 +788,44 @@ fn resolve_dirs(
     }
 
     Ok((primary_cwd, worktrees, additional_dirs))
+}
+
+/// Sort this spawn's repositories into worktrees to create and directories to
+/// attach as they are.
+///
+/// Every creation is planned before any runs, so a local multi-repo spawn can
+/// fan them out. Plan order is input order — primary first, then the extras —
+/// and each position holds its `(repo, base)` or the error the old serial loop
+/// surfaced when it *reached* that position, so the first failure in input
+/// order is still the one reported.
+fn plan_members<'a>(
+    req: &'a SpawnRequest,
+    shared_branch: Option<&'a str>,
+    opening: bool,
+) -> (Vec<WorktreePlan<'a>>, Vec<PathBuf>) {
+    let primary_base = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
+    let mut plans: Vec<WorktreePlan<'a>> = Vec::new();
+    let mut additional_dirs: Vec<PathBuf> = Vec::new();
+
+    if shared_branch.is_some() && !opening {
+        plans.push(Ok((req.repo_path.as_path(), primary_base)));
+    }
+    for extra in &req.extra_repos {
+        if !extra.worktree {
+            additional_dirs.push(extra.repo_path.clone());
+            continue;
+        }
+        plans.push(match shared_branch {
+            Some(_) => Ok((
+                extra.repo_path.as_path(),
+                extra.base_branch.as_deref().unwrap_or(primary_base),
+            )),
+            None => Err(
+                "a worktree extra-repo requires --worktree-branch (the shared branch)".to_string(),
+            ),
+        });
+    }
+    (plans, additional_dirs)
 }
 
 /// One planned worktree creation — `(repo, base)`, or the per-position error

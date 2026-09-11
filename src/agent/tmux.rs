@@ -564,28 +564,55 @@ impl WindowIndex {
         role: WindowRole,
         live_only: bool,
     ) -> Located {
-        let usable = |w: &&ListedWindow| !live_only || w.alive;
-        if !session_id.is_empty() {
-            if let Some(entries) = self.stamped.get(&(session_id.to_string(), role)) {
-                match entries.as_slice() {
-                    [] => {}
-                    // One session, one window per role — two is a listing
-                    // nobody can act on rather than a choice to make. This
-                    // holds regardless of liveness: a dead entry does not
-                    // make the ambiguity go away, and must never fall
-                    // through to a same-named window that belongs to
-                    // somebody else.
-                    [_, _, ..] => return Located::Unknown,
-                    [only] => {
-                        return if !live_only || only.alive {
-                            Located::At(only.pane.clone())
-                        } else {
-                            Located::Absent
-                        };
-                    }
-                }
-            }
+        match self.stamped_match(session_id, role, live_only) {
+            Some(found) => found,
+            None => self.named_match(session_id, session_name, role, live_only),
         }
+    }
+
+    /// The stamp half: proof, and so taken first.
+    ///
+    /// `None` means there is no stamp to go on and the name is all that is
+    /// left — which is not the same as an answer of [`Located::Absent`], and is
+    /// why this is an `Option` rather than a `Located`.
+    fn stamped_match(
+        &self,
+        session_id: &str,
+        role: WindowRole,
+        live_only: bool,
+    ) -> Option<Located> {
+        if session_id.is_empty() {
+            return None;
+        }
+        match self
+            .stamped
+            .get(&(session_id.to_string(), role))?
+            .as_slice()
+        {
+            [] => None,
+            // One session, one window per role — two is a listing nobody can
+            // act on rather than a choice to make. This holds regardless of
+            // liveness: a dead entry does not make the ambiguity go away, and
+            // must never fall through to a same-named window that belongs to
+            // somebody else.
+            [_, _, ..] => Some(Located::Unknown),
+            [only] => Some(if !live_only || only.alive {
+                Located::At(only.pane.clone())
+            } else {
+                Located::Absent
+            }),
+        }
+    }
+
+    /// The name half, reached only when no stamp decided it.
+    fn named_match(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        role: WindowRole,
+        live_only: bool,
+    ) -> Located {
+        let usable = |w: &&ListedWindow| !live_only || w.alive;
         let window = window_name_for(role, session_name);
         let named: Vec<&ListedWindow> = self
             .by_name

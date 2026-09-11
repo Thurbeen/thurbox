@@ -62,10 +62,33 @@ struct Finding {
 /// registry is a `warn` and exits 0 — having `claude` but not `aider` is an
 /// ordinary machine, not breakage.
 pub fn run() -> Result<CommandOutput, CommandError> {
-    let mut findings = Vec::new();
+    let mut findings = vec![multiplexer_finding()];
+    findings.extend(agent_findings());
+    findings.extend(host_findings());
 
+    let verdict = findings.iter().map(|f| f.level).max().unwrap_or(Level::Ok);
+    let human = render(&findings, verdict);
+    let json = document(&findings, verdict);
+
+    Ok(match verdict {
+        Level::Fail => CommandOutput::failed(
+            json,
+            human,
+            "this machine is missing something a session needs — see the FAIL checks above"
+                .to_string(),
+        ),
+        _ => CommandOutput::new(json, human),
+    })
+}
+
+/// Whether the multiplexer every local session's window is made of is there.
+///
+/// The one check that fails the report: without it nothing can be created at
+/// all, so an `Unknown` here is treated as a failure too — the only way the
+/// lookup answers that for a bare name is a `PATH` it could not read.
+fn multiplexer_finding() -> Finding {
     let mux = crate::agent::preflight::local_multiplexer();
-    findings.push(match crate::agent::preflight::look_up(mux) {
+    match crate::agent::preflight::look_up(mux) {
         crate::agent::preflight::Presence::Present => Finding {
             key: "multiplexer".into(),
             level: Level::Ok,
@@ -76,35 +99,22 @@ pub fn run() -> Result<CommandOutput, CommandError> {
             level: Level::Fail,
             detail: crate::agent::preflight::Dependency::LocalMultiplexer.missing_summary(),
         },
-    });
-
-    let registry = crate::agent::agent_config::load_or_seed();
-    let mut resolved = 0usize;
-    for agent in &registry.agents {
-        let present = crate::agent::preflight::look_up(&agent.command)
-            == crate::agent::preflight::Presence::Present;
-        resolved += usize::from(present);
-        findings.push(Finding {
-            key: format!("agent:{}", agent.name),
-            level: if present { Level::Ok } else { Level::Warn },
-            detail: if present {
-                format!("{} runs `{}`", agent.name, agent.command)
-            } else {
-                // The short form: the search path is printed once below, and
-                // repeating it on every row of a ten-agent registry buries the
-                // name that differs between them.
-                crate::agent::preflight::Dependency::Agent {
-                    name: &agent.name,
-                    command: &agent.command,
-                }
-                .missing_summary()
-            },
-        });
     }
-    if !registry.agents.is_empty() && resolved == 0 {
-        // Every individual miss above is a warning; all of them together is
-        // not. A machine where no registered agent resolves can create a
-        // session, and every one of them will open a pane that exits.
+}
+
+/// One row per registered agent, plus the verdict on the registry as a whole.
+fn agent_findings() -> Vec<Finding> {
+    let registry = crate::agent::agent_config::load_or_seed();
+    let mut findings: Vec<Finding> = registry.agents.iter().map(agent_finding).collect();
+
+    // Every individual miss above is a warning; all of them together is not. A
+    // machine where no registered agent resolves can still create a session,
+    // and every one of them will open a pane that exits. An agent whose
+    // presence is *unknown* counts as resolving: it may well launch, and
+    // failing the report over a machine nothing looked at is the conflation
+    // `Presence` exists to prevent.
+    let missing = findings.iter().filter(|f| f.level == Level::Warn).count();
+    if !registry.agents.is_empty() && missing == registry.agents.len() {
         findings.push(Finding {
             key: "agents".into(),
             level: Level::Fail,
@@ -115,39 +125,88 @@ pub fn run() -> Result<CommandOutput, CommandError> {
             ),
         });
     }
+    findings
+}
 
-    // A remote host's own binaries are on the host and are not probed here: the
-    // answer would be a round trip per host, and `session doctor` is what
-    // reports on a session once one exists there. What *is* checkable from here
-    // is the launcher that would carry the request.
-    let (hosts, _warnings) = crate::agent::host_config::cached_registry();
-    for host in &hosts.hosts {
-        let launcher = if host.backend_name().starts_with("wsl:") {
-            "wsl.exe"
-        } else {
-            "ssh"
-        };
-        let present = crate::agent::preflight::look_up(launcher)
-            == crate::agent::preflight::Presence::Present;
-        findings.push(Finding {
-            key: format!("host:{}", host.name),
-            level: if present { Level::Ok } else { Level::Fail },
-            detail: if present {
-                format!(
-                    "{} is reached with {launcher}, which is installed (the multiplexer and \
-                     agents on {} are not probed from here)",
-                    host.name, host.name
-                )
-            } else {
-                crate::agent::preflight::Dependency::Launcher(launcher).missing_summary()
-            },
-        });
+/// What one agent's `command` resolves to.
+///
+/// Three answers, not two. A relative `command` is launched from the session's
+/// own directory, so this machine's answer about it would be about the wrong
+/// directory — reported as such rather than guessed.
+fn agent_finding(agent: &crate::session::AgentDef) -> Finding {
+    let key = format!("agent:{}", agent.name);
+    match crate::agent::preflight::look_up(&agent.command) {
+        crate::agent::preflight::Presence::Present => Finding {
+            key,
+            level: Level::Ok,
+            detail: format!("{} runs `{}`", agent.name, agent.command),
+        },
+        crate::agent::preflight::Presence::Unknown => Finding {
+            key,
+            level: Level::Ok,
+            detail: format!(
+                "{} runs `{}`, which is resolved from the session's own directory — not \
+                 something this machine can answer",
+                agent.name, agent.command
+            ),
+        },
+        // The short form: the search path is printed once below, and repeating
+        // it on every row of a ten-agent registry buries the name that differs
+        // between them.
+        crate::agent::preflight::Presence::Missing => Finding {
+            key,
+            level: Level::Warn,
+            detail: crate::agent::preflight::Dependency::Agent {
+                name: &agent.name,
+                command: &agent.command,
+            }
+            .missing_summary(),
+        },
     }
+}
 
-    let verdict = findings.iter().map(|f| f.level).max().unwrap_or(Level::Ok);
+/// One row per configured host, about the launcher only.
+///
+/// A remote host's own binaries are on the host and are not probed here: the
+/// answer would be a round trip per host, and `session doctor` is what reports
+/// on a session once one exists there. What *is* checkable from here is the
+/// launcher that would carry the request.
+fn host_findings() -> Vec<Finding> {
+    let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+    hosts
+        .hosts
+        .iter()
+        .map(|host| {
+            let launcher = if host.backend_name().starts_with("wsl:") {
+                "wsl.exe"
+            } else {
+                "ssh"
+            };
+            let present = crate::agent::preflight::look_up(launcher)
+                == crate::agent::preflight::Presence::Present;
+            Finding {
+                key: format!("host:{}", host.name),
+                level: if present { Level::Ok } else { Level::Fail },
+                detail: if present {
+                    format!(
+                        "{} is reached with {launcher}, which is installed (the multiplexer and \
+                         agents on {} are not probed from here)",
+                        host.name, host.name
+                    )
+                } else {
+                    crate::agent::preflight::Dependency::Launcher(launcher).missing_summary()
+                },
+            }
+        })
+        .collect()
+}
 
+/// The report as a terminal reads it: the verdict, one line per check, then
+/// every directory searched — in full here, because this is the surface that
+/// has room for it.
+fn render(findings: &[Finding], verdict: Level) -> String {
     let mut human = format!("This machine — {}\n", verdict.as_str().to_uppercase());
-    for f in &findings {
+    for f in findings {
         human.push_str(&format!(
             "  {}  {:<20} {}\n",
             f.level.mark(),
@@ -155,18 +214,21 @@ pub fn run() -> Result<CommandOutput, CommandError> {
             f.detail
         ));
     }
-    human.push_str(&format!(
-        "\nPATH searched ({}):\n",
-        crate::paths::path_dirs().len()
-    ));
-    for dir in crate::paths::path_dirs() {
+    let dirs = crate::paths::path_dirs();
+    human.push_str(&format!("\nPATH searched ({}):\n", dirs.len()));
+    for dir in &dirs {
         human.push_str(&format!("  {}\n", dir.display()));
     }
     human.push_str("\nWiring of an existing session: thurbox-cli session doctor");
+    human
+}
 
-    let json = json!({
+/// The same report as one JSON document, for a script that branches on `key`
+/// and `level` rather than parsing the sentences.
+fn document(findings: &[Finding], verdict: Level) -> Value {
+    json!({
         "verdict": verdict.as_str(),
-        "multiplexer": mux,
+        "multiplexer": crate::agent::preflight::local_multiplexer(),
         "path": crate::paths::path_dirs()
             .iter()
             .map(|p| p.display().to_string())
@@ -179,16 +241,6 @@ pub fn run() -> Result<CommandOutput, CommandError> {
                 "detail": f.detail,
             }))
             .collect::<Vec<Value>>(),
-    });
-
-    Ok(match verdict {
-        Level::Fail => CommandOutput::failed(
-            json,
-            human,
-            "this machine is missing something a session needs — see the FAIL checks above"
-                .to_string(),
-        ),
-        _ => CommandOutput::new(json, human),
     })
 }
 

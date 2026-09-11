@@ -215,9 +215,13 @@ early is worth something:
 
 The probe is a `stat` per absolute `PATH` entry per binary — no process spawn —
 and it runs on the kernel's own schedule behind a 10-second window, never on a
-render, a keystroke or a list row. A remote host is reported as **unknown**
-rather than missing: its binaries live on the host, and thurbox has not looked
-there.
+render, a keystroke or a list row. Two things are reported as **unknown** rather
+than missing, because in both cases nothing was looked at: a **remote host**,
+whose binaries live on the host, and a **relative** `command` such as
+`./bin/agent`, which is resolved by whoever launches it from the *session's*
+own directory. Answering the latter from thurbox's working directory would call
+a binary that launches fine missing, and one that does not present — the same
+"absolute only" rule the resolver above is written under, for the same reason.
 
 The advice is platform-specific and never invented. A Windows user is pointed at
 [psmux](https://github.com/psmux/psmux), never at `tmux`; where the install

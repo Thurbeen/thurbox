@@ -69,14 +69,25 @@ impl Presence {
 /// detector that called psmux missing on every Windows machine would be worse
 /// than no detector at all.
 ///
-/// A command spelled as a path is not a `PATH` lookup: it is checked where the
-/// user pointed, which is the only place it could come from.
+/// A command spelled as a path is not a `PATH` lookup. An **absolute** one is
+/// checked where the user pointed, which is the only place it could come from.
+/// A **relative** one is [`Presence::Unknown`]: it is resolved by whoever
+/// launches it, from the *session's* working directory — the repo or worktree
+/// the window opens in — and answering it from this process's directory would
+/// report a binary that launches fine as missing, and one that does not as
+/// present. That is the same "absolute only" rule
+/// [`crate::paths::resolve_on_path`] is written under, for the same reason:
+/// whose current directory is the entire question.
 pub fn look_up(exe: &str) -> Presence {
     if exe.is_empty() {
         return Presence::Unknown;
     }
     if exe.contains('/') || exe.contains(std::path::MAIN_SEPARATOR) {
-        return present_if(crate::paths::is_executable_file(Path::new(exe)));
+        let path = Path::new(exe);
+        if !path.is_absolute() {
+            return Presence::Unknown;
+        }
+        return present_if(crate::paths::is_executable_file(path));
     }
     let names = names_to_try(exe);
     for dir in crate::paths::path_dirs() {
@@ -321,6 +332,34 @@ pub fn local_multiplexer() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relative_command_is_unknown_because_its_directory_is_not_ours() {
+        // `./bin/agent` is resolved by whoever launches it, from the *session's*
+        // working directory — the repo or worktree the window is opened in, not
+        // thurbox's own. Answering from this process's directory would report a
+        // binary that launches fine as missing, and one that does not as
+        // present. Not looking is the honest answer, and `Unknown` is how this
+        // module says it.
+        assert_eq!(look_up("./bin/agent"), Presence::Unknown);
+        assert_eq!(look_up("bin/agent"), Presence::Unknown);
+    }
+
+    #[test]
+    fn an_absolute_command_is_still_answered_where_the_user_pointed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = dir.path().join("agent");
+        std::fs::write(&agent, b"#!/bin/sh\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod");
+        }
+        // An absolute path means the same thing from every working directory,
+        // so it is the one spelling this can answer without guessing.
+        assert_eq!(look_up(&agent.display().to_string()), Presence::Present);
+    }
 
     #[test]
     fn a_command_spelled_as_a_path_is_checked_where_the_user_pointed() {
