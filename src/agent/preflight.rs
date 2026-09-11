@@ -365,8 +365,14 @@ mod tests {
     fn a_command_spelled_as_a_path_is_checked_where_the_user_pointed() {
         // Not a PATH lookup at all: no directory on PATH could make this true
         // or false, so answering from PATH would answer about the wrong file.
+        // Built from a tempdir rather than a hardcoded `/definitely/not/here`:
+        // that literal has a root but no prefix on Windows, so it is not
+        // `Path::is_absolute()` there and this exercised the relative-path
+        // (`Unknown`) branch instead of the one it's named for.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("definitely-not-here").join("agent-xyz");
         assert_eq!(
-            look_up("/definitely/not/here/agent-xyz"),
+            look_up(&missing.display().to_string()),
             Presence::Missing,
             "a path that is not there is missing, whatever PATH holds"
         );
