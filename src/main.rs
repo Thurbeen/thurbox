@@ -243,6 +243,16 @@ struct App {
     /// clipboard rather than the one being copied into — see
     /// [`thurbox::clipboard::ImageProbe`].
     image_probe: thurbox::clipboard::ImageProbe,
+    /// The sessions the presses waiting on [`Self::image_probe`] were aimed at,
+    /// in the order they were made.
+    ///
+    /// Remembered rather than resolved when the answer lands: the question takes
+    /// ~0.42 s, which is long enough to change panes, and a paste belongs where
+    /// it was aimed — a prompt typed into whichever pane happened to be focused
+    /// a third of a second later is the corruption this whole path exists to
+    /// avoid. Bounded, because key auto-repeat makes presses faster than
+    /// answers.
+    paste_targets: Vec<String>,
     notifier: Notifier,
     perf: Counters,
     /// Wall-clock stats, populated only while timing is active (ADR-P11).

@@ -52,8 +52,9 @@
 //! arrives as an ordinary bracketed paste.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 
@@ -270,6 +271,11 @@ pub const PASTE_UNAVAILABLE_HINT: &str =
 #[derive(Default)]
 pub struct ImageProbe {
     channel: Option<(Sender<bool>, Receiver<bool>)>,
+    /// Whether a question is out. One at a time: the clipboard does not change
+    /// between two presses a fifth of a second apart, so a second `powershell.exe`
+    /// would buy nothing and cost another cold start — and key auto-repeat can
+    /// hold `Ctrl+V` down, which without this is a process per repeat.
+    in_flight: bool,
 }
 
 /// How PowerShell is found. `powershell.exe` is on `PATH` inside a distro
@@ -296,10 +302,16 @@ impl ImageProbe {
 
     /// Ask Windows, on a thread. The answer arrives at a later [`Self::poll`].
     ///
-    /// Repeated presses each ask: two pastes are two pastes, and the answers
-    /// come back in the order the threads finish, which for a question this
-    /// small is the order they were asked.
+    /// A press made while an earlier question is still out does **not** ask
+    /// again: one answer serves every press waiting on it, because what is being
+    /// asked about cannot have changed in the time between them. Which presses
+    /// those were is the caller's to remember — this end of the wire only knows
+    /// what the clipboard holds.
     pub fn ask(&mut self) {
+        if self.in_flight {
+            return;
+        }
+        self.in_flight = true;
         let tx = self.channel.get_or_insert_with(channel).0.clone();
         std::thread::spawn(move || {
             let _ = tx.send(windows_clipboard_has_image());
@@ -307,9 +319,15 @@ impl ImageProbe {
     }
 
     /// The answer to one earlier [`Self::ask`], if one has come back.
+    ///
+    /// Taking the answer is what frees the next question: a probe that is never
+    /// polled is never re-asked, which is the behaviour that keeps one wedged
+    /// `powershell.exe` from becoming one per press.
     pub fn poll(&mut self) -> Option<bool> {
         let (_, rx) = self.channel.as_ref()?;
-        rx.try_recv().ok()
+        let answer = rx.try_recv().ok()?;
+        self.in_flight = false;
+        Some(answer)
     }
 }
 
@@ -317,20 +335,65 @@ impl ImageProbe {
 /// the question could not be put: a machine that cannot answer is one whose
 /// clipboard thurbox pastes as text, which is what it did before this existed.
 fn windows_clipboard_has_image() -> bool {
-    let ask = |exe: &str| {
-        Command::new(exe)
+    let ask = |exe: &str| -> std::io::Result<bool> {
+        let mut child = Command::new(exe)
             .args(["-NoProfile", "-NonInteractive", "-Sta", "-Command"])
             .arg(CONTAINS_IMAGE)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
+            .spawn()?;
+        // Past the spawn, every way this can go wrong is still just "no image":
+        // the fallback below is for a `powershell.exe` that could not be *found*,
+        // and running a second one because the first became unreadable would be
+        // two wedged processes instead of one.
+        Ok(wait_bounded(&mut child, PROBE_TIMEOUT))
     };
     match ask(POWERSHELL) {
-        Ok(status) => status.success(),
+        Ok(answer) => answer,
         Err(e) => {
             tracing::debug!("{POWERSHELL} is not on PATH ({e}); trying the interop path");
-            ask(POWERSHELL_FALLBACK).is_ok_and(|status| status.success())
+            ask(POWERSHELL_FALLBACK).unwrap_or(false)
+        }
+    }
+}
+
+/// How long the probe waits for Windows before giving up on it.
+///
+/// The round trip is ~0.42 s measured, so this is not a budget anyone reaches
+/// by being slow — it is there because WSL interop can wedge outright (this
+/// machine has logged `UtilAcceptVsock:273: accept4 failed 110`), and a wedged
+/// question with no deadline is a `powershell.exe` and a thread that never end,
+/// one per press, for as long as the interface runs.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often the wait looks. Next to a 0.42 s round trip this is noise, and it
+/// costs nothing while the probe is out: the thread is asleep.
+const PROBE_POLL: Duration = Duration::from_millis(25);
+
+/// Whether `child` exited successfully within `timeout`, killing it if not.
+///
+/// `false` for a child that overran, was killed, or became unreadable — the
+/// answer that keeps thurbox doing what it did before the probe existed.
+fn wait_bounded(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() >= deadline => {
+                tracing::warn!(
+                    "the Windows clipboard probe did not answer within {timeout:?}; \
+                     treating the clipboard as text"
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(PROBE_POLL),
+            Err(e) => {
+                tracing::debug!("could not wait for the Windows clipboard probe: {e}");
+                return false;
+            }
         }
     }
 }
@@ -394,6 +457,86 @@ mod tests {
         assert!(
             windows_clipboard_has_image(),
             "PowerShell says the clipboard holds an image and the probe did not"
+        );
+    }
+
+    /// A probe that never answers is killed, not waited on.
+    ///
+    /// WSL interop wedges (`UtilAcceptVsock:273: accept4 failed 110` on this
+    /// machine): the child is started and simply never returns. Without a
+    /// deadline the worker thread and its `powershell.exe` live for the rest of
+    /// the session — and because the probe is only re-asked once its answer is
+    /// taken, the paste chord would stop being answered at all from then on.
+    ///
+    /// Driven with a real child that really hangs, because the claim is about
+    /// the waiting: a helper asked to time out against nothing proves nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_that_never_answers_is_killed_rather_than_waited_on() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a hanging child");
+
+        let started = Instant::now();
+        let answered = wait_bounded(&mut child, Duration::from_millis(200));
+        let waited = started.elapsed();
+
+        assert!(!answered, "a child that never exited was read as an answer");
+        assert!(
+            waited < Duration::from_secs(5),
+            "the wait ran past its deadline: {waited:?}"
+        );
+        // Killed, not merely abandoned: an abandoned one holds the interop pipe.
+        assert!(
+            matches!(child.try_wait(), Ok(Some(_))),
+            "the child outlived the wait that gave up on it"
+        );
+    }
+
+    /// A press made while a question is out does not ask a second one.
+    ///
+    /// Key auto-repeat holds `Ctrl+V` down at tens of presses a second, and each
+    /// one used to spawn its own `powershell.exe` — ~0.42 s of cold start each,
+    /// all asking the same question about a clipboard that cannot have changed
+    /// in between. One question, one answer, however many presses are waiting
+    /// on it.
+    ///
+    /// Asserted by counting answers rather than processes: a second question
+    /// would deliver a second `true`/`false` down the same channel, so a probe
+    /// that answers exactly once is a probe that asked exactly once. Runs
+    /// anywhere — off WSL the command cannot start and the failure is the
+    /// answer, which is the same one answer.
+    #[test]
+    fn one_question_is_asked_at_a_time() {
+        let mut probe = ImageProbe::default();
+        probe.ask();
+        probe.ask();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut first = None;
+        while first.is_none() && Instant::now() < deadline {
+            first = probe.poll();
+            if first.is_none() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        assert!(
+            first.is_some(),
+            "the probe never answered at all, so this asserts nothing about a \
+             second one"
+        );
+
+        // A second question was asked at the same moment as the first, so its
+        // answer would already be queued behind the one just taken.
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            probe.poll(),
+            None,
+            "a press made while a question was out asked Windows again"
         );
     }
 

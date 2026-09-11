@@ -595,18 +595,28 @@ impl App {
         }
 
         let Some(session) = self.focused_session.clone() else {
-            self.report(
-                "nothing to paste into — focus a session's terminal first",
-                Level::Error,
-            );
+            self.report(NOTHING_TO_PASTE_INTO, Level::Error);
             return;
         };
+        self.paste_text_into(&session, &text);
+    }
+
+    /// Send `text` to one session's terminal as a bracketed paste.
+    ///
+    /// Takes the session rather than reading the focus, because not every paste
+    /// is delivered in the same turn it was asked for: the WSL image probe
+    /// answers ~0.42 s later, and the pane the press was aimed at is the one it
+    /// belongs in — see [`Self::poll_image_probe`].
+    fn paste_text_into(&mut self, session: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
         let mut bytes = Vec::with_capacity(text.len() + 12);
         bytes.extend_from_slice(b"\x1b[200~");
         bytes.extend_from_slice(text.as_bytes());
         bytes.extend_from_slice(b"\x1b[201~");
 
-        self.toast(if self.terminals.send(&session, bytes) {
+        self.toast(if self.terminals.send(session, bytes) {
             format!("pasted {} character(s)", text.chars().count())
         } else {
             "no live terminal to paste into".to_string()
@@ -640,10 +650,36 @@ impl App {
         // and asking costs ~0.42 s. The press is claimed, the answer acts on it
         // — [`Self::poll_image_probe`].
         if thurbox::clipboard::ImageProbe::applies() {
-            self.image_probe.ask();
-            return true;
+            return self.ask_windows_about_this_press();
         }
         self.paste_text_or_decline()
+    }
+
+    /// Claim this press and put the question to Windows, remembering where the
+    /// press was aimed.
+    ///
+    /// The target is resolved **now**: the answer is ~0.42 s away, which is long
+    /// enough to focus another pane, and a paste that lands in a pane it was not
+    /// aimed at corrupts whatever is being typed there — the same failure, in
+    /// the other direction, as pasting stale text.
+    ///
+    /// Nothing focused is answered at once rather than by asking: the press has
+    /// nowhere to land whatever Windows says.
+    fn ask_windows_about_this_press(&mut self) -> bool {
+        let Some(session) = self.focused_session.clone() else {
+            self.report(NOTHING_TO_PASTE_INTO, Level::Error);
+            return true;
+        };
+        // Key auto-repeat outruns the answer: holding `Ctrl+V` makes presses at
+        // tens a second against a question that takes a fifth of a second, and
+        // every one of them is a paste owed. Past this many the repeat is no
+        // longer someone asking for another paste.
+        if self.paste_targets.len() >= MAX_WAITING_PASTES {
+            return true;
+        }
+        self.paste_targets.push(session);
+        self.image_probe.ask();
+        true
     }
 
     /// Paste the clipboard's text, or decline the chord when there is none.
@@ -672,52 +708,68 @@ impl App {
         true
     }
 
-    /// Act on what Windows said about its clipboard, one paste press ago.
+    /// Act on what Windows said about its clipboard, for every press that was
+    /// waiting on the answer.
     ///
-    /// An image goes to the agent, which reads it itself; anything else is an
-    /// ordinary text paste. "Neither" — no image on the Windows side and no
-    /// text on ours — also goes to the agent: thurbox has nothing to offer and
-    /// the press is better spent on something that might.
-    ///
-    /// Focus is resolved now rather than remembered from the press: 0.42 s is
-    /// long enough to change panes, and a paste belongs in the pane the person
-    /// is looking at when it lands.
+    /// One answer serves them all: the question is about the clipboard, not
+    /// about the press, and it cannot have changed in the fifth of a second
+    /// between two of them. Each press is delivered to the session it was aimed
+    /// at, in the order they were made.
     pub(crate) fn poll_image_probe(&mut self) {
         let Some(has_image) = self.image_probe.poll() else {
             return;
         };
-        if has_image || !self.paste_text_or_decline() {
-            self.forward_paste_chord();
+        for session in std::mem::take(&mut self.paste_targets) {
+            self.deliver_probed_paste(has_image, &session);
         }
     }
 
-    /// Send the paste chord itself to the focused terminal.
+    /// One press, answered.
     ///
-    /// `Ctrl+V` is one byte on the wire, and it is what Claude Code watches for
-    /// before reading the clipboard itself (`xclip`/`wl-paste`, or PowerShell
-    /// under WSL). Sent directly rather than by letting the chord fall through,
-    /// because by the time the answer arrives the key press is long gone.
-    fn forward_paste_chord(&mut self) {
-        const CTRL_V: u8 = 0x16;
+    /// An image goes to the agent, which reads it itself; anything else is an
+    /// ordinary text paste. "Neither" — no image on the Windows side and no text
+    /// on ours — also goes to the agent: thurbox has nothing to offer and the
+    /// press is better spent on something that might. `Ctrl+V` is one byte on
+    /// the wire, and it is what Claude Code watches for before reading the
+    /// clipboard itself (`xclip`/`wl-paste`, or PowerShell under WSL); sent
+    /// directly rather than by letting the chord fall through, because by the
+    /// time the answer arrives the key press is long gone.
+    fn deliver_probed_paste(&mut self, has_image: bool, session: &str) {
         // A modal or a float owns typed input while it is up, and a paste must
         // never leak into the terminal behind the overlay — the same rule
-        // `on_paste` follows. There is nothing to hand an image to here (a name
-        // field cannot take one), so the press is dropped rather than routed.
+        // `on_paste` follows. One opened while the question was out, so this is
+        // checked here and not only at the press.
         if self.modals.is_open() || self.grabbed.is_some() {
             return;
         }
-        let Some(session) = self.focused_session.clone() else {
-            self.report(
-                "nothing to paste into — focus a session's terminal first",
-                Level::Error,
-            );
-            return;
-        };
-        if !self.terminals.send(&session, vec![CTRL_V]) {
+        if !has_image {
+            // No local clipboard at all — the SSH case — is the one decline that
+            // would help nobody: there is nothing on that machine for the agent
+            // to read either.
+            if self.clipboard.is_none() {
+                self.toast(thurbox::clipboard::PASTE_UNAVAILABLE_HINT);
+                return;
+            }
+            if let Some(text) = thurbox::clipboard::paste(self.clipboard.as_mut()) {
+                self.paste_text_into(session, &text);
+                return;
+            }
+        }
+        const CTRL_V: u8 = 0x16;
+        if !self.terminals.send(session, vec![CTRL_V]) {
             self.toast("no live terminal to paste into");
         }
     }
 }
+
+/// What a paste with nothing focused says. One message, because it is one
+/// situation: the press was made with no session's terminal in front of it.
+const NOTHING_TO_PASTE_INTO: &str = "nothing to paste into — focus a session's terminal first";
+
+/// How many presses may be waiting on one answer. Well above a person pressing
+/// `Ctrl+V` twice and well below what auto-repeat produces in the ~0.42 s the
+/// answer takes.
+const MAX_WAITING_PASTES: usize = 8;
 
 /// Undo Windows' spelling of AltGr, which is `Ctrl+Alt`.
 ///
