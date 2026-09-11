@@ -302,20 +302,26 @@ impl ImageProbe {
 
     /// Ask Windows, on a thread. The answer arrives at a later [`Self::poll`].
     ///
-    /// A press made while an earlier question is still out does **not** ask
-    /// again: one answer serves every press waiting on it, because what is being
-    /// asked about cannot have changed in the time between them. Which presses
-    /// those were is the caller's to remember — this end of the wire only knows
-    /// what the clipboard holds.
-    pub fn ask(&mut self) {
+    /// `true` when a question was actually put, `false` when one was already
+    /// out — at most one `powershell.exe` runs at a time, because key
+    /// auto-repeat makes presses far faster than the ~0.42 s answer and a
+    /// process per repeat is a machine brought to its knees by a held key.
+    ///
+    /// The answer that comes back describes the clipboard **as of this call**,
+    /// so it may only be applied to presses already made: the caller keeps the
+    /// presses and re-asks for any that arrived after — see
+    /// `poll_image_probe`. This end of the wire only knows what the clipboard
+    /// holds, never who is waiting.
+    pub fn ask(&mut self) -> bool {
         if self.in_flight {
-            return;
+            return false;
         }
         self.in_flight = true;
         let tx = self.channel.get_or_insert_with(channel).0.clone();
         std::thread::spawn(move || {
             let _ = tx.send(windows_clipboard_has_image());
         });
+        true
     }
 
     /// The answer to one earlier [`Self::ask`], if one has come back.
@@ -513,8 +519,13 @@ mod tests {
     #[test]
     fn one_question_is_asked_at_a_time() {
         let mut probe = ImageProbe::default();
-        probe.ask();
-        probe.ask();
+        assert!(probe.ask(), "the first press put no question at all");
+        assert!(
+            !probe.ask(),
+            "a press made while a question was out started a second one; the \
+             caller reads this as its press being covered by an answer that was \
+             asked for before it happened"
+        );
 
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut first = None;
@@ -537,6 +548,14 @@ mod tests {
             probe.poll(),
             None,
             "a press made while a question was out asked Windows again"
+        );
+
+        // And taking the answer frees the next question: the press that was
+        // refused above is asked for now, against the clipboard as it is now.
+        assert!(
+            probe.ask(),
+            "no question could be put after the previous answer was taken; a \
+             press waiting on a fresh one would wait for ever"
         );
     }
 

@@ -678,7 +678,12 @@ impl App {
             return true;
         }
         self.paste_targets.push(session);
-        self.image_probe.ask();
+        if self.image_probe.ask() {
+            // This question describes the clipboard as it is now, so it answers
+            // for the presses made by now — no more. A press that arrives while
+            // it is out gets one of its own, asked when this one comes back.
+            self.probed_presses = self.paste_targets.len();
+        }
         true
     }
 
@@ -708,19 +713,32 @@ impl App {
         true
     }
 
-    /// Act on what Windows said about its clipboard, for every press that was
-    /// waiting on the answer.
+    /// Act on what Windows said about its clipboard, for the presses that
+    /// question was asked for.
     ///
-    /// One answer serves them all: the question is about the clipboard, not
-    /// about the press, and it cannot have changed in the fifth of a second
-    /// between two of them. Each press is delivered to the session it was aimed
-    /// at, in the order they were made.
+    /// Only those: the answer describes the clipboard as it was when the
+    /// question went out, and what is copied can change while it is out — the
+    /// round trip is ~0.42 s, and a wedged one runs to its five-second
+    /// deadline. Applying it to a press made *after* it was asked is how an
+    /// image copied in between gets pasted as the text that preceded it, which
+    /// is the failure this whole path exists to prevent. Those presses are kept
+    /// and a fresh question is put for them here.
+    ///
+    /// Each press is delivered to the session it was aimed at, in the order
+    /// they were made.
     pub(crate) fn poll_image_probe(&mut self) {
         let Some(has_image) = self.image_probe.poll() else {
             return;
         };
-        for session in std::mem::take(&mut self.paste_targets) {
+        let answered = self.probed_presses.min(self.paste_targets.len());
+        self.probed_presses = 0;
+        let waiting = self.paste_targets.split_off(answered);
+        let answered = std::mem::replace(&mut self.paste_targets, waiting);
+        for session in answered {
             self.deliver_probed_paste(has_image, &session);
+        }
+        if !self.paste_targets.is_empty() && self.image_probe.ask() {
+            self.probed_presses = self.paste_targets.len();
         }
     }
 

@@ -253,6 +253,12 @@ struct App {
     /// avoid. Bounded, because key auto-repeat makes presses faster than
     /// answers.
     paste_targets: Vec<String>,
+    /// How many of [`Self::paste_targets`] the question now out was asked for.
+    ///
+    /// The answer describes the clipboard at the moment it was asked, so it is
+    /// spent only on the presses already made by then; the rest wait for a
+    /// question of their own.
+    probed_presses: usize,
     notifier: Notifier,
     perf: Counters,
     /// Wall-clock stats, populated only while timing is active (ADR-P11).
