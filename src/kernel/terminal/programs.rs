@@ -47,6 +47,19 @@ impl ProgramKey {
     }
 }
 
+/// What happened to a program slot between two looks.
+///
+/// Ordered, and that is the whole point: whether a death is news depends on
+/// what came before it in this list. See [`Terminals::take_program_transitions`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProgramTransition {
+    /// A pane was **spawned** here — never adopted from a previous run.
+    Started(ProgramKey),
+    /// A finished pane was overwritten by a restart, with what it had been
+    /// running.
+    Replaced(ProgramKey, String),
+}
+
 /// Does this surface id name a plugin's program rather than a session?
 ///
 /// A prefix test, and deliberately **not** a parse. Splitting the id back into
@@ -178,8 +191,10 @@ impl Terminals {
             // it derives. A plugin asking to restart on the frame after its
             // program died would otherwise hand the deriver a live pane under
             // the same key, and the ending would never be announced.
-            self.replaced_program_exits
-                .push((key.clone(), slot.program.clone()));
+            self.program_transitions.push(ProgramTransition::Replaced(
+                key.clone(),
+                slot.program.clone(),
+            ));
             self.release_program(key);
         }
         admit_program(&key.plugin, self.program_count(&key.plugin), program)?;
@@ -207,14 +222,7 @@ impl Terminals {
         // the interface: the name is deterministic, so finding it IS the
         // re-adoption path — there is no stored pane id that could go stale.
         let existing = self.find_program_window(&backend, &window);
-        if existing.is_none() {
-            // Spawned here, so this loop knows it ran — which is what lets its
-            // ending be announced even if it dies before anything looks again.
-            // An *adopted* window is deliberately not recorded: it belongs to a
-            // previous run of the interface, and a corpse found on startup ended
-            // before there was anything to tell.
-            self.started_programs.push(key.clone());
-        }
+        let adopted = existing.is_some();
         let pane = match existing {
             Some(backend_id) => crate::agent::backend::ProgramPane::adopt(
                 Arc::clone(&backend),
@@ -245,6 +253,19 @@ impl Terminals {
                 program: program.to_string(),
             },
         );
+        if !adopted {
+            // Spawned here, so this loop knows it ran — which is what lets its
+            // ending be announced even if it dies before anything looks again.
+            // An *adopted* window is deliberately not recorded: it belongs to a
+            // previous run of the interface, and a corpse found on startup ended
+            // before there was anything to tell.
+            //
+            // After the spawn, not before: a spawn that failed leaves no pane to
+            // die, and claiming one started would make the *next* restart's
+            // replacement look like a fresh death.
+            self.program_transitions
+                .push(ProgramTransition::Started(key.clone()));
+        }
         Ok(())
     }
 
@@ -372,25 +393,18 @@ impl Terminals {
             .collect()
     }
 
-    /// Program panes that ended and were restarted before the ending could be
-    /// derived, taken once.
+    /// Every spawn and replacement since the last look, in order, taken once.
     ///
-    /// [`Self::program_liveness`] can only describe the panes that are *held*, so
-    /// a restart that replaces an exited slot within the same iteration hides the
-    /// ending from it entirely. Those endings are recorded as they are overwritten
-    /// and drained here, alongside that read.
-    pub fn take_replaced_program_exits(&mut self) -> Vec<(ProgramKey, String)> {
-        std::mem::take(&mut self.replaced_program_exits)
-    }
-
-    /// Program panes spawned since the last look, taken once.
+    /// [`Self::program_liveness`] can only describe the panes that are *held*:
+    /// a restart that replaces an exited slot within the same iteration hides
+    /// the ending from it entirely, and a program that starts and dies inside
+    /// one iteration is only ever seen dead — indistinguishable from a corpse
+    /// adopted from a previous run, which wants the opposite answer. Both are
+    /// recorded as they happen and drained here, alongside that read.
     ///
-    /// The loop's evidence that a pane ever ran. `program_liveness` cannot say
-    /// it: a program that starts and dies inside one iteration is only ever seen
-    /// dead, which is indistinguishable from a corpse adopted from a previous
-    /// run — and those two want opposite answers.
-    pub fn take_started_programs(&mut self) -> Vec<ProgramKey> {
-        std::mem::take(&mut self.started_programs)
+    /// The order is load-bearing; `program_endings` says what it is read for.
+    pub fn take_program_transitions(&mut self) -> Vec<ProgramTransition> {
+        std::mem::take(&mut self.program_transitions)
     }
 
     /// What is running in a pane, and whether it has ended — for a pane that wants

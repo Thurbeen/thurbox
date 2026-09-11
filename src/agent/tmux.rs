@@ -981,7 +981,6 @@ impl TmuxBackend {
         Ok(())
     }
 
-
     /// One `list-windows`, with an empty answer only when the multiplexer
     /// itself said there is nothing to list.
     ///
@@ -1512,18 +1511,17 @@ impl TmuxBackend {
         // and deliberately not paid for: closing it means asking again after
         // registering, which is a second round trip on every pane attached, to
         // catch a program that died in the millisecond it took to ask once.
-        let window_id = match self
-            .ctrl_command(&format!("display-message -t {pane_id} -p '#{{window_id}}'"))
-        {
-            Ok(out) => Some(out.trim().to_string()).filter(|id| !id.is_empty()),
-            Err(e) => {
-                debug!(
-                    "could not learn which window {pane_id} is in ({e:#}); its exit \
+        let window_id =
+            match self.ctrl_command(&format!("display-message -t {pane_id} -p '#{{window_id}}'")) {
+                Ok(out) => Some(out.trim().to_string()).filter(|id| !id.is_empty()),
+                Err(e) => {
+                    debug!(
+                        "could not learn which window {pane_id} is in ({e:#}); its exit \
                      will not be announced"
-                );
-                None
-            }
-        };
+                    );
+                    None
+                }
+            };
         let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
         self.with_control(|ctrl| {
             let mut senders = ctrl
@@ -1905,7 +1903,13 @@ impl SessionBackend for TmuxBackend {
             return Ok(());
         }
         let keep = if keep { "on" } else { "off" };
-        self.tmux_run(&["set-window-option", "-t", backend_id, "remain-on-exit", keep])
+        self.tmux_run(&[
+            "set-window-option",
+            "-t",
+            backend_id,
+            "remain-on-exit",
+            keep,
+        ])
     }
 
     fn window_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>> {

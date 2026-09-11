@@ -23,7 +23,7 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use thurbox::kernel::terminal::{ProgramKey, Terminals};
+use thurbox::kernel::terminal::{ProgramKey, ProgramTransition, Terminals};
 
 const SOCKET: &str = "thurbox-program-restart-e2e";
 
@@ -92,17 +92,20 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         panic!("the program never reported that it ended; nothing to restart over");
     }
 
-    // Nothing drained it in between: the ending and the restart happen inside
-    // one iteration of the loop, which is the whole point.
-    assert!(
-        terminals.take_replaced_program_exits().is_empty(),
-        "an ending was reported before anything replaced it"
+    // The iteration that spawned it: one transition, the spawn. Drained here so
+    // the restart below is read exactly as the loop would read it — a fresh log,
+    // holding only what the restart itself puts there.
+    assert_eq!(
+        terminals.take_program_transitions(),
+        vec![ProgramTransition::Started(key.clone())],
+        "the spawn was the only thing that happened, and an ending was reported \
+         before anything replaced it"
     );
 
     // The plugin asks again, as it does on every frame.
     let long = ["-c".to_string(), "sleep 300".to_string()];
     let restarted = terminals.start_program(&key, "sh", &long, Some(dir.path()), 24, 80);
-    let replaced = terminals.take_replaced_program_exits();
+    let transitions = terminals.take_program_transitions();
     let live_again = terminals
         .program_state(&key)
         .map(|(_, exited)| !exited)
@@ -115,9 +118,15 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         "the restart left no live pane, so this asserts nothing about a \
          replacement"
     );
+    // The order is asserted, not just the contents: the deriver reads this log
+    // in sequence, and a replacement that arrived *after* the spawn beside it
+    // would be read as a fresh death — the same ending announced twice.
     assert_eq!(
-        replaced.iter().map(|(k, _)| k).collect::<Vec<_>>(),
-        vec![&key],
+        transitions,
+        vec![
+            ProgramTransition::Replaced(key.clone(), "sh".to_string()),
+            ProgramTransition::Started(key.clone()),
+        ],
         "a program that was replaced while finished reported no ending; the \
          plugin that restarted it is never told the old one stopped"
     );

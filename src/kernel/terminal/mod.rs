@@ -37,7 +37,7 @@ pub mod links;
 mod programs;
 
 pub use links::{drawn_link_paints, paint_hyperlinks, HyperlinkPaint};
-pub use programs::{validate_program_name, ProgramKey};
+pub use programs::{validate_program_name, ProgramKey, ProgramTransition};
 
 use programs::ProgramSlot;
 
@@ -363,22 +363,22 @@ pub struct Terminals {
     /// paint seam, the redraw stamp, the rect memo — and `SurfaceProvider` has
     /// one implementor by design, so a second provider is not on the table.
     programs: HashMap<ProgramKey, ProgramSlot>,
-    /// Program panes that ended and were **replaced** before the transition
-    /// could be derived.
+    /// Spawns and replacements since the last look, **in the order they
+    /// happened**.
     ///
     /// `program.exited` is derived by comparing [`Self::program_liveness`]
     /// against the previous look, and the loop applies commands before it
-    /// derives: a plugin asking to start its program on the frame after the
-    /// exit restarts the pane, and the map no longer remembers that anything
-    /// ended. Recorded here at the moment of replacement, so the exit survives
-    /// its own slot ([`Self::take_replaced_program_exits`]).
-    replaced_program_exits: Vec<(ProgramKey, String)>,
-    /// Program panes **spawned** since the last look — never adopted ones.
+    /// derives — so the map alone cannot answer either question the deriver
+    /// has. A restart hides the ending it overwrote, and a program that starts
+    /// and dies inside one iteration was never seen running at all.
     ///
-    /// Drained beside [`Self::replaced_program_exits`] and for the same reason:
-    /// the exit deriver compares against what it saw running, and a program that
-    /// starts and dies inside one iteration is never seen running at all.
-    started_programs: Vec<ProgramKey>,
+    /// One log rather than two lists because the answer depends on the order:
+    /// a death is news only if the occupant that died had been *started* after
+    /// the last drain or was known running before it. Read as two sets, a
+    /// restart on a later frame re-vouches for a death that was already
+    /// announced, and the plugin restarts twice for one process
+    /// ([`Self::take_program_transitions`]).
+    program_transitions: Vec<ProgramTransition>,
 }
 
 impl Terminals {
@@ -415,8 +415,7 @@ impl Terminals {
             mirror_rx: std::sync::mpsc::channel(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
-            replaced_program_exits: Vec::new(),
-            started_programs: Vec::new(),
+            program_transitions: Vec::new(),
             rows_cache: RefCell::new(HashMap::new()),
         }
     }

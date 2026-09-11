@@ -17,7 +17,7 @@
 use std::collections::VecDeque;
 
 use thurbox::kernel::events::{Deriver, Event, Field, MAX_DEPTH};
-use thurbox::kernel::terminal::ProgramKey;
+use thurbox::kernel::terminal::{ProgramKey, ProgramTransition};
 
 use super::*;
 
@@ -188,13 +188,12 @@ impl App {
         //
         // Derived here rather than fired where the process is reaped because
         // nothing reaps it: `start_program` replaces a finished slot lazily, the
-        // next time the plugin asks. Three readings, because one is not enough
-        // to see every ending — see [`program_endings`].
+        // next time the plugin asks. Two readings, because the live walk alone
+        // cannot see every ending — see [`program_endings`].
         let ended = program_endings(
             &mut self.events.programs,
             self.terminals.program_liveness(),
-            self.terminals.take_replaced_program_exits(),
-            self.terminals.take_started_programs(),
+            self.terminals.take_program_transitions(),
         );
         for (key, program) in ended {
             self.enqueue_event(
@@ -330,37 +329,51 @@ impl App {
 /// Which program panes ended since the last look, and what to remember for the
 /// next one.
 ///
-/// `seen` is the memo of surfaces known to be running; it is updated in place.
-/// The three readings are the loop's, and each covers an ending the others
-/// cannot see:
+/// `seen` is the memo of surfaces whose death would be news — panes known
+/// running, and panes this run spawned. It is updated in place.
 ///
-/// - **`liveness`** — what is held right now. A key that reports `has_exited`
-///   and was in `seen` is the ordinary transition.
-/// - **`replaced`** — endings whose slot is already gone. The loop applies
+/// The live walk (`liveness`) is what is held right now: a key that reports
+/// `has_exited` and is in the memo is the ordinary transition. It cannot see
+/// two things, and `transitions` — the kernel's ordered log of what happened to
+/// the slots since the last drain — carries both:
+///
+/// - **`Replaced`** — an ending whose slot is already gone. The loop applies
 ///   commands before it derives, so a plugin asking to restart on the frame
-///   after its program died hands this walk a *live* pane under the same key;
-///   `start_program` records the ending as it overwrites the slot.
-/// - **`started`** — panes spawned since the last look. Without them the memo
-///   is the only evidence a pane ever ran, and a program that dies inside one
-///   iteration — a bad file, a missing binary inside a wrapper, a program that
-///   prints usage and exits — was never in it, so its ending was dropped by the
-///   very gate that exists to ignore *adopted* corpses from a previous run of
-///   the interface. Only freshly spawned panes are seeded, so that gate still
-///   holds for the panes it was written for.
+///   after its program died hands this walk a *live* pane under the same key.
+/// - **`Started`** — a pane spawned here. Without it the memo is the only
+///   evidence a pane ever ran, and a program that dies inside one iteration —
+///   a bad file, a missing binary inside a wrapper, a program that prints usage
+///   and exits — was never in it, so its ending was dropped by the very gate
+///   that exists to ignore *adopted* corpses from a previous run.
 ///
-/// A key can legitimately appear twice: a pane that died, was restarted, and
-/// died again inside one iteration is two programs ending, and a plugin that
-/// restarts on the event owes itself both.
+/// Walked in order, and that is what keeps one death one event: a `Replaced`
+/// consumes the memo entry it reports, so the same death cannot be reported
+/// again by a restart that follows it, and a `Started` after it vouches only
+/// for the pane it spawned. Read as two unordered sets instead, a restart on a
+/// frame *after* the ending was announced re-seeds the memo and the
+/// already-told death is told a second time.
+///
+/// A key can still legitimately appear twice: a pane that died, was restarted,
+/// and died again inside one iteration is two programs ending, and a plugin
+/// that restarts on the event owes itself both.
 fn program_endings(
     seen: &mut std::collections::HashSet<String>,
     liveness: Vec<(ProgramKey, String, bool)>,
-    replaced: Vec<(ProgramKey, String)>,
-    started: Vec<ProgramKey>,
+    transitions: Vec<ProgramTransition>,
 ) -> Vec<(ProgramKey, String)> {
-    for key in started {
-        seen.insert(key.surface_id());
-    }
     let mut ended = Vec::new();
+    for transition in transitions {
+        match transition {
+            ProgramTransition::Replaced(key, program) => {
+                if seen.remove(&key.surface_id()) {
+                    ended.push((key, program));
+                }
+            }
+            ProgramTransition::Started(key) => {
+                seen.insert(key.surface_id());
+            }
+        }
+    }
     let mut running = std::collections::HashSet::with_capacity(liveness.len());
     for (key, program, exited) in liveness {
         let surface = key.surface_id();
@@ -370,13 +383,6 @@ fn program_endings(
             }
         } else {
             running.insert(surface);
-        }
-    }
-    // Drained against the OLD memo, before it is replaced: the pane that took
-    // the ended one's place is live and would otherwise vouch for it.
-    for (key, program) in replaced {
-        if seen.contains(&key.surface_id()) {
-            ended.push((key, program));
         }
     }
     *seen = running;
@@ -410,7 +416,6 @@ mod tests {
             &mut memo,
             vec![(editor.clone(), "nvim".into(), true)],
             vec![],
-            vec![],
         );
         assert_eq!(names(&ended), ["editor"]);
         assert!(
@@ -425,8 +430,8 @@ mod tests {
         let editor = key("editor");
         let mut memo = seen(&[&editor]);
         let liveness = vec![(editor.clone(), "nvim".to_string(), true)];
-        program_endings(&mut memo, liveness.clone(), vec![], vec![]);
-        let again = program_endings(&mut memo, liveness, vec![], vec![]);
+        program_endings(&mut memo, liveness.clone(), vec![]);
+        let again = program_endings(&mut memo, liveness, vec![]);
         assert!(
             again.is_empty(),
             "a pane that is still dead ended again: {:?}",
@@ -444,7 +449,6 @@ mod tests {
         let ended = program_endings(
             &mut memo,
             vec![(key("editor"), "nvim".into(), true)],
-            vec![],
             vec![],
         );
         assert!(ended.is_empty(), "{:?}", names(&ended));
@@ -464,8 +468,7 @@ mod tests {
         let ended = program_endings(
             &mut memo,
             vec![(editor.clone(), "nvim".into(), true)],
-            vec![],
-            vec![editor],
+            vec![ProgramTransition::Started(editor)],
         );
         assert_eq!(
             names(&ended),
@@ -484,8 +487,10 @@ mod tests {
             &mut memo,
             // The restarted pane, alive — what the walk alone would see.
             vec![(editor.clone(), "nvim".into(), false)],
-            vec![(editor.clone(), "nvim".into())],
-            vec![editor.clone()],
+            vec![
+                ProgramTransition::Replaced(editor.clone(), "nvim".into()),
+                ProgramTransition::Started(editor.clone()),
+            ],
         );
         assert_eq!(names(&ended), ["editor"]);
         assert!(
@@ -507,8 +512,10 @@ mod tests {
         let ended = program_endings(
             &mut memo,
             vec![(editor.clone(), "nvim".into(), true)],
-            vec![(editor.clone(), "nvim".into())],
-            vec![editor],
+            vec![
+                ProgramTransition::Replaced(editor.clone(), "nvim".into()),
+                ProgramTransition::Started(editor),
+            ],
         );
         assert_eq!(names(&ended), ["editor", "editor"]);
     }
@@ -526,12 +533,47 @@ mod tests {
                 (theirs.clone(), "helix".into(), false),
             ],
             vec![],
-            vec![],
         );
         assert_eq!(
-            ended.iter().map(|(k, _)| k.plugin.as_str()).collect::<Vec<_>>(),
+            ended
+                .iter()
+                .map(|(k, _)| k.plugin.as_str())
+                .collect::<Vec<_>>(),
             ["plugins/90_files.lua"],
             "two plugins' panes share a name, and the wrong one was told"
+        );
+    }
+
+    /// A death announced once is not announced again when the pane is restarted
+    /// on a later frame.
+    ///
+    /// The restart records the slot it overwrites, and the spawn beside it puts
+    /// the surface back in the memo — so a drain that reads the memo *after* the
+    /// spawn finds the same death vouched for a second time. The plugin that
+    /// restarts on the event then restarts twice for one process.
+    #[test]
+    fn an_ending_already_announced_is_not_announced_again_by_the_restart() {
+        let editor = key("editor");
+        let mut memo = seen(&[&editor]);
+        let first = program_endings(
+            &mut memo,
+            vec![(editor.clone(), "nvim".into(), true)],
+            vec![],
+        );
+        assert_eq!(names(&first), ["editor"], "the death itself must be told");
+        let second = program_endings(
+            &mut memo,
+            // The restart, alive.
+            vec![(editor.clone(), "nvim".into(), false)],
+            vec![
+                ProgramTransition::Replaced(editor.clone(), "nvim".into()),
+                ProgramTransition::Started(editor),
+            ],
+        );
+        assert!(
+            second.is_empty(),
+            "one process died and ended twice: {:?}",
+            names(&second)
         );
     }
 }
