@@ -51,7 +51,7 @@
 //! Terminal). Paste over SSH is the terminal's own `Ctrl+Shift+V`, which
 //! arrives as an ordinary bracketed paste.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -270,7 +270,7 @@ pub const PASTE_UNAVAILABLE_HINT: &str =
 /// worker pattern: ask, keep drawing, act when the answer arrives.
 #[derive(Default)]
 pub struct ImageProbe {
-    channel: Option<(Sender<bool>, Receiver<bool>)>,
+    channel: Option<(Sender<Verdict>, Receiver<Verdict>)>,
     /// Whether a question is out. One at a time: the clipboard does not change
     /// between two presses a fifth of a second apart, so a second `powershell.exe`
     /// would buy nothing and cost another cold start — and key auto-repeat can
@@ -285,10 +285,47 @@ const POWERSHELL: &str = "powershell.exe";
 const POWERSHELL_FALLBACK: &str =
     "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 
-/// Asks only whether an image is there — deliberately not for the image. An
-/// exit code is all the caller needs, and not carrying pixels over the boundary
-/// keeps the call cheap.
-const CONTAINS_IMAGE: &str = "Add-Type -AssemblyName System.Windows.Forms;      if (-not [System.Windows.Forms.Clipboard]::ContainsImage()) { exit 1 }";
+/// What Windows said about its clipboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// A picture and nothing else — the press belongs to the agent, which can
+    /// fetch it.
+    Image,
+    /// Something thurbox can paste itself, or nothing at all.
+    NotImage,
+    /// Windows could not be asked. Deliberately **not** folded into
+    /// [`Verdict::NotImage`]: WSL interop wedges intermittently (this machine
+    /// logs `UtilAcceptVsock:273: accept4 failed 110` roughly once in ten cold
+    /// calls), and reading that as "no image" pastes the stale X-clipboard text
+    /// this whole path exists to stop. An unanswerable question is given to the
+    /// agent, which asks Windows itself and may get further.
+    Unknown,
+}
+
+/// Asks only what *kind* of thing is there — deliberately not for the image
+/// itself: not carrying pixels over the boundary keeps the call cheap.
+///
+/// The answer is a word on stdout rather than an exit code, because an exit
+/// code cannot say "I could not ask". PowerShell exits non-zero for a wedged
+/// interop, a missing assembly and a clipboard without a picture alike, and
+/// only one of those three means "paste the text".
+///
+/// `ContainsText` is the tie-break, and it is what makes an ordinary copy
+/// survive: Excel, Word, Outlook and browsers all put a **bitmap alongside the
+/// text** on a normal copy, so `ContainsImage` alone is true for copying a
+/// spreadsheet row — and the press would be handed to the agent, which would
+/// fetch a picture of the row the person meant to paste as text. Only a
+/// clipboard that carries a picture and no text is an image paste.
+const CLIPBOARD_KIND: &str = "Add-Type -AssemblyName System.Windows.Forms; \
+     $c = [System.Windows.Forms.Clipboard]; \
+     if ($c::ContainsImage() -and -not $c::ContainsText()) { 'image' } else { 'other' }";
+
+/// What [`CLIPBOARD_KIND`] prints for a clipboard holding only a picture.
+const IMAGE_ANSWER: &str = "image";
+/// And for everything else. Named so an answer that is neither — a PowerShell
+/// banner, a profile's stray output, an error — is read as "could not ask"
+/// rather than as one of the two real answers.
+const OTHER_ANSWER: &str = "other";
 
 impl ImageProbe {
     /// Whether this machine is one where the question even arises.
@@ -329,7 +366,7 @@ impl ImageProbe {
     /// Taking the answer is what frees the next question: a probe that is never
     /// polled is never re-asked, which is the behaviour that keeps one wedged
     /// `powershell.exe` from becoming one per press.
-    pub fn poll(&mut self) -> Option<bool> {
+    pub fn poll(&mut self) -> Option<Verdict> {
         let (_, rx) = self.channel.as_ref()?;
         let answer = rx.try_recv().ok()?;
         self.in_flight = false;
@@ -340,26 +377,42 @@ impl ImageProbe {
 /// One PowerShell round trip. `false` for "no image", and also for every way
 /// the question could not be put: a machine that cannot answer is one whose
 /// clipboard thurbox pastes as text, which is what it did before this existed.
-fn windows_clipboard_has_image() -> bool {
-    let ask = |exe: &str| -> std::io::Result<bool> {
+fn windows_clipboard_has_image() -> Verdict {
+    let ask = |exe: &str| -> std::io::Result<Verdict> {
         let mut child = Command::new(exe)
             .args(["-NoProfile", "-NonInteractive", "-Sta", "-Command"])
-            .arg(CONTAINS_IMAGE)
+            .arg(CLIPBOARD_KIND)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
-        // Past the spawn, every way this can go wrong is still just "no image":
-        // the fallback below is for a `powershell.exe` that could not be *found*,
-        // and running a second one because the first became unreadable would be
-        // two wedged processes instead of one.
-        Ok(wait_bounded(&mut child, PROBE_TIMEOUT))
+        // Past the spawn, a failure is a failure of *this* attempt: the fallback
+        // below is for a `powershell.exe` that could not be found, and running a
+        // second one because the first wedged would be two wedged processes
+        // instead of one — with the person waiting through both deadlines.
+        if !wait_bounded(&mut child, PROBE_TIMEOUT) {
+            return Ok(Verdict::Unknown);
+        }
+        let mut answer = String::new();
+        if let Some(mut out) = child.stdout.take() {
+            // A word, read after the child is gone: the pipe holds it, and
+            // nothing this small can fill the buffer and deadlock the wait.
+            let _ = out.read_to_string(&mut answer);
+        }
+        Ok(match answer.trim() {
+            IMAGE_ANSWER => Verdict::Image,
+            OTHER_ANSWER => Verdict::NotImage,
+            other => {
+                tracing::debug!("the Windows clipboard probe answered {other:?}");
+                Verdict::Unknown
+            }
+        })
     };
     match ask(POWERSHELL) {
-        Ok(answer) => answer,
+        Ok(verdict) => verdict,
         Err(e) => {
             tracing::debug!("{POWERSHELL} is not on PATH ({e}); trying the interop path");
-            ask(POWERSHELL_FALLBACK).unwrap_or(false)
+            ask(POWERSHELL_FALLBACK).unwrap_or(Verdict::Unknown)
         }
     }
 }
@@ -434,14 +487,22 @@ mod tests {
     ///
     /// Run against the real Windows clipboard, because what is being tested is
     /// the wiring — the argument list, `-Sta` (without it `Add-Type` throws and
-    /// every answer becomes "no image"), the `PATH`/interop fallback, and
-    /// reading the answer off the *exit code* rather than stdout. A helper
-    /// returning `false` would pass every test that stubbed this out.
+    /// every answer becomes "other"), the `PATH`/interop fallback, and reading
+    /// a word off stdout rather than a status. A helper returning a constant
+    /// would pass every test that stubbed this out.
     ///
-    /// Skipped where it cannot discriminate: off WSL, with no PowerShell, or
-    /// with no image on the clipboard — in that last case both a working probe
-    /// and a broken one say "no". Nothing here writes to the clipboard: a test
-    /// suite that destroys what you copied is worse than a test that skips.
+    /// The oracle is asked for both halves of the question, because the probe's
+    /// answer is a tie-break between them: a clipboard carrying a picture *and*
+    /// text is an ordinary rich copy (Excel, Word, a browser) and must paste as
+    /// text.
+    ///
+    /// Skipped where it cannot discriminate — off WSL, with no PowerShell —
+    /// and, importantly, **not** skipped merely because the oracle was unhappy:
+    /// a wedged interop exits non-zero with nothing on stdout, which the first
+    /// version of this test read as "no image on the clipboard" and passed on.
+    /// A skip says which of the two it was. Nothing here writes to the
+    /// clipboard: a test suite that destroys what you copied is worse than a
+    /// test that skips.
     #[test]
     fn the_windows_probe_agrees_with_powershell() {
         if !ImageProbe::applies() {
@@ -450,19 +511,37 @@ mod tests {
         }
         let oracle = Command::new(POWERSHELL)
             .args(["-NoProfile", "-NonInteractive", "-Sta", "-Command"])
-            .arg("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::ContainsImage()")
+            .arg(
+                "Add-Type -AssemblyName System.Windows.Forms; \
+                 $c = [System.Windows.Forms.Clipboard]; \
+                 \"$($c::ContainsImage()) $($c::ContainsText())\"",
+            )
             .output();
         let Ok(oracle) = oracle else {
             eprintln!("skipping: no powershell.exe on PATH");
             return;
         };
-        if !String::from_utf8_lossy(&oracle.stdout).trim().eq_ignore_ascii_case("true") {
-            eprintln!("skipping: no image on the Windows clipboard to recognise");
+        let said = String::from_utf8_lossy(&oracle.stdout).trim().to_lowercase();
+        let words: Vec<&str> = said.split_whitespace().collect();
+        let (Some(&image), Some(&text), true) = (words.first(), words.get(1), oracle.status.success())
+        else {
+            eprintln!(
+                "skipping: PowerShell could not be asked (status {:?}, said {said:?}) — \
+                 which is NOT the same as the clipboard holding no image",
+                oracle.status.code()
+            );
             return;
-        }
-        assert!(
+        };
+        let expected = if image == "true" && text != "true" {
+            Verdict::Image
+        } else {
+            Verdict::NotImage
+        };
+        assert_eq!(
             windows_clipboard_has_image(),
-            "PowerShell says the clipboard holds an image and the probe did not"
+            expected,
+            "PowerShell reports ContainsImage={image} ContainsText={text} and the \
+             probe disagreed"
         );
     }
 

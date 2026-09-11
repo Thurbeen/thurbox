@@ -594,20 +594,24 @@ impl App {
             return;
         }
 
-        let Some(session) = self.focused_session.clone() else {
+        let Some(surface) = self.focused_surface.clone() else {
             self.report(NOTHING_TO_PASTE_INTO, Level::Error);
             return;
         };
-        self.paste_text_into(&session, &text);
+        self.paste_text_into(&surface, &text);
     }
 
-    /// Send `text` to one session's terminal as a bracketed paste.
+    /// Send `text` to one surface as a bracketed paste.
     ///
-    /// Takes the session rather than reading the focus, because not every paste
+    /// Takes the surface rather than reading the focus, because not every paste
     /// is delivered in the same turn it was asked for: the WSL image probe
     /// answers ~0.42 s later, and the pane the press was aimed at is the one it
     /// belongs in — see [`Self::poll_image_probe`].
-    fn paste_text_into(&mut self, session: &str, text: &str) {
+    ///
+    /// A *surface*, not a session, so a paste lands where a keystroke would:
+    /// `dispatch_session_input` routes by what the pane is showing, and a pane
+    /// showing a plugin's program used to take typing and refuse pastes.
+    fn paste_text_into(&mut self, surface: &str, text: &str) {
         if text.is_empty() {
             return;
         }
@@ -616,7 +620,8 @@ impl App {
         bytes.extend_from_slice(text.as_bytes());
         bytes.extend_from_slice(b"\x1b[201~");
 
-        self.toast(if self.terminals.send(session, bytes) {
+        let delivered = self.send_to_surface(surface, bytes);
+        self.toast(if delivered {
             format!("pasted {} character(s)", text.chars().count())
         } else {
             "no live terminal to paste into".to_string()
@@ -649,10 +654,35 @@ impl App {
         // this press cannot be answered here at all: Windows has to be asked,
         // and asking costs ~0.42 s. The press is claimed, the answer acts on it
         // — [`Self::poll_image_probe`].
-        if thurbox::clipboard::ImageProbe::applies() {
+        //
+        // Not while an overlay owns typed input, though: a float's name field
+        // cannot take a picture, so the question has no answer worth 0.42 s —
+        // and asking anyway used to *swallow* the press, because the clipboard
+        // stage runs before `dispatch_grabbed` and the answer then found the
+        // float still up. Pasting a repository path into the new-session wizard
+        // did nothing at all under WSL.
+        if thurbox::clipboard::ImageProbe::applies() && !self.overlay_owns_input() {
             return self.ask_windows_about_this_press();
         }
         self.paste_text_or_decline()
+    }
+
+    /// Whether a modal or a float is taking typed input right now.
+    fn overlay_owns_input(&self) -> bool {
+        self.modals.is_open() || self.grabbed.is_some()
+    }
+
+    /// Send `bytes` to a surface the way a keystroke reaches it.
+    ///
+    /// The one routing rule: a pane showing a plugin's program talks to that
+    /// program, everything else to the session's terminal — the same match
+    /// `dispatch_session_input` makes, so a paste cannot land somewhere a
+    /// keystroke would not.
+    fn send_to_surface(&mut self, surface: &str, bytes: Vec<u8>) -> bool {
+        match self.terminals.program_key(surface).cloned() {
+            Some(program) => self.terminals.send_to_program(&program, bytes),
+            None => self.terminals.send(surface, bytes),
+        }
     }
 
     /// Claim this press and put the question to Windows, remembering where the
@@ -666,7 +696,7 @@ impl App {
     /// Nothing focused is answered at once rather than by asking: the press has
     /// nowhere to land whatever Windows says.
     fn ask_windows_about_this_press(&mut self) -> bool {
-        let Some(session) = self.focused_session.clone() else {
+        let Some(surface) = self.focused_surface.clone() else {
             self.report(NOTHING_TO_PASTE_INTO, Level::Error);
             return true;
         };
@@ -675,9 +705,12 @@ impl App {
         // every one of them is a paste owed. Past this many the repeat is no
         // longer someone asking for another paste.
         if self.paste_targets.len() >= MAX_WAITING_PASTES {
+            tracing::debug!(
+                "{MAX_WAITING_PASTES} pastes are already waiting on Windows; dropping this press"
+            );
             return true;
         }
-        self.paste_targets.push(session);
+        self.paste_targets.push(surface);
         if self.image_probe.ask() {
             // This question describes the clipboard as it is now, so it answers
             // for the presses made by now — no more. A press that arrives while
@@ -727,15 +760,15 @@ impl App {
     /// Each press is delivered to the session it was aimed at, in the order
     /// they were made.
     pub(crate) fn poll_image_probe(&mut self) {
-        let Some(has_image) = self.image_probe.poll() else {
+        let Some(verdict) = self.image_probe.poll() else {
             return;
         };
         let answered = self.probed_presses.min(self.paste_targets.len());
         self.probed_presses = 0;
         let waiting = self.paste_targets.split_off(answered);
         let answered = std::mem::replace(&mut self.paste_targets, waiting);
-        for session in answered {
-            self.deliver_probed_paste(has_image, &session);
+        for surface in answered {
+            self.deliver_probed_paste(verdict, &surface);
         }
         if !self.paste_targets.is_empty() && self.image_probe.ask() {
             self.probed_presses = self.paste_targets.len();
@@ -744,23 +777,24 @@ impl App {
 
     /// One press, answered.
     ///
-    /// An image goes to the agent, which reads it itself; anything else is an
-    /// ordinary text paste. "Neither" — no image on the Windows side and no text
-    /// on ours — also goes to the agent: thurbox has nothing to offer and the
-    /// press is better spent on something that might. `Ctrl+V` is one byte on
-    /// the wire, and it is what Claude Code watches for before reading the
-    /// clipboard itself (`xclip`/`wl-paste`, or PowerShell under WSL); sent
-    /// directly rather than by letting the chord fall through, because by the
-    /// time the answer arrives the key press is long gone.
-    fn deliver_probed_paste(&mut self, has_image: bool, session: &str) {
-        // A modal or a float owns typed input while it is up, and a paste must
-        // never leak into the terminal behind the overlay — the same rule
-        // `on_paste` follows. One opened while the question was out, so this is
-        // checked here and not only at the press.
-        if self.modals.is_open() || self.grabbed.is_some() {
-            return;
-        }
-        if !has_image {
+    /// A picture goes to the agent, which reads it itself; anything thurbox can
+    /// carry is an ordinary text paste. Two cases are given away rather than
+    /// swallowed: a clipboard with nothing on it for us, and an answer that
+    /// never came — an unanswerable question must not become "paste the text",
+    /// because the text under WSL is the stale one this path exists to stop.
+    /// `Ctrl+V` is one byte on the wire, and it is what Claude Code watches for
+    /// before reading the clipboard itself (`xclip`/`wl-paste`, or PowerShell
+    /// under WSL); sent directly rather than by letting the chord fall through,
+    /// because by the time the answer arrives the key press is long gone.
+    ///
+    /// Delivered even if a modal or a float has gone up since — unlike a
+    /// keystroke, this press already named its destination, so putting it there
+    /// is not a leak past the overlay but the thing that was asked for. What an
+    /// overlay does prevent is the *question*, which is never asked while one
+    /// is up.
+    fn deliver_probed_paste(&mut self, verdict: thurbox::clipboard::Verdict, surface: &str) {
+        use thurbox::clipboard::Verdict;
+        if verdict == Verdict::NotImage {
             // No local clipboard at all — the SSH case — is the one decline that
             // would help nobody: there is nothing on that machine for the agent
             // to read either.
@@ -769,12 +803,12 @@ impl App {
                 return;
             }
             if let Some(text) = thurbox::clipboard::paste(self.clipboard.as_mut()) {
-                self.paste_text_into(session, &text);
+                self.paste_text_into(surface, &text);
                 return;
             }
         }
         const CTRL_V: u8 = 0x16;
-        if !self.terminals.send(session, vec![CTRL_V]) {
+        if !self.send_to_surface(surface, vec![CTRL_V]) {
             self.toast("no live terminal to paste into");
         }
     }
