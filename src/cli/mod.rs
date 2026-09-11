@@ -44,6 +44,7 @@ pub mod action;
 pub mod agents;
 pub mod automations;
 pub mod config;
+pub mod doctor;
 pub mod editor;
 pub mod extensions;
 pub mod home;
@@ -203,6 +204,7 @@ Examples:
   thurbox-cli agent launch-args claude          what to run so its hooks report
   thurbox-cli message send --to <id> --kind result --body 'done'
   thurbox-cli session list --json | jq         full records for a script
+  thurbox-cli doctor                           is the multiplexer/agent installed?
 
 Output is human-readable in a terminal and TOON when piped; --json restores the
 full JSON record on any command.";
@@ -281,6 +283,13 @@ pub enum Command {
         #[command(subcommand)]
         action: plugins::Action,
     },
+    /// Whether this machine has what a session needs: the multiplexer, each
+    /// registered agent's command, and the launcher for every configured host.
+    ///
+    /// The companion to `session doctor`, which asks whether an *existing*
+    /// session's status hooks are wired. This one names no session, so it
+    /// answers on a machine where nothing has been created yet.
+    Doctor,
 }
 
 /// Build the additional-repo list for a multi-repo `Spawn` from the repeatable
@@ -429,6 +438,9 @@ fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, CommandErr
         Command::Runtime { action } => runtime::run(action),
         // The only command that needs no database: a plugin is a file.
         Command::Plugin { action } => plugins::run(action)?,
+        // Reads the machine, not the database: what is installed is not
+        // something thurbox recorded.
+        Command::Doctor => doctor::run()?,
     })
 }
 

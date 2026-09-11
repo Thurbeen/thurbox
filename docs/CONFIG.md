@@ -190,6 +190,47 @@ because the resolved path is handed to a process with a working directory of its
 own — honouring it would let a `claude` sitting in the repo you are working on
 shadow the real one, which is the dependence this removes rather than moves.
 
+### What happens when it is *not* installed
+
+thurbox starts with no multiplexer and no agent on the machine, and that is
+deliberate — browsing, reading and configuring must work on a fresh box. So the
+same lookup runs a second time, as a **preflight**, in the places where knowing
+early is worth something:
+
+- the **create-session flow** marks an agent whose `command` resolves nowhere
+  (`⚠ not installed`) and says so on the step that offers it, and states a
+  missing multiplexer from the flow's first step. It never blocks: the answer is
+  a warning on the choice, because a `command` may still be launchable (a shell
+  function, or something installed a second later).
+- the **empty session list** — the one screen a first run always reaches — says
+  the multiplexer is missing, with the fix.
+- a **spawn failure** caused by a missing binary names the binary, the
+  directories thurbox searched and the one thing to do about it, instead of the
+  launcher's errno or the multiplexer's exit code.
+- `thurbox-cli doctor` answers the whole question directly: the multiplexer and
+  its version, every registered agent's `command`, the launcher for each
+  configured host, and the full search path. It is the companion to `thurbox-cli
+  session doctor`, which asks whether an *existing* session's status hooks are
+  wired.
+
+The probe is a `stat` per absolute `PATH` entry per binary — no process spawn —
+and it runs on the kernel's own schedule behind a 10-second window, never on a
+render, a keystroke or a list row. Two things are reported as **unknown** rather
+than missing, because in both cases nothing was looked at: a **remote host**,
+whose binaries live on the host, and a **relative** `command` such as
+`./bin/agent`, which is resolved by whoever launches it from the *session's*
+own directory. Answering the latter from thurbox's working directory would call
+a binary that launches fine missing, and one that does not present — the same
+"absolute only" rule the resolver above is written under, for the same reason.
+
+The advice is platform-specific and never invented. A Windows user is pointed at
+[psmux](https://github.com/psmux/psmux), never at `tmux`; where the install
+command depends on a distribution, the package name is given and the link is
+tmux's own [install page](https://github.com/tmux/tmux/wiki/Installing) rather
+than a guessed invocation. A missing **agent** is answered with the `agents.toml`
+entry that decides what gets run, because thurbox bakes in no knowledge of any
+agent's installer.
+
 `hook_schema` is optional. Custom agents are agent-neutral, so the built-in
 **hooks** extension normally wires status hooks only for the built-ins it knows
 by name. Set `hook_schema = "claude"` on a **rebranded** agent (one whose

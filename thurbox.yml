@@ -304,6 +304,10 @@ globals:
     property: read-only
   thurbox.hosts:
     property: read-only
+  # Whether the multiplexer a session's window needs is installed, so a flow can
+  # say so before the user commits.
+  thurbox.preflight.mux:
+    property: read-only
   thurbox.tasks:
     property: read-only
   thurbox.automations:

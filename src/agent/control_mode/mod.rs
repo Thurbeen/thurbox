@@ -733,7 +733,16 @@ impl ControlMode {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .context("Failed to start tmux control mode")?;
+            // No `tmux`/`ssh`/`wsl.exe` on this machine at all: the message
+            // names which, where thurbox looked and the fix, rather than the
+            // errno the launcher raised.
+            .map_err(|e| {
+                crate::agent::preflight::launch_failure(
+                    transport,
+                    "Failed to start tmux control mode",
+                    e,
+                )
+            })?;
 
         let stdin = child
             .stdin

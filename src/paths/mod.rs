@@ -96,11 +96,28 @@ pub fn resolve_on_path(exe: &str) -> Option<PathBuf> {
     if exe.is_empty() || exe.contains(std::path::MAIN_SEPARATOR) || exe.contains('/') {
         return None;
     }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .filter(|dir| dir.is_absolute())
+    path_dirs()
+        .into_iter()
         .map(|dir| dir.join(exe))
         .find(|candidate| is_executable_file(candidate))
+}
+
+/// The directories [`resolve_on_path`] searches, in the order it searches them.
+///
+/// Public because a lookup that finds nothing has to be able to say *where it
+/// looked*: an error naming only the binary leaves the reader unable to tell a
+/// missing install from a `PATH` thurbox was started without. Deriving that
+/// list a second time in the message would let the two drift, so the resolver
+/// and the message read the same function.
+///
+/// Empty when `PATH` is unset — which is itself the answer, and reads that way.
+pub fn path_dirs() -> Vec<PathBuf> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .collect()
 }
 
 /// Run `f` with `PATH` set to `path`, restoring what was there before.
@@ -128,7 +145,7 @@ pub(crate) fn with_path<T>(path: impl AsRef<OsStr>, f: impl FnOnce() -> T) -> T 
 }
 
 /// Whether `p` is a file this process could `exec`.
-fn is_executable_file(p: &Path) -> bool {
+pub(crate) fn is_executable_file(p: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(p) else {
         return false;
     };

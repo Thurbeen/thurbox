@@ -298,6 +298,22 @@ symptom is not "reloads too often" but "stops reloading while git is busy".
 `thurbox.platform` is published so a plugin shipping several binaries picks one
 itself; platform selection is deliberately not a manifest field.
 
+**`thurbox.preflight` is a read, not a probe.** Whether the multiplexer is
+installed, and whether each agent's `command` resolves, is answered by
+`agent::preflight` from `SnapshotStore::poll_preflight` — on the kernel's
+schedule, behind a 10-second window, and published in the snapshot as
+`thurbox.preflight.mux` and each agent row's `presence`. It is polled from
+`refresh_if_due` rather than from `refresh`, because `refresh` stops running
+altogether on a database nobody writes to, which is exactly the state thurbox is
+in while the user is off installing what was missing. A plugin that ran the
+lookup itself would be running a `PATH` walk per frame, per keystroke or per
+row — the regression the window exists to prevent; `kernel::snapshot::tests::
+the_preflight_answer_is_cached_rather_than_probed_on_every_tick` pins it.
+`presence` is three-valued (`present`/`missing`/`unknown`) because a remote
+host's binaries, and a relative `command`'s (resolved from the session's own
+directory), were never looked at, and `unknown` is not `missing` (see
+`docs/CONFIG.md`).
+
 **Panes are installable** (`kernel::packages`, `session::plugin_spec`). `plugins.toml`
 in the interface directory lists a `src` (a bare name resolving to `examples/panes/<name>`
 at the binary's release tag, a URL, or a path — `extension_config::resolve_source_in`,

@@ -484,9 +484,11 @@ end
 
 -- ── The empty state ─────────────────────────────────────────────────────────
 
-local function centred(sentence, width)
+local function centred(sentence, width, colour)
   local pad = math.max(0, math.floor((width - widgets.len(sentence)) / 2))
-  return { { text = string.rep(" ", pad) .. sentence, style = { fg = theme.muted } } }
+  return {
+    { text = string.rep(" ", pad) .. sentence, style = { fg = colour or theme.muted } },
+  }
 end
 
 --- The one empty state: a blank line, the sentence, and the way out.
@@ -499,7 +501,15 @@ end
 --- nothing is bound: an empty state advertising a chord that does nothing is
 --- the failure this whole indirection exists to prevent.
 ---
---- opts: title, width, hint (a format string taking the chord), hint_action
+--- `note` is one line, or a list of them, below the hint in `note_colour`: the
+--- empty list is the one screen a first run is guaranteed to reach, so it is
+--- where "the thing that would run your session is not installed" belongs.
+--- Absent on every machine that has what it needs, which is the normal case.
+--- Keep each line short — this state is drawn in a sidebar, where anything
+--- longer is truncated to its first clause.
+---
+--- opts: title, width, hint (a format string taking the chord), hint_action,
+--- note, note_colour
 ---@param opts table
 ---@return thurbox.Span[][]
 function ui.empty(opts)
@@ -508,6 +518,13 @@ function ui.empty(opts)
   local chord = opts.hint_action and ui.chord(opts.hint_action)
   if chord and opts.hint then
     lines[#lines + 1] = centred(string.format(opts.hint, chord), width)
+  end
+  if opts.note then
+    lines[#lines + 1] = {}
+    local note = type(opts.note) == "table" and opts.note or { opts.note }
+    for _, sentence in ipairs(note) do
+      lines[#lines + 1] = centred(sentence, width, opts.note_colour)
+    end
   end
   return lines
 end

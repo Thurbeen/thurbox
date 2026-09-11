@@ -135,6 +135,21 @@ impl LuaHost {
         })?;
         set(&table, "hosts", hosts)?;
 
+        // Whether the multiplexer every local session's window lives in is
+        // installed. Same gate as `agents` — it is probed on the kernel's
+        // schedule behind a TTL and lands in the snapshot, so reading it here
+        // costs a table only when the answer moves.
+        let preflight = self.group("preflight", [epoch.snapshot, 0, 0, 0], || {
+            let table = self.lua.create_table().map_err(|e| e.to_string())?;
+            let mux = self.lua.create_table().map_err(|e| e.to_string())?;
+            set(&mux, "binary", snapshot.mux.binary.clone())?;
+            set(&mux, "presence", snapshot.mux.presence.as_str())?;
+            set(&mux, "advice", snapshot.mux.advice.clone())?;
+            set(&table, "mux", Value::Table(mux))?;
+            Ok(Value::Table(table))
+        })?;
+        set(&table, "preflight", preflight)?;
+
         self.publish_repo_reads(&table, repo_store, wants, epoch)?;
         self.publish_settings(&table, settings)?;
 
@@ -790,6 +805,12 @@ fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
         // v1's picker labels a row `name  (command)` when the two differ, so
         // the command travels with the name.
         set(&item, "command", agent.command.clone())?;
+        // `present` / `missing` / `unknown`, so a flow can warn on the choice
+        // being made instead of letting the user find out from a pane that
+        // died. Three words rather than a boolean: a remote host's binaries
+        // were never looked at, and saying "missing" about them would be a
+        // claim thurbox has not earned.
+        set(&item, "presence", agent.presence.as_str())?;
         agents.raw_set(index + 1, item).map_err(|e| e.to_string())?;
     }
     Ok(Value::Table(agents))

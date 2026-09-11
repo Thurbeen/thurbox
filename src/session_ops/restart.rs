@@ -421,7 +421,14 @@ pub fn restart_session_headless_with(
                 plan.cwd.as_deref(),
                 &plan.env,
             )
-            .map_err(|e| format!("Failed to re-spawn tmux window: {e}"))?;
+            .map_err(
+                |e| match crate::agent::preflight::is_missing_dependency(&e) {
+                    // Already a sentence naming the binary, the search and the fix;
+                    // a prefix in front of it only pushes the fix off the row.
+                    true => format!("{e}"),
+                    false => format!("Failed to re-spawn tmux window: {e:#}"),
+                },
+            )?;
 
             // The new pane is a different one, and the id is how every later
             // read finds it — leaving the old one persisted would point the

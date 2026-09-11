@@ -61,6 +61,13 @@ local function agents()
   return (thurbox and thurbox.agents) or {}
 end
 
+--- Whether the binaries this session needs are installed, as the kernel last
+--- looked. Already an answer — the kernel probes on its own schedule behind a
+--- TTL, so reading it here costs a table lookup, never a `which`.
+local function preflight()
+  return (thurbox and thurbox.preflight) or {}
+end
+
 --- The spinner frame for this paint, from the flow's own clock.
 local function spinner(flow)
   return theme.spinner_frame(flow.elapsed)
@@ -279,15 +286,27 @@ local function frame(title, rows_height, children, flow)
   })
 end
 
+--- Assigned below, once `spawns_directly` exists: the warning needs to know
+--- whether this step is the last one before the session is created.
+local preflight_warning
+
 --- A refusal this flow made itself, on its own row. Empty when there is none, so
 --- the row is spent either way and the modal does not change height as messages
 --- come and go.
+---
+--- The same row carries the preflight warning when there is no refusal to show:
+--- what is already known to be missing is exactly as urgent as a refusal, and
+--- spending a second row on it would move every step's height for a state most
+--- machines are never in.
 local function message_row(flow)
-  local text = flow.message
+  local text, colour = flow.message, theme.bad
+  if not text then
+    text, colour = preflight_warning(flow)
+  end
   return {
     type = "text",
     len = 1,
-    text = { { { text = text and (" " .. text) or "", style = { fg = theme.bad } } } },
+    text = { { { text = text and (" " .. text) or "", style = { fg = colour } } } },
   }
 end
 
@@ -415,6 +434,53 @@ end
 --- their pills and `after_name` cannot drift apart.
 local function spawns_directly(flow)
   return flow.fork ~= nil or #agents() <= 1
+end
+
+--- What is already known to be missing for the session about to be created.
+---
+--- The whole point of the flow knowing this: the multiplexer and the agent are
+--- looked for *while the user is still choosing*, so the answer does not arrive
+--- as a dead pane after they have committed. Returns the sentence and the
+--- colour to draw it in, or nothing when there is nothing to say.
+---
+--- Only ever about the local machine. A remote host's binaries live on the
+--- host, and thurbox has not looked there — `unknown` is not `missing`, and
+--- reporting one as the other is a claim it has not earned.
+preflight_warning = function(flow)
+  if (flow.host or "") ~= "" then
+    return nil
+  end
+  local mux = preflight().mux
+  if mux and mux.presence == "missing" then
+    -- Nothing can be created at all without it, so it outranks the agent.
+    --
+    -- The advice in full where it fits, and where it does not — every phrasing
+    -- that names a package *and* a link is longer than this row — the command
+    -- that prints it along with every directory searched. A sentence cut off at
+    -- "install tmux 3.2 or newer — the p" is worse than one that ends.
+    local sentence = "⚠ " .. mux.binary .. " is not installed — " .. (mux.advice or "")
+    if widgets.len(sentence) > ROW_COLS then
+      sentence = "⚠ " .. mux.binary .. " is not installed — run: thurbox-cli doctor"
+    end
+    return sentence, theme.bad
+  end
+  -- A fork's agent is the source session's, resolved server-side (see
+  -- `commit`) — flow.agent_index was never assigned to mean anything for one,
+  -- so there is nothing here to check.
+  if flow.fork then
+    return nil
+  end
+  -- The agent is the last question, so it is only settled on that step; a flow
+  -- with a single agent never asks, and the answer is settled from the start.
+  if flow.step ~= "agent" and not spawns_directly(flow) then
+    return nil
+  end
+  local picked = agents()[widgets.clamp(flow.agent_index, #agents())]
+  if picked and picked.presence == "missing" then
+    return "⚠ " .. picked.command .. " is not installed — its pane will exit at once",
+      theme.warn
+  end
+  return nil
 end
 
 local function render_repo(flow)
@@ -745,10 +811,20 @@ end
 local function render_agent(flow)
   -- v1's label: the name alone when the two are the same, else `name
   -- (command)`, so two entries wrapping the same CLI are distinguishable.
+  --
+  -- Local presence only, same as preflight_warning above: a remote host's
+  -- binaries live on the host and thurbox has not looked there.
+  local local_host = (flow.host or "") == ""
   local labels = {}
   for _, agent in ipairs(agents()) do
-    labels[#labels + 1] = (agent.name == agent.command) and agent.name
+    local label = (agent.name == agent.command) and agent.name
       or (agent.name .. "  (" .. agent.command .. ")")
+    -- Marked on the row rather than only in the warning below it, so the cost
+    -- of each choice is visible while the cursor is moving over the others.
+    if local_host and agent.presence == "missing" then
+      label = label .. "  ⚠ not installed"
+    end
+    labels[#labels + 1] = label
   end
   local height = math.max(1, math.min(#labels, REPO_LIST_MAX))
   return frame("Coding Agent", height + 4, {

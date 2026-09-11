@@ -346,7 +346,28 @@ not applicable.
 5. **New branch name** — worktree mode only.
 6. **Agent picker** — choose which coding agent runs in this
    session. Skipped when only one agent is defined in
-   `agents.toml`.
+   `agents.toml`. An agent whose `command` resolves nowhere on `PATH`
+   is marked `⚠ not installed` on its own row, so the cost of the
+   choice is visible while the cursor is still moving over the
+   alternatives.
+
+**The flow says what is missing before you commit.** thurbox starts with no
+multiplexer and no agent installed — that is deliberate, and browsing and
+configuring keep working — but it used to mean the check landed at the worst
+possible moment: you committed to a session and got back a number
+(`tmux new-window exited exit status: 127`), naming neither the binary, nor
+where thurbox looked, nor what to install. Now the flow already knows. A missing
+multiplexer is stated from the flow's **first** step, because nothing can be
+created without it; a missing agent is stated on the step that offers it. Never
+a modal that blocks — a `command` may still be launchable (a shell function, or
+something installed a second later), so the answer is a warning on the choice,
+not a refusal of it. The empty session list carries the same line, since that is
+the one screen a first run always reaches, and `thurbox-cli doctor` answers the
+whole question directly. See
+[CONFIG.md](CONFIG.md#what-happens-when-it-is-not-installed) for the cost model
+(a `stat` walk on the kernel's schedule behind a 10-second window — never on a
+render, a keystroke or a list row) and for why a remote host or a relative
+`command` is reported as *unknown* rather than missing.
 
 **Creating a session moves nothing — unless you ask it to.** By default the new
 row appears in the list and waits to be picked; the selection, the pane showing

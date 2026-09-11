@@ -70,7 +70,55 @@ printing the `layout.lua` line to add — `list` is the same inventory the setti
 modal's Interface tab shows, and
 `events` lists every event a plugin may subscribe to with its payload, and
 `install|sync|update|remove|available` manage panes from a declarative spec
-— see `docs/PLUGINS.md`).
+— see `docs/PLUGINS.md`), `doctor`
+(whether **this machine** has what a session needs: the multiplexer and its
+version, every registered agent's `command`, the launcher for each configured
+host, and the full search path. The companion to `session doctor`, which asks
+whether an *existing* session's status hooks are wired — this one names no
+session, so it answers on a machine where nothing has been created yet. `fail`
+and a non-zero exit only for what must work: no multiplexer, or no registered
+agent that resolves anywhere; a partly-installed registry is `warn` and exits 0.
+See "What is missing, before you hit it" below).
+
+### What is missing, before you hit it
+
+thurbox starts with **no** multiplexer and no agent installed, deliberately.
+`agent::preflight` is the one answer to "is the thing that would run this
+actually there?", and it is asked in four places: the create-session flow (an
+agent that resolves nowhere is marked on its row; a missing multiplexer is
+stated from the flow's first step), the empty session list, the spawn error, and
+`thurbox-cli doctor`.
+
+Three rules it is written under, each of which a change here must keep:
+
+- **It never blocks.** A `Missing` answer is a warning on the choice, not a
+  refusal — a `command` may be a shell function, an alias, or something
+  installed a second later. Same rule as `tmux::resolve_local_program`:
+  resolution is an improvement where it succeeds, never a new way to fail.
+  `session create` reports it as a `warnings` entry beside `hook_failures`, and
+  still creates the session.
+- **It is never on a hot path.** The probe is a `stat` per absolute `PATH` entry
+  per binary (no process spawn), run from `SnapshotStore::poll_preflight` on the
+  kernel's schedule behind a 10-second window, and published in the snapshot.
+  A plugin *reads* `thurbox.preflight.mux` and each agent row's `presence`; it
+  never probes. `kernel::snapshot::tests::the_preflight_answer_is_cached_…`
+  pins that.
+- **It never invents an install command.** Windows is pointed at psmux, never at
+  tmux; where the command depends on a distribution the package name is given
+  with a link to the project's own install page. A missing *agent* is answered
+  with the `agents.toml` entry that decides what runs, because thurbox bakes in
+  no knowledge of any agent's installer.
+
+`Presence` is three-valued on purpose: `unknown` is not `missing`. A remote
+host's binaries live on the host, and a relative `command` (e.g. `./bin/agent`)
+is resolved from the session's own directory rather than thurbox's — in both
+cases nothing was looked at, and reporting either as `missing` is the
+conflation the module exists to end (see `docs/CONFIG.md` for the full rule).
+
+A failure to *launch* the multiplexer goes through
+`preflight::launch_failure`, which turns only a `NotFound` into that sentence
+and leaves every other io error alone — a permission error is not something an
+install fixes.
 
 ### A session reference is a name, a UUID, or an id prefix
 
