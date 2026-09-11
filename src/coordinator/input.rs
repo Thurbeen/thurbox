@@ -420,17 +420,7 @@ impl App {
         let Some(bytes) = key_to_bytes(key.code, key.modifiers) else {
             return false;
         };
-        // Whether it lands is the terminal's business; either way the key belongs
-        // to the pane that asked for raw input and is not offered to anything
-        // else.
-        //
-        // Routed by what the pane is SHOWING. A program pane's keys go to that
-        // program and to nothing else — and a pane with nothing behind it
-        // swallows nothing, since neither send finds a target.
-        let delivered = match self.terminals.program_key(&surface).cloned() {
-            Some(program) => self.terminals.send_to_program(&program, bytes),
-            None => self.terminals.send(&surface, bytes),
-        };
+        let delivered = self.send_to_surface(&surface, bytes);
         // Delivered means consumed, which is what the rule above says and what
         // this now enforces. Falling through sent `Esc` to a program AND
         // dismissed the pane under it in one keypress — a game opening its menu
@@ -672,12 +662,12 @@ impl App {
         self.modals.is_open() || self.grabbed.is_some()
     }
 
-    /// Send `bytes` to a surface the way a keystroke reaches it.
+    /// Send `bytes` to a surface, routed by what the pane is **showing**.
     ///
-    /// The one routing rule: a pane showing a plugin's program talks to that
-    /// program, everything else to the session's terminal — the same match
-    /// `dispatch_session_input` makes, so a paste cannot land somewhere a
-    /// keystroke would not.
+    /// A pane showing a plugin's program talks to that program and nothing
+    /// else; everything else goes to the session's terminal. The one rule, so a
+    /// paste cannot land somewhere a keystroke would not — and a pane with
+    /// nothing behind it delivers nothing, since neither send finds a target.
     fn send_to_surface(&mut self, surface: &str, bytes: Vec<u8>) -> bool {
         match self.terminals.program_key(surface).cloned() {
             Some(program) => self.terminals.send_to_program(&program, bytes),
@@ -777,27 +767,21 @@ impl App {
 
     /// One press, answered.
     ///
-    /// A picture goes to the agent, which reads it itself; anything thurbox can
-    /// carry is an ordinary text paste. Two cases are given away rather than
-    /// swallowed: a clipboard with nothing on it for us, and an answer that
-    /// never came — an unanswerable question must not become "paste the text",
-    /// because the text under WSL is the stale one this path exists to stop.
-    /// `Ctrl+V` is one byte on the wire, and it is what Claude Code watches for
-    /// before reading the clipboard itself (`xclip`/`wl-paste`, or PowerShell
-    /// under WSL); sent directly rather than by letting the chord fall through,
-    /// because by the time the answer arrives the key press is long gone.
+    /// A picture is given to the agent, which reads it itself — and so is an
+    /// answer that never came, because an unanswerable question must not become
+    /// "paste the text" when the text under WSL is the stale one this path
+    /// exists to stop. The hand-off is a literal `Ctrl+V` byte rather than a
+    /// fall-through to the chord, since by now the key press is long gone; that
+    /// byte is what Claude Code watches for before reading the clipboard itself
+    /// (`xclip`/`wl-paste`, or PowerShell under WSL).
     ///
-    /// Delivered even if a modal or a float has gone up since — unlike a
-    /// keystroke, this press already named its destination, so putting it there
-    /// is not a leak past the overlay but the thing that was asked for. What an
-    /// overlay does prevent is the *question*, which is never asked while one
-    /// is up.
+    /// Delivered even if a modal or a float has gone up since: this press
+    /// already named its destination, so putting it there is not a leak past
+    /// the overlay but the thing that was asked for. What an overlay prevents
+    /// is the *question* — see [`Self::paste_into_focused`].
     fn deliver_probed_paste(&mut self, verdict: thurbox::clipboard::Verdict, surface: &str) {
         use thurbox::clipboard::Verdict;
         if verdict == Verdict::NotImage {
-            // No local clipboard at all — the SSH case — is the one decline that
-            // would help nobody: there is nothing on that machine for the agent
-            // to read either.
             if self.clipboard.is_none() {
                 self.toast(thurbox::clipboard::PASTE_UNAVAILABLE_HINT);
                 return;

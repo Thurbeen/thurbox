@@ -271,10 +271,9 @@ pub const PASTE_UNAVAILABLE_HINT: &str =
 #[derive(Default)]
 pub struct ImageProbe {
     channel: Option<(Sender<Verdict>, Receiver<Verdict>)>,
-    /// Whether a question is out. One at a time: the clipboard does not change
-    /// between two presses a fifth of a second apart, so a second `powershell.exe`
-    /// would buy nothing and cost another cold start — and key auto-repeat can
-    /// hold `Ctrl+V` down, which without this is a process per repeat.
+    /// Whether a question is out. At most one at a time, because key
+    /// auto-repeat holds `Ctrl+V` down far faster than the ~0.42 s answer and
+    /// a process per repeat is a machine brought to its knees by a held key.
     in_flight: bool,
 }
 
@@ -282,8 +281,7 @@ pub struct ImageProbe {
 /// through WSL interop; the absolute path is the fallback for a `PATH` that
 /// interop did not reach, and is the one Claude Code itself falls back to.
 const POWERSHELL: &str = "powershell.exe";
-const POWERSHELL_FALLBACK: &str =
-    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+const POWERSHELL_FALLBACK: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 
 /// What Windows said about its clipboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,15 +338,12 @@ impl ImageProbe {
     /// Ask Windows, on a thread. The answer arrives at a later [`Self::poll`].
     ///
     /// `true` when a question was actually put, `false` when one was already
-    /// out — at most one `powershell.exe` runs at a time, because key
-    /// auto-repeat makes presses far faster than the ~0.42 s answer and a
-    /// process per repeat is a machine brought to its knees by a held key.
+    /// out (see `in_flight`).
     ///
-    /// The answer that comes back describes the clipboard **as of this call**,
-    /// so it may only be applied to presses already made: the caller keeps the
-    /// presses and re-asks for any that arrived after — see
-    /// `poll_image_probe`. This end of the wire only knows what the clipboard
-    /// holds, never who is waiting.
+    /// The answer describes the clipboard **as of this call**, so it may only
+    /// be applied to presses already made: the caller keeps the presses and
+    /// re-asks for any that arrived after — see `poll_image_probe`. This end of
+    /// the wire only knows what the clipboard holds, never who is waiting.
     pub fn ask(&mut self) -> bool {
         if self.in_flight {
             return false;
@@ -363,9 +358,8 @@ impl ImageProbe {
 
     /// The answer to one earlier [`Self::ask`], if one has come back.
     ///
-    /// Taking the answer is what frees the next question: a probe that is never
-    /// polled is never re-asked, which is the behaviour that keeps one wedged
-    /// `powershell.exe` from becoming one per press.
+    /// Taking it is what frees the next question, so a probe nobody polls is a
+    /// probe nobody re-asks.
     pub fn poll(&mut self) -> Option<Verdict> {
         let (_, rx) = self.channel.as_ref()?;
         let answer = rx.try_recv().ok()?;
@@ -374,9 +368,9 @@ impl ImageProbe {
     }
 }
 
-/// One PowerShell round trip. `false` for "no image", and also for every way
-/// the question could not be put: a machine that cannot answer is one whose
-/// clipboard thurbox pastes as text, which is what it did before this existed.
+/// One PowerShell round trip, and the only place the three verdicts are told
+/// apart. Every way the question could not be put — spawn, deadline, an answer
+/// that is neither word — is [`Verdict::Unknown`], never `NotImage`.
 fn windows_clipboard_has_image() -> Verdict {
     let ask = |exe: &str| -> std::io::Result<Verdict> {
         let mut child = Command::new(exe)
@@ -432,8 +426,9 @@ const PROBE_POLL: Duration = Duration::from_millis(25);
 
 /// Whether `child` exited successfully within `timeout`, killing it if not.
 ///
-/// `false` for a child that overran, was killed, or became unreadable — the
-/// answer that keeps thurbox doing what it did before the probe existed.
+/// A child that overran, was killed, or became unreadable is `false`, which the
+/// caller reads as [`Verdict::Unknown`]: the deadline exists to stop a wedged
+/// interop from leaking processes, not to decide what is on the clipboard.
 fn wait_bounded(child: &mut Child, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
@@ -521,9 +516,12 @@ mod tests {
             eprintln!("skipping: no powershell.exe on PATH");
             return;
         };
-        let said = String::from_utf8_lossy(&oracle.stdout).trim().to_lowercase();
+        let said = String::from_utf8_lossy(&oracle.stdout)
+            .trim()
+            .to_lowercase();
         let words: Vec<&str> = said.split_whitespace().collect();
-        let (Some(&image), Some(&text), true) = (words.first(), words.get(1), oracle.status.success())
+        let (Some(&image), Some(&text), true) =
+            (words.first(), words.get(1), oracle.status.success())
         else {
             eprintln!(
                 "skipping: PowerShell could not be asked (status {:?}, said {said:?}) — \
