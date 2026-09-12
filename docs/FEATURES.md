@@ -2641,8 +2641,21 @@ the paste lands when the answer does — in the pane the press was aimed at, not
 whichever one is focused by then. One question runs at a time (a held `Ctrl+V`
 would otherwise start a PowerShell per repeat), presses made while it is out are
 answered by a question of their own, and a question that has not come back in
-five seconds is abandoned and read as "no image". Nothing is asked off WSL,
-where the local clipboard is the one being copied into.
+five seconds is abandoned — an unanswerable question is handed to the agent, not
+read as "no image", because the text it would paste instead is the stale one.
+Nothing is asked off WSL, where the local clipboard is the one being copied
+into.
+
+**On macOS the byte is synthesised.** `Cmd+V` is the paste binding there, and a
+`Cmd` chord has no pty encoding at all — handing it on by declining it would
+drop it — so thurbox sends the literal `Ctrl+V` byte the agent watches for.
+Written from the encoding rules rather than from a Mac: the decision is covered
+by a test, the round trip on real hardware is not.
+
+**What the agent reads, thurbox has not seen.** This is the one paste path where
+what you copied reaches the agent as content it fetches itself, rather than as
+text thurbox brackets and sends — and an image carries instructions as readily
+as text does. The press is yours, but the content arrives unread.
 
 ### Pasting on Windows
 
