@@ -2524,7 +2524,12 @@ confined to the active pane bounds.
   newlines, the multi-line task description keeps them). While **any**
   modal is open the paste is swallowed so it can never leak into the
   terminal in the pane behind the overlay; otherwise it pastes into
-  the active PTY.
+  the active PTY. The rule is about the **press**: a press made while
+  an overlay is up never had a pane to name. An answer owed to a press
+  made *before* the overlay went up is still delivered where that press
+  was aimed — see "Pasting images".
+- **`Ctrl+V` with an image on the clipboard**: handed to the agent in
+  the pane instead of pasted — see "Pasting images" below.
 - **`Ctrl+Shift+V`** (your terminal's paste): the way to paste when
   thurbox runs over SSH — see "Pasting over SSH" below.
 - **`Cmd+C` / `Cmd+V`** (macOS): the same two actions, declared beside the
@@ -2620,6 +2625,49 @@ for one can stall for seconds. When no local clipboard is reachable,
 `Ctrl+V` shows a hint pointing at your terminal's own paste
 (usually **`Ctrl+Shift+V`**), which delivers the text as an ordinary
 bracketed paste that thurbox routes exactly like `Ctrl+V`.
+
+### Pasting images
+
+thurbox pastes text. An image on the clipboard is handed to the **agent**
+instead: `Ctrl+V` is sent to the pane as-is, and a CLI that knows how to read
+the clipboard itself picks the image up from there (Claude Code shells out to
+`xclip`/`wl-paste`, or to PowerShell under WSL). Swallowing the press instead
+is what used to make pasting a screenshot do nothing at all.
+
+**Inside WSL this needs asking Windows.** WSLg bridges the clipboard's *text*
+only: copy a screenshot in Windows and the Linux side is not updated — it keeps
+handing out whatever text was copied before, so a paste inserts something stale
+rather than the image. thurbox therefore asks `powershell.exe` whether the
+Windows clipboard holds an image before deciding what `Ctrl+V` means. The call
+costs about 0.4 s, so it runs **on a worker**: the interface keeps drawing and
+the paste lands when the answer does — in the pane the press was aimed at, not
+whichever one is focused by then. One question runs at a time (a held `Ctrl+V`
+would otherwise start a PowerShell per repeat), presses made while it is out are
+answered by a question of their own, and a question that has not come back in
+five seconds is abandoned — an unanswerable question is handed to the agent, not
+read as "no image", because the text it would paste instead is the stale one.
+Nothing is asked off WSL, where the local clipboard is the one being copied
+into, and nothing is asked on a distro where no `powershell.exe` could be found
+twice running — there is nobody to answer, and every paste would pay the wait.
+
+**A late answer still goes where the press was aimed.** No question is asked
+while a modal or a float owns typed input, so an overlay stops pastes starting
+underneath it. An overlay that goes up *after* the press, while the question is
+out, does not redirect or cancel it: the pane was named when the key was pressed,
+and a paste that vanished because someone opened a float for a third of a second
+would be the silent loss this path exists to end. Because that delivery can land
+out of sight, it says so on screen.
+
+**On macOS the byte is synthesised.** `Cmd+V` is the paste binding there, and a
+`Cmd` chord has no pty encoding at all — handing it on by declining it would
+drop it — so thurbox sends the literal `Ctrl+V` byte the agent watches for.
+Written from the encoding rules rather than from a Mac: the decision is covered
+by a test, the round trip on real hardware is not.
+
+**What the agent reads, thurbox has not seen.** This is the one paste path where
+what you copied reaches the agent as content it fetches itself, rather than as
+text thurbox brackets and sends — and an image carries instructions as readily
+as text does. The press is yours, but the content arrives unread.
 
 ### Pasting on Windows
 

@@ -149,7 +149,7 @@ impl App {
         if self.dispatch_reserved(key) {
             return;
         }
-        if self.dispatch_clipboard(kernel_action.as_deref()) {
+        if self.dispatch_clipboard(kernel_action.as_deref(), key) {
             return;
         }
         if self.dispatch_grabbed(&press) {
@@ -269,17 +269,53 @@ impl App {
     /// They "must work from any pane", and a pane that grabs every key would
     /// otherwise swallow them. Any other kernel action falls through: this step
     /// claims only the two it knows.
-    pub(crate) fn dispatch_clipboard(&mut self, action: Option<&str>) -> bool {
-        action.is_some_and(|action| self.run_clipboard_action(action) == Some(true))
+    pub(crate) fn dispatch_clipboard(&mut self, action: Option<&str>, key: &KeyEvent) -> bool {
+        let Some(action) = action else {
+            return false;
+        };
+        match self.run_clipboard_action(action) {
+            Some(true) => true,
+            Some(false) => {
+                action == clipboard::PASTE_ACTION && self.hand_unencodable_paste_over(key)
+            }
+            None => false,
+        }
+    }
+
+    /// Hand on a declined paste the rest of `on_key` cannot deliver.
+    ///
+    /// Declining is how the chord reaches the agent, which fetches the image
+    /// itself — and it works because the press falls through to
+    /// [`Self::dispatch_session_input`], which encodes it for the pty. `Cmd+V`
+    /// has no such encoding: `key_to_bytes` returns `None` for every chord
+    /// carrying `SUPER`, so on macOS the chord a person actually presses was
+    /// dropped in silence, where before this it at least produced a (wrong)
+    /// hint. The byte is synthesised here instead, the way
+    /// [`Self::deliver_probed_paste`] does for an answer that arrives after the
+    /// press is gone.
+    ///
+    /// Only where the fall-through would itself have delivered: no overlay
+    /// owning typed input, and a focused pane that asked for raw session input.
+    fn hand_unencodable_paste_over(&mut self, key: &KeyEvent) -> bool {
+        if reaches_the_pty(key) {
+            return false;
+        }
+        if self.overlay_owns_input() || !self.focused_wants_session_input() {
+            return false;
+        }
+        let Some(surface) = self.focused_surface.clone() else {
+            return false;
+        };
+        self.send_to_surface(&surface, vec![CTRL_V])
     }
 
     /// Run the kernel's own clipboard actions, or report that this was not one.
     ///
-    /// `Some(false)` is the load-bearing answer: copy with **no selection**
-    /// declines the chord, so `Ctrl+C` falls through to the focused agent and
-    /// still interrupts a turn. That is the one case where thurbox wins the
-    /// chord back from the terminal, and it is decided per press rather than by
-    /// the binding — see [`thurbox::kernel::clipboard`].
+    /// `Some(false)` is the load-bearing answer, and both chords use it: copy
+    /// with **no selection** declines, so `Ctrl+C` falls through to the focused
+    /// agent and still interrupts a turn; paste with **nothing pasteable**
+    /// declines for the reason [`Self::paste_into_focused`] gives. Decided per
+    /// press rather than by the binding — see [`thurbox::kernel::clipboard`].
     pub(crate) fn run_clipboard_action(&mut self, action: &str) -> Option<bool> {
         match action {
             clipboard::COPY_ACTION => {
@@ -292,10 +328,7 @@ impl App {
                 self.copy_selection();
                 Some(true)
             }
-            clipboard::PASTE_ACTION => {
-                self.paste_into_focused();
-                Some(true)
-            }
+            clipboard::PASTE_ACTION => Some(self.paste_into_focused()),
             _ => None,
         }
     }
@@ -423,17 +456,7 @@ impl App {
         let Some(bytes) = key_to_bytes(key.code, key.modifiers) else {
             return false;
         };
-        // Whether it lands is the terminal's business; either way the key belongs
-        // to the pane that asked for raw input and is not offered to anything
-        // else.
-        //
-        // Routed by what the pane is SHOWING. A program pane's keys go to that
-        // program and to nothing else — and a pane with nothing behind it
-        // swallows nothing, since neither send finds a target.
-        let delivered = match self.terminals.program_key(&surface).cloned() {
-            Some(program) => self.terminals.send_to_program(&program, bytes),
-            None => self.terminals.send(&surface, bytes),
-        };
+        let delivered = self.send_to_surface(&surface, bytes);
         // Delivered means consumed, which is what the rule above says and what
         // this now enforces. Falling through sent `Esc` to a program AND
         // dismissed the pane under it in one keypress — a game opening its menu
@@ -511,11 +534,17 @@ impl App {
                 return;
             }
             // Chosen by name rather than pressed, so a decline falls through to
-            // nothing and would look like a dead row: say why instead.
+            // nothing and would look like a dead row: say why instead. Both
+            // chords can decline and they decline for different reasons, so the
+            // message follows the action rather than assuming copy.
             match self.run_clipboard_action(action) {
                 Some(true) => return,
                 Some(false) => {
-                    self.toast("nothing to copy");
+                    self.toast(if action == thurbox::kernel::clipboard::PASTE_ACTION {
+                        "nothing to paste — the clipboard holds no text"
+                    } else {
+                        "nothing to copy"
+                    });
                     return;
                 }
                 None => {}
@@ -591,42 +620,288 @@ impl App {
             return;
         }
 
-        let Some(session) = self.focused_session.clone() else {
-            self.report(
-                "nothing to paste into — focus a session's terminal first",
-                Level::Error,
-            );
+        let Some(surface) = self.focused_surface.clone() else {
+            self.report(NOTHING_TO_PASTE_INTO, Level::Error);
             return;
         };
+        self.paste_text_into(&surface, &text);
+    }
+
+    /// Send `text` to one surface as a bracketed paste.
+    ///
+    /// Takes the surface rather than reading the focus, because not every paste
+    /// is delivered in the same turn it was asked for: the WSL image probe
+    /// answers ~0.42 s later, and the pane the press was aimed at is the one it
+    /// belongs in — see [`Self::poll_image_probe`].
+    ///
+    /// A *surface*, not a session, so a paste lands where a keystroke would:
+    /// `dispatch_session_input` routes by what the pane is showing, and a pane
+    /// showing a plugin's program used to take typing and refuse pastes.
+    fn paste_text_into(&mut self, surface: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
         let mut bytes = Vec::with_capacity(text.len() + 12);
         bytes.extend_from_slice(b"\x1b[200~");
         bytes.extend_from_slice(text.as_bytes());
         bytes.extend_from_slice(b"\x1b[201~");
 
-        self.toast(if self.terminals.send(&session, bytes) {
+        let delivered = self.send_to_surface(surface, bytes);
+        self.toast(if delivered {
             format!("pasted {} character(s)", text.chars().count())
         } else {
             "no live terminal to paste into".to_string()
         });
     }
 
-    /// Paste the clipboard into the focused session's terminal.
+    /// Paste the clipboard into the focused session's terminal, or decline the
+    /// chord when there is no text to paste.
     ///
     /// Sent as a bracketed paste, so a multi-line paste arrives as text rather
     /// than as a series of submissions — an agent prompt with newlines in it
     /// would otherwise fire on the first one.
-    pub(crate) fn paste_into_focused(&mut self) {
-        let Some(text) = thurbox::clipboard::paste(self.clipboard.as_mut()) else {
-            // No OSC 52 read fallback: terminals disable clipboard *reads* by
-            // default and probing for one can stall for seconds. The route that
-            // does work here is the terminal's own paste chord, which arrives as
-            // `Event::Paste` — so point at it rather than reporting a dead end.
-            self.toast(thurbox::clipboard::PASTE_UNAVAILABLE_HINT);
+    ///
+    /// **A local clipboard holding no text is not an error, it is someone else's
+    /// paste.** An image is the case that matters: thurbox can only send text, so
+    /// swallowing `Ctrl+V` there means the press does nothing at all — which is
+    /// what "pasting a screenshot into claude through thurbox does nothing" was.
+    /// The agent in the pane does know how to fetch it: Claude Code reads the
+    /// clipboard itself when it sees `Ctrl+V`, shelling out to `xclip`/`wl-paste`
+    /// (and, under WSL, to PowerShell). Declining lets the press reach it.
+    ///
+    /// No clipboard **at all** — the SSH case — still gets the hint instead:
+    /// there is nothing on that machine for the agent to read either, and the
+    /// route that does work is the terminal's own paste chord, which arrives as
+    /// `Event::Paste`. There is no OSC 52 read fallback because terminals
+    /// disable clipboard *reads* by default and probing for one can stall for
+    /// seconds.
+    pub(crate) fn paste_into_focused(&mut self) -> bool {
+        // Inside WSL the local clipboard is not the one being copied into, so
+        // this press cannot be answered here at all: Windows has to be asked,
+        // and asking costs ~0.42 s. The press is claimed, the answer acts on it
+        // — [`Self::poll_image_probe`].
+        //
+        // Not while an overlay owns typed input, though: a float's name field
+        // cannot take a picture, so the question has no answer worth 0.42 s —
+        // and asking anyway used to *swallow* the press, because the clipboard
+        // stage runs before `dispatch_grabbed` and the answer then found the
+        // float still up. Pasting a repository path into the new-session wizard
+        // did nothing at all under WSL.
+        if thurbox::clipboard::ImageProbe::applies() && !self.overlay_owns_input() {
+            return self.ask_windows_about_this_press();
+        }
+        self.paste_text_or_decline()
+    }
+
+    /// Whether a modal or a float is taking typed input right now.
+    fn overlay_owns_input(&self) -> bool {
+        self.modals.is_open() || self.grabbed.is_some()
+    }
+
+    /// Send `bytes` to a surface, routed by what the pane is **showing**.
+    ///
+    /// A pane showing a plugin's program talks to that program and nothing
+    /// else; everything else goes to the session's terminal. The one rule, so a
+    /// paste cannot land somewhere a keystroke would not — and a pane with
+    /// nothing behind it delivers nothing, since neither send finds a target.
+    fn send_to_surface(&mut self, surface: &str, bytes: Vec<u8>) -> bool {
+        match self.terminals.program_key(surface).cloned() {
+            Some(program) => self.terminals.send_to_program(&program, bytes),
+            None => self.terminals.send(surface, bytes),
+        }
+    }
+
+    /// Claim this press and put the question to Windows, remembering where the
+    /// press was aimed.
+    ///
+    /// The target is resolved **now**: the answer is ~0.42 s away, which is long
+    /// enough to focus another pane, and a paste that lands in a pane it was not
+    /// aimed at corrupts whatever is being typed there — the same failure, in
+    /// the other direction, as pasting stale text.
+    ///
+    /// Nothing focused is answered at once rather than by asking: the press has
+    /// nowhere to land whatever Windows says.
+    fn ask_windows_about_this_press(&mut self) -> bool {
+        let Some(surface) = self.focused_surface.clone() else {
+            self.report(NOTHING_TO_PASTE_INTO, Level::Error);
+            return true;
+        };
+        // Key auto-repeat outruns the answer: holding `Ctrl+V` makes presses at
+        // tens a second against a question that takes a fifth of a second, and
+        // every one of them is a paste owed. Past this many the repeat is no
+        // longer someone asking for another paste.
+        if self.paste_targets.len() >= MAX_WAITING_PASTES {
+            tracing::debug!(
+                "{MAX_WAITING_PASTES} pastes are already waiting on Windows; dropping this press"
+            );
+            return true;
+        }
+        self.paste_targets.push(surface);
+        if self.image_probe.ask() {
+            // This question describes the clipboard as it is now, so it answers
+            // for the presses made by now — no more. A press that arrives while
+            // it is out gets one of its own, asked when this one comes back.
+            self.probed_presses = self.paste_targets.len();
+        }
+        true
+    }
+
+    /// Paste the clipboard's text, or decline the chord when there is none.
+    ///
+    /// Declining is what makes an image paste work at all. thurbox can only
+    /// send text, so swallowing the press there means it does nothing — which
+    /// is what "pasting a screenshot into claude through thurbox does nothing"
+    /// was. The agent in the pane *can* fetch an image, and does so on seeing
+    /// the paste chord itself, so the press is worth more to it than to us.
+    ///
+    /// No clipboard **at all** — the SSH case — is the one decline that would
+    /// help nobody: there is nothing on that machine for the agent to read
+    /// either. That gets the hint pointing at the terminal's own paste, which
+    /// arrives as `Event::Paste`. There is no OSC 52 read fallback, because
+    /// terminals disable clipboard *reads* by default and probing for one can
+    /// stall for seconds.
+    fn paste_text_or_decline(&mut self) -> bool {
+        let text = thurbox::clipboard::paste(self.clipboard.as_mut());
+        match (paste_route(self.clipboard.is_some(), text.is_some()), text) {
+            (PasteRoute::Hint, _) => {
+                self.toast(thurbox::clipboard::PASTE_UNAVAILABLE_HINT);
+                true
+            }
+            (PasteRoute::Send, Some(text)) => {
+                self.on_paste(text);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Act on what Windows said about its clipboard, for the presses that
+    /// question was asked for.
+    ///
+    /// Only those: the answer describes the clipboard as it was when the
+    /// question went out, and what is copied can change while it is out — the
+    /// round trip is ~0.42 s, and a wedged one runs to its five-second
+    /// deadline. Applying it to a press made *after* it was asked is how an
+    /// image copied in between gets pasted as the text that preceded it, which
+    /// is the failure this whole path exists to prevent. Those presses are kept
+    /// and a fresh question is put for them here.
+    ///
+    /// Each press is delivered to the session it was aimed at, in the order
+    /// they were made.
+    pub(crate) fn poll_image_probe(&mut self) {
+        let Some(verdict) = self.image_probe.poll() else {
             return;
         };
-        self.on_paste(text);
+        let answered = self.probed_presses.min(self.paste_targets.len());
+        self.probed_presses = 0;
+        let waiting = self.paste_targets.split_off(answered);
+        let answered = std::mem::replace(&mut self.paste_targets, waiting);
+        for surface in answered {
+            self.deliver_probed_paste(verdict, &surface);
+        }
+        if !self.paste_targets.is_empty() && self.image_probe.ask() {
+            self.probed_presses = self.paste_targets.len();
+        }
+    }
+
+    /// One press, answered.
+    ///
+    /// A picture is given to the agent, which reads it itself — and so is an
+    /// answer that never came, because an unanswerable question must not become
+    /// "paste the text" when the text under WSL is the stale one this path
+    /// exists to stop. The hand-off is a literal `Ctrl+V` byte rather than a
+    /// fall-through to the chord, since by now the key press is long gone; that
+    /// byte is what Claude Code watches for before reading the clipboard itself
+    /// (`xclip`/`wl-paste`, or PowerShell under WSL).
+    ///
+    /// Delivered even if a modal or a float has gone up since: this press
+    /// already named its destination, so putting it there is not a leak past
+    /// the overlay but the thing that was asked for. What an overlay prevents
+    /// is the *question* — see [`Self::paste_into_focused`].
+    fn deliver_probed_paste(&mut self, verdict: thurbox::clipboard::Verdict, surface: &str) {
+        use thurbox::clipboard::Verdict;
+        if verdict == Verdict::NotImage {
+            // The same decision the unprobed press makes, read from the same
+            // function: what Windows answered says only whether this press is
+            // thurbox's to handle, never what handling it looks like.
+            let text = thurbox::clipboard::paste(self.clipboard.as_mut());
+            match (paste_route(self.clipboard.is_some(), text.is_some()), text) {
+                (PasteRoute::Hint, _) => {
+                    self.toast(thurbox::clipboard::PASTE_UNAVAILABLE_HINT);
+                    return;
+                }
+                (PasteRoute::Send, Some(text)) => {
+                    self.paste_text_into(surface, &text);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // Said out loud, because this is the one delivery the person may not
+        // see happen: the press can land behind a modal or a float that went up
+        // while the question was out, and what arrives there is a byte the
+        // agent acts on rather than text appearing in a prompt. The text path
+        // (`paste_text_into`) already reports itself the same way.
+        if self.send_to_surface(surface, vec![CTRL_V]) {
+            self.toast(match verdict {
+                Verdict::Image => "image left to the agent to fetch",
+                _ => "Windows could not be asked; the paste went to the agent",
+            });
+        } else {
+            self.toast("no live terminal to paste into");
+        }
     }
 }
+
+/// What a paste press does with the clipboard this machine has.
+///
+/// Two facts decide it, and this is the only place they are read together —
+/// the press that asks Windows first ends up here too, since the verdict says
+/// only whose press it is, never what to do with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PasteRoute {
+    /// No local clipboard at all: the SSH case, where the terminal's own paste
+    /// is the way through and neither thurbox nor the agent can read anything.
+    Hint,
+    /// Text thurbox can carry itself.
+    Send,
+    /// Something thurbox cannot carry — a picture, or a clipboard it cannot
+    /// read. The chord is worth more to the agent, which fetches it itself.
+    GiveToAgent,
+}
+
+fn paste_route(clipboard_present: bool, yielded_text: bool) -> PasteRoute {
+    match (clipboard_present, yielded_text) {
+        (false, _) => PasteRoute::Hint,
+        (true, true) => PasteRoute::Send,
+        (true, false) => PasteRoute::GiveToAgent,
+    }
+}
+
+/// Whether declining this press hands it to the agent by itself.
+///
+/// A declined chord reaches the pane through `dispatch_session_input`, which
+/// can only send what `key_to_bytes` encodes. `SUPER` chords have no legacy
+/// encoding at all, so `Cmd+V` — the paste chord on macOS — falls through to
+/// nothing.
+fn reaches_the_pty(key: &KeyEvent) -> bool {
+    key_to_bytes(key.code, key.modifiers).is_some()
+}
+
+/// The paste chord as one byte on the wire — what an agent watches for before
+/// reading the clipboard itself, and the only spelling of a paste that survives
+/// both a press that has no pty encoding and an answer that arrives after the
+/// press is gone.
+const CTRL_V: u8 = 0x16;
+
+/// What a paste with nothing focused says. One message, because it is one
+/// situation: the press was made with no session's terminal in front of it.
+const NOTHING_TO_PASTE_INTO: &str = "nothing to paste into — focus a session's terminal first";
+
+/// How many presses may be waiting on one answer. Well above a person pressing
+/// `Ctrl+V` twice and well below what auto-repeat produces in the ~0.42 s the
+/// answer takes.
+const MAX_WAITING_PASTES: usize = 8;
 
 /// Undo Windows' spelling of AltGr, which is `Ctrl+Alt`.
 ///
@@ -676,6 +951,37 @@ fn resolve_altgr(key: KeyEvent, windows: bool) -> KeyEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The half of this change that reaches every platform: a reachable
+    /// clipboard holding no text hands the press on instead of swallowing it,
+    /// which is what made pasting an image do nothing at all. Put `Some(true)`
+    /// back in `run_clipboard_action` and this is what says so.
+    #[test]
+    fn a_clipboard_with_nothing_to_paste_hands_the_press_on() {
+        assert_eq!(paste_route(true, false), PasteRoute::GiveToAgent);
+        assert_eq!(paste_route(true, true), PasteRoute::Send);
+        assert_eq!(
+            paste_route(false, false),
+            PasteRoute::Hint,
+            "with no clipboard on this machine there is nothing for the agent \
+             to read either"
+        );
+    }
+
+    /// And handing it on is only a hand-off for a chord the pty can carry.
+    ///
+    /// `Cmd+V` cannot be encoded, so a decline drops it: on macOS that is the
+    /// chord the paste binding is actually on.
+    #[test]
+    fn a_cmd_chord_cannot_be_handed_on_by_declining_it() {
+        let cmd_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SUPER);
+        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert!(
+            !reaches_the_pty(&cmd_v),
+            "a declined Cmd+V would reach the agent on its own"
+        );
+        assert!(reaches_the_pty(&ctrl_v));
+    }
 
     fn altgr(ch: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL | KeyModifiers::ALT)

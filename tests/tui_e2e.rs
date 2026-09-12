@@ -850,6 +850,12 @@ fn repo(under: &Path) -> PathBuf {
 /// agent-neutral, so a shell is as good an agent as any and the only one CI
 /// has.
 fn shell_session() -> Option<(Profile, Tui)> {
+    shell_session_with(|_| {})
+}
+
+/// The same, with the binary's environment adjusted — for the cases where what
+/// is being tested is what thurbox does with the machine it thinks it is on.
+fn shell_session_with(adjust: impl FnOnce(&mut Command)) -> Option<(Profile, Tui)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return None;
@@ -877,7 +883,7 @@ fn shell_session() -> Option<(Profile, Tui)> {
     // headless answer to it.
     profile.cli(&["config", "accept-interface"]);
 
-    let tui = Tui::spawn(&profile, 40, 120);
+    let tui = Tui::spawn_with(&profile, 40, 120, adjust);
     tui.wait_for("probe");
 
     // The agent pane has focus at boot, and the action band names the focused
@@ -1262,6 +1268,126 @@ fn the_scrollbar_can_be_pressed_and_dragged() {
     // And a press on the track alone is a jump, with no drag behind it.
     tui.drag_down((column, top + 1), top + 1);
     tui.wait_for("tb-bar-marker");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+// --- the WSL image probe, through the real binary ---------------------------
+
+/// A stand-in for `powershell.exe` that records every call and answers `answer`.
+///
+/// The probe resolves PowerShell through `PATH` (`clipboard::POWERSHELL`), so a
+/// directory in front of the real one is the whole trick — no Windows, and no
+/// need for a real clipboard to be in any particular state.
+fn stub_powershell(dir: &Path, answer: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("winbin");
+    std::fs::create_dir_all(&bin).expect("mkdir winbin");
+    let script = bin.join("powershell.exe");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\necho call >> \"$(dirname \"$0\")/asked\"\necho {answer}\n"),
+    )
+    .expect("write the stub");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    bin
+}
+
+/// How many times the stub has been asked.
+fn asked(bin: &Path) -> usize {
+    std::fs::read_to_string(bin.join("asked"))
+        .map(|log| log.lines().count())
+        .unwrap_or(0)
+}
+
+/// Waits for the stub to have been asked `n` times, and says so if it never is.
+fn wait_for_asks(bin: &Path, n: usize, tui: &Tui) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while asked(bin) < n && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        asked(bin),
+        n,
+        "Windows was asked {} times, not {n}\n--- frame ---\n{}",
+        asked(bin),
+        tui.frame()
+    );
+}
+
+/// Inside WSL every `Ctrl+V` asks Windows — one question per press, and none at
+/// all while a float is holding the keyboard.
+///
+/// The whole route, through the real binary: the press is claimed by the
+/// clipboard stage, the question goes out on a worker, the answer is polled
+/// back on the loop and spent, and only then can the next question be asked.
+/// Nothing below the binary is stubbed except Windows itself — a directory in
+/// front of `PATH` holding a `powershell.exe` that counts its calls.
+///
+/// Two failures are covered that unit tests cannot reach:
+///
+/// - **the answer is never polled.** Deleting `poll_image_probe` from the loop
+///   leaves every unit test green, because `ImageProbe` is perfectly happy
+///   never to be asked again — but the interface then swallows every paste for
+///   the rest of the session. Here the second press has to reach Windows, which
+///   it can only do after the first answer was taken.
+/// - **a float's paste is swallowed.** The clipboard stage runs *before*
+///   `dispatch_grabbed`, so asking Windows while the new-session wizard is up
+///   claims a press that the float should have had — and the answer, arriving
+///   0.42 s later, finds the float still there and drops it. Pasting a path
+///   into the wizard did nothing at all under WSL.
+#[test]
+fn a_paste_under_wsl_asks_windows_once_per_press_and_never_from_a_float() {
+    let windows = tempfile::tempdir().expect("tempdir");
+    // "image" so the answer is spent on forwarding the chord to the shell,
+    // which leaves the message band clean for the float's own report below.
+    let bin = stub_powershell(windows.path(), "image");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("WSL_DISTRO_NAME", "Ubuntu");
+        cmd.env("PATH", path);
+        // No X clipboard, so the float below reports the one thing it can
+        // report rather than pasting whatever this machine happens to hold.
+        cmd.env_remove("DISPLAY");
+        cmd.env_remove("WAYLAND_DISPLAY");
+    }) else {
+        return;
+    };
+
+    const CTRL_V: &[u8] = &[0x16];
+    const CTRL_N: &[u8] = &[0x0e];
+
+    tui.send(CTRL_V);
+    wait_for_asks(&bin, 1, &tui);
+    // The second press is the assertion: it can only reach Windows if the first
+    // answer came back, was polled on the loop, and freed the question.
+    tui.send(CTRL_V);
+    wait_for_asks(&bin, 2, &tui);
+
+    // Now the wizard, which floats and therefore holds the keyboard.
+    tui.send(CTRL_N);
+    // Its first question is "Run On" where the machine has hosts and "Select
+    // Repos" where it has none — this one has sibling WSL distros, so which it
+    // is depends on the machine and neither is the point.
+    tui.wait_until("the new-session wizard to be up", |frame| {
+        frame.contains("Run On") || frame.contains("Select Repos")
+    });
+    tui.send(CTRL_V);
+    // It has nothing to paste from — that is what the missing X clipboard
+    // buys — and saying so is proof the press was handled here rather than
+    // spent on a question the float could never use the answer to.
+    tui.wait_for("No local clipboard");
+    assert_eq!(
+        asked(&bin),
+        2,
+        "a press made into a float asked Windows about an image a name field \
+         could not take"
+    );
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
