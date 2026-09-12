@@ -821,6 +821,35 @@ thing that decided where every row went is the thing that receives the coordinat
 is what lets a side-by-side diff aim a click at the old or the new column with nothing
 added to the node catalog.
 
+### The right button
+
+A RIGHT press has its own hook, `on_context`, with the same `hit` payload:
+
+```lua
+on_context = function(hit)
+  if not hit.id then return false end
+  store.filemenu = { path = hit.id }   -- open a menu aimed at this row
+  return true
+end,
+```
+
+Its own hook rather than a button field on `hit`, because the two presses do not
+mean the same thing to anyone. Every `on_click` ever written reads "act on this
+row" — open the file, run the action — so a right press arriving there would do
+exactly that, in every pane, the moment the kernel began forwarding it. This way
+a pane that declares no `on_context` never hears a right press at all.
+
+It is a much shorter road than the left button's: no verb is resolved, no link
+is opened, no selection is begun, and **the focus does not move**. What a right
+press means is entirely the pane's to decide.
+
+Not every terminal sends one. The emulator may bind the right button to paste or
+to a menu of its own and never forward it, and nothing here can tell that apart
+from a button nobody pressed — it is the user's setting to make. To check a
+terminal, run `printf '\e[?1000h\e[?1006h'; cat -v` in it and right-click: a
+line like `^[[<2;12;7M` means the press is being forwarded. (`Ctrl-C`, then
+`printf '\e[?1000l\e[?1006l'` to put the terminal back.)
+
 ### Dragging
 
 A node whose `role` is exactly `drag` takes **hold of the pointer**: the press

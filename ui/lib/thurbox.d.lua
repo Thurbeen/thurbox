@@ -265,6 +265,7 @@
 ---@field on_key? fun(key: thurbox.Key): boolean
 ---@field on_action? fun(action: string): boolean
 ---@field on_click? fun(hit: thurbox.Hit): boolean
+---@field on_context? fun(hit: thurbox.Hit): boolean A RIGHT press on the same node.
 ---@field on_scroll? fun(wheel: thurbox.Wheel): boolean
 ---@field on_event? fun(name: string, payload: table<string, any>)
 
