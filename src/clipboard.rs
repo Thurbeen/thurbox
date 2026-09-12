@@ -455,7 +455,7 @@ fn wait_bounded(child: &mut Child, timeout: Duration) -> bool {
             Ok(None) if Instant::now() >= deadline => {
                 tracing::warn!(
                     "the Windows clipboard probe did not answer within {timeout:?}; \
-                     treating the clipboard as text"
+                     what the clipboard holds stays unknown and the press goes to the agent"
                 );
                 let _ = child.kill();
                 let _ = child.wait();
