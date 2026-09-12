@@ -496,11 +496,14 @@ fn birth_options(window_name: &str) -> [(&'static str, &'static str); 2] {
         // down. Measured, tmux 3.5a: with `set-option -w -g window-size
         // manual`, *every* `new-window` on a server with no attached client
         // answered `server exited unexpectedly`; with the same option said per
-        // window it answers with a pane id. Unguarded in every release that has
-        // the option (3.3 … 3.6; guarded only on tmux master), and 3.2a — the
-        // supported floor — predates it. Stating it after the window exists is
-        // what `main` did by accident, where a session-scoped write landed on
-        // the session's current window and on no other.
+        // window it answers with a pane id. Unguarded in 3.3 … 3.6 (guarded
+        // only on tmux master). The option itself is older than the supported
+        // floor — tmux 2.9 added it, `manual` and per-window `setw` included
+        // (`CHANGES`, 2.8 → 2.9) — so it needs no version gate: measured, tmux
+        // 3.2 and 3.2a accept it chained after `new-window`, and survive it
+        // server-wide as well. Stating it after the window exists is what
+        // `main` did by accident, where a session-scoped write landed on the
+        // session's current window and on no other.
         ("window-size", "manual"),
     ]
 }
@@ -4342,9 +4345,10 @@ mod tests {
     /// (`spawn_window` → `default_window_size(…, w = NULL)`) and the manual
     /// branch of `clients_calculate_size` reads `w->manual_sx` with no NULL
     /// check, so a server whose default is `manual` dies on the next
-    /// `new-window` from an unattached client — every release that has the
-    /// option (3.3 … 3.6). Measured on 3.5a: `server exited unexpectedly` every
-    /// time with the server-wide write, a pane id every time without it.
+    /// `new-window` from an unattached client — 3.3 … 3.6. Measured on 3.5a:
+    /// `server exited unexpectedly` every time with the server-wide write, a
+    /// pane id every time without it. 3.2 and 3.2a have the option too and
+    /// survive the server-wide write (measured).
     #[test]
     fn the_server_wide_window_options_do_not_size_windows_by_hand() {
         for (key, value) in WINDOW_OPTS {

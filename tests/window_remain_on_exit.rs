@@ -370,9 +370,11 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
 /// every headless spawn. Measured, tmux 3.5a: with `set-option -w -g
 /// window-size manual` every `new-window` answered `server exited
 /// unexpectedly`; with the same option said per window, a pane id every time.
-/// Unguarded in 3.3 through 3.6 and guarded only on tmux master; 3.2a — the
-/// supported floor — predates the option, which is why a machine with 3.2a
-/// cannot see the failure at all.
+/// Unguarded in 3.3 through 3.6 and guarded only on tmux master. The supported
+/// floor has the option — tmux 2.9 added it (`CHANGES`, 2.8 → 2.9) — but not
+/// the crash: measured, tmux 3.2 and 3.2a accept the per-window write and
+/// survive the server-wide one, so a machine with 3.2 cannot see the failure at
+/// all.
 ///
 /// The assertion is therefore about the *configuration*, not the crash: it is
 /// the one form that fails the same way on every tmux, including the one this
