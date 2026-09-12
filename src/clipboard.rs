@@ -54,6 +54,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -318,6 +319,61 @@ pub enum Verdict {
     Unknown,
 }
 
+/// Rounds that found no `powershell.exe` anywhere, in a row.
+///
+/// Reset by any answer at all, so this counts a *standing* absence rather than
+/// a total: a machine that answered once has interop, whatever happens next.
+static POWERSHELL_ABSENT_ROUNDS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many such rounds stop the question being asked at all.
+///
+/// Two rather than one because the first can be lost to a race nobody controls:
+/// interop mounts `/mnt/c` and publishes `powershell.exe` on `PATH` a moment
+/// after a distro starts, and a paste in that moment would otherwise silence
+/// the probe for the rest of the session.
+const ABSENT_ROUNDS_BEFORE_LATCH: usize = 2;
+
+/// Whether this machine has been shown to have no PowerShell to ask.
+///
+/// The cost this saves is the reason the gate exists at all: on a box with no
+/// interop every paste otherwise spawns nothing, waits for nothing and still
+/// walks the candidate list before answering [`Verdict::Unknown`] — and the
+/// press reaches the agent a round trip later than it needed to.
+fn powershell_is_absent() -> bool {
+    POWERSHELL_ABSENT_ROUNDS.load(Ordering::Relaxed) >= ABSENT_ROUNDS_BEFORE_LATCH
+}
+
+/// What one round of candidates says about the machine, as opposed to about
+/// the clipboard.
+///
+/// Only [`std::io::ErrorKind::NotFound`] means "there is no PowerShell here".
+/// `PermissionDenied`, an exec format error, a policy that refuses the spawn —
+/// those are a machine that **has** one and would not run it this time, and
+/// latching on them would turn a transient or administrative failure into a
+/// permanent one. They stay [`Verdict::Unknown`] with the question still asked
+/// next time.
+fn is_absence(errors: &[std::io::ErrorKind]) -> bool {
+    !errors.is_empty() && errors.iter().all(|k| *k == std::io::ErrorKind::NotFound)
+}
+
+/// Records what a round found, and reports whether the question is now latched
+/// off. A round that reached PowerShell at all clears the count.
+fn note_round(errors: &[std::io::ErrorKind]) -> bool {
+    if is_absence(errors) {
+        POWERSHELL_ABSENT_ROUNDS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        POWERSHELL_ABSENT_ROUNDS.store(0, Ordering::Relaxed);
+    }
+    powershell_is_absent()
+}
+
+/// Clears what [`note_round`] counted. Tests only: the latch is deliberately
+/// for the life of the process, and nothing in production wants it back.
+#[cfg(test)]
+fn forget_powershell_absence() {
+    POWERSHELL_ABSENT_ROUNDS.store(0, Ordering::Relaxed);
+}
+
 /// Asks only what *kind* of thing is there — deliberately not for the image
 /// itself: not carrying pixels over the boundary keeps the call cheap.
 ///
@@ -349,8 +405,15 @@ impl ImageProbe {
     /// Only inside a WSL distro: everywhere else the local clipboard *is* the
     /// one being copied into, so arboard's answer is the whole truth and no
     /// subprocess is worth spawning.
+    ///
+    /// And only while a PowerShell to ask still looks reachable — see
+    /// [`powershell_is_absent`]. A distro without interop would otherwise pay
+    /// the gate's whole cost for a question that cannot be answered, on every
+    /// paste, for as long as the session lasts.
     pub fn applies() -> bool {
-        cfg!(unix) && crate::session::host_def::current_wsl_distro().is_some()
+        cfg!(unix)
+            && !powershell_is_absent()
+            && crate::session::host_def::current_wsl_distro().is_some()
     }
 
     /// Ask Windows, on a thread. The answer arrives at a later [`Self::poll`].
@@ -420,11 +483,24 @@ fn windows_clipboard_has_image() -> Verdict {
             }
         })
     };
+    let mut failures = Vec::new();
     for exe in powershell_candidates() {
         match ask(&exe) {
-            Ok(verdict) => return verdict,
-            Err(e) => tracing::debug!("{} could not be run ({e})", exe.display()),
+            Ok(verdict) => {
+                note_round(&[]);
+                return verdict;
+            }
+            Err(e) => {
+                tracing::debug!("{} could not be run ({e})", exe.display());
+                failures.push(e.kind());
+            }
         }
+    }
+    if note_round(&failures) {
+        tracing::info!(
+            "no powershell.exe on this machine after {ABSENT_ROUNDS_BEFORE_LATCH} tries; \
+             pastes go straight to the agent from here on"
+        );
     }
     Verdict::Unknown
 }
@@ -541,6 +617,8 @@ mod tests {
     fn only_a_wsl_distro_asks_windows() {
         use crate::session::host_def::with_wsl_distro;
 
+        forget_powershell_absence();
+
         assert_eq!(
             with_wsl_distro(Some("Ubuntu"), ImageProbe::applies),
             cfg!(unix),
@@ -551,6 +629,56 @@ mod tests {
             !with_wsl_distro(None, ImageProbe::applies),
             "off WSL the local clipboard is the whole truth — asking would only \
              cost every paste a subprocess"
+        );
+    }
+
+    /// A machine with no interop stops being asked — and only that machine.
+    ///
+    /// The three cases are one test because the latch is one counter and what
+    /// matters is which outcomes move it: absence twice latches, anything that
+    /// reached PowerShell clears it, and a refusal to run is not an absence.
+    ///
+    /// Process-global state, so this relies on the suite's runner (nextest)
+    /// giving each test its own process, the way the `PATH`-mutating tests
+    /// above already do.
+    #[test]
+    fn only_a_machine_without_powershell_stops_being_asked() {
+        use crate::session::host_def::with_wsl_distro;
+        use std::io::ErrorKind;
+
+        forget_powershell_absence();
+        assert!(
+            !note_round(&[ErrorKind::NotFound]),
+            "one round is not proof"
+        );
+        assert!(
+            note_round(&[ErrorKind::NotFound]),
+            "two rounds without a powershell.exe anywhere are"
+        );
+        if cfg!(unix) {
+            assert!(
+                !with_wsl_distro(Some("Ubuntu"), ImageProbe::applies),
+                "a latched machine must stop paying ~0.42 s for a question \
+                 nothing can answer"
+            );
+        }
+
+        forget_powershell_absence();
+        assert!(
+            !note_round(&[ErrorKind::PermissionDenied, ErrorKind::PermissionDenied]),
+            "a PowerShell that would not run is a machine that has one"
+        );
+        assert!(
+            !note_round(&[ErrorKind::PermissionDenied, ErrorKind::PermissionDenied]),
+            "and no number of refusals makes it missing"
+        );
+
+        forget_powershell_absence();
+        note_round(&[ErrorKind::NotFound]);
+        note_round(&[]);
+        assert!(
+            !note_round(&[ErrorKind::NotFound]),
+            "an answer in between means the count starts again, not resumes"
         );
     }
 
