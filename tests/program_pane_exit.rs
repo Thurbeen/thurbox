@@ -58,6 +58,42 @@ fn cleanup() {
         .output();
 }
 
+/// Starts the session with **`remain-on-exit on`** (see the note at the top),
+/// kept out of the async test body: a blocking `Command::output` call written
+/// directly in an `async fn` blocks the executor thread it runs on.
+fn start_session(dir: &std::path::Path) -> std::process::Output {
+    let started = Command::new("tmux")
+        .args([
+            "-L",
+            SOCKET,
+            "new-session",
+            "-d",
+            "-s",
+            "thurbox",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .env("TMUX_TMPDIR", dir)
+        .output()
+        .expect("run tmux");
+    let _ = Command::new("tmux")
+        .args([
+            "-L",
+            SOCKET,
+            "set-option",
+            "-t",
+            "thurbox",
+            "remain-on-exit",
+            "on",
+        ])
+        .env("TMUX_TMPDIR", dir)
+        .output()
+        .expect("run tmux");
+    started
+}
+
 /// A tokio runtime is required, not decorative: wiring a pane spawns its writer
 /// task, and without one the spawn panics before anything can be observed.
 #[tokio::test(flavor = "multi_thread")]
@@ -77,36 +113,7 @@ async fn a_program_that_ends_reports_that_it_ended() {
     thurbox::paths::set_test_dir(dir.path());
 
     cleanup();
-    let started = Command::new("tmux")
-        .args([
-            "-L",
-            SOCKET,
-            "new-session",
-            "-d",
-            "-s",
-            "thurbox",
-            "-x",
-            "80",
-            "-y",
-            "24",
-        ])
-        .env("TMUX_TMPDIR", dir.path())
-        .output()
-        .expect("run tmux");
-    // The session thurbox actually runs: see the note at the top.
-    let _ = Command::new("tmux")
-        .args([
-            "-L",
-            SOCKET,
-            "set-option",
-            "-t",
-            "thurbox",
-            "remain-on-exit",
-            "on",
-        ])
-        .env("TMUX_TMPDIR", dir.path())
-        .output()
-        .expect("run tmux");
+    let started = start_session(dir.path());
     if !started.status.success() {
         cleanup();
         eprintln!(
@@ -157,7 +164,7 @@ async fn a_program_that_ends_reports_that_it_ended() {
 
     let deadline = Instant::now() + DEADLINE;
     while !pane.has_exited() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let exited = pane.has_exited();
     cleanup();

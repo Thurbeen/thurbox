@@ -88,7 +88,7 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
     };
     let deadline = Instant::now() + DEADLINE;
     while !exited(&terminals) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     if !exited(&terminals) {
         cleanup();
