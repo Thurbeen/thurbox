@@ -42,7 +42,7 @@ const SOCKET: &str = "thurbox-program-exit-e2e";
 
 /// Generous next to the notification, which arrives with the exit: the budget is
 /// for a loaded machine starting a tmux server, not for the signal itself.
-const DEADLINE: Duration = Duration::from_secs(20);
+const DEADLINE: Duration = Duration::from_secs(10);
 
 fn have_tmux() -> bool {
     Command::new("tmux")
@@ -134,23 +134,20 @@ async fn a_program_that_ends_reports_that_it_ended() {
     // is not padding: a program that exits instantly takes its pane with it
     // before `spawn` can size the window, and the spawn fails with "can't find
     // pane" — which this test used to report as a skipped environment and pass
-    // on, proving nothing at all. It also has to outlive `TmuxBackend::register_pane`'s
-    // own `display-message` round trip (registering which window the pane's
-    // death will be announced on, so the notification has somewhere to land):
-    // that round trip's own doc comment spells out that a program which exits
-    // before it returns costs this pane its exit notification *permanently* —
-    // the one-shot `%window-close` for that window has already come and gone
-    // with nothing yet in `pane_windows` to match it against, and no later
-    // wait, however long, makes it arrive a second time. On a loaded machine
-    // (this test's own failure mode: a full parallel `nextest` run stacking
-    // dozens of other tmux/pty-driving tests against a shared CPU budget) that
-    // round trip can stretch well past a few seconds. 1s cut it close, 3s
-    // still lost the race once in a large run; 8s gives it real headroom.
+    // on, proving nothing at all.
+    //
+    // A second, longer than that: the program had to outlive whatever stood
+    // between its window existing and `pane_windows` knowing about it, because
+    // a death inside that gap is announced once, to nobody, and never again.
+    // That gap used to be a serialized `display-message` round trip, which is
+    // why this budget kept being raised — 1s, then 3s, then 8s — without ever
+    // being enough. `new-window` now answers with the window id itself, so the
+    // gap is local work, and a second is a second again.
     let pane = ProgramPane::spawn(
         std::sync::Arc::clone(&backend) as std::sync::Arc<dyn SessionBackend>,
         "tbp-test-exiting",
         "sh",
-        &["-c".to_string(), "printf started; sleep 8".to_string()],
+        &["-c".to_string(), "printf started; sleep 1".to_string()],
         Some(dir.path()),
         &HashMap::new(),
         24,

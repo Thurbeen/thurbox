@@ -67,11 +67,10 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
     // Lives for a moment, then ends on its own — an editor being quit. Not
     // instant: a program that exits before tmux has sized the window takes the
     // pane with it and the spawn fails outright, which would turn this into a
-    // skip that proves nothing. It also has to outlive the pane registration's
-    // own `display-message` round trip, which can stretch well past a second
-    // on a loaded machine — 1s cut that close under a full parallel `nextest`
-    // run; 3s gives it real headroom.
-    let short = ["-c".to_string(), "printf started; sleep 3".to_string()];
+    // skip that proves nothing. The registration round trip it also used to
+    // have to outlive is gone — `new-window` answers with the window id — so
+    // this is back to the moment it was written as.
+    let short = ["-c".to_string(), "printf started; sleep 1".to_string()];
     if let Err(e) = terminals.start_program(&key, "sh", &short, Some(dir.path()), 24, 80) {
         cleanup();
         // Not a skip: tmux is installed, so a pane that would not start is the

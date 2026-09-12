@@ -299,6 +299,15 @@ pub(crate) fn program_window_name(owner: &str, pane: &str) -> String {
 const DISCOVER_FORMAT: &str =
     "#{pane_id}|#{window_name}|#{pane_dead}|#{@thurbox_session}|#{@thurbox_role}";
 
+/// What `new-window -P -F` is asked to answer with: the pane to attach to, and
+/// the window whose close will be that pane's death notice.
+///
+/// Both in one answer because the window is needed at the same moment the pane
+/// is — see `register_pane`, where asking for it separately used to leave a gap
+/// a short-lived program could end inside. `the_spawn_format_asks_for_the_window_too`
+/// pins it.
+const SPAWN_FORMAT: &str = "#{pane_id} #{window_id}";
+
 /// One `list-windows` line, or `None` for a window that is not thurbox's.
 ///
 /// Every thurbox prefix is discovered, not just the agent's: a `tbs-` shell and
@@ -1572,27 +1581,35 @@ impl TmuxBackend {
 
     /// Register a pane sender and return the corresponding reader.
     /// Multiple instances can register the same pane; output will be broadcast to all.
-    fn register_pane(&self, pane_id: &str) -> Result<ControlModeReader> {
-        // Asked BEFORE the sender is registered, and best-effort: tmux announces
-        // a pane's death only by the window it was in (`%window-close @3`), and
-        // this round trip is the one chance to learn which that is — afterwards
-        // the pane is gone and nothing can be asked about it. A backend that
-        // cannot answer (psmux) simply keeps the old behaviour: no mapping, so
-        // no EOF from a window close. One round trip per pane attached, on a
-        // path that already spawns or adopts a window.
+    ///
+    /// `window_id` is the window the pane lives in, when the caller already
+    /// knows it. tmux announces a pane's death only by the window it was in
+    /// (`%window-close @3`), so without that mapping a pane cannot notice its
+    /// own ending — and the announcement is one-shot, so learning the window
+    /// late is the same as never learning it.
+    fn register_pane(&self, pane_id: &str, window_id: Option<&str>) -> Result<ControlModeReader> {
+        // Handed in by whoever created the pane: `new-window` is already asked
+        // to answer (`-P -F`), and answering with the window as well as the
+        // pane costs nothing (see `SPAWN_FORMAT`). Asking separately is what
+        // this used to do, and it put a serialized control-mode round trip —
+        // queued behind every other command in flight — between the window
+        // existing and the mapping being written. A program that ended inside
+        // that gap had its `%window-close` arrive with nothing to match it
+        // against, and no later wait brings it back.
         //
-        // Two ways to end up with no mapping, both of which cost this pane the
-        // ability to notice its own death, and neither of which used to leave a
-        // trace: the round trip failing (a reconnecting control mode, a
-        // multiplexer without `display-message`), and the pane dying inside the
-        // round trip — the window close then arrives before there is anything
-        // to match it against. The first is logged here. The second is narrow
-        // and deliberately not paid for: closing it means asking again after
-        // registering, which is a second round trip on every pane attached, to
-        // catch a program that died in the millisecond it took to ask once.
-        let window_id =
-            match self.ctrl_command(&format!("display-message -t {pane_id} -p '#{{window_id}}'")) {
-                Ok(out) => Some(out.trim().to_string()).filter(|id| !id.is_empty()),
+        // Asked here only when nobody could hand it over: `adopt`, which is
+        // given a pane id out of the database and nothing else. Best-effort
+        // there, as it always was — a backend that cannot answer (psmux, a
+        // reconnecting control mode) keeps the old behaviour of no mapping and
+        // no EOF from a window close, and says so in the log.
+        let window_id = match window_id {
+            Some(id) => Some(id.to_string()),
+            None => match self
+                .ctrl_command(&format!("display-message -t {pane_id} -p '#{{window_id}}'"))
+            {
+                Ok(out) => {
+                    Some(out.trim().to_string()).filter(|id| control_mode::is_valid_window_id(id))
+                }
                 Err(e) => {
                     debug!(
                         "could not learn which window {pane_id} is in ({e:#}); its exit \
@@ -1600,7 +1617,8 @@ impl TmuxBackend {
                     );
                     None
                 }
-            };
+            },
+        };
         let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
         self.with_control(|ctrl| {
             let mut senders = ctrl
@@ -1664,8 +1682,14 @@ impl TmuxBackend {
 
     /// Connect I/O to an existing pane: start monitoring, resize to correct
     /// dimensions, and create writer.
-    fn connect_pane(&self, pane_id: &str, rows: u16, cols: u16) -> Result<AdoptedSession> {
-        let reader = self.register_pane(pane_id)?;
+    fn connect_pane(
+        &self,
+        pane_id: &str,
+        window_id: Option<&str>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<AdoptedSession> {
+        let reader = self.register_pane(pane_id, window_id)?;
         // Must use send_command (waited) here — a nowait call would leave an
         // unclaimed %begin/%end response in the stream that steals the next
         // send_command waiter.
@@ -1878,17 +1902,35 @@ impl SessionBackend for TmuxBackend {
         // `birth_options` for why neither can be a message of its own.
         let options = birth_options_suffix(window_name, psmux);
         let cmd = format!(
-            "new-window -t {session} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}{options}"
+            "new-window -t {session} -n {escaped_window_name} -P -F '{SPAWN_FORMAT}'{cwd_part}{env_part} {shell_cmd}{options}"
         );
         let result = self.ctrl_command(&cmd)?;
-        let pane_id = result.trim().to_string();
+        // Two fields, and the second is optional in practice: a multiplexer
+        // that prints only the pane id (psmux's `-P -F` support is unverified
+        // against the documented divergences, ADR-13) leaves `window_id` None
+        // and `register_pane` falls back to asking, exactly as before.
+        let answer = result.trim();
+        let (pane_id, window_id) = match answer.split_once(char::is_whitespace) {
+            Some((pane, window)) => (pane.trim().to_string(), Some(window.trim().to_string())),
+            None => (answer.to_string(), None),
+        };
         if !control_mode::is_valid_pane_id(&pane_id) {
             bail!("tmux new-window returned an invalid pane id: {pane_id:?}");
         }
+        // Dropped rather than fatal: a window id that is not one costs this pane
+        // the ability to notice its own ending, which is what the pre-#1107
+        // behaviour was — not a reason to refuse a window that started fine.
+        let window_id = window_id.filter(|id| {
+            let ok = control_mode::is_valid_window_id(id);
+            if !ok {
+                debug!("tmux new-window answered with an unusable window id: {id:?}");
+            }
+            ok
+        });
 
-        debug!(pane_id = %pane_id, "tmux window created via control mode");
+        debug!(pane_id = %pane_id, window_id = ?window_id, "tmux window created via control mode");
 
-        let connected = self.connect_pane(&pane_id, rows, cols)?;
+        let connected = self.connect_pane(&pane_id, window_id.as_deref(), rows, cols)?;
 
         Ok(SpawnedSession {
             backend_id: pane_id,
@@ -1928,7 +1970,9 @@ impl SessionBackend for TmuxBackend {
         let capture_ms = capture_start.map(|s| s.elapsed().as_millis() as u64);
 
         let connect_start = perf_log.then(std::time::Instant::now);
-        let connected = self.connect_pane(backend_id, rows, cols)?;
+        // No window id to hand over: `adopt` is given a pane id out of the
+        // database, so `register_pane` asks for the window itself.
+        let connected = self.connect_pane(backend_id, None, rows, cols)?;
         if let (Some(capture_ms), Some(start)) = (capture_ms, connect_start) {
             tracing::info!(
                 pane = %backend_id,
@@ -4391,6 +4435,30 @@ mod tests {
     fn the_discover_format_reads_both_stamps() {
         assert!(DISCOVER_FORMAT.contains(&format!("#{{{WINDOW_SESSION_OPTION}}}")));
         assert!(DISCOVER_FORMAT.contains(&format!("#{{{WINDOW_ROLE_OPTION}}}")));
+    }
+
+    /// A pane learns of its own ending only through the window it is in, and
+    /// the only free moment to learn which window that is, is the answer to the
+    /// command that made it. Dropping `#{window_id}` from here would cost
+    /// nothing visible — spawning still works, and the exit simply stops being
+    /// announced under load — so it is pinned.
+    #[test]
+    fn the_spawn_format_asks_for_the_window_too() {
+        assert!(SPAWN_FORMAT.contains("#{pane_id}"));
+        assert!(SPAWN_FORMAT.contains("#{window_id}"));
+        // Parsed by splitting on whitespace, so the two must be separable.
+        assert!(SPAWN_FORMAT.split_whitespace().count() == 2);
+    }
+
+    /// Both ids are read off the wire, so both are checked the same way.
+    #[test]
+    fn a_window_id_is_an_at_sign_and_digits() {
+        assert!(control_mode::is_valid_window_id("@0"));
+        assert!(control_mode::is_valid_window_id("@42"));
+        assert!(!control_mode::is_valid_window_id("@"));
+        assert!(!control_mode::is_valid_window_id("%3"));
+        assert!(!control_mode::is_valid_window_id("@3x"));
+        assert!(!control_mode::is_valid_window_id(""));
     }
 
     /// The stamp is the identity, so a window answers to its session whatever

@@ -625,6 +625,18 @@ pub fn is_valid_pane_id(s: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// A tmux window id is `@<digits>`.
+///
+/// Checked for a different reason than the pane id: a window id is never
+/// interpolated into a command, only compared against the one `%window-close`
+/// carries. A value that is not an id would therefore never match and never
+/// complain — indistinguishable from a pane whose death is simply not
+/// announced, which is the failure this mapping exists to prevent.
+pub fn is_valid_window_id(s: &str) -> bool {
+    s.strip_prefix('@')
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Parse `list-panes -F "#{pane_id} #{@thurbox_state}"` output into the
 /// `(pane_id, value)` pairs whose option is **set**: one `%<id> [value]` line
 /// per pane; empty values (option unset) and malformed lines are skipped —
