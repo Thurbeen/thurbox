@@ -817,8 +817,10 @@ function require(name) end
 ---@field action? "close"|"stop"
 ---@field keys? string Type this into the program already running in the pane.
 --- The bytes reach its stdin as if typed, so `"\r"` is Enter and `"\27"` is
---- Escape. Names the pane through `text` and starts nothing: it is how a
---- long-lived program is told something rather than replaced.
+--- Escape. Names the pane through `text`: it is how a long-lived program is
+--- told something rather than replaced. On its own it starts nothing and says
+--- so when the pane holds nothing live; sent *with* `repo`, a pane with nothing
+--- running is started from it instead, and these keys are not sent.
 
 ---@class (exact) thurbox.cmd.Delete
 ---@field session string
