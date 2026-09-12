@@ -156,8 +156,10 @@ than the answer, and a `powershell.exe` per repeat is a held key bringing the
 machine down — with the presses that arrive while it is out kept (at most eight)
 and asked about separately, because an answer may only classify presses that
 predate it. And the child has a **five-second deadline**, after which it is
-killed and read as "no image": WSL interop can wedge outright, and the question
-after this one waits on its answer.
+killed and the press handed to the agent unanswered: WSL interop can wedge
+outright, and the question after this one waits on its answer. A probe that was
+killed is never read as "no image" — that reading is exactly the stale paste
+this path exists to stop.
 
 **Rejected**: *a second chord for "give the paste to the agent"* — cheap and
 exact, but it leaves the ordinary `Ctrl+V` after copying an image still pasting
