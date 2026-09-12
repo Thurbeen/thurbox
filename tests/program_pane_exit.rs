@@ -127,12 +127,18 @@ async fn a_program_that_ends_reports_that_it_ended() {
     // is not padding: a program that exits instantly takes its pane with it
     // before `spawn` can size the window, and the spawn fails with "can't find
     // pane" — which this test used to report as a skipped environment and pass
-    // on, proving nothing at all.
+    // on, proving nothing at all. It also has to outlive `ProgramPane::spawn`'s
+    // own `display-message` round trip (registering which window the pane's
+    // death will be announced on, so the notification has somewhere to land):
+    // on a loaded machine that round trip can stretch well past a second, and
+    // a program already gone by the time it returns is a death nothing was
+    // listening for yet, not a slow notification. 1s cut it close under a full
+    // parallel `nextest` run; 3s gives that round trip real headroom.
     let pane = ProgramPane::spawn(
         std::sync::Arc::clone(&backend) as std::sync::Arc<dyn SessionBackend>,
         "tbp-test-exiting",
         "sh",
-        &["-c".to_string(), "printf started; sleep 1".to_string()],
+        &["-c".to_string(), "printf started; sleep 3".to_string()],
         Some(dir.path()),
         &HashMap::new(),
         24,
