@@ -4,10 +4,9 @@
 #
 # Under squash merge the commit on main is built by GitHub from the PR title
 # plus its own " (#N)" suffix. That string — not any commit on the branch — is
-# what `cog bump --auto` reads for the release decision, what the changelog
-# quotes, and what check-conventional-commits.sh then holds the history to.
-# Nothing else validates it: that sibling script walks *branch* commits, and
-# squash discards exactly those. This is the only gate between a typo in a title
+# what `cog bump --auto` reads for the release decision and what the changelog
+# quotes. Nothing else validates it: branch commits are discarded by the squash,
+# so CI no longer walks them. This is the only gate between a typo in a title
 # box and a main whose history no longer parses.
 #
 # The title is checked in its final form, suffix included, because that is the
@@ -45,7 +44,7 @@ fi
 # nothing commits and so nothing configures an identity. The author is only
 # printed back, never part of the verdict, so lend one through a throwaway HOME
 # (libgit2 reads $HOME/.gitconfig) rather than writing into the repository being
-# checked. Same reasoning, and same fix, as check-conventional-commits.sh.
+# checked.
 if ! git config --get user.name >/dev/null 2>&1 ||
     ! git config --get user.email >/dev/null 2>&1; then
     borrowed_home=$(mktemp -d)
@@ -59,12 +58,31 @@ fi
 # allowlists this repository declares are part of what is enforced here.
 subject="$title (#$number)"
 
+# `cog verify` names only the token it disliked — "Commit scope `program` not
+# allowed" — never the set it was checked against, so an author who has not
+# read cog.toml cannot correct the title from the failure alone. Quote the
+# declared sets back. Each awk reads from the key to the line that closes it,
+# so a reformatted (multi-line) array still prints; an allowlist the file does
+# not declare prints nothing rather than an empty label.
+print_allowlists() {
+    [ -f cog.toml ] || return 0
+    local types scopes
+    types=$(awk '/^\[commit_types\]/{f=1;next} f&&/^\[/{exit} f&&/^[a-z]/{print $1}' \
+        cog.toml | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    scopes=$(awk '/^[[:space:]]*scopes[[:space:]]*=/{f=1} f{printf "%s", $0} f&&/\]/{exit}' \
+        cog.toml | sed 's/.*\[//; s/\].*//' | tr -d '" ' | tr ',' ' ')
+    [ -n "$types" ] && printf '  allowed types:  %s\n' "$types" >&2
+    [ -n "$scopes" ] && printf '  allowed scopes: %s\n' "$scopes" >&2
+    return 0
+}
+
 if ! report=$(printf '%s\n' "$subject" | cog verify --file - 2>&1); then
     printf 'The pull request title is not a conventional commit.\n\n' >&2
     printf '  title:    %s\n' "$title" >&2
     printf '  lands as: %s\n\n' "$subject" >&2
     printf '%s\n\n' "$report" >&2
-    printf 'Valid types and scopes are declared in cog.toml.\n' >&2
+    print_allowlists
+    printf '\nA scope is optional; these are declared in cog.toml.\n' >&2
     exit 1
 fi
 

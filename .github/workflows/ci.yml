@@ -32,6 +32,7 @@ jobs:
       install_sh: ${{ steps.filter.outputs.install_sh }}
       install_ps: ${{ steps.filter.outputs.install_ps }}
       winget: ${{ steps.filter.outputs.winget }}
+      pr_title: ${{ steps.filter.outputs.pr_title }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -104,6 +105,15 @@ jobs:
               # The winget channel's testable half: the manifest bump and the
               # submit/skip + deferrable decisions the release job asks for.
               - 'packaging/winget/**'
+              - '.github/workflows/ci.yml'
+            # cog.toml is an input to the checker, not merely a neighbour: it
+            # declares the type and scope allowlists `cog verify` enforces and
+            # the suite asserts the rejection quotes back.
+            pr_title:
+              - 'scripts/ci/check-pr-title.sh'
+              - 'scripts/ci/check-pr-title.bats'
+              - 'cog.toml'
+              - '.github/workflows/pr-title.yml'
               - '.github/workflows/ci.yml'
 
   # No `check` job. `clippy --all-targets -D warnings` below type-checks the
@@ -255,33 +265,27 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
-  conventional-commits:
-    name: Conventional Commits
+  # The suite behind the required `PR Title` gate. It runs here rather than in
+  # pr-title.yml because that workflow re-runs on every edit of the title box
+  # and stays lean; nothing validates the branch's own commit messages, which
+  # squash merge discards — the title is the commit that lands.
+  pr-title-checker:
+    name: PR Title Checker
+    needs: changes
+    if: needs.changes.outputs.pr_title == 'true'
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-      # `cog check` is not run directly: it cannot exempt a commit, and the
-      # no-mistakes gate authors its CI-fix commits under a subject baked into
-      # that binary, so the commit pushed to fix this job used to fail it. The
-      # script holds every other commit to the same cog.toml.
+      # Provides the `cog` binary the checker shells out to, exactly as
+      # pr-title.yml does.
       - name: Install cocogitto
         uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
         with:
           install-only: true
       - name: Install bats-core
         run: sudo apt-get update && sudo apt-get install -y bats
-      - name: Test the commit checker
-        run: bats scripts/ci/check-conventional-commits.bats
-      # The PR-title checker's suite runs here rather than in pr-title.yml:
-      # bats and cog are already installed in this job, and that workflow
-      # re-runs on every edit of the title box, so it stays lean.
       - name: Test the PR title checker
         run: bats scripts/ci/check-pr-title.bats
-      - name: Check conventional commits
-        run: scripts/ci/check-conventional-commits.sh
 
   markdown-lint:
     name: Markdown Lint
@@ -505,7 +509,7 @@ jobs:
       - windows-test
       - deny
       - docs
-      - conventional-commits
+      - pr-title-checker
       - markdown-lint
       - install-script
       - install-script-ps

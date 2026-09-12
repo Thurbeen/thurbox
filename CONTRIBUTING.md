@@ -174,14 +174,17 @@ prek install
 - **commit-msg** — conventional-commit validation (`cog verify`)
 - **pre-commit** — fmt, clippy, check, nextest, architecture rules, cargo-deny,
   rustdoc, bats, shellcheck, rumdl, prettier, htmlhint, stylelint, eslint
-- **pre-push** — commit-history check
-  ([`scripts/ci/check-conventional-commits.sh`](scripts/ci/check-conventional-commits.sh))
+
+There is no **pre-push** stage. The hook that used it walked the branch's own
+commit messages, and squash merge discards those — see below.
 
 ## Commit conventions
 
 All commits must follow
-[Conventional Commits](https://www.conventionalcommits.org/), enforced by
-`cocogitto` via the `commit-msg` hook.
+[Conventional Commits](https://www.conventionalcommits.org/), enforced locally
+by `cocogitto` in the `commit-msg` hook. That hook keeps the branch's history
+legible; it is not what gates the merge — the pull request title is, because
+that is the only message that survives the squash.
 
 - **Types:** `feat`, `fix`, `perf`, `refactor`, `docs`, `style`, `test`,
   `chore`, `ci`, `build`, `revert`
@@ -196,16 +199,6 @@ cog commit fix "avoid panic on empty worktree" git
 Commit type drives releases: `feat` → minor bump, `fix` / `perf` → patch bump;
 `docs`, `chore`, `ci`, `style` and `test` produce no release. On `main` the type
 that counts is the **pull request title's** — see below.
-
-The history check that the `pre-push` hook and CI's `Conventional Commits` job
-run is [`scripts/ci/check-conventional-commits.sh`](scripts/ci/check-conventional-commits.sh)
-rather than `cog check` itself. It verifies each commit with `cog verify` — the
-same `cog.toml`, so the type and scope allowlists above still apply — and
-exempts exactly the subjects the no-mistakes gate hardcodes for the commits it
-authors (`no-mistakes: apply CI fixes` and `no-mistakes: apply agent fixes`).
-`.no-mistakes.yaml`'s `commit.fix_message` retemplates the gate's per-step
-auto-fix commits, but those two are not templatable, and `cog check` cannot
-exempt a commit — so the fix the gate pushed for this job used to fail it.
 
 ### The pull request title is the commit
 
@@ -225,10 +218,11 @@ fix(core): keep the caret where the frame put it
 fix(core): keep the caret where the frame put it (#1044)
 ```
 
-That single string is what `cog bump --auto` reads for the release decision,
-what the changelog quotes, and what the history check above then holds `main`
-to. So the type and scope allowlists apply to the **title**, and it is the
-title's type that decides the release — a branch whose every commit is `fix`
+That single string is what `cog bump --auto` reads for the release decision and
+what the changelog quotes. Nothing else validates it: CI no longer walks the
+branch's commits, because squash discards exactly those. So the type and scope
+allowlists apply to the **title**, and it is the title's type that decides the
+release — a branch whose every commit is `fix`
 still ships nothing if its pull request is titled `docs:`. Keep a pull request
 to one purpose and title it after its most significant change.
 
@@ -240,9 +234,12 @@ discarded.
 [`scripts/ci/check-pr-title.sh`](scripts/ci/check-pr-title.sh) enforces this as
 the required `PR Title` check. It validates the title in the exact form that
 lands, suffix included, and rejects one that already ends in a `(#N)` of its own
-— squash would append a second. It runs from its own workflow rather than from
-CI because `ci.yml` does not listen for `edited`, so a title changed after
-checks went green would otherwise never be revalidated.
+— squash would append a second. When it rejects a title it prints the types and
+scopes `cog.toml` declares, so the message is enough to correct it. It runs from
+its own workflow rather than from CI because `ci.yml` does not listen for
+`edited`, so a title changed after checks went green would otherwise never be
+revalidated; its bats suite runs in CI's `PR Title Checker` job so that workflow
+stays lean.
 
 ## Documentation
 
