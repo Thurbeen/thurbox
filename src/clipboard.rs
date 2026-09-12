@@ -541,10 +541,11 @@ mod tests {
     fn only_a_wsl_distro_asks_windows() {
         use crate::session::host_def::with_wsl_distro;
 
-        assert!(
+        assert_eq!(
             with_wsl_distro(Some("Ubuntu"), ImageProbe::applies),
+            cfg!(unix),
             "inside a distro the X clipboard is not the one being copied into, \
-             so Windows has to be asked"
+             so Windows has to be asked — and a native Windows build asks nobody"
         );
         assert!(
             !with_wsl_distro(None, ImageProbe::applies),
