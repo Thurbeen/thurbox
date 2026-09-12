@@ -837,7 +837,17 @@ impl App {
                 _ => {}
             }
         }
-        if !self.send_to_surface(surface, vec![CTRL_V]) {
+        // Said out loud, because this is the one delivery the person may not
+        // see happen: the press can land behind a modal or a float that went up
+        // while the question was out, and what arrives there is a byte the
+        // agent acts on rather than text appearing in a prompt. The text path
+        // (`paste_text_into`) already reports itself the same way.
+        if self.send_to_surface(surface, vec![CTRL_V]) {
+            self.toast(match verdict {
+                Verdict::Image => "image left to the agent to fetch",
+                _ => "Windows could not be asked; the paste went to the agent",
+            });
+        } else {
             self.toast("no live terminal to paste into");
         }
     }

@@ -2524,7 +2524,10 @@ confined to the active pane bounds.
   newlines, the multi-line task description keeps them). While **any**
   modal is open the paste is swallowed so it can never leak into the
   terminal in the pane behind the overlay; otherwise it pastes into
-  the active PTY.
+  the active PTY. The rule is about the **press**: a press made while
+  an overlay is up never had a pane to name. An answer owed to a press
+  made *before* the overlay went up is still delivered where that press
+  was aimed — see "Pasting images".
 - **`Ctrl+V` with an image on the clipboard**: handed to the agent in
   the pane instead of pasted — see "Pasting images" below.
 - **`Ctrl+Shift+V`** (your terminal's paste): the way to paste when
@@ -2644,7 +2647,16 @@ answered by a question of their own, and a question that has not come back in
 five seconds is abandoned — an unanswerable question is handed to the agent, not
 read as "no image", because the text it would paste instead is the stale one.
 Nothing is asked off WSL, where the local clipboard is the one being copied
-into.
+into, and nothing is asked on a distro where no `powershell.exe` could be found
+twice running — there is nobody to answer, and every paste would pay the wait.
+
+**A late answer still goes where the press was aimed.** No question is asked
+while a modal or a float owns typed input, so an overlay stops pastes starting
+underneath it. An overlay that goes up *after* the press, while the question is
+out, does not redirect or cancel it: the pane was named when the key was pressed,
+and a paste that vanished because someone opened a float for a third of a second
+would be the silent loss this path exists to end. Because that delivery can land
+out of sight, it says so on screen.
 
 **On macOS the byte is synthesised.** `Cmd+V` is the paste binding there, and a
 `Cmd` chord has no pty encoding at all — handing it on by declining it would
