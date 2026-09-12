@@ -255,10 +255,6 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
             level: get_string("level"),
             file: get_string("file"),
             action: get_string("action"),
-            // Bytes for a program pane this plugin already started. Read as a
-            // plain string so `"\27"` or `"\r"` written in Lua arrive as the
-            // bytes they are — the pane's stdin takes bytes, not key names.
-            keys: get_string("keys"),
             // A Lua array of session ids. Read here rather than as text so a
             // plugin cannot build an order by string concatenation.
             list: opts

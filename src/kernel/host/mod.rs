@@ -1678,28 +1678,6 @@ impl LuaHost {
     /// loop itself, so a footer pill or a modal button needs no `on_click` at
     /// all and cannot behave differently from its key.
     pub fn on_click(&self, index: usize, click: &Click) -> Result<bool, PluginError> {
-        self.pointer_hook(index, click, "on_click")
-    }
-
-    /// Offer a RIGHT press to the plugin that painted the node under it.
-    ///
-    /// Its own hook rather than a `button` field on [`Click`], because the two
-    /// presses do not mean the same thing to anyone. Every `on_click` written
-    /// so far reads "act on this row" — open the file, run the action — and a
-    /// right press that arrived there would do exactly that, on every pane, the
-    /// moment the kernel started forwarding it. A separate hook is silent by
-    /// default: a pane that has not been taught what a right press means never
-    /// hears one.
-    ///
-    /// For the same reason the kernel does NOT resolve its own verbs here: a
-    /// pill's action is what its LEFT press and its key do, and a right press
-    /// on it means nothing until somebody says so.
-    pub fn on_context(&self, index: usize, click: &Click) -> Result<bool, PluginError> {
-        self.pointer_hook(index, click, "on_context")
-    }
-
-    /// The body both pointer hooks share: same payload, different name.
-    fn pointer_hook(&self, index: usize, click: &Click, hook: &str) -> Result<bool, PluginError> {
         let Some(plugin) = self.plugins.get(index) else {
             return Ok(false);
         };
@@ -1709,7 +1687,10 @@ impl LuaHost {
             message,
         };
 
-        let handler: Value = plugin.def.get(hook).map_err(|e| fail(e.to_string()))?;
+        let handler: Value = plugin
+            .def
+            .get("on_click")
+            .map_err(|e| fail(e.to_string()))?;
         let Value::Function(handler) = handler else {
             return Ok(false);
         };
