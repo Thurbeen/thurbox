@@ -436,6 +436,16 @@ impl WindowRole {
 ///   ever, and the editor cannot be reopened (measured on a live session
 ///   2026-09-11).
 ///
+/// The shell only gets half of that today, and deliberately so for now: `off`
+/// makes its death *reportable*, and nothing reports it. `Session::has_exited`
+/// reads the agent's pane alone, `ShellPane`'s own flag has no reader anywhere,
+/// and `ensure_shell_pane` returns early on a slot that is already filled — so
+/// typing `exit` in a `Ctrl+T` shell still leaves a frozen grid that `Ctrl+T`
+/// will not replace. That is what it did before this too, by accident rather
+/// than by design. Dropping the shell pane when its reader ends is the fix, and
+/// it is a different change from this one: it decides what happens to a pane the
+/// user is looking at, where this only decides whether tmux tells anyone.
+///
 /// Stated per window because `remain-on-exit` is a window option that cannot be
 /// set for a session (see [`SESSION_OPTS`]) — and stated even when the answer is
 /// tmux's own default, because the user's `~/.tmux.conf` is read on thurbox's
@@ -1899,6 +1909,13 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()> {
+        // The guard every neighbour carries, for the reason a target makes it
+        // worth carrying: tmux resolves `-t` as a window *name* as readily as
+        // an id, so a caller passing anything else would quietly set
+        // `remain-on-exit` on whatever window that name picked out.
+        if !control_mode::is_valid_pane_id(backend_id) {
+            bail!("refusing to set remain-on-exit on invalid pane id: {backend_id:?}");
+        }
         if self.transport.uses_psmux() {
             return Ok(());
         }
