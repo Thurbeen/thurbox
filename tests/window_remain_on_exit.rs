@@ -202,3 +202,68 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
          exit stays unannounceable for as long as that window lives"
     );
 }
+
+/// An agent whose command exits **instantly** still leaves a window behind.
+///
+/// The option is not a message of its own: a window is born with the
+/// server-wide default (`off`), and a command that has already exited by the
+/// time a second message arrives takes its window with it — and the server too,
+/// when it was the last window. That is what CI reported on this branch, twice,
+/// as `tmux new-window exited exit status: 1 for window tb-flow: server exited
+/// unexpectedly`, on the *second* install of a test whose agent binary does not
+/// exist on the runner.
+///
+/// Deterministic without the fix, which is why it is worth having: five windows
+/// created this way with the option sent afterwards were gone every time
+/// (measured, tmux 3.2a, `no such window`). `exit 7` stands in for the real
+/// cause — a missing agent binary, a supported state since #1104.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_dies_at_once_still_leaves_its_window() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", dir.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    thurbox::paths::set_test_dir(dir.path());
+
+    cleanup();
+
+    let spawned = thurbox::agent::tmux::spawn_window(
+        "22222222-2222-4222-8222-222222222222",
+        "dies-at-once",
+        "sh",
+        &["-c".to_string(), "exit 7".to_string()],
+        Some(dir.path()),
+        &HashMap::new(),
+    );
+    let pane = match spawned {
+        Ok(pane) if !pane.is_empty() => pane,
+        other => {
+            cleanup();
+            panic!("the agent window could not be spawned: {other:?}");
+        }
+    };
+
+    // Long enough for the corpse to be reaped if it was ever going to be.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let listed = pane_of("tb-");
+    let retention = remain_on_exit(&pane);
+    cleanup();
+
+    assert_eq!(
+        listed.as_deref(),
+        Some(pane.as_str()),
+        "an agent window whose command exited at once must still be there — a \
+         window that goes takes the error with it, and the server with it when \
+         it was the last one"
+    );
+    assert_eq!(
+        retention, "on",
+        "and it must be there because it was told to keep its corpse, not by \
+         luck of timing"
+    );
+}

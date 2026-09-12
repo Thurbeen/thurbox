@@ -457,6 +457,47 @@ fn keeps_dead_pane(window_name: &str) -> bool {
     )
 }
 
+/// The command that states a window's retention, to be run **in the same
+/// command list as the window's creation**.
+///
+/// Not a round trip of its own, and that is the whole point. A window is born
+/// with the server-wide default ([`WINDOW_OPTS`], `off`), so the role that
+/// wants a corpse has to say so afterwards — and "afterwards" was a second
+/// message to tmux. A command that exits instantly (a missing agent binary,
+/// which #1104 made a supported state rather than an error) dies in that gap,
+/// takes its window with it, and if that window is the last one on the server
+/// tmux exits: the next spawn then reports `server exited unexpectedly`, which
+/// is what CI reported on this branch.
+///
+/// Measured, tmux 3.2a: five windows created with `sh -c 'exit 7'` and the
+/// option set by a second call were gone every time (`no such window`); created
+/// with the option chained into the same command list, the corpse was kept every
+/// time. A command list runs to completion before the server returns to its
+/// event loop, so there is no moment in it for a pane to be reaped.
+///
+/// The target is left unsaid on purpose: `new-window` without `-d` makes the
+/// window it created current, and the bare form is therefore exactly that
+/// window — including when an older window of the same name exists, which
+/// `-t <name>` would resolve to instead (measured: the lowest index wins).
+/// The `-d` path cannot use that and names its window; see [`spawn_window`].
+fn retention_suffix(window_name: &str, psmux: bool) -> String {
+    if psmux {
+        // psmux has no such option at all.
+        return String::new();
+    }
+    // Both answers are stated, not just the one that differs from the default:
+    // the server-wide value is a best-effort write of its own ([`WINDOW_OPTS`]),
+    // and a program window that inherited `on` from a user's `~/.tmux.conf`
+    // because that write failed is a pane whose death is never announced. It
+    // costs nothing to say — this is the same message, not another one.
+    let keep = if keeps_dead_pane(window_name) {
+        "on"
+    } else {
+        "off"
+    };
+    format!(" ; set-window-option remain-on-exit {keep}")
+}
+
 /// Where a listing puts a session's window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
@@ -1805,8 +1846,11 @@ impl SessionBackend for TmuxBackend {
         };
         let escaped_window_name = quote_arg(window_name);
         let session = &self.session;
+        // The window's retention rides along in the same command list — see
+        // `retention_suffix` for why it cannot be a message of its own.
+        let retention = retention_suffix(window_name, psmux);
         let cmd = format!(
-            "new-window -t {session} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}"
+            "new-window -t {session} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}{retention}"
         );
         let result = self.ctrl_command(&cmd)?;
         let pane_id = result.trim().to_string();
@@ -1815,26 +1859,6 @@ impl SessionBackend for TmuxBackend {
         }
 
         debug!(pane_id = %pane_id, "tmux window created via control mode");
-
-        // The new window states, for itself, whether its pane's corpse is kept —
-        // see `keeps_dead_pane` for what the answer turns on. Said here because
-        // this is where the window's purpose is known, and because there is no
-        // session-level setting that could have said it (`SESSION_OPTS`).
-        //
-        // Best-effort: an option this fails to set costs the announcement or the
-        // last screen, not the pane, and psmux has no such option at all.
-        if !psmux {
-            let keep = if keeps_dead_pane(window_name) {
-                "on"
-            } else {
-                "off"
-            };
-            if let Err(e) = self.ctrl_command(&format!(
-                "set-window-option -t {pane_id} remain-on-exit {keep}"
-            )) {
-                debug!("could not set remain-on-exit={keep} for {window_name}: {e:#}");
-            }
-        }
 
         let connected = self.connect_pane(&pane_id, rows, cols)?;
 
@@ -2922,13 +2946,18 @@ const SESSION_OPTS: &[(&str, &str)] = &[("status", "off"), ("history-limit", "50
 const WINDOW_OPTS: &[(&str, &str)] = &[
     ("window-size", "manual"),
     // The default a window is BORN with, so the one role that wants a corpse
-    // asks for it and nothing else inherits one. Set here as well as per window
-    // at spawn because the two cover different moments: the user's
-    // `~/.tmux.conf` is read on thurbox's socket too, and `set -g
-    // remain-on-exit on` there would have every window born keeping its corpse
-    // — including a program that dies in the round trip between `new-window`
-    // and the option being set on it, whose death would then never be
-    // announced.
+    // asks for it (in the same command list as its creation — see
+    // `retention_suffix`) and nothing else inherits one. Said here rather than
+    // left to tmux's own default because the user's `~/.tmux.conf` is read on
+    // thurbox's socket too, and `set -g remain-on-exit on` there would have
+    // every window born keeping its corpse — a program pane whose death is
+    // then never announced, since tmux reports a pane's death only by closing
+    // its window.
+    //
+    // Which role loses a race is not a choice between the two: born `off`, an
+    // agent window whose command exits instantly used to vanish before its
+    // `on` arrived, taking the server with it when it was the last one. Neither
+    // role waits on a round trip now.
     ("remain-on-exit", "off"),
 ];
 
@@ -3039,6 +3068,17 @@ pub fn spawn_window(
         }
     }
 
+    // Chained into the same command list as the creation, not sent after it —
+    // `retention_suffix` has the measurement. This path passes `-d`, so the new
+    // window is not current and the option has to name it; a same-named window
+    // from another session with the same name would take the write instead
+    // (tmux resolves such a target to the lowest index), which leaves that rare
+    // case exactly where it was before.
+    if !cfg!(windows) && keeps_dead_pane(&window_name) {
+        tmux.args([";", "set-window-option", "-t", &window_name]);
+        tmux.args(["remain-on-exit", "on"]);
+    }
+
     let output = tmux
         .output()
         .map_err(|e| local_launch_failure("Failed to run tmux new-window for headless spawn", e))?;
@@ -3064,20 +3104,6 @@ pub fn spawn_window(
         pane_id.clone()
     };
     stamp_local_window(&target, session_id, WindowRole::Agent);
-    // The same statement `TmuxBackend::spawn` makes for the window it creates:
-    // this is an agent's window, so its corpse is kept and stays readable. Said
-    // on both paths because a session restarted headlessly must not behave
-    // differently from one started by the interface. Best-effort, and skipped on
-    // psmux, which has no such option.
-    if !cfg!(windows) && keeps_dead_pane(&window_name) {
-        if let Err(e) =
-            local_mux_command(&["set-window-option", "-t", &target, "remain-on-exit", "on"])
-                .output()
-                .context("set remain-on-exit for a headless agent window")
-        {
-            debug!("could not set remain-on-exit for {window_name}: {e:#}");
-        }
-    }
     Ok(pane_id)
 }
 
