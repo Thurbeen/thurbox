@@ -457,45 +457,70 @@ fn keeps_dead_pane(window_name: &str) -> bool {
     )
 }
 
-/// The command that states a window's retention, to be run **in the same
-/// command list as the window's creation**.
+/// The window options a window thurbox creates is given **in the same command
+/// list as its creation**, in order.
 ///
-/// Not a round trip of its own, and that is the whole point. A window is born
-/// with the server-wide default ([`WINDOW_OPTS`], `off`), so the role that
-/// wants a corpse has to say so afterwards — and "afterwards" was a second
-/// message to tmux. A command that exits instantly (a missing agent binary,
-/// which #1104 made a supported state rather than an error) dies in that gap,
-/// takes its window with it, and if that window is the last one on the server
-/// tmux exits: the next spawn then reports `server exited unexpectedly`, which
-/// is what CI reported on this branch.
+/// Both are window options that cannot be waited for. A window is born with the
+/// server-wide default ([`WINDOW_OPTS`]), and "afterwards" was a second message
+/// to tmux: a command that exits instantly (a missing agent binary, which #1104
+/// made a supported state rather than an error) dies in that gap, takes its
+/// window with it, and if that window is the last one on the server tmux exits.
 ///
-/// Measured, tmux 3.2a: five windows created with `sh -c 'exit 7'` and the
-/// option set by a second call were gone every time (`no such window`); created
-/// with the option chained into the same command list, the corpse was kept every
-/// time. A command list runs to completion before the server returns to its
-/// event loop, so there is no moment in it for a pane to be reaped.
+/// Measured, tmux 3.2a: five windows created with `sh -c 'exit 7'` and
+/// `remain-on-exit` set by a second call were gone every time (`no such
+/// window`); created with the option chained into the same command list, the
+/// corpse was kept every time. A command list runs to completion before the
+/// server returns to its event loop, so there is no moment in it for a pane to
+/// be reaped.
+fn birth_options(window_name: &str) -> [(&'static str, &'static str); 2] {
+    [
+        // Both answers are stated, not just the one that differs from the
+        // default: the server-wide value is a best-effort write of its own
+        // ([`WINDOW_OPTS`]), and a program window that inherited `on` from a
+        // user's `~/.tmux.conf` because that write failed is a pane whose death
+        // is never announced. It costs nothing to say — this is the same
+        // message, not another one.
+        (
+            "remain-on-exit",
+            if keeps_dead_pane(window_name) {
+                "on"
+            } else {
+                "off"
+            },
+        ),
+        // Said per window because it **must not** be the server-wide default:
+        // tmux asks for a window's size before that window exists
+        // (`spawn_window` calls `default_window_size(…, w = NULL)`), and the
+        // manual branch of `clients_calculate_size` reads `w->manual_sx`
+        // without checking — a NULL dereference that takes the whole server
+        // down. Measured, tmux 3.5a: with `set-option -w -g window-size
+        // manual`, *every* `new-window` on a server with no attached client
+        // answered `server exited unexpectedly`; with the same option said per
+        // window it answers with a pane id. Unguarded in every release that has
+        // the option (3.3 … 3.6; guarded only on tmux master), and 3.2a — the
+        // supported floor — predates it. Stating it after the window exists is
+        // what `main` did by accident, where a session-scoped write landed on
+        // the session's current window and on no other.
+        ("window-size", "manual"),
+    ]
+}
+
+/// [`birth_options`] as the tail of a control-mode command list.
 ///
 /// The target is left unsaid on purpose: `new-window` without `-d` makes the
 /// window it created current, and the bare form is therefore exactly that
 /// window — including when an older window of the same name exists, which
 /// `-t <name>` would resolve to instead (measured: the lowest index wins).
 /// The `-d` path cannot use that and names its window; see [`spawn_window`].
-fn retention_suffix(window_name: &str, psmux: bool) -> String {
+fn birth_options_suffix(window_name: &str, psmux: bool) -> String {
     if psmux {
-        // psmux has no such option at all.
+        // psmux has neither option.
         return String::new();
     }
-    // Both answers are stated, not just the one that differs from the default:
-    // the server-wide value is a best-effort write of its own ([`WINDOW_OPTS`]),
-    // and a program window that inherited `on` from a user's `~/.tmux.conf`
-    // because that write failed is a pane whose death is never announced. It
-    // costs nothing to say — this is the same message, not another one.
-    let keep = if keeps_dead_pane(window_name) {
-        "on"
-    } else {
-        "off"
-    };
-    format!(" ; set-window-option remain-on-exit {keep}")
+    birth_options(window_name)
+        .iter()
+        .map(|(key, value)| format!(" ; set-window-option {key} {value}"))
+        .collect()
 }
 
 /// Where a listing puts a session's window.
@@ -1846,11 +1871,11 @@ impl SessionBackend for TmuxBackend {
         };
         let escaped_window_name = quote_arg(window_name);
         let session = &self.session;
-        // The window's retention rides along in the same command list — see
-        // `retention_suffix` for why it cannot be a message of its own.
-        let retention = retention_suffix(window_name, psmux);
+        // The window's own options ride along in the same command list — see
+        // `birth_options` for why neither can be a message of its own.
+        let options = birth_options_suffix(window_name, psmux);
         let cmd = format!(
-            "new-window -t {session} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}{retention}"
+            "new-window -t {session} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}{options}"
         );
         let result = self.ctrl_command(&cmd)?;
         let pane_id = result.trim().to_string();
@@ -2927,9 +2952,11 @@ fn history_seed_bytes(mut raw: Vec<u8>) -> Vec<u8> {
 /// 3.2a — the option is on `@0` and a window created a moment later does not
 /// have it). Since `apply_session_config` runs on every `ensure_ready`, which
 /// window ends up carrying such an option is an accident of timing. Window
-/// options therefore live in [`WINDOW_OPTS`], and the one that depends on what
-/// the window is *for* — `remain-on-exit` — is set per window by
-/// [`keeps_dead_pane`] at spawn.
+/// options therefore live in [`WINDOW_OPTS`] when every window should have them,
+/// and in [`birth_options`] when a window has to be given them as it is created:
+/// `remain-on-exit`, which depends on what the window is *for*, and
+/// `window-size`, which no tmux in the supported range survives as a
+/// server-wide default.
 const SESSION_OPTS: &[(&str, &str)] = &[("status", "off"), ("history-limit", "5000")];
 
 /// Window options applied to **every** window on thurbox's own tmux server.
@@ -2939,15 +2966,15 @@ const SESSION_OPTS: &[(&str, &str)] = &[("status", "off"), ("history-limit", "50
 /// on each window as it is born — would miss any window thurbox did not create.
 /// The blast radius is thurbox's own socket, which holds nothing else.
 ///
-/// Best-effort: `resize-window -x/-y` already flips `window-size` to `manual`
-/// for the window it resizes (measured, tmux 3.2a), and thurbox resizes every
-/// pane it paints — so this is the belt for a window not yet resized, not the
-/// mechanism, and a multiplexer that rejects the option loses nothing.
+/// `window-size` is **not** here, and must not be: made the server-wide default
+/// it kills the server on every window creation from an unattached client (see
+/// [`birth_options`], where it is said per window instead). Best-effort either
+/// way — `resize-window -x/-y` already flips a window to `manual` when it
+/// resizes it (measured, tmux 3.2a), and thurbox resizes every pane it paints.
 const WINDOW_OPTS: &[(&str, &str)] = &[
-    ("window-size", "manual"),
     // The default a window is BORN with, so the one role that wants a corpse
     // asks for it (in the same command list as its creation — see
-    // `retention_suffix`) and nothing else inherits one. Said here rather than
+    // `birth_options`) and nothing else inherits one. Said here rather than
     // left to tmux's own default because the user's `~/.tmux.conf` is read on
     // thurbox's socket too, and `set -g remain-on-exit on` there would have
     // every window born keeping its corpse — a program pane whose death is
@@ -3080,13 +3107,15 @@ pub fn spawn_window(
     }
 
     // Chained into the same command list as the creation, not sent after it —
-    // `retention_suffix` has the measurement. This path passes `-d`, so the new
+    // `birth_options` has the measurement. This path passes `-d`, so the new
     // window is not current and the bare form the control-mode path uses is not
     // available; `{end}` names it instead, which is why the window is created
     // there.
-    if !cfg!(windows) && keeps_dead_pane(&window_name) {
-        tmux.args([";", "set-window-option", "-t", &create_target]);
-        tmux.args(["remain-on-exit", "on"]);
+    if !cfg!(windows) {
+        for (key, value) in birth_options(&window_name) {
+            tmux.args([";", "set-window-option", "-t", &create_target]);
+            tmux.args([key, value]);
+        }
     }
 
     let output = tmux
@@ -4294,9 +4323,8 @@ mod tests {
     }
 
     /// `remain-on-exit` is a WINDOW option, and `window-size` is one too: neither
-    /// can be set for a session, so neither belongs in the session list. The
-    /// first is per role (`keeps_dead_pane`), the second is global to the server
-    /// (`WINDOW_OPTS`).
+    /// can be set for a session, so neither belongs in the session list. Both
+    /// are stated as the window is created (`birth_options`).
     #[test]
     fn the_session_option_list_holds_no_window_options() {
         for (key, _) in SESSION_OPTS {
@@ -4306,6 +4334,32 @@ mod tests {
                  window happens to be current"
             );
         }
+    }
+
+    /// `window-size manual` may be said for a window, never for the server.
+    ///
+    /// tmux works out a window's size *before* the window exists
+    /// (`spawn_window` → `default_window_size(…, w = NULL)`) and the manual
+    /// branch of `clients_calculate_size` reads `w->manual_sx` with no NULL
+    /// check, so a server whose default is `manual` dies on the next
+    /// `new-window` from an unattached client — every release that has the
+    /// option (3.3 … 3.6). Measured on 3.5a: `server exited unexpectedly` every
+    /// time with the server-wide write, a pane id every time without it.
+    #[test]
+    fn the_server_wide_window_options_do_not_size_windows_by_hand() {
+        for (key, value) in WINDOW_OPTS {
+            assert!(
+                *key != "window-size",
+                "a server-wide `window-size {value}` kills the server on the \
+                 next window creation; say it per window (`birth_options`)"
+            );
+        }
+        assert!(
+            birth_options("tb-anything")
+                .iter()
+                .any(|(key, value)| *key == "window-size" && *value == "manual"),
+            "the window that is created still has to be told"
+        );
     }
 
     /// A listed window, as `discover` would have reported it.

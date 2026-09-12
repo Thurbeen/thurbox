@@ -47,6 +47,20 @@ fn cleanup() {
     let _ = tmux(&["kill-server"]);
 }
 
+/// What `window-size` says for the window holding `pane`, or for the server when
+/// `pane` is `None`.
+fn window_size(pane: Option<&str>) -> String {
+    let out = match pane {
+        Some(pane) => tmux(&["show-options", "-w", "-t", pane, "window-size"]),
+        None => tmux(&["show-options", "-w", "-g", "window-size"]),
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    match text.split_whitespace().nth(1) {
+        Some(value) => value.to_string(),
+        None => "<unset>".to_string(),
+    }
+}
+
 /// What `remain-on-exit` says for the window holding `pane`, or `"<unset>"` when
 /// the window carries no value of its own — which is the failure this guards:
 /// an option nobody set is an option that was never inherited either.
@@ -217,6 +231,10 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
 /// created this way with the option sent afterwards were gone every time
 /// (measured, tmux 3.2a, `no such window`). `exit 7` stands in for the real
 /// cause — a missing agent binary, a supported state since #1104.
+///
+/// Not the same failure as the `server exited unexpectedly` CI reported, which
+/// was `window-size` (see `a_window_is_born_sized_by_hand`) — the two produce
+/// the same string from different causes.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     if !have_tmux() {
@@ -338,5 +356,70 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     assert_eq!(
         retention, "on",
         "and the retention must have landed on it, not on its namesake"
+    );
+}
+
+/// A window thurbox creates sizes itself, and the **server** never does.
+///
+/// `window-size manual` is what keeps a window from being resized to the
+/// smallest attached client. Said server-wide it is fatal: tmux works out a
+/// window's size before the window exists (`spawn_window` calls
+/// `default_window_size` with `w = NULL`) and the manual branch of
+/// `clients_calculate_size` reads `w->manual_sx` with no NULL check, so the
+/// server dies on the next `new-window` from an unattached client — which is
+/// every headless spawn. Measured, tmux 3.5a: with `set-option -w -g
+/// window-size manual` every `new-window` answered `server exited
+/// unexpectedly`; with the same option said per window, a pane id every time.
+/// Unguarded in 3.3 through 3.6 and guarded only on tmux master; 3.2a — the
+/// supported floor — predates the option, which is why a machine with 3.2a
+/// cannot see the failure at all.
+///
+/// The assertion is therefore about the *configuration*, not the crash: it is
+/// the one form that fails the same way on every tmux, including the one this
+/// machine has.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_is_born_sized_by_hand_and_the_server_is_not() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", dir.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    thurbox::paths::set_test_dir(dir.path());
+
+    cleanup();
+
+    let spawned = thurbox::agent::tmux::spawn_window(
+        "55555555-5555-4555-8555-555555555555",
+        "hand-sized",
+        "sh",
+        &["-c".to_string(), "sleep 300".to_string()],
+        Some(dir.path()),
+        &HashMap::new(),
+    );
+    let pane = match spawned {
+        Ok(pane) if !pane.is_empty() => pane,
+        other => {
+            cleanup();
+            panic!("the agent window could not be spawned: {other:?}");
+        }
+    };
+
+    let window = window_size(Some(&pane));
+    let server = window_size(None);
+    cleanup();
+
+    assert_eq!(
+        window, "manual",
+        "a window thurbox creates must size itself rather than follow the \
+         smallest attached client"
+    );
+    assert_ne!(
+        server, "manual",
+        "and the server must not, or the next window creation from an \
+         unattached client takes the whole server down (tmux 3.3 … 3.6)"
     );
 }
