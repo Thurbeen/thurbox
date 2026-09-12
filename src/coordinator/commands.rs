@@ -407,7 +407,7 @@ impl App {
         program: &str,
         argv: &[String],
         close: bool,
-        keys: Option<&str>,
+        keys: Option<&[u8]>,
     ) {
         let key = thurbox::kernel::terminal::ProgramKey::new(owner, name);
         if close {
@@ -448,10 +448,7 @@ impl App {
         // than silently dropped — "the editor did not open the file" with no reason
         // is the failure this whole channel exists to avoid.
         if let Some(keys) = keys {
-            if self
-                .terminals
-                .send_to_program(&key, keys.as_bytes().to_vec())
-            {
+            if self.terminals.send_to_program(&key, keys.to_vec()) {
                 self.changed_this_frame = true;
                 return;
             }

@@ -255,10 +255,17 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
             level: get_string("level"),
             file: get_string("file"),
             action: get_string("action"),
-            // Bytes for a program pane this plugin already started. Read as a
-            // plain string so `"\27"` or `"\r"` written in Lua arrive as the
-            // bytes they are — the pane's stdin takes bytes, not key names.
-            keys: get_string("keys"),
+            // Bytes for a program pane this plugin already started. Read as
+            // bytes and never through a Rust `String`: `"\27"` and `"\r"` are the
+            // point of the field, and a Lua string may hold a sequence that is
+            // not UTF-8 at all — a keyboard escape for a program that speaks its
+            // own encoding. Converted, such a field would be dropped whole and
+            // silently, which reads as "the editor ignored the file" with no
+            // error anywhere. The pane's stdin takes bytes, not text.
+            keys: opts
+                .as_ref()
+                .and_then(|t| t.get::<Option<mlua::LuaString>>("keys").ok().flatten())
+                .map(|keys| keys.as_bytes().to_vec()),
             // A Lua array of session ids. Read here rather than as text so a
             // plugin cannot build an order by string concatenation.
             list: opts

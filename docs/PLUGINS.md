@@ -1087,7 +1087,8 @@ command("program", { text = "editor", keys = ":e " .. path .. "\r" })
 ```
 
 The bytes reach the program's stdin exactly as if they had been typed, so `\r`
-is Enter and `\27` is Escape; `text` names the pane and nothing is started. This
+is Enter and `\27` is Escape — and because a Lua string is bytes, a sequence that
+is not UTF-8 arrives as written; `text` names the pane and nothing is started. This
 is what makes an editor pane worth keeping: opening a second file is a line typed
 at the editor you have, not a second one paid for from scratch. It is refused,
 and reported, when no program of that name is running — and it needs the same

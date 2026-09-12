@@ -216,7 +216,11 @@ pub enum Command {
         /// Sent WITH a program, it means "type at it, or start it if it is not
         /// running" — the coordinator picks, because whether the pane is alive
         /// is not something a plugin can read. See `apply_program`.
-        keys: Option<String>,
+        ///
+        /// Bytes, not text: what a program is told is a keystroke sequence, and
+        /// a plugin is free to write one its program understands and UTF-8 does
+        /// not.
+        keys: Option<Vec<u8>>,
     },
     /// Open a session's working directory in the configured editor.
     ///
@@ -836,7 +840,10 @@ pub struct Args {
     /// Arguments for a program a plugin asked to run.
     pub argv: Vec<String>,
     /// Bytes to type into a program a plugin already started.
-    pub keys: Option<String>,
+    ///
+    /// Read off the Lua table as bytes, so a sequence that is not UTF-8 arrives
+    /// rather than vanishing — see `install_command`.
+    pub keys: Option<Vec<u8>>,
     /// Every other scalar field of the options table, for a command that
     /// forwards them whole — an event's payload.
     pub payload: Vec<(String, super::events::Field)>,
@@ -1411,26 +1418,26 @@ mod tests {
     /// and it is not a way to close one.
     #[test]
     fn a_program_command_can_type_into_a_pane_it_already_started() {
-        let ask = |keys: Option<&str>, program: &str, action: Option<&str>| {
+        let ask = |keys: Option<&[u8]>, program: &str, action: Option<&str>| {
             Command::parse(
                 "program",
                 Args {
                     owner: "plugins/50_editor.lua".into(),
                     text: Some("editor".into()),
                     repo: (!program.is_empty()).then(|| program.to_string()),
-                    keys: keys.map(str::to_string),
+                    keys: keys.map(<[u8]>::to_vec),
                     action: action.map(str::to_string),
                     ..Args::default()
                 },
             )
         };
 
-        let typed = ask(Some(":e /tmp/x\r"), "", None).expect("keys need no program");
+        let typed = ask(Some(b":e /tmp/x\r"), "", None).expect("keys need no program");
         match typed {
             Command::Program {
                 keys, close, name, ..
             } => {
-                assert_eq!(keys.as_deref(), Some(":e /tmp/x\r"));
+                assert_eq!(keys.as_deref(), Some(b":e /tmp/x\r".as_slice()));
                 assert!(!close);
                 assert_eq!(name, "editor");
             }
@@ -1439,16 +1446,16 @@ mod tests {
 
         // Empty keys are nothing to say, not a request to start something with no
         // program — so they fall through to the ordinary refusal.
-        let error = ask(Some(""), "", None).expect_err("should refuse");
+        let error = ask(Some(b""), "", None).expect_err("should refuse");
         assert!(error.contains("program"), "{error}");
 
         // Two different things to do to one pane in one call.
-        let error = ask(Some("q"), "", Some("close")).expect_err("should refuse");
+        let error = ask(Some(b"q"), "", Some("close")).expect_err("should refuse");
         assert!(error.contains("close"), "{error}");
 
         // Keys AND a program is the fallback form: both survive parsing, and
         // `apply_program` is what chooses between them from the pane's liveness.
-        let both = ask(Some(":e /tmp/x\r"), "nvim", None).expect("keys may carry a fallback");
+        let both = ask(Some(b":e /tmp/x\r"), "nvim", None).expect("keys may carry a fallback");
         match both {
             Command::Program {
                 keys,
@@ -1456,7 +1463,7 @@ mod tests {
                 close,
                 ..
             } => {
-                assert_eq!(keys.as_deref(), Some(":e /tmp/x\r"));
+                assert_eq!(keys.as_deref(), Some(b":e /tmp/x\r".as_slice()));
                 assert_eq!(program, "nvim");
                 assert!(!close);
             }

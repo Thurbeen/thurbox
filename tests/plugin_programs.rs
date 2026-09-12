@@ -12,6 +12,7 @@
 //! that is absent until you read the error, and a pane resolved to the wrong owner
 //! looks like nothing at all until two plugins both want `watch`.
 
+use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{Capability, LuaHost, RenderContext};
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
 
@@ -233,6 +234,44 @@ fn a_key_for_an_absent_program_is_not_reported_as_delivered() {
     assert!(
         !terminals.send_to_program(&key, b"q".to_vec()),
         "nothing is running, so nothing accepted it"
+    );
+}
+
+/// `keys` is a byte string, and a byte that is not UTF-8 must arrive anyway.
+///
+/// The failure this pins is silent: read through a Rust `String`, a sequence Lua
+/// is perfectly happy to hold — an escape for a program that speaks its own
+/// encoding — was dropped whole, leaving a command that says "start it" where the
+/// plugin wrote "type at it". Nothing reports that, and the pane looks like an
+/// editor that ignored the file.
+#[test]
+fn keys_that_are_not_utf8_reach_the_command_intact() {
+    let pane = r#"return {
+  name = "editor",
+  slot = "center",
+  capabilities = { "program" },
+  render = function()
+    command("program", { text = "editor", keys = "\27\255q\r" })
+    return { type = "surface", program = "editor", fill = 1 }
+  end,
+}"#;
+    let (_home, ui) = interface(&[("91_editor.lua", pane)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    render(&host, "editor");
+
+    let keys = host
+        .drain_commands()
+        .into_iter()
+        .find_map(|command| match command {
+            Command::Program { keys, .. } => Some(keys),
+            _ => None,
+        })
+        .expect("the render asked for a program");
+    assert_eq!(
+        keys.as_deref(),
+        Some(b"\x1b\xffq\r".as_slice()),
+        "every byte the plugin wrote, including the one that is not UTF-8"
     );
 }
 
