@@ -267,3 +267,76 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
          luck of timing"
     );
 }
+
+/// And it still leaves it when an older window already answers to its name.
+///
+/// `tb-<session name>` is not unique — two sessions can share a name, which is
+/// what the `@thurbox_session` stamp exists for — and tmux resolves a duplicate
+/// name to the **lowest index**, which is the older window (measured, tmux
+/// 3.2a). A retention chained by name would therefore land on the wrong window
+/// and leave the new one with the server-wide `off`, which is the failure this
+/// file is about, one collision away.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_namesake_does_not_take_the_new_windows_retention() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", dir.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    thurbox::paths::set_test_dir(dir.path());
+
+    cleanup();
+
+    // The older namesake, from the other session that shares the name. Spawned
+    // through the same path, so it is a real one rather than a hand-made window.
+    let first = thurbox::agent::tmux::spawn_window(
+        "33333333-3333-4333-8333-333333333333",
+        "same-name",
+        "sh",
+        &["-c".to_string(), "sleep 300".to_string()],
+        Some(dir.path()),
+        &HashMap::new(),
+    );
+    if !matches!(&first, Ok(pane) if !pane.is_empty()) {
+        cleanup();
+        panic!("the first window could not be spawned: {first:?}");
+    }
+
+    let second = thurbox::agent::tmux::spawn_window(
+        "44444444-4444-4444-8444-444444444444",
+        "same-name",
+        "sh",
+        &["-c".to_string(), "exit 7".to_string()],
+        Some(dir.path()),
+        &HashMap::new(),
+    );
+    let pane = match second {
+        Ok(pane) if !pane.is_empty() => pane,
+        other => {
+            cleanup();
+            panic!("the second window could not be spawned: {other:?}");
+        }
+    };
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let retention = remain_on_exit(&pane);
+    let listed = tmux(&["list-windows", "-a", "-F", "#{pane_id}"]);
+    let alive = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .any(|line| line == pane);
+    cleanup();
+
+    assert!(
+        alive,
+        "the second window must survive its instant exit even though an older \
+         window answers to the same name"
+    );
+    assert_eq!(
+        retention, "on",
+        "and the retention must have landed on it, not on its namesake"
+    );
+}

@@ -3031,14 +3031,25 @@ pub fn spawn_window(
     TmuxBackend::local().ensure_session_configured()?;
 
     let window_name = agent_window_name(session_name);
-    let mut tmux = local_mux_command(&[
-        "new-window",
-        "-d",
-        "-t",
-        &format!("{TMUX_SESSION}:"),
-        "-n",
-        &window_name,
-    ]);
+    // Created at the END of the session's window list, so the retention below
+    // can name the window this command just made: `{end}` is the last window
+    // and `-a` appends after it, so within this one command list `{end}` is
+    // exactly the new one. The window's *name* cannot say that — `tb-<session
+    // name>` is not unique (two sessions can share a name, which is why the
+    // stamp exists), and tmux resolves a duplicate name to the lowest index,
+    // which is the older window (measured, tmux 3.2a). psmux keeps the plain
+    // session target: it gets no retention write either, and the shorthand is
+    // tmux's.
+    let create_target = if cfg!(windows) {
+        format!("{TMUX_SESSION}:")
+    } else {
+        format!("{TMUX_SESSION}:{{end}}")
+    };
+    let mut tmux = local_mux_command(&["new-window", "-d"]);
+    if !cfg!(windows) {
+        tmux.arg("-a");
+    }
+    tmux.args(["-t", &create_target, "-n", &window_name]);
     if !cfg!(windows) {
         tmux.args(["-P", "-F", "#{pane_id}"]);
     }
@@ -3070,12 +3081,11 @@ pub fn spawn_window(
 
     // Chained into the same command list as the creation, not sent after it —
     // `retention_suffix` has the measurement. This path passes `-d`, so the new
-    // window is not current and the option has to name it; a same-named window
-    // from another session with the same name would take the write instead
-    // (tmux resolves such a target to the lowest index), which leaves that rare
-    // case exactly where it was before.
+    // window is not current and the bare form the control-mode path uses is not
+    // available; `{end}` names it instead, which is why the window is created
+    // there.
     if !cfg!(windows) && keeps_dead_pane(&window_name) {
-        tmux.args([";", "set-window-option", "-t", &window_name]);
+        tmux.args([";", "set-window-option", "-t", &create_target]);
         tmux.args(["remain-on-exit", "on"]);
     }
 
