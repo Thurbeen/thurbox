@@ -1,8 +1,10 @@
 default_stages: [pre-commit]
+# No `pre-push`: the hook that used it walked the branch's commit messages, and
+# squash merge discards those — the pull request title is the commit that lands
+# on main, and .github/workflows/pr-title.yml is what validates it.
 default_install_hook_types:
   - commit-msg
   - pre-commit
-  - pre-push
 repos:
   - repo: local
     hooks:
@@ -149,14 +151,3 @@ repos:
         language: system
         files: ^website/.*\.js$
         pass_filenames: true
-
-      - id: cocogitto-check
-        name: Check commit history
-        # Not `cog check`: it cannot exempt the no-mistakes gate's own fix
-        # commits, whose subject that binary hardcodes. The script is what CI
-        # runs, and holds every other commit to the same cog.toml.
-        entry: scripts/ci/check-conventional-commits.sh
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]

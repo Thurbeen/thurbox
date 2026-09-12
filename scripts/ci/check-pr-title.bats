@@ -22,9 +22,16 @@ setup() {
   git init -q -b main .
   git config user.name tester
   git config user.email tester@example.invalid
-  # cog.toml is read by `cog verify` from the working directory, so the scope
-  # allowlist a repository declares is part of what the checker enforces.
-  printf 'scopes = ["core", "cli"]\n' >cog.toml
+  # cog.toml is read by `cog verify` from the working directory, so the type
+  # and scope allowlists a repository declares are part of what the checker
+  # enforces — and are what it must quote back when it rejects one.
+  cat >cog.toml <<'TOML'
+scopes = ["core", "cli"]
+
+[commit_types]
+feat = { changelog_title = "Features" }
+fix = { changelog_title = "Bug Fixes" }
+TOML
 }
 
 @test "accepts a conventional title" {
@@ -52,6 +59,26 @@ setup() {
 @test "rejects a scope outside the allowlist" {
   run "$CHECKER" "fix(lint): keep the caret where the frame put it" 1044
   [ "$status" -eq 1 ]
+}
+
+# The rejection a contributor actually sees. `cog verify` names only the token
+# it disliked ("Commit scope `lint` not allowed"), so a first-time author has
+# to find and read cog.toml to learn the set. Both open fork pull requests
+# (#1107 `fix(program)`, #1108 `fix(clipboard)`) failed exactly this way.
+@test "a rejected scope's message names the scopes cog.toml allows" {
+  run "$CHECKER" "fix(lint): keep the caret where the frame put it" 1044
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"allowed scopes"* ]]
+  [[ "$output" == *"core"* ]]
+  [[ "$output" == *"cli"* ]]
+}
+
+@test "a rejected type's message names the types cog.toml allows" {
+  run "$CHECKER" "wibble(core): keep the caret where the frame put it" 1044
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"allowed types"* ]]
+  [[ "$output" == *"feat"* ]]
+  [[ "$output" == *"fix"* ]]
 }
 
 @test "accepts a breaking change declared in the title" {

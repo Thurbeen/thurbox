@@ -213,9 +213,18 @@ cargo deny check bans licenses sources                    # Dep policy
 
 ## Conventional Commits
 
-All commits must follow
-[Conventional Commits](https://www.conventionalcommits.org/).
-Enforced by cocogitto via pre-commit hooks.
+Pull requests land by **squash merge**, so the commit on `main` is
+built from the pull request **title** plus GitHub's own `(#N)`
+suffix — not from any commit on the branch. That title is what
+`cog bump --auto` reads for the release decision and what the
+changelog quotes, and `.github/workflows/pr-title.yml` (the required
+`PR Title` check, via `scripts/ci/check-pr-title.sh`) is the only
+thing that validates it. Title the pull request after its most
+significant change.
+
+Branch commits are held to the same convention locally by the
+`commit-msg` hook, for a legible history; nothing in CI checks them,
+because the squash throws them away.
 
 - **Types**: feat, fix, perf, refactor, docs, style, test,
   chore, ci, build, revert
@@ -240,14 +249,16 @@ event loop are in the `thurbox-kernel` skill.
 
 ## Pre-commit Hooks
 
-19 hooks run automatically via `prek` (Rust-based pre-commit
+18 hooks run automatically via `prek` (Rust-based pre-commit
 framework). Install with `prek install`. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
 - **pre-commit**: fmt, clippy, check, nextest, architecture,
   deny, doc, bats (the install script), shellcheck, rumdl, selene,
   stylua, prettier, htmlhint, stylelint, eslint
-- **pre-push**: commit history check (`cog check`)
+
+There is no **pre-push** stage: the hook that used it walked the
+branch's commit messages, which squash merge discards.
 
 The bats hook has a CI twin (`install-script`), so the suite that
 guards that script is actually run rather than merely present.

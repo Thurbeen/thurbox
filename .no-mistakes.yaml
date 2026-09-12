@@ -92,15 +92,16 @@ ci:
 
 # The default subject (`no-mistakes({{.Step}}): ...`) is not a conventional
 # commit: `no-mistakes` is not one of cog.toml's commit types, so `cog verify`
-# in the commit-msg hook and `cog check` in pre-push and CI would both reject
-# it. `chore` is scopeless (cog.toml enumerates its valid scopes and a gate fix
-# spans them), is omitted from the changelog, and drives no version bump - the
-# real feat/fix commit on the branch decides the release.
+# in the commit-msg hook rejects it. `chore` is scopeless (cog.toml enumerates
+# its valid scopes and a gate fix spans them), is omitted from the changelog,
+# and drives no version bump - and under squash merge no branch commit reaches
+# the changelog or the release decision anyway; the pull request title does.
 #
 # It does not reach the subjects the binary hardcodes for the commits it
 # authors itself (`no-mistakes: apply CI fixes`, `no-mistakes: apply agent
-# fixes`), which are not templatable and not conventional either -
-# scripts/ci/check-conventional-commits.sh exempts exactly those two.
+# fixes`), which are not templatable and not conventional either. Nothing in
+# CI walks branch commits any more, so those pass; the commit-msg hook is the
+# one place they can still be refused.
 commit:
   fix_message: "chore: no-mistakes {{.Step}} - {{.Summary}}"
 

@@ -64,9 +64,12 @@ when known CVEs affect the dependency tree.
 
 ### 6. Conventional commits
 
-Every commit message is validated against the Conventional Commits spec
-by `cocogitto`. Non-conforming commits are rejected
-by the `commit-msg` hook.
+Every commit that reaches `main` is validated against the Conventional Commits
+spec by `cocogitto`. Pull requests land by squash merge, so that commit is the
+pull request **title**, and the required `PR Title` check
+(`scripts/ci/check-pr-title.sh`) is what rejects a non-conforming one. The
+`commit-msg` hook holds a branch's own commits to the same spec locally, for a
+legible history; squash discards them, so nothing in CI checks them.
 
 ### 7. The interface is a plugin kernel, and its five rules hold
 
@@ -172,7 +175,7 @@ binaries have correct versions while keeping the source tree clean.
 | Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit |
 | Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` |
 | Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` |
-| Conventional commits | `cocogitto` (`cog verify`) | `cog.toml` |
+| Conventional commits | `scripts/ci/check-pr-title.sh` (required `PR Title` check) + `cog verify` in `commit-msg` | `cog.toml` |
 | Plugin-kernel rules | `tests/kernel_mvp.rs` + `thurbox.yml` (selene) + `.luarc.json` (luals) | `thurbox.yml` |
 | Backend-first model | Code review | — |
 | Logging off stdout | Code review | — |
