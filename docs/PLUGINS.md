@@ -1078,6 +1078,41 @@ survive being concatenated into a command line.
 Give one up with `command("program", { text = "watch", action = "close" })`. A
 plugin that is removed, renamed or turned off has its panes released for it.
 
+**Telling a running program something.** Starting is idempotent, so asking again
+with different `args` does nothing — the pane is already there. To change what a
+long-lived program is showing, type at it:
+
+```lua
+command("program", { text = "editor", keys = ":e " .. path .. "\r" })
+```
+
+The bytes reach the program's stdin exactly as if they had been typed, so `\r`
+is Enter and `\27` is Escape; `text` names the pane and nothing is started. This
+is what makes an editor pane worth keeping: opening a second file is a line typed
+at the editor you have, not a second one paid for from scratch. It is refused,
+and reported, when no program of that name is running — and it needs the same
+`program` capability starting one does, since driving a live process is the same
+privilege as beginning it.
+
+**Type it, or start it.** Send `keys` *and* a program and the kernel picks: the
+keys go to a pane that is running, and a pane that is not is started from `repo`
+and `args` instead, which is expected to leave it in the state the keys were for.
+
+```lua
+command("program", {
+  text = "editor",
+  repo = "nvim",
+  args = { path },                    -- if it has to be started
+  keys = ":e " .. path .. "\r",       -- if it is already there
+})
+```
+
+Do not try to make this decision in the plugin. Whether a pane is alive is not in
+the snapshot, and a plugin that kept the answer in its own `state` would be wrong
+after an interface reload, which keeps panes but re-runs the file. The kernel is
+asking the pane. The keys are **not** sent to a program it just started: a process
+that has not begun reading yet would lose them.
+
 **Learning that it ended.** A program that exits leaves its pane holding a
 finished screen; the kernel does not reap it, because asking again is what
 restarts it. Subscribe to know:
