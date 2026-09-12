@@ -42,7 +42,7 @@ const SOCKET: &str = "thurbox-program-exit-e2e";
 
 /// Generous next to the notification, which arrives with the exit: the budget is
 /// for a loaded machine starting a tmux server, not for the signal itself.
-const DEADLINE: Duration = Duration::from_secs(10);
+const DEADLINE: Duration = Duration::from_secs(20);
 
 fn have_tmux() -> bool {
     Command::new("tmux")
@@ -56,6 +56,42 @@ fn cleanup() {
     let _ = Command::new("tmux")
         .args(["-L", SOCKET, "kill-server"])
         .output();
+}
+
+/// Starts the session with **`remain-on-exit on`** (see the note at the top),
+/// kept out of the async test body: a blocking `Command::output` call written
+/// directly in an `async fn` blocks the executor thread it runs on.
+fn start_session(dir: &std::path::Path) -> std::process::Output {
+    let started = Command::new("tmux")
+        .args([
+            "-L",
+            SOCKET,
+            "new-session",
+            "-d",
+            "-s",
+            "thurbox",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .env("TMUX_TMPDIR", dir)
+        .output()
+        .expect("run tmux");
+    let _ = Command::new("tmux")
+        .args([
+            "-L",
+            SOCKET,
+            "set-option",
+            "-t",
+            "thurbox",
+            "remain-on-exit",
+            "on",
+        ])
+        .env("TMUX_TMPDIR", dir)
+        .output()
+        .expect("run tmux");
+    started
 }
 
 /// A tokio runtime is required, not decorative: wiring a pane spawns its writer
@@ -77,36 +113,7 @@ async fn a_program_that_ends_reports_that_it_ended() {
     thurbox::paths::set_test_dir(dir.path());
 
     cleanup();
-    let started = Command::new("tmux")
-        .args([
-            "-L",
-            SOCKET,
-            "new-session",
-            "-d",
-            "-s",
-            "thurbox",
-            "-x",
-            "80",
-            "-y",
-            "24",
-        ])
-        .env("TMUX_TMPDIR", dir.path())
-        .output()
-        .expect("run tmux");
-    // The session thurbox actually runs: see the note at the top.
-    let _ = Command::new("tmux")
-        .args([
-            "-L",
-            SOCKET,
-            "set-option",
-            "-t",
-            "thurbox",
-            "remain-on-exit",
-            "on",
-        ])
-        .env("TMUX_TMPDIR", dir.path())
-        .output()
-        .expect("run tmux");
+    let started = start_session(dir.path());
     if !started.status.success() {
         cleanup();
         eprintln!(
@@ -127,12 +134,23 @@ async fn a_program_that_ends_reports_that_it_ended() {
     // is not padding: a program that exits instantly takes its pane with it
     // before `spawn` can size the window, and the spawn fails with "can't find
     // pane" — which this test used to report as a skipped environment and pass
-    // on, proving nothing at all.
+    // on, proving nothing at all. It also has to outlive `TmuxBackend::register_pane`'s
+    // own `display-message` round trip (registering which window the pane's
+    // death will be announced on, so the notification has somewhere to land):
+    // that round trip's own doc comment spells out that a program which exits
+    // before it returns costs this pane its exit notification *permanently* —
+    // the one-shot `%window-close` for that window has already come and gone
+    // with nothing yet in `pane_windows` to match it against, and no later
+    // wait, however long, makes it arrive a second time. On a loaded machine
+    // (this test's own failure mode: a full parallel `nextest` run stacking
+    // dozens of other tmux/pty-driving tests against a shared CPU budget) that
+    // round trip can stretch well past a few seconds. 1s cut it close, 3s
+    // still lost the race once in a large run; 8s gives it real headroom.
     let pane = ProgramPane::spawn(
         std::sync::Arc::clone(&backend) as std::sync::Arc<dyn SessionBackend>,
         "tbp-test-exiting",
         "sh",
-        &["-c".to_string(), "printf started; sleep 1".to_string()],
+        &["-c".to_string(), "printf started; sleep 8".to_string()],
         Some(dir.path()),
         &HashMap::new(),
         24,
@@ -151,7 +169,7 @@ async fn a_program_that_ends_reports_that_it_ended() {
 
     let deadline = Instant::now() + DEADLINE;
     while !pane.has_exited() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let exited = pane.has_exited();
     cleanup();
