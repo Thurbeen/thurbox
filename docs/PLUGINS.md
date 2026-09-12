@@ -640,7 +640,8 @@ A pane used to learn that the world changed only by being rendered and diffing
 the snapshot itself. Declare what you listen for and the kernel calls you **once
 per change**, off the render path, with the tables current: a session appeared,
 disappeared, changed status, name or branch; the selection or the focused pane
-moved; a command a plugin issued finished or failed; the interface reloaded. The
+moved; a command a plugin issued finished or failed; a program you started
+ended; the interface reloaded. The
 whole list, with each payload, is `thurbox-cli plugin events` and the last
 section of `F1`.
 
@@ -659,6 +660,23 @@ veto, only write state and enqueue. It runs under the render's instruction
 budget, and one that throws costs its own subscription for that event: the other
 subscribers still run, your pane still draws, and the failure is reported once
 per event in the message band rather than painted into your rect every frame.
+
+**One event is addressed rather than broadcast.** `program.exited` goes only to
+the plugin whose pane it was. A program pane belongs to the plugin that started
+it and no other plugin can even name it, so the news that it ended has the same
+owner — and two plugins may both call their pane `editor`, which a broadcast
+would have each of them acting on. Every other event is about something every
+pane can already see in the snapshot, and is delivered to every subscriber.
+
+`program.exited` fires for every program **this run of the interface started**,
+however it ended — including one that died before the loop looked at it again,
+and including twice in a row when a program was restarted and its replacement
+also ended before the next look (two programs really did end). One death,
+though, is one event: a program restarted on a *later* frame does not re-announce
+the ending that was already reported, so a handler that restarts on the event
+restarts once. What it does not announce is a corpse adopted from a *previous*
+run: that program stopped while nothing was watching, and reporting it at boot
+would tell a pane its editor had just closed.
 
 **A subscription to a name nothing emits refuses to load** (`plugin check` says
 which), because a handler that never fires is the one failure with no symptom.
@@ -1059,6 +1077,22 @@ survive being concatenated into a command line.
 
 Give one up with `command("program", { text = "watch", action = "close" })`. A
 plugin that is removed, renamed or turned off has its panes released for it.
+
+**Learning that it ended.** A program that exits leaves its pane holding a
+finished screen; the kernel does not reap it, because asking again is what
+restarts it. Subscribe to know:
+
+```lua
+events = { "program.exited" },
+
+on_event = function(name, payload)
+  if name == "program.exited" then       -- payload.name, payload.program
+    state.showing = nil                  -- draw something else, or move on
+  end
+end,
+```
+
+It fires once, on the transition, and only for **your** panes.
 
 **Why `thurbox.granted` and not `if not program then`.** A capability is normally
 withheld by *absence* — that is rule 4, and it is why `run` is simply not a

@@ -420,6 +420,109 @@ impl WindowRole {
     }
 }
 
+/// Should a window of this name keep its pane's frame after the pane dies?
+///
+/// Yes for an agent (`tb-`) and no for everything else, and the difference is
+/// **how each one's death is noticed**:
+///
+/// - A session's liveness is read from a *listing* (`#{pane_dead}`, see
+///   [`WindowIndex`]), which a kept window answers truthfully. Keeping it is the
+///   point: the agent's last screen — the error it printed — stays attachable,
+///   and `live_agent_window` still refuses to call the corpse an agent.
+/// - A shell (`tbs-`) and a plugin's program (`tbp-`) are read from their pane's
+///   output *stream*, and tmux announces a pane's death only by closing its
+///   window. A kept window is therefore a death that is never announced: the
+///   pane paints a frozen grid, `start_program` answers "already running" for
+///   ever, and the editor cannot be reopened (measured on a live session
+///   2026-09-11).
+///
+/// The shell only gets half of that today, and deliberately so for now: `off`
+/// makes its death *reportable*, and nothing reports it. `Session::has_exited`
+/// reads the agent's pane alone, `ShellPane`'s own flag has no reader anywhere,
+/// and `ensure_shell_pane` returns early on a slot that is already filled — so
+/// typing `exit` in a `Ctrl+T` shell still leaves a frozen grid that `Ctrl+T`
+/// will not replace. That is what it did before this too, by accident rather
+/// than by design. Dropping the shell pane when its reader ends is the fix, and
+/// it is a different change from this one: it decides what happens to a pane the
+/// user is looking at, where this only decides whether tmux tells anyone.
+///
+/// Stated per window because `remain-on-exit` is a window option that cannot be
+/// set for a session (see [`SESSION_OPTS`]) — and stated even when the answer is
+/// tmux's own default, because the user's `~/.tmux.conf` is read on thurbox's
+/// socket too and may have turned it on globally.
+fn keeps_dead_pane(window_name: &str) -> bool {
+    matches!(
+        WindowRole::from_window_name(window_name),
+        Some(WindowRole::Agent)
+    )
+}
+
+/// The window options a window thurbox creates is given **in the same command
+/// list as its creation**, in order.
+///
+/// Both are window options that cannot be waited for. A window is born with the
+/// server-wide default ([`WINDOW_OPTS`]), and "afterwards" was a second message
+/// to tmux: a command that exits instantly (a missing agent binary, which #1104
+/// made a supported state rather than an error) dies in that gap, takes its
+/// window with it, and if that window is the last one on the server tmux exits.
+///
+/// Measured, tmux 3.2a: five windows created with `sh -c 'exit 7'` and
+/// `remain-on-exit` set by a second call were gone every time (`no such
+/// window`); created with the option chained into the same command list, the
+/// corpse was kept every time. A command list runs to completion before the
+/// server returns to its event loop, so there is no moment in it for a pane to
+/// be reaped.
+fn birth_options(window_name: &str) -> [(&'static str, &'static str); 2] {
+    [
+        // Both answers are stated, not just the one that differs from the
+        // default: the server-wide value is a best-effort write of its own
+        // ([`WINDOW_OPTS`]), and a program window that inherited `on` from a
+        // user's `~/.tmux.conf` because that write failed is a pane whose death
+        // is never announced. It costs nothing to say — this is the same
+        // message, not another one.
+        (
+            "remain-on-exit",
+            if keeps_dead_pane(window_name) {
+                "on"
+            } else {
+                "off"
+            },
+        ),
+        // Said per window because it **must not** be the server-wide default:
+        // tmux asks for a window's size before that window exists
+        // (`spawn_window` calls `default_window_size(…, w = NULL)`), and the
+        // manual branch of `clients_calculate_size` reads `w->manual_sx`
+        // without checking — a NULL dereference that takes the whole server
+        // down. Measured, tmux 3.5a: with `set-option -w -g window-size
+        // manual`, *every* `new-window` on a server with no attached client
+        // answered `server exited unexpectedly`; with the same option said per
+        // window it answers with a pane id. Unguarded in every release that has
+        // the option (3.3 … 3.6; guarded only on tmux master), and 3.2a — the
+        // supported floor — predates it. Stating it after the window exists is
+        // what `main` did by accident, where a session-scoped write landed on
+        // the session's current window and on no other.
+        ("window-size", "manual"),
+    ]
+}
+
+/// [`birth_options`] as the tail of a control-mode command list.
+///
+/// The target is left unsaid on purpose: `new-window` without `-d` makes the
+/// window it created current, and the bare form is therefore exactly that
+/// window — including when an older window of the same name exists, which
+/// `-t <name>` would resolve to instead (measured: the lowest index wins).
+/// The `-d` path cannot use that and names its window; see [`spawn_window`].
+fn birth_options_suffix(window_name: &str, psmux: bool) -> String {
+    if psmux {
+        // psmux has neither option.
+        return String::new();
+    }
+    birth_options(window_name)
+        .iter()
+        .map(|(key, value)| format!(" ; set-window-option {key} {value}"))
+        .collect()
+}
+
 /// Where a listing puts a session's window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
@@ -1101,6 +1204,14 @@ impl TmuxBackend {
             self.tmux_run(&["set-option", "-t", &self.session, key, val])?;
         }
 
+        // Window-level options — see `WINDOW_OPTS` for why these are global to
+        // the server and why failing to set one is not fatal.
+        for (key, val) in WINDOW_OPTS {
+            if let Err(e) = self.tmux_run(&["set-option", "-w", "-g", key, val]) {
+                debug!("window option {key}={val} not set: {e}");
+            }
+        }
+
         Ok(())
     }
 
@@ -1459,6 +1570,34 @@ impl TmuxBackend {
     /// Register a pane sender and return the corresponding reader.
     /// Multiple instances can register the same pane; output will be broadcast to all.
     fn register_pane(&self, pane_id: &str) -> Result<ControlModeReader> {
+        // Asked BEFORE the sender is registered, and best-effort: tmux announces
+        // a pane's death only by the window it was in (`%window-close @3`), and
+        // this round trip is the one chance to learn which that is — afterwards
+        // the pane is gone and nothing can be asked about it. A backend that
+        // cannot answer (psmux) simply keeps the old behaviour: no mapping, so
+        // no EOF from a window close. One round trip per pane attached, on a
+        // path that already spawns or adopts a window.
+        //
+        // Two ways to end up with no mapping, both of which cost this pane the
+        // ability to notice its own death, and neither of which used to leave a
+        // trace: the round trip failing (a reconnecting control mode, a
+        // multiplexer without `display-message`), and the pane dying inside the
+        // round trip — the window close then arrives before there is anything
+        // to match it against. The first is logged here. The second is narrow
+        // and deliberately not paid for: closing it means asking again after
+        // registering, which is a second round trip on every pane attached, to
+        // catch a program that died in the millisecond it took to ask once.
+        let window_id =
+            match self.ctrl_command(&format!("display-message -t {pane_id} -p '#{{window_id}}'")) {
+                Ok(out) => Some(out.trim().to_string()).filter(|id| !id.is_empty()),
+                Err(e) => {
+                    debug!(
+                        "could not learn which window {pane_id} is in ({e:#}); its exit \
+                     will not be announced"
+                    );
+                    None
+                }
+            };
         let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
         self.with_control(|ctrl| {
             let mut senders = ctrl
@@ -1469,6 +1608,14 @@ impl TmuxBackend {
                 .entry(pane_id.to_string())
                 .or_insert_with(Vec::new)
                 .push(tx);
+            drop(senders);
+            if let Some(window_id) = window_id {
+                let mut windows = ctrl
+                    .pane_windows
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("pane_windows lock: {e}"))?;
+                windows.insert(pane_id.to_string(), window_id);
+            }
             Ok(())
         })?;
         Ok(ControlModeReader::new(rx))
@@ -1484,6 +1631,12 @@ impl TmuxBackend {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("pane_senders lock: {e}"))?;
             senders.remove(pane_id);
+            drop(senders);
+            let mut windows = ctrl
+                .pane_windows
+                .lock()
+                .map_err(|e| anyhow::anyhow!("pane_windows lock: {e}"))?;
+            windows.remove(pane_id);
             Ok(())
         })
     }
@@ -1718,8 +1871,11 @@ impl SessionBackend for TmuxBackend {
         };
         let escaped_window_name = quote_arg(window_name);
         let session = &self.session;
+        // The window's own options ride along in the same command list — see
+        // `birth_options` for why neither can be a message of its own.
+        let options = birth_options_suffix(window_name, psmux);
         let cmd = format!(
-            "new-window -t {session} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}"
+            "new-window -t {session} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}{options}"
         );
         let result = self.ctrl_command(&cmd)?;
         let pane_id = result.trim().to_string();
@@ -1801,7 +1957,28 @@ impl SessionBackend for TmuxBackend {
         self.capture_history_seed(backend_id)
     }
 
-    fn find_window(&self, window_name: &str) -> Result<Option<String>> {
+    fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()> {
+        // The guard every neighbour carries, for the reason a target makes it
+        // worth carrying: tmux resolves `-t` as a window *name* as readily as
+        // an id, so a caller passing anything else would quietly set
+        // `remain-on-exit` on whatever window that name picked out.
+        if !control_mode::is_valid_pane_id(backend_id) {
+            bail!("refusing to set remain-on-exit on invalid pane id: {backend_id:?}");
+        }
+        if self.transport.uses_psmux() {
+            return Ok(());
+        }
+        let keep = if keep { "on" } else { "off" };
+        self.tmux_run(&[
+            "set-window-option",
+            "-t",
+            backend_id,
+            "remain-on-exit",
+            keep,
+        ])
+    }
+
+    fn window_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>> {
         // A name lookup rather than an identity one: a program window carries no
         // session id to resolve, only its deterministic name. Matched exactly
         // rather than by prefix — tmux's own name matching is FNMATCH-ish, which
@@ -1813,17 +1990,21 @@ impl SessionBackend for TmuxBackend {
             "-F",
             "#{pane_id}|#{window_name}|#{pane_dead}",
         ])?;
+        let mut found = Vec::new();
         for line in listing.lines() {
             let parts: Vec<&str> = line.splitn(3, '|').collect();
             if parts.len() < 3 || parts[1] != window_name {
                 continue;
             }
-            if parse_pane_dead(parts[2]) || !control_mode::is_valid_pane_id(parts[0]) {
+            // An unparseable id is dropped rather than reported dead: the caller
+            // would try to kill it, and a target tmux cannot resolve is not a
+            // corpse, it is noise.
+            if !control_mode::is_valid_pane_id(parts[0]) {
                 continue;
             }
-            return Ok(Some(parts[0].to_string()));
+            found.push((parts[0].to_string(), parse_pane_dead(parts[2])));
         }
-        Ok(None)
+        Ok(found)
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
@@ -2763,15 +2944,48 @@ fn history_seed_bytes(mut raw: Vec<u8>) -> Vec<u8> {
 ///
 /// Single source of truth for both the TUI and headless paths — applied
 /// (alongside the server-wide options + `default-command`) by
-/// [`TmuxBackend::apply_session_config`]. In particular `remain-on-exit=on` is
-/// required so a failed agent process leaves its tmux window visible with the
-/// error instead of silently vanishing.
-const SESSION_OPTS: &[(&str, &str)] = &[
-    ("remain-on-exit", "on"),
-    ("status", "off"),
-    ("history-limit", "5000"),
-    // Allow each window to size independently of the smallest attached client.
-    ("window-size", "manual"),
+/// [`TmuxBackend::apply_session_config`].
+///
+/// **Session options only.** `set-option -t <session> <key>` does not mean "for
+/// this session" when `<key>` is a *window* option: tmux resolves the target
+/// down to the session's CURRENT window and sets it there (measured, tmux
+/// 3.2a — the option is on `@0` and a window created a moment later does not
+/// have it). Since `apply_session_config` runs on every `ensure_ready`, which
+/// window ends up carrying such an option is an accident of timing. Window
+/// options therefore live in [`WINDOW_OPTS`] when every window should have them,
+/// and in [`birth_options`] when a window has to be given them as it is created:
+/// `remain-on-exit`, which depends on what the window is *for*, and
+/// `window-size`, which no tmux in the supported range survives as a
+/// server-wide default.
+const SESSION_OPTS: &[(&str, &str)] = &[("status", "off"), ("history-limit", "5000")];
+
+/// Window options applied to **every** window on thurbox's own tmux server.
+///
+/// Set with `-w -g` rather than per session: a window option has no session
+/// scope to be set at (see [`SESSION_OPTS`]), and the alternative — setting it
+/// on each window as it is born — would miss any window thurbox did not create.
+/// The blast radius is thurbox's own socket, which holds nothing else.
+///
+/// `window-size` is **not** here, and must not be: made the server-wide default
+/// it kills the server on every window creation from an unattached client (see
+/// [`birth_options`], where it is said per window instead). Best-effort either
+/// way — `resize-window -x/-y` already flips a window to `manual` when it
+/// resizes it (measured, tmux 3.2a), and thurbox resizes every pane it paints.
+const WINDOW_OPTS: &[(&str, &str)] = &[
+    // The default a window is BORN with, so the one role that wants a corpse
+    // asks for it (in the same command list as its creation — see
+    // `birth_options`) and nothing else inherits one. Said here rather than
+    // left to tmux's own default because the user's `~/.tmux.conf` is read on
+    // thurbox's socket too, and `set -g remain-on-exit on` there would have
+    // every window born keeping its corpse — a program pane whose death is
+    // then never announced, since tmux reports a pane's death only by closing
+    // its window.
+    //
+    // Which role loses a race is not a choice between the two: born `off`, an
+    // agent window whose command exits instantly used to vanish before its
+    // `on` arrived, taking the server with it when it was the last one. Neither
+    // role waits on a round trip now.
+    ("remain-on-exit", "off"),
 ];
 
 /// The agent's command as an **absolute path**, resolved against thurbox's own
@@ -2844,14 +3058,25 @@ pub fn spawn_window(
     TmuxBackend::local().ensure_session_configured()?;
 
     let window_name = agent_window_name(session_name);
-    let mut tmux = local_mux_command(&[
-        "new-window",
-        "-d",
-        "-t",
-        &format!("{TMUX_SESSION}:"),
-        "-n",
-        &window_name,
-    ]);
+    // Created at the END of the session's window list, so the retention below
+    // can name the window this command just made: `{end}` is the last window
+    // and `-a` appends after it, so within this one command list `{end}` is
+    // exactly the new one. The window's *name* cannot say that — `tb-<session
+    // name>` is not unique (two sessions can share a name, which is why the
+    // stamp exists), and tmux resolves a duplicate name to the lowest index,
+    // which is the older window (measured, tmux 3.2a). psmux keeps the plain
+    // session target: it gets no retention write either, and the shorthand is
+    // tmux's.
+    let create_target = if cfg!(windows) {
+        format!("{TMUX_SESSION}:")
+    } else {
+        format!("{TMUX_SESSION}:{{end}}")
+    };
+    let mut tmux = local_mux_command(&["new-window", "-d"]);
+    if !cfg!(windows) {
+        tmux.arg("-a");
+    }
+    tmux.args(["-t", &create_target, "-n", &window_name]);
     if !cfg!(windows) {
         tmux.args(["-P", "-F", "#{pane_id}"]);
     }
@@ -2878,6 +3103,18 @@ pub fn spawn_window(
         tmux.arg(resolve_local_program(command));
         for a in args {
             tmux.arg(a);
+        }
+    }
+
+    // Chained into the same command list as the creation, not sent after it —
+    // `birth_options` has the measurement. This path passes `-d`, so the new
+    // window is not current and the bare form the control-mode path uses is not
+    // available; `{end}` names it instead, which is why the window is created
+    // there.
+    if !cfg!(windows) {
+        for (key, value) in birth_options(&window_name) {
+            tmux.args([";", "set-window-option", "-t", &create_target]);
+            tmux.args([key, value]);
         }
     }
 
@@ -4071,6 +4308,58 @@ mod tests {
         assert!(once.starts_with(PROGRAM_WINDOW_PREFIX));
         assert!(!once.starts_with(&format!("{WINDOW_PREFIX}a")));
         assert!(!once.starts_with(SHELL_WINDOW_PREFIX));
+    }
+
+    /// Only an agent's window keeps its corpse — and the answer is read off the
+    /// *name*, so it is pinned against the three name builders rather than
+    /// against hand-written prefixes that could drift from them.
+    #[test]
+    fn an_agent_window_keeps_its_corpse_and_the_other_two_do_not() {
+        assert!(keeps_dead_pane(&agent_window_name("Foo Bar")));
+        assert!(!keeps_dead_pane(&shell_window_name("Foo Bar")));
+        assert!(!keeps_dead_pane(&program_window_name("abcd1234", "watch")));
+        // A window thurbox did not create is not thurbox's to keep open either.
+        assert!(!keeps_dead_pane("zsh"));
+    }
+
+    /// `remain-on-exit` is a WINDOW option, and `window-size` is one too: neither
+    /// can be set for a session, so neither belongs in the session list. Both
+    /// are stated as the window is created (`birth_options`).
+    #[test]
+    fn the_session_option_list_holds_no_window_options() {
+        for (key, _) in SESSION_OPTS {
+            assert!(
+                !["remain-on-exit", "window-size"].contains(key),
+                "{key} is a window option and is silently applied to whichever \
+                 window happens to be current"
+            );
+        }
+    }
+
+    /// `window-size manual` may be said for a window, never for the server.
+    ///
+    /// tmux works out a window's size *before* the window exists
+    /// (`spawn_window` → `default_window_size(…, w = NULL)`) and the manual
+    /// branch of `clients_calculate_size` reads `w->manual_sx` with no NULL
+    /// check, so a server whose default is `manual` dies on the next
+    /// `new-window` from an unattached client — every release that has the
+    /// option (3.3 … 3.6). Measured on 3.5a: `server exited unexpectedly` every
+    /// time with the server-wide write, a pane id every time without it.
+    #[test]
+    fn the_server_wide_window_options_do_not_size_windows_by_hand() {
+        for (key, value) in WINDOW_OPTS {
+            assert!(
+                *key != "window-size",
+                "a server-wide `window-size {value}` kills the server on the \
+                 next window creation; say it per window (`birth_options`)"
+            );
+        }
+        assert!(
+            birth_options("tb-anything")
+                .iter()
+                .any(|(key, value)| *key == "window-size" && *value == "manual"),
+            "the window that is created still has to be told"
+        );
     }
 
     /// A listed window, as `discover` would have reported it.

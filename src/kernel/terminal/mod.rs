@@ -37,7 +37,7 @@ pub mod links;
 mod programs;
 
 pub use links::{drawn_link_paints, paint_hyperlinks, HyperlinkPaint};
-pub use programs::{validate_program_name, ProgramKey};
+pub use programs::{validate_program_name, ProgramKey, ProgramTransition};
 
 use programs::ProgramSlot;
 
@@ -363,6 +363,22 @@ pub struct Terminals {
     /// paint seam, the redraw stamp, the rect memo — and `SurfaceProvider` has
     /// one implementor by design, so a second provider is not on the table.
     programs: HashMap<ProgramKey, ProgramSlot>,
+    /// Spawns and replacements since the last look, **in the order they
+    /// happened**.
+    ///
+    /// `program.exited` is derived by comparing [`Self::program_liveness`]
+    /// against the previous look, and the loop applies commands before it
+    /// derives — so the map alone cannot answer either question the deriver
+    /// has. A restart hides the ending it overwrote, and a program that starts
+    /// and dies inside one iteration was never seen running at all.
+    ///
+    /// One log rather than two lists because the answer depends on the order:
+    /// a death is news only if the occupant that died had been *started* after
+    /// the last drain or was known running before it. Read as two sets, a
+    /// restart on a later frame re-vouches for a death that was already
+    /// announced, and the plugin restarts twice for one process
+    /// ([`Self::take_program_transitions`]).
+    program_transitions: Vec<ProgramTransition>,
 }
 
 impl Terminals {
@@ -399,6 +415,7 @@ impl Terminals {
             mirror_rx: std::sync::mpsc::channel(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
+            program_transitions: Vec::new(),
             rows_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -518,12 +535,13 @@ impl Terminals {
     /// Let go of a session whose pane died, so it is re-attached rather than
     /// painting a frozen last screen forever.
     ///
-    /// `has_exited` is set when a session's output **stream** ends, which is a
-    /// narrower signal than it looks. Control mode carries every pane on a
-    /// backend down one connection, so this fires when the *connection* goes —
-    /// a host or ssh dropping, a local tmux server dying — and **not** when a
-    /// single pane is killed. A restart therefore cannot be caught here, however
-    /// tempting it looks: it says so itself, through [`Terminals::forget`].
+    /// `has_exited` is set when a session's output **stream** ends. Control mode
+    /// carries every pane on a backend down one connection, so it fires when the
+    /// *connection* goes — a host or ssh dropping, a local tmux server dying —
+    /// and, since the kernel started reading tmux's window-close notifications,
+    /// when a single pane's window closes as well. A restart is therefore caught
+    /// here on its own; [`Terminals::forget`] remains the faster path, because
+    /// the restart already knows and need not wait to be told.
     ///
     /// Also let go when the row's pane id has *moved*: the interface is holding a
     /// pane the session no longer claims. That covers a restart on either
@@ -745,11 +763,10 @@ impl Terminals {
 
     /// Let go of a session's terminal, so the next sync attaches afresh.
     ///
-    /// Told, not inferred. Inference does not work here: `has_exited` is set when
-    /// a session's output *stream* ends, and tmux control mode carries every pane
-    /// on a backend down one connection — killing a pane leaves that stream wide
-    /// open, so a restarted session looked perfectly alive while showing a pane
-    /// that no longer existed. The restart knows; this is how it says so.
+    /// Told rather than waited for. `has_exited` does now catch a killed pane —
+    /// tmux announces the window's close and the pane's reader ends with it — but
+    /// that is a notification arriving in its own time, and the restart knew
+    /// before it happened. This is how it says so, immediately.
     ///
     /// The recorded failure is cleared too, or the next attach would be held off
     /// by the retry interval and the session would sit frozen for another 20s

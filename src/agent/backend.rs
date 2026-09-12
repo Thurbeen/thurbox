@@ -316,7 +316,8 @@ pub trait SessionBackend: Send + Sync {
         Ok(())
     }
 
-    /// The pane id of a live window with this **exact** name, if there is one.
+    /// The pane of every window carrying this **exact** name, and whether that
+    /// pane is dead.
     ///
     /// Deliberately separate from [`Self::discover`], which filters to agent
     /// windows (`tb-`) — by design, since it answers "which sessions are running".
@@ -325,10 +326,31 @@ pub trait SessionBackend: Send + Sync {
     /// to a prefix it does not have. That the shell prefix `tbs-` also fails
     /// `discover`'s filter is why shells persist a pane id instead.
     ///
+    /// Dead panes are **reported, not hidden**, and every window of the name is
+    /// reported rather than the first: a caller that cannot see a corpse cannot
+    /// clear it, and the name is meant to address exactly one window — so the one
+    /// caller there is ([`crate::kernel::terminal::Terminals::start_program`])
+    /// needs the whole picture to keep that true.
+    ///
     /// Default: nothing found, so a backend without a window concept simply always
     /// spawns fresh.
-    fn find_window(&self, _window_name: &str) -> Result<Option<String>> {
-        Ok(None)
+    fn window_panes(&self, _window_name: &str) -> Result<Vec<(String, bool)>> {
+        Ok(Vec::new())
+    }
+
+    /// Say whether the window holding `backend_id` keeps its pane's corpse.
+    ///
+    /// For a window that already existed: it was made by an **earlier**
+    /// interface, possibly one that set `remain-on-exit` for a whole session and
+    /// landed it on whichever window was current — and a program window left
+    /// carrying `on` is a pane whose exit can never be announced, which is the
+    /// state the first restart after an upgrade would otherwise inherit.
+    ///
+    /// Asked only where the answer is already known from the caller's own
+    /// naming, so this is one round trip and no lookup. Default: nothing to say,
+    /// for a backend with no window options at all.
+    fn set_pane_retention(&self, _backend_id: &str, _keep: bool) -> Result<()> {
+        Ok(())
     }
 
     /// Resize a session's terminal.

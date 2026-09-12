@@ -1672,9 +1672,11 @@ spawn path never received the same treatment.
 
 `send_prompt_now` (`src/agent/tmux.rs`) targets the session's tmux window and
 treats a zero exit from `send-keys` as delivery. thurbox sets
-`remain-on-exit=on` (`SESSION_OPTS`, `src/agent/tmux.rs:1719`; verified
-session-level on the live server), so an agent that exits or crashes **leaves
-its window and pane in place**.
+`remain-on-exit=on` on an agent's window (`keeps_dead_pane`, `src/agent/tmux.rs`;
+at the time of this measurement it was asked for session-wide in `SESSION_OPTS`,
+which — being a window option — actually reached only whichever window was
+current), so an agent that exits or crashes **leaves its window and pane in
+place**.
 
 Measured against a pane whose process was killed (`pane_dead=1`, window still
 listed):

@@ -57,6 +57,16 @@ pub struct Event {
     /// is one deeper than the event that handler was running for, which is what
     /// bounds a ping-pong between two plugins — see [`MAX_DEPTH`].
     pub depth: u8,
+    /// The one plugin this event is addressed to, by path, or `None` for every
+    /// subscriber.
+    ///
+    /// Almost nothing needs this: an event about a session is about a thing
+    /// every pane can already see. A **program** pane is the exception — it
+    /// belongs to the plugin that started it and no other plugin can even name
+    /// it, so the news that it ended has the same owner. Two plugins may both
+    /// call their pane `editor`, and a broadcast would have each of them acting
+    /// on the other's.
+    pub only: Option<String>,
 }
 
 impl Event {
@@ -65,7 +75,14 @@ impl Event {
             name: name.into(),
             payload: Vec::new(),
             depth: 0,
+            only: None,
         }
+    }
+
+    /// Address this event to one plugin, by path.
+    pub fn to(mut self, plugin: impl Into<String>) -> Self {
+        self.only = Some(plugin.into());
+        self
     }
 
     /// Add a field. A `None` is left out rather than published as an empty
@@ -169,6 +186,11 @@ pub const KERNEL_EVENTS: &[EventSpec] = &[
         name: "command.failed",
         when: "a command a plugin issued failed",
         fields: &["kind", "session", "subject", "error"],
+    },
+    EventSpec {
+        name: "program.exited",
+        when: "a program THIS plugin started ended, however it ended",
+        fields: &["name", "program"],
     },
     EventSpec {
         name: "interface.reloaded",
@@ -384,6 +406,28 @@ mod tests {
     use super::*;
     use crate::session::SessionState;
     use std::path::PathBuf;
+
+    /// The list is closed, so a name that is not in it refuses to load — which
+    /// makes "is it in the list" the whole of the subscription contract.
+    #[test]
+    fn a_program_can_report_that_it_ended() {
+        assert!(is_kernel_event("program.exited"));
+        let spec = KERNEL_EVENTS
+            .iter()
+            .find(|spec| spec.name == "program.exited")
+            .expect("the spec is what `plugin events` and `F1` print");
+        assert_eq!(spec.fields, &["name", "program"]);
+        // Broadcast is the default; this one is addressed, because a program pane
+        // belongs to one plugin and two may name theirs the same.
+        assert!(Event::new("program.exited").only.is_none());
+        assert_eq!(
+            Event::new("program.exited")
+                .to("plugins/50_editor.lua")
+                .only
+                .as_deref(),
+            Some("plugins/50_editor.lua")
+        );
+    }
 
     fn row(id: &str, status: SessionState) -> SessionRow {
         SessionRow {

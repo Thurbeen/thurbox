@@ -208,6 +208,54 @@ fn decode_octal_overflow_wraps() {
     assert_eq!(decode_octal("\\400"), vec![0u8]);
 }
 
+// --- window close → reader EOF ---
+
+/// The point of the notification: a closed window must give the readers of its
+/// panes an EOF, because EOF is the only thing that sets `exited`, and `exited`
+/// is what `program.exited` and `start_program`'s "replace a finished slot"
+/// both stand on.
+#[test]
+fn window_close_gives_its_panes_eof() {
+    let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
+    let windows: PaneWindowsMapShared = Arc::new(Mutex::new(HashMap::new()));
+    let (tx, rx) = sync_channel(4);
+    senders.lock().unwrap().insert("%7".to_string(), vec![tx]);
+    windows
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), "@3".to_string());
+    let mut reader = ControlModeReader::new(rx);
+
+    ControlMode::close_window_panes(&senders, &windows, "@3");
+
+    let mut buf = [0u8; 16];
+    assert_eq!(reader.read(&mut buf).unwrap(), 0, "reader should see EOF");
+    assert!(senders.lock().unwrap().is_empty());
+    assert!(windows.lock().unwrap().is_empty());
+}
+
+/// Somebody else's window closing must not take our panes with it — on a shared
+/// tmux server most closes are not ours.
+#[test]
+fn window_close_leaves_other_windows_alone() {
+    let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
+    let windows: PaneWindowsMapShared = Arc::new(Mutex::new(HashMap::new()));
+    let (tx, rx) = sync_channel(4);
+    senders.lock().unwrap().insert("%7".to_string(), vec![tx]);
+    windows
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), "@3".to_string());
+    let mut reader = ControlModeReader::new(rx);
+
+    ControlMode::close_window_panes(&senders, &windows, "@9");
+
+    ControlMode::dispatch_output(&senders, "%7", b"still here".to_vec());
+    let mut buf = [0u8; 16];
+    assert_eq!(reader.read(&mut buf).unwrap(), 10);
+    assert_eq!(&buf[..10], b"still here");
+}
+
 // --- parse_notification tests ---
 
 #[test]
@@ -265,6 +313,48 @@ fn parse_pause_notification() {
         Notification::Pause {
             pane_id: "%42".to_string()
         }
+    );
+}
+
+/// Both spellings of a window's death mean the same thing, and the one that
+/// actually arrives when a program exits on its own is the UNLINKED one
+/// (measured against tmux control mode, 2026-09-11). Parsing only
+/// `%window-close` would leave every ordinary exit unnoticed.
+#[test]
+fn parse_window_close_both_spellings() {
+    assert_eq!(
+        parse_notification("%window-close @3"),
+        Notification::WindowClose {
+            window_id: "@3".to_string()
+        }
+    );
+    assert_eq!(
+        parse_notification("%unlinked-window-close @3"),
+        Notification::WindowClose {
+            window_id: "@3".to_string()
+        }
+    );
+}
+
+/// Some tmux versions append a layout to the close line; the id is the first
+/// token either way, and the rest is not ours to interpret.
+#[test]
+fn parse_window_close_ignores_trailing_fields() {
+    assert_eq!(
+        parse_notification("%window-close @7 80x24,0,0,1"),
+        Notification::WindowClose {
+            window_id: "@7".to_string()
+        }
+    );
+}
+
+/// A close with no id is not a close: it names no window, so acting on it
+/// would mean guessing which one died.
+#[test]
+fn parse_window_close_without_an_id_is_other() {
+    assert_eq!(
+        parse_notification("%window-close "),
+        Notification::Other("%window-close ".to_string())
     );
 }
 

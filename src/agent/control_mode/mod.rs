@@ -30,6 +30,17 @@ pub const PANE_CHANNEL_CAPACITY: usize = 4096;
 pub type PaneSendersMap = HashMap<String, Vec<SyncSender<Vec<u8>>>>;
 pub type PaneSendersMapShared = Arc<Mutex<PaneSendersMap>>;
 
+/// Which window each registered pane lives in, so a window's closing can be
+/// turned into EOF for the readers of the panes that went with it.
+///
+/// tmux announces a death by WINDOW (`%window-close @3`) and streams output by
+/// PANE (`%output %7 …`), and nothing in the protocol relates the two: the
+/// `%window-add` that opened it carried no pane, and the panes are gone by the
+/// time the close arrives, so it cannot be asked afterwards either. Recorded
+/// when the pane is registered, which is the one moment both ids are in hand.
+pub type PaneWindowsMap = HashMap<String, String>;
+pub type PaneWindowsMapShared = Arc<Mutex<PaneWindowsMap>>;
+
 /// Response from a tmux control mode command.
 pub struct CommandResponse {
     pub lines: Vec<String>,
@@ -48,6 +59,20 @@ pub enum Notification {
     Error,
     Pause {
         pane_id: String,
+    },
+    /// A window is gone, with every pane that was in it — the program in it
+    /// exited, or something killed it.
+    ///
+    /// tmux spells this two ways and means the same thing by both:
+    /// `%window-close` for a window of the session the client is attached to,
+    /// `%unlinked-window-close` for one that has already been unlinked from it.
+    /// Measured 2026-09-11 (tmux control mode, program exiting on its own): the
+    /// notification that actually arrives for a `new-window` of the attached
+    /// session is the UNLINKED one, because tmux unlinks before it announces.
+    /// Treating only the first spelling as a death is therefore the same as
+    /// treating none of them as one.
+    WindowClose {
+        window_id: String,
     },
     /// A `refresh-client -B` format subscription reported a changed value
     /// (tmux >= 3.2). Carries the remote hook state for
@@ -520,6 +545,20 @@ pub fn parse_notification(line: &str) -> Notification {
         return Notification::Error;
     }
 
+    for prefix in ["%window-close ", "%unlinked-window-close "] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            let window_id = rest.trim();
+            // `%window-close` can carry a layout after the id in some tmux
+            // versions; the id is the first token either way.
+            let window_id = window_id.split_whitespace().next().unwrap_or(window_id);
+            if !window_id.is_empty() {
+                return Notification::WindowClose {
+                    window_id: window_id.to_string(),
+                };
+            }
+        }
+    }
+
     if let Some(rest) = line.strip_prefix("%pause ") {
         // Format: %pause %<pane_id>
         return Notification::Pause {
@@ -695,6 +734,9 @@ const GRACEFUL_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::fr
 pub(super) struct ControlMode {
     pub(super) stdin: Arc<Mutex<ChildStdin>>,
     pub(super) pane_senders: PaneSendersMapShared,
+    /// Where each registered pane lives, for turning `%window-close` into EOF.
+    /// Written by `register_pane`/`unregister_pane`, read by the reader thread.
+    pub(super) pane_windows: PaneWindowsMapShared,
     /// FIFO queue of response channels — one per `send_command()` call, in order.
     response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
     /// `(pane_id, state)` pairs from `%subscription-changed` notifications
@@ -771,6 +813,8 @@ impl ControlMode {
         let stdin = Arc::new(Mutex::new(stdin));
         let pane_senders: PaneSendersMapShared =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let pane_windows: PaneWindowsMapShared =
+            Arc::new(Mutex::new(std::collections::HashMap::new()));
         let response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>> =
             Arc::new(Mutex::new(VecDeque::new()));
         let sub_events: Arc<Mutex<VecDeque<(String, String)>>> =
@@ -779,6 +823,7 @@ impl ControlMode {
 
         let reader_stdin = Arc::clone(&stdin);
         let reader_pane_senders = Arc::clone(&pane_senders);
+        let reader_pane_windows = Arc::clone(&pane_windows);
         let reader_queue = Arc::clone(&response_queue);
         let reader_sub_events = Arc::clone(&sub_events);
         let reader_alive = Arc::clone(&alive);
@@ -790,6 +835,7 @@ impl ControlMode {
                     reader,
                     reader_stdin,
                     reader_pane_senders,
+                    reader_pane_windows,
                     reader_queue,
                     reader_sub_events,
                 );
@@ -800,6 +846,7 @@ impl ControlMode {
         let control = Self {
             stdin,
             pane_senders,
+            pane_windows,
             response_queue,
             sub_events,
             alive,
@@ -987,6 +1034,7 @@ impl ControlMode {
         mut reader: BufReader<std::process::ChildStdout>,
         stdin: Arc<Mutex<ChildStdin>>,
         pane_senders: PaneSendersMapShared,
+        pane_windows: PaneWindowsMapShared,
         response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
         sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
     ) {
@@ -1009,6 +1057,9 @@ impl ControlMode {
                 }
                 Notification::Pause { pane_id } => {
                     Self::resume_pane(&stdin, &pane_id);
+                }
+                Notification::WindowClose { window_id } => {
+                    Self::close_window_panes(&pane_senders, &pane_windows, &window_id);
                 }
                 // Consumed even mid-%begin block: tmux never interleaves
                 // notifications inside response bodies, so this can't eat a
@@ -1035,6 +1086,52 @@ impl ControlMode {
         if let Ok(mut senders) = pane_senders.lock() {
             senders.clear();
         }
+        if let Ok(mut windows) = pane_windows.lock() {
+            windows.clear();
+        }
+    }
+
+    /// A window closed: drop the senders of every pane that was in it, which is
+    /// what gives those panes' `reader_loop`s their EOF.
+    ///
+    /// Without this the channel simply goes quiet, and quiet is indistinguishable
+    /// from a program that has nothing to say: `exited` stays false, so nothing
+    /// fires `program.exited`, the surface keeps painting the grid the program
+    /// left behind, and `start_program` keeps answering "already running" to
+    /// every request to open it again. That last one has no error path — it
+    /// returns `Ok(())` — so the symptom is a pane that cannot be reopened and a
+    /// log with nothing in it. (Found 2026-09-11: `:q` in the editor pane, and
+    /// no click or key would ever bring it back.)
+    fn close_window_panes(
+        pane_senders: &PaneSendersMapShared,
+        pane_windows: &PaneWindowsMapShared,
+        window_id: &str,
+    ) {
+        let gone: Vec<String> = match pane_windows.lock() {
+            Ok(mut windows) => {
+                let gone: Vec<String> = windows
+                    .iter()
+                    .filter(|(_, window)| window.as_str() == window_id)
+                    .map(|(pane, _)| pane.clone())
+                    .collect();
+                for pane in &gone {
+                    windows.remove(pane);
+                }
+                gone
+            }
+            Err(_) => return,
+        };
+        if gone.is_empty() {
+            // A window nothing was reading — every window the interface did not
+            // open itself, which is most of them on a shared server.
+            return;
+        }
+        if let Ok(mut senders) = pane_senders.lock() {
+            for pane in &gone {
+                senders.remove(pane);
+            }
+        }
+        debug!(window_id, panes = ?gone, "window closed, its pane readers get EOF");
     }
 
     /// Broadcast a `%output` payload to every reader registered for `pane_id`.

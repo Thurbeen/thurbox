@@ -208,6 +208,7 @@
 ---| "focus.pane"
 ---| "command.done"
 ---| "command.failed"
+---| "program.exited"
 ---| "interface.reloaded"
 ---| string A `user.<name>` a plugin emits.
 

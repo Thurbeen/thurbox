@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ratatui::layout::Rect;
+use tracing::debug;
 
 use super::Terminals;
 
@@ -44,6 +45,19 @@ impl ProgramKey {
     pub fn surface_id(&self) -> String {
         format!("{PROGRAM_SURFACE_PREFIX}{}#{}", self.plugin, self.name)
     }
+}
+
+/// What happened to a program slot between two looks.
+///
+/// Ordered, and that is the whole point: whether a death is news depends on
+/// what came before it in this list. See [`Terminals::take_program_transitions`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProgramTransition {
+    /// A pane was **spawned** here — never adopted from a previous run.
+    Started(ProgramKey),
+    /// A finished pane was overwritten by a restart, with what it had been
+    /// running.
+    Replaced(ProgramKey, String),
 }
 
 /// Does this surface id name a plugin's program rather than a session?
@@ -171,6 +185,16 @@ impl Terminals {
             if !slot.pane.has_exited() {
                 return Ok(());
             }
+            // The exit has to be remembered before the slot that carries it is
+            // replaced: `program.exited` is derived by comparing the live set
+            // against the previous look, and the loop applies commands *before*
+            // it derives. A plugin asking to restart on the frame after its
+            // program died would otherwise hand the deriver a live pane under
+            // the same key, and the ending would never be announced.
+            self.program_transitions.push(ProgramTransition::Replaced(
+                key.clone(),
+                slot.program.clone(),
+            ));
             self.release_program(key);
         }
         admit_program(&key.plugin, self.program_count(&key.plugin), program)?;
@@ -198,6 +222,7 @@ impl Terminals {
         // the interface: the name is deterministic, so finding it IS the
         // re-adoption path — there is no stored pane id that could go stale.
         let existing = self.find_program_window(&backend, &window);
+        let adopted = existing.is_some();
         let pane = match existing {
             Some(backend_id) => crate::agent::backend::ProgramPane::adopt(
                 Arc::clone(&backend),
@@ -228,15 +253,37 @@ impl Terminals {
                 program: program.to_string(),
             },
         );
+        if !adopted {
+            // Spawned here, so this loop knows it ran — which is what lets its
+            // ending be announced even if it dies before anything looks again.
+            // An *adopted* window is deliberately not recorded: it belongs to a
+            // previous run of the interface, and a corpse found on startup ended
+            // before there was anything to tell.
+            //
+            // After the spawn, not before: a spawn that failed leaves no pane to
+            // die, and claiming one started would make the *next* restart's
+            // replacement look like a fresh death.
+            self.program_transitions
+                .push(ProgramTransition::Started(key.clone()));
+        }
         Ok(())
     }
 
-    /// A window of this exact name already running on `backend`, if there is one.
+    /// A *live* window of this exact name already running on `backend`, if there
+    /// is one — clearing any corpse that carries the same name on the way.
     ///
     /// This is the whole of re-adoption after a restart: the name is deterministic
     /// (`tmux::program_window_name`), so it is enough to look. Nothing is
     /// persisted, and therefore nothing can be stale — which is the failure a
     /// stored pane id invites and this repository has been bitten by before.
+    ///
+    /// A dead window is killed rather than skipped. A window whose program has
+    /// ended can outlive it (an older build left `remain-on-exit` on for these,
+    /// and a pane can also die while the interface is not running); skipping it
+    /// spawns a second window of the same name beside the corpse, so the name
+    /// stops addressing one window and the next lookup has to guess. Adopting it
+    /// is worse still — a pane that paints a frozen grid and swallows every
+    /// keystroke, which is what "the editor hung" looks like from the outside.
     ///
     /// A tmux round trip, so it is called when a pane is *started* and never per
     /// frame.
@@ -245,11 +292,33 @@ impl Terminals {
         backend: &Arc<dyn crate::agent::SessionBackend>,
         window: &str,
     ) -> Option<String> {
-        // `find_window`, not `discover`: a program window has no session id to
+        // `window_panes`, not `discover`: a program window has no session id to
         // resolve by, only its deterministic name. Discovery does list it, but
         // stamped `@thurbox_role=program` and unowned, so it can never be
         // adopted as a session's agent (ADR-25).
-        backend.find_window(window).ok().flatten()
+        let mut live = None;
+        for (backend_id, dead) in backend.window_panes(window).unwrap_or_default() {
+            if dead {
+                if let Err(e) = backend.kill(&backend_id) {
+                    debug!("could not clear the dead program window {window}: {e:#}");
+                }
+            } else if live.is_none() {
+                // Normalised on the way, not taken as found: this window was
+                // made by an earlier interface, possibly one that set
+                // `remain-on-exit` for a whole session and landed it on
+                // whichever window happened to be current. Left as it stood, a
+                // program window carrying `on` is a pane whose exit can never be
+                // announced — the corpse comes straight back on the first
+                // restart after an upgrade, which is the one moment this is
+                // about. One round trip, and only here, where the answer is
+                // known from the name we looked the window up by.
+                if let Err(e) = backend.set_pane_retention(&backend_id, false) {
+                    debug!("could not clear remain-on-exit on {window}: {e:#}");
+                }
+                live = Some(backend_id);
+            }
+        }
+        live
     }
 
     /// The key a surface id names, by matching against the keys that generate
@@ -308,6 +377,34 @@ impl Terminals {
             return false;
         }
         slot.pane.send_input(bytes).is_ok()
+    }
+
+    /// Every program pane held right now, with what it runs and whether it has
+    /// ended.
+    ///
+    /// The loop's per-iteration read, so it can fire `program.exited` on the
+    /// transition. `has_exited` is an atomic the reader loop sets, so this is a
+    /// map walk and some atomic loads — no tmux round trip, and nothing that can
+    /// block the frame.
+    pub fn program_liveness(&self) -> Vec<(ProgramKey, String, bool)> {
+        self.programs
+            .iter()
+            .map(|(key, slot)| (key.clone(), slot.program.clone(), slot.pane.has_exited()))
+            .collect()
+    }
+
+    /// Every spawn and replacement since the last look, in order, taken once.
+    ///
+    /// [`Self::program_liveness`] can only describe the panes that are *held*:
+    /// a restart that replaces an exited slot within the same iteration hides
+    /// the ending from it entirely, and a program that starts and dies inside
+    /// one iteration is only ever seen dead — indistinguishable from a corpse
+    /// adopted from a previous run, which wants the opposite answer. Both are
+    /// recorded as they happen and drained here, alongside that read.
+    ///
+    /// The order is load-bearing; `program_endings` says what it is read for.
+    pub fn take_program_transitions(&mut self) -> Vec<ProgramTransition> {
+        std::mem::take(&mut self.program_transitions)
     }
 
     /// What is running in a pane, and whether it has ended — for a pane that wants

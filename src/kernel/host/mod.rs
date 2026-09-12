@@ -1067,7 +1067,22 @@ impl LuaHost {
     /// with the event's name, and the next handler still runs. Return values are
     /// ignored — a handler cannot answer, only enqueue commands and write state.
     pub fn dispatch_event(&self, event: &Event) -> Vec<PluginError> {
-        let subscribers = self.subscribers(&event.name);
+        let subscribers = match &event.only {
+            None => self.subscribers(&event.name),
+            // Addressed. Filtered on `path` because that is the identity a
+            // program pane is keyed by — trust, the disabled set and `run`'s
+            // attribution all use the same one, and a declared `name` is
+            // neither unique nor stable.
+            Some(path) => self
+                .subscribers(&event.name)
+                .into_iter()
+                .filter(|index| {
+                    self.plugins
+                        .get(*index)
+                        .is_some_and(|plugin| plugin.path == *path)
+                })
+                .collect(),
+        };
         if subscribers.is_empty() {
             return Vec::new();
         }
