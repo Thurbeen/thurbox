@@ -52,6 +52,7 @@
 //! arrives as an ordinary bracketed paste.
 
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -283,6 +284,23 @@ pub struct ImageProbe {
 const POWERSHELL: &str = "powershell.exe";
 const POWERSHELL_FALLBACK: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 
+/// Where PowerShell is looked for, in the order it is tried.
+///
+/// The `PATH` search goes through [`crate::paths::resolve_on_path`] rather than
+/// through `Command::new`'s own: the OS search treats an **empty** entry in
+/// `PATH` (a stray leading, trailing or doubled `:`) as the current directory,
+/// so a file named `powershell.exe` sitting in whatever repository thurbox was
+/// launched from would answer this question on every `Ctrl+V`. `resolve_on_path`
+/// keeps absolute entries only, which is the rule #1100 landed for agent
+/// spawns; there is no reason for this path to hold a weaker one.
+fn powershell_candidates() -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = crate::paths::resolve_on_path(POWERSHELL)
+        .into_iter()
+        .collect();
+    found.push(PathBuf::from(POWERSHELL_FALLBACK));
+    found
+}
+
 /// What Windows said about its clipboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
@@ -372,7 +390,7 @@ impl ImageProbe {
 /// apart. Every way the question could not be put — spawn, deadline, an answer
 /// that is neither word — is [`Verdict::Unknown`], never `NotImage`.
 fn windows_clipboard_has_image() -> Verdict {
-    let ask = |exe: &str| -> std::io::Result<Verdict> {
+    let ask = |exe: &Path| -> std::io::Result<Verdict> {
         let mut child = Command::new(exe)
             .args(["-NoProfile", "-NonInteractive", "-Sta", "-Command"])
             .arg(CLIPBOARD_KIND)
@@ -402,13 +420,13 @@ fn windows_clipboard_has_image() -> Verdict {
             }
         })
     };
-    match ask(POWERSHELL) {
-        Ok(verdict) => verdict,
-        Err(e) => {
-            tracing::debug!("{POWERSHELL} is not on PATH ({e}); trying the interop path");
-            ask(POWERSHELL_FALLBACK).unwrap_or(Verdict::Unknown)
+    for exe in powershell_candidates() {
+        match ask(&exe) {
+            Ok(verdict) => return verdict,
+            Err(e) => tracing::debug!("{} could not be run ({e})", exe.display()),
         }
     }
+    Verdict::Unknown
 }
 
 /// How long the probe waits for Windows before giving up on it.
@@ -455,6 +473,63 @@ fn wait_bounded(child: &mut Child, timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The probe never runs a `powershell.exe` the working directory can reach.
+    ///
+    /// An empty entry in `PATH` — a stray leading, trailing or doubled `:` —
+    /// means "here" to the OS search, and a relative entry is resolved against
+    /// wherever thurbox was launched from, so a file of that name in a
+    /// repository would answer every `Ctrl+V` on a WSL box. #1100 closed the
+    /// same hole for agent spawns; this is that rule holding on the clipboard
+    /// path. Planted where a relative `PATH` entry really does find it, since
+    /// a lookup that cannot see the file proves nothing about the rule.
+    #[test]
+    #[cfg(unix)]
+    fn the_probe_looks_only_at_absolute_path_entries() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Relative to the working directory a unit test runs in — the package
+        // root — and inside the build directory, which is not tracked.
+        let relative = std::path::Path::new("target").join("tbx-powershell-probe");
+        std::fs::create_dir_all(&relative).unwrap();
+        let planted = relative.join(POWERSHELL);
+        std::fs::write(&planted, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            planted.exists(),
+            "the plant has to be findable to prove anything"
+        );
+
+        let reachable = format!(":{}", relative.display());
+        let candidates = crate::paths::with_path(&reachable, powershell_candidates);
+        let _ = std::fs::remove_dir_all(&relative);
+
+        assert_eq!(
+            candidates,
+            vec![PathBuf::from(POWERSHELL_FALLBACK)],
+            "a PATH entry the working directory resolves reached the probe"
+        );
+    }
+
+    /// And the interop PowerShell an absolute entry names is still what is
+    /// tried before the hard-coded path.
+    #[test]
+    #[cfg(unix)]
+    fn an_absolute_path_entry_is_what_the_probe_prefers() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let planted = dir.path().join(POWERSHELL);
+        std::fs::write(&planted, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let candidates = crate::paths::with_path(dir.path(), powershell_candidates);
+
+        assert_eq!(
+            candidates.first().map(PathBuf::as_path),
+            Some(planted.as_path())
+        );
+    }
 
     /// The probe fires inside a WSL distro and nowhere else.
     ///

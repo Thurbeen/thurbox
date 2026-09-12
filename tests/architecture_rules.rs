@@ -194,7 +194,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     // and never reaches into agent / ui / app / storage.
     ModuleRules {
         name: "clipboard",
-        allowed: &["session"],
+        allowed: &["paths", "session"],
         allowed_path_only: &[],
     },
 ];
