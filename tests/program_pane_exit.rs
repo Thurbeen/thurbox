@@ -58,9 +58,12 @@ fn cleanup() {
         .output();
 }
 
-/// Starts the session with **`remain-on-exit on`** (see the note at the top),
-/// kept out of the async test body: a blocking `Command::output` call written
-/// directly in an `async fn` blocks the executor thread it runs on.
+/// Starts the session with **`remain-on-exit on`** (see the note at the top).
+///
+/// Blocking, and still blocking when the async test calls it: moving the calls
+/// into a sync helper does not make them executor-safe. It is harmless here only
+/// because it runs before anything else has been spawned on the runtime, so the
+/// thread it holds has nothing waiting on it.
 fn start_session(dir: &std::path::Path) -> std::process::Output {
     let started = Command::new("tmux")
         .args([
