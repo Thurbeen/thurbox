@@ -407,7 +407,7 @@ impl ImageProbe {
     /// subprocess is worth spawning.
     ///
     /// And only while a PowerShell to ask still looks reachable — see
-    /// [`powershell_is_absent`]. A distro without interop would otherwise pay
+    /// `powershell_is_absent`. A distro without interop would otherwise pay
     /// the gate's whole cost for a question that cannot be answered, on every
     /// paste, for as long as the session lasts.
     pub fn applies() -> bool {
