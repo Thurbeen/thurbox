@@ -267,7 +267,7 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     };
 
     // Long enough for the corpse to be reaped if it was ever going to be.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let listed = pane_of("tb-");
     let retention = remain_on_exit(&pane);
     cleanup();
@@ -340,7 +340,7 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
         }
     };
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let retention = remain_on_exit(&pane);
     let listed = tmux(&["list-windows", "-a", "-F", "#{pane_id}"]);
     let alive = String::from_utf8_lossy(&listed.stdout)
