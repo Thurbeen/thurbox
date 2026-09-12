@@ -66,9 +66,13 @@ status goes back to what the hooks say.
 The same treatment covers **mid-session host loss**: `drop_lost_panes` (per tick)
 spots a *live* remote session whose pane is gone, lets it go, and clears the
 readied-backend cache — the connection that session died with is the one every
-other session on that host shares. The reliable signal is `has_exited()`: with
-`remain-on-exit=on` a clean agent exit keeps its pane alive (no reader EOF), so a
-remote reader hitting EOF means the host/SSH connection dropped. This composes
+other session on that host shares. The signal is `has_exited()`, and what it
+means has narrowed: it now says the pane's stream ended. On a remote backend
+that is either the host/SSH connection going or that pane's own window closing —
+`remain-on-exit=on` keeps a clean agent exit from ending the stream, but a
+window closed for any other reason ends it too. `drop_lost_panes` still reads it
+as host loss and clears the readied-backend cache for every backend on that
+host; telling the two apart is open. This composes
 with the fail-fast SSH hardening (`crate::shell::SSH_HARDENING_OPTS` =
 `BatchMode=yes` + `ConnectTimeout` + `ServerAlive*`; plus
 `SSH_MULTIPLEX_OPTS` — `ControlMaster=auto` with a socket under `~/.ssh` —
