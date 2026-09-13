@@ -159,6 +159,74 @@ after_submit() { # <exit-code> <submit output>
     "${BATS_TEST_TMPDIR}/manifests/Thurbeen.thurbox.locale.en-US.yaml"
 }
 
+# `after-sync` reads a finished `gh repo sync` of the token account's fork and
+# says whether it synced, is worth retrying with `--force`, or cannot succeed.
+after_sync() { # <exit-code> <sync output>
+  echo "$2" | python3 "${DIR}/submit-decision.py" after-sync --exit-code "$1"
+}
+
+@test "after-sync: a clean sync needs nothing more" {
+  run after_sync 0 "✓ Synced the \"LeTuR:master\" branch from \"microsoft:master\""
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .synced)" = "true" ]
+  [ "$(echo "$output" | jq -r .fail)" = "false" ]
+}
+
+@test "after-sync: a diverged fork is retried with --force" {
+  run after_sync 1 "can't sync because there are diverging changes; use \`--force\` to overwrite the destination branch"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .retry_force)" = "true" ]
+  [ "$(echo "$output" | jq -r .fail)" = "false" ]
+}
+
+# Run 34749835769's exact failure, and every release's from 34541900941 on. The
+# token lacks the `workflow` scope, so GitHub refuses to move the fork onto
+# upstream commits that touch .github/workflows — with or without `--force`,
+# which updates the same ref. Retrying cannot help; the job must say which
+# scope to add instead of blaming a stale fork.
+@test "after-sync: a token without the workflow scope fails with the fix, no --force" {
+  msg='Upstream commits contain workflow changes, which require the `workflow` scope or permission to merge. To request it, run: gh auth refresh -s workflow'
+  run after_sync 1 "$msg"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .synced)" = "false" ]
+  [ "$(echo "$output" | jq -r .retry_force)" = "false" ]
+  [ "$(echo "$output" | jq -r .fail)" = "true" ]
+  echo "$output" | jq -e '.reason | test("WINGET_TOKEN") and test("`workflow` scope")'
+}
+
+# The raw API wording, for a gh that stops translating it.
+@test "after-sync: the API's own workflow-scope refusal is recognised too" {
+  run after_sync 1 'refusing to allow a Personal Access Token to create or update workflow `.github/workflows/x.yaml` without `workflow` scope'
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .fail)" = "true" ]
+  [ "$(echo "$output" | jq -r .retry_force)" = "false" ]
+}
+
+# The safety rule is "no second thurbox PR on the moderation queue", whoever
+# opened the first. A third-party bot (damn-good-b0t) submits thurbox too —
+# every version merged since 1.8.6 is its — so a decision fed only the token
+# account's PRs would stack a second PR on top of the bot's.
+@test "decide: the workflow asks about thurbox PRs from every author" {
+  step="$(awk '/name: Decide whether to submit/{f=1} f&&/- name: Download release checksums/{exit} f' \
+    "${DIR}/../../.github/workflows/cd.yml")"
+  echo "$step" | grep -q 'gh pr list --repo microsoft/winget-pkgs'
+  ! echo "$step" | grep -q -- '--author'
+}
+
+# Both binaries import VCRUNTIME140.dll (the MSVC target links the CRT
+# dynamically), so a machine without the VC++ 2015+ runtime cannot start them.
+# winget installs a declared dependency first; winget-pkgs' merged manifests
+# carry it, and ours must too or the next submission drops it.
+@test "manifest: the installer declares the VC++ runtime the binaries import" {
+  grep -q "PackageIdentifier: Microsoft.VCRedist.2015+.x64" \
+    "${DIR}/manifests/Thurbeen.thurbox.installer.yaml"
+  cp -r "${DIR}/manifests" "${BATS_TEST_TMPDIR}/manifests"
+  python3 "${DIR}/bump-manifests.py" v2.19.6 "${BATS_TEST_TMPDIR}/manifests" \
+    "${DIR}/testdata/checksums-v2.19.6.txt"
+  grep -q "PackageIdentifier: Microsoft.VCRedist.2015+.x64" \
+    "${BATS_TEST_TMPDIR}/manifests/Thurbeen.thurbox.installer.yaml"
+}
+
 @test "bump-manifests: fails loudly when the Windows checksum is missing" {
   cp -r "${DIR}/manifests" "${BATS_TEST_TMPDIR}/manifests"
   grep -v windows "${DIR}/testdata/checksums-v2.19.6.txt" > "${BATS_TEST_TMPDIR}/checksums.txt"

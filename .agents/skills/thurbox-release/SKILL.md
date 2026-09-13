@@ -114,15 +114,16 @@ package channels (each gated on its secret, skipped on forks):
   `packaging/winget/manifests/` (via `packaging/winget/bump-manifests.py`,
   reading the release `checksums.txt`), then `wingetcreate submit`s the set as a
   PR to `microsoft/winget-pkgs`. Runs on `windows-latest`; needs the
-  `WINGET_TOKEN` secret (a `public_repo` PAT owning a fork of
-  `microsoft/winget-pkgs`). New versions go through winget-pkgs PR
+  `WINGET_TOKEN` secret (a classic PAT with `public_repo` **and `workflow`**,
+  owning a fork of `microsoft/winget-pkgs`). New versions go through winget-pkgs PR
   validation + review.
   **Attempts every release** (Chocolatey's shape), paced by the queue rather
   than a calendar: winget-pkgs is *manually moderated* — each `submit` opens a PR
   a human must review, and thurbox's per-`feat`/`fix`/`perf` cadence buried the
   maintainers (30 open PRs at once, flagged in
   [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
-  So the decision step hands our own thurbox PRs (via `gh pr list`, any state) to
+  So the decision step hands every thurbox PR (via `gh pr list`, any state, any
+  author — the third-party `damn-good-b0t` submits thurbox too) to
   `packaging/winget/submit-decision.py decide`, which **skips green** with a
   `::warning::` while one is still **open** — wingetcreate cannot update a
   pending PR, so a second would only lengthen the queue — and also honours
@@ -134,7 +135,13 @@ package channels (each gated on its secret, skipped on forks):
   wingetcreate's own fast-forward-only auto-sync is what failed v2.19.6 on a
   fork 48 days behind a repo that merges hundreds of PRs a day. The fork is a
   submission staging area (each submission gets its own branch), so a reset
-  destroys neither work nor an open PR.
+  destroys neither work nor an open PR. Both need the token's `workflow` scope —
+  GitHub refuses to move a branch onto upstream commits that change
+  `.github/workflows` without it, `--force` included, which failed every
+  submission from v2.19.8 to v2.22.4 — so `submit-decision.py after-sync`
+  classifies the sync and fails with an `::error::` naming the scope instead of
+  retrying. The installer manifest declares `Microsoft.VCRedist.2015+.x64`: both
+  binaries import `VCRUNTIME140.dll`.
   A `submit` rejected *by the channel* (rate limit, version already pending)
   warns and exits green via `submit-decision.py after-submit`, which also reports
   whether a PR was **opened** — the flag the close-superseded-PRs step is gated

@@ -707,11 +707,14 @@ jobs:
         with:
           ref: ${{ needs.check-release.outputs.version }}
 
-      # Ask packaging/winget/submit-decision.py whether to submit, from our own
-      # thurbox PRs on winget-pkgs (any state). It skips green when one is still
-      # open, and when the newest is younger than THROTTLE_DAYS. The rules and
-      # their edge cases are covered by packaging/winget/winget.bats — the
-      # reason this is a script and not inline PowerShell.
+      # Ask packaging/winget/submit-decision.py whether to submit, from every
+      # thurbox PR on winget-pkgs (any state, any author). It skips green when
+      # one is still open, and when the newest is younger than THROTTLE_DAYS.
+      # Any author, because a third-party bot (damn-good-b0t) submits thurbox
+      # versions too, and a PR of ours on top of its open one is still a second
+      # PR on the moderation queue. The rules and their edge cases are covered
+      # by packaging/winget/winget.bats — the reason this is a script and not
+      # inline PowerShell.
       - name: Decide whether to submit
         id: decide
         if: env.WINGET_TOKEN != ''
@@ -723,7 +726,7 @@ jobs:
           $shouldSubmit = $true
           $reason = ""
           try {
-            $prs = gh pr list --repo microsoft/winget-pkgs --author "@me" `
+            $prs = gh pr list --repo microsoft/winget-pkgs `
               --search "Thurbeen.thurbox in:title" --state all `
               --json number,state,createdAt,title --limit 100
             if ($LASTEXITCODE -ne 0) { throw "gh pr list exited $LASTEXITCODE" }
@@ -785,6 +788,13 @@ jobs:
       # staging area, nothing of ours lives on its default branch, and each
       # submission gets its own branch, so a reset cannot destroy work or an
       # open PR.
+      #
+      # Either way the token needs the `workflow` scope: GitHub refuses to move
+      # a branch onto upstream commits that change .github/workflows without
+      # it, `--force` included, and winget-pkgs changes its workflows often
+      # enough that every sync from v2.19.8 on was refused. `after-sync` tells
+      # that apart from a diverged fork, so the job names the scope to add
+      # instead of retrying something that cannot succeed.
       - name: Sync the winget-pkgs fork
         if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
         shell: pwsh
@@ -803,20 +813,36 @@ jobs:
             Write-Host "No $fork yet — wingetcreate forks on first submit."
             exit 0
           }
-          $out = gh repo sync $fork --source microsoft/winget-pkgs 2>&1 | Out-String
-          Write-Host $out
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Synced $fork from microsoft/winget-pkgs."
-            exit 0
+          foreach ($force in @($false, $true)) {
+            $syncArgs = @("repo", "sync", $fork, "--source", "microsoft/winget-pkgs")
+            if ($force) { $syncArgs += "--force" }
+            $out = gh @syncArgs 2>&1 | Out-String
+            $syncExit = $LASTEXITCODE
+            Write-Host $out
+            $verdict = $out |
+              python packaging/winget/submit-decision.py after-sync --exit-code $syncExit |
+              ConvertFrom-Json
+            if ($null -eq $verdict) {
+              Write-Error "could not classify gh repo sync's outcome (exited $syncExit)."
+              exit 1
+            }
+            if ($verdict.synced) {
+              Write-Host "Synced $fork from microsoft/winget-pkgs."
+              exit 0
+            }
+            if ($verdict.fail) {
+              Write-Host "::error title=winget fork sync refused::$($verdict.reason)."
+              "winget submission **failed**: $($verdict.reason)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              exit 1
+            }
+            if (-not $force) {
+              # Not fast-forwardable: --force hard-resets the fork's default
+              # branch to upstream's, the only way back for a fork this far behind.
+              Write-Host "::warning title=winget fork hard-reset::$fork could not be fast-forwarded; resetting its default branch to microsoft/winget-pkgs."
+            }
           }
-          # Not fast-forwardable: --force hard-resets the fork's default branch
-          # to upstream's, which is the only way back for a fork this far behind.
-          Write-Host "::warning title=winget fork hard-reset::$fork could not be fast-forwarded; resetting its default branch to microsoft/winget-pkgs."
-          gh repo sync $fork --source microsoft/winget-pkgs --force
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "could not sync $fork with microsoft/winget-pkgs — wingetcreate submit would fail on a stale fork."
-            exit 1
-          }
+          Write-Error "could not sync $fork with microsoft/winget-pkgs — wingetcreate submit would fail on a stale fork."
+          exit 1
 
       # `submit` validates the bumped manifests and opens a PR against
       # microsoft/winget-pkgs from the fork synced above. Works for both the

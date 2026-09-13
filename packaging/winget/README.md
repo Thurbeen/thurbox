@@ -85,8 +85,10 @@ The `publish-winget` job in
 6. closes any *older* still-open `Thurbeen.thurbox` PR from the token account,
    keeping only the one just opened (second-line cleanup).
 
-The job needs a `WINGET_TOKEN` secret — a classic PAT with the `public_repo`
-scope on the account that owns a fork of `microsoft/winget-pkgs` (wingetcreate
+The job needs a `WINGET_TOKEN` secret — a classic PAT with the `public_repo` and
+`workflow` scopes on the account that owns a fork of `microsoft/winget-pkgs`
+(`workflow` because syncing that fork moves it onto upstream commits that change
+winget-pkgs' own workflows, which GitHub refuses without it; wingetcreate
 pushes the manifest branch to that fork and opens the PR). The job is skipped
 where the secret is absent (e.g. on forks). The committed template files are not
 modified by CI — they stay as last-known-good, exactly like the Chocolatey /
@@ -98,8 +100,9 @@ Homebrew templates.
 > maintainers under stale version-bump PRs (30 open at once, flagged in
 > [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
 > The rule that prevents that is **one thurbox PR in flight**, not a monthly
-> window: the job lists our own thurbox PRs on winget-pkgs (`gh pr list`, any
-> state) and hands them to [`submit-decision.py`](submit-decision.py), which
+> window: the job lists every thurbox PR on winget-pkgs (`gh pr list`, any
+> state, any author — a third-party bot, `damn-good-b0t`, submits thurbox too)
+> and hands them to [`submit-decision.py`](submit-decision.py), which
 > **skips the submission and exits green** with a `::warning::` while one is
 > still open — `wingetcreate` cannot update a pending PR, so a second one would
 > only lengthen the queue. The next release retries; the binary itself always
@@ -123,6 +126,12 @@ Homebrew templates.
 > default branch and every submission gets its own branch, so a reset destroys
 > neither work nor an open PR.
 >
+> Neither form works without the token's `workflow` scope: GitHub refuses to
+> move a branch onto commits that change `.github/workflows` without it,
+> `--force` included, and that refusal failed every submission from v2.19.8 to
+> v2.22.4. `submit-decision.py after-sync` recognises it, skips the pointless
+> `--force` retry, and fails the job with an `::error::` naming the scope to add.
+>
 > **When `submit` fails.** A rejection from the channel itself (GitHub rate
 > limit, version already pending) warns and exits green — the same shape as the
 > Chocolatey push's 403/409 handling, with the classification in
@@ -142,7 +151,8 @@ Homebrew templates.
 > `bump-manifests.py` against a recorded `checksums.txt` and pins every
 > submit/skip and deferrable/red decision — including that the stale-fork
 > message is *not* treated as deferrable, since the sync step exists to prevent
-> it. The Windows-only halves (`wingetcreate`, `gh repo sync` against a real
+> it, and that a missing `workflow` scope is not retried with `--force`. The
+> Windows-only halves (`wingetcreate`, `gh repo sync` against a real
 > diverged fork) are not covered.
 >
 > **Review (winget-pkgs side, not CI).** microsoft/winget-pkgs runs automated
@@ -150,6 +160,15 @@ Homebrew templates.
 > smoke test) and then human review before a version goes live. The
 > `wingetcreate submit` succeeds when the PR is opened; the package appears in
 > `winget search thurbox` only after that PR merges. This is not a CI failure.
+>
+> **"No package found" on a machine that should see it.** Check the local index
+> before blaming winget-pkgs: `Get-AppxPackage Microsoft.Winget.Source` shows
+> its version (`YYYY.MMDD…`). `winget source update` can log a successful
+> download and still leave an old index registered — on the lab host, run over
+> SSH, it stayed at `2026.702`, from before thurbox was first published, so
+> every search came back empty. Registering the current index by hand (download
+> `https://cdn.winget.microsoft.com/cache/source2.msix`, then `Add-AppxPackage`)
+> made `winget search thurbox` find it at once.
 
 ## Manual publishing / initial import
 

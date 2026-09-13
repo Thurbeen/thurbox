@@ -2,6 +2,7 @@
 """The winget channel's two decisions, out of the workflow so they are testable.
 
 Usage: submit-decision.py decide --throttle-days N [--now ISO8601] [PRS_JSON]
+       submit-decision.py after-sync --exit-code N [OUTPUT_FILE]
        submit-decision.py after-submit --exit-code N [OUTPUT_FILE]
 
 `decide` reads `gh pr list --json number,state,createdAt,title` output (stdin by
@@ -12,6 +13,14 @@ no "update the pending PR" mode), and a last submission younger than
 `--throttle-days`. At `--throttle-days 0` only the open-PR rule can gate, which
 is the Chocolatey-parity cadence: attempt every release, let the moderation
 queue itself set the pace.
+
+`after-sync` reads a finished `gh repo sync` of the token account's fork — exit
+code plus output — and prints `{"synced": bool, "retry_force": bool, "fail":
+bool, "reason": str}`. A diverged fork is worth a `--force` retry; a token
+without the `workflow` scope is not, because GitHub refuses any update of the
+fork's branch onto upstream commits that touch `.github/workflows`, and
+`--force` is such an update. That refusal failed every submission from
+v2.19.8 on while the step only ever reported a stale fork.
 
 `after-submit` reads a finished `wingetcreate submit` — its exit code, plus its
 output (stdin by default) — and prints `{"opened": bool, "deferrable": bool,
@@ -87,6 +96,35 @@ def decide(prs, throttle_days: int, now: datetime) -> dict:
     }
 
 
+# gh's own translation, then the API's raw wording (gh passes it through as-is
+# on paths it does not translate, such as the `--force` ref update).
+MISSING_WORKFLOW_SCOPE = (
+    r"(?i)require the `workflow` scope|refusing to allow .* without `workflows?` (scope|permission)"
+)
+
+
+def after_sync(exit_code: int, output: str) -> dict:
+    if exit_code == 0:
+        return {"synced": True, "retry_force": False, "fail": False, "reason": "fork synced"}
+    if re.search(MISSING_WORKFLOW_SCOPE, output):
+        return {
+            "synced": False,
+            "retry_force": False,
+            "fail": True,
+            "reason": (
+                "WINGET_TOKEN lacks the `workflow` scope, so GitHub refuses to move the fork "
+                "onto upstream commits that change .github/workflows (with or without --force). "
+                "Add the `workflow` scope to that classic PAT"
+            ),
+        }
+    return {
+        "synced": False,
+        "retry_force": True,
+        "fail": False,
+        "reason": "fork could not be fast-forwarded",
+    }
+
+
 def after_submit(exit_code: int, output: str) -> dict:
     if exit_code == 0:
         return {
@@ -115,6 +153,10 @@ def main() -> int:
     d.add_argument("--throttle-days", type=int, required=True)
     d.add_argument("--now", default=None, help="ISO-8601 instant to age against (default: now)")
 
+    s = sub.add_parser("after-sync")
+    s.add_argument("output", nargs="?", default="-", help="gh repo sync output, or - for stdin")
+    s.add_argument("--exit-code", type=int, required=True, help="gh repo sync's exit code")
+
     a = sub.add_parser("after-submit")
     a.add_argument("output", nargs="?", default="-", help="wingetcreate output, or - for stdin")
     a.add_argument("--exit-code", type=int, required=True, help="wingetcreate submit's exit code")
@@ -129,6 +171,8 @@ def main() -> int:
             return 2
         now = parse_iso(args.now) if args.now else datetime.now(timezone.utc)
         result = decide(json.loads(source), args.throttle_days, now)
+    elif args.command == "after-sync":
+        result = after_sync(args.exit_code, source)
     else:
         result = after_submit(args.exit_code, source)
 
