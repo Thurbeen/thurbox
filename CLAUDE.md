@@ -228,7 +228,7 @@ because the squash throws them away.
 
 - **Types**: feat, fix, perf, refactor, docs, style, test,
   chore, ci, build, revert
-- **Scopes**: api, cli, ui, git, core, docs, deps, config, mcp
+- **Scopes**: api, cli, ui, git, core, docs, deps, config, mcp, release
 - Use `cog commit feat "message"`
   or `cog commit fix "message" scope`
 
