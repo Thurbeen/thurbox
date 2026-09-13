@@ -1753,7 +1753,7 @@ means "looked at", not "not looked at".
   for an O(rows x cols) copy. Background sessions' parsers are never locked
   during render.
 - **Remote SSH.** Both configured hosts were **up** during this pass
-  (`linux-hp` 317 ms rc=0; `windows-hp` connects, returns `ALIVE`) — ssh
+  (the Linux host 317 ms rc=0; the Windows host connects, returns `ALIVE`) — ssh
   returns 255 on connect failure, and neither did. No **active** session is
   remote: all 3 live sessions are `local-tmux`; the 8 `ssh:*` rows are
   soft-deleted. Backends are registered lazily (`App::select_backend`) and

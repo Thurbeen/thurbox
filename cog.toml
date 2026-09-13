@@ -46,5 +46,5 @@ owner = "Thurbeen"
 
 # Map git signatures to GitHub usernames
 authors = [
-    { signature = "LeTuR", username = "magicletur" },
+    { signature = "LeTuR", username = "LeTuR" },
 ]

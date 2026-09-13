@@ -2276,7 +2276,7 @@ mod tests {
     #[test]
     fn mirror_report_mentions_a_pushed_tombstone() {
         let report = crate::session_ops::mirror::MirrorReport {
-            host: "debian-hp".to_string(),
+            host: "devbox".to_string(),
             tombstoned: vec![SessionId::default()],
             ..Default::default()
         };
