@@ -47,6 +47,25 @@ pub struct CommandResponse {
     pub is_error: bool,
 }
 
+/// A sent line waiting for its answer, and how many `%begin`/`%end` blocks that
+/// answer spans. tmux answers a command list (`a ; b ; c`) with one block per
+/// command it runs, and nothing on the wire says which blocks belong together —
+/// each carries a command number of its own (measured, tmux 3.2 and 3.7c) — so
+/// only the sender can know.
+struct Waiter {
+    tx: SyncSender<CommandResponse>,
+    blocks: usize,
+}
+
+/// The waiters, in the order their lines were written.
+type ResponseQueue = Arc<Mutex<VecDeque<Waiter>>>;
+
+/// A waiter whose command list has answered some of its blocks.
+struct Answer {
+    waiter: Waiter,
+    lines: Vec<String>,
+}
+
 /// Parsed notification from the tmux control mode protocol.
 #[derive(Debug, PartialEq)]
 pub enum Notification {
@@ -749,8 +768,9 @@ pub(super) struct ControlMode {
     /// Where each registered pane lives, for turning `%window-close` into EOF.
     /// Written by `register_pane`/`unregister_pane`, read by the reader thread.
     pub(super) pane_windows: PaneWindowsMapShared,
-    /// FIFO queue of response channels — one per `send_command()` call, in order.
-    response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
+    /// FIFO queue of waiters — one per `send_command()`/`send_command_list()`
+    /// call, in order.
+    response_queue: ResponseQueue,
     /// `(pane_id, state)` pairs from `%subscription-changed` notifications
     /// (remote hook status — see [`crate::session::REMOTE_HOOK_STATE_OPTION`]),
     /// pushed by the reader thread and drained by the app tick via
@@ -827,8 +847,7 @@ impl ControlMode {
             Arc::new(Mutex::new(std::collections::HashMap::new()));
         let pane_windows: PaneWindowsMapShared =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>> =
-            Arc::new(Mutex::new(VecDeque::new()));
+        let response_queue: ResponseQueue = Arc::new(Mutex::new(VecDeque::new()));
         let sub_events: Arc<Mutex<VecDeque<(String, String)>>> =
             Arc::new(Mutex::new(VecDeque::new()));
         let alive = Arc::new(AtomicBool::new(true));
@@ -943,7 +962,7 @@ impl ControlMode {
                     if !alive.load(Ordering::Relaxed) {
                         break;
                     }
-                    let body = match Self::send_command_on(&stdin, &queue, &cmd) {
+                    let body = match Self::send_command_on(&stdin, &queue, &cmd, 1) {
                         Ok(body) => body,
                         Err(e) => {
                             debug!("psmux hook poller stopping: {e:#}");
@@ -1037,8 +1056,10 @@ impl ControlMode {
     /// Background thread that reads and dispatches control mode output.
     ///
     /// Responses arrive in FIFO order matching `send_command()` calls.
-    /// We track a single in-flight response at a time (`%begin` → collect
-    /// lines → `%end`/`%error`), then pop the next waiter from the queue.
+    /// We track a single in-flight block at a time (`%begin` → collect
+    /// lines → `%end`/`%error`), then hand it to the waiter at the front of
+    /// the queue, which a command list keeps for as many blocks as it has
+    /// commands (see [`Self::deliver_response`]).
     /// Commands sent via `send_command_nowait()` also produce `%begin`/`%end`
     /// blocks, but no waiter is in the queue for them — those responses are
     /// simply discarded.
@@ -1047,11 +1068,12 @@ impl ControlMode {
         stdin: Arc<Mutex<ChildStdin>>,
         pane_senders: PaneSendersMapShared,
         pane_windows: PaneWindowsMapShared,
-        response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
+        response_queue: ResponseQueue,
         sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
     ) {
-        // Accumulates response lines for the current in-flight command.
+        // Accumulates response lines for the current in-flight block.
         let mut collecting: Option<Vec<String>> = None;
+        let mut answering: Option<Answer> = None;
         let mut line_buf = Vec::new();
 
         while let Some(line) = Self::next_control_line(&mut reader, &mut line_buf) {
@@ -1065,7 +1087,7 @@ impl ControlMode {
                 end_or_error @ (Notification::End | Notification::Error) => {
                     let lines = collecting.take().unwrap_or_default();
                     let is_error = matches!(end_or_error, Notification::Error);
-                    Self::deliver_response(&response_queue, lines, is_error);
+                    Self::deliver_response(&response_queue, &mut answering, lines, is_error);
                 }
                 Notification::Pause { pane_id } => {
                     Self::resume_pane(&stdin, &pane_id);
@@ -1176,19 +1198,43 @@ impl ControlMode {
         }
     }
 
-    /// Deliver a completed `%begin`/`%end`(`%error`) block to the next waiter.
+    /// Add a completed `%begin`/`%end`(`%error`) block to the answer in
+    /// progress — the next waiter's, when none is — and hand the answer over
+    /// once its last block is in, or at an error: tmux drops the rest of a list
+    /// at its first failing command, so no more blocks of it will come.
     ///
     /// Responses with no waiter in the queue (e.g. from `send_command_nowait`)
     /// are simply discarded.
     fn deliver_response(
-        response_queue: &Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
+        response_queue: &ResponseQueue,
+        answering: &mut Option<Answer>,
         lines: Vec<String>,
         is_error: bool,
     ) {
-        if let Ok(mut queue) = response_queue.lock() {
-            if let Some(tx) = queue.pop_front() {
-                let _ = tx.send(CommandResponse { lines, is_error });
+        let mut answer = match answering.take() {
+            Some(answer) => answer,
+            None => {
+                let Ok(mut queue) = response_queue.lock() else {
+                    return;
+                };
+                let Some(waiter) = queue.pop_front() else {
+                    return;
+                };
+                Answer {
+                    waiter,
+                    lines: Vec::new(),
+                }
             }
+        };
+        answer.lines.extend(lines);
+        answer.waiter.blocks = answer.waiter.blocks.saturating_sub(1);
+        if is_error || answer.waiter.blocks == 0 {
+            let _ = answer.waiter.tx.send(CommandResponse {
+                lines: answer.lines,
+                is_error,
+            });
+        } else {
+            *answering = Some(answer);
         }
     }
 
@@ -1214,7 +1260,26 @@ impl ControlMode {
 
     /// Send a command and wait for its response.
     pub(super) fn send_command(&self, cmd: &str) -> Result<String> {
-        Self::send_command_on(&self.stdin, &self.response_queue, cmd)
+        Self::send_command_on(&self.stdin, &self.response_queue, cmd, 1)
+    }
+
+    /// Send commands as one command list (`a ; b ; c`) and wait for the whole
+    /// list's answer — every command's output, in order, or the first error.
+    ///
+    /// One line and not several because tmux runs a list without returning to
+    /// its event loop in between (what `birth_options` relies on). Each entry
+    /// must be a single command: one that chains its own `;` answers with more
+    /// blocks than are counted here, and the surplus reaches the next waiter.
+    pub(super) fn send_command_list(&self, cmds: &[&str]) -> Result<String> {
+        if cmds.is_empty() {
+            bail!("an empty command list has nothing to send");
+        }
+        Self::send_command_on(
+            &self.stdin,
+            &self.response_queue,
+            &cmds.join(" ; "),
+            cmds.len(),
+        )
     }
 
     /// [`Self::send_command`] without `&self`, so background threads holding
@@ -1226,10 +1291,13 @@ impl ControlMode {
     /// matching the on-wire command order and every later response is
     /// delivered one command off. A failed write pops the just-enqueued
     /// waiter for the same reason.
+    ///
+    /// `blocks` is how many commands `cmd` holds (see [`Waiter`]).
     fn send_command_on(
         stdin: &Arc<Mutex<ChildStdin>>,
-        response_queue: &Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
+        response_queue: &ResponseQueue,
         cmd: &str,
+        blocks: usize,
     ) -> Result<String> {
         let (tx, rx) = sync_channel(1);
 
@@ -1249,7 +1317,7 @@ impl ControlMode {
                 let mut queue = response_queue
                     .lock()
                     .map_err(|e| anyhow::anyhow!("response_queue lock: {e}"))?;
-                queue.push_back(tx);
+                queue.push_back(Waiter { tx, blocks });
             }
             if let Err(e) = writeln!(stdin, "{cmd}").and_then(|()| stdin.flush()) {
                 // Un-enqueue our waiter — still under the stdin lock, so no
