@@ -1105,3 +1105,118 @@ mod transport_proptests {
         }
     }
 }
+
+// --- command lists on a real tmux ---
+
+/// A tmux server on a throwaway socket, killed on drop. Real tmux because what
+/// is pinned is how the server answers a command list — one `%begin`/`%end`
+/// block per command that runs — not the reader's bookkeeping.
+#[cfg(unix)]
+struct ThrowawayServer {
+    socket: String,
+}
+
+#[cfg(unix)]
+impl ThrowawayServer {
+    const SESSION: &'static str = "lists";
+
+    /// `None` when tmux is absent or will not start a server: an environment
+    /// fact, not a regression.
+    fn start(name: &str) -> Option<Self> {
+        let socket = format!("thurbox-cm-{name}-{}", std::process::id());
+        let started = TmuxTransport::Local
+            .tmux_command(
+                &socket,
+                &[
+                    "new-session",
+                    "-d",
+                    "-s",
+                    Self::SESSION,
+                    "-x",
+                    "80",
+                    "-y",
+                    "24",
+                ],
+            )
+            .output();
+        match started {
+            Ok(out) if out.status.success() => Some(Self { socket }),
+            _ => {
+                eprintln!("skipping: tmux would not start a server");
+                None
+            }
+        }
+    }
+
+    fn control(&self) -> ControlMode {
+        ControlMode::start(&TmuxTransport::Local, &self.socket, Self::SESSION)
+            .expect("control mode starts")
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ThrowawayServer {
+    fn drop(&mut self) {
+        let _ = TmuxTransport::Local
+            .tmux_command(&self.socket, &["kill-server"])
+            .output();
+    }
+}
+
+/// The blocks after a list's first belong to the list. Here the middle one is
+/// held open by `run-shell`, so a reader that answered the list at its first
+/// `%end` has already let the next command queue up behind it — and that
+/// command would be answered with the `run-shell` block's empty body (#1120).
+#[cfg(unix)]
+#[test]
+fn a_command_list_is_answered_once_all_its_blocks_are_in() {
+    let Some(server) = ThrowawayServer::start("list-blocks") else {
+        return;
+    };
+    let ctrl = server.control();
+
+    let list = ctrl
+        .send_command_list(&[
+            "display-message -p first",
+            "run-shell 'sleep 0.5'",
+            "display-message -p third",
+        ])
+        .expect("the list runs");
+    let next = ctrl
+        .send_command("display-message -p second")
+        .expect("the next command runs");
+
+    assert_eq!(
+        next, "second",
+        "the next command got another command's answer"
+    );
+    assert_eq!(list, "first\nthird");
+}
+
+/// tmux drops the rest of a list at its first error, so the list answers with
+/// fewer blocks than it has commands. The error is the list's, and the command
+/// after it still gets its own answer.
+#[cfg(unix)]
+#[test]
+fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place() {
+    let Some(server) = ThrowawayServer::start("list-error") else {
+        return;
+    };
+    let ctrl = server.control();
+
+    let failed = ctrl.send_command_list(&[
+        "display-message -p a",
+        "set-window-option nosuchoption on",
+        "display-message -p c",
+    ]);
+    let next = ctrl
+        .send_command("display-message -p next")
+        .expect("the next command runs");
+
+    let err = failed.expect_err("a failing command fails its list");
+    assert!(
+        format!("{err:#}").contains("nosuchoption"),
+        "the error is the failing command's: {err:#}"
+    );
+    assert_eq!(next, "next");
+}

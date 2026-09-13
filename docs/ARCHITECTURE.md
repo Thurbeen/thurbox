@@ -555,6 +555,16 @@ waiter. `send_command_nowait` is only safe when nothing follows
 (e.g., `detach`) or when issued from the reader thread itself
 (e.g., pause resume).
 
+A command list (`a ; b ; c`, sent by `ControlMode::send_command_list`) answers
+with one `%begin`/`%end` block per command it runs — each gets its own command
+number, so nothing on the wire marks the blocks as belonging together (measured,
+tmux 3.2 and 3.7c) — and an error drops the rest of the list. The waiter that
+sent the list therefore records how many blocks it holds and keeps its queue
+slot until that many have arrived or the first `%error` does, concatenating
+their lines into one answer (issue #1120). `TmuxBackend::spawn_window` relies on
+this to fold `new-window` and its window options into one list without a later
+command being answered by one of the list's own blocks.
+
 **Session restore**: On reconnect (`TmuxBackend::adopt`),
 `capture-pane -e -p -J -S -<scrollback_lines>` seeds the fresh
 vt100 parser with the pane's scrollback history **and** visible

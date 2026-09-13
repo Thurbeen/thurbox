@@ -517,21 +517,22 @@ fn birth_options(window_name: &str) -> [(&'static str, &'static str); 2] {
     ]
 }
 
-/// [`birth_options`] as the tail of a control-mode command list.
+/// [`birth_options`] as the commands that follow `new-window` in a control-mode
+/// command list.
 ///
 /// The target is left unsaid on purpose: `new-window` without `-d` makes the
 /// window it created current, and the bare form is therefore exactly that
 /// window — including when an older window of the same name exists, which
 /// `-t <name>` would resolve to instead (measured: the lowest index wins).
 /// The `-d` path cannot use that and names its window; see [`spawn_window`].
-fn birth_options_suffix(window_name: &str, psmux: bool) -> String {
+fn birth_option_commands(window_name: &str, psmux: bool) -> Vec<String> {
     if psmux {
         // psmux has neither option.
-        return String::new();
+        return Vec::new();
     }
     birth_options(window_name)
         .iter()
-        .map(|(key, value)| format!(" ; set-window-option {key} {value}"))
+        .map(|(key, value)| format!("set-window-option {key} {value}"))
         .collect()
 }
 
@@ -1552,13 +1553,19 @@ impl TmuxBackend {
     /// Send a command via control mode and return the response.
     /// On broken pipe or timeout, reconnects control mode and retries once.
     fn ctrl_command(&self, cmd: &str) -> Result<String> {
-        let result = self.with_control(|ctrl| ctrl.send_command(cmd));
+        self.ctrl_command_list(&[cmd])
+    }
+
+    /// [`Self::ctrl_command`] for a command list, answered once every command
+    /// in it has answered (see `ControlMode::send_command_list`).
+    fn ctrl_command_list(&self, cmds: &[&str]) -> Result<String> {
+        let result = self.with_control(|ctrl| ctrl.send_command_list(cmds));
         match result {
             Ok(val) => Ok(val),
             Err(err) if is_broken_pipe(&err) || is_recv_timeout(&err) => {
                 warn!("Control mode error, reconnecting: {err:#}");
                 self.reconnect_control()?;
-                self.with_control(|ctrl| ctrl.send_command(cmd))
+                self.with_control(|ctrl| ctrl.send_command_list(cmds))
             }
             Err(err) => Err(err),
         }
@@ -1900,11 +1907,14 @@ impl SessionBackend for TmuxBackend {
         let session = &self.session;
         // The window's own options ride along in the same command list — see
         // `birth_options` for why neither can be a message of its own.
-        let options = birth_options_suffix(window_name, psmux);
-        let cmd = format!(
-            "new-window -t {session} -n {escaped_window_name} -P -F '{SPAWN_FORMAT}'{cwd_part}{env_part} {shell_cmd}{options}"
+        let new_window = format!(
+            "new-window -t {session} -n {escaped_window_name} -P -F '{SPAWN_FORMAT}'{cwd_part}{env_part} {shell_cmd}"
         );
-        let result = self.ctrl_command(&cmd)?;
+        let options = birth_option_commands(window_name, psmux);
+        let cmds: Vec<&str> = std::iter::once(new_window.as_str())
+            .chain(options.iter().map(String::as_str))
+            .collect();
+        let result = self.ctrl_command_list(&cmds)?;
         // Two fields, and the second is optional in practice: a multiplexer
         // that prints only the pane id (psmux's `-P -F` support is unverified
         // against the documented divergences, ADR-13) leaves `window_id` None
