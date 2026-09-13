@@ -203,17 +203,15 @@ impl App {
             }
         }
 
-        let target = self.target_at(x, y);
-
-        // A float takes every click while it is up — the mouse half of what
-        // makes it a modal rather than a pane drawn on top. A press that misses
-        // its buttons is swallowed rather than reaching what it covers.
-        if let Some(grabbed) = self.grabbed {
-            if let Some(target) = target.filter(|target| target.plugin == grabbed) {
-                self.dispatch_click(target, x, y);
+        let target = match float_grab(self.grabbed, self.target_at(x, y)) {
+            Grab::Free(target) => target,
+            Grab::Held(target) => {
+                if let Some(target) = target {
+                    self.dispatch_click(target, x, y);
+                }
+                return;
             }
-            return;
-        }
+        };
 
         if modifiers.contains(KeyModifiers::CONTROL) {
             // A modified press is a link open, never the start of a selection.
@@ -250,19 +248,12 @@ impl App {
             return;
         }
 
-        let target = self.target_at(x, y);
-
-        // A float owns the pointer while it is up, so a right press outside it
-        // is swallowed rather than reaching what it covers. Without this a menu
-        // opened by a right press could be re-opened by the next one on the
-        // pane beneath it, which reads as the menu having moved.
-        if let Some(grabbed) = self.grabbed {
-            if let Some(target) = target.filter(|target| target.plugin == grabbed) {
-                self.dispatch_context(target, x, y);
-            }
-            return;
-        }
-
+        // Held or free, a right press has only the one road. The float's rule
+        // still matters here: without it a menu opened by a right press could
+        // be re-opened by the next one on the pane beneath it, which reads as
+        // the menu having moved.
+        let (Grab::Free(target) | Grab::Held(target)) =
+            float_grab(self.grabbed, self.target_at(x, y));
         if let Some(target) = target {
             self.dispatch_context(target, x, y);
         }
@@ -712,6 +703,28 @@ impl App {
     }
 }
 
+/// What a press may still reach once a float has had its say.
+///
+/// A float owns the pointer while it is up — the mouse half of what makes it a
+/// modal rather than a pane drawn on top — so a press that misses it is
+/// swallowed rather than reaching what it covers. Both buttons ask
+/// [`float_grab`], so a left and a right press cannot come to disagree about
+/// what a float swallows.
+enum Grab {
+    /// No float is up; the press goes on down its own path.
+    Free(Option<ClickTarget>),
+    /// A float is up and the press is spent: the target is the float's own, or
+    /// `None` when the press landed anywhere else.
+    Held(Option<ClickTarget>),
+}
+
+fn float_grab(grabbed: Option<usize>, target: Option<ClickTarget>) -> Grab {
+    match grabbed {
+        None => Grab::Free(target),
+        Some(float) => Grab::Held(target.filter(|target| target.plugin == float)),
+    }
+}
+
 /// How close two reports have to be to belong to the same wheel notch.
 ///
 /// A detent's reports are written in one go — microseconds apart, well inside
@@ -753,6 +766,40 @@ impl WheelNotch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn painted_by(plugin: usize) -> Option<ClickTarget> {
+        Some(ClickTarget {
+            plugin,
+            rect: Rect::new(0, 0, 10, 1),
+            identity: Identity::default(),
+        })
+    }
+
+    fn plugin_of(target: &Option<ClickTarget>) -> Option<usize> {
+        target.as_ref().map(|target| target.plugin)
+    }
+
+    /// Both presses answer to this one rule, so a left and a right press can
+    /// never disagree about what a float swallows.
+    #[test]
+    fn a_float_holds_every_press_and_hands_on_only_its_own() {
+        match float_grab(None, painted_by(3)) {
+            Grab::Free(target) => assert_eq!(plugin_of(&target), Some(3)),
+            Grab::Held(_) => panic!("no float is up, so nothing holds the press"),
+        }
+        match float_grab(Some(7), painted_by(7)) {
+            Grab::Held(target) => assert_eq!(plugin_of(&target), Some(7)),
+            Grab::Free(_) => panic!("a press on the float is the float's"),
+        }
+        match float_grab(Some(7), painted_by(3)) {
+            Grab::Held(target) => assert!(target.is_none(), "the pane beneath must not hear it"),
+            Grab::Free(_) => panic!("a press outside the float is swallowed, not freed"),
+        }
+        match float_grab(Some(7), None) {
+            Grab::Held(target) => assert!(target.is_none()),
+            Grab::Free(_) => panic!("a press on nothing is still swallowed"),
+        }
+    }
 
     /// Ghostty, kitty and xterm send one report per line of their scroll
     /// setting: three for one detent. Each report steps the selection and opens
