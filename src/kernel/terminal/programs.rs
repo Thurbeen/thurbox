@@ -144,6 +144,37 @@ fn admit_program(plugin: &str, held: usize, program: &str) -> Result<(), String>
     Ok(())
 }
 
+/// What `keys` sent to a plugin's pane should do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeysPlan {
+    /// The program is running: type at it.
+    Send,
+    /// Nothing is running and the plugin named a program: start that instead.
+    Start,
+    /// Nothing is running and nothing was named to start.
+    Refuse(String),
+}
+
+/// The choice `keys` makes: type at a running program, start the one named, or
+/// refuse.
+///
+/// `running` is the pane's state **before** the send, never the answer a send
+/// gave. A live pane can refuse a send because its input channel is full; read
+/// as "not running", that refusal was reported as a missing program, or handed
+/// to the start — which answers `Ok` for the pane already there, so the keys
+/// were lost with nothing said. Pure for the reason `admit_program` is.
+pub fn plan_keys(plugin: &str, name: &str, running: bool, program: &str) -> KeysPlan {
+    if running {
+        return KeysPlan::Send;
+    }
+    if program.trim().is_empty() {
+        return KeysPlan::Refuse(format!(
+            "{plugin} has no running program named {name:?} to type into"
+        ));
+    }
+    KeysPlan::Start
+}
+
 /// One plugin's program pane, and the rect it was last painted into.
 pub(super) struct ProgramSlot {
     pub(super) pane: crate::agent::backend::ProgramPane,
@@ -368,15 +399,18 @@ impl Terminals {
     }
 
     /// Send bytes to a plugin's program.
-    #[must_use = "the caller decides whether the keystroke was consumed from this"]
-    pub fn send_to_program(&self, key: &ProgramKey, bytes: Vec<u8>) -> bool {
+    ///
+    /// The error says which refusal it was — no pane, a finished program, or an
+    /// input channel that is full — because a caller that reports one as another
+    /// sends the author looking for the wrong fault.
+    pub fn send_to_program(&self, key: &ProgramKey, bytes: Vec<u8>) -> Result<(), String> {
         let Some(slot) = self.programs.get(key) else {
-            return false;
+            return Err(format!("there is no program pane named {:?}", key.name));
         };
         if slot.pane.has_exited() {
-            return false;
+            return Err(format!("{} has exited", slot.program));
         }
-        slot.pane.send_input(bytes).is_ok()
+        slot.pane.send_input(bytes).map_err(|e| format!("{e:#}"))
     }
 
     /// Every program pane held right now, with what it runs and whether it has
@@ -500,8 +534,40 @@ mod tests {
         let terminals = Terminals::new();
         let key = ProgramKey::new("plugins/90_watch.lua", "watch");
         assert_eq!(terminals.program_count("plugins/90_watch.lua"), 0);
-        assert!(!terminals.send_to_program(&key, b"x".to_vec()));
+        assert!(terminals.send_to_program(&key, b"x".to_vec()).is_err());
         assert!(terminals.program_state(&key).is_none());
+    }
+
+    /// A running program is typed at even when a program to start was named.
+    ///
+    /// The branch this pins had no test and was wrong: the choice was made from
+    /// whether a send *worked*, so a live pane that refused one — its input
+    /// channel full — was sent to the start, which keeps the pane already there
+    /// and reports success. The keys were lost and nothing was reported.
+    #[test]
+    fn keys_for_a_running_program_are_sent_even_with_a_program_named() {
+        let plan = |program| plan_keys("plugins/90_editor.lua", "editor", true, program);
+        assert_eq!(plan("nvim"), KeysPlan::Send);
+        assert_eq!(plan(""), KeysPlan::Send);
+    }
+
+    #[test]
+    fn keys_for_a_program_that_is_not_running_start_the_one_named() {
+        assert_eq!(
+            plan_keys("plugins/90_editor.lua", "editor", false, "nvim"),
+            KeysPlan::Start
+        );
+    }
+
+    #[test]
+    fn keys_with_nothing_running_and_nothing_to_start_are_refused_by_name() {
+        let KeysPlan::Refuse(error) = plan_keys("plugins/90_editor.lua", "editor", false, "  ")
+        else {
+            panic!("nothing to type into and nothing to start must be refused");
+        };
+        // Names the plugin and the pane, because the plugin shows it.
+        assert!(error.contains("90_editor.lua"), "{error}");
+        assert!(error.contains("\"editor\""), "{error}");
     }
 
     /// A plugin that is still loaded keeps its pane; one that is gone does not.

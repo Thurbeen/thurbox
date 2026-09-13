@@ -1120,13 +1120,18 @@ is Enter and `\27` is Escape — and because a Lua string is bytes, a sequence t
 is not UTF-8 arrives as written; `text` names the pane and nothing is started. This
 is what makes an editor pane worth keeping: opening a second file is a line typed
 at the editor you have, not a second one paid for from scratch. It is refused,
-and reported, when no program of that name is running — and it needs the same
-`program` capability starting one does, since driving a live process is the same
-privilege as beginning it.
+and reported, when no program of that name is running, and when a running one
+cannot take the bytes — more sends in one frame than its input holds refuses the
+rest as a full input channel. It needs the same `program` capability starting one
+does, since driving a live process is the same privilege as beginning it.
+
+Every refusal of a `program` command reaches `command.failed` with `kind =
+"program"`, the pane's name as `subject`, and the reason as `error`.
 
 **Type it, or start it.** Send `keys` *and* a program and the kernel picks: the
 keys go to a pane that is running, and a pane that is not is started from `repo`
 and `args` instead, which is expected to leave it in the state the keys were for.
+A running pane that refuses the keys is reported, never started over.
 
 ```lua
 command("program", {
