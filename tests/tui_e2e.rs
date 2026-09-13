@@ -50,6 +50,7 @@ const CTRL_SLASH: &[u8] = b"\x1f";
 const ESC: &[u8] = b"\x1b";
 const F1: &[u8] = b"\x1bOP";
 const F6: &[u8] = b"\x1b[17~";
+const F10: &[u8] = b"\x1b[21~";
 const F9: &[u8] = b"\x1b[20~";
 
 /// The `GIT_*` location variables git exports to hook processes — the list
@@ -876,6 +877,77 @@ fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click()
 
     tui.press(0, tui.find("tb-hook-right"));
     tui.wait_for("tb-hook-left");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// A pane in the session column that paints what it heard, and from which node.
+fn listening_pane(name: &str, order: u8) -> String {
+    format!(
+        r#"return {{
+  name = "{name}",
+  slot = "sessions",
+  order = {order},
+  render = function()
+    return {{ type = "text", text = "tb-{name}-" .. (state.heard or "none"), id = "{name}" }}
+  end,
+  on_click = function(hit)
+    state.heard = (state.heard or "") .. "L:" .. tostring(hit.id)
+    return true
+  end,
+  on_context = function(hit)
+    state.heard = (state.heard or "") .. "R:" .. tostring(hit.id)
+    return true
+  end,
+}}"#
+    )
+}
+
+/// A press read in the same batch as a reload reaches no pane, rather than the
+/// one that now sits at the index the last paint recorded (#1118).
+///
+/// Click targets name plugins by index, and a reload rebuilds the vector those
+/// indices point into. Removing a pane that sorts before `aim` moves `near` into
+/// `aim`'s old index, so a press resolved against the previous paint reaches
+/// `near` carrying `aim`'s node id. The reload and both presses are one write
+/// so `drain_input` handles all three before the next paint records fresh
+/// targets — the same window a watcher reload leaves open between a paint and
+/// the press that follows it.
+#[test]
+fn a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it() {
+    let interface = interface_plus("06_tbgone.lua", &listening_pane("gone", 6));
+    let plugins = interface.path().join("plugins");
+    std::fs::write(plugins.join("07_tbaim.lua"), listening_pane("aim", 7)).expect("add aim");
+    std::fs::write(plugins.join("08_tbnear.lua"), listening_pane("near", 8)).expect("add near");
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("tb-gone-none");
+    tui.wait_for("tb-near-none");
+    let (x, y) = tui.find("tb-aim-none");
+
+    // Written at once, well inside the watcher's debounce, so the reload the
+    // deletion schedules cannot repaint before F10 is read.
+    std::fs::remove_file(plugins.join("06_tbgone.lua")).expect("remove gone");
+    let (px, py) = (x + 1, y + 1);
+    let mut batch = F10.to_vec();
+    for button in [2, 0] {
+        batch.extend(format!("\x1b[<{button};{px};{py}M\x1b[<{button};{px};{py}m").as_bytes());
+    }
+    tui.send(&batch);
+    tui.wait_gone("tb-gone-");
+
+    // Events are handled in order, so once `aim` has painted this later press
+    // nothing from the batch can still be on its way to `near`.
+    tui.press(0, tui.find("tb-aim-"));
+    tui.wait_for("tb-aim-L:aim");
+    let frame = tui.frame();
+    assert!(
+        frame.contains("tb-near-none"),
+        "a press after a reload reached a pane that did not paint the node:\n{frame}"
+    );
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");

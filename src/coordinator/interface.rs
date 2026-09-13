@@ -28,11 +28,13 @@ impl App {
         // the rebuilt ones hear that they were rebuilt.
         self.note_reload(reason);
         // Plugin indices are positions in a vector the rebuild just replaced, and
-        // `grabbed` is one recorded during the previous paint. A reload between a
-        // paint and a keystroke — a watcher firing on a deleted file — would leave
-        // it pointing past the end. The next paint sets it again if a float is
-        // still up.
+        // `grabbed` and every click target are ones recorded during the previous
+        // paint. A reload between a paint and an input — a watcher firing on a
+        // deleted file — would leave them pointing past the end, or at whichever
+        // plugin moved into that position, which then receives a press on a node
+        // it never painted (#1118). The next paint records them again.
         self.grabbed = None;
+        self.click_targets.clear();
         self.last_floats.clear();
         self.drawn_floats.clear();
         // A plugin that was edited away, renamed, removed or turned off must not
