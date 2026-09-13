@@ -825,31 +825,34 @@ impl Tui {
     }
 }
 
-/// A right press travels from the terminal to the pane's `on_context`, and a
-/// left one still reaches `on_click`.
+/// A right press travels from the terminal to the `on_context` of the pane
+/// that painted the node under it, and a left one still reaches `on_click`.
 ///
-/// `tests/mouse_context.rs` calls both hooks directly, with a plugin index it
-/// picked and a `Click` it built, which proves the hooks are separate and
-/// nothing about the road to them. That road is entirely the binary's: the
+/// `tests/mouse.rs` calls both hooks directly, with a plugin index it picked
+/// and a `Click` it built, which proves the hooks are separate and nothing
+/// about the road to them. That road is entirely the binary's: the
 /// mouse-reporting mode it turns on, `crossterm` reading button 2 as
 /// `Down(Right)`, `on_mouse` sending it to `on_context_click` rather than down
 /// the click path, and the hit under the pointer resolving to the plugin that
 /// painted it. A wire that named `on_click` for both buttons would leave every
 /// in-process test green while making every pane ever written act on a right
 /// press — the failure this feature exists to avoid.
+///
+/// Two panes answer `on_context`, so a press that reached every pane, or the
+/// wrong one, repaints the bystander and fails here.
 #[test]
 fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click() {
     // The `id` is what makes the row a hit target: a pane that cannot hold
     // focus records no rect of its own, so an anonymous node would leave the
     // press landing on nothing and the test passing for the wrong reason.
-    let interface = interface_plus(
-        "91_twohanded.lua",
-        r#"return {
-  name = "twohanded",
+    let pane = |name: &str, order: u8| {
+        format!(
+            r#"return {{
+  name = "{name}",
   slot = "sessions",
-  order = 5,
+  order = {order},
   render = function()
-    return { type = "text", text = "tb-hook-" .. (state.said or "none"), id = "tb-row" }
+    return {{ type = "text", text = "tb-{name}-" .. (state.said or "none"), id = "tb-{name}" }}
   end,
   on_click = function(hit)
     state.said = "left"
@@ -859,13 +862,21 @@ fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click()
     state.said = "right"
     return true
   end,
-}"#,
-    );
+}}"#
+        )
+    };
+    let interface = interface_plus("91_hook.lua", &pane("hook", 5));
+    std::fs::write(
+        interface.path().join("plugins/92_other.lua"),
+        pane("other", 6),
+    )
+    .expect("add the second pane");
     let profile = Profile::new();
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
     tui.wait_for("tb-hook-none");
+    tui.wait_for("tb-other-none");
 
     // `wait_for` is the assertion: the pane repainted, and what it painted says
     // which hook ran. A right press routed to the click path would paint
@@ -873,9 +884,15 @@ fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click()
     // pass quietly.
     tui.press(2, tui.find("tb-hook-none"));
     tui.wait_for("tb-hook-right");
+    tui.find("tb-other-none");
+
+    tui.press(2, tui.find("tb-other-none"));
+    tui.wait_for("tb-other-right");
+    tui.find("tb-hook-right");
 
     tui.press(0, tui.find("tb-hook-right"));
     tui.wait_for("tb-hook-left");
+    tui.find("tb-other-right");
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
