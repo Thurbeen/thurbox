@@ -1109,15 +1109,19 @@ plugin that is removed, renamed or turned off has its panes released for it.
 
 **Telling a running program something.** Starting is idempotent, so asking again
 with different `args` does nothing — the pane is already there. To change what a
-long-lived program is showing, type at it:
+long-lived program is showing, type at it from any interactive hook —
+`on_key`, `on_action`, `on_click`, `on_context`, `on_scroll`, or `on_event`
+(not from `render`, or it will be re-typed every frame):
 
 ```lua
 command("program", { text = "editor", keys = ":e " .. path .. "\r" })
 ```
 
 The bytes reach the program's stdin exactly as if they had been typed, so `\r`
-is Enter and `\27` is Escape — and because a Lua string is bytes, a sequence that
-is not UTF-8 arrives as written; `text` names the pane and nothing is started. This
+is Enter and `\27` is Escape. On tmux, because a Lua string is bytes, a sequence
+that is not UTF-8 arrives as written; on native Windows, non-UTF-8 bytes are
+lossy-decoded (`String::from_utf8_lossy`) before they are sent. `text` names the
+pane and nothing is started. This
 is what makes an editor pane worth keeping: opening a second file is a line typed
 at the editor you have, not a second one paid for from scratch. It is refused,
 and reported, when no program of that name is running, and when a running one
