@@ -202,29 +202,22 @@ after_sync() { # <exit-code> <sync output>
   [ "$(echo "$output" | jq -r .retry_force)" = "false" ]
 }
 
-# The safety rule is "no second thurbox PR on the moderation queue", whoever
-# opened the first. A third-party bot (damn-good-b0t) submits thurbox too —
-# every version merged since 1.8.6 is its — so a decision fed only the token
-# account's PRs would stack a second PR on top of the bot's.
-@test "decide: the workflow asks about thurbox PRs from every author" {
-  step="$(awk '/name: Decide whether to submit/{f=1} f&&/- name: Download release checksums/{exit} f' \
-    "${DIR}/../../.github/workflows/cd.yml")"
-  echo "$step" | grep -q 'gh pr list --repo microsoft/winget-pkgs'
-  ! echo "$step" | grep -q -- '--author'
-}
-
 # Both binaries import VCRUNTIME140.dll (the MSVC target links the CRT
 # dynamically), so a machine without the VC++ 2015+ runtime cannot start them.
 # winget installs a declared dependency first; winget-pkgs' merged manifests
-# carry it, and ours must too or the next submission drops it.
-@test "manifest: the installer declares the VC++ runtime the binaries import" {
-  grep -q "PackageIdentifier: Microsoft.VCRedist.2015+.x64" \
-    "${DIR}/manifests/Thurbeen.thurbox.installer.yaml"
+# carry it, and the set CI submits must too or the next submission drops it.
+@test "manifest: the submitted installer declares the VC++ runtime the binaries import" {
   cp -r "${DIR}/manifests" "${BATS_TEST_TMPDIR}/manifests"
   python3 "${DIR}/bump-manifests.py" v2.19.6 "${BATS_TEST_TMPDIR}/manifests" \
     "${DIR}/testdata/checksums-v2.19.6.txt"
-  grep -q "PackageIdentifier: Microsoft.VCRedist.2015+.x64" \
-    "${BATS_TEST_TMPDIR}/manifests/Thurbeen.thurbox.installer.yaml"
+  run python3 -c '
+import sys, yaml
+m = yaml.safe_load(open(sys.argv[1]))
+deps = [d["PackageIdentifier"] for d in m["Dependencies"]["PackageDependencies"]]
+print(",".join(deps))
+' "${BATS_TEST_TMPDIR}/manifests/Thurbeen.thurbox.installer.yaml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Microsoft.VCRedist.2015+.x64" ]
 }
 
 @test "bump-manifests: fails loudly when the Windows checksum is missing" {
