@@ -37,7 +37,7 @@ pub mod links;
 mod programs;
 
 pub use links::{drawn_link_paints, paint_hyperlinks, HyperlinkPaint};
-pub use programs::{validate_program_name, ProgramKey, ProgramTransition};
+pub use programs::{plan_keys, validate_program_name, KeysPlan, ProgramKey, ProgramTransition};
 
 use programs::ProgramSlot;
 

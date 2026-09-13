@@ -396,10 +396,10 @@ impl App {
     /// which is also what makes revoking trust take effect on the next frame
     /// rather than at the next reload.
     ///
-    /// A refusal is **reported to the plugin's own error channel** rather than
-    /// silently dropped, because a pane that cannot start needs to be able to say
-    /// why: an empty box that never explains itself is the failure mode the
-    /// capability model is otherwise prone to.
+    /// A refusal is **reported** — see `refuse_program` — rather than silently
+    /// dropped, because a pane that cannot start needs to be able to say why: an
+    /// empty box that never explains itself is the failure mode the capability
+    /// model is otherwise prone to.
     pub(crate) fn apply_program(
         &mut self,
         owner: &str,
@@ -424,9 +424,9 @@ impl App {
             .host
             .may_path(owner, thurbox::kernel::host::Capability::Program)
         {
-            self.report(
+            self.refuse_program(
+                name,
                 format!("{owner} may not run a program — trust it in settings → Interface"),
-                Level::Error,
             );
             return;
         }
@@ -438,31 +438,37 @@ impl App {
         // had it.
         //
         // `keys` WITH a program is "type at it, or start it if it is not there" —
-        // one command, decided here. The plugin cannot make that decision itself:
-        // liveness is not in the snapshot, and a plugin that tracked it in its own
-        // state would be wrong across an interface reload, which keeps panes but
-        // re-runs the file. `send_to_program` is false for a pane that is missing
-        // AND for one whose program has exited, which is exactly the question.
-        //
-        // With no program to fall back on, nothing to type into is reported rather
-        // than silently dropped — "the editor did not open the file" with no reason
-        // is the failure this whole channel exists to avoid.
+        // one command, decided here by `plan_keys`. The plugin cannot make that
+        // decision itself: liveness is not in the snapshot, and a plugin that
+        // tracked it in its own state would be wrong across an interface reload,
+        // which keeps panes but re-runs the file.
         if let Some(keys) = keys {
-            if self.terminals.send_to_program(&key, keys.to_vec()) {
-                self.changed_this_frame = true;
-                return;
+            use thurbox::kernel::terminal::{plan_keys, KeysPlan};
+            let running = self
+                .terminals
+                .program_state(&key)
+                .is_some_and(|(_, exited)| !exited);
+            match plan_keys(owner, name, running, program) {
+                KeysPlan::Send => {
+                    match self.terminals.send_to_program(&key, keys.to_vec()) {
+                        Ok(()) => self.changed_this_frame = true,
+                        Err(e) => self.refuse_program(
+                            name,
+                            format!("{owner} could not type into {name:?}: {e}"),
+                        ),
+                    }
+                    return;
+                }
+                KeysPlan::Refuse(error) => {
+                    self.refuse_program(name, error);
+                    return;
+                }
+                // The start below begins in the state the keys were meant to
+                // produce — the editor opens the file it was given as an
+                // argument. Sending them anyway would race a program that is not
+                // yet reading its input.
+                KeysPlan::Start => {}
             }
-            if program.trim().is_empty() {
-                self.report(
-                    format!("{owner} has no running program named {name:?} to type into"),
-                    Level::Error,
-                );
-                return;
-            }
-            // Falls through to the start below, which begins in the state the keys
-            // were meant to produce — the editor opens the file it was given as an
-            // argument. Sending them anyway would race a program that is not yet
-            // reading its input.
         }
 
         // Born at the rect it will be painted into where the last frame recorded
@@ -481,9 +487,26 @@ impl App {
             .terminals
             .start_program(&key, program, argv, Some(&cwd), rows, cols)
         {
-            self.report(e, Level::Error);
+            self.refuse_program(name, e);
             return;
         }
         self.changed_this_frame = true;
+    }
+
+    /// Report a refused `program` command to the message band and to
+    /// `command.failed`.
+    ///
+    /// Both, because the band is the user's and the event is the plugin's: a pane
+    /// that cannot start or be typed at has to be able to react, not only be
+    /// explained. Applied on this thread, so there is no `TrackedCommand` for
+    /// `report_finished_commands` to report it through.
+    fn refuse_program(&mut self, name: &str, error: String) {
+        self.enqueue_event(
+            thurbox::kernel::events::Event::new("command.failed")
+                .with("kind", Some("program"))
+                .with("subject", Some(name))
+                .with("error", Some(error.as_str())),
+        );
+        self.report(error, Level::Error);
     }
 }
