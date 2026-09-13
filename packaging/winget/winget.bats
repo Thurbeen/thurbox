@@ -166,7 +166,7 @@ after_sync() { # <exit-code> <sync output>
 }
 
 @test "after-sync: a clean sync needs nothing more" {
-  run after_sync 0 "✓ Synced the \"LeTuR:master\" branch from \"microsoft:master\""
+  run after_sync 0 "✓ Synced the \"octocat:master\" branch from \"microsoft:master\""
   [ "$status" -eq 0 ]
   [ "$(echo "$output" | jq -r .synced)" = "true" ]
   [ "$(echo "$output" | jq -r .fail)" = "false" ]
