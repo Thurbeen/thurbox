@@ -87,7 +87,7 @@ fn registry(host: &LuaHost) -> Registry {
 /// per group, live panes, and a git stat block — the shape the session list
 /// spends its time on.
 fn snapshot(sessions: usize) -> Snapshot {
-    let repos = ["/src/thurbox", "/src/thurlab", "/src/thurspace"];
+    let repos = ["/src/thurbox", "/src/thurview", "/src/thurspace"];
     let rows = (0..sessions)
         .map(|nth| {
             let repo = repos[nth % repos.len()];

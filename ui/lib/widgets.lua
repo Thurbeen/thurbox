@@ -141,7 +141,7 @@ end
 ---
 --- For a path, the head says where you are and the leaf says which one it is, and
 --- the leaf is the half an end-truncation throws away: a repo picker offering
---- `/home/me/.local/share/thurbox/worktrees/e854f81b/thurb` has spent every
+--- `/home/me/.local/share/thurbox/worktrees/a1b2c3d4/thurb` has spent every
 --- column it had on boilerplate and cut off the only part that identifies the
 --- repository. Falls back to end-truncation below eight columns, where there is
 --- not room for two halves and an ellipsis.

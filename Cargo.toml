@@ -8,7 +8,7 @@ edition = "2021"
 build = "build.rs"
 # `cargo run` (no --bin) launches the TUI; thurbox-cli is the headless binary.
 default-run = "thurbox"
-authors = ["LeTuR <magicletur@protonmail.com>"]
+authors = ["LeTuR"]
 license = "MIT"
 description = "A TUI for orchestrating multiple coding-agent CLI sessions in persistent tmux panels"
 repository = "https://github.com/Thurbeen/thurbox"
