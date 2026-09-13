@@ -881,6 +881,102 @@ fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click()
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+/// Record a trust grant for one interface file, as the settings modal would.
+///
+/// Both spellings of the path are granted: trust is keyed by the absolute path
+/// the binary resolved, and a tempdir reached through a symlink has two.
+fn trust(profile: &Profile, interface: &Path, file: &str, contents: &str) {
+    let digest = thurbox::kernel::bundled::digest(contents);
+    let raw = interface.join(file);
+    let canonical = raw.canonicalize().expect("canonicalize");
+    std::fs::write(
+        profile.path("config/ui.json"),
+        format!(r#"{{"trusted": {{ {raw:?}: "{digest}", {canonical:?}: "{digest}" }}}}"#),
+    )
+    .expect("seed trust");
+}
+
+/// Types at a program it started, and counts what `command.failed` told it.
+const TYPIST: &str = r#"return {
+  name = "typist",
+  slot = "sessions",
+  order = 5,
+  capabilities = { "program" },
+  events = { "command.failed" },
+  render = function()
+    return {
+      type = "text",
+      text = "tb-typist " .. (state.step or 0)
+        .. " absent=" .. (state.absent or 0)
+        .. " full=" .. (state.full and "yes" or "no"),
+    }
+  end,
+  keys = {
+    { key = "ctrl+g", action = "typist.next", desc = "next step", scope = "global" },
+  },
+  on_action = function(action)
+    if action ~= "typist.next" then
+      return false
+    end
+    state.step = (state.step or 0) + 1
+    if state.step == 1 then
+      command("program", { text = "cat", repo = "cat" })
+      for _ = 1, 5000 do
+        command("program", { text = "cat", keys = "x" })
+      end
+    else
+      command("program", { text = "gone", keys = "x" })
+    end
+    return true
+  end,
+  on_event = function(_, payload)
+    local error = payload.error or ""
+    if error:find("no running program", 1, true) then
+      state.absent = (state.absent or 0) + 1
+    end
+    if error:find("full", 1, true) then
+      state.full = true
+    end
+  end,
+}"#;
+
+/// Every refused `keys` send reaches the plugin's `command.failed`, with the
+/// reason it was refused (#1119).
+///
+/// The burst is the case that was misreported: one batch holds more sends than
+/// a pane's input channel, so the tail is refused while `cat` is plainly
+/// running — and was reported as "no running program", to the band only. The
+/// second step is the honest version of that message, which also never reached
+/// the plugin.
+#[test]
+fn a_refused_keystroke_reaches_the_plugin_with_the_reason_it_was_refused() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let interface = interface_plus("91_typist.lua", TYPIST);
+    let profile = Profile::new();
+    trust(&profile, interface.path(), "plugins/91_typist.lua", TYPIST);
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("tb-typist 0");
+
+    tui.send(b"\x07");
+    tui.wait_for("tb-typist 1 absent=0 full=yes");
+    assert!(
+        !tui.frame().contains("no running program"),
+        "a full input channel was reported as a missing program:\n{}",
+        tui.frame()
+    );
+
+    tui.send(b"\x07");
+    tui.wait_for("tb-typist 2 absent=1");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 // --- a live session ---------------------------------------------------------
 
 fn git(dir: &Path, args: &[&str]) {

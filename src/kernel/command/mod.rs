@@ -215,7 +215,9 @@ pub enum Command {
         ///
         /// Sent WITH a program, it means "type at it, or start it if it is not
         /// running" — the coordinator picks, because whether the pane is alive
-        /// is not something a plugin can read. See `apply_program`.
+        /// is not something a plugin can read. A running pane that refuses the
+        /// keys (its input channel is full) is reported, never started over.
+        /// See `terminal::plan_keys`.
         ///
         /// Bytes, not text: what a program is told is a keystroke sequence, and
         /// a plugin is free to write one its program understands and UTF-8 does

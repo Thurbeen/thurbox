@@ -232,7 +232,7 @@ fn a_key_for_an_absent_program_is_not_reported_as_delivered() {
     let terminals = Terminals::new();
     let key = ProgramKey::new("plugins/91_watch.lua", "watch");
     assert!(
-        !terminals.send_to_program(&key, b"q".to_vec()),
+        terminals.send_to_program(&key, b"q".to_vec()).is_err(),
         "nothing is running, so nothing accepted it"
     );
 }

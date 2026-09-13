@@ -706,7 +706,7 @@ impl App {
     /// nothing behind it delivers nothing, since neither send finds a target.
     fn send_to_surface(&mut self, surface: &str, bytes: Vec<u8>) -> bool {
         match self.terminals.program_key(surface).cloned() {
-            Some(program) => self.terminals.send_to_program(&program, bytes),
+            Some(program) => self.terminals.send_to_program(&program, bytes).is_ok(),
             None => self.terminals.send(surface, bytes),
         }
     }
