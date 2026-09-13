@@ -164,8 +164,8 @@ Homebrew templates.
 > **"No package found" on a machine that should see it.** Check the local index
 > before blaming winget-pkgs: `Get-AppxPackage Microsoft.Winget.Source` shows
 > its version (`YYYY.MMDD…`). `winget source update` can log a successful
-> download and still leave an old index registered — on the lab host, run over
-> SSH, it stayed at `2026.702`, from before thurbox was first published, so
+> download and still leave an old index registered — on a Windows 11 test
+> machine it stayed at `2026.702`, from before thurbox was first published, so
 > every search came back empty. Registering the current index by hand (download
 > `https://cdn.winget.microsoft.com/cache/source2.msix`, then `Add-AppxPackage`)
 > made `winget search thurbox` find it at once.
