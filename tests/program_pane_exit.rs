@@ -58,7 +58,6 @@ fn cleanup() {
         .output();
 }
 
-// Starts the session with **`remain-on-exit on`** (see the note at the top).
 // The blocking `Command::output` calls are safe here because this test uses
 // `#[tokio::test(flavor = "multi_thread")]`: the body runs on its own thread
 // (`block_on(body)`), while spawned tasks run on worker threads.
