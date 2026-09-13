@@ -292,6 +292,11 @@ impl App {
         self.host.set_trusted(trusted);
     }
 
+    /// Tell the host which plugins the user turned off.
+    ///
+    /// Derived from the *stored* absolute paths rather than from the loaded
+    /// plugins, because a disabled one is not loaded — it would not be in the
+    /// list to filter. Relative, because that is what `build` compares against.
     pub(crate) fn publish_disabled(&self) {
         let disabled: Vec<String> = self
             .registry
