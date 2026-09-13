@@ -384,11 +384,6 @@ impl App {
         self.note_data_change();
     }
 
-    /// Tell the host which plugins the user turned off.
-    ///
-    /// Derived from the *stored* absolute paths rather than from the loaded
-    /// plugins, because a disabled one is not loaded — it would not be in the
-    /// list to filter. Relative, because that is what `build` compares against.
     /// Start or close a plugin's program pane.
     ///
     /// The gate is here rather than in the queue: a command is honoured after the
