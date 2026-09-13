@@ -171,7 +171,7 @@ that can make the whole interface feel slow.
   reuses that tree until something it read actually changes, and skips your Lua
   entirely on every other frame. This is the single biggest lever. It is only
   wrong if `render` *writes* `store`/`state` or calls `command` — move those
-  writes into `on_key`/`on_action`/`on_click` and purity comes back. Floats
+  writes into `on_key`/`on_action`/`on_click`/`on_context` and purity comes back. Floats
   especially: a float renders every frame **even while closed**, so an impure
   closed modal costs a Lua call per frame forever.
 - **Memoize on table identity, not by re-deriving.** The published groups
