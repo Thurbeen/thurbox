@@ -13,6 +13,12 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.on_click(mouse.column, mouse.row, mouse.modifiers)
             }
+            // The other press a pane can be taught to answer. Nothing else in
+            // the loop reads it: it starts no selection, opens no link and runs
+            // no verb — see `on_context_click`.
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.on_context_click(mouse.column, mouse.row)
+            }
             // A held node comes first: while a scrollbar has the pointer, the
             // movement is that pane's, not a selection over the text beside it.
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -222,6 +228,57 @@ impl App {
             }
         }
         self.begin_selection(x, y);
+    }
+
+    /// A RIGHT press, offered to the pane under it and to nobody else.
+    ///
+    /// Deliberately a much shorter road than [`Self::on_click`]: no verb is
+    /// resolved, no link is opened, no selection is begun and the focus does
+    /// not move. A right press means whatever the pane it landed in decides it
+    /// means, and a pane that declares no `on_context` never hears it — which
+    /// is what lets this be added without changing what any existing pane does.
+    ///
+    /// Not every terminal sends one: the emulator may bind the right button to
+    /// paste or to its own menu and never forward it. That is the user's
+    /// setting to make, and nothing here can tell the difference between a
+    /// button that was not pressed and one that was swallowed on the way.
+    pub(crate) fn on_context_click(&mut self, x: u16, y: u16) {
+        // A system modal takes every press while it is up, the same rule its
+        // left half follows — but it has no context verb of its own, so this is
+        // swallowed rather than acted on.
+        if self.modals.is_open() {
+            return;
+        }
+
+        let target = self.target_at(x, y);
+
+        // A float owns the pointer while it is up, so a right press outside it
+        // is swallowed rather than reaching what it covers. Without this a menu
+        // opened by a right press could be re-opened by the next one on the
+        // pane beneath it, which reads as the menu having moved.
+        if let Some(grabbed) = self.grabbed {
+            if let Some(target) = target.filter(|target| target.plugin == grabbed) {
+                self.dispatch_context(target, x, y);
+            }
+            return;
+        }
+
+        if let Some(target) = target {
+            self.dispatch_context(target, x, y);
+        }
+    }
+
+    /// Offer a right press to the plugin that painted the node under it.
+    fn dispatch_context(&mut self, target: ClickTarget, x: u16, y: u16) {
+        let click = self.click_at(&target, x, y, false);
+        match self.host.on_context(target.plugin, &click) {
+            Ok(handled) => {
+                if handled {
+                    self.dirty = true;
+                }
+            }
+            Err(e) => self.errors.push(e),
+        }
     }
 
     /// Act on a hit target. `true` means the press is spent.

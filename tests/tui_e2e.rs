@@ -811,6 +811,76 @@ fn a_pane_can_speak_in_the_message_band_and_open_a_kernel_modal() {
     assert!(tui.quit().success());
 }
 
+impl Tui {
+    /// One press and release of `button` at a 0-based cell, as SGR reports.
+    ///
+    /// Button 0 is the left, 2 the right — the numbers xterm sends, which is
+    /// the layer this has to start at: the whole road from the escape sequence
+    /// to the hook is what is being asserted, so a `MouseEvent` built in
+    /// process would skip the part that was missing.
+    fn press(&mut self, button: u8, (x, y): (u16, u16)) {
+        let (px, py) = (x + 1, y + 1);
+        self.send(format!("\x1b[<{button};{px};{py}M").as_bytes());
+        self.send(format!("\x1b[<{button};{px};{py}m").as_bytes());
+    }
+}
+
+/// A right press travels from the terminal to the pane's `on_context`, and a
+/// left one still reaches `on_click`.
+///
+/// `tests/mouse_context.rs` calls both hooks directly, with a plugin index it
+/// picked and a `Click` it built, which proves the hooks are separate and
+/// nothing about the road to them. That road is entirely the binary's: the
+/// mouse-reporting mode it turns on, `crossterm` reading button 2 as
+/// `Down(Right)`, `on_mouse` sending it to `on_context_click` rather than down
+/// the click path, and the hit under the pointer resolving to the plugin that
+/// painted it. A wire that named `on_click` for both buttons would leave every
+/// in-process test green while making every pane ever written act on a right
+/// press — the failure this feature exists to avoid.
+#[test]
+fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click() {
+    // The `id` is what makes the row a hit target: a pane that cannot hold
+    // focus records no rect of its own, so an anonymous node would leave the
+    // press landing on nothing and the test passing for the wrong reason.
+    let interface = interface_plus(
+        "91_twohanded.lua",
+        r#"return {
+  name = "twohanded",
+  slot = "sessions",
+  order = 5,
+  render = function()
+    return { type = "text", text = "tb-hook-" .. (state.said or "none"), id = "tb-row" }
+  end,
+  on_click = function(hit)
+    state.said = "left"
+    return true
+  end,
+  on_context = function(hit)
+    state.said = "right"
+    return true
+  end,
+}"#,
+    );
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("tb-hook-none");
+
+    // `wait_for` is the assertion: the pane repainted, and what it painted says
+    // which hook ran. A right press routed to the click path would paint
+    // `tb-hook-left` instead, and this would fail on the timeout rather than
+    // pass quietly.
+    tui.press(2, tui.find("tb-hook-none"));
+    tui.wait_for("tb-hook-right");
+
+    tui.press(0, tui.find("tb-hook-right"));
+    tui.wait_for("tb-hook-left");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 // --- a live session ---------------------------------------------------------
 
 fn git(dir: &Path, args: &[&str]) {
