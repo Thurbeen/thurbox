@@ -58,9 +58,9 @@ fn cleanup() {
         .output();
 }
 
-/// Starts the session with **`remain-on-exit on`** (see the note at the top),
-/// kept out of the async test body: a blocking `Command::output` call written
-/// directly in an `async fn` blocks the executor thread it runs on.
+// The blocking `Command::output` calls are safe here because this test uses
+// `#[tokio::test(flavor = "multi_thread")]`: the body runs on its own thread
+// (`block_on(body)`), while spawned tasks run on worker threads.
 fn start_session(dir: &std::path::Path) -> std::process::Output {
     let started = Command::new("tmux")
         .args([
