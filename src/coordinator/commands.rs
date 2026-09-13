@@ -58,7 +58,8 @@ impl App {
                 program,
                 argv,
                 close,
-            } => self.apply_program(owner, name, program, argv, *close),
+                keys,
+            } => self.apply_program(owner, name, program, argv, *close, keys.as_deref()),
             // The editor wants a controlling tty, which only this thread can hand
             // it — see `Command::Editor`.
             Command::Editor { session } => self.apply_editor_command(session, terminal),
@@ -406,6 +407,7 @@ impl App {
         program: &str,
         argv: &[String],
         close: bool,
+        keys: Option<&[u8]>,
     ) {
         let key = thurbox::kernel::terminal::ProgramKey::new(owner, name);
         if close {
@@ -427,6 +429,40 @@ impl App {
                 Level::Error,
             );
             return;
+        }
+
+        // Typing into a pane that is already running, checked after the
+        // capability and before the start: this changes what a live program is
+        // doing, which is the same privilege as starting one, and a plugin whose
+        // trust was revoked must not keep driving a process it started while it
+        // had it.
+        //
+        // `keys` WITH a program is "type at it, or start it if it is not there" —
+        // one command, decided here. The plugin cannot make that decision itself:
+        // liveness is not in the snapshot, and a plugin that tracked it in its own
+        // state would be wrong across an interface reload, which keeps panes but
+        // re-runs the file. `send_to_program` is false for a pane that is missing
+        // AND for one whose program has exited, which is exactly the question.
+        //
+        // With no program to fall back on, nothing to type into is reported rather
+        // than silently dropped — "the editor did not open the file" with no reason
+        // is the failure this whole channel exists to avoid.
+        if let Some(keys) = keys {
+            if self.terminals.send_to_program(&key, keys.to_vec()) {
+                self.changed_this_frame = true;
+                return;
+            }
+            if program.trim().is_empty() {
+                self.report(
+                    format!("{owner} has no running program named {name:?} to type into"),
+                    Level::Error,
+                );
+                return;
+            }
+            // Falls through to the start below, which begins in the state the keys
+            // were meant to produce — the editor opens the file it was given as an
+            // argument. Sending them anyway would race a program that is not yet
+            // reading its input.
         }
 
         // Born at the rect it will be painted into where the last frame recorded

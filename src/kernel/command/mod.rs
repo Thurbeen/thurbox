@@ -203,6 +203,24 @@ pub enum Command {
         argv: Vec<String>,
         /// Give the pane up instead of starting it.
         close: bool,
+        /// Type into the program instead of starting it: the bytes go to the
+        /// pane's stdin exactly as if they had been typed at it.
+        ///
+        /// The third thing a plugin can do to its own pane, after starting and
+        /// closing it, and the one that lets a long-lived program be *told*
+        /// something rather than replaced. Restarting an editor to open a
+        /// second file is the case that asked for it: the process is the
+        /// expensive part, and `start_program` is idempotent, so without this
+        /// the only way to change what it shows was to close it first.
+        ///
+        /// Sent WITH a program, it means "type at it, or start it if it is not
+        /// running" — the coordinator picks, because whether the pane is alive
+        /// is not something a plugin can read. See `apply_program`.
+        ///
+        /// Bytes, not text: what a program is told is a keystroke sequence, and
+        /// a plugin is free to write one its program understands and UTF-8 does
+        /// not.
+        keys: Option<Vec<u8>>,
     },
     /// Open a session's working directory in the configured editor.
     ///
@@ -518,6 +536,7 @@ impl Command {
             extras,
             owner,
             argv,
+            keys,
             payload,
             level,
         } = args;
@@ -715,9 +734,19 @@ impl Command {
             // The verb, spelled the way `plugin` and `bookmark` spell theirs.
             let close = matches!(action.as_deref(), Some("close") | Some("stop"));
             let program = repo.unwrap_or_default();
-            if !close && program.trim().is_empty() {
+            // Typing is checked before the program is required: `keys` alone
+            // names a pane that is already running, so asking for `repo` as well
+            // would be asking what to start something already started with. Both
+            // together are legal and mean "type, or start if it is not there".
+            let keys = keys.filter(|keys| !keys.is_empty());
+            if keys.is_some() && close {
                 return Err(
-                    "command \"program\" needs a program to run (or action = \"close\")"
+                    "command \"program\" cannot type into a pane and close it at once".to_string(),
+                );
+            }
+            if keys.is_none() && !close && program.trim().is_empty() {
+                return Err(
+                    "command \"program\" needs a program to run (or action = \"close\", or keys)"
                         .to_string(),
                 );
             }
@@ -727,6 +756,7 @@ impl Command {
                 program,
                 argv,
                 close,
+                keys,
             });
         }
         if session.is_empty() {
@@ -809,6 +839,11 @@ pub struct Args {
     pub owner: String,
     /// Arguments for a program a plugin asked to run.
     pub argv: Vec<String>,
+    /// Bytes to type into a program a plugin already started.
+    ///
+    /// Read off the Lua table as bytes, so a sequence that is not UTF-8 arrives
+    /// rather than vanishing — see `install_command`.
+    pub keys: Option<Vec<u8>>,
     /// Every other scalar field of the options table, for a command that
     /// forwards them whole — an event's payload.
     pub payload: Vec<(String, super::events::Field)>,
@@ -1347,6 +1382,7 @@ mod tests {
             program: "watch".into(),
             argv: Vec::new(),
             close: false,
+            keys: None,
         };
         assert_eq!(program.session(), "");
         assert_eq!(program.kind(), "program");
@@ -1376,6 +1412,63 @@ mod tests {
         // handed to the multiplexer.
         let error = ask("", None).expect_err("should refuse");
         assert!(error.contains("program"), "{error}");
+    }
+
+    /// Typing names a pane that is already running, so it asks for no program —
+    /// and it is not a way to close one.
+    #[test]
+    fn a_program_command_can_type_into_a_pane_it_already_started() {
+        let ask = |keys: Option<&[u8]>, program: &str, action: Option<&str>| {
+            Command::parse(
+                "program",
+                Args {
+                    owner: "plugins/50_editor.lua".into(),
+                    text: Some("editor".into()),
+                    repo: (!program.is_empty()).then(|| program.to_string()),
+                    keys: keys.map(<[u8]>::to_vec),
+                    action: action.map(str::to_string),
+                    ..Args::default()
+                },
+            )
+        };
+
+        let typed = ask(Some(b":e /tmp/x\r"), "", None).expect("keys need no program");
+        match typed {
+            Command::Program {
+                keys, close, name, ..
+            } => {
+                assert_eq!(keys.as_deref(), Some(b":e /tmp/x\r".as_slice()));
+                assert!(!close);
+                assert_eq!(name, "editor");
+            }
+            other => panic!("expected a program command, got {other:?}"),
+        }
+
+        // Empty keys are nothing to say, not a request to start something with no
+        // program — so they fall through to the ordinary refusal.
+        let error = ask(Some(b""), "", None).expect_err("should refuse");
+        assert!(error.contains("program"), "{error}");
+
+        // Two different things to do to one pane in one call.
+        let error = ask(Some(b"q"), "", Some("close")).expect_err("should refuse");
+        assert!(error.contains("close"), "{error}");
+
+        // Keys AND a program is the fallback form: both survive parsing, and
+        // `apply_program` is what chooses between them from the pane's liveness.
+        let both = ask(Some(b":e /tmp/x\r"), "nvim", None).expect("keys may carry a fallback");
+        match both {
+            Command::Program {
+                keys,
+                program,
+                close,
+                ..
+            } => {
+                assert_eq!(keys.as_deref(), Some(b":e /tmp/x\r".as_slice()));
+                assert_eq!(program, "nvim");
+                assert!(!close);
+            }
+            other => panic!("expected a program command, got {other:?}"),
+        }
     }
 
     #[test]
