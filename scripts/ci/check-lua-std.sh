@@ -17,9 +17,8 @@
 #   typos.lua  one misspelling per table. Each must still be reported, so the
 #              fix cannot be a wildcard that accepts whatever is asked for.
 #
-# This covers the tables a plugin names directly, not everything `LuaHost::publish`
-# serves — a path stops being checked at the first `[…]`, so a list has nothing
-# below it to probe.
+# This covers those five tables, not everything `LuaHost::publish` serves — a path
+# stops being checked at the first `[…]`, so a list has nothing below it to probe.
 #
 # Run from the repository root: selene resolves the `std` name against the
 # working directory, not the directory of the config it was given, so the `cd`

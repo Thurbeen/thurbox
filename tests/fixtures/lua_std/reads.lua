@@ -1,5 +1,6 @@
--- A pane that reads every field the kernel publishes on the injected tables an
--- author reaches for by name, each as a plain dotted path.
+-- A pane that reads every field the kernel publishes on `thurbox.granted`,
+-- `.platform`, `.metrics`, `.hover` and `.preflight.mux` — the injected tables no
+-- bundled pane reads in a form selene can see — each as a plain dotted path.
 --
 -- Expected to lint CLEAN, and that is the whole assertion: selene checks a
 -- dotted path against `thurbox.yml` one segment at a time, so a table declared

@@ -175,8 +175,9 @@ table read as `thurbox.platform.os` needs an entry per field while a list read a
 `thurbox.sessions[i].name` stops at the list. `selene ui examples` cannot notice a
 table left at the table — no bundled pane reads one by name — so
 `scripts/ci/check-lua-std.sh` runs two panes from `tests/fixtures/lua_std/`: one
-reading every field on the injected tables a plugin names directly, which must
-lint clean, and one misspelling each of them, which must not.
+reading every field on `granted`, `platform`, `metrics`, `hover` and
+`preflight.mux`, which must lint clean, and one misspelling each of them, which
+must not.
 
 ## Comments
 

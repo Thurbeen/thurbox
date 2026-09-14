@@ -47,12 +47,13 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   still be reported. `--check ui` proves the panes are clean; this proves the
   types have teeth. Runs in the Lua Lint job and in `just lint`.
 - **`scripts/ci/check-lua-std.sh`** — the same trick for `thurbox.yml`. Two panes
-  in `tests/fixtures/lua_std/` read the injected tables `selene ui examples` never
-  reaches by name: one reads every field on them and must lint clean, the other
-  misspells each and must not. It covers the tables a plugin names directly, not
-  everything `LuaHost::publish` serves — a checked path stops at the first `[…]`,
-  so a list has nothing below it to probe. Those tables were declared without their
-  fields for as long as nothing read them (issue #1133). Same two runners.
+  in `tests/fixtures/lua_std/` read `granted`, `platform`, `metrics`, `hover` and
+  `preflight.mux`, the tables no bundled pane reads in a form selene can see: one
+  reads every field on those five and must lint clean, the other misspells each
+  and must not. It covers those five, not everything `LuaHost::publish` serves —
+  a checked path stops at the first `[…]`, so a list has nothing below it to
+  probe. Those tables were declared without their fields for as long as nothing
+  read them (issue #1133). Same two runners.
 - **`tests/frames.rs`** — the bundled panes' frames pinned cell for cell, as
   literals in the file (no snapshot tool): the session list grouped, nested,
   windowed, narrow and under double-width names; the selection as a *style*;
