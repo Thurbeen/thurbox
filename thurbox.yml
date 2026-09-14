@@ -271,9 +271,14 @@ globals:
   #
   # The shape is spelled out rather than left as a wildcard so a typo is a lint
   # error: `thurbox.sesions` would otherwise just be nil, and the pane would
-  # render empty with nothing to explain it. Only the paths a plugin *indexes*
-  # need declaring — rows inside `sessions` are ordinary tables, so their fields
-  # are not checked here.
+  # render empty with nothing to explain it.
+  #
+  # What decides how deep an entry goes is that selene checks a *dotted* path,
+  # one segment at a time, and stops at the first computed index. So a table
+  # read as `thurbox.platform.os` needs an entry per field or the read is an
+  # error, while `sessions` stops at the table because a row is reached through
+  # `[i]` — its fields are ordinary and unchecked. Declaring a field implies its
+  # parents, so only the leaves a plugin names are written out.
   #
   # A newly published field used by a plugin fails lint until it is added here,
   # which is the right direction for the prompt to point.
@@ -305,8 +310,13 @@ globals:
   thurbox.hosts:
     property: read-only
   # Whether the multiplexer a session's window needs is installed, so a flow can
-  # say so before the user commits.
-  thurbox.preflight.mux:
+  # say so before the user commits. A fixed record, so its three fields are
+  # written out.
+  thurbox.preflight.mux.binary:
+    property: read-only
+  thurbox.preflight.mux.presence:
+    property: read-only
+  thurbox.preflight.mux.advice:
     property: read-only
   thurbox.tasks:
     property: read-only
@@ -339,14 +349,30 @@ globals:
   # absence: `run` is a global, so `if not run then` is the check, but a program
   # pane is asked for through `command`, which every plugin has. Without this a
   # pane could not tell "you have not trusted me" from "still starting".
-  thurbox.granted:
+  #
+  # One entry per capability, from `Capability::ALL`, so a third one is a third
+  # line here rather than a read that lints clean against a table nobody serves.
+  thurbox.granted.run:
     property: read-only
-  thurbox.metrics:
+  thurbox.granted.program:
+    property: read-only
+  # Machine, per-agent and account readings. `system` is a fixed record, so its
+  # three fields are written out; `sessions` is keyed by session id and can only
+  # be reached through a variable, which ends the checked path there.
+  thurbox.metrics.system.cpu_percent:
+    property: read-only
+  thurbox.metrics.system.memory_used:
+    property: read-only
+  thurbox.metrics.system.memory_total:
+    property: read-only
+  thurbox.metrics.sessions:
     property: read-only
   # The machine this is running on: `platform.os` / `platform.arch`, from the
   # values the binary was built for. Here so a plugin that delivers more than one
   # build can pick — which is why platform selection is NOT in a package manifest.
-  thurbox.platform:
+  thurbox.platform.os:
+    property: read-only
+  thurbox.platform.arch:
     property: read-only
   # Both are on the root table (`kernel::host` sets them beside the snapshot) and
   # were missing here, so a pane reading a field the kernel genuinely serves was
@@ -364,7 +390,12 @@ globals:
     property: read-only
   thurbox.focus:
     property: read-only
-  thurbox.hover:
+  # What the pointer is over, as whichever of the two the affordance was marked
+  # with — so both are absent when nothing is hovered, and a pane matches on the
+  # one it painted with.
+  thurbox.hover.id:
+    property: read-only
+  thurbox.hover.role:
     property: read-only
   # The interface's own files: where each came from, and which are running.
   thurbox.plugins:
@@ -374,7 +405,10 @@ globals:
   # What the arrangement needs to know about the bands, and no more.
   thurbox.chrome.status_rows:
     property: read-only
-  # The active palette as role -> colour, plus the selectable list.
+  # The active palette as role -> colour, plus the selectable list. `roles` stops
+  # at the table because `ui/lib/theme.lua` memoizes it through a local, which
+  # ends the checked path — so a dotted `thurbox.theme.roles.accent` is still
+  # rejected, and no probe covers it.
   thurbox.theme.name:
     property: read-only
   thurbox.theme.roles:

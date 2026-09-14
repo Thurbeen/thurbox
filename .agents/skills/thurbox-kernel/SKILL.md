@@ -237,6 +237,10 @@ a fixed set is spelled as that set (a misspelt value is `assign-type-mismatch`).
 `tests/fixtures/lua_types/` holds three panes that each make one of those mistakes
 and `scripts/ci/check-lua-types.sh` fails when any of them stops being reported —
 the counterpart to `--check ui`, which only proves the bundled panes are clean.
+`tests/fixtures/lua_std/` + `scripts/ci/check-lua-std.sh` are the same counterpart
+to `selene ui examples`: selene checks a dotted path a segment at a time, so a
+table declared without its fields rejects `thurbox.platform.os`, and no bundled
+pane reads one by name to notice.
 
 The directory ships its own guidance for whoever edits it: `README.md` is the
 reference, and **`AGENTS.md`** is the operational half a coding CLI loads as context

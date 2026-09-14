@@ -83,10 +83,12 @@ jobs:
               - 'thurbox.yml'
               - 'stylua.toml'
               - '.luarc.json'
-              # The probes that hold the type definitions to their job, and the
-              # script that runs them.
+              # The probes that hold the type definitions and the standard
+              # library to their jobs, and the scripts that run them.
               - 'tests/fixtures/lua_types/**'
               - 'scripts/ci/check-lua-types.sh'
+              - 'tests/fixtures/lua_std/**'
+              - 'scripts/ci/check-lua-std.sh'
               - '.github/workflows/ci.yml'
             website:
               - 'website/**'
@@ -381,6 +383,12 @@ jobs:
         # library — so this also checks that no plugin reaches for a capability
         # the kernel withholds.
         run: selene ui examples
+      - name: Check the standard library still declares what the kernel serves
+        # The complement to the step above, for the same reason the type probes
+        # are the complement to `--check ui`: nothing in `ui/` or `examples/`
+        # reads the injected tables in a form selene can see, so they sat declared
+        # without their fields and this step stayed green (issue #1133).
+        run: scripts/ci/check-lua-std.sh
       - name: Check formatting
         run: stylua --check ui examples
       - name: Install lua-language-server
