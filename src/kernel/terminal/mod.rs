@@ -1269,6 +1269,27 @@ impl Terminals {
         })
     }
 
+    /// A move with no button down, to the terminal under `(x, y)` — only
+    /// `?1003` asks for these.
+    ///
+    /// Routed by position, like the wheel and unlike the gesture above: with
+    /// no button down there is no press to have chosen an owner, so the move
+    /// belongs to whatever pane the pointer is actually over.
+    pub fn forward_move(&self, x: u16, y: u16) -> bool {
+        let position = Position::new(x, y);
+        let Some((_, live)) = self
+            .live
+            .iter()
+            .find(|(_, live)| live.rect.get().contains(position))
+        else {
+            return false;
+        };
+        // 35 is "motion, no button": 3 under the 32 move flag.
+        self.forward_button(live, x, y, 35, true, |mode| {
+            mode == vt100::MouseProtocolMode::AnyMotion
+        })
+    }
+
     /// The release that ends the gesture, to the session that took the press.
     /// Every mode past X10 (`?9`) asks to hear it.
     pub fn forward_release(&self, session: &str, x: u16, y: u16) -> bool {

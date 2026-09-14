@@ -1488,6 +1488,30 @@ fn a_drag_over_a_tracking_terminal_reaches_the_program_inside() {
 }
 
 #[test]
+fn a_bare_move_reaches_a_terminal_that_asked_for_every_motion() {
+    // `?1003` is the one tracking mode that wants motion with no button down
+    // — hover-driven TUIs are built on it — and a bare move used to stop at
+    // thurbox's own hover. With no button down there is no gesture for a
+    // capture to own, so the move is routed by position, like the wheel.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    tui.send(b"echo tb-hover-\"\"here\r");
+    tui.wait_for("tb-hover-here");
+    tui.send(b"printf '\\033[?1003h\\033[?1006h'; cat\r");
+    tui.wait_until_quiet();
+
+    // 35 is SGR's "motion, no button": 3 under the 32 move flag.
+    let (x, y) = tui.find("tb-hover-here");
+    tui.send(format!("\x1b[<35;{};{}M", x + 1, y + 1).as_bytes());
+    tui.wait_for("[<35;");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
 fn a_new_press_frees_a_capture_whose_release_never_came() {
     // A release is the outer terminal's to deliver, and it can fail to — a
     // focus loss mid-drag is enough in some emulators. A capture that only

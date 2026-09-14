@@ -59,8 +59,18 @@ impl App {
             MouseEventKind::ScrollDown => self.on_scroll(mouse.column, mouse.row, false),
             // A bare move only matters when it changes what is under the
             // pointer. Anything else — and there is a LOT of it, one report per
-            // cell crossed — is dropped without touching `dirty`.
-            MouseEventKind::Moved => self.hover(mouse.column, mouse.row),
+            // cell crossed — is dropped without touching `dirty`. A `?1003`
+            // terminal is the exception: it asked for exactly this stream, and
+            // gets it under the same guards the wheel forwards under — never
+            // beneath a modal or a held float. The hover still runs: the chips
+            // it lights sit on the pane's frame, outside the rect a forwarded
+            // move can land in, so the two never answer for the same cell.
+            MouseEventKind::Moved => {
+                if !self.modals.is_open() && self.grabbed.is_none() {
+                    self.terminals.forward_move(mouse.column, mouse.row);
+                }
+                self.hover(mouse.column, mouse.row);
+            }
             _ => {}
         }
     }
