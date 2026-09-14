@@ -11,6 +11,13 @@ impl App {
     pub(crate) fn on_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // A press starts a new gesture wherever it lands, so it also
+                // frees a capture whose release never arrived — the outer
+                // terminal owes one, but some emulators drop it on a focus
+                // loss mid-drag, and only the missing release could clear it
+                // otherwise. `on_click` re-arms it when this press is itself
+                // forwarded.
+                self.pty_pointer = None;
                 self.on_click(mouse.column, mouse.row, mouse.modifiers)
             }
             // The other press a pane can be taught to answer. Nothing else in

@@ -1487,6 +1487,45 @@ fn a_drag_over_a_tracking_terminal_reaches_the_program_inside() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+#[test]
+fn a_new_press_frees_a_capture_whose_release_never_came() {
+    // A release is the outer terminal's to deliver, and it can fail to — a
+    // focus loss mid-drag is enough in some emulators. A capture that only
+    // the missing release could clear would then own every later drag, and
+    // a selection made anywhere else would be typed into the old pane's pty
+    // instead. The next press starts a new gesture, so it is what frees the
+    // orphaned capture.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    tui.send(b"echo tb-stale-\"\"here\r");
+    tui.wait_for("tb-stale-here");
+    tui.send(b"printf '\\033[?1002h\\033[?1006h'; cat\r");
+    tui.wait_until_quiet();
+
+    // The press is forwarded — its echo proves the capture armed — and the
+    // release is deliberately never sent.
+    let (x, y) = tui.find("tb-stale-here");
+    tui.send(format!("\x1b[<0;{};{}M", x + 1, y + 1).as_bytes());
+    tui.wait_for("[<0;");
+
+    // A whole drag over the sessions pane: with the capture still armed its
+    // moves would be forwarded and echo as `[<32;` — the settle wait gives
+    // them every chance to.
+    let mark = tui.raw_len();
+    let at = tui.find("no status hooks");
+    tui.drag(at, 3);
+    tui.wait_until_quiet();
+    assert!(
+        !tui.raw_since(mark).contains("[<32;"),
+        "a drag outside the pane must not reach an orphaned capture"
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 // --- the scrollbar is a control, not a decoration ---------------------------
 
 impl Tui {
