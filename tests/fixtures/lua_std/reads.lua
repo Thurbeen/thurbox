@@ -10,11 +10,7 @@
 return {
   name = "std_reads",
   render = function()
-    -- `docs/PLUGINS.md` binds the table first when it reads two fields off it;
-    -- a field entry has to leave that spelling working.
-    local platform = thurbox.platform
     local read = {
-      platform.os .. "-" .. platform.arch,
       tostring(thurbox.granted.run),
       tostring(thurbox.granted.program),
       thurbox.platform.os,
