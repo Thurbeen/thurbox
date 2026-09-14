@@ -760,6 +760,18 @@ impl std::ops::Deref for Session {
 }
 
 impl Session {
+    /// Whether the backend reports this session's pane as exited.
+    ///
+    /// A round trip, unlike [`WiredPane::has_exited`]: that atomic flag flips
+    /// on the reader's EOF, and a window kept by `remain-on-exit` never
+    /// delivers one — the pane an agent exited out of is still there, and only
+    /// the backend can still be asked. Off the render path for that cost;
+    /// called on the deliberate chord that must tell a dead pane from a live
+    /// one.
+    pub fn is_dead(&self) -> Result<bool> {
+        self.backend.is_dead(self.backend_id())
+    }
+
     /// Spawn a new session via the given backend.
     pub fn spawn(
         name: String,

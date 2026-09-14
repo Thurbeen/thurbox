@@ -140,4 +140,17 @@ impl App {
             .and_then(|index| self.host.plugins.get(*index))
             .is_some_and(|plugin| plugin.session_input)
     }
+
+    /// Whether the terminal the focused pane is showing has a dead pane.
+    ///
+    /// Only meaningful next to [`Self::focused_wants_session_input`]: it is the
+    /// surface that pane painted (`focused_surface`) whose session is asked.
+    /// `false` when nothing is focused or the backend cannot say — an unsure
+    /// answer must not divert a chord from the agent it would otherwise reach.
+    pub(crate) fn focused_terminal_is_dead(&self) -> bool {
+        self.focused_surface
+            .as_deref()
+            .and_then(|surface| self.terminals.is_dead(surface))
+            .unwrap_or(false)
+    }
 }

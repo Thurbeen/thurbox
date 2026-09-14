@@ -1178,6 +1178,64 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+#[test]
+fn ctrl_d_deletes_a_session_whose_agent_has_exited() {
+    // `Ctrl+D` is a passthrough chord: while a terminal has focus it is the
+    // agent's EOF, and the delete it also means is left to the session list.
+    // But an agent that ran `/exit` leaves a dead pane the window keeps
+    // (remain-on-exit), and tmux still accepts `send-keys` into it — so the
+    // chord was delivered to a pane no one reads and the session it should
+    // have deleted hung in the list. A dead pane is doing no line editing, so
+    // the delete is what the chord means there.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    // The agent exits; the pane it held stays, dead. The row does not — that
+    // is the bug — so its presence is the precondition the delete acts on.
+    tui.send(b"exit\r");
+    tui.wait_until_quiet();
+    assert!(
+        tui.frame().contains("no status hooks"),
+        "the session must still be listed after its agent exits:\n{}",
+        tui.frame()
+    );
+
+    // 0x04 is Ctrl+D. Focus never left the agent pane, so this is the
+    // passthrough path — the one that used to feed the dead pane.
+    tui.send(b"\x04");
+    tui.wait_gone("no status hooks");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn ctrl_d_reaches_a_live_agent_as_its_eof() {
+    // The other side of the rule above: while the agent is live the chord is
+    // still its EOF, not a delete. Pressing it ends `sh` — which is what EOF
+    // does — but the session stays in the list, because the keystroke went to
+    // the pty and never to the list's delete. Were the dead-pane exception
+    // firing on a live pane, the row would be gone instead.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    tui.send(b"\x04");
+    // `sh` took the EOF and exited, so its pane is now dead — the same visible
+    // end as `exit`. The assertion is what did NOT happen: the row is still
+    // there, so the chord was delivered and not spent on a delete.
+    tui.wait_until_quiet();
+    assert!(
+        tui.frame().contains("no status hooks"),
+        "Ctrl+D to a live agent must not delete its session:\n{}",
+        tui.frame()
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 // --- selection, copy, and the interrupt a shell is owed ----------------------
 
 const OSC52: &str = "\x1b]52;c;";
