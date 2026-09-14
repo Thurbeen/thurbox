@@ -1,0 +1,73 @@
+# The gate the `publish` skill runs for this repository, and the only thing it
+# reads to know what "check this change" means here:
+# https://github.com/LeTuR/publish
+#
+# The commands are spelled out rather than discovered from the toolchain, so
+# what runs is the same every time. The house rules the review is held to are
+# prose, in docs/REVIEW.md, which `review.rules` names below.
+
+version: 1
+
+forge: github
+base: main
+
+review:
+  rules:
+    # The house rules a change is reviewed against, scoped per path, plus the
+    # trees excluded from review and the documentation ownership map. Read the
+    # blocks matching the paths the change touches.
+    - docs/REVIEW.md
+    # The agent-facing index into the docs and the per-subsystem skills.
+    - CLAUDE.md
+    # The contribution process: commit conventions, staging discipline, the
+    # pull request title, and this gate.
+    - CONTRIBUTING.md
+
+gate:
+  # The repo's canonical gate: rustfmt, clippy -D warnings, cargo-deny, rumdl,
+  # shellcheck, selene, stylua and the Lua checks. Needs the dev toolchain
+  # (`nix develop`, or scripts/install-dev-tools.sh plus a lua-language-server
+  # package).
+  #
+  # The rustdoc check is appended because `just lint` does not carry it (`just
+  # arch` does) while CI's docs job and the prek hook both do: a broken
+  # intra-doc link in a src/** change would otherwise pass the gate green and
+  # fail only after the push, which is the round-trip this step exists to
+  # prevent. What is deliberately left to CI is `npm run lint:website`, for the
+  # same reason `fix` below avoids `just fmt` — it needs `npm ci` in a fresh
+  # worktree.
+  - name: lint
+    run:
+      - just lint
+      - RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+    # Deliberately not `just fmt`: that also runs `npm run fmt:website`, which
+    # needs node_modules installed. Website formatting is a separate CI job.
+    # stylua is spelled out instead (`just fmt-lua`, no npm) because `just
+    # lint` enforces `stylua --check` over the same trees, and this repo's
+    # interface is Lua: a Lua fix written during the gate would otherwise reach
+    # lint unformatted and cost an extra round.
+    fix: cargo fmt --all && stylua ui examples
+
+  # The suite, named explicitly.
+  #
+  # A test step that names no command does not mean "a small test run" — it
+  # means whatever drives the gate decides what running the tests looks like.
+  # One such decision was that a paired before/after reading with
+  # `scripts/dev/perf-run.sh` was the evidence to gather; it waited through a
+  # release build and timed runs and failed the step on a 30-minute timeout.
+  # perf-run.sh refuses to run wherever `THURBOX_GATE` is exported, which
+  # closes that one hole; naming the command closes the general one.
+  #
+  # The build is not marginal cost: the lint step above compiles the crate in
+  # the same worktree, so the artifacts are warm by the time tests run and the
+  # suite itself is ~30s.
+  - name: test
+    run: cargo nextest run --all
+
+ci:
+  required: true
+  # ci.yml sets `cancel-in-progress: true`, so a cancelled check here almost
+  # always means a newer push superseded it, not provider-side flakiness.
+  # Read the failing job rather than re-running the pipeline on the theory
+  # that it passes next time.
+  timeout: 30m

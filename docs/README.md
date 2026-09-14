@@ -19,6 +19,7 @@ operational guidance (build commands, module layout, event loop), see
 | [AGENTS.md](AGENTS.md) | Each built-in agent's config and status-hook mechanism | Adding or changing a built-in agent |
 | [CONFIG.md](CONFIG.md) | Thurbox's own config files / env vars / DB settings in one place | Adding/changing a config file, env var, or DB setting |
 | [RELEASING.md](RELEASING.md) | What a release may and may not change about the artifacts | Changing the release workflow or a published artifact |
+| [REVIEW.md](REVIEW.md) | The per-path house rules a change is reviewed against, and which document owns which class of fact | Encoding a new house rule, or moving what a document owns |
 
 Two files here are not rationale: [TUTORIAL.md](TUTORIAL.md), the onboarding
 walkthrough (its screenshots are generated — see

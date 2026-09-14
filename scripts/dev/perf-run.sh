@@ -121,14 +121,16 @@ say() { [ "$JSON" = "1" ] || echo "$@" >&2; }
 # -- it is under scripts/dev/, it drives the real binary, it prints a result --
 # so an agent asked to run the tests and gather evidence reaches for it, waits
 # for it, and burns the step's whole budget. Not hypothetical: it timed out a
-# no-mistakes test step at 30m0s with the agent silent, having decided the
-# intent's paired before/after reading was the evidence to gather.
+# gate's test step at 30m0s with the agent silent, having decided the intent's
+# paired before/after reading was the evidence to gather.
 #
 # So it refuses, and says how to get the number instead. A benchmark that also
 # generates load has no business running unattended inside a validation step --
 # the reading would be meaningless there anyway, since the gate's own build is
-# what the machine is busy doing.
-if [ -n "${NO_MISTAKES_GATE:-}" ] && [ -z "${THURBOX_PERF_ALLOW_IN_GATE:-}" ]; then
+# what the machine is busy doing. THURBOX_GATE is the sentinel to export around
+# any such step; it is deliberately not named after one tool, because the next
+# gate is a different tool and the hazard is the same.
+if [ -n "${THURBOX_GATE:-}" ] && [ -z "${THURBOX_PERF_ALLOW_IN_GATE:-}" ]; then
     cat >&2 <<'REFUSE'
 perf-run.sh: refusing to run inside a validation step.
 

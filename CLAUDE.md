@@ -317,6 +317,10 @@ For rationale behind decisions, see `docs/`:
   the checklist for adding a new built-in
 - `docs/PERFORMANCE.md` — Render/tick performance: demand-driven redraw,
   perf counters, the session-order cache, and how to measure
+- `docs/REVIEW.md` — The per-path house rules a change is reviewed
+  against, the trees excluded from review, and which document owns
+  which class of fact. `.publish.yaml` names it in `review.rules`;
+  read the blocks matching the paths you are touching
 
 **Rule**: If a code change invalidates or extends a documented
 decision, update the relevant doc in the same PR.

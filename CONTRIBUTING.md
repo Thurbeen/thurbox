@@ -76,30 +76,38 @@ in both `.claude/commands/` and `.opencode/commands/`, kept in sync by hand.
 A minimal [`opencode.json`](opencode.json) declares the `$schema` for editor
 validation.
 
-### The no-mistakes gate
+### The publish gate
 
-Reviewing and shipping a change is the job of
-[no-mistakes](https://github.com/kunchenguid/no-mistakes), a local gate that
-runs a change through one pipeline: intent, rebase, review, test, document,
-lint, push, PR, then watching CI and rebasing the branch when the base moves.
+Reviewing and shipping a change is the job of the
+[publish](https://github.com/LeTuR/publish) skill, which runs one pipeline:
+rebase onto `main`, review the whole branch against this repository's own
+rules, run the gate, commit what the review and the gate fixed, push, open the
+pull request, then watch CI. It writes into the PR body an attestation naming
+the commit every one of those steps ran against — a green pipeline on a commit
+nobody will merge proves nothing, so a body whose attestation names anything
+but the head is stale and says so.
 
-Set it up once per checkout with `no-mistakes init`, then drive it from your
-agent with `/no-mistakes` or by hand with `no-mistakes axi run --intent "..."`.
-Its lint step runs `just lint` plus the rustdoc check, so it needs the same dev
-toolchain the manual workflow does. It does not run the website linters — those
-need `npm ci`, and CI's `website-lint` job covers them.
+Install it once per machine, then ask your agent to publish the branch:
 
-[`.no-mistakes.yaml`](.no-mistakes.yaml) configures it: the lint and format
-commands, the paths excluded from review, the documentation ownership map, and
-the per-path house rules the reviewer is given. It is external tooling, so it is
-described here rather than in [`docs/CONFIG.md`](docs/CONFIG.md), which covers
-thurbox's own configuration. The gate reads the fields that steer its behaviour
-(`commands`, `document.instructions`, `review.path_instructions`) from **main**
-rather than from your branch, so an edit to them only takes effect once merged.
+```bash
+npx skills@latest add https://github.com/LeTuR/publish --skill publish --agent claude-code --global --yes
+```
 
-The project's code-quality rubric lives in that file's
-`review.path_instructions`, which is why there is no review command to run by
-hand — extend those rules rather than reintroducing one.
+[`.publish.yaml`](.publish.yaml) is everything the skill reads here: the base
+branch, the two gate steps and the files the review must read. Its lint step
+runs `just lint` plus the rustdoc check, so it needs the same dev toolchain the
+manual workflow does. It does not run the website linters — those need
+`npm ci`, and CI's `website-lint` job covers them. It is external tooling, so
+it is described here rather than in [`docs/CONFIG.md`](docs/CONFIG.md), which
+covers thurbox's own configuration.
+
+The project's code-quality rubric is [`docs/REVIEW.md`](docs/REVIEW.md), which
+`.publish.yaml` names in `review.rules`: the per-path house rules a reviewer
+reading only the diff could not know, the trees that carry no reviewable
+intent, and the documentation ownership map. There is no review command to run
+by hand — extend those rules rather than reintroducing one. They live on your
+branch and take effect there, so a change that weakens them is a change the
+pull request shows.
 
 Performance is reviewed there rather than measured there, deliberately. The
 `src/**` block carries the render loop's change-signal rules — including that a
@@ -115,11 +123,19 @@ compiles `benches/` through `cargo clippy --all-targets`, so the instrument
 cannot rot while nobody is running it.
 
 The load harness stays out of the gate by refusing to run there
-(`NO_MISTAKES_GATE`). It lives under `scripts/dev/`, drives the real binary and
+(`THURBOX_GATE`). It lives under `scripts/dev/`, drives the real binary and
 prints a result, so it reads as a test to anything deciding what "run the tests"
 means — and a step that waits through a release build and timed runs fails on
-the agent timeout, which is what happened once. That is also why `commands.test`
-names the suite explicitly rather than leaving the choice to the step.
+the agent timeout, which is what happened once. That is also why the `test` step
+names the suite explicitly rather than leaving the choice to whatever is driving
+the gate.
+
+The fixes the gate commits are ordinary conventional commits, so the
+`commit-msg` hook — the one place a branch commit is still refused — accepts
+them. `chore` is the type to reach for: it is scopeless (`cog.toml` enumerates
+the valid scopes and a gate fix spans them) and omitted from the changelog, and
+under squash merge no branch commit reaches the release decision anyway; the
+pull request title does.
 
 One discipline the gate cannot do for you, because it validates committed
 history rather than your working tree: **stage deliberately**. Commit the files
@@ -251,6 +267,8 @@ doc in the **same PR**. Rationale lives in:
 - [`docs/FEATURES.md`](docs/FEATURES.md) — feature-level design choices
 - [`docs/CONFIG.md`](docs/CONFIG.md) — thurbox's own config files, env vars and
   DB settings
+- [`docs/REVIEW.md`](docs/REVIEW.md) — the house rules a change is reviewed
+  against, and which document owns which class of fact
 
 Comments explain **why**, not **what** — see the Comments section of
 [`CLAUDE.md`](CLAUDE.md).
