@@ -1,0 +1,343 @@
+# Reviewing a change
+
+The house rules a change to this repository is reviewed against — what a
+reviewer reading only the diff could not know. Most of them are the encoded
+result of a mistake this project already made, and the rule carries the defect
+that produced it, because a rule without its reason is the first one somebody
+deletes.
+
+These rules were a gate tool's configuration until they moved here; they were
+never tool-specific. [`.publish.yaml`](../.publish.yaml) names this file in
+`review.rules`, so whatever runs the review reads it before the first round,
+and a human reviewing by hand reads the same file.
+
+**Read the block for every path the change touches, and only those.** The rules
+are scoped: a docs-only change is not held to the `src/**` block, a change
+spanning `src/` and `ui/` is held to both, and reading a block that does not
+apply is how a review produces findings nobody asked for.
+
+## Paths that carry no reviewable intent
+
+Generated or vendored trees. `*` never crosses a `/`, and a pattern with no
+slash matches by basename at any depth.
+
+- `Cargo.lock`
+- `package-lock.json`
+- `proptest-regressions/**`
+- `media/**` — demo GIFs/MP4s and tutorial stills, produced by
+  `scripts/demo/record*.sh`.
+- `website/assets/tutorial/**`, `website/assets/ui-review/**`, `*-poster.webp`
+  — only the unreviewable part of `website/assets`: the tutorial stills that
+  `scripts/demo/record-tutorial.sh` copies from `media/tutorial/`, the
+  `ui-review` skill's captures, and the committed poster frames, which are
+  rasters carrying no reviewable diff (only the doom one has a producer in the
+  tree; the rest were committed by hand). Everything else there — `favicon.svg`,
+  `logo*.svg`, `og-image.*`, the fonts — is hand-authored source and stays under
+  review; an SVG is text and can carry a script element or an external
+  reference.
+
+## House rules by path
+
+### `src/**`
+
+Module boundaries are enforced by tests/architecture_rules.rs as an allowlist:
+session is pure data, agent may not reference git, and kernel reaches agent or
+usage by fully-qualified path only, never a use. A new module fails that test
+until its rules entry is declared.
+
+Anything that touches the world - terminal attach, commands, diffs, metrics,
+git, repository reads, update checks - runs on a worker and publishes back,
+never on the render loop, because a down remote host runs its ssh out to the
+connect timeout.
+
+A cache here carries an age, not just a value: a TTL, an in-flight marker, or a
+generation counter. Storing "we have an answer" where "the answer is current"
+was needed is the mistake this code base has made repeatedly. A change-signal
+is bumped inside the mutation and only when the value actually changed.
+
+The render loop's cost is gated on those signals, so read a change to anything
+on the per-frame path - the loop body, republish, the snapshot, the published
+groups, the terminal stores - for what it does to them, in both directions. A
+signal that stops moving when its source did is a stale pane with no error
+anywhere. A signal that moves when nothing a reader cares about did is silent
+waste: it rebuilds every published group and drops every pure pane's cached
+tree, and the frame still looks correct. Agent output in particular must never
+move the data epoch - that is what lets a streaming turn reuse diffs, links,
+content, commands and metrics whole.
+
+A signal is also worth scoping to whoever reads it. The animation clock
+invalidated every pure pane eight times a second for a spinner one of them
+draws, until `ctx.elapsed` became something the kernel could see a pane ask for
+(ADR-P21). Prefer observing a dependency over asking a plugin to declare one: a
+declaration that defaults to "no dependency" fails silently for whoever did not
+read the release note, and one that defaults to "yes" saves nothing.
+
+"Only when the value actually changed" is necessary and not sufficient, and
+ADR-P20 is the case that proves it: the link scan compared before storing, and
+the answer had genuinely changed, because a scrolling screen puts its URLs on
+new rows every frame. Compare-before-store asks whether the value moved; the
+second question, for anything recomputed on the frame path from a source that
+moves continuously, is whether it was worth asking yet - a pacing interval or a
+stamp, sized to what a reader can act on. Ask that of any new per-frame
+recompute.
+
+A change that claims a performance effect carries its measurement: `cargo bench
+--bench frame_cost` for the pieces of a frame, or `scripts/dev/perf-run.sh` for
+the whole binary under load, reported as a paired before/after at a stated
+terminal size and session count. An absolute number on its own says nothing -
+the harness and the bench both pin their inputs for that reason. Timing
+assertions stay out of the test suite (ADR-P5); the deterministic half is
+asserted on counters and change-signals instead, in tests/kernel_frame_cost.rs
+and tests/kernel_perf.rs.
+
+A newly published thurbox.* field also goes into thurbox.yml at the repo root:
+it is selene's standard library for the Lua tree, so a field LuaHost::publish
+adds but it does not declare is a lint error in every plugin that uses it. The
+change originates here, in a diff that need not touch ui/ at all.
+
+This repository is test-driven: a bug fix starts with a test that reproduces
+the bug, so it fails before the fix and passes after it. That test goes
+wherever this repository already puts one, and both places are ordinary: a
+module's own `#[cfg(test)] mod tests` block, which most files under src/ carry
+and which is where a fix to one module's logic usually belongs, or a file under
+tests/ when the coverage crosses modules or drives the kernel, the interface or
+the binary end to end. A src-only fix whose regression sits inline is the
+normal shape here, not a missing test; what is missing is a fix that adds
+neither.
+
+Comments explain why, never what. A stale comment is worse than none, so
+comments around touched code are fixed or deleted. This repository uses no
+TODO, FIXME or HACK markers and keeps no commented-out code.
+
+Read the change for structure as well as correctness: names that reveal intent,
+functions that do one thing, duplication folded together, dead code and unused
+imports gone, magic values named, early returns rather than deep nesting, and
+no abstraction introduced before there is real duplication to justify it.
+
+Read it for coherence too, across the whole diff and against the code around
+it: naming, patterns and abstractions consistent with the rest of the tree,
+signatures, return types, error handling and data shapes agreeing between
+callers and callees, and no contradictory conditions, redundant branches or
+unreachable code left behind.
+
+### `ui/**`
+
+This is the Lua interface running on the Rust kernel, and the plugin sandbox is
+enforced by absence: os, io, debug, package, print and the loaders are not in
+the environment. thurbox.yml is selene's standard library for this tree and
+must stay in step with LuaHost::publish, so a newly published thurbox field is
+added there too.
+
+There are four node kinds - text, box, input, surface - and everything else
+composes in ui/lib/widgets.lua; do not propose a fifth. Panes declare size
+statically, read from the snapshot and write by command, and never block. Ask
+for a theme role rather than a colour, so one pane looks right under all
+thirty-six palettes.
+
+Read the change for structure as well as correctness, the same way a Rust one
+is read: names that reveal intent, functions that do one thing, duplication
+folded into ui/lib/ rather than repeated across panes, dead code and unused
+locals gone, magic numbers named, early returns rather than deep nesting, and
+no abstraction introduced before there is real duplication to justify it.
+
+Read it for coherence too, across the whole diff and against the panes around
+it: naming, patterns and widget use consistent with the rest of ui/, the shape
+a helper returns agreeing with what every caller expects, snapshot fields read
+as they are published, and no contradictory conditions, redundant branches or
+unreachable code left behind.
+
+### `examples/panes/**`
+
+Example panes that install by bare name. The same plugin sandbox as ui/
+applies: no os, io, debug, package or print, four node kinds only,
+snapshot-read and command-write, and theme roles rather than colours. These are
+examples to read and copy from, not a catalogue thurbox maintains for anyone.
+
+Hold them to the same structure and coherence rubric as ui/, and more strictly
+for being examples: intention-revealing names, one thing per function, no
+duplication or dead code, magic numbers named, early returns over deep nesting,
+no abstraction ahead of real duplication, and patterns consistent with the
+panes under ui/ - somebody will copy whatever shape this file teaches.
+
+### `benches/**`
+
+The frame-cost instrument, not a test: `harness = false`, run by `cargo bench`,
+deliberately outside the PR gate per ADR-P5, which keeps wall-clock timing out
+of CI. `cargo clippy --all-targets` still compiles it under `just lint`, so it
+cannot rot silently.
+
+Judge it on one question: does it measure what the loop actually does? A bench
+that measures something no frame performs is worse than none, because it is
+believed. The trap already paid for here is rendering every loaded plugin
+rather than the panes an arrangement of that size places - a closed search
+strip occupies no slot, `draw_slots` never reaches it, and the bench reported
+it as the second most expensive pane in the interface. So a phase must
+correspond to a step the loop takes, and every input a number depends on - the
+palette, the session count, the terminal size, the epoch - is pinned or swept
+explicitly, never inherited from the developer's environment.
+
+Subtracting one measurement from another to isolate a phase is only honest when
+the subtrahend is small, and the invalidator that makes the subtrahend small
+must still invalidate everything being measured. Per-pane cost is driven by
+`cold()` — the themes epoch — which is in the pure-pane cache key
+unconditionally while gating only the palette, so every pane really re-renders
+and the publish beside it stays a near-cache-hit. Not a snapshot change, where
+the publish is a ~1ms rebuild and the subtraction measures itself; and not the
+animation epoch, which since ADR-P21 leaves a pure pane that never reads
+`ctx.elapsed` served from its cache, so every such row would report roughly
+zero.
+
+### `scripts/dev/perf-run.sh`
+
+Runs the real binary under load and reports CPU. Its failures are plausible
+numbers rather than errors, so read it for the two it already guards: it must
+identify its OWN process (a developer's running thurbox answers to `pgrep -x
+thurbox` first, and every configuration then reports that instance's CPU), and
+the TUI must start before any session exists, or the v1->v2 consent gate waits
+for a keypress and the run reports 0%.
+
+A reading is only comparable with another at the same terminal size and session
+count, so both stay explicit parameters and neither acquires a default that
+varies with the invoking window.
+
+### `tests/**`
+
+A test that shells out to git must scrub the GIT_* location variables
+(git::GIT_LOCATION_ENV). Git exports them to hook processes, so a suite running
+under this project's own pre-commit hook inherits a GIT_DIR pointing at the
+real repository and will rewrite it.
+
+tests/frames.rs pins bundled panes' frames cell for cell as literals on
+purpose, against fully pinned inputs; that is an owned snapshot contract, not
+an accident, and a failing test prints the new literal to paste. Do not propose
+replacing it with a snapshot tool or loosening its inputs - a frame that moves
+on its own is worse than no test.
+
+This repository is test-driven: a bug fix starts with a test that reproduces
+the bug, so it fails before the fix and passes after it. Coverage belongs in
+the file that owns the surface - tests/kernel_mvp.rs for the kernel's contract,
+one tests/<surface>.rs per interface surface or contract, tests/render_props.rs
+for proptest crash invariants, tests/tui_e2e.rs for the real binary on a real
+pty - rather than in a new file beside them. Follow the conventions already in
+that file and cover the edge case as well as the happy path.
+
+A test must execute a real interface and assert observable behavior, state,
+output or failure mode. A test whose only evidence is that it greps
+implementation source for a string, a name or a token proves nothing: the text
+can be dead, and a behavior-preserving refactor changes it.
+
+### `docs/**`
+
+Documentation prose. Do not request test coverage for it. The worked Lua
+examples that used to sit here now live under examples/lua/ and carry their own
+block below.
+
+### `examples/lua/**`
+
+Worked example panes, not prose: selene and stylua cover them under `just
+lint`, and examples/lua/plugin.lua is embedded in the binary as what
+`thurbox-cli plugin new` writes, so a break here ships a starter that does not
+load. Read them the more carefully for it - the Lua type check runs against ui/
+only, so a type error here reaches neither linter. The same plugin sandbox as
+ui/ applies: no os, io, debug, package or print, four node kinds only,
+snapshot-read and command-write, and theme roles rather than colours.
+
+The structure and coherence rubric applies here as it does to ui/, and a worked
+example carries it further than most code: intention-revealing names, one thing
+per function, no duplication or dead code, magic numbers named, early returns
+over deep nesting, and shapes consistent with the panes a reader will go on to
+write.
+
+### `website/**`
+
+Website prose, styles and templates. Do not request test coverage. Only website
+CSS and JS are Prettier-formatted (see .prettierignore).
+
+### `scripts/**`
+
+Every tracked *.sh is linted by shellcheck under .shellcheckrc, which sets no
+default shell: the dialect is derived per file from its own shebang, or from a
+`# shellcheck shell=` directive in a library that is sourced rather than run.
+Bash is the norm here - judge a script by the line at the top of it rather than
+by a repo-wide default.
+
+Not everything under this path is shell. scripts/demo/*.tape are VHS tapes
+driving the real TUI, scripts/demo/trim-cast.mjs is Node, and the installers
+have their own block.
+
+### `scripts/install.*`
+
+The two installers are a mirrored pair - install.sh for Linux/macOS,
+install.ps1 for Windows - and each is fetched and piped straight into a shell,
+so a break here is a break in the documented one-line install rather than
+something a user can work around.
+
+install.sh is deliberately POSIX sh, not bash: it is run as `curl ... | sh`.
+Keep it to standard tools (curl/wget, tar, sha256sum/shasum), non-interactive,
+and cleaning up through its trap.
+
+install.ps1 is PowerShell 5.1+ and its source must stay ASCII-only, because
+that is what survives `irm | iex` decoding on Windows PowerShell 5.1.
+Write-Host for UI output is intentional and not a lint to fix - Write-Output
+would leak into the iex pipeline - and the pure helpers are guarded by
+$env:THURBOX_PS_TEST so the file can be dot-sourced for testing without running
+the installer.
+
+Both are tested, and a change to either should move its suite: install.bats
+(bats-core) covers install.sh and install.Tests.ps1 (Pester 5) is its
+PowerShell mirror, each run by its own CI job.
+
+## Documentation ownership
+
+The placement policy: a duplicate is reduced to a pointer rather than
+synchronized, and a change that invalidates a documented decision updates its
+owner in the same change.
+
+Each class of fact has exactly one owner document. docs/CONSTITUTION.md owns
+core principles. docs/ARCHITECTURE.md owns architectural decisions and their
+ADR-NN anchors. docs/PERFORMANCE.md owns render-loop and tick performance
+decisions and their ADR-PNN anchors, and a performance ADR records the
+measurement that produced it - the harness invocation, the terminal size, the
+session count and a paired before/after - so the number can be reproduced
+rather than remembered. docs/FEATURES.md owns feature-level design choices.
+docs/CONFIG.md owns thurbox's own configuration - every config file,
+environment variable and database setting it reads - while CONTRIBUTING.md owns
+the contribution process itself (how to propose a change, commit conventions,
+staging discipline, the review gate) and the configuration of external tooling
+such as .publish.yaml, so a root-level config file is not automatically
+docs/CONFIG.md's. docs/REVIEW.md owns the house rules a change is reviewed
+against - the per-path blocks above, the trees excluded from review, and this
+ownership map. docs/AGENTS.md owns each built-in coding agent's exact
+configuration and the checklist for adding one. docs/V2-KERNEL.md owns the
+kernel's shape and its five rules, and docs/PLUGINS.md owns interface-plugin
+authoring. docs/DEVELOPMENT.md owns the dev environment and the runtime
+sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
+so dev-setup facts stay there. docs/RELEASING.md owns the release process and
+docs/ORCHESTRATION.md the control-plane pattern. packaging/README.md owns the
+packaging overview and scripts/dev/README.md the dev-scripts index. README.md
+owns the introduction.
+
+CLAUDE.md is the agent-facing index into those owners: it carries pointers and
+the operating guidance a coding agent needs on every turn, and a code change
+that invalidates or extends a documented decision updates the owning doc in the
+same change. The per-subsystem working reference lives in the skills under
+.agents/skills/ (thurbox-testing, thurbox-performance, thurbox-release,
+thurbox-agents, thurbox-remote-hosts, thurbox-cli, thurbox-extensions,
+thurbox-session-status, thurbox-kernel, thurbox-ui-surfaces,
+thurbox-demo-media), which CLAUDE.md indexes: detail an agent needs only when
+working on that subsystem belongs in its skill rather than back in CLAUDE.md,
+and a change that invalidates one updates it in the same change. A skill is a
+working reference, not an owner - the docs above still own the rationale.
+ui/AGENTS.md owns interface-authoring guidance for whichever coding CLI is
+editing ui/; ui/CLAUDE.md and ui/GEMINI.md are deliberately one-line pointers
+to it, never copies, so do not expand them.
+
+docs/TUTORIAL.md and website/docs/tutorial.html are two separate documents in
+different voices covering the same walkthrough, not a generated pair: a step
+edited in one is edited in both, and its screenshots are regenerated by
+scripts/demo/record-tutorial.sh rather than described.
+
+This repository intentionally has no CHANGELOG.md; release notes are generated
+from conventional commits by cocogitto. Do not create one, and do not add a new
+documentation file to close a perceived gap when an owner above already covers
+the subject.
