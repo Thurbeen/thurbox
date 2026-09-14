@@ -1462,10 +1462,9 @@ fn a_drag_over_a_tracking_terminal_reaches_the_program_inside() {
         return;
     };
 
-    // A marker to aim the drag at, then button-event tracking (1002, SGR
-    // encoded per 1006) turned on from inside the terminal, and `cat` to park
-    // the shell: the tty echoes what the program is sent, control bytes
-    // visibly (`ESC` as `^[`), which is what the assertions read.
+    // `cat` parks the shell so the tty's echo shows what the program is sent,
+    // control bytes visibly (`ESC` as `^[`) — the only way a forwarded report
+    // can be read off the screen.
     tui.send(b"echo tb-mouse-\"\"here\r");
     tui.wait_for("tb-mouse-here");
     tui.send(b"printf '\\033[?1002h\\033[?1006h'; cat\r");
@@ -1474,9 +1473,8 @@ fn a_drag_over_a_tracking_terminal_reaches_the_program_inside() {
     let at = tui.find("tb-mouse-here");
     tui.drag(at, 3);
 
-    // The three legs of the gesture, told apart the way SGR spells them:
-    // `[<0;…M` is the press, `[<32;…M` a move with the button down, and the
-    // final `m` the release.
+    // SGR tells the legs apart by `Cb` and the final letter alone: 0 is the
+    // left button, 32 its move flag, and only a release ends in `m`.
     tui.wait_for("[<0;");
     tui.wait_for("[<32;");
     tui.wait_until("the release to reach the program", |frame| {
