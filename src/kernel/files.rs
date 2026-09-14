@@ -79,6 +79,10 @@ pub fn resolve(root: &Path, relative: &str) -> Result<PathBuf, String> {
 }
 
 /// Entries directly under `relative`, sorted directories-first then by name.
+///
+/// A symlink to a directory counts as a directory, so the flag agrees with what
+/// [`list`] and [`read`] do with that same path. A plugin has no filesystem of
+/// its own, so this flag is the only thing it can ask.
 pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
     let path = resolve(root, relative)?;
     let read = std::fs::read_dir(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -89,7 +93,23 @@ pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
             break;
         }
         let name = item.file_name().to_string_lossy().to_string();
-        let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        // `DirEntry::file_type` describes the link rather than its target, so a
+        // link to a directory was handed to a plugin as a file while `list` and
+        // `read` through that same path both treated it as the directory it
+        // points at. Only a link pays for the second syscall, which keeps a
+        // node_modules-sized listing at one call per entry.
+        //
+        // Asking the target's type is not following the link anywhere: `resolve`
+        // runs on every path a caller names and still refuses one that lands
+        // outside the session directory. A target that cannot be stat'd at all —
+        // dangling, or a loop — is not a directory, and nothing can expand it.
+        let is_dir = match item.file_type() {
+            Ok(kind) if kind.is_symlink() => std::fs::metadata(item.path())
+                .map(|target| target.is_dir())
+                .unwrap_or(false),
+            Ok(kind) => kind.is_dir(),
+            Err(_) => false,
+        };
         entries.push(Entry { name, is_dir });
     }
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
@@ -201,6 +221,95 @@ mod tests {
 
             let error = resolve(dir.path(), "link").unwrap_err();
             assert!(error.contains("escapes"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_symlinked_directory_is_listed_as_a_directory() {
+        #[cfg(unix)]
+        {
+            let dir = fixture();
+            std::os::unix::fs::symlink(dir.path().join("src"), dir.path().join("link-to-src"))
+                .expect("symlink");
+
+            let entries = list(dir.path(), "").expect("list");
+            let link = entries
+                .iter()
+                .find(|entry| entry.name == "link-to-src")
+                .expect("the link is listed");
+            assert!(link.is_dir, "a link to a directory is a directory");
+
+            // The sort puts directories first, so the link moves up among them.
+            // A plugin's file tree reorders because of this, which is the point:
+            // the row was drawn as a leaf and acted on as one.
+            let order: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+            assert_eq!(order, ["link-to-src", "src", "README.md"]);
+        }
+    }
+
+    #[test]
+    fn a_symlink_out_of_the_directory_is_typed_but_still_not_followed() {
+        // Reading the target's type is not traversing the link: `resolve` is
+        // what enforces the boundary, and it runs on every path a caller names.
+        #[cfg(unix)]
+        {
+            let dir = fixture();
+            let outside = tempfile::tempdir().expect("outside");
+            std::fs::create_dir_all(outside.path().join("secrets")).expect("mkdir");
+            std::os::unix::fs::symlink(outside.path().join("secrets"), dir.path().join("link-out"))
+                .expect("symlink");
+
+            let entries = list(dir.path(), "").expect("list");
+            let link = entries
+                .iter()
+                .find(|entry| entry.name == "link-out")
+                .expect("the link is listed");
+            assert!(link.is_dir);
+
+            for error in [
+                list(dir.path(), "link-out").unwrap_err(),
+                read(dir.path(), "link-out").unwrap_err(),
+            ] {
+                assert!(error.contains("escapes"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_dangling_symlink_is_listed_and_is_not_a_directory() {
+        // There is no target to ask, and a link that resolves to nothing cannot
+        // be expanded, so it is listed as a leaf rather than dropped.
+        #[cfg(unix)]
+        {
+            let dir = fixture();
+            std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("dangling"))
+                .expect("symlink");
+
+            let entries = list(dir.path(), "").expect("list");
+            let link = entries
+                .iter()
+                .find(|entry| entry.name == "dangling")
+                .expect("the link is listed");
+            assert!(!link.is_dir);
+        }
+    }
+
+    #[test]
+    fn a_symlink_loop_is_listed_and_is_not_a_directory() {
+        // ELOOP rather than "not found", and it must take the same path: the
+        // listing neither stalls on it nor drops the entry.
+        #[cfg(unix)]
+        {
+            let dir = fixture();
+            std::os::unix::fs::symlink(dir.path().join("ouroboros"), dir.path().join("ouroboros"))
+                .expect("symlink");
+
+            let entries = list(dir.path(), "").expect("list");
+            let link = entries
+                .iter()
+                .find(|entry| entry.name == "ouroboros")
+                .expect("the link is listed");
+            assert!(!link.is_dir);
         }
     }
 

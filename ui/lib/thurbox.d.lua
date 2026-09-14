@@ -676,7 +676,7 @@ state = {}
 
 ---@class (exact) thurbox.FileEntry
 ---@field name string
----@field dir boolean
+---@field dir boolean True for a directory, and for a symlink to one.
 
 --- Directory entries and file text, rooted at a session's working directory.
 --- Not a filesystem: a path outside the root is refused.
