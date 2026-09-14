@@ -148,35 +148,39 @@ const CONTENT_LINE_CAP: usize = 500;
 /// The suffix that addresses a session's companion shell as its own surface.
 const SHELL_SUFFIX: &str = "#shell";
 
-/// One wheel tick, in the encoding the program inside the pane asked for.
+/// One mouse report, in the encoding the program inside the pane asked for.
 ///
-/// Xterm's wheel is buttons 64 (up) and 65 (down), reported as a press with no
-/// release. Two encodings are emitted, because a program that asks for the
-/// mouse at all and is handed nothing is a pane the wheel is dead in: the
-/// alternate screen it is almost certainly on keeps no scrollback, so there is
-/// no local fallback to leave it to.
+/// `button` is xterm's Cb before the +32 offset: 0 for the left button, 32 for
+/// a move with it held, 64/65 for the wheel (a press with no release). Two
+/// encodings are emitted, because a program that asks for the mouse at all and
+/// is handed nothing is a pane the mouse is dead in: the alternate screen it
+/// is almost certainly on keeps no scrollback, so there is no local fallback
+/// to leave it to.
 ///
-/// * `Sgr` (`?1006`) — `CSI < Cb ; Cx ; Cy M`, and the only one with no size
-///   limit.
+/// * `Sgr` (`?1006`) — `CSI < Cb ; Cx ; Cy M`, `m` for a release, and the only
+///   encoding with no size limit.
 /// * `Default` — xterm's original `CSI M` with each field offset by 32, which
 ///   caps a coordinate at 223. Past that there is no legal report to send, so
-///   `None`: a truncated one would land the tick on the wrong cell.
+///   `None`: a truncated one would land the event on the wrong cell. A release
+///   here has no button of its own — the protocol spells every release 3.
 ///
 /// `Utf8` (`?1005`) is deliberately not emitted. It is ambiguous by
 /// construction — a receiver cannot tell it from the default encoding without
 /// being told — and no agent asks for it.
-fn wheel_report(
+fn mouse_report(
     encoding: vt100::MouseProtocolEncoding,
-    up: bool,
+    button: u32,
     col: u32,
     row: u32,
+    press: bool,
 ) -> Option<Vec<u8>> {
-    let button = if up { 64 } else { 65 };
     match encoding {
         vt100::MouseProtocolEncoding::Sgr => {
-            Some(format!("\x1b[<{button};{col};{row}M").into_bytes())
+            let end = if press { 'M' } else { 'm' };
+            Some(format!("\x1b[<{button};{col};{row}{end}").into_bytes())
         }
         vt100::MouseProtocolEncoding::Default => {
+            let button = if press { button } else { 3 };
             let cell = |n: u32| u8::try_from(n + 32).ok();
             Some(vec![
                 0x1b,
@@ -1221,13 +1225,104 @@ impl Terminals {
         let rect = live.rect.get();
         let col = u32::from(x - rect.x) + 1;
         let row = u32::from(y - rect.y) + 1;
-        let Some(bytes) = wheel_report(encoding, up, col, row) else {
+        let button = if up { 64 } else { 65 };
+        let Some(bytes) = mouse_report(encoding, button, col, row, true) else {
             return false;
         };
         match live.send_visible_input(bytes) {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!("forwarding a wheel tick to the pty failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Hand a left press to the terminal under `(x, y)`, if the program
+    /// inside asked for the mouse — any tracking mode hears a press.
+    ///
+    /// The wheel above answers per tick; a button starts a *gesture*. So the
+    /// caller is told which session took the press and routes the moves and
+    /// the release back by that key, the way any pointer capture works: the
+    /// surface that heard the press owns the button until it comes back up,
+    /// even when the drag wanders off the pane.
+    pub fn forward_press(&self, x: u16, y: u16) -> Option<String> {
+        let position = Position::new(x, y);
+        let (key, live) = self
+            .live
+            .iter()
+            .find(|(_, live)| live.rect.get().contains(position))?;
+        self.forward_button(live, x, y, 0, true, |_| true)
+            .then(|| key.clone())
+    }
+
+    /// A move with the button held, to the session that took the press.
+    /// Only `?1002`/`?1003` ask to hear these.
+    pub fn forward_motion(&self, session: &str, x: u16, y: u16) -> bool {
+        self.live.get(session).is_some_and(|live| {
+            self.forward_button(live, x, y, 32, true, |mode| {
+                matches!(
+                    mode,
+                    vt100::MouseProtocolMode::ButtonMotion | vt100::MouseProtocolMode::AnyMotion
+                )
+            })
+        })
+    }
+
+    /// The release that ends the gesture, to the session that took the press.
+    /// Every mode past X10 (`?9`) asks to hear it.
+    pub fn forward_release(&self, session: &str, x: u16, y: u16) -> bool {
+        self.live.get(session).is_some_and(|live| {
+            self.forward_button(live, x, y, 0, false, |mode| {
+                mode != vt100::MouseProtocolMode::Press
+            })
+        })
+    }
+
+    /// Encode and send one button report, if the terminal's tracking mode
+    /// `wants` events of this kind.
+    ///
+    /// Coordinates are clamped into the pane rather than dropped: a drag that
+    /// crosses the border still means "as far as you go in that direction" to
+    /// the program tracking it, which is how every capture behaves.
+    fn forward_button(
+        &self,
+        live: &Live,
+        x: u16,
+        y: u16,
+        button: u32,
+        press: bool,
+        wants: impl Fn(vt100::MouseProtocolMode) -> bool,
+    ) -> bool {
+        let parser = live.visible_parser();
+        let asked = match parser.lock() {
+            Ok(parser) => {
+                let screen = parser.screen();
+                let mode = screen.mouse_protocol_mode();
+                (mode != vt100::MouseProtocolMode::None && wants(mode))
+                    .then(|| screen.mouse_protocol_encoding())
+            }
+            Err(_) => None,
+        };
+        let Some(encoding) = asked else {
+            return false;
+        };
+
+        // The rect is the surface's own content area, as for the wheel; a
+        // surface no longer painted has an empty one and gets nothing.
+        let rect = live.rect.get();
+        if rect.width == 0 || rect.height == 0 {
+            return false;
+        }
+        let col = u32::from(x.clamp(rect.x, rect.x + rect.width - 1) - rect.x) + 1;
+        let row = u32::from(y.clamp(rect.y, rect.y + rect.height - 1) - rect.y) + 1;
+        let Some(bytes) = mouse_report(encoding, button, col, row, press) else {
+            return false;
+        };
+        match live.send_visible_input(bytes) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("forwarding a button event to the pty failed: {e}");
                 false
             }
         }
@@ -1725,29 +1820,39 @@ mod tests {
     use crate::kernel::snapshot::SessionRow;
 
     #[test]
-    fn a_wheel_tick_is_encoded_the_way_the_pane_asked_for_it() {
+    fn a_mouse_event_is_encoded_the_way_the_pane_asked_for_it() {
         use vt100::MouseProtocolEncoding as E;
         assert_eq!(
-            wheel_report(E::Sgr, true, 12, 3).expect("sgr"),
+            mouse_report(E::Sgr, 64, 12, 3, true).expect("sgr"),
             b"\x1b[<64;12;3M".to_vec()
         );
         assert_eq!(
-            wheel_report(E::Sgr, false, 12, 3).expect("sgr"),
+            mouse_report(E::Sgr, 65, 12, 3, true).expect("sgr"),
             b"\x1b[<65;12;3M".to_vec()
+        );
+        // SGR keeps the button on a release — the final letter is what flips.
+        assert_eq!(
+            mouse_report(E::Sgr, 0, 12, 3, false).expect("sgr"),
+            b"\x1b[<0;12;3m".to_vec()
         );
         // The original encoding offsets every field by 32. A program that asks
         // for the mouse without asking for SGR used to be handed nothing, and
         // its alternate screen leaves no scrollback to fall back on.
         assert_eq!(
-            wheel_report(E::Default, true, 12, 3).expect("default"),
+            mouse_report(E::Default, 64, 12, 3, true).expect("default"),
             vec![0x1b, b'[', b'M', 96, 44, 35]
         );
-        // Past 223 there is no legal report, and a truncated one would land the
-        // tick on the wrong cell.
-        assert_eq!(wheel_report(E::Default, true, 224, 3), None);
-        assert!(wheel_report(E::Default, true, 223, 223).is_some());
+        // ...and it spells every release button 3, whatever went down.
+        assert_eq!(
+            mouse_report(E::Default, 0, 12, 3, false).expect("default"),
+            vec![0x1b, b'[', b'M', 35, 44, 35]
+        );
+        // Past 223 there is no legal report, and a truncated one would land
+        // the event on the wrong cell.
+        assert_eq!(mouse_report(E::Default, 64, 224, 3, true), None);
+        assert!(mouse_report(E::Default, 64, 223, 223, true).is_some());
         // Ambiguous by construction, and asked for by nothing.
-        assert_eq!(wheel_report(E::Utf8, true, 12, 3), None);
+        assert_eq!(mouse_report(E::Utf8, 64, 12, 3, true), None);
     }
 
     fn row(id: &str, backend: &str, backend_id: Option<&str>) -> SessionRow {

@@ -1447,6 +1447,48 @@ fn the_wheel_scrolls_the_companion_shell_too() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+// --- the buttons over a tracking terminal -----------------------------------
+
+#[test]
+fn a_drag_over_a_tracking_terminal_reaches_the_program_inside() {
+    // The wheel above already goes to a terminal that asked for the mouse, and
+    // the buttons did not: a program that tracks the mouse and selects text
+    // itself (Claude Code copies on select this way) never heard a press,
+    // because thurbox spent every drag on its own selection. Once a program
+    // has asked, the gesture is its: press, the moves while the button is
+    // down, and the release all reach the pty, in the encoding it asked for
+    // and with coordinates local to its pane.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    // A marker to aim the drag at, then button-event tracking (1002, SGR
+    // encoded per 1006) turned on from inside the terminal, and `cat` to park
+    // the shell: the tty echoes what the program is sent, control bytes
+    // visibly (`ESC` as `^[`), which is what the assertions read.
+    tui.send(b"echo tb-mouse-\"\"here\r");
+    tui.wait_for("tb-mouse-here");
+    tui.send(b"printf '\\033[?1002h\\033[?1006h'; cat\r");
+    tui.wait_until_quiet();
+
+    let at = tui.find("tb-mouse-here");
+    tui.drag(at, 3);
+
+    // The three legs of the gesture, told apart the way SGR spells them:
+    // `[<0;…M` is the press, `[<32;…M` a move with the button down, and the
+    // final `m` the release.
+    tui.wait_for("[<0;");
+    tui.wait_for("[<32;");
+    tui.wait_until("the release to reach the program", |frame| {
+        frame
+            .match_indices("[<0;")
+            .any(|(i, _)| frame[i..].chars().take(16).find(|c| *c == 'M' || *c == 'm') == Some('m'))
+    });
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 // --- the scrollbar is a control, not a decoration ---------------------------
 
 impl Tui {
