@@ -405,7 +405,10 @@ globals:
   # What the arrangement needs to know about the bands, and no more.
   thurbox.chrome.status_rows:
     property: read-only
-  # The active palette as role -> colour, plus the selectable list.
+  # The active palette as role -> colour, plus the selectable list. `roles` stops
+  # at the table because `ui/lib/theme.lua` memoizes it through a local, which
+  # ends the checked path — so a dotted `thurbox.theme.roles.accent` is still
+  # rejected, and no probe covers it.
   thurbox.theme.name:
     property: read-only
   thurbox.theme.roles:

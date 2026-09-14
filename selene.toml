@@ -2,8 +2,9 @@
 #
 # `std` names `thurbox.yml`, which declares the plugin VM's real standard
 # library — the five stdlib tables the kernel grants plus its six injected
-# globals, with everything it withholds marked removed. So this checks two
-# things at once: that the Lua is sound, and that it stays inside the sandbox.
+# globals, with everything it withholds simply *absent*: the file inherits no
+# `base:`, so there is nothing to mark removed. It checks two things at once:
+# that the Lua is sound, and that it stays inside the sandbox.
 std = "thurbox"
 
 # The type definitions are declarations, not code: nothing loads
