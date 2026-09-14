@@ -10,15 +10,25 @@
 # `incorrect_standard_library_use`, while CI stayed green because nothing in
 # `ui/` or `examples/` reads them in a form selene can see (issue #1133).
 #
-# The two probes are what notices:
+# The probes are what notices:
 #
 #   reads.lua  every field on those tables, as a plain dotted path. Must lint
 #              CLEAN, so a table that regresses to a bare property fails here.
-#   typos.lua  one misspelling per table. Each must still be reported, so the
-#              fix cannot be a wildcard that accepts whatever is asked for.
+#   typos/     one file per table, each misspelling one field. Each must still
+#              be reported, so the fix cannot be a wildcard that accepts
+#              whatever is asked for.
 #
 # This covers those five tables, not everything `LuaHost::publish` serves — a path
 # stops being checked at the first `[…]`, so a list has nothing below it to probe.
+#
+# Read through selene's `Json2` display style, and asserted on the `code` field.
+# That code is selene's own lint identifier — the same name `selene.toml`'s
+# `[lints]` keys and a `-- selene: allow(…)` comment use — so it is a contract
+# rather than prose. An earlier version grepped the message text ("does not
+# contain the field"), which a selene release could reword into a gate that
+# passes every probe while catching nothing. Which table a finding belongs to
+# comes from the file it was found in, not from that text, which is why `typos/`
+# is a file per table.
 #
 # Run from the repository root: selene resolves the `std` name against the
 # working directory, not the directory of the config it was given, so the `cd`
@@ -38,28 +48,47 @@ fi
 
 cd "$root"
 
+# One JSON object per line, so counting lines counts findings and no JSON parser
+# is needed in CI — the same reason `check-lua-types.sh` reads its report with
+# awk. A probe is expected to fail, so selene's exit status carries no
+# information here and is discarded; the objects are the answer.
+lint() {
+    selene --config selene.toml --display-style Json2 "$1" 2>&1 || true
+}
+
+# `grep -c` exits 1 on no match, which `set -e` would take as a failure.
+count() {
+    printf '%s\n' "$1" | grep -cF "$2" || true
+}
+
 failed=0
 
-if ! findings=$(selene --config selene.toml --quiet --no-summary "$probes/reads.lua" 2>&1); then
-    printf 'tests/fixtures/lua_std/reads.lua: expected no findings, got\n' >&2
-    printf '%s\n' "$findings" >&2
+reported=$(lint "$probes/reads.lua")
+diagnostics=$(count "$reported" '"type":"Diagnostic"')
+if [ "$diagnostics" -eq 0 ]; then
+    printf 'tests/fixtures/lua_std/reads.lua: clean\n'
+else
+    printf 'tests/fixtures/lua_std/reads.lua: expected no findings, got %s\n' "$diagnostics" >&2
+    printf '%s\n' "$reported" >&2
     printf '  thurbox.yml no longer declares a field the kernel publishes.\n' >&2
     printf '  Compare it with LuaHost::publish in src/kernel/host/.\n' >&2
     failed=1
-else
-    printf 'tests/fixtures/lua_std/reads.lua: clean\n'
 fi
 
-# Expected to fail, so the exit status carries no information — the messages do.
-reported=$(selene --config selene.toml --quiet --no-summary "$probes/typos.lua" 2>&1 || true)
-
-for table in thurbox.granted thurbox.platform thurbox.metrics thurbox.metrics.system thurbox.hover thurbox.preflight.mux; do
-    if printf '%s\n' "$reported" | grep -qF "global \`$table\` does not contain"; then
-        printf 'tests/fixtures/lua_std/typos.lua: %s rejects a misspelt field\n' "$table"
+for probe in "$probes"/typos/*.lua; do
+    name=$(basename "$probe")
+    reported=$(lint "$probe")
+    diagnostics=$(count "$reported" '"type":"Diagnostic"')
+    rejections=$(count "$reported" '"code":"incorrect_standard_library_use"')
+    if [ "$rejections" -eq 1 ] && [ "$diagnostics" -eq 1 ]; then
+        printf 'tests/fixtures/lua_std/typos/%s: the misspelt field is rejected\n' "$name"
     else
-        printf 'tests/fixtures/lua_std/typos.lua: expected %s to reject a\n' "$table" >&2
-        printf '  misspelt field and it did not — thurbox.yml describes it too\n' >&2
-        printf '  loosely to catch the typo it exists to catch.\n' >&2
+        printf 'tests/fixtures/lua_std/typos/%s: expected exactly one\n' "$name" >&2
+        printf '  incorrect_standard_library_use and nothing else, got %s of it\n' "$rejections" >&2
+        printf '  among %s finding(s):\n' "$diagnostics" >&2
+        printf '%s\n' "$reported" >&2
+        printf '  thurbox.yml describes that table too loosely to catch the typo\n' >&2
+        printf '  it exists to catch.\n' >&2
         failed=1
     fi
 done

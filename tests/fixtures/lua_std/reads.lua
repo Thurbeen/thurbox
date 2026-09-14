@@ -2,12 +2,12 @@
 -- `.platform`, `.metrics`, `.hover` and `.preflight.mux` — the injected tables no
 -- bundled pane reads in a form selene can see — each as a plain dotted path.
 --
--- Expected to lint CLEAN, and that is the whole assertion: selene checks a
--- dotted path against `thurbox.yml` one segment at a time, so a table declared
--- as a bare property rejects the exact expression `ui/README.md` and
--- `docs/PLUGINS.md` tell an author to write. Each of these was, and CI stayed
--- green because nothing in `ui/` or `examples/` reads them in a form selene can
--- see.
+-- Expected to lint CLEAN, and that is the whole assertion here; `typos/` holds
+-- the other direction, one pane per table. selene checks a dotted path against
+-- `thurbox.yml` one segment at a time, so a table declared as a bare property
+-- rejects the exact expression `ui/README.md` and `docs/PLUGINS.md` tell an
+-- author to write. Each of these was, and CI stayed green because nothing in
+-- `ui/` or `examples/` reads them in a form selene can see.
 return {
   name = "std_reads",
   render = function()

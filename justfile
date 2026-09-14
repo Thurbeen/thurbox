@@ -55,9 +55,9 @@ lint:
     # The other direction: three panes that each misspell something, which must
     # each still come back as a finding.
     scripts/ci/check-lua-types.sh
-    # And selene's own: two panes reading the injected tables, one clean and one
-    # misspelt, so a table declared without its fields fails instead of passing
-    # unread.
+    # And selene's own: one pane reading the injected tables, which must lint
+    # clean, and one misspelt pane per table, which must not — so a table
+    # declared without its fields fails instead of passing unread.
     scripts/ci/check-lua-std.sh
 
 # Format the Lua interface in place (the counterpart to `cargo fmt`).

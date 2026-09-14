@@ -174,10 +174,13 @@ checks a **dotted** path one segment at a time and stops at the first `[…]`, s
 table read as `thurbox.platform.os` needs an entry per field while a list read as
 `thurbox.sessions[i].name` stops at the list. `selene ui examples` cannot notice a
 table left at the table — no bundled pane reads one by name — so
-`scripts/ci/check-lua-std.sh` runs two panes from `tests/fixtures/lua_std/`: one
-reading every field on `granted`, `platform`, `metrics`, `hover` and
-`preflight.mux`, which must lint clean, and one misspelling each of them, which
-must not.
+`scripts/ci/check-lua-std.sh` runs the panes in `tests/fixtures/lua_std/`:
+`reads.lua` reads every field on `granted`, `platform`, `metrics`, `hover` and
+`preflight.mux` and must lint clean, and `typos/` holds one pane per table
+misspelling one field, each of which must not. The assertion is selene's
+`incorrect_standard_library_use` code out of its `Json2` output, and the table a
+finding belongs to is the file it was found in — neither depends on the wording
+of a message, which a selene release could change under us.
 
 ## Comments
 
