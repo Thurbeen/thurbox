@@ -116,6 +116,7 @@ stylua ui                            # Lua format (stylua.toml); --check in CI
 # phantom findings). `just lint` passes an absolute one:
 lua-language-server --check ui --configpath "$PWD/.luarc.json" --checklevel=Warning
 scripts/ci/check-lua-types.sh        # the definitions' own test (see below)
+scripts/ci/check-lua-std.sh          # the standard library's own test (see below)
 ```
 
 Three tools on `ui/`, chosen to match what the Lua ecosystem actually gates on —
@@ -168,7 +169,14 @@ caught.
 
 It also declares the published shape of `thurbox`, so `thurbox.sesions` is a lint
 error rather than a silently-nil pane. Keep it in step with `LuaHost::publish`;
-a newly published field used by a plugin fails lint until it is added.
+a newly published field used by a plugin fails lint until it is added. selene
+checks a **dotted** path one segment at a time and stops at the first `[…]`, so a
+table read as `thurbox.platform.os` needs an entry per field while a list read as
+`thurbox.sessions[i].name` stops at the list. `selene ui examples` cannot notice a
+table left at the table — no bundled pane reads one by name — so
+`scripts/ci/check-lua-std.sh` runs two panes from `tests/fixtures/lua_std/`: one
+reading every published field, which must lint clean, and one misspelling each of
+them, which must not.
 
 ## Comments
 

@@ -389,6 +389,16 @@ check the table against. The second and third need nothing — `command` and
 Those three examples are literally `tests/fixtures/lua_types/`, and
 `scripts/ci/check-lua-types.sh` fails if any of them stops being reported.
 
+`selene` checks the same names from the other side, against `thurbox.yml`. That
+file declares **fields**, not only tables, so `thurbox.platform.os`,
+`thurbox.granted.program`, `thurbox.metrics.system.cpu_percent` and
+`thurbox.hover.role` are all checked reads and a misspelt one is an error. A path
+stops being checked at the first `[…]` — `thurbox.sessions[i].name` is yours to
+get wrong — which is why a list is declared only as far as the list itself.
+`tests/fixtures/lua_std/` and `scripts/ci/check-lua-std.sh` are that half's
+probes: one pane reading every published field, which must lint clean, and one
+misspelling each of them, which must not.
+
 ## The four node kinds
 
 `text`, `box`, `input`, `surface`. That is the whole vocabulary, and it is meant
@@ -1086,7 +1096,7 @@ focusable = true,                  -- or it can never be typed at
 input = "session",                 -- keys you do not handle go to the surface
 
 render = function(ctx)
-  if not (thurbox.granted or {}).program then
+  if not thurbox.granted.program then
     return needs_trust(ctx)        -- absent until you are trusted; draw that
   end
   -- Every frame. Asking for a pane you already have is a map lookup, not a

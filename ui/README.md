@@ -258,7 +258,11 @@ interactive program pane is asked for through `command`, which every plugin has.
 `load`, `loadstring`, `require` of anything outside `lib/`. They are not blocked,
 they are *missing* — `os.time()` is an `attempt to index a nil value`, not a
 permission error. `selene` catches this at lint time via `thurbox.yml`, which is
-the sandbox written down; run `selene ui` if it is installed.
+the sandbox written down; run `selene ui` if it is installed. It names *fields*
+as well as tables, so `thurbox.granted.program` and `thurbox.platform.os` are
+checked reads and a misspelt one is an error. The path stops being checked at the
+first `[…]`, which is why a list like `thurbox.sessions` is declared only as far
+as the list.
 
 ## Names, checked before you run
 
