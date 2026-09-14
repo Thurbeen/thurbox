@@ -772,6 +772,19 @@ impl Session {
         self.backend.is_dead(self.backend_id())
     }
 
+    /// Whether the backend reports this session's companion shell pane as dead.
+    ///
+    /// `None` when there is no shell pane. Asked of the shell's own backend id,
+    /// not the agent's: the two panes die apart (an agent can `/exit` while its
+    /// shell runs on, and the reverse), so a caller acting on the surface the
+    /// user is looking at must ask the pane that surface names — the same pane
+    /// [`crate::kernel::terminal::Terminals::send`] would deliver to.
+    pub fn shell_is_dead(&self) -> Option<Result<bool>> {
+        self.shell_pane
+            .as_ref()
+            .map(|shell| self.backend.is_dead(shell.backend_id()))
+    }
+
     /// Spawn a new session via the given backend.
     pub fn spawn(
         name: String,
