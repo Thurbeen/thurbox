@@ -1369,9 +1369,7 @@ fn clicking_a_session_row_hands_focus_to_the_agent_pane() {
         return;
     };
 
-    // Walk focus over to the session column, as `Ctrl+H` does. The action
-    // band names the focused pane; it saying so is the ground truth here,
-    // exactly as it is in `shell_session`.
+    // 0x08 is Ctrl+H, the kernel's focus-cycle chord.
     tui.send(b"\x08");
     tui.wait_until("the sessions pane to be the focused one", |frame| {
         frame
@@ -1380,9 +1378,9 @@ fn clicking_a_session_row_hands_focus_to_the_agent_pane() {
             .is_some_and(|band| band.trim_start().starts_with("Sessions"))
     });
 
-    // A bare click on the session's own row. Aimed by its status text, not
-    // its name: "probe" is also painted in the chrome line and in the agent
-    // pane's title, both above the list, and `find` answers with the first.
+    // Aimed by the row's status text because "probe" is also painted in the
+    // chrome line and in the agent pane's title, both above the list, and
+    // `find` answers with the first.
     let at = tui.find("no status hooks");
     tui.drag(at, 0);
     tui.wait_until("the click to hand focus to the agent pane", |frame| {
