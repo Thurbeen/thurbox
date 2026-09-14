@@ -1178,6 +1178,110 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+#[test]
+fn ctrl_d_deletes_a_session_whose_agent_has_exited() {
+    // `Ctrl+D` is a passthrough chord: while a terminal has focus it is the
+    // agent's EOF, and the delete it also means is left to the session list.
+    // But an agent that ran `/exit` leaves a dead pane the window keeps
+    // (remain-on-exit), and tmux still accepts `send-keys` into it — so the
+    // chord was delivered to a pane no one reads and the session it should
+    // have deleted hung in the list. A dead pane is doing no line editing, so
+    // the delete is what the chord means there.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    // The row's presence is the precondition the delete acts on.
+    tui.send(b"exit\r");
+    tui.wait_until_quiet();
+    assert!(
+        tui.frame().contains("no status hooks"),
+        "the session must still be listed after its agent exits:\n{}",
+        tui.frame()
+    );
+
+    // 0x04 is Ctrl+D; focus never left the agent pane, so this is the
+    // passthrough path, not the list's own binding.
+    tui.send(b"\x04");
+    tui.wait_gone("no status hooks");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn ctrl_d_reaches_a_live_agent_as_its_eof() {
+    // The other side of the rule above: while the agent is live the chord is
+    // still its EOF, not a delete. Pressing it ends `sh` — which is what EOF
+    // does — but the session stays in the list, because the keystroke went to
+    // the pty and never to the list's delete. Were the dead-pane exception
+    // firing on a live pane, the row would be gone instead.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    tui.send(b"\x04");
+    // The assertion is the negative: the row is still there, so the chord
+    // reached the pty and was not spent on a delete.
+    tui.wait_until_quiet();
+    assert!(
+        tui.frame().contains("no status hooks"),
+        "Ctrl+D to a live agent must not delete its session:\n{}",
+        tui.frame()
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
+    // The shell is a second pane, addressed `<id>#shell`, and the two panes can
+    // die apart: an agent that ran `/exit` is dead while its companion shell is
+    // still a live `sh`. The chord follows the surface on screen, so with the
+    // shell up it must ask *the shell* whether it is dead — not the agent whose
+    // suffix it shares. Judging by the agent would delete the session out from
+    // under a shell the user is still typing in.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    tui.send(b"exit\r");
+    tui.wait_until_quiet();
+    assert!(
+        tui.frame().contains("no status hooks"),
+        "the agent must be dead and the session still listed:\n{}",
+        tui.frame()
+    );
+
+    // Ctrl+T raises the companion shell — a fresh pane, so it is live even though
+    // the agent it sits beside is not.
+    tui.send(b"\x14");
+    tui.wait_until("the shell tab to be the view", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Shell"))
+    });
+    // The pane paints before the shell inside it has drawn its prompt, and a
+    // chord sent in between would race the shell that must receive it.
+    tui.wait_until_quiet();
+
+    // 0x04 is Ctrl+D, here the live shell's EOF. Were deadness read off the
+    // agent, the chord would delete the session instead; the row leaving is the
+    // failure this guards.
+    tui.send(b"\x04");
+    tui.wait_until_quiet();
+    assert!(
+        tui.frame().contains("1 session(s)") && !tui.frame().contains("No sessions yet"),
+        "Ctrl+D on a live shell must not delete the session behind it:\n{}",
+        tui.frame()
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 // --- selection, copy, and the interrupt a shell is owed ----------------------
 
 const OSC52: &str = "\x1b]52;c;";

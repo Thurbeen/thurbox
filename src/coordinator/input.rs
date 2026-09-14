@@ -394,9 +394,17 @@ impl App {
         // reachable from every other pane (and its F-key alternate). Gated on
         // the bound chord, so rebinding a passthrough action onto a free key
         // makes it work in the terminal again.
+        //
+        // A dead pane is the exception: an agent that exited (a `/exit`, and
+        // the window kept by `remain-on-exit`) is doing no line editing, and
+        // tmux takes `send-keys` into a dead pane without complaint — so the
+        // deferred chord vanished and `Ctrl+D` could not delete the session it
+        // was looking at. There the chord keeps its list meaning. The backend
+        // is asked only here, on the chord itself, never on the render path.
         let defer_to_agent = passthrough
             && self.focused_wants_session_input()
-            && is_ctrl_letter_chord(&canonical_chord(press));
+            && is_ctrl_letter_chord(&canonical_chord(press))
+            && !self.focused_terminal_is_dead();
         if defer_to_agent {
             return false;
         }

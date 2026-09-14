@@ -760,6 +760,31 @@ impl std::ops::Deref for Session {
 }
 
 impl Session {
+    /// Whether the backend reports this session's pane as exited.
+    ///
+    /// A round trip, unlike [`WiredPane::has_exited`]: that atomic flag flips
+    /// on the reader's EOF, and a window kept by `remain-on-exit` never
+    /// delivers one — the pane an agent exited out of is still there, and only
+    /// the backend can still be asked. Off the render path for that cost;
+    /// called on the deliberate chord that must tell a dead pane from a live
+    /// one.
+    pub fn is_dead(&self) -> Result<bool> {
+        self.backend.is_dead(self.backend_id())
+    }
+
+    /// Whether the backend reports this session's companion shell pane as dead.
+    ///
+    /// `None` when there is no shell pane. Asked of the shell's own backend id,
+    /// not the agent's: the two panes die apart (an agent can `/exit` while its
+    /// shell runs on, and the reverse), so a caller acting on the surface the
+    /// user is looking at must ask the pane that surface names — the same pane
+    /// [`crate::kernel::terminal::Terminals::send`] would deliver to.
+    pub fn shell_is_dead(&self) -> Option<Result<bool>> {
+        self.shell_pane
+            .as_ref()
+            .map(|shell| self.backend.is_dead(shell.backend_id()))
+    }
+
     /// Spawn a new session via the given backend.
     pub fn spawn(
         name: String,

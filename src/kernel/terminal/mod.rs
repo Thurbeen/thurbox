@@ -976,6 +976,24 @@ impl Terminals {
         }
     }
 
+    /// Whether the pane a surface names is dead, as the backend reports it now.
+    ///
+    /// Resolves the surface the way [`Self::send`] and `surface_parser` do,
+    /// and for the same reason: a `<id>#shell` surface is the companion
+    /// shell pane, a bare id the session's own pane, and the two die apart. A
+    /// caller weighing whether to forward a keystroke or divert it must ask the
+    /// pane the keystroke would actually reach — asking the agent while the
+    /// shell is on screen judged the wrong pane and could delete a session out
+    /// from under a live shell. `None` when the session is not attached, has no
+    /// such pane, or the backend cannot say — every caller reads that as "not
+    /// known to be dead", so an unsure answer changes nothing.
+    pub fn is_dead(&self, surface: &str) -> Option<bool> {
+        if let Some(id) = surface.strip_suffix(SHELL_SUFFIX) {
+            return self.live.get(id)?.session.shell_is_dead()?.ok();
+        }
+        self.live.get(surface)?.session.is_dead().ok()
+    }
+
     /// The live entry a surface key names, and the parser it is showing.
     ///
     /// One resolver for both spellings a surface arrives as: an explicit
