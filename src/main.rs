@@ -503,6 +503,11 @@ struct App {
     grabbed: Option<usize>,
     /// The node holding the pointer between a press and its release, if any.
     pointer_grab: Option<PointerGrab>,
+    /// The session whose pty took the last left press, if the program inside
+    /// tracks the mouse. While set, moves and the release are forwarded there
+    /// instead of drawing thurbox's own selection — the press chose the owner
+    /// of the whole gesture.
+    pty_pointer: Option<String>,
     /// Programs plugins asked to be run, and what they printed.
     runs: thurbox::kernel::runs::RunStore,
     /// Every file of the interface, as of the last painted frame.

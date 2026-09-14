@@ -1485,6 +1485,109 @@ fn the_wheel_scrolls_the_companion_shell_too() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+// --- the buttons over a tracking terminal -----------------------------------
+
+#[test]
+fn a_drag_over_a_tracking_terminal_reaches_the_program_inside() {
+    // The wheel above already goes to a terminal that asked for the mouse, and
+    // the buttons did not: a program that tracks the mouse and selects text
+    // itself (Claude Code copies on select this way) never heard a press,
+    // because thurbox spent every drag on its own selection. Once a program
+    // has asked, the gesture is its: press, the moves while the button is
+    // down, and the release all reach the pty, in the encoding it asked for
+    // and with coordinates local to its pane.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    // `cat` parks the shell so the tty's echo shows what the program is sent,
+    // control bytes visibly (`ESC` as `^[`) — the only way a forwarded report
+    // can be read off the screen.
+    tui.send(b"echo tb-mouse-\"\"here\r");
+    tui.wait_for("tb-mouse-here");
+    tui.send(b"printf '\\033[?1002h\\033[?1006h'; cat\r");
+    tui.wait_until_quiet();
+
+    let at = tui.find("tb-mouse-here");
+    tui.drag(at, 3);
+
+    // SGR tells the legs apart by `Cb` and the final letter alone: 0 is the
+    // left button, 32 its move flag, and only a release ends in `m`.
+    tui.wait_for("[<0;");
+    tui.wait_for("[<32;");
+    tui.wait_until("the release to reach the program", |frame| {
+        frame
+            .match_indices("[<0;")
+            .any(|(i, _)| frame[i..].chars().take(16).find(|c| *c == 'M' || *c == 'm') == Some('m'))
+    });
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn a_bare_move_reaches_a_terminal_that_asked_for_every_motion() {
+    // `?1003` is the one tracking mode that wants motion with no button down
+    // — hover-driven TUIs are built on it — and a bare move used to stop at
+    // thurbox's own hover. With no button down there is no gesture for a
+    // capture to own, so the move is routed by position, like the wheel.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    tui.send(b"echo tb-hover-\"\"here\r");
+    tui.wait_for("tb-hover-here");
+    tui.send(b"printf '\\033[?1003h\\033[?1006h'; cat\r");
+    tui.wait_until_quiet();
+
+    // 35 is SGR's "motion, no button": 3 under the 32 move flag.
+    let (x, y) = tui.find("tb-hover-here");
+    tui.send(format!("\x1b[<35;{};{}M", x + 1, y + 1).as_bytes());
+    tui.wait_for("[<35;");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn a_new_press_frees_a_capture_whose_release_never_came() {
+    // A release is the outer terminal's to deliver, and it can fail to — a
+    // focus loss mid-drag is enough in some emulators. A capture that only
+    // the missing release could clear would then own every later drag, and
+    // a selection made anywhere else would be typed into the old pane's pty
+    // instead. The next press starts a new gesture, so it is what frees the
+    // orphaned capture.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    tui.send(b"echo tb-stale-\"\"here\r");
+    tui.wait_for("tb-stale-here");
+    tui.send(b"printf '\\033[?1002h\\033[?1006h'; cat\r");
+    tui.wait_until_quiet();
+
+    // The wait pins the capture as armed. No release follows — that absence
+    // is the failure under test, not an oversight.
+    let (x, y) = tui.find("tb-stale-here");
+    tui.send(format!("\x1b[<0;{};{}M", x + 1, y + 1).as_bytes());
+    tui.wait_for("[<0;");
+
+    // Proving an absence needs the stream to settle: were the capture still
+    // armed, the moves would echo as `[<32;`, and the quiet wait is what
+    // gives them time to land before the assertion looks.
+    let mark = tui.raw_len();
+    let at = tui.find("no status hooks");
+    tui.drag(at, 3);
+    tui.wait_until_quiet();
+    assert!(
+        !tui.raw_since(mark).contains("[<32;"),
+        "a drag outside the pane must not reach an orphaned capture"
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 // --- the scrollbar is a control, not a decoration ---------------------------
 
 impl Tui {

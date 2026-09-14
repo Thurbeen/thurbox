@@ -11,6 +11,13 @@ impl App {
     pub(crate) fn on_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // A press starts a new gesture wherever it lands, so it also
+                // frees a capture whose release never arrived — the outer
+                // terminal owes one, but some emulators drop it on a focus
+                // loss mid-drag, and only the missing release could clear it
+                // otherwise. `on_click` re-arms it when this press is itself
+                // forwarded.
+                self.pty_pointer = None;
                 self.on_click(mouse.column, mouse.row, mouse.modifiers)
             }
             // The other press a pane can be taught to answer. Nothing else in
@@ -19,14 +26,23 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) => {
                 self.on_context_click(mouse.column, mouse.row)
             }
-            // A held node comes first: while a scrollbar has the pointer, the
-            // movement is that pane's, not a selection over the text beside it.
+            // A pty holding the button comes first — the press already chose
+            // the program inside as the owner of this gesture. Then a held
+            // node: while a scrollbar has the pointer, the movement is that
+            // pane's, not a selection over the text beside it.
             MouseEventKind::Drag(MouseButton::Left) => {
-                if !self.drag_held(mouse.column, mouse.row) {
+                if let Some(session) = self.pty_pointer.clone() {
+                    self.terminals
+                        .forward_motion(&session, mouse.column, mouse.row);
+                } else if !self.drag_held(mouse.column, mouse.row) {
                     self.drag_selection(mouse.column, mouse.row);
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(session) = self.pty_pointer.take() {
+                    self.terminals
+                        .forward_release(&session, mouse.column, mouse.row);
+                }
                 self.pointer_grab = None;
                 if let Some(selection) = &mut self.selection {
                     selection.dragging = false;
@@ -43,8 +59,18 @@ impl App {
             MouseEventKind::ScrollDown => self.on_scroll(mouse.column, mouse.row, false),
             // A bare move only matters when it changes what is under the
             // pointer. Anything else — and there is a LOT of it, one report per
-            // cell crossed — is dropped without touching `dirty`.
-            MouseEventKind::Moved => self.hover(mouse.column, mouse.row),
+            // cell crossed — is dropped without touching `dirty`. A `?1003`
+            // terminal is the exception: it asked for exactly this stream, and
+            // gets it under the same guards the wheel forwards under — never
+            // beneath a modal or a held float. The hover still runs: the chips
+            // it lights sit on the pane's frame, outside the rect a forwarded
+            // move can land in, so the two never answer for the same cell.
+            MouseEventKind::Moved => {
+                if !self.modals.is_open() && self.grabbed.is_none() {
+                    self.terminals.forward_move(mouse.column, mouse.row);
+                }
+                self.hover(mouse.column, mouse.row);
+            }
             _ => {}
         }
     }
@@ -224,6 +250,21 @@ impl App {
             if self.dispatch_click(target, x, y) {
                 return;
             }
+        }
+        // A program that tracks the mouse hears the press itself — Claude
+        // Code selects and copies with its own handling, and thurbox drawing
+        // a selection over it would be two answers to one gesture. The click
+        // has already focused the pane above; only the selection leg is
+        // ceded. `Ctrl+Click` stays thurbox's (the link leg, earlier), the
+        // way modified presses conventionally bypass an application's mouse.
+        if let Some(session) = self.terminals.forward_press(x, y) {
+            // Whatever selection was armed elsewhere is over: this gesture is
+            // the program's, and keeping the old one would turn the next
+            // `Ctrl+C` into a copy of it — the same reason the modified press
+            // above drops it.
+            self.selection = None;
+            self.pty_pointer = Some(session);
+            return;
         }
         self.begin_selection(x, y);
     }
