@@ -1528,15 +1528,15 @@ fn a_new_press_frees_a_capture_whose_release_never_came() {
     tui.send(b"printf '\\033[?1002h\\033[?1006h'; cat\r");
     tui.wait_until_quiet();
 
-    // The press is forwarded — its echo proves the capture armed — and the
-    // release is deliberately never sent.
+    // The wait pins the capture as armed. No release follows — that absence
+    // is the failure under test, not an oversight.
     let (x, y) = tui.find("tb-stale-here");
     tui.send(format!("\x1b[<0;{};{}M", x + 1, y + 1).as_bytes());
     tui.wait_for("[<0;");
 
-    // A whole drag over the sessions pane: with the capture still armed its
-    // moves would be forwarded and echo as `[<32;` — the settle wait gives
-    // them every chance to.
+    // Proving an absence needs the stream to settle: were the capture still
+    // armed, the moves would echo as `[<32;`, and the quiet wait is what
+    // gives them time to land before the assertion looks.
     let mark = tui.raw_len();
     let at = tui.find("no status hooks");
     tui.drag(at, 3);
