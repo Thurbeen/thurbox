@@ -693,10 +693,16 @@ return {
     command("focus", { text = "agent" })
   end,
 
-  -- A click on a row selects it, exactly as `j`/`k` would — v1's
-  -- `ClickAction::SelectSession`. The row carries the session id rather than an
-  -- index, so a list that reordered between the paint and the press still
-  -- selects the session you pointed at.
+  -- A click on a row selects it — v1's `ClickAction::SelectSession`. The row
+  -- carries the session id rather than an index, so a list that reordered
+  -- between the paint and the press still selects the session you pointed at.
+  --
+  -- Selecting is not the end of the gesture: the agent pane is what shows a
+  -- session, so the click then hands focus there, exactly as Enter
+  -- (`sessions.open`) does. Without it the kernel's click-focuses-the-pane
+  -- rule leaves the keyboard in this column, and the next thing typed goes to
+  -- the list instead of the agent just chosen. The `focus` command is applied
+  -- after the press resolves, so the agent wins.
   --
   -- A repo header carries no id — it is drawn as its own line and only session
   -- lines are targets — so a click on one focuses the column and selects
@@ -708,7 +714,11 @@ return {
       return false
     end
     local items = session_model.build(sessions())
-    return ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) ~= nil
+    if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
+      return false
+    end
+    command("focus", { text = "agent" })
+    return true
   end,
 
   on_action = function(action)

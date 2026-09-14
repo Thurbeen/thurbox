@@ -1356,6 +1356,46 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+#[test]
+fn clicking_a_session_row_hands_focus_to_the_agent_pane() {
+    // Choosing a session is one gesture, however it is made: Enter on a row
+    // already moves focus to the agent pane, and a click on one must land in
+    // the same place — the next thing typed belongs to the agent just chosen.
+    // The kernel's click-focuses-the-pane rule runs first and puts the
+    // keyboard in the column, so it is the pane's own follow-up `focus`
+    // command this test pins down; without it the badge below stays
+    // "Sessions" and typing goes to the list.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    // Walk focus over to the session column, as `Ctrl+H` does. The action
+    // band names the focused pane; it saying so is the ground truth here,
+    // exactly as it is in `shell_session`.
+    tui.send(b"\x08");
+    tui.wait_until("the sessions pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Sessions"))
+    });
+
+    // A bare click on the session's own row. Aimed by its status text, not
+    // its name: "probe" is also painted in the chrome line and in the agent
+    // pane's title, both above the list, and `find` answers with the first.
+    let at = tui.find("no status hooks");
+    tui.drag(at, 0);
+    tui.wait_until("the click to hand focus to the agent pane", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 // --- the wheel over a live terminal -----------------------------------------
 
 impl Tui {
