@@ -64,20 +64,20 @@ count() {
 failed=0
 
 reported=$(lint "$probes/reads.lua")
-diagnostics=$(count "$reported" '"type":"Diagnostic"')
-if [ "$diagnostics" -eq 0 ]; then
+clean=$(count "$reported" '{"type":"Summary","errors":0,"warnings":0,"parse_errors":0}')
+if [ "$clean" -eq 1 ]; then
     printf 'tests/fixtures/lua_std/reads.lua: clean\n'
 else
-    printf 'tests/fixtures/lua_std/reads.lua: expected no findings, got %s\n' "$diagnostics" >&2
+    printf 'tests/fixtures/lua_std/reads.lua: expected a clean lint, got:\n' >&2
     printf '%s\n' "$reported" >&2
-    printf '  thurbox.yml no longer declares a field the kernel publishes.\n' >&2
-    printf '  Compare it with LuaHost::publish in src/kernel/host/.\n' >&2
+    printf '  Either thurbox.yml no longer declares a field the kernel publishes\n' >&2
+    printf '  — compare it with LuaHost::publish in src/kernel/host/ — or selene\n' >&2
+    printf '  never linted the probe.\n' >&2
     failed=1
 fi
 
-for probe in "$probes"/typos/*.lua; do
-    name=$(basename "$probe")
-    reported=$(lint "$probe")
+for name in granted.lua platform.lua metrics.lua metrics_system.lua hover.lua preflight_mux.lua; do
+    reported=$(lint "$probes/typos/$name")
     diagnostics=$(count "$reported" '"type":"Diagnostic"')
     rejections=$(count "$reported" '"code":"incorrect_standard_library_use"')
     if [ "$rejections" -eq 1 ] && [ "$diagnostics" -eq 1 ]; then
@@ -87,8 +87,8 @@ for probe in "$probes"/typos/*.lua; do
         printf '  incorrect_standard_library_use and nothing else, got %s of it\n' "$rejections" >&2
         printf '  among %s finding(s):\n' "$diagnostics" >&2
         printf '%s\n' "$reported" >&2
-        printf '  thurbox.yml describes that table too loosely to catch the typo\n' >&2
-        printf '  it exists to catch.\n' >&2
+        printf '  Either thurbox.yml describes that table too loosely to catch the\n' >&2
+        printf '  typo this probe exists to catch, or selene never linted it.\n' >&2
         failed=1
     fi
 done
