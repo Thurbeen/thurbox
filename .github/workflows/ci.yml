@@ -386,8 +386,8 @@ jobs:
       - name: Check the standard library still declares what the kernel serves
         # The complement to the step above, for the same reason the type probes
         # are the complement to `--check ui`: nothing in `ui/` or `examples/`
-        # reads the injected tables in a form selene can see, so four of them sat
-        # declared without their fields and this step stayed green (issue #1133).
+        # reads the injected tables in a form selene can see, so they sat declared
+        # without their fields and this step stayed green (issue #1133).
         run: scripts/ci/check-lua-std.sh
       - name: Check formatting
         run: stylua --check ui examples

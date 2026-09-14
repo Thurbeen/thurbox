@@ -5,20 +5,26 @@
 #
 # `selene ui examples` proves the bundled interface is clean, which a standard
 # library declaring nothing about those tables would also achieve — and did:
-# `thurbox.granted`, `.platform`, `.metrics` and `.hover` were declared as bare
-# properties, so a dotted read off any of them was an
+# `thurbox.granted`, `.platform`, `.metrics`, `.hover` and `.preflight.mux` were
+# declared as bare properties, so a dotted read off any of them was an
 # `incorrect_standard_library_use`, while CI stayed green because nothing in
 # `ui/` or `examples/` reads them in a form selene can see (issue #1133).
 #
 # The two probes are what notices:
 #
-#   reads.lua  every published field, as a plain dotted path. Must lint CLEAN,
-#              so a table that regresses to a bare property fails here.
+#   reads.lua  every field on those tables, as a plain dotted path. Must lint
+#              CLEAN, so a table that regresses to a bare property fails here.
 #   typos.lua  one misspelling per table. Each must still be reported, so the
 #              fix cannot be a wildcard that accepts whatever is asked for.
 #
-# Run from the repository root: selene resolves `std` against the directory of
-# the config it was given, and `selene.toml` names `thurbox.yml` beside it.
+# This covers the tables a plugin names directly, not everything `LuaHost::publish`
+# serves — a path stops being checked at the first `[…]`, so a list has nothing
+# below it to probe.
+#
+# Run from the repository root: selene resolves the `std` name against the
+# working directory, not the directory of the config it was given, so the `cd`
+# below is what makes `selene.toml`'s `std = "thurbox"` find this repository's
+# `thurbox.yml`.
 #
 # Usage: check-lua-std.sh
 set -euo pipefail
@@ -48,7 +54,7 @@ fi
 # Expected to fail, so the exit status carries no information — the messages do.
 reported=$(selene --config selene.toml --quiet --no-summary "$probes/typos.lua" 2>&1 || true)
 
-for table in thurbox.granted thurbox.platform thurbox.metrics thurbox.metrics.system thurbox.hover; do
+for table in thurbox.granted thurbox.platform thurbox.metrics thurbox.metrics.system thurbox.hover thurbox.preflight.mux; do
     if printf '%s\n' "$reported" | grep -qF "global \`$table\` does not contain"; then
         printf 'tests/fixtures/lua_std/typos.lua: %s rejects a misspelt field\n' "$table"
     else

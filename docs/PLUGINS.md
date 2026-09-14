@@ -396,8 +396,9 @@ file declares **fields**, not only tables, so `thurbox.platform.os`,
 stops being checked at the first `[…]` — `thurbox.sessions[i].name` is yours to
 get wrong — which is why a list is declared only as far as the list itself.
 `tests/fixtures/lua_std/` and `scripts/ci/check-lua-std.sh` are that half's
-probes: one pane reading every published field, which must lint clean, and one
-misspelling each of them, which must not.
+probes: one pane reading every field on the injected tables a plugin names
+directly, which must lint clean, and one misspelling each of them, which must
+not.
 
 ## The four node kinds
 

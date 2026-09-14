@@ -13,6 +13,7 @@ return {
       tostring(thurbox.metrics.sesions),
       tostring(thurbox.metrics.system.cpu_precent),
       tostring(thurbox.hover.roel),
+      thurbox.preflight.mux.binray,
     }
     return { text = table.concat(read, " ") }
   end,
