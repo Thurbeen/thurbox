@@ -18,6 +18,12 @@
 #              be reported, so the fix cannot be a wildcard that accepts
 #              whatever is asked for.
 #
+# Both halves are asserted on a positive result rather than on the absence of
+# one, so a selene that never linted a probe — a renamed or deleted file — fails
+# instead of passing quietly. That is why the loop names its probes instead of
+# globbing, and why declaring a further table takes a file here *and* its name in
+# that list.
+#
 # This covers those five tables, not everything `LuaHost::publish` serves — a path
 # stops being checked at the first `[…]`, so a list has nothing below it to probe.
 #
