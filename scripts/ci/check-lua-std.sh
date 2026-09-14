@@ -82,7 +82,9 @@ else
     failed=1
 fi
 
-for name in granted.lua platform.lua metrics.lua metrics_system.lua hover.lua preflight_mux.lua; do
+for name in granted.lua platform.lua metrics.lua metrics_system.lua hover.lua \
+    preflight_mux.lua settings_features.lua theme_roles.lua bookmarks.lua \
+    browse.lua branches.lua worktrees.lua; do
     reported=$(lint "$probes/typos/$name")
     diagnostics=$(count "$reported" '"type":"Diagnostic"')
     rejections=$(count "$reported" '"code":"incorrect_standard_library_use"')

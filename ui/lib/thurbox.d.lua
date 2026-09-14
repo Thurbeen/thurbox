@@ -21,9 +21,16 @@
 -- `tests/fixtures/lua_types` + `scripts/ci/check-lua-types.sh` hold this to it.
 --
 -- Keep in step with `src/kernel/node.rs` and `src/kernel/convert.rs` (nodes),
--- `src/kernel/host/load.rs` (the declaration), `src/kernel/host/publish.rs`
--- (`thurbox.*`), `src/kernel/command/mod.rs` (verbs) and `src/kernel/theme.rs`
--- (roles) — and with `thurbox.yml`, which is the same contract for selene.
+-- `src/kernel/host/load.rs` (the declaration), `src/kernel/host/publish.rs` and
+-- `LuaHost::enter` (`thurbox.*`), `src/kernel/command/mod.rs` (verbs) and
+-- `src/kernel/theme.rs` (roles) — and with `thurbox.yml`, which is the same
+-- contract for selene.
+--
+-- The two files split by LIFETIME. A global, or a field of a published table,
+-- is a NAME selene can see, and it belongs in `thurbox.yml`. The shape of a
+-- value that exists only while a call is running — a `hit`, a `key`, a `wheel`,
+-- a row out of a list, an answer out of `thurbox.runs` — is unreachable from
+-- there and is declared here.
 
 ---@alias thurbox.Color string A role's colour, `#rrggbb`, a name, or a 0-255 index.
 
@@ -98,6 +105,7 @@
 ---@field role? string
 ---@field frame? thurbox.Frame|string|boolean
 ---@field block? thurbox.Frame|string|boolean The POC's spelling of `frame`.
+---@field float? thurbox.Float|boolean Read on a returned tree's ROOT only; `true` takes the default size.
 
 --- Text. `style` paints across the whole rect before the spans go on top, so a
 --- span that names its own colour keeps it — that is a selection bar or a
@@ -549,11 +557,45 @@
 ---@field memory_used integer
 ---@field memory_total integer
 
+--- What an agent reported about its own turn, from its statusline. Every field
+--- is absent rather than zero when the agent did not report it, so a panel
+--- renders the rows it has — `publish.rs`'s `agent_metrics_table` drops a nil.
+--- The counts arrive as Lua numbers rather than integers: they cross as `f64`.
+---@class (exact) thurbox.AgentMetrics
+---@field model? string The display name.
+---@field model_id? string
+---@field cli_version? string
+---@field cost_usd? number
+---@field duration_ms? number
+---@field api_duration_ms? number
+---@field lines_added? number
+---@field lines_removed? number
+---@field input_tokens? number
+---@field output_tokens? number
+---@field context_window? number
+---@field context_used_percent? number
+---@field current_input_tokens? number
+---@field current_output_tokens? number
+---@field cache_creation_tokens? number
+---@field cache_read_tokens? number
+
+--- One account rate-limit window.
+---@class (exact) thurbox.UsageWindow
+---@field label string
+---@field used_percent number
+---@field resets_at? integer Epoch seconds; absent when the account did not say.
+
+--- The account's rate-limit windows, shared by every session on that agent.
+---@class (exact) thurbox.Usage
+---@field windows thurbox.UsageWindow[]
+---@field plan? string
+---@field note? string
+
 ---@class thurbox.SessionMetrics
 ---@field cpu_percent? number
 ---@field memory_bytes? integer
----@field agent? table<string, any>
----@field usage? table<string, any>
+---@field agent? thurbox.AgentMetrics
+---@field usage? thurbox.Usage
 
 ---@class (exact) thurbox.Metrics
 ---@field system thurbox.SystemMetrics
