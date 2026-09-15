@@ -7,7 +7,9 @@
 //! slot exists, so the request is held for exactly one layout and re-asked
 //! there.
 
-use super::*;
+use thurbox::kernel::layout::SlotMode;
+
+use crate::App;
 
 impl App {
     /// Move focus onto a plugin, if focus can rest there at all.

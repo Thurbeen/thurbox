@@ -8,7 +8,14 @@
 //! scrubs them. Route new git calls through [`git_program`]/[`git_command`]
 //! rather than `Command::new("git")`, and that stays true for free.
 
-use super::*;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use anyhow::{Context, Result};
+
+use super::reportable_stderr;
+use crate::session::HostDef;
+use crate::shell::posix_quote;
 
 /// The ambient `GIT_*` variables that pin git to a specific repo/index/worktree,
 /// overriding the path we point it at via `current_dir`/`-C`. Git exports these

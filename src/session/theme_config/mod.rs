@@ -6,7 +6,17 @@
 
 mod palettes;
 
-use palettes::*;
+use palettes::{
+    ayu_dark_palette, ayu_light_palette, ayu_mirage_palette, catppuccin_latte_palette,
+    catppuccin_mocha_palette, doom_palette, dracula_palette, everforest_palette,
+    github_dark_palette, github_light_palette, gruvbox_dark_palette, gruvbox_light_palette,
+    iceberg_palette, kanagawa_palette, material_palette, melange_palette, monokai_palette,
+    nightfly_palette, nightfox_palette, nord_palette, one_dark_palette, one_light_palette,
+    oxocarbon_palette, rose_pine_dawn_palette, rose_pine_moon_palette, rose_pine_palette,
+    solarized_dark_palette, solarized_light_palette, sonokai_palette, synthwave_palette,
+    tokyo_night_day_palette, tokyo_night_palette, tomorrow_night_palette, vesper_palette,
+    zenburn_palette,
+};
 
 use ratatui::style::Color;
 

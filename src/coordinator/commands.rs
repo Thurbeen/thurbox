@@ -7,7 +7,12 @@
 //! a command simply *leaves* the in-flight list, so what it was about has to be
 //! captured while the row it names still exists.
 
-use super::*;
+use ratatui::DefaultTerminal;
+
+use thurbox::kernel::bands::Level;
+
+use super::{open_editor, snapshots_db};
+use crate::{App, TrackedCommand};
 
 impl App {
     /// Commands plugins issued last frame, handed to the bus.

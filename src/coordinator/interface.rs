@@ -7,7 +7,15 @@
 //! the capability is *absent* on the next frame rather than present and
 //! refusing.
 
-use super::*;
+use std::time::Instant;
+
+use thurbox::kernel::bands::Level;
+use thurbox::kernel::host::LuaHost;
+use thurbox::kernel::modals::{ModalKind, Modals};
+use thurbox::kernel::perf::Counters;
+
+use super::snapshots_db;
+use crate::{App, DEBOUNCE};
 
 impl App {
     /// Rebuild the interface from the directory the user actually edits, dropping

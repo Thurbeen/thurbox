@@ -6,7 +6,13 @@
 //! by which file happens to hold the parser would hide that.
 
 use super::*;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
 use crate::paths::TestPathGuard;
+use crate::session::HostDef;
+use crate::shell::posix_quote;
 
 #[test]
 fn git_program_scrubs_inherited_location_env() {
@@ -596,7 +602,7 @@ fn host(dest: &str, wt_dir: Option<&str>) -> HostDef {
         name: "h".into(),
         destination: dest.into(),
         ssh_opts: vec!["-o".into(), "ControlMaster=auto".into()],
-        worktrees_dir: wt_dir.map(|s| s.to_string()),
+        worktrees_dir: wt_dir.map(str::to_string),
         ..Default::default()
     }
 }

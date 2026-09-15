@@ -16,10 +16,14 @@
 
 use std::collections::VecDeque;
 
+use ratatui::DefaultTerminal;
+
+use thurbox::kernel::bands::Level;
 use thurbox::kernel::events::{Deriver, Event, Field, MAX_DEPTH};
+use thurbox::kernel::host::PluginError;
 use thurbox::kernel::terminal::{ProgramKey, ProgramTransition};
 
-use super::*;
+use crate::{App, TrackedCommand};
 
 /// Why the interface was rebuilt, as `interface.reloaded` reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

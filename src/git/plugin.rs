@@ -6,7 +6,11 @@
 //! working copy keeps its `.git`, which is what makes `update` a fetch and lets
 //! git own "your edits are yours" — a dirty tree is never moved.
 
-use super::*;
+use std::path::Path;
+
+use anyhow::{Context, Result};
+
+use super::{git_command, git_program, non_interactive, reportable_stderr, run_git};
 
 /// Does this ref name a commit rather than a branch or a tag?
 ///
@@ -58,11 +62,13 @@ pub fn clone_plugin(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()>
             // *replaces* commits, so a pin taken from a pull request that has since
             // been merged names an object the remote no longer has. Reachable
             // without the pin, which is the actual next step.
-            return Err(e.context(format!(
-                "the repository cloned, but commit {commit} could not be obtained \
-                 from it — if that commit came from a branch which was since \
-                 rebased, squashed or deleted, the remote no longer has it"
-            )));
+            return Err(e).with_context(|| {
+                format!(
+                    "the repository cloned, but commit {commit} could not be obtained \
+                     from it — if that commit came from a branch which was since \
+                     rebased, squashed or deleted, the remote no longer has it"
+                )
+            });
         }
     }
     Ok(())

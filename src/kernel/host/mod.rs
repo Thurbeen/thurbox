@@ -946,7 +946,7 @@ impl LuaHost {
         for path in files {
             let name = path
                 .file_name()
-                .map(|n| n.to_string_lossy())
+                .map(std::ffi::OsStr::to_string_lossy)
                 .unwrap_or_default();
             let relative = format!("plugins/{name}");
             // A plugin the user turned off is simply not read. That is the

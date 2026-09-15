@@ -7,7 +7,14 @@
 //! deliberately no body-only `git diff HEAD` helper — having one is how that
 //! omission happened in the first place (ADR-P6).
 
-use super::*;
+use std::path::Path;
+use std::process::Stdio;
+
+use anyhow::{Context, Result};
+use tracing::warn;
+
+use super::{git_command, reportable_stderr, resolve_base_ref, run_git_capture};
+use crate::session::HostDef;
 
 /// List local branch names for a repo.
 pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
@@ -441,7 +448,7 @@ fn squashed_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
 
 /// Commits the worktree's HEAD is `(ahead, behind)` relative to its base ref,
 /// resolved by `resolve_base_ref` (upstream → `origin/HEAD` → `origin/main` →
-/// `origin/master`) — the same chain [`sync_worktree`] rebases onto, so the
+/// `origin/master`) — the same chain [`sync_worktree`](super::sync_worktree) rebases onto, so the
 /// "behind" count is measured against the ref sync would use. Returns `(0, 0)`
 /// when no base can be resolved.
 pub fn ahead_behind(cwd: &Path) -> (usize, usize) {

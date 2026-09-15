@@ -7,7 +7,23 @@
 //! painted. Marking a band changed for having been *drawn* held `dirty` set
 //! after every frame and stopped the loop settling at all.
 
-use super::*;
+use std::error::Error;
+use std::time::Instant;
+
+use ratatui::layout::Rect;
+use ratatui::{DefaultTerminal, Frame};
+
+use thurbox::kernel::bands::{Band, BandState};
+use thurbox::kernel::host::RenderContext;
+use thurbox::kernel::layout::{resolve, SlotMode};
+use thurbox::kernel::node::{Axis, Identity};
+use thurbox::kernel::perf::Counters;
+use thurbox::kernel::{bands, paint};
+
+use super::{clamp_span, error_area, hud_area, read_cells, render_hud};
+use crate::{
+    App, ClickTarget, FORCE_REDRAW_INTERVAL, MIN_FRAME_INTERVAL, OUTPUT_FRAME_INTERVAL, STATUS_TTL,
+};
 
 impl App {
     /// Demand-driven paint: when something changed, or when the forced-redraw

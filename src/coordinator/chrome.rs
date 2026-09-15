@@ -4,7 +4,13 @@
 //! panic hook share, and the rects and renderers for the error panel and the
 //! perf HUD.
 
-use super::*;
+use std::time::Duration;
+
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::Rect;
+use ratatui::{DefaultTerminal, Frame};
+
+use thurbox::kernel::host::KeyPress;
 
 /// A connection for reading the persisted theme choice at startup.
 ///
@@ -572,6 +578,8 @@ pub(crate) fn to_press(key: &KeyEvent) -> KeyPress {
 mod tests {
     use super::*;
     use thurbox::kernel::host::Float;
+
+    use crate::App;
 
     /// Every chrome rect is derived from the space available, so each one has to
     /// hold at a size smaller than its own content floor. The error panel matters

@@ -10,7 +10,16 @@
 //! (`could not write index`) rather than real. `is_transient_error` is
 //! deliberately a matcher over messages — git offers no code for these.
 
-use super::*;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use tracing::warn;
+
+use super::{git_command, git_program, remote_home, reportable_stderr, run_git_capture_on};
+use crate::paths;
+use crate::session::HostDef;
 
 /// Deterministic worktree directory path for a repo + branch on the given host.
 ///
