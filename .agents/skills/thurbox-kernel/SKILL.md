@@ -242,6 +242,13 @@ to `selene ui examples`: selene checks a dotted path a segment at a time, so a
 table declared without its fields rejects `thurbox.platform.os`, and no bundled
 pane reads one by name to notice.
 
+The two files split by LIFETIME. A global, or a field of a published table, is a
+name selene can see, and it belongs in `thurbox.yml` — kept in step with
+`LuaHost::publish` *and* `LuaHost::enter`, which sets `thurbox.runs` and
+`thurbox.granted` per plugin. The shape of a value that exists only while a call
+is running — a `hit`, a `key`, a `wheel`, a row out of a list — is unreachable
+from there and is `thurbox.d.lua`'s. Neither file can do the other's half.
+
 The directory ships its own guidance for whoever edits it: `README.md` is the
 reference, and **`AGENTS.md`** is the operational half a coding CLI loads as context
 without being asked — which is what stops "install this plugin" being read as a

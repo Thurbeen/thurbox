@@ -26,6 +26,14 @@ globals:
   # ── Base ──────────────────────────────────────────────────────────────────
   # mlua loads the base library alongside the tables above. Listed rather than
   # inherited so this file stays the single statement of what a plugin may touch.
+  #
+  # `_G` is reachable too and is deliberately NOT here. Declaring it would buy
+  # nothing — selene's own `global_usage` lint rejects `_G` whether or not the
+  # standard library knows the name — while `_G["io"]` is a spelling this file
+  # cannot see, so the entry would only blur what "the sandbox is what is
+  # declared here" means.
+  _VERSION:
+    property: read-only
   assert:
     args:
       - type: "..."
@@ -155,13 +163,30 @@ globals:
       - type: "..."
 
   # ── math ──────────────────────────────────────────────────────────────────
+  # The trigonometry is Lua 5.4's own. What is NOT here is the handful mlua's
+  # vendored Lua still answers because it is built with LUA_COMPAT_MATHLIB
+  # (`pow`, `ldexp`, `frexp`, `log10`, `atan2`, `cosh`, `sinh`, `tanh`): 5.4
+  # removed them, so declaring one would bless a name a dependency bump can take
+  # away — the "lints clean, nil at runtime" failure this file exists to avoid.
   math.abs:
+    args:
+      - type: "..."
+  math.acos:
+    args:
+      - type: "..."
+  math.asin:
+    args:
+      - type: "..."
+  math.atan:
     args:
       - type: "..."
   math.ceil:
     args:
       - type: "..."
   math.cos:
+    args:
+      - type: "..."
+  math.deg:
     args:
       - type: "..."
   math.exp:
@@ -183,6 +208,9 @@ globals:
     args:
       - type: "..."
   math.modf:
+    args:
+      - type: "..."
+  math.rad:
     args:
       - type: "..."
   math.random:
@@ -295,17 +323,77 @@ globals:
     property: read-only
   # The settings in force: every feature switch, plus the scalars a pane or the
   # arrangement needs.
-  thurbox.settings:
+  # Each switch is named because a pane that owns its own surface is the only
+  # thing that can honour its own switch — `publish_settings` is the field set.
+  thurbox.settings.features.tasks:
+    property: read-only
+  thurbox.settings.features.automations:
+    property: read-only
+  thurbox.settings.features.file_viewer:
+    property: read-only
+  thurbox.settings.features.global_search:
+    property: read-only
+  thurbox.settings.features.info_panel:
+    property: read-only
+  thurbox.settings.features.shell_pane:
+    property: read-only
+  thurbox.settings.features.code_review:
+    property: read-only
+  thurbox.settings.features.perf_hud:
+    property: read-only
+  thurbox.settings.features.mouse:
+    property: read-only
+  thurbox.settings.features.notifications:
+    property: read-only
+  thurbox.settings.features.soft_delete:
+    property: read-only
+  thurbox.settings.features.version_check:
+    property: read-only
+  thurbox.settings.features.auto_update:
+    property: read-only
+  thurbox.settings.two_panel_min_cols:
+    property: read-only
+  thurbox.settings.three_panel_min_cols:
+    property: read-only
+  thurbox.settings.scrollback_lines:
     property: read-only
   # The creation flow's four parameterised reads, each published only while it
   # is being asked for (`store.want_*`).
-  thurbox.bookmarks:
+  thurbox.bookmarks.host:
     property: read-only
-  thurbox.browse:
+  thurbox.bookmarks.loading:
     property: read-only
-  thurbox.branches:
+  thurbox.bookmarks.rows:
     property: read-only
-  thurbox.worktrees:
+  thurbox.browse.host:
+    property: read-only
+  thurbox.browse.dir:
+    property: read-only
+  thurbox.browse.loading:
+    property: read-only
+  thurbox.browse.error:
+    property: read-only
+  thurbox.browse.entries:
+    property: read-only
+  thurbox.branches.host:
+    property: read-only
+  thurbox.branches.repo:
+    property: read-only
+  thurbox.branches.loading:
+    property: read-only
+  thurbox.branches.error:
+    property: read-only
+  thurbox.branches.list:
+    property: read-only
+  thurbox.worktrees.host:
+    property: read-only
+  thurbox.worktrees.repo:
+    property: read-only
+  thurbox.worktrees.loading:
+    property: read-only
+  thurbox.worktrees.error:
+    property: read-only
+  thurbox.worktrees.list:
     property: read-only
   thurbox.hosts:
     property: read-only
@@ -342,7 +430,18 @@ globals:
     property: read-only
   # Answers to the programs THIS plugin asked to be run. Set per plugin as it is
   # entered, so a pane reads its own and no other's.
+  #
+  # The one map that takes `*`. Every other is keyed by a session id and so is
+  # only ever reached through a variable, which ends the checked path on its
+  # own; this one is keyed by the key the plugin itself passed to `run`, so
+  # `thurbox.runs.cpu.state` IS a dotted path and was rejected. There is no
+  # field set to police — the keys are the plugin's — and `thurbox.Run` in the
+  # definitions is what checks the answer's own fields.
   thurbox.runs:
+    property: read-only
+  thurbox.runs.*:
+    property: read-only
+  thurbox.runs.*.*:
     property: read-only
   # Which capabilities THIS plugin has been granted, as `granted.run` /
   # `granted.program`. Present because not every capability can be withheld by
@@ -405,13 +504,83 @@ globals:
   # What the arrangement needs to know about the bands, and no more.
   thurbox.chrome.status_rows:
     property: read-only
-  # The active palette as role -> colour, plus the selectable list. `roles` stops
-  # at the table because `ui/lib/theme.lua` memoizes it through a local, which
-  # ends the checked path — so a dotted `thurbox.theme.roles.accent` is still
-  # rejected, and no probe covers it.
+  # The active palette as role -> colour, plus the selectable list.
+  #
+  # `roles` is written out rather than left at the table, reversing the call in
+  # #1138. Nothing bundled forced it — `ui/lib/theme.lua` memoizes the table
+  # through a local, which ends the checked path — but the kernel serves every
+  # one of these, and a pane reaching for a role directly rather than through
+  # that helper reads `thurbox.theme.roles.accent`, which was rejected against a
+  # value that is genuinely there. The field set is `theme::palette_roles`', and
+  # fixed, so spelling it out also makes `roles.acent` a lint error — the same
+  # catch `thurbox.Role` makes on the lua-language-server side.
   thurbox.theme.name:
     property: read-only
-  thurbox.theme.roles:
+  thurbox.theme.roles.accent:
+    property: read-only
+  thurbox.theme.roles.accent_bright:
+    property: read-only
+  thurbox.theme.roles.app_bg:
+    property: read-only
+  thurbox.theme.roles.border_focused:
+    property: read-only
+  thurbox.theme.roles.border_unfocused:
+    property: read-only
+  thurbox.theme.roles.branch_name:
+    property: read-only
+  thurbox.theme.roles.danger:
+    property: read-only
+  thurbox.theme.roles.diff_added:
+    property: read-only
+  thurbox.theme.roles.diff_added_bg:
+    property: read-only
+  thurbox.theme.roles.diff_removed:
+    property: read-only
+  thurbox.theme.roles.diff_removed_bg:
+    property: read-only
+  thurbox.theme.roles.inverted_fg:
+    property: read-only
+  thurbox.theme.roles.keybind_hint:
+    property: read-only
+  thurbox.theme.roles.modal_bg:
+    property: read-only
+  thurbox.theme.roles.modal_border:
+    property: read-only
+  thurbox.theme.roles.modal_dim_bg:
+    property: read-only
+  thurbox.theme.roles.role_name:
+    property: read-only
+  thurbox.theme.roles.search_bar:
+    property: read-only
+  thurbox.theme.roles.selection_bg:
+    property: read-only
+  thurbox.theme.roles.selection_fg:
+    property: read-only
+  thurbox.theme.roles.status_blocked:
+    property: read-only
+  thurbox.theme.roles.status_done:
+    property: read-only
+  thurbox.theme.roles.status_error:
+    property: read-only
+  thurbox.theme.roles.status_idle:
+    property: read-only
+  thurbox.theme.roles.status_running:
+    property: read-only
+  thurbox.theme.roles.status_unknown:
+    property: read-only
+  thurbox.theme.roles.status_unreachable:
+    property: read-only
+  thurbox.theme.roles.status_working:
+    property: read-only
+  thurbox.theme.roles.text_muted:
+    property: read-only
+  thurbox.theme.roles.text_primary:
+    property: read-only
+  thurbox.theme.roles.text_secondary:
+    property: read-only
+  thurbox.theme.roles.tool_allowed:
+    property: read-only
+  thurbox.theme.roles.tool_disallowed:
     property: read-only
   thurbox.theme.choices:
     property: read-only

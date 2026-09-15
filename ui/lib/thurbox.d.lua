@@ -21,9 +21,16 @@
 -- `tests/fixtures/lua_types` + `scripts/ci/check-lua-types.sh` hold this to it.
 --
 -- Keep in step with `src/kernel/node.rs` and `src/kernel/convert.rs` (nodes),
--- `src/kernel/host/load.rs` (the declaration), `src/kernel/host/publish.rs`
--- (`thurbox.*`), `src/kernel/command/mod.rs` (verbs) and `src/kernel/theme.rs`
--- (roles) — and with `thurbox.yml`, which is the same contract for selene.
+-- `src/kernel/host/load.rs` (the declaration), `src/kernel/host/publish.rs` and
+-- `LuaHost::enter` (`thurbox.*`), `src/kernel/command/mod.rs` (verbs) and
+-- `src/kernel/theme.rs` (roles) — and with `thurbox.yml`, which is the same
+-- contract for selene.
+--
+-- The two files split by LIFETIME. A global, or a field of a published table,
+-- is a NAME selene can see, and it belongs in `thurbox.yml`. The shape of a
+-- value that exists only while a call is running — a `hit`, a `key`, a `wheel`,
+-- a row out of a list, an answer out of `thurbox.runs` — is unreachable from
+-- there and is declared here.
 
 ---@alias thurbox.Color string A role's colour, `#rrggbb`, a name, or a 0-255 index.
 
@@ -137,6 +144,29 @@
 
 ---@alias thurbox.Node thurbox.TextNode|thurbox.BoxNode|thurbox.InputNode|thurbox.SurfaceNode
 
+--- What a render RETURNS: any node, plus the one key that is read only there.
+---
+--- `float` is on these and not on `thurbox.NodeCommon` because the kernel reads
+--- it from the returned value itself (`host/load.rs`'s `read_float`, called on
+--- the render's result in `LuaHost::render`) and never walks the tree for it.
+--- On the shared shape the type said a child could carry one, which `convert.rs`
+--- drops in silence.
+---
+--- This buys accuracy and editor completion, not a diagnostic: luals does not
+--- flag an extra key in a table constructor, so a `float` on a child is no more
+--- reported now than it was before, and `thurbox.Float` has no required field
+--- for a misspelt `widht` to be missing. Verified by probing both.
+---@class (exact) thurbox.RootText : thurbox.TextNode
+---@field float? thurbox.Float|boolean `true` takes the default size.
+---@class (exact) thurbox.RootBox : thurbox.BoxNode
+---@field float? thurbox.Float|boolean
+---@class (exact) thurbox.RootInput : thurbox.InputNode
+---@field float? thurbox.Float|boolean
+---@class (exact) thurbox.RootSurface : thurbox.SurfaceNode
+---@field float? thurbox.Float|boolean
+
+---@alias thurbox.Root thurbox.RootText|thurbox.RootBox|thurbox.RootInput|thurbox.RootSurface
+
 --- How big a floating pane asks to be: a share of the screen, or exact cells.
 ---@class (exact) thurbox.Float
 ---@field width? number
@@ -242,7 +272,9 @@
 --- What a plugin file returns.
 ---
 --- `render` is required unless the plugin `decorates` another, which draws
---- nothing of its own. A returned tree may carry `float` on its root.
+--- nothing of its own. Its return type is `thurbox.Root` rather than
+--- `thurbox.Node` because `float` is read from that value alone; `decorate`
+--- keeps `thurbox.Node`, since nothing reads `float` off its result.
 ---@class thurbox.Plugin
 ---@field name? string Defaults to the filename, minus a numeric ordering prefix.
 ---@field slot? string Defaults to `"center"`.
@@ -260,7 +292,7 @@
 ---@field commands? thurbox.CommandDecl[]
 ---@field events? thurbox.Event[]
 ---@field capabilities? ("run"|"program")[]
----@field render? fun(ctx: thurbox.Ctx): thurbox.Node
+---@field render? fun(ctx: thurbox.Ctx): thurbox.Root
 ---@field decorate? fun(node: thurbox.Node, ctx: thurbox.DecorateCtx): thurbox.Node
 ---@field on_key? fun(key: thurbox.Key): boolean
 ---@field on_action? fun(action: string): boolean
@@ -549,11 +581,45 @@
 ---@field memory_used integer
 ---@field memory_total integer
 
+--- What an agent reported about its own turn, from its statusline. Every field
+--- is absent rather than zero when the agent did not report it, so a panel
+--- renders the rows it has — `publish.rs`'s `agent_metrics_table` drops a nil.
+--- The counts arrive as Lua numbers rather than integers: they cross as `f64`.
+---@class (exact) thurbox.AgentMetrics
+---@field model? string The display name.
+---@field model_id? string
+---@field cli_version? string
+---@field cost_usd? number
+---@field duration_ms? number
+---@field api_duration_ms? number
+---@field lines_added? number
+---@field lines_removed? number
+---@field input_tokens? number
+---@field output_tokens? number
+---@field context_window? number
+---@field context_used_percent? number
+---@field current_input_tokens? number
+---@field current_output_tokens? number
+---@field cache_creation_tokens? number
+---@field cache_read_tokens? number
+
+--- One account rate-limit window.
+---@class (exact) thurbox.UsageWindow
+---@field label string
+---@field used_percent number
+---@field resets_at? integer Epoch seconds; absent when the account did not say.
+
+--- The account's rate-limit windows, shared by every session on that agent.
+---@class (exact) thurbox.Usage
+---@field windows thurbox.UsageWindow[]
+---@field plan? string
+---@field note? string
+
 ---@class thurbox.SessionMetrics
 ---@field cpu_percent? number
 ---@field memory_bytes? integer
----@field agent? table<string, any>
----@field usage? table<string, any>
+---@field agent? thurbox.AgentMetrics
+---@field usage? thurbox.Usage
 
 ---@class (exact) thurbox.Metrics
 ---@field system thurbox.SystemMetrics

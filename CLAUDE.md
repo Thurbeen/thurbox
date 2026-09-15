@@ -168,15 +168,18 @@ but not to a table's fields, so `os.time()` passed review while `dofile` was
 caught.
 
 It also declares the published shape of `thurbox`, so `thurbox.sesions` is a lint
-error rather than a silently-nil pane. Keep it in step with `LuaHost::publish`;
-a newly published field used by a plugin fails lint until it is added. selene
+error rather than a silently-nil pane. Keep it in step with **both** publish
+paths: `LuaHost::publish`, and `LuaHost::enter`, which sets `thurbox.runs` and
+`thurbox.granted` per plugin and is easy to miss because it is not named
+"publish". A newly published field used by a plugin fails lint until it is added. selene
 checks a **dotted** path one segment at a time and stops at the first `[…]`, so a
 table read as `thurbox.platform.os` needs an entry per field while a list read as
 `thurbox.sessions[i].name` stops at the list. `selene ui examples` cannot notice a
 table left at the table — no bundled pane reads one by name — so
 `scripts/ci/check-lua-std.sh` runs the panes in `tests/fixtures/lua_std/`:
-`reads.lua` reads every field on `granted`, `platform`, `metrics`, `hover` and
-`preflight.mux` and must lint clean, and `typos/` holds one pane per table
+`reads.lua` reads every field on `granted`, `platform`, `metrics`, `hover`,
+`preflight.mux`, `settings`, `theme.roles`, the four creation-flow reads and
+`runs` and must lint clean, and `typos/` holds one pane per table
 misspelling one field, each of which must not. The assertion is selene's
 `incorrect_standard_library_use` code out of its `Json2` output, and the table a
 finding belongs to is the file it was found in — neither depends on the wording

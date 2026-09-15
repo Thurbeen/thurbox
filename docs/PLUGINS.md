@@ -397,9 +397,10 @@ stops being checked at the first `[…]` — `thurbox.sessions[i].name` is yours
 get wrong — which is why a list is declared only as far as the list itself.
 `tests/fixtures/lua_std/` and `scripts/ci/check-lua-std.sh` are that half's
 probes: `reads.lua` reads every field on `granted`, `platform`, `metrics`,
-`hover` and `preflight.mux` — the tables no bundled pane reads in a form selene
-can see — and must lint clean, while `typos/` holds one pane per table
-misspelling one field, each of which must not.
+`hover`, `preflight.mux`, `settings`, `theme.roles`, the four creation-flow reads
+and `runs` — the tables no bundled pane reads in a form selene can see — and must
+lint clean, while `typos/` holds one pane per table misspelling one field, each of
+which must not.
 
 ## The four node kinds
 
