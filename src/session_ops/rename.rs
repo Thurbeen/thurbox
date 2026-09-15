@@ -25,6 +25,11 @@ pub struct RenameReport {
 /// a rename is a name chosen on purpose. Other backends are not consulted, for
 /// the reason create gives: a mirrored host's `build` is not this machine's.
 ///
+/// A name is also taken when it names the same window as another session's:
+/// a window name folds everything outside `[A-Za-z0-9_-]` to `_`, so `a:b` and
+/// `a.b` share `tb-a_b`, and where a window carries no stamp (psmux) that name
+/// is all that finds it.
+///
 /// The windows are renamed before the row: a window with no stamp is found by
 /// the name the row still has, so the other order would lose it.
 pub fn rename_session_headless(
@@ -44,16 +49,22 @@ pub fn rename_session_headless(
         });
     }
 
+    let window = crate::agent::tmux::sanitize_window_name(name);
     let taken: Vec<String> = db
-        .find_sessions_by_name(name)
-        .map_err(|e| format!("find_sessions_by_name: {e}"))?
+        .list_active_sessions()
+        .map_err(|e| format!("list_active_sessions: {e}"))?
         .into_iter()
-        .filter(|s| s.id != session_id && s.backend_type == session.backend_type)
+        .filter(|s| {
+            s.id != session_id
+                && s.backend_type == session.backend_type
+                && crate::agent::tmux::sanitize_window_name(&s.name) == window
+        })
         .map(|s| s.id.to_string())
         .collect();
     if !taken.is_empty() {
         return Err(format!(
-            "'{name}' is already the name of another session on {} ({}). Pick another name",
+            "another session on {} ({}) already has the name '{name}', or one that names \
+             the same window. Pick another name",
             session.backend_type,
             taken.join(", ")
         ));

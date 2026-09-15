@@ -269,6 +269,30 @@ fn a_name_create_would_refuse_is_refused_and_the_row_keeps_its_own() {
 }
 
 #[test]
+fn a_name_whose_window_name_another_session_holds_is_refused() {
+    // A window is named after its session with everything outside
+    // `[A-Za-z0-9_-]` folded to `_`, so `a:b` and `a.b` share `tb-a_b`. Where a
+    // window carries no stamp (psmux) that name is all that finds it, and two
+    // sessions answering to one window could no longer be told apart.
+    let env = Env::new();
+    let id = env.seed("probe");
+    let other = env.seed("a.b");
+
+    let out = env.run(&["session", "rename", "probe", "a:b"]);
+    assert!(
+        !out.status.success(),
+        "a window-name collision must be refused:\n{}",
+        said(&out)
+    );
+    assert!(
+        said(&out).contains(&other.to_string()),
+        "the refusal names the session in the way:\n{}",
+        said(&out)
+    );
+    assert_eq!(env.name_of(id), "probe");
+}
+
+#[test]
 fn a_name_another_session_holds_on_the_same_backend_is_refused() {
     // `session create` lets two sessions share a name by default, and a name
     // matching several is then refused wherever one is typed. A rename is a

@@ -887,6 +887,10 @@ it came from.
   backend already has is refused, as `create --on-existing fail` refuses it:
   create allows namesakes by default, but a name matching several sessions is
   then refused wherever one is typed, and a rename is a name chosen on purpose.
+  A name that folds onto another session's window name (`a:b` and `a.b` both
+  make `tb-a_b`) is refused too: an unstamped window is found by that name
+  alone. Two renames racing to one name are not locked against each other —
+  the worst case is a pair of namesakes, which create already allows.
 - **The windows follow.** The agent's `tb-` window and the shell's `tbs-`
   window are renamed first, found stamp-first under the old name (ADR-25), then
   the row. The order matters where a window carries no stamp (psmux): the name

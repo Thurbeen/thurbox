@@ -71,13 +71,16 @@ return {
     if not ask then
       return false
     end
-    if key.key == "esc" then
-      store.rename = nil
+    -- Nothing happens while the answer is out, Esc included: the rename still
+    -- lands after the float is gone, so closing would look like a cancel that
+    -- was not one, drop the reason for a refusal, and let that late answer
+    -- close a second request for the same session. The field would also stop
+    -- being the name that was sent.
+    if ask.waiting then
       return true
     end
-    -- Nothing is edited while the answer is out: the field would stop being
-    -- the name that was sent, and a refusal would explain the wrong text.
-    if ask.waiting then
+    if key.key == "esc" then
+      store.rename = nil
       return true
     end
     local field = field_of(ask)
