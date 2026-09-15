@@ -5,17 +5,16 @@
 //! frames" is exact. These re-derive what ADR-P6 and ADR-P12 gave v1, against
 //! the v2 render path.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use thurbox::kernel::command::{Args, Command, CommandBus};
 use thurbox::kernel::events::Event;
 use thurbox::kernel::host::{Epoch, LuaHost, Published, RenderContext};
 use thurbox::kernel::perf::{
-    snapshot_json, Counters, Hint, PluginReport, PluginRow, RunTiming, Snapshot as Perf, Startup,
-    Timings,
+    snapshot_json, Counters, Hint, PluginReport, PluginRow, Snapshot as Perf, Startup, Timings,
 };
 use thurbox::kernel::registry::Registry;
+use thurbox::kernel::runs::RunEvent;
 use thurbox::kernel::snapshot::{Snapshot, SnapshotStore};
 use thurbox::kernel::theme::Themes;
 use thurbox::storage::Database;
@@ -411,7 +410,7 @@ fn the_expensive_pane_ranks_first_and_the_pure_one_shows_its_reuse() {
     publish(&host);
     paint(&host, 20);
 
-    let report = host.plugin_report(&HashMap::new());
+    let report = host.plugin_report();
     assert_eq!(report.frames, 20);
     assert_eq!(
         report.rows[0].name, "heavy",
@@ -453,7 +452,7 @@ fn a_slow_on_event_is_attributed_to_its_plugin() {
         "a slow op names the plugin that spent it, not merely the last one called"
     );
 
-    let report = host.plugin_report(&HashMap::new());
+    let report = host.plugin_report();
     let listener = row(&report, "listener");
     let cheap = row(&report, "cheap");
     assert_eq!(listener.stats.hooks.event.calls, 1);
@@ -480,7 +479,7 @@ fn a_pure_pane_that_keeps_re_rendering_while_idle_is_flagged() {
     host.set_idle(true);
     paint(&host, 12);
 
-    let report = host.plugin_report(&HashMap::new());
+    let report = host.plugin_report();
     let restless = row(&report, "restless");
     assert_eq!(restless.stats.idle_renders, 12, "{restless:?}");
     assert!(restless.hints.contains(&Hint::IdleRenders), "{restless:?}");
@@ -500,7 +499,7 @@ fn nothing_is_recorded_per_plugin_while_timing_is_off() {
     host.begin_op();
     let _ = host.dispatch_event(&ping());
 
-    let report = host.plugin_report(&HashMap::new());
+    let report = host.plugin_report();
     assert_eq!(report.frames, 0);
     assert!(
         report.rows.iter().all(|row| row.stats.renders == 0
@@ -521,7 +520,43 @@ fn turning_timing_on_starts_a_fresh_plugin_window() {
     paint(&host, 3);
     host.set_perf_timing(false);
     host.set_perf_timing(true);
-    assert_eq!(host.plugin_report(&HashMap::new()).frames, 0);
+    assert_eq!(host.plugin_report().frames, 0);
+}
+
+#[test]
+fn a_run_is_counted_only_in_the_window_it_started_in() {
+    let (_dir, host) = interface();
+    let path = host.plugins[host.index_of("heavy").expect("heavy")]
+        .path
+        .clone();
+    let started = |at| RunEvent::Started {
+        plugin: path.clone(),
+        at,
+    };
+    let finished = |started, ms| RunEvent::Finished {
+        plugin: path.clone(),
+        started,
+        took: Duration::from_millis(ms),
+    };
+
+    // Started before anyone was measuring, finished after the HUD opened: its
+    // finish must not show up in a window it did not start in.
+    let before = Instant::now() - Duration::from_millis(50);
+    host.note_run(&started(before));
+    host.set_perf_timing(true);
+    host.note_run(&finished(before, 30));
+    let inside = Instant::now();
+    host.note_run(&started(inside));
+    let runs = row(&host.plugin_report(), "heavy").stats.runs;
+    assert_eq!((runs.started, runs.finished), (1, 0), "{runs:?}");
+
+    // A window roll splits the run in flight: the new window must not report
+    // a finish whose start it never saw.
+    std::thread::sleep(Duration::from_millis(2));
+    host.reset_plugin_perf();
+    host.note_run(&finished(inside, 5));
+    let runs = row(&host.plugin_report(), "heavy").stats.runs;
+    assert_eq!((runs.started, runs.finished), (0, 0), "{runs:?}");
 }
 
 /// The key set an agent scripting `thurbox-cli perf --plugins --json` relies on.
@@ -553,19 +588,22 @@ fn the_cli_prints_the_plugin_table_sorted_with_a_stable_json_shape() {
     host.set_perf_timing(true);
     publish(&host);
     paint(&host, 20);
-    let mut runs = HashMap::new();
-    runs.insert(
-        host.plugins[host.index_of("heavy").expect("heavy")]
-            .path
-            .clone(),
-        RunTiming {
-            started: 2,
-            finished: 2,
-            total_us: 30_000,
-            max_us: 20_000,
-        },
-    );
-    let report = host.plugin_report(&runs);
+    let heavy = host.plugins[host.index_of("heavy").expect("heavy")]
+        .path
+        .clone();
+    for ms in [10, 20] {
+        let at = Instant::now();
+        host.note_run(&RunEvent::Started {
+            plugin: heavy.clone(),
+            at,
+        });
+        host.note_run(&RunEvent::Finished {
+            plugin: heavy.clone(),
+            started: at,
+            took: Duration::from_millis(ms),
+        });
+    }
+    let report = host.plugin_report();
 
     let json = snapshot_json(
         &Counters::default().read(),

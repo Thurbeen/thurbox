@@ -558,17 +558,34 @@ pub(crate) fn render_hud(
 /// --plugins` lists all of them.
 const PLUGIN_HUD_ROWS: usize = 8;
 
-/// Where the per-pane table sits: under the counters, in the same corner.
+/// Columns the per-pane table wants: the widest row it formats, plus borders.
+const PLUGIN_HUD_WIDTH: u16 = 52;
+
+/// Two borders, the header and one row: less than this shows no pane at all.
+const PLUGIN_HUD_MIN_HEIGHT: u16 = 4;
+
+/// Where the per-pane table sits: under the counters, in the same corner — or
+/// beside them on a terminal too short to have room below, where placing it
+/// underneath would draw nothing at all.
 pub(crate) fn plugin_hud_area(area: Rect, hud: Rect, rows: usize) -> Rect {
-    let width = 52.min(area.width);
     // Two borders, the header, the rows and one hint line.
     let wanted = (rows.min(PLUGIN_HUD_ROWS) as u16).saturating_add(4);
-    let y = hud.bottom().min(area.bottom());
+    let below = area.bottom().saturating_sub(hud.bottom());
+    if below >= wanted.min(PLUGIN_HUD_MIN_HEIGHT) {
+        let width = PLUGIN_HUD_WIDTH.min(area.width);
+        return Rect {
+            x: area.right() - width,
+            y: hud.bottom(),
+            width,
+            height: wanted.min(below),
+        };
+    }
+    let width = PLUGIN_HUD_WIDTH.min(hud.x.saturating_sub(area.x));
     Rect {
-        x: area.x + area.width - width,
-        y,
+        x: hud.x - width,
+        y: area.y,
         width,
-        height: wanted.min(area.bottom().saturating_sub(y)),
+        height: wanted.min(area.height),
     }
 }
 
@@ -602,9 +619,9 @@ pub(crate) fn render_plugin_hud(
     )];
     for (rank, row) in report.rows.iter().take(PLUGIN_HUD_ROWS).enumerate() {
         let text = format!(
-            "{} {:<13.13} {:>7} {:>6} {:>4}% {:>5}/{:<5}{}",
+            "{} {} {:>7} {:>6} {:>4}% {:>5}/{:<5}{}",
             rank + 1,
-            row.name,
+            thurbox::kernel::perf::fit_columns(&row.name, 13),
             fmt_hud_us(row.total_us),
             fmt_hud_us(row.stats.render.percentile_us(95)),
             (row.frame_share * 100.0).round() as u64,
@@ -729,5 +746,41 @@ mod tests {
         assert_eq!(clamp_span(1, 3, 5), 3);
         assert_eq!(clamp_span(9, 3, 2), 2);
         assert_eq!(clamp_span(9, 3, 0), 0);
+    }
+
+    /// A short terminal leaves no room under the counters, and the table the
+    /// HUD exists for must not silently vanish there.
+    #[test]
+    fn the_pane_table_moves_beside_the_counters_when_there_is_no_room_below() {
+        for (width, height) in [(120u16, 15u16), (120, 17), (100, 12)] {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            };
+            let hud = hud_area(area);
+            let panes = plugin_hud_area(area, hud, 8);
+            assert!(
+                panes.height >= 4 && panes.width >= 20,
+                "{width}x{height}: no room for a row: {panes:?}"
+            );
+            assert!(
+                panes.intersection(hud).is_empty(),
+                "{width}x{height}: covers the counters: {panes:?} / {hud:?}"
+            );
+        }
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        };
+        let hud = hud_area(area);
+        assert_eq!(
+            plugin_hud_area(area, hud, 8).y,
+            hud.bottom(),
+            "with room below, it stays under the counters"
+        );
     }
 }

@@ -39,6 +39,7 @@ mod load;
 mod publish;
 
 use self::api::{clean_error, install_api, RUN_IMPL};
+pub(crate) use self::api::{columns, take_left};
 use self::load::{load_arrangement, load_plugin, new_vm, read_float, Budget};
 use self::publish::run_to_lua;
 use super::perf::Hook;
@@ -1660,10 +1661,7 @@ impl LuaHost {
     }
 
     /// Every loaded plugin's cost this window, most expensive first.
-    pub fn plugin_report(
-        &self,
-        runs: &HashMap<String, super::perf::RunTiming>,
-    ) -> super::perf::PluginReport {
+    pub fn plugin_report(&self) -> super::perf::PluginReport {
         super::perf::plugin_report(
             &self.plugin_perf.borrow(),
             self.plugins.iter().map(|plugin| super::perf::PluginMeta {
@@ -1672,8 +1670,15 @@ impl LuaHost {
                 pure: plugin.pure,
                 floats: plugin.floats,
             }),
-            runs,
         )
+    }
+
+    /// Count a program starting or finishing, in the window its start belongs
+    /// to — see [`super::perf::PluginTable::note_run`].
+    pub fn note_run(&self, event: &super::runs::RunEvent) {
+        if self.perf_timing.get() {
+            self.plugin_perf.borrow_mut().note_run(event);
+        }
     }
 
     /// A clock for one plugin call, when anything will read it.

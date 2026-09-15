@@ -611,7 +611,7 @@ const ELLIPSIS: &str = "…";
 /// column budget is hardest to get right on. This is the same `unicode-width`
 /// the painter measures with, so a plugin that budgets with it agrees with what
 /// lands on the screen.
-fn columns(s: &str) -> usize {
+pub(crate) fn columns(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
@@ -620,7 +620,7 @@ fn columns(s: &str) -> usize {
 /// A double-width glyph that would straddle the edge is left out rather than
 /// half-drawn, so the result is never *wider* than asked for — which is what
 /// lets a caller add its own marker and still fit.
-fn take_left(s: &str, cols: usize) -> &str {
+pub(crate) fn take_left(s: &str, cols: usize) -> &str {
     let mut used = 0;
     for (at, ch) in s.char_indices() {
         let w = UnicodeWidthChar::width(ch).unwrap_or(0);

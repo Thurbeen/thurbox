@@ -185,7 +185,7 @@ fn render_plugins(s: &Value) -> CommandOutput {
     let name_of = |row: &Value| row["name"].as_str().unwrap_or("?").to_string();
     let width = rows
         .iter()
-        .map(|row| name_of(row).chars().count())
+        .map(|row| crate::kernel::perf::text_columns(&name_of(row)))
         .max()
         .unwrap_or(4)
         .clamp(4, 24);
@@ -216,9 +216,9 @@ fn render_plugins(s: &Value) -> CommandOutput {
         .iter()
         .map(|hook| u(row, &["handlers", hook, "total_us"]))
         .sum();
-        let name: String = name_of(row).chars().take(width).collect();
+        let name = crate::kernel::perf::fit_columns(&name_of(row), width);
         out.push_str(&format!(
-            "\n{name:<width$}  {:>8} {:>8} {:>8} {:>4}% {:>7} {:>6} {:>8} {:>5} {:>8.2} {:>5} {:>4}",
+            "\n{name}  {:>8} {:>8} {:>8} {:>4}% {:>7} {:>6} {:>8} {:>5} {:>8.2} {:>5} {:>4}",
             fmt_us(u(row, &["total_us"])),
             fmt_us(u(row, &["render", "p95_us"])),
             fmt_us(u(row, &["render", "max_us"])),
@@ -295,5 +295,30 @@ mod tests {
         let out = run(&db, true).unwrap();
         assert!(out.failure.is_some());
         assert!(out.human.contains("per-plugin"), "{}", out.human);
+    }
+
+    #[test]
+    fn a_wide_pane_name_keeps_the_columns_after_it_aligned() {
+        // Two rows with identical numbers: whatever the names are made of, both
+        // lines must occupy the same terminal columns.
+        let db = Database::open_in_memory().unwrap();
+        let row =
+            |name: &str| format!(r#"{{"name":"{name}","total_us":1200,"renders":3,"reused":1}}"#);
+        db.set_perf_snapshot(&format!(
+            r#"{{"pid":1,"captured_at":0,"plugin_window":{{"frames":3,"frame_total_us":9000}},
+                "plugins":[{},{}]}}"#,
+            row("files"),
+            row("名前ペイン"),
+        ))
+        .unwrap();
+        let out = run(&db, true).unwrap();
+        let widths: Vec<usize> = out
+            .human
+            .lines()
+            .filter(|line| line.contains("1.2ms"))
+            .map(unicode_width::UnicodeWidthStr::width)
+            .collect();
+        assert_eq!(widths.len(), 2, "{}", out.human);
+        assert_eq!(widths[0], widths[1], "{}", out.human);
     }
 }

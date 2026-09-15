@@ -1543,7 +1543,10 @@ and `thurbox-cli perf --plugins` (text, or `--json` for a script). Per plugin:
 Lua renders and pure-cache reuses, render time (p50/p95/max and the exact sum),
 share of painted-frame time, time in each handler (`on_key`, `on_action`,
 `on_click`/`on_context`, `on_scroll`, `on_event`, `decorate`), `run` asks plus
-the started programs' durations (from `RunStore`, off-thread and so reported
+the started programs' durations (`RunStore` emits a `RunEvent` when a program starts and when it
+finishes, and a window counts a finish only if it saw that run start, so a run in
+flight when the HUD opens or across a window roll is never half-counted; off-thread,
+so reported
 beside the pane's cost, never added to it), `store`/`state` writes made while
 rendering and how many assigned a table, the last tree's node and run counts,
 failures, idle renders and closed-float renders. Rows sort by UI-thread time.

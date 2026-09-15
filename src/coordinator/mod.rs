@@ -176,7 +176,7 @@ impl App {
                     None => format!("{}:{}ms", op.name, op.ms),
                 })
                 .collect();
-            let plugins = self.host.plugin_report(self.runs.timings()).summary(5);
+            let plugins = self.host.plugin_report().summary(5);
             tracing::info!(
                 iterations = window.iterations,
                 frames = window.frames,
@@ -199,7 +199,6 @@ impl App {
             self.perf_window_tick = counters.iterations;
             self.timings.reset_window();
             self.host.reset_plugin_perf();
-            self.runs.reset_timings();
         }
 
         // The snapshot, on its own slower cadence: it is a database write, not
@@ -218,7 +217,7 @@ impl App {
             &self.timings,
             &self.startup,
             self.snapshots.current().sessions.len(),
-            &self.host.plugin_report(self.runs.timings()),
+            &self.host.plugin_report(),
         );
         if let Some(db) = snapshots_db() {
             if let Err(e) = db.set_perf_snapshot(&json.to_string()) {
@@ -515,6 +514,11 @@ impl App {
             for (plugin, ask) in asked {
                 self.runs.request(&plugin, ask, &runner);
             }
+        }
+        // Drained on every pass so the store never holds them; the host ignores
+        // them while timing is off.
+        for event in self.runs.drain_events() {
+            self.host.note_run(&event);
         }
         // Answers, per plugin, for the next render to read.
         let mut answers = thurbox::kernel::host::RunAnswers::new();

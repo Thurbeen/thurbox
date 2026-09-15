@@ -144,6 +144,10 @@ impl App {
         self.terminals.forget_rects();
         let area = frame.area();
         self.last_area = area;
+        // Taken before this frame's panes render, so the HUD's table reads a
+        // window whose renders and frame count agree: afterwards, the renders
+        // would include this frame while `note_frame` has not counted it yet.
+        let plugin_report = self.hud.then(|| self.host.plugin_report());
 
         // 1. The arrangement decides where slots go — before any plugin runs.
         let region = match self.host.arrangement(area.width, area.height) {
@@ -244,12 +248,9 @@ impl App {
         if self.hud {
             let hud = hud_area(area);
             render_hud(frame, hud, &self.perf.read(), &self.timings);
-            let report = self.host.plugin_report(self.runs.timings());
-            render_plugin_hud(
-                frame,
-                plugin_hud_area(area, hud, report.rows.len()),
-                &report,
-            );
+            if let Some(report) = &plugin_report {
+                render_plugin_hud(frame, plugin_hud_area(area, hud, report.rows.len()), report);
+            }
             // The counters move on every iteration, so the HUD is never
             // settled — while it is up, the loop keeps painting.
             self.changed_this_frame = true;

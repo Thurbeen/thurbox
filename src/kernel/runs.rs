@@ -108,7 +108,7 @@ struct Finished {
     key: String,
     run: Run,
     at: Instant,
-    took: Duration,
+    started: Instant,
 }
 
 /// Sends its `Finished` when the worker thread's frame goes away, however it
@@ -133,7 +133,7 @@ impl Drop for Report {
             key: std::mem::take(&mut self.key),
             run: self.run.take().unwrap_or(Run::Pending),
             at: Instant::now(),
-            took: self.started.elapsed(),
+            started: self.started,
         });
     }
 }
@@ -169,6 +169,25 @@ impl Answer {
 /// the host resolution, neither of which belongs in a store.
 pub type Runner = dyn Fn(&Ask) -> Run + Send + Sync;
 
+/// A program starting or finishing, handed to the loop for the per-plugin perf
+/// report.
+///
+/// Events rather than running totals so the *report* decides which measuring
+/// window a run belongs to: a finish carries the instant its run started, and a
+/// window counts it only if it saw that start.
+#[derive(Debug, Clone)]
+pub enum RunEvent {
+    Started {
+        plugin: String,
+        at: Instant,
+    },
+    Finished {
+        plugin: String,
+        started: Instant,
+        took: Duration,
+    },
+}
+
 /// Every run a plugin asked for, keyed by `(plugin, key)`.
 #[derive(Default)]
 pub struct RunStore {
@@ -177,11 +196,12 @@ pub struct RunStore {
     queued: VecDeque<(String, Ask)>,
     running: usize,
     channel: Option<(Sender<Finished>, Receiver<Finished>)>,
-    /// How long each plugin's programs took, for the per-plugin perf report.
+    /// Runs started and finished since the loop last took them.
     ///
-    /// Recorded unconditionally: it moves once per process started and once per
-    /// process finished, which is nothing beside the process itself.
-    timings: HashMap<String, super::perf::RunTiming>,
+    /// Pushed unconditionally — once per process started and once per process
+    /// finished, which is nothing beside the process — and drained by the loop
+    /// on every call that can push one, so it never accumulates.
+    events: Vec<RunEvent>,
 }
 
 impl RunStore {
@@ -233,7 +253,11 @@ impl RunStore {
                 return;
             };
             self.running += 1;
-            self.timings.entry(plugin.clone()).or_default().started += 1;
+            let started = Instant::now();
+            self.events.push(RunEvent::Started {
+                plugin: plugin.clone(),
+                at: started,
+            });
             let tx = self.ensure_channel();
             let runner = runner.clone();
             std::thread::spawn(move || {
@@ -247,7 +271,7 @@ impl RunStore {
                     plugin,
                     key: ask.key.clone(),
                     run: Some(Run::Failed(format!("{}: the run panicked", ask.program))),
-                    started: Instant::now(),
+                    started,
                 };
                 report.run = Some(runner(&ask));
             });
@@ -271,10 +295,11 @@ impl RunStore {
         };
         for done in finished {
             self.running = self.running.saturating_sub(1);
-            self.timings
-                .entry(done.plugin.clone())
-                .or_default()
-                .record(done.took);
+            self.events.push(RunEvent::Finished {
+                plugin: done.plugin.clone(),
+                started: done.started,
+                took: done.at.saturating_duration_since(done.started),
+            });
             let id = (done.plugin, done.key);
             let ttl = self.answers.get(&id).map(|a| a.ttl).unwrap_or(DEFAULT_TTL);
             self.answers.insert(
@@ -325,17 +350,11 @@ impl RunStore {
     pub fn retain_plugins(&mut self, live: &[String]) {
         self.answers.retain(|(plugin, _), _| live.contains(plugin));
         self.queued.retain(|(plugin, _)| live.contains(plugin));
-        self.timings.retain(|plugin, _| live.contains(plugin));
     }
 
-    /// Programs started and finished per plugin, since the last reset.
-    pub fn timings(&self) -> &HashMap<String, super::perf::RunTiming> {
-        &self.timings
-    }
-
-    /// Start a new measuring window, alongside the loop's own.
-    pub fn reset_timings(&mut self) {
-        self.timings.clear();
+    /// Take the runs started and finished since the last call.
+    pub fn drain_events(&mut self) -> Vec<RunEvent> {
+        std::mem::take(&mut self.events)
     }
 }
 

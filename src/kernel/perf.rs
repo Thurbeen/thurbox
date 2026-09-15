@@ -20,11 +20,12 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use super::node::{Node, SurfaceSource};
+use super::runs::RunEvent;
 
 /// One counter per thing worth knowing about the loop.
 #[derive(Default)]
@@ -430,6 +431,9 @@ pub struct PluginStats {
     pub idle_renders: u64,
     /// Renders of a float that returned no float: nothing drawn, Lua paid.
     pub closed_renders: u64,
+    /// Programs this plugin had `run` start in the window, and those of them
+    /// that finished.
+    pub runs: RunTiming,
 }
 
 impl PluginStats {
@@ -465,6 +469,22 @@ pub fn tree_size(node: &Node) -> (u64, u64) {
     }
 }
 
+/// `name` cut and padded to exactly `cols` terminal columns, for a table cell.
+///
+/// Columns rather than characters: a CJK or emoji pane name takes the width it
+/// is drawn at, so the columns after it stay aligned. The same measure the
+/// painter and `text.width` use.
+pub fn fit_columns(name: &str, cols: usize) -> String {
+    let cut = super::host::take_left(name, cols);
+    let pad = cols.saturating_sub(super::host::columns(cut));
+    format!("{cut}{}", " ".repeat(pad))
+}
+
+/// How many terminal columns `s` occupies.
+pub fn text_columns(s: &str) -> usize {
+    super::host::columns(s)
+}
+
 /// The per-plugin stats of one measuring window, keyed by plugin path.
 #[derive(Default, Debug)]
 pub struct PluginTable {
@@ -473,6 +493,9 @@ pub struct PluginTable {
     pub frames: u64,
     pub frame_total_us: u64,
     stats: HashMap<String, PluginStats>,
+    /// When the window opened; `None` for one that was never cleared, which
+    /// counts everything. What decides which window a run belongs to.
+    opened_at: Option<Instant>,
 }
 
 impl PluginTable {
@@ -489,8 +512,35 @@ impl PluginTable {
         self.frame_total_us = self.frame_total_us.saturating_add(micros(took));
     }
 
+    /// Count a run, but only in the window that saw it start.
+    ///
+    /// A finish whose start predates the window belongs to an earlier one:
+    /// counting it would show a program finishing that this window never saw
+    /// begin — a run in flight when the HUD opened, or across a window roll.
+    pub fn note_run(&mut self, event: &RunEvent) {
+        let opened = self.opened_at;
+        // `map_or(true, ..)` rather than `is_none_or`: MSRV 1.75.
+        let inside = |at: Instant| opened.map_or(true, |opened| at >= opened);
+        match event {
+            RunEvent::Started { plugin, at } if inside(*at) => {
+                self.stats_mut(plugin).runs.started += 1;
+            }
+            RunEvent::Finished {
+                plugin,
+                started,
+                took,
+            } if inside(*started) => {
+                self.stats_mut(plugin).runs.record(*took);
+            }
+            _ => {}
+        }
+    }
+
     pub fn clear(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            opened_at: Some(Instant::now()),
+            ..Self::default()
+        };
     }
 }
 
@@ -553,7 +603,6 @@ pub struct PluginRow {
     pub pure: bool,
     pub floats: bool,
     pub stats: PluginStats,
-    pub runs: RunTiming,
     pub total_us: u64,
     /// Render time over painted-frame time, clamped to 1.
     pub frame_share: f64,
@@ -610,10 +659,10 @@ impl PluginRow {
             "handlers": s.hooks.to_json(),
             "runs": {
                 "asked": s.asked,
-                "started": self.runs.started,
-                "finished": self.runs.finished,
-                "total_us": self.runs.total_us,
-                "max_us": self.runs.max_us,
+                "started": s.runs.started,
+                "finished": s.runs.finished,
+                "total_us": s.runs.total_us,
+                "max_us": s.runs.max_us,
             },
             "store_writes": s.store_writes,
             "store_table_writes": s.store_table_writes,
@@ -659,14 +708,13 @@ impl PluginReport {
     }
 }
 
-/// Rank the loaded plugins by UI-thread time, attach their runs and hints.
+/// Rank the loaded plugins by UI-thread time and attach their hints.
 ///
 /// Every loaded plugin gets a row, measured or not, so a pane that cost nothing
 /// is visibly cheap rather than absent.
 pub fn plugin_report<'a>(
     table: &PluginTable,
     plugins: impl IntoIterator<Item = PluginMeta<'a>>,
-    runs: &HashMap<String, RunTiming>,
 ) -> PluginReport {
     let empty = PluginStats::default();
     let mut rows: Vec<PluginRow> = plugins
@@ -683,7 +731,6 @@ pub fn plugin_report<'a>(
                 file: meta.path.to_string(),
                 pure: meta.pure,
                 floats: meta.floats,
-                runs: runs.get(meta.path).copied().unwrap_or_default(),
                 total_us: stats.total_us(),
                 frame_share,
                 hints: PluginRow::hints(&meta, stats, table.frames),
@@ -927,7 +974,7 @@ mod tests {
             table.note_frame(Duration::from_millis(1));
             table.stats_mut("a").renders += 1;
         }
-        let report = plugin_report(&table, [meta("a", false, false)], &HashMap::new());
+        let report = plugin_report(&table, [meta("a", false, false)]);
         assert!(report.rows[0].hints.is_empty(), "{:?}", report.rows[0]);
     }
 
@@ -941,7 +988,6 @@ mod tests {
         let report = plugin_report(
             &table,
             [meta("idle", true, false), meta("busy", true, false)],
-            &HashMap::new(),
         );
         let names: Vec<&str> = report.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["busy", "idle"]);
@@ -969,5 +1015,15 @@ mod tests {
             identity: Default::default(),
         };
         assert_eq!(tree_size(&tree), (3, 5));
+    }
+
+    #[test]
+    fn fit_columns_pads_and_cuts_by_terminal_columns() {
+        assert_eq!(fit_columns("abc", 5), "abc  ");
+        assert_eq!(fit_columns("abcdef", 3), "abc");
+        // A double-width glyph that would straddle the edge is left out and the
+        // gap padded, so the cell is still exactly three columns.
+        assert_eq!(fit_columns("名前", 3), "名 ");
+        assert_eq!(text_columns(&fit_columns("名前ペイン", 7)), 7);
     }
 }
