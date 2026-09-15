@@ -504,13 +504,16 @@ globals:
   # What the arrangement needs to know about the bands, and no more.
   thurbox.chrome.status_rows:
     property: read-only
-  # The active palette as role -> colour, plus the selectable list. The roles are
-  # `theme::palette_roles`' own field set, written out rather than left at the
-  # table: `ui/lib/theme.lua` memoizes it through a local so nothing bundled
-  # names one, but a pane written against the documented `thurbox.theme.roles.
-  # accent` is a dotted path, and it was rejected. Spelling the set out also
-  # makes `roles.acent` a lint error — the same catch `thurbox.Role` makes on
-  # the lua-language-server side.
+  # The active palette as role -> colour, plus the selectable list.
+  #
+  # `roles` is written out rather than left at the table, reversing the call in
+  # #1138. Nothing bundled forced it — `ui/lib/theme.lua` memoizes the table
+  # through a local, which ends the checked path — but the kernel serves every
+  # one of these, and a pane reaching for a role directly rather than through
+  # that helper reads `thurbox.theme.roles.accent`, which was rejected against a
+  # value that is genuinely there. The field set is `theme::palette_roles`', and
+  # fixed, so spelling it out also makes `roles.acent` a lint error — the same
+  # catch `thurbox.Role` makes on the lua-language-server side.
   thurbox.theme.name:
     property: read-only
   thurbox.theme.roles.accent:

@@ -3,6 +3,12 @@
 -- the four creation-flow reads and `.runs` — the injected tables no bundled pane
 -- reads in a form selene can see — each as a plain dotted path.
 --
+-- It ends with the stdlib names in the same position: `_VERSION`, and the five
+-- `math` functions Lua 5.4 has that `thurbox.yml` did not list. They are not
+-- published by anything, but they are reachable in the VM and were rejected for
+-- the same reason the tables above were — nothing in `ui/` happens to name them
+-- — so they would go unnoticed the same way.
+--
 -- Expected to lint CLEAN, and that is the whole assertion here; `typos/` holds
 -- the other direction, one pane per table. selene checks a dotted path against
 -- `thurbox.yml` one segment at a time, so a table declared as a bare property
