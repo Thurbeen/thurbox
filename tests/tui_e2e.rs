@@ -1836,7 +1836,7 @@ fn stub_powershell(dir: &Path, answer: &str) -> PathBuf {
         format!("#!/bin/sh\necho call >> \"$(dirname \"$0\")/asked\"\necho {answer}\n"),
     )
     .expect("write the stub");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     bin
 }
 

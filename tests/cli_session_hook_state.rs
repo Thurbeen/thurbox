@@ -471,7 +471,7 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     }
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);

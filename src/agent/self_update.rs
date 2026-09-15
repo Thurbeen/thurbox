@@ -244,11 +244,19 @@ fn stage_binary(src: &Path, dest: &Path) -> Result<PathBuf, String> {
     Ok(staged)
 }
 
+/// `rwxr-xr-x`: only the owner may write, but everyone keeps read + execute,
+/// because a system-wide install (e.g. `/usr/local/bin`, updated as root) is
+/// run by other accounts. `chmod` is not masked by the umask, so this is the
+/// exact mode the binary ends up with.
+#[cfg(unix)]
+const INSTALLED_BINARY_MODE: u32 = 0o755;
+
 #[cfg(unix)]
 fn set_executable(path: &Path) -> Result<(), String> {
+    use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("chmod {}: {e}", path.display()))
+    let perms = Permissions::from_mode(INSTALLED_BINARY_MODE); // NOSONAR: world r-x is required
+    std::fs::set_permissions(path, perms).map_err(|e| format!("chmod {}: {e}", path.display()))
 }
 
 #[cfg(not(unix))]
@@ -511,7 +519,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         for name in BINARIES {
             let p = install.path().join(name);
             std::fs::write(&p, b"OLD").unwrap();
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
             // New extracted binaries with fresh contents.
             std::fs::write(extract.path().join(name), format!("NEW-{name}")).unwrap();
         }
