@@ -307,7 +307,7 @@ fn statusline_file(agent_session_id: &str) -> Option<PathBuf> {
 }
 
 /// One backend and its sampled panes, as `(session, pane_id)` pairs — the unit
-/// the batched pid lookup in [`collect`] groups subjects into.
+/// the batched pid lookup in [`pane_pids`] groups subjects into.
 type BackendPanes = (Arc<dyn crate::agent::SessionBackend>, Vec<(String, String)>);
 
 /// Take one sample. Runs on a worker thread.
@@ -319,16 +319,27 @@ fn collect(mut collector: Box<sysinfo::System>, subjects: Vec<SampleInput>) -> S
         memory_used: collector.used_memory(),
         memory_total: collector.total_memory(),
     };
+    let pids = pane_pids(&subjects);
+    let resources = process_resources(&mut collector, &pids);
+    let agents = statusline_metrics(subjects);
+    Sample {
+        system,
+        resources,
+        agents,
+        collector,
+    }
+}
 
-    // Pane pids first, batched per backend: each single-pane lookup is a
-    // control-mode round trip serialized on the connection mutex keystrokes
-    // share, so asking per session per second scaled the contention with the
-    // session count. One `pane_pids` call per backend answers for all of its
-    // sessions; a backend without the batched command falls back to the
-    // per-pane lookup.
-    let mut pids: Vec<(String, u32)> = Vec::new();
+/// Each sampled session's pane pid, batched per backend.
+///
+/// Each single-pane lookup is a control-mode round trip serialized on the
+/// connection mutex keystrokes share, so asking per session per second scaled
+/// the contention with the session count. One `pane_pids` call per backend
+/// answers for all of its sessions; a backend without the batched command
+/// falls back to the per-pane lookup.
+fn pane_pids(subjects: &[SampleInput]) -> Vec<(String, u32)> {
     let mut by_backend: HashMap<usize, BackendPanes> = HashMap::new();
-    for (session, _, pane) in &subjects {
+    for (session, _, pane) in subjects {
         if let Some((backend, pane_id)) = pane {
             // Keyed by the Arc's address: backends carry no id of their own
             // here, and two subjects on one host share the same Arc.
@@ -340,70 +351,182 @@ fn collect(mut collector: Box<sysinfo::System>, subjects: Vec<SampleInput>) -> S
                 .push((session.clone(), pane_id.clone()));
         }
     }
+    let mut pids = Vec::new();
     for (backend, sessions) in by_backend.into_values() {
         match backend.pane_pids() {
-            Ok(map) => {
-                for (session, pane_id) in sessions {
-                    if let Some(pid) = map.get(&pane_id) {
-                        pids.push((session, *pid));
-                    }
-                }
-            }
-            Err(_) => {
-                for (session, pane_id) in sessions {
-                    if let Some(pid) = backend.pane_pid(&pane_id).ok().flatten() {
-                        pids.push((session, pid));
-                    }
-                }
-            }
+            Ok(map) => pids.extend(
+                sessions
+                    .into_iter()
+                    .filter_map(|(session, pane_id)| Some((session, *map.get(&pane_id)?))),
+            ),
+            Err(_) => pids.extend(sessions.into_iter().filter_map(|(session, pane_id)| {
+                Some((session, backend.pane_pid(&pane_id).ok().flatten()?))
+            })),
         }
     }
+    pids
+}
 
-    // One process refresh over every pid rather than one walk per session.
+/// CPU and memory for each pid, from one process refresh over all of them
+/// rather than one walk per session.
+fn process_resources(
+    collector: &mut sysinfo::System,
+    pids: &[(String, u32)],
+) -> HashMap<String, SessionResources> {
+    let mut resources = HashMap::new();
+    if pids.is_empty() {
+        return resources;
+    }
     let all_pids: Vec<sysinfo::Pid> = pids
         .iter()
         .map(|(_, pid)| sysinfo::Pid::from_u32(*pid))
         .collect();
-    let mut resources = HashMap::new();
-    if !all_pids.is_empty() {
-        let kind = sysinfo::ProcessRefreshKind::nothing()
-            .with_memory()
-            .with_cpu();
-        collector.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::Some(&all_pids),
-            false,
-            kind,
-        );
-        for (session, pid) in &pids {
-            if let Some(process) = collector.process(sysinfo::Pid::from_u32(*pid)) {
-                resources.insert(
-                    session.clone(),
-                    SessionResources {
-                        cpu_percent: process.cpu_usage(),
-                        memory_bytes: process.memory(),
-                    },
-                );
-            }
+    let kind = sysinfo::ProcessRefreshKind::nothing()
+        .with_memory()
+        .with_cpu();
+    collector.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&all_pids), false, kind);
+    for (session, pid) in pids {
+        if let Some(process) = collector.process(sysinfo::Pid::from_u32(*pid)) {
+            resources.insert(
+                session.clone(),
+                SessionResources {
+                    cpu_percent: process.cpu_usage(),
+                    memory_bytes: process.memory(),
+                },
+            );
         }
     }
+    resources
+}
 
+/// Each session's statusline metrics. Best-effort: an agent that writes no
+/// statusline file simply has no metrics, which the panel renders as absence.
+fn statusline_metrics(subjects: Vec<SampleInput>) -> HashMap<String, AgentMetrics> {
     let mut agents = HashMap::new();
     for (session, statusline, _) in subjects {
-        // Best-effort: an agent that writes no statusline file simply has no
-        // metrics, which the panel renders as absence.
-        if let Some(path) = statusline {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) {
-                    agents.insert(session, AgentMetrics::from_statusline_json(&raw));
-                }
+        let Some(text) = statusline.and_then(|path| std::fs::read_to_string(path).ok()) else {
+            continue;
+        };
+        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) {
+            agents.insert(session, AgentMetrics::from_statusline_json(&raw));
+        }
+    }
+    agents
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Pane pids from a table: batched, or — for a backend without the batched
+    /// command — one pane at a time.
+    struct Panes {
+        pids: HashMap<String, u32>,
+        batched: bool,
+    }
+
+    impl crate::agent::SessionBackend for Panes {
+        fn name(&self) -> &str {
+            "panes"
+        }
+        fn check_available(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_ready(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&Path>,
+            _: &HashMap<String, String>,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+            unimplemented!()
+        }
+        fn adopt(
+            &self,
+            _: &str,
+            _: u16,
+            _: u16,
+            _: Option<Vec<u8>>,
+        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+            unimplemented!()
+        }
+        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+            Ok(Vec::new())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn kill(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn detach(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pane_pid(&self, pane: &str) -> anyhow::Result<Option<u32>> {
+            Ok(self.pids.get(pane).copied())
+        }
+        fn pane_pids(&self) -> anyhow::Result<HashMap<String, u32>> {
+            if self.batched {
+                Ok(self.pids.clone())
+            } else {
+                anyhow::bail!("no batched lookup")
             }
         }
     }
 
-    Sample {
-        system,
-        resources,
-        agents,
-        collector,
+    #[test]
+    fn a_sample_resolves_pids_per_backend_and_reads_only_parseable_statuslines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let good = dir.path().join("good.json");
+        std::fs::write(&good, "{}").expect("write");
+        let bad = dir.path().join("bad.json");
+        std::fs::write(&bad, "not json").expect("write");
+        // This test's own process: a pid sysinfo is certain to find.
+        let me = std::process::id();
+        let batched: Arc<dyn crate::agent::SessionBackend> = Arc::new(Panes {
+            pids: HashMap::from([("%1".to_string(), me)]),
+            batched: true,
+        });
+        let one_at_a_time: Arc<dyn crate::agent::SessionBackend> = Arc::new(Panes {
+            pids: HashMap::from([("%3".to_string(), me)]),
+            batched: false,
+        });
+        let subjects: Vec<SampleInput> = vec![
+            (
+                "one".into(),
+                Some(good),
+                Some((Arc::clone(&batched), "%1".into())),
+            ),
+            (
+                "two".into(),
+                Some(bad),
+                Some((Arc::clone(&batched), "%2".into())),
+            ),
+            (
+                "three".into(),
+                Some(dir.path().join("missing.json")),
+                Some((Arc::clone(&one_at_a_time), "%3".into())),
+            ),
+            ("four".into(), None, None),
+        ];
+
+        let sample = collect(Box::new(sysinfo::System::new()), subjects);
+
+        let mut resourced: Vec<&str> = sample.resources.keys().map(String::as_str).collect();
+        resourced.sort_unstable();
+        assert_eq!(resourced, ["one", "three"]);
+        let agents: Vec<&str> = sample.agents.keys().map(String::as_str).collect();
+        assert_eq!(agents, ["one"]);
+        assert!(sample.system.memory_total > 0);
     }
 }
