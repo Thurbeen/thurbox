@@ -157,7 +157,7 @@ fn fire(host: &LuaHost, chord: &str) {
 /// below, in `CHORDS_AWAITING_THEIR_PANE`. They are listed rather than dropped so
 /// re-adding a pane has an obvious place to reconnect, and so the shortfall is
 /// counted rather than forgotten.
-const GLOBAL_CHORDS: [(&str, &str); 23] = [
+const GLOBAL_CHORDS: [(&str, &str); 24] = [
     ("ctrl+n", "new_session.open"),
     // Reassigned deliberately, not reused quietly: v1 spent it on the
     // automations pane, and the palette is the way *into* that pane — and every
@@ -174,6 +174,10 @@ const GLOBAL_CHORDS: [(&str, &str); 23] = [
     ("ctrl+f", "sessions.fork"),
     ("ctrl+s", "sessions.sync"),
     ("ctrl+o", "sessions.editor"),
+    // Reassigned deliberately, as `ctrl+p` was: v1 held it for a files pane that
+    // exists nowhere now, and `f2`, the other conventional rename key, is still
+    // claimed by the info panel that is maintained out of tree.
+    ("ctrl+e", "sessions.rename"),
     ("ctrl+z", "sessions.undo"),
     ("ctrl+j", "sessions.next"),
     ("ctrl+k", "sessions.previous"),
@@ -193,14 +197,14 @@ const GLOBAL_CHORDS: [(&str, &str); 23] = [
 /// back. Asserted to be *unbound* — a chord that silently resolved to something
 /// else would be worse than one that does nothing.
 ///
-/// `ctrl+p` was here for the automations pane and was reassigned to the command
-/// palette on purpose (`GLOBAL_CHORDS`): a deliberate, recorded reassignment is
-/// the one thing this list does not forbid.
-const CHORDS_AWAITING_THEIR_PANE: [(&str, &str); 8] = [
+/// `ctrl+p` (the automations pane) and `ctrl+e` (the files pane) were here and
+/// were reassigned on purpose, to the command palette and to renaming a session
+/// (`GLOBAL_CHORDS`): a deliberate, recorded reassignment is the one thing this
+/// list does not forbid.
+const CHORDS_AWAITING_THEIR_PANE: [(&str, &str); 7] = [
     ("ctrl+w", "tasks"),
     ("ctrl+x", "review"),
     ("ctrl+b", "info"),
-    ("ctrl+e", "files"),
     ("f2", "info"),
     ("f3", "files"),
     ("f5", "tasks"),

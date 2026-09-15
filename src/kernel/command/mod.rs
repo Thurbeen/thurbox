@@ -118,6 +118,15 @@ pub enum Command {
     Sync {
         session: String,
     },
+    /// Give a session a new name, and its windows with it.
+    ///
+    /// The name is judged on the worker, not at parse time: whether it collides
+    /// is a database read, and one place judging all of it keeps a refusal in
+    /// the same words the CLI uses. It arrives as `command.failed`.
+    Rename {
+        session: String,
+        name: String,
+    },
     /// Create a task, or change one that exists.
     Task {
         /// `None` creates; `Some` edits.
@@ -387,6 +396,7 @@ impl Command {
             Command::Create { .. } => "create",
             Command::Fork { .. } => "fork",
             Command::Sync { .. } => "sync",
+            Command::Rename { .. } => "rename",
             Command::Copy { .. } => "copy",
             Command::Diff { .. } => "diff",
             Command::Shell { .. } => "shell",
@@ -420,6 +430,7 @@ impl Command {
             | Command::Reorder { session, .. }
             | Command::Fork { session, .. }
             | Command::Sync { session }
+            | Command::Rename { session, .. }
             | Command::Copy { session }
             | Command::Diff { session }
             | Command::Editor { session }
@@ -787,12 +798,18 @@ impl Command {
                 name: text.unwrap_or_default(),
             }),
             "sync" => Ok(Command::Sync { session }),
+            // An empty name is still a rename: the worker refuses it with the
+            // reason the CLI gives, which a parse error here could not match.
+            "rename" => Ok(Command::Rename {
+                session,
+                name: text.unwrap_or_default(),
+            }),
             "copy" => Ok(Command::Copy { session }),
             "diff" => Ok(Command::Diff { session }),
             "shell" => Ok(Command::Shell { session }),
             "editor" => Ok(Command::Editor { session }),
             other => Err(format!(
-                "unknown command {other:?} — try create, fork, sync, copy, diff, \
+                "unknown command {other:?} — try create, fork, rename, sync, copy, diff, \
                  delete, restore, restart, send, reorder, theme, set, emit, \
                  action or message"
             )),
@@ -945,6 +962,26 @@ mod tests {
                 delta: -1
             })
         );
+        // No name at all still parses: the worker's refusal carries the reason.
+        for (text, name) in [(Some("renamed"), "renamed"), (None, "")] {
+            let parsed = Command::parse(
+                "rename",
+                Args {
+                    session: "s1".into(),
+                    text: text.map(str::to_string),
+                    ..Args::default()
+                },
+            );
+            assert_eq!(
+                parsed,
+                Ok(Command::Rename {
+                    session: "s1".into(),
+                    name: name.into()
+                })
+            );
+            assert_eq!(parsed.as_ref().map(Command::kind), Ok("rename"));
+            assert_eq!(parsed.as_ref().map(Command::session), Ok("s1"));
+        }
     }
 
     /// A pane reaching the action registry from a key handler, which is the

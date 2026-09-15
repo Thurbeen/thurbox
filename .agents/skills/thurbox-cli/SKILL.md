@@ -35,7 +35,7 @@ thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children onl
 ```
 
 Subcommands: `agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/reap/restore/restart
-[`--if-missing`]/stop/start/fork/exec/meta/reports-as/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
+[`--if-missing`]/rename/stop/start/fork/exec/meta/reports-as/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
 `sync`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
 the session event log, one event per line), `runtime` (status/stop — what
 thurbox runs that is not a session), `automation` (alias `auto`:

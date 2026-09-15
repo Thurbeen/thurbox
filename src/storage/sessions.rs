@@ -981,6 +981,52 @@ impl Database {
         Ok(())
     }
 
+    /// Give an active session a new name.
+    ///
+    /// A targeted UPDATE rather than [`upsert_session`](Self::upsert_session),
+    /// which rewrites every column from a row the caller read earlier. Recorded
+    /// as the `changed` event the upsert records for a name change, so `watch`
+    /// and a peer's refresh see it. False when no active row has this id.
+    pub fn rename_session(&self, id: SessionId, name: &str) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let Some(before) = self
+            .conn
+            .query_row(
+                "SELECT name FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![id_str],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        if before == name {
+            return Ok(true);
+        }
+        self.conn.execute(
+            "UPDATE sessions SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            params![name, current_time_millis() as i64, id_str],
+        )?;
+        self.log_audit(
+            EntityType::Session,
+            &id_str,
+            AuditAction::Updated,
+            Some("name"),
+            Some(&before),
+            Some(name),
+        )?;
+        self.record_session_event(
+            id,
+            SessionEventKind::Changed,
+            EventReason::Updated,
+            None,
+            None,
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Snapshot a host's self-reported `updated_at` for a row a mirror pass
     /// just adopted or updated from it (schema v45).
     ///
