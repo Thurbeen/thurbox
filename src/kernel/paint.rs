@@ -177,15 +177,7 @@ pub fn render_recording(
         });
     }
     let inner = match node.frame() {
-        Some(spec) => {
-            let block = build_block(spec);
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            if let (Some(overlay), Borders::All) = (spec.overlay.as_deref(), spec.borders) {
-                paint_overlay(frame.buffer_mut(), area, overlay, hits);
-            }
-            pad(inner, spec.padding)
-        }
+        Some(spec) => paint_frame(frame, area, spec, hits),
         None => area,
     };
     if inner.width == 0 || inner.height == 0 {
@@ -205,60 +197,25 @@ pub fn render_recording(
             // The node's style is the paragraph's base: ratatui fills the rect
             // with it and each run patches over, so a bar reaches the right
             // edge and a run that names a colour keeps it.
-            let mut paragraph = Paragraph::new(text).style(*style).scroll((*scroll, 0));
-            paragraph = match align {
+            let paragraph = Paragraph::new(text).style(*style).scroll((*scroll, 0));
+            let paragraph = match align {
                 Align::Left => paragraph.left_aligned(),
                 Align::Center => paragraph.centered(),
                 Align::Right => paragraph.right_aligned(),
             };
             if *wrap {
-                paragraph = paragraph.wrap(Wrap { trim: false });
-            }
-            frame.render_widget(paragraph, inner);
-            if !*wrap {
+                frame.render_widget(paragraph.wrap(Wrap { trim: false }), inner);
+            } else {
+                frame.render_widget(paragraph, inner);
                 record_run_hits(lines, inner, *align, *scroll, hits);
             }
         }
-
         Node::Box {
             axis,
             gap,
             children,
             ..
-        } => {
-            if children.is_empty() {
-                return;
-            }
-            let sizes: Vec<_> = children.iter().map(Node::size).collect();
-            let total = match axis {
-                Axis::Vertical => inner.height,
-                Axis::Horizontal => inner.width,
-            };
-            let lengths = divide(total, &sizes, *gap);
-            let mut cursor = match axis {
-                Axis::Vertical => inner.y,
-                Axis::Horizontal => inner.x,
-            };
-            for (child, length) in children.iter().zip(lengths) {
-                let rect = match axis {
-                    Axis::Vertical => Rect {
-                        x: inner.x,
-                        y: cursor,
-                        width: inner.width,
-                        height: length,
-                    },
-                    Axis::Horizontal => Rect {
-                        x: cursor,
-                        y: inner.y,
-                        width: length,
-                        height: inner.height,
-                    },
-                };
-                render_recording(frame, rect, child, surfaces, hits);
-                cursor = cursor.saturating_add(length).saturating_add(*gap);
-            }
-        }
-
+        } => paint_children(frame, inner, *axis, *gap, children, surfaces, hits),
         Node::Input {
             value,
             cursor,
@@ -266,73 +223,142 @@ pub fn render_recording(
             focused,
             style,
             ..
-        } => {
-            let showing_placeholder = value.is_empty();
-            let text = if showing_placeholder {
-                placeholder
-            } else {
-                value
-            };
-            let mut line_style = *style;
-            if showing_placeholder {
-                line_style = line_style.add_modifier(Modifier::DIM);
-            }
-            frame.render_widget(
-                Paragraph::new(Line::from(text.clone()).style(line_style)),
-                inner,
-            );
-            // A real caret, in the one field that claims it — empty or not. A
-            // field showing its placeholder is still the field being typed
-            // into: keying the caret on the value being non-empty instead, as
-            // this did, made the cursor blink into existence on the first
-            // keystroke and out of it on the last backspace, and handed it to
-            // whichever *other* field on screen happened to hold text. The
-            // placeholder is dim, so a caret at its start cannot be mistaken
-            // for one. Clamped into the rect so a cursor past the end cannot
-            // paint outside it.
-            if *focused {
-                let offset = (*cursor).min(value.chars().count());
-                let column = inner
-                    .x
-                    .saturating_add(offset.min(usize::from(inner.width)) as u16);
-                if column < inner.x.saturating_add(inner.width) {
-                    frame.set_cursor_position((column, inner.y));
-                }
-            }
-        }
-
+        } => paint_input(frame, inner, value, placeholder, *cursor, *focused, *style),
         Node::Surface { source, scroll, .. } => {
-            // No blanket `Clear` here. `swap_buffers` resets the frame buffer
-            // before every draw, so nothing stale survives to be erased, and a
-            // live terminal covers its rect itself — clearing first was a second
-            // full-grid write of ~9,000 cells for a frame about to overwrite
-            // them (ADR-P17). Whatever does *not* cover its rect clears itself
-            // instead: the paragraph below, `render_notice`/`render_detached`,
-            // and `clear_uncovered` for a grid still catching up to a resize.
-            match source {
-                SurfaceSource::Cells(cells) => {
-                    frame.render_widget(Clear, inner);
-                    let lines: Vec<Line> = cells.iter().map(|runs| to_line(runs)).collect();
-                    frame.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), inner);
-                }
-                SurfaceSource::Session(id) => {
-                    if !surfaces.render_session(frame, inner, id, *scroll) {
-                        render_detached(frame, inner, id);
-                    }
-                }
-                SurfaceSource::Program(id) => match surfaces.render_program(frame, inner, id) {
-                    ProgramPaint::Painted => {}
-                    ProgramPaint::NotStarted => {
-                        render_notice(frame, inner, "program surface", "nothing started here yet")
-                    }
-                    // Said rather than shown: the grid a finished program left
-                    // behind looks exactly like one that is still running.
-                    ProgramPaint::Exited(program) => {
-                        render_notice(frame, inner, &program, "exited")
-                    }
-                },
+            paint_surface(frame, inner, source, *scroll, surfaces)
+        }
+    }
+}
+
+/// Draw a node's frame over `area`, and return the rect its content gets.
+fn paint_frame(frame: &mut Frame, area: Rect, spec: &NodeFrame, hits: &mut Vec<Hit>) -> Rect {
+    let block = build_block(spec);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if let (Some(overlay), Borders::All) = (spec.overlay.as_deref(), spec.borders) {
+        paint_overlay(frame.buffer_mut(), area, overlay, hits);
+    }
+    pad(inner, spec.padding)
+}
+
+/// Divide `inner` along `axis` by the children's declared sizes, and paint
+/// each child into its share.
+fn paint_children(
+    frame: &mut Frame,
+    inner: Rect,
+    axis: Axis,
+    gap: u16,
+    children: &[Node],
+    surfaces: &dyn SurfaceProvider,
+    hits: &mut Vec<Hit>,
+) {
+    if children.is_empty() {
+        return;
+    }
+    let sizes: Vec<_> = children.iter().map(Node::size).collect();
+    let (mut cursor, total) = match axis {
+        Axis::Vertical => (inner.y, inner.height),
+        Axis::Horizontal => (inner.x, inner.width),
+    };
+    let lengths = divide(total, &sizes, gap);
+    for (child, length) in children.iter().zip(lengths) {
+        let rect = child_rect(inner, axis, cursor, length);
+        render_recording(frame, rect, child, surfaces, hits);
+        cursor = cursor.saturating_add(length).saturating_add(gap);
+    }
+}
+
+/// The part of `inner` that starts `cursor` along `axis` and runs `length`
+/// cells, spanning all of `inner` across it.
+fn child_rect(inner: Rect, axis: Axis, cursor: u16, length: u16) -> Rect {
+    match axis {
+        Axis::Vertical => Rect {
+            x: inner.x,
+            y: cursor,
+            width: inner.width,
+            height: length,
+        },
+        Axis::Horizontal => Rect {
+            x: cursor,
+            y: inner.y,
+            width: length,
+            height: inner.height,
+        },
+    }
+}
+
+fn paint_input(
+    frame: &mut Frame,
+    inner: Rect,
+    value: &str,
+    placeholder: &str,
+    cursor: usize,
+    focused: bool,
+    style: Style,
+) {
+    let (text, line_style) = if value.is_empty() {
+        (placeholder, style.add_modifier(Modifier::DIM))
+    } else {
+        (value, style)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(text.to_string()).style(line_style)),
+        inner,
+    );
+    // A real caret, in the one field that claims it — empty or not. A field
+    // showing its placeholder is still the field being typed into: keying the
+    // caret on the value being non-empty instead, as this did, made the cursor
+    // blink into existence on the first keystroke and out of it on the last
+    // backspace, and handed it to whichever *other* field on screen happened to
+    // hold text. The placeholder is dim, so a caret at its start cannot be
+    // mistaken for one. Clamped into the rect so a cursor past the end cannot
+    // paint outside it.
+    if !focused {
+        return;
+    }
+    let offset = cursor.min(value.chars().count());
+    let column = inner
+        .x
+        .saturating_add(offset.min(usize::from(inner.width)) as u16);
+    if column < inner.x.saturating_add(inner.width) {
+        frame.set_cursor_position((column, inner.y));
+    }
+}
+
+fn paint_surface(
+    frame: &mut Frame,
+    inner: Rect,
+    source: &SurfaceSource,
+    scroll: u16,
+    surfaces: &dyn SurfaceProvider,
+) {
+    // No blanket `Clear` here. `swap_buffers` resets the frame buffer before
+    // every draw, so nothing stale survives to be erased, and a live terminal
+    // covers its rect itself — clearing first was a second full-grid write of
+    // ~9,000 cells for a frame about to overwrite them (ADR-P17). Whatever does
+    // *not* cover its rect clears itself instead: the paragraph below,
+    // `render_notice`/`render_detached`, and `clear_uncovered` for a grid still
+    // catching up to a resize.
+    match source {
+        SurfaceSource::Cells(cells) => {
+            frame.render_widget(Clear, inner);
+            let lines: Vec<Line> = cells.iter().map(|runs| to_line(runs)).collect();
+            frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+        }
+        SurfaceSource::Session(id) => {
+            if !surfaces.render_session(frame, inner, id, scroll) {
+                render_detached(frame, inner, id);
             }
         }
+        SurfaceSource::Program(id) => match surfaces.render_program(frame, inner, id) {
+            ProgramPaint::Painted => {}
+            ProgramPaint::NotStarted => {
+                render_notice(frame, inner, "program surface", "nothing started here yet")
+            }
+            // Said rather than shown: the grid a finished program left behind
+            // looks exactly like one that is still running.
+            ProgramPaint::Exited(program) => render_notice(frame, inner, &program, "exited"),
+        },
     }
 }
 
@@ -961,5 +987,124 @@ mod tests {
     #[test]
     fn padding_never_underflows_a_small_rect() {
         assert_eq!(pad(Rect::new(0, 0, 1, 1), 4).width, 0);
+    }
+
+    /// Programs answer by surface id; there are no live sessions.
+    struct Programs;
+
+    impl SurfaceProvider for Programs {
+        fn render_session(&self, _: &mut Frame, _: Rect, _: &str, _: u16) -> bool {
+            false
+        }
+
+        fn render_program(&self, _: &mut Frame, _: Rect, surface: &str) -> ProgramPaint {
+            match surface {
+                "started" => ProgramPaint::Painted,
+                "ended" => ProgramPaint::Exited("watch".into()),
+                _ => ProgramPaint::NotStarted,
+            }
+        }
+    }
+
+    fn paint_recorded(
+        node: &crate::kernel::node::Node,
+        width: u16,
+        height: u16,
+    ) -> (String, Vec<Hit>) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| render_recording(frame, frame.area(), node, &Programs, &mut hits))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        (text, hits)
+    }
+
+    #[test]
+    fn a_program_surface_says_whether_it_never_started_or_has_ended() {
+        use crate::kernel::node::{Identity, Node, Size, SurfaceSource};
+        let program = |id: &str| Node::Surface {
+            source: SurfaceSource::Program(id.into()),
+            scroll: 0,
+            frame: None,
+            size: Size::default(),
+            identity: Identity::default(),
+        };
+        let (idle, _) = paint_recorded(&program("unknown"), 40, 6);
+        assert!(idle.contains("program surface"), "{idle}");
+        assert!(idle.contains("nothing started here yet"), "{idle}");
+        let (ended, _) = paint_recorded(&program("ended"), 40, 6);
+        assert!(ended.contains("watch"), "{ended}");
+        assert!(ended.contains("exited"), "{ended}");
+        let (painted, _) = paint_recorded(&program("started"), 40, 6);
+        assert!(painted.trim().is_empty(), "{painted:?}");
+    }
+
+    #[test]
+    fn hits_run_parent_then_border_then_children_and_skip_wrapped_runs() {
+        use crate::kernel::node::{
+            Align, Axis, BorderKind, Borders, Frame as Spec, Identity, Node, Overlay, Run, Size,
+        };
+        let identity = |id: &str| Identity {
+            id: Some(id.into()),
+            ..Identity::default()
+        };
+        let run = |id: &str| Run {
+            text: "go".into(),
+            style: Style::default(),
+            identity: Some(Box::new(identity(id))),
+        };
+        let text = |id: &str, wrap: bool| Node::Text {
+            lines: vec![vec![run(id)]],
+            align: Align::Left,
+            wrap,
+            scroll: 0,
+            style: Style::default(),
+            frame: None,
+            size: Size {
+                len: Some(1),
+                ..Size::default()
+            },
+            identity: Identity::default(),
+        };
+        let node = Node::Box {
+            axis: Axis::Vertical,
+            gap: 0,
+            children: vec![text("unwrapped", false), text("wrapped", true)],
+            frame: Some(Spec {
+                title: None,
+                title_align: Align::Left,
+                borders: Borders::All,
+                border_type: BorderKind::Rounded,
+                border_style: Style::default(),
+                style: Style::default(),
+                padding: 0,
+                overlay: Some(Box::new(Overlay {
+                    top_left: vec![run("chip")],
+                    top_right: Vec::new(),
+                    bottom_left: Vec::new(),
+                    bottom_right: Vec::new(),
+                    right_column: Vec::new(),
+                })),
+            }),
+            size: Size::default(),
+            identity: identity("root"),
+        };
+        let (_, hits) = paint_recorded(&node, 10, 4);
+        let ids: Vec<&str> = hits
+            .iter()
+            .map(|hit| hit.identity.id.as_deref().unwrap_or(""))
+            .collect();
+        assert_eq!(ids, ["root", "chip", "unwrapped"]);
+        assert_eq!(hits[0].rect, Rect::new(0, 0, 10, 4));
+        assert_eq!(hits[2].rect, Rect::new(1, 1, 2, 1));
     }
 }
