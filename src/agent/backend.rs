@@ -1079,11 +1079,7 @@ impl Session {
                     data.extend_from_slice(&buf[..n]);
                     let ready = utf8_ready_prefix_len(&data);
                     carry = data.split_off(ready);
-                    if !data.is_empty() {
-                        if let Ok(mut p) = parser.lock() {
-                            p.process(&data);
-                        }
-                    }
+                    Self::feed_parser(&parser, &data);
                 }
                 Err(e) => {
                     debug!("Session reader error: {e}");
@@ -1093,12 +1089,18 @@ impl Session {
         }
         // Stream ended (EOF or error): flush any leftover partial UTF-8 sequence,
         // since no more bytes are coming to complete it.
-        if !carry.is_empty() {
-            if let Ok(mut p) = parser.lock() {
-                p.process(&carry);
-            }
-        }
+        Self::feed_parser(&parser, &carry);
         exited.store(true, Ordering::SeqCst);
+    }
+
+    /// Hand `bytes` to the parser, unless there are none — which takes no lock.
+    fn feed_parser(parser: &Mutex<SessionParser>, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        if let Ok(mut p) = parser.lock() {
+            p.process(bytes);
+        }
     }
 
     async fn writer_loop(mut writer: Box<dyn Write + Send>, mut input_rx: mpsc::Receiver<Vec<u8>>) {
@@ -1748,6 +1750,37 @@ mod tests {
             initial_output_at(WireMode::Adopt),
             "scrollback replay alone must not read as activity"
         );
+    }
+
+    /// A character split across two reads reaches the parser whole, and the
+    /// loop marks the session exited once the stream ends — even when it ends
+    /// on half a character, which is flushed rather than kept back forever.
+    #[test]
+    fn reader_loop_carries_a_split_character_and_marks_the_end() {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            4,
+            20,
+            0,
+            TermSignals::default(),
+        )));
+        let exited = Arc::new(AtomicBool::new(false));
+        let last_output_at = Arc::new(AtomicU64::new(0));
+
+        // "é" is 0xC3 0xA9: the first read ends on its lead byte, and the
+        // stream ends on the lead byte of "日".
+        let reader = Cursor::new(b"f\xc3".to_vec()).chain(Cursor::new(b"\xa9\r\nok\xe6".to_vec()));
+        Session::reader_loop(
+            Box::new(reader),
+            Arc::clone(&parser),
+            Arc::clone(&exited),
+            Arc::clone(&last_output_at),
+            0,
+        );
+
+        let screen = parser.lock().unwrap().screen().contents();
+        assert!(screen.starts_with("fé\nok"), "{screen:?}");
+        assert!(exited.load(Ordering::SeqCst));
+        assert!(last_output_at.load(Ordering::Relaxed) > 0);
     }
 
     /// The other half: once the seed is exhausted, genuinely live bytes still
