@@ -369,56 +369,8 @@ fn diagnose(
         },
     });
 
-    // A parked session has no pane on purpose, and nothing has signalled since
-    // `stop` cleared the state. Said plainly it is a clean report; left to the
-    // pane check below it would be one more "could not be checked" warning
-    // about the very thing the operator asked for.
-    if hook.stopped {
-        findings.push(Finding {
-            key: "pane",
-            level: Level::Ok,
-            detail: "stopped by `session stop`, so it has no pane by design — `session start` \
-                      puts one back"
-                .into(),
-        });
-    } else if let Some(corroboration) = hook.corroboration.as_ref() {
-        let process = hook.foreground_process.as_deref().unwrap_or("nothing");
-        findings.push(if hook.contradicted == Some(true) {
-            Finding {
-                key: "pane",
-                level: Level::Warn,
-                detail: format!(
-                    "the row says '{}' but {process} holds the pane — the agent that reported \
-                     it is gone",
-                    hook.hook_state.as_deref().unwrap_or("?")
-                ),
-            }
-        } else {
-            Finding {
-                key: "pane",
-                // "Nothing could be resolved" is honest, but it is not a clean
-                // bill of health: it means the one check that could have
-                // falsified the row could not be run.
-                level: match corroboration {
-                    Corroboration::Unavailable | Corroboration::Unknown | Corroboration::Dead => {
-                        Level::Warn
-                    }
-                    _ => Level::Ok,
-                },
-                detail: match corroboration {
-                    Corroboration::Unknown => {
-                        "no live pane for this session, so its state cannot be checked".into()
-                    }
-                    Corroboration::Dead => "the pane's command has exited (its frame is kept \
-                         by remain-on-exit)"
-                        .into(),
-                    Corroboration::Unavailable => "this session's pane is on its own host, so \
-                         its state cannot be checked from here"
-                        .into(),
-                    _ => format!("{} ({process})", corroboration.as_str()),
-                },
-            }
-        });
+    if let Some(finding) = pane_finding(hook) {
+        findings.push(finding);
     }
 
     let verdict = findings.iter().map(|f| f.level).max().unwrap_or(Level::Ok);
@@ -428,6 +380,61 @@ fn diagnose(
         hook: hook.clone(),
         agent: agent.clone(),
     }
+}
+
+/// Whether the pane agrees with the row — or `None` when there is no pane
+/// answer to report.
+fn pane_finding(hook: &Assessment) -> Option<Finding> {
+    // A parked session has no pane on purpose, and nothing has signalled since
+    // `stop` cleared the state. Said plainly it is a clean report; left to the
+    // pane check below it would be one more "could not be checked" warning
+    // about the very thing the operator asked for.
+    if hook.stopped {
+        return Some(Finding {
+            key: "pane",
+            level: Level::Ok,
+            detail: "stopped by `session stop`, so it has no pane by design — `session start` \
+                      puts one back"
+                .into(),
+        });
+    }
+    let corroboration = hook.corroboration.as_ref()?;
+    let process = hook.foreground_process.as_deref().unwrap_or("nothing");
+    if hook.contradicted == Some(true) {
+        return Some(Finding {
+            key: "pane",
+            level: Level::Warn,
+            detail: format!(
+                "the row says '{}' but {process} holds the pane — the agent that reported \
+                 it is gone",
+                hook.hook_state.as_deref().unwrap_or("?")
+            ),
+        });
+    }
+    Some(Finding {
+        key: "pane",
+        // "Nothing could be resolved" is honest, but it is not a clean bill of
+        // health: it means the one check that could have falsified the row
+        // could not be run.
+        level: match corroboration {
+            Corroboration::Unavailable | Corroboration::Unknown | Corroboration::Dead => {
+                Level::Warn
+            }
+            _ => Level::Ok,
+        },
+        detail: match corroboration {
+            Corroboration::Unknown => {
+                "no live pane for this session, so its state cannot be checked".into()
+            }
+            Corroboration::Dead => "the pane's command has exited (its frame is kept \
+                 by remain-on-exit)"
+                .into(),
+            Corroboration::Unavailable => "this session's pane is on its own host, so \
+                 its state cannot be checked from here"
+                .into(),
+            _ => format!("{} ({process})", corroboration.as_str()),
+        },
+    })
 }
 
 /// Whether this agent's hook payload is where the agent will read it.
