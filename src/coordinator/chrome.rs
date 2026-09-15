@@ -536,8 +536,13 @@ pub(crate) fn render_hud(
             fmt_hud_us(histogram.max_us()),
         ));
     }
+    // The pane when there is one: it is what the reader goes to fix, and the
+    // op name alone does not fit beside it.
     match timings.slow_ops.iter_recent().next() {
-        Some(op) => text.push_str(&format!("slow   {}:{}ms", op.name, op.ms)),
+        Some(op) => match &op.plugin {
+            Some(plugin) => text.push_str(&format!("slow   {}ms {plugin}", op.ms)),
+            None => text.push_str(&format!("slow   {}:{}ms", op.name, op.ms)),
+        },
         None => text.push_str("slow   none"),
     }
     frame.render_widget(Clear, area);
@@ -546,6 +551,86 @@ pub(crate) fn render_hud(
         Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
         inner,
     );
+}
+
+/// Rows of the per-pane table. The table is ranked, so an interface with more
+/// plugins than this shows its most expensive ones; `thurbox-cli perf
+/// --plugins` lists all of them.
+const PLUGIN_HUD_ROWS: usize = 8;
+
+/// Where the per-pane table sits: under the counters, in the same corner.
+pub(crate) fn plugin_hud_area(area: Rect, hud: Rect, rows: usize) -> Rect {
+    let width = 52.min(area.width);
+    // Two borders, the header, the rows and one hint line.
+    let wanted = (rows.min(PLUGIN_HUD_ROWS) as u16).saturating_add(4);
+    let y = hud.bottom().min(area.bottom());
+    Rect {
+        x: area.x + area.width - width,
+        y,
+        width,
+        height: wanted.min(area.bottom().saturating_sub(y)),
+    }
+}
+
+/// Paint the per-pane cost table: most expensive first, the worst in red, any
+/// pane with a hint marked `!`, and the first hint spelled out underneath.
+pub(crate) fn render_plugin_hud(
+    frame: &mut Frame,
+    area: Rect,
+    report: &thurbox::kernel::perf::PluginReport,
+) {
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::Line;
+    use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+
+    if area.width < 3 || area.height < 3 {
+        return;
+    }
+    let yellow = Style::default().fg(Color::Yellow);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(yellow)
+        .title(" panes ");
+    let inner = block.inner(area);
+    let mut lines = vec![Line::styled(
+        format!(
+            "  {:<13} {:>7} {:>6} {:>5} rend/reuse",
+            "pane", "total", "p95", "share"
+        ),
+        yellow,
+    )];
+    for (rank, row) in report.rows.iter().take(PLUGIN_HUD_ROWS).enumerate() {
+        let text = format!(
+            "{} {:<13.13} {:>7} {:>6} {:>4}% {:>5}/{:<5}{}",
+            rank + 1,
+            row.name,
+            fmt_hud_us(row.total_us),
+            fmt_hud_us(row.stats.render.percentile_us(95)),
+            (row.frame_share * 100.0).round() as u64,
+            row.stats.renders,
+            row.stats.reused,
+            if row.hints.is_empty() { "" } else { "!" },
+        );
+        let style = if rank == 0 && row.total_us > 0 {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else if !row.hints.is_empty() {
+            Style::default().fg(Color::LightYellow)
+        } else {
+            yellow
+        };
+        lines.push(Line::styled(text, style));
+    }
+    if let Some((name, hint)) = report
+        .rows
+        .iter()
+        .find_map(|row| row.hints.first().map(|hint| (&row.name, hint)))
+    {
+        lines.push(Line::styled(format!("! {name}: {}", hint.text()), yellow));
+    }
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Flatten a crossterm key into what Lua is told about it.
@@ -606,6 +691,11 @@ mod tests {
                 assert!(
                     hud.right() <= area.right() && hud.bottom() <= area.bottom(),
                     "hud_area({width}x{height}) escaped: {hud:?}"
+                );
+                let panes = plugin_hud_area(area, hud, 20);
+                assert!(
+                    panes.right() <= area.right() && panes.bottom() <= area.bottom(),
+                    "plugin_hud_area({width}x{height}) escaped: {panes:?}"
                 );
 
                 for float in [

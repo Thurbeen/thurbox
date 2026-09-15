@@ -61,7 +61,8 @@ startup when the flag is on), `notify`
 (diagnose OS desktop notifications: prints the detected delivery backend
 and last error; `--test` fires a sample — see OS notifications below), `perf`
 (print the perf snapshot a running TUI publishes while `THURBOX_PERF_LOG`
-or its perf HUD is active — see `docs/PERFORMANCE.md`), `plugin`
+or its perf HUD is active; `--plugins` for one row per pane, sorted by cost,
+with hints — see `docs/PERFORMANCE.md`), `plugin`
 (v2 interface plugins without a TTY: `dir` reports the directory in force and
 which of the two rules chose it, `new <name>` writes a starter that already
 loads, `check` loads the interface the way `thurbox` does and exits non-zero on

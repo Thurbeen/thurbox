@@ -158,6 +158,14 @@ pane from being the thing that makes the whole interface feel slow:
 pane is not settling — usually an impure render, or a per-frame `store` write
 of a fresh table (writing the same *value* is free; a new table never is).
 
+**Finding the slow pane:** `F12`, then read the `panes` table under the
+counters — most expensive first, the worst in red, `!` where a hint applies.
+Then `thurbox-cli perf --plugins` prints every column for every pane, with the
+hint spelled out (not pure but rendering every frame, a float rendering while
+closed, fresh tables written to `store` from a render, a pure pane re-rendering
+while idle); add `--json` to script it. A `slow op` in the output names the pane
+whose call took the time.
+
 ## What you cannot do from a pane
 
 - **No `os`, `io`, `debug`, `package`, `print`, `dofile`, `load`.** They are not

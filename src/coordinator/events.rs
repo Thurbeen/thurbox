@@ -109,28 +109,33 @@ impl App {
         // batch — the same rule an input batch follows.
         self.republish();
         self.events.cascade_reported = false;
-        while let Some(event) = self.events.queue.pop_front() {
-            if event.depth > MAX_DEPTH {
-                if !self.events.cascade_reported {
-                    self.events.cascade_reported = true;
-                    self.report(
-                        format!(
-                            "{}: dropped — events cascaded more than {MAX_DEPTH} deep",
-                            event.name
-                        ),
-                        Level::Error,
-                    );
+        // Timed as an op like a keypress: a handler is plugin Lua on the UI
+        // thread, and a slow one stalls the loop exactly as a slow key does.
+        // Only reached with something queued, so an idle loop pays no clock.
+        self.time_op("event_dispatch", |app| {
+            while let Some(event) = app.events.queue.pop_front() {
+                if event.depth > MAX_DEPTH {
+                    if !app.events.cascade_reported {
+                        app.events.cascade_reported = true;
+                        app.report(
+                            format!(
+                                "{}: dropped — events cascaded more than {MAX_DEPTH} deep",
+                                event.name
+                            ),
+                            Level::Error,
+                        );
+                    }
+                    continue;
                 }
-                continue;
+                app.events.current = Some(event.depth);
+                for failure in app.host.dispatch_event(&event) {
+                    app.report_event_failure(failure, &event.name);
+                }
+                // What the handlers asked for, applied now rather than next
+                // iteration, so an emit lands in this dispatch.
+                app.apply_commands(terminal);
             }
-            self.events.current = Some(event.depth);
-            for failure in self.host.dispatch_event(&event) {
-                self.report_event_failure(failure, &event.name);
-            }
-            // What the handlers asked for, applied now rather than next
-            // iteration, so an emit lands in this dispatch.
-            self.apply_commands(terminal);
-        }
+        });
         self.events.current = None;
     }
 

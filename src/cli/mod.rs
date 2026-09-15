@@ -262,8 +262,9 @@ pub enum Command {
     /// Diagnose OS desktop notifications; `--test` fires a sample.
     Notify(notify::NotifyArgs),
     /// Print the perf snapshot a running TUI publishes (THURBOX_PERF_LOG or
-    /// the perf HUD must be active in that TUI).
-    Perf,
+    /// the perf HUD must be active in that TUI); `--plugins` for the per-pane
+    /// table.
+    Perf(perf::PerfArgs),
     /// Stream the session event log — one line per transition, so nothing
     /// driving thurbox has to poll.
     ///
@@ -430,7 +431,7 @@ fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, CommandErr
         Command::Version(args) => version::run(args),
         Command::Update(args) => update::run(args),
         Command::Notify(args) => notify::run(args),
-        Command::Perf => perf::run(db)?,
+        Command::Perf(args) => perf::run(db, args.plugins)?,
         // Never returns a document: it *is* the document, one line at a time,
         // written as each change lands. Handled before dispatch for that
         // reason — see `run`.

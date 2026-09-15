@@ -49,6 +49,7 @@ const CTRL_Y: &[u8] = b"\x19";
 const CTRL_SLASH: &[u8] = b"\x1f";
 const ESC: &[u8] = b"\x1b";
 const F1: &[u8] = b"\x1bOP";
+const F12: &[u8] = b"\x1b[24~";
 const F6: &[u8] = b"\x1b[17~";
 const F10: &[u8] = b"\x1b[21~";
 const F9: &[u8] = b"\x1b[20~";
@@ -539,6 +540,41 @@ fn f1_opens_the_help_overlay_and_escape_closes_it() {
 
     tui.send(ESC);
     tui.wait_gone("Keybindings");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn f12_shows_the_per_pane_cost_table() {
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/settings.toml"),
+        "[features]\nautomations = false\nversion_check = false\nauto_update = false\n\
+         perf_hud = true\n",
+    )
+    .expect("seed settings");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+
+    tui.send(F12);
+    tui.wait_for("rend/reuse");
+    // A ranked row for a bundled pane, not merely the header: `<rank> sessions`
+    // followed by a share, inside the table's own borders — which neither the
+    // session list's empty state nor the footer's session count can mimic.
+    tui.wait_until("a ranked row for the session list", |frame| {
+        frame.lines().any(|line| {
+            line.split('│').any(|cell| {
+                let mut words = cell.split_whitespace();
+                words
+                    .next()
+                    .is_some_and(|rank| rank.chars().all(|c| c.is_ascii_digit()))
+                    && words.next() == Some("sessions")
+                    && cell.contains('%')
+            })
+        })
+    });
+
+    tui.send(F12);
+    tui.wait_gone("rend/reuse");
     assert!(tui.quit().success());
 }
 

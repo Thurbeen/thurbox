@@ -108,6 +108,7 @@ struct Finished {
     key: String,
     run: Run,
     at: Instant,
+    took: Duration,
 }
 
 /// Sends its `Finished` when the worker thread's frame goes away, however it
@@ -122,6 +123,7 @@ struct Report {
     plugin: String,
     key: String,
     run: Option<Run>,
+    started: Instant,
 }
 
 impl Drop for Report {
@@ -131,6 +133,7 @@ impl Drop for Report {
             key: std::mem::take(&mut self.key),
             run: self.run.take().unwrap_or(Run::Pending),
             at: Instant::now(),
+            took: self.started.elapsed(),
         });
     }
 }
@@ -174,6 +177,11 @@ pub struct RunStore {
     queued: VecDeque<(String, Ask)>,
     running: usize,
     channel: Option<(Sender<Finished>, Receiver<Finished>)>,
+    /// How long each plugin's programs took, for the per-plugin perf report.
+    ///
+    /// Recorded unconditionally: it moves once per process started and once per
+    /// process finished, which is nothing beside the process itself.
+    timings: HashMap<String, super::perf::RunTiming>,
 }
 
 impl RunStore {
@@ -225,6 +233,7 @@ impl RunStore {
                 return;
             };
             self.running += 1;
+            self.timings.entry(plugin.clone()).or_default().started += 1;
             let tx = self.ensure_channel();
             let runner = runner.clone();
             std::thread::spawn(move || {
@@ -238,6 +247,7 @@ impl RunStore {
                     plugin,
                     key: ask.key.clone(),
                     run: Some(Run::Failed(format!("{}: the run panicked", ask.program))),
+                    started: Instant::now(),
                 };
                 report.run = Some(runner(&ask));
             });
@@ -261,6 +271,10 @@ impl RunStore {
         };
         for done in finished {
             self.running = self.running.saturating_sub(1);
+            self.timings
+                .entry(done.plugin.clone())
+                .or_default()
+                .record(done.took);
             let id = (done.plugin, done.key);
             let ttl = self.answers.get(&id).map(|a| a.ttl).unwrap_or(DEFAULT_TTL);
             self.answers.insert(
@@ -311,6 +325,17 @@ impl RunStore {
     pub fn retain_plugins(&mut self, live: &[String]) {
         self.answers.retain(|(plugin, _), _| live.contains(plugin));
         self.queued.retain(|(plugin, _)| live.contains(plugin));
+        self.timings.retain(|plugin, _| live.contains(plugin));
+    }
+
+    /// Programs started and finished per plugin, since the last reset.
+    pub fn timings(&self) -> &HashMap<String, super::perf::RunTiming> {
+        &self.timings
+    }
+
+    /// Start a new measuring window, alongside the loop's own.
+    pub fn reset_timings(&mut self) {
+        self.timings.clear();
     }
 }
 

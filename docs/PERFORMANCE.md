@@ -1527,6 +1527,71 @@ pane, a delete still doing both.
 
 ---
 
+## ADR-P23: Per-plugin cost, from one report (2026-09-15)
+
+**Context**: ADR-P11's layer is aggregate. It says a frame is 12ms, that renders
+climb while idle, that `input_dispatch` took 140ms — and nothing says *which
+pane*. On an interface made of the user's own panes (a task list, a file
+browser, a review pane) that was the question actually being asked, and the only
+way to answer it was to delete panes until the number moved.
+
+**Decision**: the Lua host records cost per plugin, keyed by the plugin's path,
+into one `kernel::perf::PluginTable`, and `kernel::perf::plugin_report` turns it
+into the one ranked `PluginReport` that all three surfaces read — the HUD's
+`panes` table under the counters, the `plugins` array of the published snapshot,
+and `thurbox-cli perf --plugins` (text, or `--json` for a script). Per plugin:
+Lua renders and pure-cache reuses, render time (p50/p95/max and the exact sum),
+share of painted-frame time, time in each handler (`on_key`, `on_action`,
+`on_click`/`on_context`, `on_scroll`, `on_event`, `decorate`), `run` asks plus
+the started programs' durations (from `RunStore`, off-thread and so reported
+beside the pane's cost, never added to it), `store`/`state` writes made while
+rendering and how many assigned a table, the last tree's node and run counts,
+failures, idle renders and closed-float renders. Rows sort by UI-thread time.
+
+- **Recorded in the host**, not around the coordinator's call sites: a plugin is
+  reached from a dozen of them, and the pure cache's hit path is inside
+  `render`. `render` is split into the cache check and `render_lua`, so one
+  place charges a Lua render and another a reuse.
+- **Gated like ADR-P11.** The loop hands the host `perf_timing_active()` once per
+  iteration; off, a plugin call pays two `Cell<bool>` reads and no `Instant`.
+  Turning it on clears the table, so an opened HUD shows what happened while it
+  was open, and the `perf_window` roll clears it with the histograms.
+- **Writes are counted in `__newindex`**, one add per write, always; a render's
+  share is the difference across that render. Attribution by difference is what
+  keeps the closure from needing to know which plugin is current.
+- **Hints, not only numbers**, each the cause `ui/AGENTS.md` names: an impure
+  pane rendering on ≥90% of frames, a float rendering while closed, fresh tables
+  (or any writes) to `store`/`state` from a render, and a *pure* pane re-rendering
+  while idle (an impure one renders on every paint by definition, which the first
+  hint already says). None fires under `HINT_MIN_FRAMES` frames.
+- **Slow ops are attributed.** `time_op` opens an op on the host, which remembers
+  the longest single plugin call inside it, so `input_dispatch 140ms` carries the
+  pane. Tracked whether or not timing is on, because slow ops are. Event dispatch
+  is now an op of its own (`event_dispatch`), timed only when something is queued.
+
+**Rejected**:
+
+- *Timing in the coordinator* — a dozen call sites, each able to forget, and no
+  view of the cache's hit path.
+- *Total time rather than the longest call for a slow op* — an op is one action;
+  the pane that stalled it is the one whose call took the time.
+- *Adding run durations to a pane's total* — a slow program costs a stale answer,
+  not a frame, and ranking by it would point at the wrong pane.
+
+**Consequences**: pinned by `tests/kernel_perf.rs` — a deliberately expensive,
+impure pane ranks above a cheap pure one, the pure one shows its reuse, a slow
+`on_event` is attributed to its plugin, nothing is recorded while timing is off,
+and the CLI's JSON row shape — and by `tests/tui_e2e.rs`'s F12 scenario, which
+opens the HUD on the real binary and waits for the session list's row.
+
+Overhead, as a paired reading (`perf-run.sh -n 8 -p 1 -d 30`, 200×50, three
+interleaved runs a side): render-thread CPU with the perf log off averaged 8.69%
+before and after; with it on, the median went from 8.53% to 9.07%. That is inside
+the baseline's own run-to-run spread (6.0–9.2%), and frame p50/p95 and frames per
+window did not move.
+
+---
+
 ## Measuring: the bench and the load harness (2026-08-29)
 
 Two instruments, because "a frame costs 2ms" and "thurbox costs 8% of a core"
@@ -1810,8 +1875,10 @@ worktree/spawn offload should ride with that branch or follow it.
 | Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read the `startup` line in `thurbox.log` |
 | Break down startup time | Read the `startup` line's phase fields: `config_init_ms`, `db_open_ms`, `theme_activate_ms`, `extension_heal_ms`, `heartbeat_ms`, `ui_build_ms` (building the Lua interface) and `first_frame_ms` |
 | Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~1000 iterations: counter deltas + frame/republish/tick percentiles + slow ops) |
-| Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms), or the slow-op list in `perf_window` |
+| Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms + the plugin whose call was longest), or the slow-op list in `perf_window` |
 | Watch perf live in the TUI | Press `F12` (perf HUD overlay; `[features] perf_hud`) |
+| Find the slow pane | `F12`, read the `panes` table (worst in red, `!` = a hint), then `thurbox-cli perf --plugins` for every column and the hints spelled out — ADR-P23 |
+| Script per-pane cost | `thurbox-cli perf --plugins --json` — one row per plugin, sorted by `total_us` |
 | Inspect a running TUI from outside | `thurbox-cli perf` (needs THURBOX_PERF_LOG or an open HUD in that TUI) |
 | See what a frame costs | `thurbox-cli perf` — `frame` is the paint and `republish` the table rebuild beside it; a frame is roughly the two added together |
 | See binary size | Check the `Binary Size` CI job summary, or `cargo bloat --release --crates` |

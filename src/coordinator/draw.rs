@@ -20,9 +20,12 @@ use thurbox::kernel::node::{Axis, Identity};
 use thurbox::kernel::perf::Counters;
 use thurbox::kernel::{bands, paint};
 
-use super::{clamp_span, error_area, hud_area, read_cells, render_hud};
+use super::{
+    clamp_span, error_area, hud_area, plugin_hud_area, read_cells, render_hud, render_plugin_hud,
+};
 use crate::{
-    App, ClickTarget, FORCE_REDRAW_INTERVAL, MIN_FRAME_INTERVAL, OUTPUT_FRAME_INTERVAL, STATUS_TTL,
+    App, ClickTarget, FORCE_REDRAW_INTERVAL, MIN_FRAME_INTERVAL, OUTPUT_FRAME_INTERVAL,
+    QUIESCENT_AFTER, STATUS_TTL,
 };
 
 impl App {
@@ -51,6 +54,10 @@ impl App {
         // that paints nothing is pure waste. At `drain_input`'s 10ms poll that
         // was 100 rebuilds a second to feed a screen that redraws four times.
         let timing = self.perf_timing_active();
+        if timing {
+            self.host
+                .set_idle(self.last_activity.elapsed() >= QUIESCENT_AFTER);
+        }
         let republish_start = timing.then(Instant::now);
         self.republish();
         if let Some(start) = republish_start {
@@ -59,7 +66,9 @@ impl App {
         let draw_start = timing.then(Instant::now);
         let painted = terminal.draw(|frame| self.draw(frame))?;
         if let Some(start) = draw_start {
-            self.timings.frame.record(start.elapsed());
+            let took = start.elapsed();
+            self.timings.frame.record(took);
+            self.host.note_frame(took);
         }
         // While `painted` still borrows the terminal — it only needs `&self` and
         // the cells, and this order is what lets the frame buffer be read in
@@ -233,7 +242,14 @@ impl App {
         // The counters, above the floats: a diagnostic a modal could cover
         // would be useless exactly when a modal is what you are diagnosing.
         if self.hud {
-            render_hud(frame, hud_area(area), &self.perf.read(), &self.timings);
+            let hud = hud_area(area);
+            render_hud(frame, hud, &self.perf.read(), &self.timings);
+            let report = self.host.plugin_report(self.runs.timings());
+            render_plugin_hud(
+                frame,
+                plugin_hud_area(area, hud, report.rows.len()),
+                &report,
+            );
             // The counters move on every iteration, so the HUD is never
             // settled — while it is up, the loop keeps painting.
             self.changed_this_frame = true;
