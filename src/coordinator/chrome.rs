@@ -536,8 +536,13 @@ pub(crate) fn render_hud(
             fmt_hud_us(histogram.max_us()),
         ));
     }
+    // The pane when there is one: it is what the reader goes to fix, and the
+    // op name alone does not fit beside it.
     match timings.slow_ops.iter_recent().next() {
-        Some(op) => text.push_str(&format!("slow   {}:{}ms", op.name, op.ms)),
+        Some(op) => match &op.plugin {
+            Some(plugin) => text.push_str(&format!("slow   {}ms {plugin}", op.ms)),
+            None => text.push_str(&format!("slow   {}:{}ms", op.name, op.ms)),
+        },
         None => text.push_str("slow   none"),
     }
     frame.render_widget(Clear, area);
@@ -546,6 +551,103 @@ pub(crate) fn render_hud(
         Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
         inner,
     );
+}
+
+/// Rows of the per-pane table. The table is ranked, so an interface with more
+/// plugins than this shows its most expensive ones; `thurbox-cli perf
+/// --plugins` lists all of them.
+const PLUGIN_HUD_ROWS: usize = 8;
+
+/// Columns the per-pane table wants: the widest row it formats, plus borders.
+const PLUGIN_HUD_WIDTH: u16 = 52;
+
+/// Two borders, the header and one row: less than this shows no pane at all.
+const PLUGIN_HUD_MIN_HEIGHT: u16 = 4;
+
+/// Where the per-pane table sits: under the counters, in the same corner — or
+/// beside them on a terminal too short to have room below, where placing it
+/// underneath would draw nothing at all.
+pub(crate) fn plugin_hud_area(area: Rect, hud: Rect, rows: usize) -> Rect {
+    // Two borders, the header, the rows and one hint line.
+    let wanted = (rows.min(PLUGIN_HUD_ROWS) as u16).saturating_add(4);
+    let below = area.bottom().saturating_sub(hud.bottom());
+    if below >= wanted.min(PLUGIN_HUD_MIN_HEIGHT) {
+        let width = PLUGIN_HUD_WIDTH.min(area.width);
+        return Rect {
+            x: area.right() - width,
+            y: hud.bottom(),
+            width,
+            height: wanted.min(below),
+        };
+    }
+    let width = PLUGIN_HUD_WIDTH.min(hud.x.saturating_sub(area.x));
+    Rect {
+        x: hud.x - width,
+        y: area.y,
+        width,
+        height: wanted.min(area.height),
+    }
+}
+
+/// Paint the per-pane cost table: most expensive first, the worst in red, any
+/// pane with a hint marked `!`, and the first hint spelled out underneath.
+pub(crate) fn render_plugin_hud(
+    frame: &mut Frame,
+    area: Rect,
+    report: &thurbox::kernel::perf::PluginReport,
+) {
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::Line;
+    use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+
+    if area.width < 3 || area.height < 3 {
+        return;
+    }
+    let yellow = Style::default().fg(Color::Yellow);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(yellow)
+        .title(" panes ");
+    let inner = block.inner(area);
+    let mut lines = vec![Line::styled(
+        format!(
+            "  {:<13} {:>7} {:>6} {:>5} rend/reuse",
+            "pane", "total", "p95", "share"
+        ),
+        yellow,
+    )];
+    for (rank, row) in report.rows.iter().take(PLUGIN_HUD_ROWS).enumerate() {
+        let text = format!(
+            "{} {} {:>7} {:>6} {:>4}% {:>5}/{:<5}{}",
+            rank + 1,
+            thurbox::kernel::perf::fit_columns(&row.name, 13),
+            fmt_hud_us(row.total_us),
+            fmt_hud_us(row.stats.render.percentile_us(95)),
+            (row.frame_share * 100.0).round() as u64,
+            row.stats.renders,
+            row.stats.reused,
+            if row.hints.is_empty() { "" } else { "!" },
+        );
+        let style = if rank == 0 && row.total_us > 0 {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else if !row.hints.is_empty() {
+            Style::default().fg(Color::LightYellow)
+        } else {
+            yellow
+        };
+        lines.push(Line::styled(text, style));
+    }
+    if let Some((name, hint)) = report
+        .rows
+        .iter()
+        .find_map(|row| row.hints.first().map(|hint| (&row.name, hint)))
+    {
+        lines.push(Line::styled(format!("! {name}: {}", hint.text()), yellow));
+    }
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Flatten a crossterm key into what Lua is told about it.
@@ -607,6 +709,11 @@ mod tests {
                     hud.right() <= area.right() && hud.bottom() <= area.bottom(),
                     "hud_area({width}x{height}) escaped: {hud:?}"
                 );
+                let panes = plugin_hud_area(area, hud, 20);
+                assert!(
+                    panes.right() <= area.right() && panes.bottom() <= area.bottom(),
+                    "plugin_hud_area({width}x{height}) escaped: {panes:?}"
+                );
 
                 for float in [
                     Float::default(),
@@ -639,5 +746,41 @@ mod tests {
         assert_eq!(clamp_span(1, 3, 5), 3);
         assert_eq!(clamp_span(9, 3, 2), 2);
         assert_eq!(clamp_span(9, 3, 0), 0);
+    }
+
+    /// A short terminal leaves no room under the counters, and the table the
+    /// HUD exists for must not silently vanish there.
+    #[test]
+    fn the_pane_table_moves_beside_the_counters_when_there_is_no_room_below() {
+        for (width, height) in [(120u16, 15u16), (120, 17), (100, 12)] {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            };
+            let hud = hud_area(area);
+            let panes = plugin_hud_area(area, hud, 8);
+            assert!(
+                panes.height >= 4 && panes.width >= 20,
+                "{width}x{height}: no room for a row: {panes:?}"
+            );
+            assert!(
+                panes.intersection(hud).is_empty(),
+                "{width}x{height}: covers the counters: {panes:?} / {hud:?}"
+            );
+        }
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        };
+        let hud = hud_area(area);
+        assert_eq!(
+            plugin_hud_area(area, hud, 8).y,
+            hud.bottom(),
+            "with room below, it stays under the counters"
+        );
     }
 }

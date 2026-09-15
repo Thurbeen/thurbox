@@ -247,7 +247,14 @@ levers, in the order they pay:
    usually draws nothing moving costs you the cache eight times a second.
 
 `F12` (the perf HUD) is the check: `renders` climbing on an untouched screen
-means a pane is not settling. The bundled panes are worked examples — the
+means a pane is not settling. To find **which** pane, read the `panes` table
+under the counters — one row per plugin, most expensive first, the worst in red
+and a `!` on any pane with a hint — then run `thurbox-cli perf --plugins` for
+render p50/p95/max, handler time, reuse, `run` durations, `store` writes per
+render and tree size, with each hint spelled out (`--json` to script it). The
+hints name the traps above: not `pure` yet rendering every frame, a float
+rendering while closed, a fresh table written to `store` from a render, a pure
+pane that keeps re-rendering while idle. The bundled panes are worked examples — the
 session list's memoized model (`lib/session_model.lua`), the flow's row cache,
 and the search strip's per-session content memo.
 

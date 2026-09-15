@@ -476,7 +476,7 @@ effect in either direction. Same for `three_panel_min_cols` above.
 | Key | Default | Controls |
 |-----|---------|----------|
 | `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
-| `perf_hud` | `true` | perf HUD overlay (`F12`): live perf counters + frame/tick timing (see `docs/PERFORMANCE.md`) |
+| `perf_hud` | `true` | perf HUD overlay (`F12`): live perf counters, frame/tick timing and the per-pane cost table (see `docs/PERFORMANCE.md`) |
 | `automations` | `true` | TUI schedule firing + heartbeat arming (the CLI stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |

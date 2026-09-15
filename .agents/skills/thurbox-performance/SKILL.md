@@ -166,6 +166,12 @@ a paired before/after rather than two absolute numbers.
 `thurbox-cli perf`. Three histograms, kept separate so they **decompose** rather
 than nest: `frame` is the paint, `republish` is the per-frame table rebuild
 above, and `tick` is the rest of one iteration. `kernel::perf::snapshot_json`
-owns the published shape and `cli::perf` only renders it. Full rationale:
+owns the published shape and `cli::perf` only renders it. **Per plugin**
+(ADR-P23): the Lua host records each plugin's renders, reuses, render and
+handler time, `run` asks, render-time `store` writes and tree size into a
+`PluginTable` under the same gate (`LuaHost::set_perf_timing`), and
+`perf::plugin_report` ranks it with hints into the one `PluginReport` the HUD's
+`panes` table, the snapshot's `plugins` array and `thurbox-cli perf --plugins`
+read; `time_op` names the plugin whose call was longest. Full rationale:
 `docs/PERFORMANCE.md`.
 

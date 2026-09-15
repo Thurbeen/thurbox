@@ -39,8 +39,10 @@ mod load;
 mod publish;
 
 use self::api::{clean_error, install_api, RUN_IMPL};
+pub(crate) use self::api::{columns, take_left};
 use self::load::{load_arrangement, load_plugin, new_vm, read_float, Budget};
 use self::publish::run_to_lua;
+use super::perf::Hook;
 
 /// Instructions a single plugin call may execute before it is interrupted.
 ///
@@ -117,6 +119,8 @@ enum Persisted {
 /// `store` is shared by every plugin; `state` is keyed by plugin file too, so
 /// two plugins can both use `state.index` without colliding.
 type Shared = Rc<RefCell<BTreeMap<String, Persisted>>>;
+/// `store`/`state` assignments so far, and how many of them assigned a table.
+type WriteCount = Rc<std::cell::Cell<(u64, u64)>>;
 /// How many times plugin state — shared or private — has been written.
 ///
 /// A pure pane's tree may legitimately depend on `store` or `state`: the agent
@@ -704,6 +708,25 @@ pub struct LuaHost {
     /// on, since it has nothing else to assert on (`frame-cost`).
     skipped_renders: std::cell::Cell<u64>,
     reused_groups: std::cell::Cell<u64>,
+    /// Per-plugin cost, recorded only while [`Self::set_perf_timing`] is on
+    /// (ADR-P23).
+    ///
+    /// Recorded here rather than at the loop's call sites because a plugin is
+    /// reached from a dozen of them — every hook, every event subscriber, the
+    /// pure cache's hit path — and only the host sees all of them and knows
+    /// which plugin each call was for. Off, a call pays two `Cell<bool>` reads.
+    perf_timing: std::cell::Cell<bool>,
+    plugin_perf: RefCell<super::perf::PluginTable>,
+    /// Whether the loop has seen no input for a while, for `idle_renders`.
+    idle: std::cell::Cell<bool>,
+    /// Open between [`Self::begin_op`] and [`Self::end_op`]: the longest single
+    /// plugin call since, so a slow op can name whose it was. Tracked whether or
+    /// not timing is on, because slow ops are.
+    op_open: std::cell::Cell<bool>,
+    op_heaviest: RefCell<Option<(String, std::time::Duration)>>,
+    /// Every `store`/`state` write, counted in the VM's `__newindex`; a render's
+    /// share is the difference across the call.
+    store_writes: WriteCount,
     /// A pure pane's last converted tree, with the key it was built under.
     ///
     /// Keyed by plugin index. Dropped whenever the VM is rebuilt, alongside
@@ -850,6 +873,12 @@ impl LuaHost {
             epoch: RefCell::new(None),
             skipped_renders: std::cell::Cell::new(0),
             reused_groups: std::cell::Cell::new(0),
+            perf_timing: std::cell::Cell::new(false),
+            plugin_perf: RefCell::new(super::perf::PluginTable::default()),
+            idle: std::cell::Cell::new(false),
+            op_open: std::cell::Cell::new(false),
+            op_heaviest: RefCell::new(None),
+            store_writes: Rc::new(std::cell::Cell::new((0, 0))),
             store: Shared::default(),
             state: Private::default(),
             state_version: StateVersion::default(),
@@ -922,6 +951,7 @@ impl LuaHost {
             self.state_version.clone(),
             self.clock.clone(),
             self.clock_read.clone(),
+            self.store_writes.clone(),
         )
         .map_err(|e| e.to_string())?;
 
@@ -1036,10 +1066,12 @@ impl LuaHost {
             return Ok(false);
         };
 
+        let start = self.call_started();
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);
         let handled: Result<bool, mlua::Error> = handler.call(action.to_string());
         drop(guard);
+        self.hook_finished(plugin, start, Hook::Action, handled.is_err());
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
@@ -1143,10 +1175,12 @@ impl LuaHost {
             return Ok(());
         };
 
+        let start = self.call_started();
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);
         let outcome: Result<Value, mlua::Error> = handler.call((name.to_string(), payload.clone()));
         drop(guard);
+        self.hook_finished(plugin, start, Hook::Event, outcome.is_err());
         outcome.map(|_| ()).map_err(|e| fail(clean_error(&e)))
     }
 
@@ -1236,10 +1270,12 @@ impl LuaHost {
 
         let tree = convert::to_lua(&self.lua, node).map_err(fail)?;
 
+        let start = self.call_started();
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);
         let result: Result<Value, mlua::Error> = handler.call((tree, table));
         drop(guard);
+        self.hook_finished(plugin, start, Hook::Decorate, result.is_err());
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         // The DECORATOR owns what it returns: a program surface it names is one of
@@ -1522,7 +1558,14 @@ impl LuaHost {
 
     /// Take the runs plugins asked for this frame.
     pub fn drain_runs(&self) -> Vec<(String, super::runs::Ask)> {
-        std::mem::take(&mut *self.runs.borrow_mut())
+        let asked = std::mem::take(&mut *self.runs.borrow_mut());
+        if self.perf_timing.get() {
+            let mut table = self.plugin_perf.borrow_mut();
+            for (path, _) in &asked {
+                table.stats_mut(path).asked += 1;
+            }
+        }
+        asked
     }
 
     pub fn drain_commands(&self) -> Vec<Command> {
@@ -1576,6 +1619,110 @@ impl LuaHost {
         self.reused_groups.get()
     }
 
+    /// Record per-plugin cost or stop. Turning it on starts a fresh window, so
+    /// what an opened HUD shows is what happened while it was open.
+    pub fn set_perf_timing(&self, on: bool) {
+        if on && !self.perf_timing.get() {
+            self.plugin_perf.borrow_mut().clear();
+        }
+        self.perf_timing.set(on);
+    }
+
+    /// Whether renders from now on happen while the interface is idle.
+    pub fn set_idle(&self, idle: bool) {
+        self.idle.set(idle);
+    }
+
+    /// Count one painted frame, the denominator of every per-plugin share.
+    pub fn note_frame(&self, took: std::time::Duration) {
+        if self.perf_timing.get() {
+            self.plugin_perf.borrow_mut().note_frame(took);
+        }
+    }
+
+    /// Start a new per-plugin window, alongside the loop's `perf_window`.
+    pub fn reset_plugin_perf(&self) {
+        self.plugin_perf.borrow_mut().clear();
+    }
+
+    /// Start watching plugin calls for [`Self::end_op`].
+    pub fn begin_op(&self) {
+        self.op_open.set(true);
+        self.op_heaviest.replace(None);
+    }
+
+    /// The plugin whose single call was the longest since [`Self::begin_op`].
+    ///
+    /// The longest call, not the most total time: an op is one user action, and
+    /// the pane that stalled it is the one call that took the time.
+    pub fn end_op(&self) -> Option<String> {
+        self.op_open.set(false);
+        self.op_heaviest.take().map(|(name, _)| name)
+    }
+
+    /// Every loaded plugin's cost this window, most expensive first.
+    pub fn plugin_report(&self) -> super::perf::PluginReport {
+        super::perf::plugin_report(
+            &self.plugin_perf.borrow(),
+            self.plugins.iter().map(|plugin| super::perf::PluginMeta {
+                name: &plugin.name,
+                path: &plugin.path,
+                pure: plugin.pure,
+                floats: plugin.floats,
+            }),
+        )
+    }
+
+    /// Count a program starting or finishing, in the window its start belongs
+    /// to — see [`super::perf::PluginTable::note_run`].
+    pub fn note_run(&self, event: &super::runs::RunEvent) {
+        if self.perf_timing.get() {
+            self.plugin_perf.borrow_mut().note_run(event);
+        }
+    }
+
+    /// A clock for one plugin call, when anything will read it.
+    fn call_started(&self) -> Option<std::time::Instant> {
+        (self.perf_timing.get() || self.op_open.get()).then(std::time::Instant::now)
+    }
+
+    /// Feed a finished call to an open op; its duration when timing is on.
+    fn call_finished(
+        &self,
+        plugin: &Plugin,
+        start: Option<std::time::Instant>,
+    ) -> Option<std::time::Duration> {
+        let took = start?.elapsed();
+        if self.op_open.get() {
+            let mut heaviest = self.op_heaviest.borrow_mut();
+            // `map_or(true, ..)` rather than `is_none_or`: MSRV 1.75.
+            if heaviest
+                .as_ref()
+                .map_or(true, |(_, longest)| took > *longest)
+            {
+                *heaviest = Some((plugin.name.clone(), took));
+            }
+        }
+        self.perf_timing.get().then_some(took)
+    }
+
+    /// Charge one handler call to its plugin.
+    fn hook_finished(
+        &self,
+        plugin: &Plugin,
+        start: Option<std::time::Instant>,
+        hook: Hook,
+        failed: bool,
+    ) {
+        let Some(took) = self.call_finished(plugin, start) else {
+            return;
+        };
+        let mut table = self.plugin_perf.borrow_mut();
+        let stats = table.stats_mut(&plugin.path);
+        stats.hooks.stat_mut(hook).record(took);
+        stats.failures += u64::from(failed);
+    }
+
     /// The epoch of the most recent publish, which a pure pane's tree is keyed
     /// on. `None` before anything has been published.
     fn published_epoch(&self) -> Option<Epoch> {
@@ -1612,12 +1759,47 @@ impl LuaHost {
                 if let Some(cached) = self.trees.borrow().get(&index) {
                     if cached.answers(&key) {
                         self.skipped_renders.set(self.skipped_renders.get() + 1);
+                        if self.perf_timing.get() {
+                            self.plugin_perf.borrow_mut().stats_mut(&plugin.path).reused += 1;
+                        }
                         return Ok(cached.rendered.clone());
                     }
                 }
             }
         }
 
+        let start = self.call_started();
+        let writes = self.store_writes.get();
+        let result = self.render_lua(index, plugin, ctx, key);
+        if let Some(took) = self.call_finished(plugin, start) {
+            let (all, tables) = self.store_writes.get();
+            let mut table = self.plugin_perf.borrow_mut();
+            let stats = table.stats_mut(&plugin.path);
+            stats.renders += 1;
+            stats.render.record(took);
+            stats.idle_renders += u64::from(self.idle.get());
+            stats.store_writes += all.wrapping_sub(writes.0);
+            stats.store_table_writes += tables.wrapping_sub(writes.1);
+            match &result {
+                Ok(rendered) => {
+                    stats.note_tree(&rendered.node);
+                    stats.closed_renders += u64::from(plugin.floats && rendered.float.is_none());
+                }
+                Err(_) => stats.failures += 1,
+            }
+        }
+        result
+    }
+
+    /// The uncached half of [`Self::render`]: call the plugin and convert what it
+    /// returned, caching the tree for a pure pane.
+    fn render_lua(
+        &self,
+        index: usize,
+        plugin: &Plugin,
+        ctx: RenderContext,
+        key: Option<TreeKey>,
+    ) -> Result<Rendered, PluginError> {
         let fail = |message: String| PluginError {
             plugin: plugin.name.clone(),
             phase: Phase::Render,
@@ -1718,10 +1900,12 @@ impl LuaHost {
             .map_err(|e| fail(e.to_string()))?;
         table.set("cmd", key.cmd).map_err(|e| fail(e.to_string()))?;
 
+        let start = self.call_started();
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);
         let handled: Result<bool, mlua::Error> = handler.call(table);
         drop(guard);
+        self.hook_finished(plugin, start, Hook::Key, handled.is_err());
 
         handled.map_err(|e| fail(clean_error(&e)))
     }
@@ -1787,10 +1971,12 @@ impl LuaHost {
             .set("dragging", click.dragging)
             .map_err(|e| fail(e.to_string()))?;
 
+        let start = self.call_started();
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);
         let handled: Result<bool, mlua::Error> = handler.call(table);
         drop(guard);
+        self.hook_finished(plugin, start, Hook::Click, handled.is_err());
 
         handled.map_err(|e| fail(clean_error(&e)))
     }
@@ -1825,10 +2011,12 @@ impl LuaHost {
         table.set("x", scroll.x).map_err(|e| fail(e.to_string()))?;
         table.set("y", scroll.y).map_err(|e| fail(e.to_string()))?;
 
+        let start = self.call_started();
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);
         let handled: Result<bool, mlua::Error> = handler.call(table);
         drop(guard);
+        self.hook_finished(plugin, start, Hook::Scroll, handled.is_err());
 
         handled.map_err(|e| fail(clean_error(&e)))
     }

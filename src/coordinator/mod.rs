@@ -55,6 +55,7 @@ impl App {
             // One cached bool, so a default run pays nothing for the two
             // `Instant` reads below (ADR-P11).
             let timing = self.perf_timing_active();
+            self.host.set_perf_timing(timing);
             let tick_start = timing.then(Instant::now);
 
             self.poll_reload();
@@ -170,8 +171,12 @@ impl App {
                 .timings
                 .slow_ops
                 .iter_recent()
-                .map(|op| format!("{}:{}ms", op.name, op.ms))
+                .map(|op| match &op.plugin {
+                    Some(plugin) => format!("{}:{}ms@{plugin}", op.name, op.ms),
+                    None => format!("{}:{}ms", op.name, op.ms),
+                })
                 .collect();
+            let plugins = self.host.plugin_report().summary(5);
             tracing::info!(
                 iterations = window.iterations,
                 frames = window.frames,
@@ -187,11 +192,13 @@ impl App {
                 tick_p50_us = self.timings.tick.percentile_us(50),
                 tick_p95_us = self.timings.tick.percentile_us(95),
                 slow_ops = slow.join(" "),
+                plugins,
                 "perf_window"
             );
             self.perf_window_base = counters;
             self.perf_window_tick = counters.iterations;
             self.timings.reset_window();
+            self.host.reset_plugin_perf();
         }
 
         // The snapshot, on its own slower cadence: it is a database write, not
@@ -210,6 +217,7 @@ impl App {
             &self.timings,
             &self.startup,
             self.snapshots.current().sessions.len(),
+            &self.host.plugin_report(),
         );
         if let Some(db) = snapshots_db() {
             if let Err(e) = db.set_perf_snapshot(&json.to_string()) {
@@ -227,11 +235,19 @@ impl App {
     /// user-triggered operations rather than the hot loop, and an interactive
     /// stall has to be attributable even when nobody had a HUD open.
     pub(crate) fn time_op<T>(&mut self, name: &'static str, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.host.begin_op();
         let start = Instant::now();
         let out = f(self);
         let elapsed = start.elapsed();
-        if self.timings.record_op(name, elapsed) {
-            tracing::warn!(op = name, ms = elapsed.as_millis() as u64, "slow op");
+        let plugin = self.host.end_op();
+        let log_plugin = plugin.clone().unwrap_or_default();
+        if self.timings.record_op(name, elapsed, plugin) {
+            tracing::warn!(
+                op = name,
+                ms = elapsed.as_millis() as u64,
+                plugin = log_plugin,
+                "slow op"
+            );
         }
         out
     }
@@ -498,6 +514,11 @@ impl App {
             for (plugin, ask) in asked {
                 self.runs.request(&plugin, ask, &runner);
             }
+        }
+        // Drained on every pass so the store never holds them; the host ignores
+        // them while timing is off.
+        for event in self.runs.drain_events() {
+            self.host.note_run(&event);
         }
         // Answers, per plugin, for the next render to read.
         let mut answers = thurbox::kernel::host::RunAnswers::new();

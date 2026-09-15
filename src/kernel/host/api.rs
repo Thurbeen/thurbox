@@ -28,11 +28,19 @@ pub(super) fn install_api(
     state_version: StateVersion,
     clock: Rc<std::cell::Cell<f64>>,
     clock_read: Rc<std::cell::Cell<bool>>,
+    store_writes: super::WriteCount,
 ) -> mlua::Result<()> {
     scrub_globals(lua)?;
     install_require(lua, ui_dir)?;
-    install_store(lua, "store", store, state_version.clone(), None)?;
-    install_private(lua, state, current, state_version)?;
+    install_store(
+        lua,
+        "store",
+        store,
+        state_version.clone(),
+        store_writes.clone(),
+        None,
+    )?;
+    install_private(lua, state, current, state_version, store_writes)?;
     install_command(lua, queue, current_path.clone())?;
     install_files(lua, roots)?;
     install_run(lua, runs, current_path)?;
@@ -408,6 +416,7 @@ fn install_store(
     global: &str,
     store: Shared,
     version: StateVersion,
+    writes: super::WriteCount,
     _ns: Option<()>,
 ) -> mlua::Result<()> {
     let table = lua.create_table()?;
@@ -428,6 +437,7 @@ fn install_store(
     meta.set(
         "__newindex",
         lua.create_function(move |_, (_, key, value): (Table, String, Value)| {
+            count_write(&writes, &value);
             let mut slot = write.borrow_mut();
             // Compared before storing. A pane may write the same value on every
             // frame — the search strip re-states how many panes it is showing —
@@ -469,6 +479,7 @@ fn install_private(
     state: Private,
     current: Rc<RefCell<String>>,
     version: StateVersion,
+    writes: super::WriteCount,
 ) -> mlua::Result<()> {
     let table = lua.create_table()?;
     let meta = lua.create_table()?;
@@ -491,6 +502,7 @@ fn install_private(
     meta.set(
         "__newindex",
         lua.create_function(move |_, (_, key, value): (Table, String, Value)| {
+            count_write(&writes, &value);
             let ns = write_ns.borrow().clone();
             let mut slot = write.borrow_mut();
             // Same rule as `store`: only a value that actually moved counts.
@@ -515,6 +527,16 @@ fn install_private(
     table.set_metatable(Some(meta))?;
     lua.globals().set("state", table)?;
     Ok(())
+}
+
+/// Count one `store`/`state` assignment, and whether it assigned a table.
+///
+/// Always counted, since it is one add; the host attributes the count to a
+/// plugin by reading it before and after that plugin renders.
+fn count_write(writes: &super::WriteCount, value: &Value) {
+    let (all, tables) = writes.get();
+    let table = u64::from(matches!(value, Value::Table(_)));
+    writes.set((all.wrapping_add(1), tables.wrapping_add(table)));
 }
 
 fn to_lua(lua: &Lua, value: &Persisted) -> mlua::Result<Value> {
@@ -589,7 +611,7 @@ const ELLIPSIS: &str = "…";
 /// column budget is hardest to get right on. This is the same `unicode-width`
 /// the painter measures with, so a plugin that budgets with it agrees with what
 /// lands on the screen.
-fn columns(s: &str) -> usize {
+pub(crate) fn columns(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
@@ -598,7 +620,7 @@ fn columns(s: &str) -> usize {
 /// A double-width glyph that would straddle the edge is left out rather than
 /// half-drawn, so the result is never *wider* than asked for — which is what
 /// lets a caller add its own marker and still fit.
-fn take_left(s: &str, cols: usize) -> &str {
+pub(crate) fn take_left(s: &str, cols: usize) -> &str {
     let mut used = 0;
     for (at, ch) in s.char_indices() {
         let w = UnicodeWidthChar::width(ch).unwrap_or(0);
