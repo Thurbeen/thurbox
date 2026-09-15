@@ -357,6 +357,7 @@ fn a_plugin_can_read_the_platform_it_is_running_on() {
         repos: &repos,
         wants: &Default::default(),
         focus: Some("probe"),
+        selection: None,
         hovered: None,
         printing: &Default::default(),
     })

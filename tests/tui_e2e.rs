@@ -1506,6 +1506,65 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+/// The mouse text selection reaches a Lua pane through `thurbox.selection`.
+///
+/// The coordinator recomputes the selection every frame for `copy_selection`;
+/// publishing it into the snapshot is what lets a pane see it at all. This is the
+/// whole wire, not the module: a probe pane paints the field, and a drag over the
+/// shell's own echoed line is a real selection — the copy test above proves the
+/// same gesture copies exactly that text. Without the publish the field is nil
+/// and the probe stays `selwire:[]`, so this fails on the timeout rather than
+/// passing quietly.
+///
+/// The probe is deliberately NOT `pure`: `thurbox.selection` is a bare scalar, so
+/// it moves no epoch and bumps no state version — a pure pane reading it live
+/// would be served its cached tree until some other signal ticked. The real
+/// consumer (`41_notes`) reads it in `on_key`, which is never cached; a pane that
+/// wants to paint the live selection reads it every frame, which is what impure
+/// means. Reading it in render here is what makes the wire observable.
+#[test]
+fn the_text_selection_reaches_a_pane_as_a_published_field() {
+    let interface = interface_plus(
+        "95_selwire.lua",
+        r#"return {
+  name = "selwire",
+  slot = "sessions",
+  order = 90,
+  render = function()
+    return {
+      type = "text",
+      text = "selwire:[" .. (thurbox.selection or "") .. "]",
+      id = "selwire",
+    }
+  end,
+}"#,
+    );
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+
+    // The field is published every frame, so it is "" before any drag — the
+    // probe paints the empty selection rather than a missing field.
+    tui.wait_for("selwire:[]");
+
+    // A line the shell echoes back, aimed at by its output (the `""` keeps the
+    // needle out of the command line, which still shows the quotes). The drag
+    // over it is the selection.
+    tui.send(b"echo tb-select-\"\"me\r");
+    tui.wait_for("tb-select-me");
+    let at = tui.find("tb-select-me");
+    tui.drag(at, 12);
+
+    // The assertion: the pane repainted with the dragged text, which it could
+    // only have read from `thurbox.selection`.
+    tui.wait_for("selwire:[tb-select-me]");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 #[test]
 fn clicking_a_session_row_hands_focus_to_the_agent_pane() {
     // Choosing a session is one gesture, however it is made: Enter on a row

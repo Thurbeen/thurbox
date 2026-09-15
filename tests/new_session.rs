@@ -204,6 +204,7 @@ fn publish(host: &LuaHost, world: &World) {
         repos: &world.repos,
         wants: &world.wants,
         focus: None,
+        selection: None,
         hovered: None,
         printing: &Default::default(),
     })

@@ -102,6 +102,7 @@ fn publish(host: &LuaHost, registry: &Registry, themes: &Themes) {
         repos: &repos,
         wants: &Default::default(),
         focus: None,
+        selection: None,
         hovered: None,
         printing: &Default::default(),
     })

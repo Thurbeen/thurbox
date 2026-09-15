@@ -723,6 +723,7 @@
 ---@field taken_at_ms integer When these rows were read.
 ---@field error? string
 ---@field focus string Which pane holds focus, by name.
+---@field selection string The mouse text selection, empty when nothing is selected.
 ---@field hover thurbox.Hover
 ---@field plugins thurbox.PluginRow[]
 ---@field ui_dir string

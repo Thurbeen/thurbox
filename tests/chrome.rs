@@ -120,6 +120,7 @@ fn publish_with(
         repos: &repos,
         wants: &Default::default(),
         focus: None,
+        selection: None,
         hovered: None,
         printing: &Default::default(),
     })

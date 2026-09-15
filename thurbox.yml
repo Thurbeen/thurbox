@@ -489,6 +489,9 @@ globals:
     property: read-only
   thurbox.focus:
     property: read-only
+  # The mouse text selection, empty when nothing is selected.
+  thurbox.selection:
+    property: read-only
   # What the pointer is over, as whichever of the two the affordance was marked
   # with — so both are absent when nothing is hovered, and a pane matches on the
   # one it painted with.

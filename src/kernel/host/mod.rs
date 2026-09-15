@@ -631,6 +631,26 @@ pub struct Published<'a> {
     /// to name whoever IS, and it is not focusable itself. v1 reads the same
     /// thing off `App::focus`.
     pub focus: Option<&'a str>,
+    /// The mouse text selection, so a pane can read what the user has selected —
+    /// the coordinator otherwise keeps it only for `copy_selection`. `None` is
+    /// published as an empty string, so a pane reads a cleared selection as
+    /// cleared rather than as the last one.
+    ///
+    /// A bare scalar like `focus`, not a group: it moves no epoch and bumps no
+    /// state version, so a pane painting the live selection must be impure (read
+    /// it every frame) — a pure pane would be served its cached tree until some
+    /// other signal ticked. A pane that reads it in a key handler — to comment on
+    /// the selection under a chord — is never cached and sees it at once.
+    ///
+    /// The value is the selection as of the last completed paint: `republish`
+    /// runs before the paint that recomputes `selected_text`, and a handler runs
+    /// in `drain_input` after that paint, so it reads what the paint published.
+    /// A human chord after a drag lands a later frame — the drag has painted, so
+    /// the chord reads the finished selection. The only stale read is a chord
+    /// delivered in the same input batch as the drag, before any paint has run;
+    /// that is not reachable by hand and does not arise for the intended
+    /// comment-on-selection gesture.
+    pub selection: Option<&'a str>,
     /// The interface's own files: where each came from and which are running.
     ///
     /// Published rather than drawn by the kernel, so the pane that lists the

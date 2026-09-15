@@ -100,6 +100,10 @@ impl App {
             status_rows: self.status_rows(),
             can_open: browser_available(),
             focus: focus.as_deref(),
+            // Last frame's, since `republish` runs before the paint that
+            // recomputes `selected_text` — a chord pressed after a drag reads the
+            // finished selection, which is the case that matters.
+            selection: self.selected_text.as_deref(),
             hovered: self.hovered.as_ref(),
             inventory: &inventory,
             ui_dir: &ui_dir,
