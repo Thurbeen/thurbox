@@ -320,8 +320,8 @@ pub fn apply(
     // `updated_at` as last known before that (schema v45): the host's row
     // only outranks one when *the host's own clock* shows it was written
     // after that snapshot. `deleted_at` is this machine's clock and cannot be
-    // compared to the host's `updated_at` directly — see `apply` below.
-    let local_deleted: HashMap<SessionId, (u64, bool, Option<u64>)> = db
+    // compared to the host's `updated_at` directly — see `plan_row`.
+    let local_deleted: Tombstones = db
         .list_deleted_sessions()
         .unwrap_or_default()
         .into_iter()
@@ -333,97 +333,20 @@ pub fn apply(
 
     for row in active {
         let id = row.session.id;
-        if let Some(local) = local_active.get(&id) {
-            let merged = merge(local, &row.session);
-            if merged != *local {
-                if let Err(e) = db.upsert_session(&merged) {
-                    tracing::warn!("mirror: could not update {id}: {e}");
-                    continue;
-                }
-                report.updated.push(id);
-                record_host_clock(db, id, row.updated_at);
-            }
-        } else if let Some(&(deleted_at, _, host_updated_at)) = local_deleted.get(&id) {
-            // A tombstone here is a decision, not a gap. The host listing the
-            // row as active only outranks it when the host itself wrote the
-            // row *after* the last state this database knew from that host —
-            // that is a restore taken there. Comparing two readings of the
-            // host's own clock, rather than the host's `updated_at` against
-            // this machine's `deleted_at` (two different, possibly skewed
-            // clocks — see schema v45). When this database never held a
-            // reading from the host for this row (never mirrored before the
-            // delete), there is nothing to compare against, so this machine's
-            // own clock is the best available approximation. Otherwise the
-            // delete simply has not reached the host (its CLI was in backoff,
-            // or sharing was off when it was taken), and restoring would undo
-            // it on every pass for as long as both sides disagree.
-            let host_has_moved = match host_updated_at {
-                Some(known) => row.updated_at.is_some_and(|at| at > known),
-                None => row.updated_at.is_some_and(|at| at > deleted_at),
-            };
-            if !host_has_moved {
-                report.tombstoned.push(id);
-                continue;
-            }
-            if let Err(e) = db
-                .restore_session(id)
-                .and_then(|()| db.upsert_session(&row.session))
-            {
-                tracing::warn!("mirror: could not restore {id}: {e}");
-                continue;
-            }
-            report.restored.push(id);
-            record_host_clock(db, id, row.updated_at);
-        } else {
-            // Adopted, not spawned: the host launched it and this database is
-            // taking it on, which is what a watcher's `registered` reason says.
-            if let Err(e) =
-                db.upsert_session_as(&row.session, crate::storage::EventReason::Registered)
-            {
-                tracing::warn!("mirror: could not adopt {id}: {e}");
-                continue;
-            }
-            report.adopted.push(id);
-            record_host_clock(db, id, row.updated_at);
+        let plan = plan_row(&local_active, &local_deleted, row);
+        if !apply_plan(db, row, plan, &mut report) {
+            continue;
         }
-        // Status is the host's: its hooks wrote it. Only a *different* value is
-        // written, so an acknowledged `done` is not re-reported as new, and a
-        // host that says nothing leaves whatever the live channel set.
-        if let Some(state) = row.hook_state.as_deref() {
-            let local_state = hook_rows.get(&id).and_then(|r| r.state.as_deref());
-            if local_state != Some(state) {
-                if let Err(e) = db.set_hook_state(id, state) {
-                    tracing::warn!("mirror: could not record status of {id}: {e}");
-                }
-            }
-        }
-        if let Some(base) = row.base_branch.as_deref() {
-            if bases.get(&id).map(String::as_str) != Some(base) {
-                if let Err(e) = db.set_session_base_branch(id, base) {
-                    tracing::warn!("mirror: could not record base branch of {id}: {e}");
-                }
-            }
-        }
+        record_host_facts(
+            db,
+            row,
+            hook_rows.get(&id).and_then(|r| r.state.as_deref()),
+            bases.get(&id).map(String::as_str),
+        );
     }
 
     for gone in deleted {
-        let id = gone.id;
-        if local_active.contains_key(&id) {
-            let deleted = if gone.force_deleted {
-                db.force_delete_session(id)
-            } else {
-                db.soft_delete_session(id)
-            };
-            if let Err(e) = deleted {
-                tracing::warn!("mirror: could not delete {id}: {e}");
-                continue;
-            }
-            report.deleted.push(id);
-        } else if let Some((_, false, _)) = local_deleted.get(&id) {
-            if gone.force_deleted {
-                let _ = db.mark_session_force_deleted(id);
-            }
-        }
+        apply_host_delete(db, gone, &local_active, &local_deleted, &mut report);
     }
 
     let host_knows: HashSet<SessionId> = active
@@ -439,6 +362,161 @@ pub fn apply(
     report.unknown_local.sort_by_key(|id| id.to_string());
     report.tombstoned.sort_by_key(|id| id.to_string());
     report
+}
+
+/// Local tombstones on one host: when each was taken, whether it was forced,
+/// and the host's own `updated_at` as last known before it.
+type Tombstones = HashMap<SessionId, (u64, bool, Option<u64>)>;
+
+/// What one row the host lists as active asks of this database.
+enum RowPlan {
+    /// Held here and already what the merge would write.
+    Unchanged,
+    /// Held here, and the host's facts change it.
+    Update(Box<SharedSession>),
+    /// Tombstoned here, and the host has not written the row since.
+    KeepTombstone,
+    /// Tombstoned here, but the host wrote the row after its delete.
+    Restore,
+    /// Not held here at all.
+    Adopt,
+}
+
+fn plan_row(
+    local_active: &HashMap<SessionId, SharedSession>,
+    local_deleted: &Tombstones,
+    row: &HostRow,
+) -> RowPlan {
+    let id = row.session.id;
+    if let Some(local) = local_active.get(&id) {
+        let merged = merge(local, &row.session);
+        return if merged == *local {
+            RowPlan::Unchanged
+        } else {
+            RowPlan::Update(Box::new(merged))
+        };
+    }
+    let Some(&(deleted_at, _, host_updated_at)) = local_deleted.get(&id) else {
+        return RowPlan::Adopt;
+    };
+    // A tombstone here is a decision, not a gap. The host listing the row as
+    // active only outranks it when the host itself wrote the row *after* the
+    // last state this database knew from that host — that is a restore taken
+    // there. Comparing two readings of the host's own clock, rather than the
+    // host's `updated_at` against this machine's `deleted_at` (two different,
+    // possibly skewed clocks — see schema v45). When this database never held
+    // a reading from the host for this row (never mirrored before the delete),
+    // there is nothing to compare against, so this machine's own clock is the
+    // best available approximation. Otherwise the delete simply has not
+    // reached the host (its CLI was in backoff, or sharing was off when it was
+    // taken), and restoring would undo it on every pass for as long as both
+    // sides disagree.
+    let host_has_moved = match host_updated_at {
+        Some(known) => row.updated_at.is_some_and(|at| at > known),
+        None => row.updated_at.is_some_and(|at| at > deleted_at),
+    };
+    if host_has_moved {
+        RowPlan::Restore
+    } else {
+        RowPlan::KeepTombstone
+    }
+}
+
+/// Carry out one row's plan and note it in `report`. `false` when nothing more
+/// is to be written for the row: its tombstone stands, or the write failed.
+fn apply_plan(db: &Database, row: &HostRow, plan: RowPlan, report: &mut MirrorReport) -> bool {
+    let id = row.session.id;
+    let written = match plan {
+        RowPlan::Unchanged => return true,
+        RowPlan::KeepTombstone => {
+            report.tombstoned.push(id);
+            return false;
+        }
+        RowPlan::Update(merged) => {
+            if let Err(e) = db.upsert_session(&merged) {
+                tracing::warn!("mirror: could not update {id}: {e}");
+                return false;
+            }
+            &mut report.updated
+        }
+        RowPlan::Restore => {
+            if let Err(e) = db
+                .restore_session(id)
+                .and_then(|()| db.upsert_session(&row.session))
+            {
+                tracing::warn!("mirror: could not restore {id}: {e}");
+                return false;
+            }
+            &mut report.restored
+        }
+        // Adopted, not spawned: the host launched it and this database is
+        // taking it on, which is what a watcher's `registered` reason says.
+        RowPlan::Adopt => {
+            if let Err(e) =
+                db.upsert_session_as(&row.session, crate::storage::EventReason::Registered)
+            {
+                tracing::warn!("mirror: could not adopt {id}: {e}");
+                return false;
+            }
+            &mut report.adopted
+        }
+    };
+    written.push(id);
+    record_host_clock(db, id, row.updated_at);
+    true
+}
+
+/// Write the host's status and base branch for a row where they differ from
+/// what this database holds.
+///
+/// Status is the host's: its hooks wrote it. Only a *different* value is
+/// written, so an acknowledged `done` is not re-reported as new, and a host
+/// that says nothing leaves whatever the live channel set.
+fn record_host_facts(
+    db: &Database,
+    row: &HostRow,
+    held_state: Option<&str>,
+    held_base: Option<&str>,
+) {
+    let id = row.session.id;
+    if let Some(state) = row.hook_state.as_deref().filter(|s| held_state != Some(*s)) {
+        if let Err(e) = db.set_hook_state(id, state) {
+            tracing::warn!("mirror: could not record status of {id}: {e}");
+        }
+    }
+    if let Some(base) = row.base_branch.as_deref().filter(|b| held_base != Some(*b)) {
+        if let Err(e) = db.set_session_base_branch(id, base) {
+            tracing::warn!("mirror: could not record base branch of {id}: {e}");
+        }
+    }
+}
+
+/// A row the host lists as deleted: delete it here when it is still active, or
+/// carry the host's force mark onto a soft tombstone already taken here.
+fn apply_host_delete(
+    db: &Database,
+    gone: &HostDeletedRow,
+    local_active: &HashMap<SessionId, SharedSession>,
+    local_deleted: &Tombstones,
+    report: &mut MirrorReport,
+) {
+    let id = gone.id;
+    if local_active.contains_key(&id) {
+        let deleted = if gone.force_deleted {
+            db.force_delete_session(id)
+        } else {
+            db.soft_delete_session(id)
+        };
+        if let Err(e) = deleted {
+            tracing::warn!("mirror: could not delete {id}: {e}");
+            return;
+        }
+        report.deleted.push(id);
+    } else if let Some((_, false, _)) = local_deleted.get(&id) {
+        if gone.force_deleted {
+            let _ = db.mark_session_force_deleted(id);
+        }
+    }
 }
 
 /// Snapshot the host's self-reported `updated_at` on the row this pass just
@@ -987,6 +1065,52 @@ mod tests {
             db.load_hook_state(id).unwrap().unwrap().state.as_deref(),
             Some("done")
         );
+    }
+
+    #[test]
+    fn a_base_branch_is_written_only_when_the_host_names_a_different_one() {
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+        let base = |db: &Database| db.load_base_branches().unwrap().get(&id).cloned();
+        apply(&db, BACKEND, &[host_row(id, "foo")], &[]);
+        assert_eq!(base(&db).as_deref(), Some("main"));
+        let mut moved = host_row(id, "foo");
+        moved.base_branch = Some("develop".into());
+        apply(&db, BACKEND, &[moved], &[]);
+        assert_eq!(base(&db).as_deref(), Some("develop"));
+        let mut silent = host_row(id, "foo");
+        silent.base_branch = None;
+        apply(&db, BACKEND, &[silent], &[]);
+        assert_eq!(
+            base(&db).as_deref(),
+            Some("develop"),
+            "a host that names no base leaves the recorded one alone"
+        );
+    }
+
+    #[test]
+    fn a_host_force_delete_marks_a_row_already_soft_deleted_here() {
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+        db.upsert_session(&local_row(id, "gone")).unwrap();
+        db.soft_delete_session(id).unwrap();
+        let report = apply(
+            &db,
+            BACKEND,
+            &[],
+            &[HostDeletedRow {
+                id,
+                force_deleted: true,
+            }],
+        );
+        assert!(report.deleted.is_empty(), "{report:?}");
+        let row = db
+            .list_deleted_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == id)
+            .expect("still a tombstone");
+        assert!(row.force_deleted);
     }
 
     #[test]
