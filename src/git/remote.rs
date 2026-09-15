@@ -616,8 +616,8 @@ pub(super) fn stream_into_child(
     if let Err(e) = written {
         let detail = reportable_stderr(&output.stderr);
         if detail.is_empty() {
-            return Err(anyhow::Error::new(e)
-                .context(format!("failed to stream the payload for remote {action}")));
+            return Err(e)
+                .with_context(|| format!("failed to stream the payload for remote {action}"));
         }
         anyhow::bail!("remote {action} failed: {detail}");
     }

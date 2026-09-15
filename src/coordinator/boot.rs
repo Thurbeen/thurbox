@@ -80,7 +80,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // worker must outlive every later log call, including the panic hook's, and
     // this runs once per process.
     let log_dir = thurbox::paths::log_directory().unwrap_or_else(|| std::path::PathBuf::from("."));
-    std::fs::create_dir_all(&log_dir).ok();
+    let create = log_dir.clone();
+    tokio::task::spawn_blocking(move || std::fs::create_dir_all(create))
+        .await
+        .ok();
     let (writer, guard) =
         tracing_appender::non_blocking(tracing_appender::rolling::daily(log_dir, "thurbox.log"));
     Box::leak(Box::new(guard));
