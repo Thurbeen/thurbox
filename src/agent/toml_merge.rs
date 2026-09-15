@@ -63,28 +63,17 @@ pub fn merge(target: &mut DocumentMut, source: &DocumentMut) {
 
 fn merge_item(target: &mut Item, source: &Item) {
     match (target, source) {
-        (Item::Table(t), Item::Table(s)) => {
-            for (key, sv) in s.iter() {
-                match t.get_mut(key) {
-                    Some(tv) => merge_item(tv, sv),
-                    None => {
-                        t.insert(key, sv.clone());
-                    }
-                }
-            }
-        }
+        (Item::Table(t), Item::Table(s)) => merge_table(t, s),
         (Item::ArrayOfTables(t), Item::ArrayOfTables(s)) => {
             for entry in s.iter() {
-                let rendered = entry.to_string();
-                if !t.iter().any(|e| e.to_string() == rendered) {
+                if !renders_among(t.iter(), entry) {
                     t.push(entry.clone());
                 }
             }
         }
         (Item::Value(Value::Array(t)), Item::Value(Value::Array(s))) => {
             for entry in s.iter() {
-                let rendered = entry.to_string();
-                if !t.iter().any(|e| e.to_string() == rendered) {
+                if !renders_among(t.iter(), entry) {
                     t.push_formatted(entry.clone());
                 }
             }
@@ -93,6 +82,26 @@ fn merge_item(target: &mut Item, source: &Item) {
         // value untouched rather than corrupt it.
         _ => {}
     }
+}
+
+fn merge_table(target: &mut Table, source: &Table) {
+    for (key, sv) in source.iter() {
+        match target.get_mut(key) {
+            Some(tv) => merge_item(tv, sv),
+            None => {
+                target.insert(key, sv.clone());
+            }
+        }
+    }
+}
+
+/// Whether one of `entries` renders exactly as `entry` does.
+fn renders_among<T: std::fmt::Display>(
+    mut entries: impl Iterator<Item = T>,
+    entry: &impl std::fmt::Display,
+) -> bool {
+    let rendered = entry.to_string();
+    entries.any(|e| e.to_string() == rendered)
 }
 
 /// Remove every `[[array of tables]]` entry **thurbox owns** — one whose own
