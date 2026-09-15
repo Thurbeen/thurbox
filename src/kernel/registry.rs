@@ -337,35 +337,7 @@ impl Registry {
     }
 
     fn apply_overrides(&mut self) {
-        // A command the user bound a chord to is a binding from then on, so it
-        // resolves, appears in help and can be reset there. Synthesised on every
-        // pass rather than kept, because `declare_all` replaces the list — and
-        // recognisable by its empty default chord, so the previous pass's copies
-        // are dropped before this one's are added.
-        self.bindings
-            .retain(|binding| !binding.default_chord.is_empty());
-        for command in &self.commands {
-            let already_bound = self
-                .bindings
-                .iter()
-                .any(|binding| binding.action == command.action);
-            if already_bound {
-                continue;
-            }
-            if let Some(chord) = self.binding_overrides.get(&command.action) {
-                self.bindings.push(Binding {
-                    plugin: command.plugin.clone(),
-                    action: command.action.clone(),
-                    default_chord: String::new(),
-                    chord: chord.clone(),
-                    overridden: true,
-                    description: command.description.clone(),
-                    scope: Scope::Plugin,
-                    passthrough: false,
-                    group: command.plugin.clone(),
-                });
-            }
-        }
+        self.bind_overridden_commands();
         for binding in &mut self.bindings {
             // A synthesised binding has no default to fall back to; it exists
             // only while its override does.
@@ -396,6 +368,40 @@ impl Registry {
                 if value.type_name() == setting.default.type_name() {
                     setting.value = value.clone();
                 }
+            }
+        }
+    }
+
+    /// Make a binding of every command the user bound a chord to.
+    ///
+    /// A command the user bound a chord to is a binding from then on, so it
+    /// resolves, appears in help and can be reset there. Synthesised on every
+    /// pass rather than kept, because `declare_all` replaces the list — and
+    /// recognisable by its empty default chord, so the previous pass's copies
+    /// are dropped before this one's are added.
+    fn bind_overridden_commands(&mut self) {
+        self.bindings
+            .retain(|binding| !binding.default_chord.is_empty());
+        for command in &self.commands {
+            let already_bound = self
+                .bindings
+                .iter()
+                .any(|binding| binding.action == command.action);
+            if already_bound {
+                continue;
+            }
+            if let Some(chord) = self.binding_overrides.get(&command.action) {
+                self.bindings.push(Binding {
+                    plugin: command.plugin.clone(),
+                    action: command.action.clone(),
+                    default_chord: String::new(),
+                    chord: chord.clone(),
+                    overridden: true,
+                    description: command.description.clone(),
+                    scope: Scope::Plugin,
+                    passthrough: false,
+                    group: command.plugin.clone(),
+                });
             }
         }
     }
@@ -587,25 +593,18 @@ impl Registry {
     pub fn palette_rows(&self) -> Vec<PaletteRow> {
         let mut rows: Vec<PaletteRow> = Vec::new();
         for binding in &self.bindings {
-            if let Some(row) = rows
+            let existing = rows
                 .iter_mut()
-                .find(|row| row.plugin == binding.plugin && row.action == binding.action)
-            {
-                let chords = row.chords.get_or_insert_with(String::new);
-                if !chords.split(" / ").any(|chord| chord == binding.chord) {
-                    if !chords.is_empty() {
-                        chords.push_str(" / ");
-                    }
-                    chords.push_str(&binding.chord);
-                }
-                continue;
+                .find(|row| row.plugin == binding.plugin && row.action == binding.action);
+            match existing {
+                Some(row) => add_chord(row.chords.get_or_insert_with(String::new), &binding.chord),
+                None => rows.push(PaletteRow {
+                    plugin: binding.plugin.clone(),
+                    action: binding.action.clone(),
+                    description: binding.description.clone(),
+                    chords: Some(binding.chord.clone()),
+                }),
             }
-            rows.push(PaletteRow {
-                plugin: binding.plugin.clone(),
-                action: binding.action.clone(),
-                description: binding.description.clone(),
-                chords: Some(binding.chord.clone()),
-            });
         }
         for command in &self.commands {
             let bound = rows
@@ -614,11 +613,10 @@ impl Registry {
             match bound {
                 // The key's row already exists; a command's description wins
                 // when the key declared none.
-                Some(row) => {
-                    if row.description.is_empty() {
-                        row.description = command.description.clone();
-                    }
+                Some(row) if row.description.is_empty() => {
+                    row.description = command.description.clone();
                 }
+                Some(_) => {}
                 None => rows.push(PaletteRow {
                     plugin: command.plugin.clone(),
                     action: command.action.clone(),
@@ -751,6 +749,18 @@ impl Registry {
 }
 
 /// Do two declarations compete for the same chord?
+/// Append `chord` to an action's chords, joined as help joins them, unless the
+/// action already lists it.
+fn add_chord(chords: &mut String, chord: &str) {
+    if chords.split(" / ").any(|listed| listed == chord) {
+        return;
+    }
+    if !chords.is_empty() {
+        chords.push_str(" / ");
+    }
+    chords.push_str(chord);
+}
+
 fn scopes_overlap(a: &Binding, b: &Binding) -> bool {
     match (a.scope, b.scope) {
         // Two plugin-scoped claims only collide when the same plugin makes both.
@@ -1182,6 +1192,62 @@ mod tests {
             passthrough: false,
             group: plugin.into(),
         }
+    }
+
+    /// One row per `(plugin, action)`: its chords joined once each in
+    /// declaration order, the first description kept, a command filling only a
+    /// blank one, and a chord-less command after every binding.
+    #[test]
+    fn palette_rows_merge_an_actions_chords_and_descriptions() {
+        let mut registry = Registry::default();
+        let mut next = binding("mine", "j", "mine.next", Scope::Plugin);
+        next.description = "next item".into();
+        let mut next_again = binding("mine", "down", "mine.next", Scope::Plugin);
+        next_again.description = "a second description".into();
+        let repeated = binding("mine", "j", "mine.next", Scope::Plugin);
+        let export = binding("mine", "x", "mine.export", Scope::Plugin);
+        let theirs = binding("theirs", "k", "mine.next", Scope::Plugin);
+        registry.declare(vec![next, next_again, repeated, export, theirs], Vec::new());
+        let command = |action: &str, description: &str| CommandDecl {
+            plugin: "mine".into(),
+            action: action.into(),
+            description: description.into(),
+        };
+        registry.declare_commands(vec![
+            command("mine.export", "export the list"),
+            command("mine.next", "not the key's"),
+            command("mine.fresh", "chord-less"),
+        ]);
+        let row =
+            |plugin: &str, action: &str, description: &str, chords: Option<String>| PaletteRow {
+                plugin: plugin.into(),
+                action: action.into(),
+                description: description.into(),
+                chords,
+            };
+        assert_eq!(
+            registry.palette_rows(),
+            vec![
+                row(
+                    "mine",
+                    "mine.next",
+                    "next item",
+                    Some(format!(
+                        "{} / {}",
+                        normalise_chord("j"),
+                        normalise_chord("down")
+                    ))
+                ),
+                row(
+                    "mine",
+                    "mine.export",
+                    "export the list",
+                    Some(normalise_chord("x"))
+                ),
+                row("theirs", "mine.next", "", Some(normalise_chord("k"))),
+                row("mine", "mine.fresh", "chord-less", None),
+            ]
+        );
     }
 
     #[test]
