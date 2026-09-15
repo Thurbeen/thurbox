@@ -354,12 +354,6 @@ impl HelpModal {
     }
 }
 
-/// How wide the chord column has to be for every row to keep a gap.
-///
-/// Measured across the whole list — the editable rows and the fixed ones — so one
-/// long chord string widens the column rather than overlapping its own
-/// description, and every row stays aligned. Identical to v1's fixed 16 whenever
-/// nothing exceeds it, which is the common case.
 /// The rows after the rebindable ones: the fixed chords, then the events a
 /// plugin may subscribe to.
 fn push_reference_lines(lines: &mut Vec<Line<'_>>, key_width: usize, chrome: Chrome) {
@@ -441,6 +435,12 @@ fn record_row_hits(
     }
 }
 
+/// How wide the chord column has to be for every row to keep a gap.
+///
+/// Measured across the whole list — the editable rows and the fixed ones — so one
+/// long chord string widens the column rather than overlapping its own
+/// description, and every row stays aligned. Identical to v1's fixed 16 whenever
+/// nothing exceeds it, which is the common case.
 fn key_column(registry: &Registry) -> usize {
     let widest = rows(registry)
         .iter()

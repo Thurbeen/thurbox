@@ -748,7 +748,6 @@ impl Registry {
     }
 }
 
-/// Do two declarations compete for the same chord?
 /// Append `chord` to an action's chords, joined as help joins them, unless the
 /// action already lists it.
 fn add_chord(chords: &mut String, chord: &str) {
@@ -761,6 +760,7 @@ fn add_chord(chords: &mut String, chord: &str) {
     chords.push_str(chord);
 }
 
+/// Do two declarations compete for the same chord?
 fn scopes_overlap(a: &Binding, b: &Binding) -> bool {
     match (a.scope, b.scope) {
         // Two plugin-scoped claims only collide when the same plugin makes both.
