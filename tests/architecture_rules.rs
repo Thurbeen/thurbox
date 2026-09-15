@@ -521,18 +521,7 @@ fn check_module(rules: &ModuleRules) -> Vec<Violation> {
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
         let stripped = strip_comments_and_strings(&content);
         for site in crate_refs(&stripped) {
-            // `self` (`use crate::{self, …}`) names the crate root, which
-            // declares only modules — harmless. Own-module refs are fine.
-            if site.segment == "self" || site.segment == rules.name {
-                continue;
-            }
-            if !is_module(&site.segment) {
-                continue;
-            }
-            if rules.allowed.contains(&site.segment.as_str()) {
-                continue;
-            }
-            if !site.in_use && rules.allowed_path_only.contains(&site.segment.as_str()) {
+            if !breaks_rules(rules, &site.segment, site.in_use) {
                 continue;
             }
             let line_number = stripped[..site.offset].matches('\n').count() + 1;
@@ -552,6 +541,20 @@ fn check_module(rules: &ModuleRules) -> Vec<Violation> {
         }
     }
     violations
+}
+
+/// Whether a reference to `crate::<segment>` — inside a `use` when `in_use` —
+/// is one `rules` forbid.
+fn breaks_rules(rules: &ModuleRules, segment: &str, in_use: bool) -> bool {
+    // `self` (`use crate::{self, …}`) names the crate root, which
+    // declares only modules — harmless. Own-module refs are fine.
+    if segment == "self" || segment == rules.name {
+        return false;
+    }
+    if !is_module(segment) || rules.allowed.contains(&segment) {
+        return false;
+    }
+    in_use || !rules.allowed_path_only.contains(&segment)
 }
 
 fn format_violations(rules: &ModuleRules, violations: &[Violation]) -> String {
