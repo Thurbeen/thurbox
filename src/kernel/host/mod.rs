@@ -642,14 +642,13 @@ pub struct Published<'a> {
     /// other signal ticked. A pane that reads it in a key handler — to comment on
     /// the selection under a chord — is never cached and sees it at once.
     ///
-    /// The value is the selection as of the last completed paint: `republish`
-    /// runs before the paint that recomputes `selected_text`, and a handler runs
-    /// in `drain_input` after that paint, so it reads what the paint published.
-    /// A human chord after a drag lands a later frame — the drag has painted, so
-    /// the chord reads the finished selection. The only stale read is a chord
-    /// delivered in the same input batch as the drag, before any paint has run;
-    /// that is not reachable by hand and does not arise for the intended
-    /// comment-on-selection gesture.
+    /// A handler reads the selection the drag just made, even a chord drained in
+    /// the same input batch as that drag: a left drag recomputes its text from
+    /// the grid and re-publishes it before the next event runs (see
+    /// `coordinator::input` and `refresh_selection_text`), so the
+    /// comment-on-selection gesture never reads the pre-drag value. A selection
+    /// outside every terminal has no grid to read mid-batch and falls back to the
+    /// last completed paint.
     pub selection: Option<&'a str>,
     /// The interface's own files: where each came from and which are running.
     ///

@@ -87,6 +87,47 @@ impl App {
         }
     }
 
+    /// The text under `selection`, read from the terminal grid.
+    ///
+    /// The grid half of what `draw` computes at paint time — `draw` adds a
+    /// painted-buffer fall-back for a selection that lands outside every
+    /// terminal. Factored out so a mid-batch refresh reads from exactly the
+    /// same source the paint prefers.
+    pub(crate) fn grid_selection_text(&self, selection: &Selection) -> Option<String> {
+        self.surface_at(selection.pane.rect().x, selection.pane.rect().y)
+            .filter(|(_, rect)| *rect == selection.pane.rect())
+            .and_then(|(session, rect)| {
+                self.terminals
+                    .selected_text(&session, selection, (rect.x, rect.y))
+            })
+    }
+
+    /// Recompute `selected_text` from the grid mid-batch; report whether it moved.
+    ///
+    /// `draw` refreshes `selected_text` off the painted frame once per paint. A
+    /// whole input batch is drained between two paints, so a chord queued behind
+    /// the drag that made the selection would otherwise read the value the batch
+    /// published at its start — an empty or stale selection. Recomputing here,
+    /// from the same grid `draw` prefers, lets that chord read the finished
+    /// selection. A selection outside every terminal has no grid and only the
+    /// paint can read it: its text is left as the last paint set it, the field's
+    /// documented floor. The `anchor != cursor` filter mirrors `draw` — an
+    /// unextended selection is a click and carries no text.
+    pub(crate) fn refresh_selection_text(&mut self) -> bool {
+        let next = self
+            .selection
+            .clone()
+            .filter(|selection| selection.anchor != selection.cursor)
+            .map(|selection| match self.grid_selection_text(&selection) {
+                Some(text) => (!text.trim().is_empty()).then_some(text),
+                None => self.selected_text.clone(),
+            })
+            .unwrap_or(None);
+        let changed = next != self.selected_text;
+        self.selected_text = next;
+        changed
+    }
+
     /// A wheel tick, routed the way v1's `handle_mouse_scroll` routes one.
     ///
     /// Three legs, in order: an open modal owns the wheel outright; a live
