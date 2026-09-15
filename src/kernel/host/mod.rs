@@ -631,6 +631,25 @@ pub struct Published<'a> {
     /// to name whoever IS, and it is not focusable itself. v1 reads the same
     /// thing off `App::focus`.
     pub focus: Option<&'a str>,
+    /// The mouse text selection, so a pane can read what the user has selected —
+    /// the coordinator otherwise keeps it only for `copy_selection`. `None` is
+    /// published as an empty string, so a pane reads a cleared selection as
+    /// cleared rather than as the last one.
+    ///
+    /// A bare scalar like `focus`, not a group: it moves no epoch and bumps no
+    /// state version, so a pane painting the live selection must be impure (read
+    /// it every frame) — a pure pane would be served its cached tree until some
+    /// other signal ticked. A pane that reads it in a key handler — to comment on
+    /// the selection under a chord — is never cached and sees it at once.
+    ///
+    /// A handler reads the selection the drag just made, even a chord drained in
+    /// the same input batch as that drag: a left drag recomputes its text from
+    /// the grid and re-publishes it before the next event runs (see
+    /// `coordinator::input` and `refresh_selection_text`), so the
+    /// comment-on-selection gesture never reads the pre-drag value. A selection
+    /// outside every terminal has no grid to read mid-batch and falls back to the
+    /// last completed paint.
+    pub selection: Option<&'a str>,
     /// The interface's own files: where each came from and which are running.
     ///
     /// Published rather than drawn by the kernel, so the pane that lists the
@@ -1280,6 +1299,23 @@ impl LuaHost {
         if moved {
             self.state_version
                 .set(self.state_version.get().wrapping_add(1));
+        }
+    }
+
+    /// Overwrite just `thurbox.selection` on the already-published snapshot.
+    ///
+    /// A drag mutates the selection mid input-batch, and a chord queued behind
+    /// it in the same batch must read the finished text — but rerunning the
+    /// whole republish per drag report is the expensive path (terminal sync,
+    /// links, search, trust, inventory), and none of that moved. This patches
+    /// the one scalar in place, exactly as a full publish writes it (`raw_set`,
+    /// so no `state_version` bump — a pure pane reading `selection` is
+    /// deliberately not invalidated, matching the field's last-painted
+    /// contract). A no-op before the first publish, when the global is still
+    /// absent.
+    pub fn set_published_selection(&self, selection: &str) {
+        if let Ok(table) = self.lua.globals().get::<Table>("thurbox") {
+            let _ = table.raw_set("selection", selection);
         }
     }
 

@@ -40,6 +40,7 @@ impl LuaHost {
             epoch,
             hovered,
             focus,
+            selection,
             snapshot,
             attach_errors,
             inflight,
@@ -207,6 +208,10 @@ impl LuaHost {
         // Which pane holds focus, by name. `ctx.focused` answers "am I?", but
         // the footer has to name whoever IS and is not focusable itself.
         set(&table, "focus", focus.unwrap_or(""))?;
+        // The mouse text selection, empty when nothing is selected. A bare scalar
+        // like `focus`: a pane painting it live must be impure, since it moves no
+        // epoch — see `Published::selection`.
+        set(&table, "selection", selection.unwrap_or(""))?;
         // Published so a plugin can render how many times it has been reloaded
         // — the feedback that tells you a save actually took effect.
         set(&table, "reloads", self.reloads)?;

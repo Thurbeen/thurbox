@@ -93,6 +93,7 @@ fn hits_of(plugin: &str, width: u16, height: u16) -> Vec<Hit> {
         repos: &repos,
         wants: &Default::default(),
         focus: None,
+        selection: None,
         hovered: None,
         printing: &Default::default(),
     })
@@ -554,6 +555,7 @@ fn clicking_a_session_row_selects_that_session() {
         repos: &repos,
         wants: &Default::default(),
         focus: None,
+        selection: None,
         hovered: None,
         printing: &Default::default(),
     })

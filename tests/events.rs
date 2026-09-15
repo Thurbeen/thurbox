@@ -90,6 +90,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
         repos: &repos,
         wants: &Default::default(),
         focus: None,
+        selection: None,
         hovered: None,
         printing: &Default::default(),
     })

@@ -232,6 +232,7 @@ fn publish_at_printing(
         repos: &repos,
         wants: &Default::default(),
         focus: None,
+        selection: None,
         hovered: None,
         printing,
     })

@@ -17,7 +17,9 @@
 use std::error::Error;
 use std::time::Instant;
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 
 use thurbox::agent::input::key_to_bytes;
 use thurbox::kernel::bands::Level;
@@ -41,11 +43,18 @@ impl App {
     ///
     /// The batch is also what `thurbox.*` is published for: once, before the first
     /// event that runs Lua, rather than once per event. A handler has to read
-    /// something current, and nothing between two events of one batch can change
-    /// what it would say — the snapshot is refreshed at the top of the iteration,
-    /// and a command a handler queues is drained on the next one. Per event, a
-    /// held-down key paid for the whole publish (every session's links, the
-    /// interface inventory, the plugin lock) on every repeat.
+    /// something current, and almost nothing between two events of one batch can
+    /// change what it would say — the snapshot is refreshed at the top of the
+    /// iteration, and a command a handler queues is drained on the next one. Per
+    /// event, a held-down key paid for the whole publish (every session's links,
+    /// the interface inventory, the plugin lock) on every repeat.
+    ///
+    /// The one exception is the mouse text selection: a drag mutates it mid-batch,
+    /// and a chord queued behind the drag must read the finished selection, not
+    /// the one the batch published at its start. So a left drag patches just the
+    /// published `selection` scalar when its text moves — not a full republish,
+    /// which would rerun per crossed cell. See the mouse arm,
+    /// `refresh_selection_text` and `LuaHost::set_published_selection`.
     pub(crate) fn drain_input(&mut self, input_failures: &mut u32) -> Result<(), Box<dyn Error>> {
         let mut published = false;
         let mut waited = false;
@@ -104,7 +113,28 @@ impl App {
                 // `App::update`.
                 Event::Mouse(mouse) if self.mouse => {
                     self.publish_for_batch(&mut published);
+                    // Read before `on_mouse` consumes the event: only a left
+                    // press, drag or release can move the selection, so a bare
+                    // move or a wheel tick pays for no grid read.
+                    let may_move_selection = matches!(
+                        mouse.kind,
+                        MouseEventKind::Down(MouseButton::Left)
+                            | MouseEventKind::Drag(MouseButton::Left)
+                            | MouseEventKind::Up(MouseButton::Left)
+                    );
                     self.on_mouse(mouse);
+                    // The drag builds the selection here, but `selected_text` is
+                    // only recomputed at paint time — so a chord queued behind it
+                    // in this same batch would read the pre-drag selection.
+                    // Refresh from the grid now and patch just the published
+                    // scalar: a multi-cell drag reports once per crossed cell, so
+                    // forcing a full republish here would rerun terminal sync,
+                    // links, search, trust and inventory per cell. See
+                    // `refresh_selection_text` and `LuaHost::set_published_selection`.
+                    if may_move_selection && self.refresh_selection_text() {
+                        self.host
+                            .set_published_selection(self.selected_text.as_deref().unwrap_or(""));
+                    }
                     self.note_input();
                 }
                 // A bracketed paste from the terminal itself. Routed to

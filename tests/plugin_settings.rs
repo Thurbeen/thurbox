@@ -108,6 +108,7 @@ fn session_list_of(host: &LuaHost, registry: &Registry, sessions: Vec<SessionRow
         repos: &repos,
         wants: &Default::default(),
         focus: Some("sessions"),
+        selection: None,
         hovered: None,
         printing: &Default::default(),
     })

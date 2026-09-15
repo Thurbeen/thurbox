@@ -117,6 +117,7 @@ fn publish_inner(
         repos: &repos,
         wants: &Default::default(),
         focus: None,
+        selection: None,
         hovered,
         printing: &Default::default(),
     })

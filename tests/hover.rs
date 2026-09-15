@@ -63,6 +63,7 @@ fn chip_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<(String, 
         repos: &repos,
         wants: &Default::default(),
         focus: Some("agent"),
+        selection: None,
         hovered,
         printing: &Default::default(),
     })
@@ -290,6 +291,7 @@ fn a_hovered_row_is_banded_and_keeps_its_own_colours() {
             repos: &repos,
             wants: &Default::default(),
             focus: Some("sessions"),
+            selection: None,
             hovered,
             printing: &Default::default(),
         })

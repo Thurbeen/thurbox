@@ -1373,6 +1373,23 @@ impl Tui {
         std::thread::sleep(Duration::from_millis(250));
     }
 
+    /// A left drag and a chord `key`, written to the pty in one burst so they
+    /// reach `drain_input` in a single batch with no paint between — the case
+    /// `drag`'s trailing sleep deliberately avoids. The whole SGR gesture
+    /// (press, `over` moves, release) is followed immediately by the chord
+    /// byte, so a handler bound to the chord runs in the same batch as the drag
+    /// that made the selection.
+    fn drag_then_chord(&mut self, (x, y): (u16, u16), over: u16, key: u8) {
+        let (px, py) = (x + 1, y + 1);
+        let mut seq = format!("\x1b[<0;{px};{py}M").into_bytes();
+        for cx in px + 1..=px + over {
+            seq.extend_from_slice(format!("\x1b[<32;{cx};{py}M").as_bytes());
+        }
+        seq.extend_from_slice(format!("\x1b[<0;{};{py}m", px + over).as_bytes());
+        seq.push(key);
+        self.send(&seq);
+    }
+
     /// `Ctrl+C`, then a marker typed straight after: the marker echoing is
     /// the shell having taken the chord as its interrupt and gone back to its
     /// prompt. What the binary wrote in between is returned for the caller to
@@ -1501,6 +1518,120 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
         !out.contains(OSC52),
         "a key press must clear the selection; wrote:\n{out:?}"
     );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// The mouse text selection reaches a Lua pane through `thurbox.selection`.
+///
+/// The coordinator recomputes the selection every frame for `copy_selection`;
+/// publishing it into the snapshot is what lets a pane see it at all. This is the
+/// whole wire, not the module: a probe pane paints the field, and a drag over the
+/// shell's own echoed line is a real selection — the copy test above proves the
+/// same gesture copies exactly that text. Without the publish the field is nil
+/// and the probe stays `selwire:[]`, so this fails on the timeout rather than
+/// passing quietly.
+///
+/// The probe is deliberately NOT `pure`: `thurbox.selection` is a bare scalar, so
+/// it moves no epoch and bumps no state version — a pure pane reading it live
+/// would be served its cached tree until some other signal ticked. The real
+/// consumer (`41_notes`) reads it in `on_key`, which is never cached; a pane that
+/// wants to paint the live selection reads it every frame, which is what impure
+/// means. Reading it in render here is what makes the wire observable.
+#[test]
+fn the_text_selection_reaches_a_pane_as_a_published_field() {
+    let interface = interface_plus(
+        "95_selwire.lua",
+        r#"return {
+  name = "selwire",
+  slot = "sessions",
+  order = 90,
+  render = function()
+    return {
+      type = "text",
+      text = "selwire:[" .. (thurbox.selection or "") .. "]",
+      id = "selwire",
+    }
+  end,
+}"#,
+    );
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+
+    // The field is published every frame, so it is "" before any drag — the
+    // probe paints the empty selection rather than a missing field.
+    tui.wait_for("selwire:[]");
+
+    // A line the shell echoes back, aimed at by its output (the `""` keeps the
+    // needle out of the command line, which still shows the quotes). The drag
+    // over it is the selection.
+    tui.send(b"echo tb-select-\"\"me\r");
+    tui.wait_for("tb-select-me");
+    let at = tui.find("tb-select-me");
+    tui.drag(at, 12);
+
+    // The assertion: the pane repainted with the dragged text, which it could
+    // only have read from `thurbox.selection`.
+    tui.wait_for("selwire:[tb-select-me]");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// A chord that fires in the *same* input batch as the drag that made the
+/// selection reads the finished selection, not the pre-drag one.
+///
+/// `drain_input` publishes the world once per batch and `selected_text` is
+/// recomputed at paint time, so a chord queued right behind a drag — with no
+/// paint between — used to read the selection as it stood before the gesture
+/// (empty here). The human path (drag, see the highlight, then press) is a
+/// later batch and already works; `drag_then_chord` writes the gesture and the
+/// chord in one burst to pin the batch-boundary case. `on_action` echoes what
+/// it read into the message band, so a stale read shows `selchord:[]` and this
+/// fails on the timeout.
+#[test]
+fn a_chord_reads_the_selection_dragged_in_its_own_batch() {
+    let interface = interface_plus(
+        "95_selchord.lua",
+        r#"return {
+  name = "selchord",
+  slot = "sessions",
+  order = 90,
+  render = function()
+    return { type = "text", text = state.seen or "selchord-ready", id = "selchord" }
+  end,
+  keys = {
+    { key = "ctrl+g", action = "selchord.read", desc = "read the selection", scope = "global" },
+  },
+  on_action = function(action)
+    if action == "selchord.read" then
+      state.seen = "selchord:[" .. (thurbox.selection or "") .. "]"
+      return true
+    end
+    return false
+  end,
+}"#,
+    );
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("selchord-ready");
+
+    tui.send(b"echo tb-select-\"\"me\r");
+    tui.wait_for("tb-select-me");
+    let at = tui.find("tb-select-me");
+
+    // Drag over the echoed line and press ctrl+g in one batch. The handler
+    // reads `thurbox.selection` while it runs — which is inside this batch.
+    tui.drag_then_chord(at, 12, 0x07);
+
+    tui.wait_for("selchord:[tb-select-me]");
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");

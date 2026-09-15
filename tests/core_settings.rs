@@ -330,6 +330,7 @@ fn publish_with(host: &thurbox::kernel::host::LuaHost, settings: &Settings) {
         repos: &repos,
         wants: &Default::default(),
         focus: None,
+        selection: None,
         hovered: None,
         printing: &Default::default(),
     })

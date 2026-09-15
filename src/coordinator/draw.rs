@@ -265,14 +265,9 @@ impl App {
             // loop at the frame cap for as long as anything stayed selected.
 
             // Read here, not at copy time: outside a terminal the only record of
-            // what is selected is the frame we are holding.
-            let from_grid = self
-                .surface_at(selection.pane.rect().x, selection.pane.rect().y)
-                .filter(|(_, rect)| *rect == selection.pane.rect())
-                .and_then(|(session, rect)| {
-                    self.terminals
-                        .selected_text(&session, &selection, (rect.x, rect.y))
-                });
+            // what is selected is the frame we are holding. The grid half is
+            // shared with the mid-batch refresh — see `grid_selection_text`.
+            let from_grid = self.grid_selection_text(&selection);
             let text = from_grid.unwrap_or_else(|| {
                 thurbox::kernel::selection::extract_text_from_buffer(frame.buffer_mut(), &selection)
             });
