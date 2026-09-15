@@ -105,7 +105,6 @@
 ---@field role? string
 ---@field frame? thurbox.Frame|string|boolean
 ---@field block? thurbox.Frame|string|boolean The POC's spelling of `frame`.
----@field float? thurbox.Float|boolean Read on a returned tree's ROOT only; `true` takes the default size.
 
 --- Text. `style` paints across the whole rect before the spans go on top, so a
 --- span that names its own colour keeps it — that is a selection bar or a
@@ -144,6 +143,29 @@
 ---@field scroll? integer
 
 ---@alias thurbox.Node thurbox.TextNode|thurbox.BoxNode|thurbox.InputNode|thurbox.SurfaceNode
+
+--- What a render RETURNS: any node, plus the one key that is read only there.
+---
+--- `float` is on these and not on `thurbox.NodeCommon` because the kernel reads
+--- it from the returned value itself (`host/load.rs`'s `read_float`, called on
+--- the render's result in `LuaHost::render`) and never walks the tree for it.
+--- On the shared shape the type said a child could carry one, which `convert.rs`
+--- drops in silence.
+---
+--- This buys accuracy and editor completion, not a diagnostic: luals does not
+--- flag an extra key in a table constructor, so a `float` on a child is no more
+--- reported now than it was before, and `thurbox.Float` has no required field
+--- for a misspelt `widht` to be missing. Verified by probing both.
+---@class (exact) thurbox.RootText : thurbox.TextNode
+---@field float? thurbox.Float|boolean `true` takes the default size.
+---@class (exact) thurbox.RootBox : thurbox.BoxNode
+---@field float? thurbox.Float|boolean
+---@class (exact) thurbox.RootInput : thurbox.InputNode
+---@field float? thurbox.Float|boolean
+---@class (exact) thurbox.RootSurface : thurbox.SurfaceNode
+---@field float? thurbox.Float|boolean
+
+---@alias thurbox.Root thurbox.RootText|thurbox.RootBox|thurbox.RootInput|thurbox.RootSurface
 
 --- How big a floating pane asks to be: a share of the screen, or exact cells.
 ---@class (exact) thurbox.Float
@@ -250,7 +272,9 @@
 --- What a plugin file returns.
 ---
 --- `render` is required unless the plugin `decorates` another, which draws
---- nothing of its own. A returned tree may carry `float` on its root.
+--- nothing of its own. Its return type is `thurbox.Root` rather than
+--- `thurbox.Node` because `float` is read from that value alone; `decorate`
+--- keeps `thurbox.Node`, since nothing reads `float` off its result.
 ---@class thurbox.Plugin
 ---@field name? string Defaults to the filename, minus a numeric ordering prefix.
 ---@field slot? string Defaults to `"center"`.
@@ -268,7 +292,7 @@
 ---@field commands? thurbox.CommandDecl[]
 ---@field events? thurbox.Event[]
 ---@field capabilities? ("run"|"program")[]
----@field render? fun(ctx: thurbox.Ctx): thurbox.Node
+---@field render? fun(ctx: thurbox.Ctx): thurbox.Root
 ---@field decorate? fun(node: thurbox.Node, ctx: thurbox.DecorateCtx): thurbox.Node
 ---@field on_key? fun(key: thurbox.Key): boolean
 ---@field on_action? fun(action: string): boolean
