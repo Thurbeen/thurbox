@@ -84,15 +84,32 @@ pub fn rename_session_headless(
         });
     }
 
-    crate::agent::tmux::rename_session_windows(
-        host.as_ref(),
-        &session_id.to_string(),
-        &session.name,
-        name,
-    )
-    .map_err(|e| format!("could not rename the windows of '{}': {e:#}", session.name))?;
-    db.rename_session(session_id, name)
-        .map_err(|e| format!("rename_session: {e}"))?;
+    let id = session_id.to_string();
+    let written =
+        crate::agent::tmux::rename_session_windows(host.as_ref(), &id, &session.name, name)
+            .map_err(|e| format!("could not rename the windows of '{}': {e:#}", session.name))
+            .and_then(|()| match db.rename_session(session_id, name) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(format!("Session not found: {session_id}")),
+                Err(e) => Err(format!("rename_session: {e}")),
+            });
+    if let Err(error) = written {
+        // Some window may now carry a name the row does not — the agent's, when
+        // the shell's rename failed after it, or both, when the row could not be
+        // written. A window with no stamp is found by the row's name alone: left
+        // like this it reads as gone, and a relaunch would start a second agent
+        // beside it. Nothing renamed is found under the new name, so putting
+        // back is harmless when the first rename failed outright.
+        if let Err(e) =
+            crate::agent::tmux::rename_session_windows(host.as_ref(), &id, name, &session.name)
+        {
+            tracing::warn!(
+                "could not put back the windows of '{}': {e:#}",
+                session.name
+            );
+        }
+        return Err(error);
+    }
     Ok(RenameReport {
         previous: session.name,
         renamed: true,

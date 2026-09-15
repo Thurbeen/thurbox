@@ -1499,6 +1499,34 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_changes_the_name_alone_and_tells_watchers() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("before");
+        db.upsert_session(&session).unwrap();
+        let events = |db: &Database| db.session_events_since(0, Some(session.id), 100).unwrap();
+        let before = events(&db).len();
+
+        assert!(db.rename_session(session.id, "after").unwrap());
+        let row = db.get_session_by_id(session.id).unwrap().unwrap();
+        assert_eq!(row.name, "after");
+        assert_eq!(
+            row.backend_id, session.backend_id,
+            "not a rewrite of the row"
+        );
+        let after = events(&db);
+        assert_eq!(after.len(), before + 1);
+        assert_eq!(after.last().unwrap().event, "changed");
+
+        // The name it already has is nothing a watcher needs to hear about.
+        assert!(db.rename_session(session.id, "after").unwrap());
+        assert_eq!(events(&db).len(), before + 1);
+
+        // A row deleted meanwhile is not renamed behind the delete's back.
+        db.soft_delete_session(session.id).unwrap();
+        assert!(!db.rename_session(session.id, "later").unwrap());
+    }
+
+    #[test]
     fn display_order_roundtrips() {
         let db = Database::open_in_memory().unwrap();
         let mut session = make_session("Session 1");

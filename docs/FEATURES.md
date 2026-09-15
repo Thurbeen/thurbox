@@ -890,7 +890,8 @@ it came from.
 - **The windows follow.** The agent's `tb-` window and the shell's `tbs-`
   window are renamed first, found stamp-first under the old name (ADR-25), then
   the row. The order matters where a window carries no stamp (psmux): the name
-  is all that finds it. A shareable host renames its own row and windows
+  is all that finds it, which is also why the windows are put back when the row
+  cannot be written. A shareable host renames its own row and windows
   through its CLI, and this machine mirrors the result (ADR-24).
 - **The field says why.** The interface's float stays up until the command
   answers, so a refused name is explained beside the text that caused it.

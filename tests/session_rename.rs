@@ -5,7 +5,9 @@
 //! windows are named after it, and a rename that left them behind would be half
 //! of one — so they skip where tmux is absent, as `tests/create_e2e.rs` does.
 
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use serde_json::Value;
@@ -128,24 +130,59 @@ impl Env {
             .name
     }
 
-    /// Every window name on this instance's private server.
-    fn windows(&self) -> Vec<String> {
-        let out = Command::new("tmux")
+    /// Gated with its only callers: the Windows `clippy -D warnings` job counts
+    /// an unused helper as dead code and fails the build.
+    #[cfg(unix)]
+    fn tmux(&self, args: &[&str]) -> Output {
+        Command::new("tmux")
             .env("TMUX_TMPDIR", &self.sockets)
-            .args([
-                "-L",
-                &self.socket,
-                "list-windows",
-                "-a",
-                "-F",
-                "#{window_name}",
-            ])
+            .env_remove("TMUX")
+            .args(["-L", &self.socket])
+            .args(args)
             .output()
-            .expect("list windows");
+            .expect("run tmux")
+    }
+
+    /// Every window name on this instance's private server.
+    #[cfg(unix)]
+    fn windows(&self) -> Vec<String> {
+        let out = self.tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    /// Open a session's companion shell window, stamped the way the interface
+    /// stamps the one it spawns. Raw tmux because nothing headless opens one.
+    #[cfg(unix)]
+    fn open_shell_window(&self, session_id: &str, name: &str) {
+        let sessions = self.tmux(&["list-sessions", "-F", "#{session_name}"]);
+        let target = String::from_utf8_lossy(&sessions.stdout)
+            .lines()
+            .next()
+            .expect("a thurbox tmux session")
+            .to_string();
+        let out = self.tmux(&[
+            "new-window",
+            "-d",
+            "-t",
+            &target,
+            "-n",
+            &format!("tbs-{name}"),
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "sh",
+        ]);
+        let pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert!(pane.starts_with('%'), "new-window said {pane:?}");
+        for (option, value) in [
+            (thurbox::agent::tmux::WINDOW_SESSION_OPTION, session_id),
+            (thurbox::agent::tmux::WINDOW_ROLE_OPTION, "shell"),
+        ] {
+            self.tmux(&["set-option", "-w", "-t", &pane, option, value]);
+        }
     }
 }
 
@@ -287,7 +324,7 @@ fn a_rename_resolves_the_session_like_get_and_answers_in_json() {
 
 #[cfg(unix)]
 #[test]
-fn renaming_a_running_session_renames_its_window_and_keeps_its_pane() {
+fn renaming_a_running_session_renames_its_windows_and_keeps_its_pane() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
@@ -303,17 +340,23 @@ fn renaming_a_running_session_renames_its_window_and_keeps_its_pane() {
         repo.to_str().expect("utf-8 path"),
         "--agent",
         "shell",
+        "--json",
     ]);
     assert!(
         created.status.success(),
         "create failed:\n{}",
         said(&created)
     );
+    let id = json(&created)["id"]
+        .as_str()
+        .expect("the created session's id")
+        .to_string();
+    // A companion shell is named after the session too, and has to follow it.
+    env.open_shell_window(&id, "probe");
+    let windows = env.windows();
     assert!(
-        env.windows().iter().any(|w| w == "tb-probe"),
-        "precondition: {:?}\ncreate said:\n{}",
-        env.windows(),
-        said(&created)
+        windows.iter().any(|w| w == "tb-probe") && windows.iter().any(|w| w == "tbs-probe"),
+        "precondition: {windows:?}"
     );
 
     let out = env.run(&["session", "rename", "probe", "renamed agent"]);
@@ -322,8 +365,10 @@ fn renaming_a_running_session_renames_its_window_and_keeps_its_pane() {
     // Sanitised exactly as a spawn names a window, so the two cannot disagree.
     let windows = env.windows();
     assert!(
-        windows.iter().any(|w| w == "tb-renamed_agent") && !windows.iter().any(|w| w == "tb-probe"),
-        "the window must follow the session: {windows:?}"
+        windows.iter().any(|w| w == "tb-renamed_agent")
+            && windows.iter().any(|w| w == "tbs-renamed_agent")
+            && !windows.iter().any(|w| w.ends_with("-probe")),
+        "both windows must follow the session: {windows:?}"
     );
 
     // The pane is still the session's: typing into it by the new name works.
