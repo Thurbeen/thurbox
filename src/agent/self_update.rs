@@ -253,9 +253,10 @@ const INSTALLED_BINARY_MODE: u32 = 0o755;
 
 #[cfg(unix)]
 fn set_executable(path: &Path) -> Result<(), String> {
+    use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(INSTALLED_BINARY_MODE))
-        .map_err(|e| format!("chmod {}: {e}", path.display()))
+    let perms = Permissions::from_mode(INSTALLED_BINARY_MODE); // NOSONAR: world r-x is required
+    std::fs::set_permissions(path, perms).map_err(|e| format!("chmod {}: {e}", path.display()))
 }
 
 #[cfg(not(unix))]
