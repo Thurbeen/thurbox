@@ -227,6 +227,19 @@ pub enum Action {
         #[arg(long)]
         if_missing: bool,
     },
+    /// Rename a session, and the windows named after it.
+    ///
+    /// The name is held to `create`'s rules (1-64 bytes, no slashes, no `..`,
+    /// no leading '.'), and a name another active session on the same backend
+    /// already has is refused, as `create --on-existing fail` refuses it.
+    Rename {
+        /// Session name, UUID, or unique id prefix.
+        #[arg(value_name = "SESSION")]
+        session: String,
+        /// The name to give it.
+        #[arg(value_name = "NEW_NAME")]
+        name: String,
+    },
     /// Mirror the sessions of a shareable host (or every one) into this
     /// database — the pass the interface runs on its own cadence.
     Sync {
@@ -583,6 +596,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
         } => restore_deleted(db, &session, best_effort),
         Action::Reap { session } => run_reap(db, session),
         Action::Restart { uuid, if_missing } => run_restart(db, uuid, if_missing),
+        Action::Rename { session, name } => run_rename(db, session, name),
         Action::Send {
             uuid,
             text,
@@ -921,6 +935,25 @@ fn run_restart(
             "session_id": session.id.to_string(),
             "session_name": session.name,
             "hook_failures": report.hook_failures,
+        }),
+        human,
+    ))
+}
+
+fn run_rename(db: &Database, session: String, name: String) -> Result<CommandOutput, CommandError> {
+    let row = resolve(db, &session)?;
+    let report = crate::session_ops::rename::rename_session_headless(db, row.id, &name)?;
+    let human = if report.renamed {
+        format!("Renamed '{}' to '{name}' ({})", report.previous, row.id)
+    } else {
+        format!("'{name}' ({}) already has that name", row.id)
+    };
+    Ok(CommandOutput::new(
+        json!({
+            "renamed": report.renamed,
+            "session_id": row.id.to_string(),
+            "session_name": name,
+            "previous_name": report.previous,
         }),
         human,
     ))

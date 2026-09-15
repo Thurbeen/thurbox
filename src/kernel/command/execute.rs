@@ -164,6 +164,9 @@ pub(super) fn execute(
         Command::Fork { .. } => unreachable!("handled above, where it mints its session"),
 
         Command::Sync { .. } => sync(&db, id),
+        Command::Rename { name, .. } => {
+            crate::session_ops::rename::rename_session_headless(&db, id, name).map(|_| ())
+        }
         // Unreachable: guarded above, and kept exhaustive so adding a command
         // is a compile error here rather than a silent no-op.
         // Handled above, before the session id is parsed.

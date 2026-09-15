@@ -981,6 +981,52 @@ impl Database {
         Ok(())
     }
 
+    /// Give an active session a new name.
+    ///
+    /// A targeted UPDATE rather than [`upsert_session`](Self::upsert_session),
+    /// which rewrites every column from a row the caller read earlier. Recorded
+    /// as the `changed` event the upsert records for a name change, so `watch`
+    /// and a peer's refresh see it. False when no active row has this id.
+    pub fn rename_session(&self, id: SessionId, name: &str) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let Some(before) = self
+            .conn
+            .query_row(
+                "SELECT name FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![id_str],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        if before == name {
+            return Ok(true);
+        }
+        self.conn.execute(
+            "UPDATE sessions SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            params![name, current_time_millis() as i64, id_str],
+        )?;
+        self.log_audit(
+            EntityType::Session,
+            &id_str,
+            AuditAction::Updated,
+            Some("name"),
+            Some(&before),
+            Some(name),
+        )?;
+        self.record_session_event(
+            id,
+            SessionEventKind::Changed,
+            EventReason::Updated,
+            None,
+            None,
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Snapshot a host's self-reported `updated_at` for a row a mirror pass
     /// just adopted or updated from it (schema v45).
     ///
@@ -1450,6 +1496,34 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "Session 1");
         assert_eq!(sessions[0].agent, "claude");
+    }
+
+    #[test]
+    fn a_rename_changes_the_name_alone_and_tells_watchers() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("before");
+        db.upsert_session(&session).unwrap();
+        let events = |db: &Database| db.session_events_since(0, Some(session.id), 100).unwrap();
+        let before = events(&db).len();
+
+        assert!(db.rename_session(session.id, "after").unwrap());
+        let row = db.get_session_by_id(session.id).unwrap().unwrap();
+        assert_eq!(row.name, "after");
+        assert_eq!(
+            row.backend_id, session.backend_id,
+            "not a rewrite of the row"
+        );
+        let after = events(&db);
+        assert_eq!(after.len(), before + 1);
+        assert_eq!(after.last().unwrap().event, "changed");
+
+        // The name it already has is nothing a watcher needs to hear about.
+        assert!(db.rename_session(session.id, "after").unwrap());
+        assert_eq!(events(&db).len(), before + 1);
+
+        // A row deleted meanwhile is not renamed behind the delete's back.
+        db.soft_delete_session(session.id).unwrap();
+        assert!(!db.rename_session(session.id, "later").unwrap());
     }
 
     #[test]

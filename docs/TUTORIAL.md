@@ -187,6 +187,7 @@ The ones worth knowing on day one:
 | `Ctrl+T` / `F8` | A shell in the session's directory |
 | `Ctrl+F` | Fork the session — same repo, branch and agent, with the conversation carried over and the source recorded as its parent |
 | `Ctrl+S` | Sync the worktree with its base branch |
+| `Ctrl+E` | Rename the session (with the list focused — in a terminal it is end-of-line) |
 | `Ctrl+D` | Delete the session (`Ctrl+Z` undoes it) |
 | `Ctrl+U` | Restore a deleted session |
 | `Ctrl+Y` / `F4` | Theme picker (36 palettes) |

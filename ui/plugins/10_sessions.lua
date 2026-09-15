@@ -547,6 +547,17 @@ return {
       passthrough = true,
       group = "Sessions",
     },
+    -- Readline's end-of-line, so passthrough like the chords above. Not `f2`,
+    -- the other conventional rename key: the info panel maintained out of tree
+    -- binds it, and a bundled claim would take it from that pane.
+    {
+      key = "ctrl+e",
+      action = "sessions.rename",
+      desc = "rename session",
+      scope = "global",
+      passthrough = true,
+      group = "Sessions",
+    },
     -- Not passthrough, matching v1: undo and session navigation are how you
     -- act on the list without leaving the terminal you are watching.
     {
@@ -810,6 +821,11 @@ return {
         session = id,
         name = ((source and source.name) or "session") .. "-fork",
       }
+    elseif action == "sessions.rename" and id then
+      -- The field lives in the rename float, handed over through `store` as a
+      -- question is handed to `confirm`: this pane knows which session and what
+      -- it is called, and decides nothing about how the new name is asked for.
+      store.rename = { session = id, name = items[at].session.name or "" }
     elseif action == "sessions.sync" and id then
       command("sync", { session = id })
     elseif action == "sessions.editor" and id then

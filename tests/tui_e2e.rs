@@ -135,6 +135,10 @@ impl Profile {
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
         cmd.env("TMUX_TMPDIR", &self.sockets);
         cmd.env(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, &self.socket);
+        // Run from inside a thurbox pane, an inherited owner makes the override
+        // above read as inherited, and the server lands on a derived socket that
+        // `Drop` never kills.
+        cmd.env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV);
         cmd.env("TERM", "xterm-256color");
         // A test run inside tmux must not look like one to the binary.
         cmd.env_remove("TMUX");
@@ -1275,6 +1279,48 @@ fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
     assert!(
         tui.frame().contains("1 session(s)") && !tui.frame().contains("No sessions yet"),
         "Ctrl+D on a live shell must not delete the session behind it:\n{}",
+        tui.frame()
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn ctrl_e_renames_the_selected_session_and_says_why_a_name_is_refused() {
+    // Issue #1141: a session could be created and deleted from the keyboard, and
+    // renamed by nothing at all. `Ctrl+E` is a readline chord like the list's
+    // others, so it is pressed with the list focused; the field it opens holds
+    // the current name, a refused name is explained in the field rather than
+    // lost, and a good one lands in the list.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    // 0x08 is Ctrl+H, the reserved way out of a focused terminal and onto the
+    // list beside it.
+    tui.send(b"\x08");
+    tui.wait_until("the session list to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Sessions"))
+    });
+
+    // 0x05 is Ctrl+E; 0x15 is Ctrl+U, which clears the prefilled name.
+    tui.send(b"\x05");
+    tui.wait_for("Rename session");
+    tui.send(b"\x15");
+    tui.send(b"bad/name\r");
+    tui.wait_for("Name contains invalid characters");
+
+    tui.send(b"\x15");
+    tui.send(b"renamed\r");
+    tui.wait_gone("Rename session");
+    tui.wait_gone("probe");
+    assert!(
+        tui.frame().contains("renamed"),
+        "the list must show the new name:\n{}",
         tui.frame()
     );
 

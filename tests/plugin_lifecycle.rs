@@ -511,6 +511,7 @@ fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
 
     for float in [
         "plugins/60_confirm.lua",
+        "plugins/62_rename.lua",
         "plugins/70_new_session.lua",
         "plugins/80_restore.lua",
     ] {

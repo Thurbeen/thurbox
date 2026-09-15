@@ -911,6 +911,12 @@ function require(name) end
 ---@field session string
 ---@field text? string The new session's name.
 
+--- Refused, as `command.failed` with the reason, for any name `session create`
+--- would refuse or another session on the same backend already has.
+---@class (exact) thurbox.cmd.Rename
+---@field session string
+---@field text string The name to give it.
+
 --- Run a declared action, exactly as its chord or a click on it would — which
 --- is how a pane opens help, settings, themes or the palette from a key
 --- handler. The plugin that asked is the fallback owner, stamped by the kernel.
@@ -927,7 +933,7 @@ function require(name) end
 ---| "emit" | "plugin" | "set" | "task" | "dispatch" | "automation"
 ---| "create" | "bookmark" | "focus" | "open" | "theme" | "order" | "program"
 ---| "delete" | "restore" | "restart" | "send" | "reorder" | "fork"
----| "sync" | "copy" | "diff" | "shell" | "editor" | "action" | "message"
+---| "sync" | "rename" | "copy" | "diff" | "shell" | "editor" | "action" | "message"
 
 --- The only way a plugin changes anything. Enqueues and returns; it never runs
 --- the operation, which is why a plugin cannot stall the loop.
@@ -954,6 +960,7 @@ function require(name) end
 ---@overload fun(verb: "reorder", opts: thurbox.cmd.Reorder)
 ---@overload fun(verb: "fork", opts: thurbox.cmd.Fork)
 ---@overload fun(verb: "sync", opts: thurbox.cmd.Session)
+---@overload fun(verb: "rename", opts: thurbox.cmd.Rename)
 ---@overload fun(verb: "copy", opts: thurbox.cmd.Session)
 ---@overload fun(verb: "diff", opts: thurbox.cmd.Session)
 ---@overload fun(verb: "shell", opts: thurbox.cmd.Session)

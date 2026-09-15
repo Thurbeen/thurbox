@@ -936,6 +936,7 @@ never sent, so the terminal keeps its own selection and scrolling.
 
 ```lua
 command("delete",  { session = id })
+command("rename",  { session = id, text = "fix-osc52" })       -- refusal: command.failed
 command("create",  { repo = "/src/thing", branch = "feat/x", agent = "claude" })
 command("task",    { number = 3, status = "done" })
 command("theme",   { text = "tokyo-night" })

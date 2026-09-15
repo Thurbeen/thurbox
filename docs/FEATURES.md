@@ -710,7 +710,8 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+,` / `F6` | Global | Settings panel (edit settings.toml) | **,** = preferences |
 | `F1` / `Ctrl+G` | Global | Keybindings help + interactive editor | Universal help |
 | `Ctrl+B` / `F2` | Global | Toggle info panel | **B**rowse info |
-| `Ctrl+E` / `F3` | Global | Toggle file viewer | **E**xplore files |
+| `Ctrl+E` | Global (passthrough) | Rename selected session | **E**dit the name |
+| `F3` | Global | Toggle file viewer | Files |
 | `Shift+J` | Session list | Move selected session down | Reorder |
 | `Shift+K` | Session list | Move selected session up | Reorder |
 | `Shift+S` | Session list | Sort sessions alphabetically within repo groups | **S**ort |
@@ -873,6 +874,39 @@ reusing the session's stored agent. Agents that define no
   preserved (when the agent supports it).
 - The session's `SessionInfo` (ID, name, agent, repos)
   stays intact — only the backend pane and I/O are replaced.
+
+### Session Rename (`Ctrl+E`)
+
+`Ctrl+E` on the session list, `thurbox-cli session rename <session> <name>`,
+or `command("rename", { session = id, text = name })` from a plugin. All three
+run one pipeline (`session_ops::rename`), so a refusal reads the same wherever
+it came from.
+
+- **Create's rules.** The name is held to `validate_safe_name` (1-64 bytes, no
+  `/`, `\` or `..`, no leading `.`). A name another active session on the same
+  backend already has is refused, as `create --on-existing fail` refuses it:
+  create allows namesakes by default, but a name matching several sessions is
+  then refused wherever one is typed, and a rename is a name chosen on purpose.
+  A name that folds onto another session's window name (`a:b` and `a.b` both
+  make `tb-a_b`) is refused too: an unstamped window is found by that name
+  alone. Two renames racing to one name are not locked against each other —
+  the worst case is a pair of namesakes, which create already allows.
+- **The windows follow.** The agent's `tb-` window and the shell's `tbs-`
+  window are renamed first, found stamp-first under the old name (ADR-25), then
+  the row. The order matters where a window carries no stamp (psmux): the name
+  is all that finds it, which is also why the windows are put back when the row
+  cannot be written. A shareable host renames its own row and windows
+  through its CLI, and this machine mirrors the result (ADR-24).
+- **The field says why.** The interface's float stays up until the command
+  answers, so a refused name is explained beside the text that caused it.
+  The rules live only in Rust; the float keeps no copy of them.
+- **Why `Ctrl+E`.** It fits the list's scheme of global, passthrough
+  `Ctrl+<letter>` session chords: in a focused terminal it stays readline's
+  end-of-line. v1 held it for a files pane that no longer exists anywhere.
+  `F2`, the other conventional rename key, is bound by the info panel that is
+  maintained out of tree.
+- **No lifecycle hooks.** A rename changes a label, not what runs, so
+  `hooks.toml` has no event for it.
 
 ### Session lifecycle hooks (`hooks.toml`)
 

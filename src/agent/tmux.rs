@@ -3307,6 +3307,43 @@ pub fn agent_window_alive(
     Ok(!agent_window(host, session_id, session_name)?.is_absent())
 }
 
+/// Follow a session's rename with the windows named after it: its agent's, and
+/// its companion shell's when it has one.
+///
+/// Located under the name the session *had*, stamp first, so a namesake's
+/// window is never the one renamed. The name is more than looks where a window
+/// carries no stamp (psmux, or one spawned before stamping): the name is then
+/// all that finds it, and a row renamed without its window would lose it — which
+/// is also why ambiguity refuses rather than skips.
+pub fn rename_session_windows(
+    host: Option<&crate::session::HostDef>,
+    session_id: &str,
+    from: &str,
+    to: &str,
+) -> Result<()> {
+    let backend = match host {
+        Some(host) => {
+            known_host_socket(host)?;
+            TmuxBackend::from_host(host)
+        }
+        None => TmuxBackend::local(),
+    };
+    let index = WindowIndex::from_listing(backend.discover_answered()?);
+    for role in [WindowRole::Agent, WindowRole::Shell] {
+        match index.locate(session_id, from, role, false) {
+            Located::At(pane) => {
+                backend.tmux_run(&["rename-window", "-t", &pane, &window_name_for(role, to)])?;
+            }
+            Located::Absent => {}
+            Located::Unknown => bail!(
+                "several windows are named after '{from}' and none is stamped as this \
+                 session's, so there is no telling which one to rename"
+            ),
+        }
+    }
+    Ok(())
+}
+
 /// Record a hook state on the pane this process runs in — the pane option a
 /// remote observer's control-mode subscription reads — so a status reported
 /// through the CLI reaches a peer within a second, not at the mirror's
@@ -4472,8 +4509,8 @@ mod tests {
     }
 
     /// The stamp is the identity, so a window answers to its session whatever
-    /// it is called — a session cannot be renamed today, but resolution must
-    /// not be the reason it never can be.
+    /// it is called — which is what lets a renamed session's row and window
+    /// disagree for the moment between the two writes without losing it.
     #[test]
     fn a_stamped_window_is_its_sessions_whatever_it_is_named() {
         let index =
