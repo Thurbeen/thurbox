@@ -199,15 +199,7 @@ pub fn spawn_session_headless_with_progress(
         }
     };
     report(SpawnPhase::Resolving);
-    crate::paths::validate_safe_name(&req.name)?;
-    if req.resume_session_id.is_some() && req.command.as_deref().is_some_and(|c| !c.is_empty()) {
-        return Err(
-            "--resume is not supported for --command sessions: a raw command has no agent \
-             conversation to attach to; drop --resume, or use --agent instead of --command"
-                .to_string(),
-        );
-    }
-    validate_parent_session(db, req.parent_session_id)?;
+    validate_request(db, &req)?;
 
     // Resolve the optional remote host. `backend_type` is `local-tmux` or
     // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
@@ -367,18 +359,9 @@ pub fn spawn_session_headless_with_progress(
     // has committed. Only for a local session — a remote host's binaries are on
     // the host, and `Presence::Unknown` is the honest answer about a machine
     // this one has not looked at.
-    let mut warnings = Vec::new();
-    if host.is_none()
-        && crate::agent::preflight::look_up(&command) == crate::agent::preflight::Presence::Missing
-    {
-        warnings.push(
-            crate::agent::preflight::Dependency::Agent {
-                name: &agent_name,
-                command: &command,
-            }
-            .missing_message(),
-        );
-    }
+    let warnings: Vec<String> = missing_agent_warning(host.as_ref(), &agent_name, &command)
+        .into_iter()
+        .collect();
 
     report(SpawnPhase::Launching);
     // The window is stamped with the row's id as it is created (ADR-25), which
@@ -388,41 +371,15 @@ pub fn spawn_session_headless_with_progress(
     // one over the SSH backend's control mode, the local one from
     // `new-window -P` — which is the pane the interface attaches to.
     let stamp = session_id.to_string();
-    let backend_id = match host.as_ref() {
-        Some(h) => crate::agent::tmux::spawn_window_remote(
-            h,
-            &stamp,
-            &req.name,
-            &command,
-            &args,
-            Some(&launch_cwd),
-            &config.env,
-        )
-        .map_err(
-            |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                // `ssh`/`wsl.exe` missing on *this* machine: already a sentence
-                // naming it, the search and the fix.
-                true => format!("{e}"),
-                false => format!("Failed to spawn remote tmux window: {e:#}"),
-            },
-        )?,
-        None => crate::agent::tmux::spawn_window(
-            &stamp,
-            &req.name,
-            &command,
-            &args,
-            Some(&launch_cwd),
-            &config.env,
-        )
-        .map_err(
-            |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                // Already a sentence naming the binary, the search and the fix;
-                // a prefix in front of it only pushes the fix off the row.
-                true => format!("{e}"),
-                false => format!("Failed to spawn tmux window: {e:#}"),
-            },
-        )?,
-    };
+    let backend_id = launch_window(
+        host.as_ref(),
+        &stamp,
+        &req.name,
+        &command,
+        &args,
+        &launch_cwd,
+        &config.env,
+    )?;
 
     report(SpawnPhase::Persisting);
     let shared = SharedSession {
@@ -453,37 +410,7 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        // Ownership-gated, for the same reason the reap is: this tears down a
-        // window that never became a row, so it must kill only the one it just
-        // spawned. `kill_window`'s resolution would reach the `tb-<name>`
-        // window when the pane id is unusable — and it is unusable exactly
-        // where it matters, since psmux records none — which on a name two
-        // sessions share destroys a live one. Leaking the window we already
-        // leaked is the cheap failure; killing someone else's is not.
-        let cleanup = match host.as_ref() {
-            Some(h) => crate::agent::tmux::kill_remote_windows(
-                h,
-                &stamp,
-                &req.name,
-                crate::agent::tmux::SessionPanes::agent(&backend_id),
-            ),
-            None => crate::agent::tmux::kill_window(&stamp, &req.name).map(|()| true),
-        };
-        match cleanup {
-            Ok(true) => {}
-            // Nothing this spawn can prove is its own. The window leaks rather
-            // than taking a live session's down with it.
-            Ok(false) => tracing::error!(
-                "orphaned window for '{}' (pane {:?}) is not provably its own; \
-                 leaving any same-named window alone",
-                req.name,
-                backend_id
-            ),
-            Err(kill_err) => tracing::error!(
-                "failed to tear down orphaned window for '{}': {kill_err}",
-                req.name
-            ),
-        }
+        discard_orphaned_window(host.as_ref(), &stamp, &req.name, &backend_id);
         return Err(format!("Failed to persist session: {e}"));
     }
 
@@ -503,15 +430,7 @@ pub fn spawn_session_headless_with_progress(
         tracing::warn!("Failed to record the session's launch environment: {e}");
     }
 
-    // Record the worktree's fork point so the code-review view can scope its
-    // diff to `<base>..HEAD`. Only meaningful for worktree sessions; a bare-repo
-    // session leaves it NULL (review falls back to the repo's default branch).
-    if req.worktree_branch.is_some() {
-        let base = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
-        if let Err(e) = db.set_session_base_branch(session_id, base) {
-            tracing::warn!("Failed to record session base branch: {e}");
-        }
-    }
+    record_fork_point(db, session_id, &req);
 
     // No spawn-time status seed: a fresh session is `Idle` (the hooks-driven
     // default) until the agent's hooks report otherwise — e.g. claude's
@@ -542,6 +461,124 @@ pub fn spawn_session_headless_with_progress(
         warnings,
         sharing,
     })
+}
+
+/// Refuse a request that cannot be spawned, before anything is resolved.
+fn validate_request(db: &Database, req: &SpawnRequest) -> Result<(), String> {
+    crate::paths::validate_safe_name(&req.name)?;
+    if req.resume_session_id.is_some() && req.command.as_deref().is_some_and(|c| !c.is_empty()) {
+        return Err(
+            "--resume is not supported for --command sessions: a raw command has no agent \
+             conversation to attach to; drop --resume, or use --agent instead of --command"
+                .to_string(),
+        );
+    }
+    validate_parent_session(db, req.parent_session_id)?;
+    Ok(())
+}
+
+/// The warning a local launch owes when its agent's binary is not on `PATH`.
+fn missing_agent_warning(
+    host: Option<&HostDef>,
+    agent_name: &str,
+    command: &str,
+) -> Option<String> {
+    if host.is_some()
+        || crate::agent::preflight::look_up(command) != crate::agent::preflight::Presence::Missing
+    {
+        return None;
+    }
+    Some(
+        crate::agent::preflight::Dependency::Agent {
+            name: agent_name,
+            command,
+        }
+        .missing_message(),
+    )
+}
+
+/// Open the session's window, on its host or here, and return the new pane's
+/// id.
+fn launch_window(
+    host: Option<&HostDef>,
+    stamp: &str,
+    name: &str,
+    command: &str,
+    args: &[String],
+    cwd: &std::path::Path,
+    env: &std::collections::HashMap<String, String>,
+) -> Result<String, String> {
+    match host {
+        Some(h) => {
+            crate::agent::tmux::spawn_window_remote(h, stamp, name, command, args, Some(cwd), env)
+                .map_err(
+                    |e| match crate::agent::preflight::is_missing_dependency(&e) {
+                        // `ssh`/`wsl.exe` missing on *this* machine: already a sentence
+                        // naming it, the search and the fix.
+                        true => format!("{e}"),
+                        false => format!("Failed to spawn remote tmux window: {e:#}"),
+                    },
+                )
+        }
+        None => crate::agent::tmux::spawn_window(stamp, name, command, args, Some(cwd), env)
+            .map_err(
+                |e| match crate::agent::preflight::is_missing_dependency(&e) {
+                    // Already a sentence naming the binary, the search and the fix;
+                    // a prefix in front of it only pushes the fix off the row.
+                    true => format!("{e}"),
+                    false => format!("Failed to spawn tmux window: {e:#}"),
+                },
+            ),
+    }
+}
+
+/// Tear down the window a spawn opened but could not persist as a row — only
+/// when it is provably that spawn's own.
+fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, backend_id: &str) {
+    // Ownership-gated, for the same reason the reap is: this tears down a
+    // window that never became a row, so it must kill only the one it just
+    // spawned. `kill_window`'s resolution would reach the `tb-<name>`
+    // window when the pane id is unusable — and it is unusable exactly
+    // where it matters, since psmux records none — which on a name two
+    // sessions share destroys a live one. Leaking the window we already
+    // leaked is the cheap failure; killing someone else's is not.
+    let cleanup = match host {
+        Some(h) => crate::agent::tmux::kill_remote_windows(
+            h,
+            stamp,
+            name,
+            crate::agent::tmux::SessionPanes::agent(backend_id),
+        ),
+        None => crate::agent::tmux::kill_window(stamp, name).map(|()| true),
+    };
+    match cleanup {
+        Ok(true) => {}
+        // Nothing this spawn can prove is its own. The window leaks rather
+        // than taking a live session's down with it.
+        Ok(false) => tracing::error!(
+            "orphaned window for '{}' (pane {:?}) is not provably its own; \
+             leaving any same-named window alone",
+            name,
+            backend_id
+        ),
+        Err(kill_err) => tracing::error!(
+            "failed to tear down orphaned window for '{}': {kill_err}",
+            name
+        ),
+    }
+}
+
+/// Record the worktree's fork point so the code-review view can scope its diff
+/// to `<base>..HEAD`. Only meaningful for worktree sessions; a bare-repo
+/// session leaves it NULL (review falls back to the repo's default branch).
+fn record_fork_point(db: &Database, session_id: SessionId, req: &SpawnRequest) {
+    if req.worktree_branch.is_none() {
+        return;
+    }
+    let base = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
+    if let Err(e) = db.set_session_base_branch(session_id, base) {
+        tracing::warn!("Failed to record session base branch: {e}");
+    }
 }
 
 /// Create the session by running `thurbox-cli session create` **on the host**.

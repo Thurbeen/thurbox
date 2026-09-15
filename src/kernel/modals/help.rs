@@ -291,80 +291,20 @@ impl HelpModal {
             }
             lines.push(Line::default());
         }
-
-        // Never selectable, and last: the escape route out of any pane, which a
-        // reader needs to know exists but can never change.
-        lines.push(Line::from(Span::styled(
-            "Fixed (not rebindable)",
-            chrome.section_header(),
-        )));
-        for (chord, description) in RESERVED_ROWS {
-            lines.push(entry_line(
-                key_width,
-                chord,
-                description,
-                None,
-                false,
-                chrome,
-            ));
-        }
-
-        // The events a plugin may subscribe to, from the same table the loader
-        // validates against — so what help shows is what `events = { … }` may
-        // name, and a plugin author need not leave the interface to find out.
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            "Events (for plugins: events = { … } + on_event)",
-            chrome.section_header(),
-        )));
-        let event_width = crate::kernel::events::KERNEL_EVENTS
-            .iter()
-            .map(|spec| spec.name.chars().count())
-            .max()
-            .unwrap_or(0)
-            + 2;
-        for spec in crate::kernel::events::KERNEL_EVENTS {
-            lines.push(entry_line(
-                event_width,
-                spec.name,
-                &format!("{} — {}", spec.fields.join(", "), spec.when),
-                None,
-                false,
-                chrome,
-            ));
-        }
-        lines.push(entry_line(
-            event_width,
-            &format!("{}<name>", crate::kernel::events::USER_PREFIX),
-            "source, … — a plugin ran command(\"emit\", { text = \"<name>\", … })",
-            None,
-            false,
-            chrome,
-        ));
+        push_reference_lines(&mut lines, key_width, chrome);
 
         let total = lines.len();
         let height = usize::from(body.height);
         let scroll = scroll_for(total, height, selected_line);
         let (rows_area, track) = chrome::reserve_track(body, total, height);
         frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), rows_area);
-
-        for (line, action) in action_lines {
-            let Some(on_screen) = line.checked_sub(scroll) else {
-                continue;
-            };
-            if on_screen >= height {
-                continue;
-            }
-            self.hits.rows.push((
-                Rect::new(
-                    rows_area.x,
-                    rows_area.y + on_screen as u16,
-                    rows_area.width,
-                    1,
-                ),
-                action,
-            ));
-        }
+        record_row_hits(
+            &mut self.hits.rows,
+            &action_lines,
+            scroll,
+            height,
+            rows_area,
+        );
 
         // The bar tracks ACTIONS, not screen lines, so its thumb matches what
         // the selection cursor moves through — v1's rule, and why the viewport
@@ -411,6 +351,87 @@ impl HelpModal {
             ],
             chrome,
         );
+    }
+}
+
+/// The rows after the rebindable ones: the fixed chords, then the events a
+/// plugin may subscribe to.
+fn push_reference_lines(lines: &mut Vec<Line<'_>>, key_width: usize, chrome: Chrome) {
+    // Never selectable: the escape route out of any pane, which a reader needs
+    // to know exists but can never change.
+    lines.push(Line::from(Span::styled(
+        "Fixed (not rebindable)",
+        chrome.section_header(),
+    )));
+    for (chord, description) in RESERVED_ROWS {
+        lines.push(entry_line(
+            key_width,
+            chord,
+            description,
+            None,
+            false,
+            chrome,
+        ));
+    }
+
+    // The events a plugin may subscribe to, from the same table the loader
+    // validates against — so what help shows is what `events = { … }` may
+    // name, and a plugin author need not leave the interface to find out.
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        "Events (for plugins: events = { … } + on_event)",
+        chrome.section_header(),
+    )));
+    let event_width = crate::kernel::events::KERNEL_EVENTS
+        .iter()
+        .map(|spec| spec.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    for spec in crate::kernel::events::KERNEL_EVENTS {
+        lines.push(entry_line(
+            event_width,
+            spec.name,
+            &format!("{} — {}", spec.fields.join(", "), spec.when),
+            None,
+            false,
+            chrome,
+        ));
+    }
+    lines.push(entry_line(
+        event_width,
+        &format!("{}<name>", crate::kernel::events::USER_PREFIX),
+        "source, … — a plugin ran command(\"emit\", { text = \"<name>\", … })",
+        None,
+        false,
+        chrome,
+    ));
+}
+
+/// A click target for every action row the scroll window leaves on screen.
+fn record_row_hits(
+    rows: &mut Vec<(Rect, usize)>,
+    action_lines: &[(usize, usize)],
+    scroll: usize,
+    height: usize,
+    rows_area: Rect,
+) {
+    for &(line, action) in action_lines {
+        let Some(on_screen) = line.checked_sub(scroll) else {
+            continue;
+        };
+        if on_screen >= height {
+            continue;
+        }
+        rows.push((
+            Rect::new(
+                rows_area.x,
+                rows_area.y + on_screen as u16,
+                rows_area.width,
+                1,
+            ),
+            action,
+        ));
     }
 }
 

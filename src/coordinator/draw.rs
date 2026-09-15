@@ -42,72 +42,85 @@ impl App {
             OUTPUT_FRAME_INTERVAL
         };
         let due = self.dirty && since_paint >= floor;
-        if due || since_paint >= FORCE_REDRAW_INTERVAL {
-            // Published HERE rather than every iteration: a plugin only reads
-            // `thurbox.*` while it renders, so rebuilding those tables on a tick
-            // that paints nothing is pure waste. At `drain_input`'s 10ms poll
-            // that was 100 rebuilds a second to feed a screen that redraws four
-            // times.
-            let timing = self.perf_timing_active();
-            let republish_start = timing.then(Instant::now);
-            self.republish();
-            if let Some(start) = republish_start {
-                self.timings.republish.record(start.elapsed());
-            }
-            let draw_start = timing.then(Instant::now);
-            let painted = terminal.draw(|frame| self.draw(frame))?;
-            if let Some(start) = draw_start {
-                self.timings.frame.record(start.elapsed());
-            }
-            // While `painted` still borrows the terminal — it only needs
-            // `&self` and the cells, and this order is what lets the frame
-            // buffer be read in place instead of cloned whole (10,000 cells a
-            // frame) just to end the borrow. The backend has flushed by the
-            // time `draw` returns, so the escapes cannot interleave with
-            // ratatui's own output; the cursor corrections below come after,
-            // which also leaves the caret where the modal put it.
-            self.paint_outer_hyperlinks(painted.buffer);
-            // A modal captures input, so it owns the caret — or nothing
-            // does. The panes underneath still draw, and one with a text
-            // field claims the cursor as it goes; a frame that ends with a
-            // cursor position SHOWS it, so it would blink behind the modal,
-            // which reads as the screen refreshing wrongly rather than as a
-            // misplaced cursor. Corrected after the frame because a `Frame`'s
-            // cursor can be set but never unset, and the modal draws last.
-            if self.modals.is_open() {
-                match self.modals.caret() {
-                    Some(position) => {
-                        terminal.show_cursor()?;
-                        terminal.set_cursor_position(position)?;
-                    }
-                    None => terminal.hide_cursor()?,
-                }
-            }
-            self.last_paint = Instant::now();
-            self.input_dirty = false;
-            self.frames += 1;
-            Counters::bump(&self.perf.frames);
-            if !self.first_frame_logged {
-                self.first_frame_logged = true;
-                self.startup.first_frame_ms = self.process_start.elapsed().as_millis() as u64;
-                if self.perf_log {
-                    let s = &self.startup;
-                    tracing::info!(
-                        config_init_ms = s.config_init_ms,
-                        db_open_ms = s.db_open_ms,
-                        theme_activate_ms = s.theme_activate_ms,
-                        extension_heal_ms = s.extension_heal_ms,
-                        heartbeat_ms = s.heartbeat_ms,
-                        ui_build_ms = s.ui_build_ms,
-                        first_frame_ms = s.first_frame_ms,
-                        "startup"
-                    );
-                }
-            }
-        } else {
+        if !due && since_paint < FORCE_REDRAW_INTERVAL {
             Counters::bump(&self.perf.skipped);
+            return Ok(());
+        }
+        // Published HERE rather than every iteration: a plugin only reads
+        // `thurbox.*` while it renders, so rebuilding those tables on a tick
+        // that paints nothing is pure waste. At `drain_input`'s 10ms poll that
+        // was 100 rebuilds a second to feed a screen that redraws four times.
+        let timing = self.perf_timing_active();
+        let republish_start = timing.then(Instant::now);
+        self.republish();
+        if let Some(start) = republish_start {
+            self.timings.republish.record(start.elapsed());
+        }
+        let draw_start = timing.then(Instant::now);
+        let painted = terminal.draw(|frame| self.draw(frame))?;
+        if let Some(start) = draw_start {
+            self.timings.frame.record(start.elapsed());
+        }
+        // While `painted` still borrows the terminal — it only needs `&self` and
+        // the cells, and this order is what lets the frame buffer be read in
+        // place instead of cloned whole (10,000 cells a frame) just to end the
+        // borrow. The backend has flushed by the time `draw` returns, so the
+        // escapes cannot interleave with ratatui's own output; the cursor
+        // corrections below come after, which also leaves the caret where the
+        // modal put it.
+        self.paint_outer_hyperlinks(painted.buffer);
+        self.place_modal_caret(terminal)?;
+        self.last_paint = Instant::now();
+        self.input_dirty = false;
+        self.frames += 1;
+        Counters::bump(&self.perf.frames);
+        self.log_first_frame();
+        Ok(())
+    }
+
+    /// A modal captures input, so it owns the caret — or nothing does.
+    ///
+    /// The panes underneath still draw, and one with a text field claims the
+    /// cursor as it goes; a frame that ends with a cursor position SHOWS it, so
+    /// it would blink behind the modal, which reads as the screen refreshing
+    /// wrongly rather than as a misplaced cursor. Corrected after the frame
+    /// because a `Frame`'s cursor can be set but never unset, and the modal
+    /// draws last.
+    fn place_modal_caret(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn Error>> {
+        if !self.modals.is_open() {
+            return Ok(());
+        }
+        match self.modals.caret() {
+            Some(position) => {
+                terminal.show_cursor()?;
+                terminal.set_cursor_position(position)?;
+            }
+            None => terminal.hide_cursor()?,
         }
         Ok(())
+    }
+
+    /// Stamp the first frame's startup time, once, and log every startup phase
+    /// when performance logging is on.
+    fn log_first_frame(&mut self) {
+        if self.first_frame_logged {
+            return;
+        }
+        self.first_frame_logged = true;
+        self.startup.first_frame_ms = self.process_start.elapsed().as_millis() as u64;
+        if self.perf_log {
+            let s = &self.startup;
+            tracing::info!(
+                config_init_ms = s.config_init_ms,
+                db_open_ms = s.db_open_ms,
+                theme_activate_ms = s.theme_activate_ms,
+                extension_heal_ms = s.extension_heal_ms,
+                heartbeat_ms = s.heartbeat_ms,
+                ui_build_ms = s.ui_build_ms,
+                first_frame_ms = s.first_frame_ms,
+                "startup"
+            );
+        }
     }
 
     pub(crate) fn draw(&mut self, frame: &mut Frame) {

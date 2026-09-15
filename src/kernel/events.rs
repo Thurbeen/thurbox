@@ -284,6 +284,25 @@ impl Facts {
             parent: row.parent_id.clone(),
         }
     }
+
+    /// The fields other than status that differ from `before`, spelled the way
+    /// a `session.changed` subscriber reads them.
+    fn changed_since(&self, before: &Facts) -> Vec<String> {
+        let mut fields = Vec::new();
+        if before.name != self.name {
+            fields.push("name".to_string());
+        }
+        if before.branch != self.branch {
+            fields.push("branch".to_string());
+        }
+        if before.repo != self.repo || before.repos != self.repos {
+            fields.push("repos".to_string());
+        }
+        if before.parent != self.parent {
+            fields.push("parent".to_string());
+        }
+        fields
+    }
 }
 
 /// Turns one snapshot into the events that separate it from the last.
@@ -323,69 +342,14 @@ impl Deriver {
         }
 
         let mut events = Vec::new();
-        let new_ids: BTreeSet<&str> = next.iter().map(|(id, _)| id.as_str()).collect();
-        for (id, facts) in &self.rows {
-            if !new_ids.contains(id.as_str()) {
-                events.push(
-                    Event::new("session.deleted")
-                        .with("session", Some(id.as_str()))
-                        .with("name", Some(facts.name.as_str())),
-                );
-            }
-        }
+        push_departures(&mut events, &self.rows, &next);
         let old: std::collections::HashMap<&str, &Facts> = self
             .rows
             .iter()
             .map(|(id, facts)| (id.as_str(), facts))
             .collect();
-        for (id, facts) in &next {
-            if !old.contains_key(id.as_str()) {
-                events.push(
-                    Event::new("session.created")
-                        .with("session", Some(id.as_str()))
-                        .with("name", Some(facts.name.as_str()))
-                        .with("agent", Some(facts.agent.as_str()))
-                        .with("repo", facts.repo.as_deref()),
-                );
-            }
-        }
-        let mut changes = Vec::new();
-        for (id, facts) in &next {
-            let Some(before) = old.get(id.as_str()) else {
-                continue;
-            };
-            if before.status != facts.status {
-                events.push(
-                    Event::new("session.status")
-                        .with("session", Some(id.as_str()))
-                        .with("name", Some(facts.name.as_str()))
-                        .with("from", Some(before.status.as_str()))
-                        .with("to", Some(facts.status.as_str())),
-                );
-            }
-            let mut fields = Vec::new();
-            if before.name != facts.name {
-                fields.push("name".to_string());
-            }
-            if before.branch != facts.branch {
-                fields.push("branch".to_string());
-            }
-            if before.repo != facts.repo || before.repos != facts.repos {
-                fields.push("repos".to_string());
-            }
-            if before.parent != facts.parent {
-                fields.push("parent".to_string());
-            }
-            if !fields.is_empty() {
-                changes.push(
-                    Event::new("session.changed")
-                        .with("session", Some(id.as_str()))
-                        .with("name", Some(facts.name.as_str()))
-                        .with("fields", Some(Field::List(fields))),
-                );
-            }
-        }
-        events.extend(changes);
+        push_arrivals(&mut events, &old, &next);
+        push_changes(&mut events, &old, &next);
         self.rows = next;
         events
     }
@@ -399,6 +363,74 @@ impl Deriver {
         self.rows.clear();
         self.version = None;
     }
+}
+
+/// `session.deleted` for every row of `before` that `after` no longer holds.
+fn push_departures(events: &mut Vec<Event>, before: &[(String, Facts)], after: &[(String, Facts)]) {
+    let remaining: BTreeSet<&str> = after.iter().map(|(id, _)| id.as_str()).collect();
+    for (id, facts) in before {
+        if !remaining.contains(id.as_str()) {
+            events.push(
+                Event::new("session.deleted")
+                    .with("session", Some(id.as_str()))
+                    .with("name", Some(facts.name.as_str())),
+            );
+        }
+    }
+}
+
+/// `session.created` for every row of `after` that `old` did not hold.
+fn push_arrivals(
+    events: &mut Vec<Event>,
+    old: &std::collections::HashMap<&str, &Facts>,
+    after: &[(String, Facts)],
+) {
+    for (id, facts) in after {
+        if !old.contains_key(id.as_str()) {
+            events.push(
+                Event::new("session.created")
+                    .with("session", Some(id.as_str()))
+                    .with("name", Some(facts.name.as_str()))
+                    .with("agent", Some(facts.agent.as_str()))
+                    .with("repo", facts.repo.as_deref()),
+            );
+        }
+    }
+}
+
+/// For every row both snapshots hold: its `session.status`, and then — once
+/// every status has been pushed — a `session.changed` naming whatever else
+/// moved.
+fn push_changes(
+    events: &mut Vec<Event>,
+    old: &std::collections::HashMap<&str, &Facts>,
+    after: &[(String, Facts)],
+) {
+    let mut changes = Vec::new();
+    for (id, facts) in after {
+        let Some(before) = old.get(id.as_str()) else {
+            continue;
+        };
+        if before.status != facts.status {
+            events.push(
+                Event::new("session.status")
+                    .with("session", Some(id.as_str()))
+                    .with("name", Some(facts.name.as_str()))
+                    .with("from", Some(before.status.as_str()))
+                    .with("to", Some(facts.status.as_str())),
+            );
+        }
+        let fields = facts.changed_since(before);
+        if !fields.is_empty() {
+            changes.push(
+                Event::new("session.changed")
+                    .with("session", Some(id.as_str()))
+                    .with("name", Some(facts.name.as_str()))
+                    .with("fields", Some(Field::List(fields))),
+            );
+        }
+    }
+    events.extend(changes);
 }
 
 #[cfg(test)]
@@ -523,6 +555,49 @@ mod tests {
         );
         // And nothing fires again for the same version.
         assert!(deriver.observe(&snapshot(vec![]), 2).is_empty());
+    }
+
+    #[test]
+    fn a_change_names_each_field_that_moved_and_a_status_alone_is_not_one() {
+        let mut deriver = Deriver::new();
+        let ids = ["a", "b", "c", "d"];
+        deriver.observe(
+            &snapshot(ids.iter().map(|id| row(id, SessionState::Idle)).collect()),
+            1,
+        );
+        let mut repos_grew = row("a", SessionState::Idle);
+        repos_grew.repos.push("fleet".into());
+        let mut reparented = row("b", SessionState::Idle);
+        reparented.parent_id = Some("a".into());
+        let working = row("c", SessionState::Working);
+        let mut repo_moved = row("d", SessionState::Idle);
+        repo_moved.repo = Some("elsewhere".into());
+        let events = deriver.observe(
+            &snapshot(vec![repos_grew, reparented, working, repo_moved]),
+            2,
+        );
+        let fields = |event: &Event| {
+            event
+                .payload
+                .iter()
+                .find(|(k, _)| k == "fields")
+                .map(|(_, v)| v.clone())
+        };
+        let summary: Vec<(&str, Option<&str>, Option<Field>)> = events
+            .iter()
+            .map(|e| (e.name.as_str(), e.text("session"), fields(e)))
+            .collect();
+        let list =
+            |names: &[&str]| Some(Field::List(names.iter().map(|n| n.to_string()).collect()));
+        assert_eq!(
+            summary,
+            [
+                ("session.status", Some("c"), None),
+                ("session.changed", Some("a"), list(&["repos"])),
+                ("session.changed", Some("b"), list(&["parent"])),
+                ("session.changed", Some("d"), list(&["repos"])),
+            ]
+        );
     }
 
     #[test]

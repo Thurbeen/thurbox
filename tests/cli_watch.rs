@@ -507,41 +507,59 @@ fn split_toon_row(row: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut chars = row.chars().peekable();
     loop {
-        let mut field = String::new();
-        if chars.peek() == Some(&'"') {
+        let field = if chars.peek() == Some(&'"') {
             chars.next();
-            while let Some(c) = chars.next() {
-                match c {
-                    '"' => break,
-                    '\\' => {
-                        if let Some(next) = chars.next() {
-                            field.push(match next {
-                                'n' => '\n',
-                                'r' => '\r',
-                                't' => '\t',
-                                other => other,
-                            });
-                        }
-                    }
-                    c => field.push(c),
-                }
-            }
+            toon_quoted_field(&mut chars)
         } else {
-            while let Some(&c) = chars.peek() {
-                if c == ',' {
-                    break;
-                }
-                field.push(c);
-                chars.next();
-            }
-        }
+            toon_bare_field(&mut chars)
+        };
         fields.push(field);
-        match chars.next() {
-            Some(',') => continue,
-            _ => break,
+        if chars.next() != Some(',') {
+            break;
         }
     }
     fields
+}
+
+/// A quoted field after its opening quote: up to and including the closing
+/// quote, with `\n`, `\r` and `\t` unescaped and any other escaped character
+/// taken literally.
+fn toon_quoted_field(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut field = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    field.push(toon_unescape(next));
+                }
+            }
+            c => field.push(c),
+        }
+    }
+    field
+}
+
+fn toon_unescape(escaped: char) -> char {
+    match escaped {
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        other => other,
+    }
+}
+
+/// An unquoted field: everything up to, but not including, the next delimiter.
+fn toon_bare_field(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut field = String::new();
+    while let Some(&c) = chars.peek() {
+        if c == ',' {
+            break;
+        }
+        field.push(c);
+        chars.next();
+    }
+    field
 }
 
 /// A session name that itself contains the row delimiter and a colon must not

@@ -1364,22 +1364,15 @@ fn no_bundled_plugin_hardcodes_a_colour() {
     for dir in [ui.join("plugins"), ui.join("lib")] {
         for entry in std::fs::read_dir(&dir).expect("read ui dir") {
             let path = entry.expect("entry").path();
-            if path.extension().is_some_and(|e| e == "lua") {
-                let source = std::fs::read_to_string(&path).expect("read");
-                // theme.lua names roles; everything else must go through it.
-                if path.file_name().is_some_and(|n| n == "theme.lua") {
-                    continue;
-                }
-                for (n, line) in source.lines().enumerate() {
-                    let trimmed = line.trim_start();
-                    if trimmed.starts_with("--") {
-                        continue;
-                    }
-                    if hardcodes_colour(line) {
-                        offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
-                    }
-                }
+            if !path.extension().is_some_and(|e| e == "lua") {
+                continue;
             }
+            let source = std::fs::read_to_string(&path).expect("read");
+            // theme.lua names roles; everything else must go through it.
+            if path.file_name().is_some_and(|n| n == "theme.lua") {
+                continue;
+            }
+            offenders.extend(colour_offenders(&path, &source));
         }
     }
     assert!(
@@ -1387,6 +1380,16 @@ fn no_bundled_plugin_hardcodes_a_colour() {
         "bundled plugins must name roles, not colours:\n{}",
         offenders.join("\n")
     );
+}
+
+/// Every uncommented line of `source` that names a colour, as `path:line: text`.
+fn colour_offenders(path: &std::path::Path, source: &str) -> Vec<String> {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("--") && hardcodes_colour(line))
+        .map(|(n, line)| format!("{}:{}: {}", path.display(), n + 1, line.trim()))
+        .collect()
 }
 
 // --- registry --------------------------------------------------------------

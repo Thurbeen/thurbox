@@ -116,22 +116,14 @@ pub fn usable(host: &HostDef) -> Usable {
     let mut failures = 0;
     if let Ok(cache) = verdicts().lock() {
         if let Some(verdict) = cache.get(&key) {
-            let fresh = match &verdict.usable {
-                Usable::Yes(_) => true,
-                Usable::No(_) => verdict.at.elapsed() < retry_after(verdict.failures),
-            };
-            if fresh {
+            if is_fresh(verdict) {
                 return verdict.usable.clone();
             }
             failures = verdict.failures;
         }
     }
     let verdict = establish(host);
-    if let Usable::Yes(cli) = &verdict {
-        if let Some(socket) = &cli.tmux_socket {
-            crate::agent::tmux::learn_host_socket(host, socket);
-        }
-    }
+    remember_socket(host, &verdict);
     let failures = match &verdict {
         Usable::Yes(_) => 0,
         Usable::No(reason) => {
@@ -155,6 +147,24 @@ pub fn usable(host: &HostDef) -> Usable {
         );
     }
     verdict
+}
+
+/// Whether a cached verdict still stands: a `Yes` for the process lifetime, a
+/// `No` until its backoff runs out.
+fn is_fresh(verdict: &Verdict) -> bool {
+    match &verdict.usable {
+        Usable::Yes(_) => true,
+        Usable::No(_) => verdict.at.elapsed() < retry_after(verdict.failures),
+    }
+}
+
+/// Tell the tmux layer the socket a usable host's CLI reported.
+fn remember_socket(host: &HostDef, verdict: &Usable) {
+    if let Usable::Yes(cli) = verdict {
+        if let Some(socket) = &cli.tmux_socket {
+            crate::agent::tmux::learn_host_socket(host, socket);
+        }
+    }
 }
 
 /// The usable CLI for `host`, or `None` (with the reason logged once) when the

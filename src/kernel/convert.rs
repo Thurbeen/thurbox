@@ -650,46 +650,49 @@ fn read_style_raw(raw: Value, key: &str, path: Crumb<'_>) -> Result<Style, Strin
                 None => Style::default(),
             },
         ),
-        // Applied field by field rather than collected into a map first.
-        //
-        // This is the hottest path in the whole renderer: it runs once per SPAN
-        // per plugin per frame, and the map it used to build allocated a heap
-        // `String` for every key and value. At ~100 spans a pane that was
-        // thousands of allocations a frame, and it dominated render time — the
-        // session list cost 1.2ms with zero sessions in it.
-        Value::Table(spec) => {
-            let mut style = Style::default();
-            for pair in spec.pairs::<mlua::LuaString, Value>() {
-                let (field, value) = pair.map_err(|e| lua_err(path, key, &e))?;
-                let field = field.as_bytes();
-                match value {
-                    Value::String(s) => {
-                        // Borrowed, not `to_string_lossy`: that was a heap
-                        // `String` per colour value right here, and a non-UTF-8
-                        // one parses to no colour either way.
-                        if let Ok(s) = s.to_str() {
-                            apply_color(&mut style, &field, &s);
-                        }
-                    }
-                    // Rare enough (a numeric `fg = 3`) that its `String` stays.
-                    Value::Integer(n) => {
-                        apply_color(&mut style, &field, &n.to_string());
-                    }
-                    Value::Boolean(true) => {
-                        if let Some(modifier) = modifier_for(&field) {
-                            style = style.add_modifier(modifier);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Ok(style)
-        }
+        Value::Table(spec) => read_style_table(&spec, key, path),
         ref other => Err(format!(
             "{path}.{key}: expected a style string or table, found {}",
             type_name(other)
         )),
     }
+}
+
+/// A full style table, applied field by field rather than collected into a
+/// map first.
+///
+/// This is the hottest path in the whole renderer: it runs once per SPAN per
+/// plugin per frame, and the map it used to build allocated a heap `String`
+/// for every key and value. At ~100 spans a pane that was thousands of
+/// allocations a frame, and it dominated render time — the session list cost
+/// 1.2ms with zero sessions in it.
+fn read_style_table(spec: &Table, key: &str, path: Crumb<'_>) -> Result<Style, String> {
+    let mut style = Style::default();
+    for pair in spec.pairs::<mlua::LuaString, Value>() {
+        let (field, value) = pair.map_err(|e| lua_err(path, key, &e))?;
+        let field = field.as_bytes();
+        match value {
+            Value::String(s) => {
+                // Borrowed, not `to_string_lossy`: that was a heap `String` per
+                // colour value right here, and a non-UTF-8 one parses to no
+                // colour either way.
+                if let Ok(s) = s.to_str() {
+                    apply_color(&mut style, &field, &s);
+                }
+            }
+            // Rare enough (a numeric `fg = 3`) that its `String` stays.
+            Value::Integer(n) => {
+                apply_color(&mut style, &field, &n.to_string());
+            }
+            Value::Boolean(true) => {
+                if let Some(modifier) = modifier_for(&field) {
+                    style = style.add_modifier(modifier);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(style)
 }
 
 fn opt_string(table: &Table, key: &str, path: Crumb<'_>) -> Result<Option<String>, String> {
@@ -892,6 +895,13 @@ fn align_name(align: Align) -> &'static str {
     }
 }
 
+fn axis_name(axis: Axis) -> &'static str {
+    match axis {
+        Axis::Vertical => "vertical",
+        Axis::Horizontal => "horizontal",
+    }
+}
+
 pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
     let table = lua.create_table().map_err(|e| e.to_string())?;
     let set = |key: &str, value: Value| -> Result<(), String> {
@@ -899,89 +909,12 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
     };
 
     set("type", string_value(lua, node.kind())?)?;
-
-    let size = node.size();
-    if let Some(len) = size.len {
-        table.set("len", len).map_err(|e| e.to_string())?;
-    }
-    if let Some(pct) = size.pct {
-        table.set("pct", pct).map_err(|e| e.to_string())?;
-    }
-    if let Some(fill) = size.fill {
-        table.set("fill", fill).map_err(|e| e.to_string())?;
-    }
-    // `min`/`max` round-trip for the same reason the styles below do: a decorator
-    // handed the tree returns one, so a field dropped here is dropped from the
-    // pane -- and an identity decorator must leave the pane exactly as it was.
-    if let Some(min) = size.min {
-        table.set("min", min).map_err(|e| e.to_string())?;
-    }
-    if let Some(max) = size.max {
-        table.set("max", max).map_err(|e| e.to_string())?;
-    }
-
-    let identity = node.identity();
-    if let Some(id) = &identity.id {
-        set("id", string_value(lua, id)?)?;
-    }
-    if !identity.classes.is_empty() {
-        set("class", string_value(lua, &identity.classes.join(" "))?)?;
-    }
-    if let Some(role) = &identity.role {
-        set("role", string_value(lua, role)?)?;
-    }
+    size_to_lua(&table, node.size())?;
+    identity_to_lua(lua, &table, node.identity())?;
     if let Some(frame) = node.frame() {
-        let spec = lua.create_table().map_err(|e| e.to_string())?;
-        if let Some(title) = &frame.title {
-            // The runs, not `title_text()`: a title carries styled runs (the
-            // session list's badge, the agent pane's status word) and
-            // flattening it here would hand every decorated pane a plain one.
-            spec.set("title", runs_to_lua(lua, title)?)
-                .map_err(|e| e.to_string())?;
-        }
-        spec.set("title_align", align_name(frame.title_align))
+        table
+            .set("frame", frame_to_lua(lua, frame)?)
             .map_err(|e| e.to_string())?;
-        spec.set(
-            "borders",
-            match frame.borders {
-                Borders::All => "all",
-                Borders::None => "none",
-            },
-        )
-        .map_err(|e| e.to_string())?;
-        spec.set(
-            "border_type",
-            match frame.border_type {
-                BorderKind::Rounded => "rounded",
-                BorderKind::Square => "square",
-            },
-        )
-        .map_err(|e| e.to_string())?;
-        if let Some(overlay) = &frame.overlay {
-            let out = lua.create_table().map_err(|e| e.to_string())?;
-            for (key, runs) in [
-                ("top_left", &overlay.top_left),
-                ("top_right", &overlay.top_right),
-                ("bottom_left", &overlay.bottom_left),
-                ("bottom_right", &overlay.bottom_right),
-                ("right_column", &overlay.right_column),
-            ] {
-                if !runs.is_empty() {
-                    out.set(key, runs_to_lua(lua, runs)?)
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-            spec.set("overlay", out).map_err(|e| e.to_string())?;
-        }
-        spec.set("padding", frame.padding)
-            .map_err(|e| e.to_string())?;
-        if let Some(style) = style_to_lua(lua, &frame.border_style)? {
-            spec.set("border_style", style).map_err(|e| e.to_string())?;
-        }
-        if let Some(style) = style_to_lua(lua, &frame.style)? {
-            spec.set("style", style).map_err(|e| e.to_string())?;
-        }
-        table.set("frame", spec).map_err(|e| e.to_string())?;
     }
 
     match node {
@@ -993,23 +926,15 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
             style,
             ..
         } => {
-            let out = lua.create_table().map_err(|e| e.to_string())?;
-            for (index, runs) in lines.iter().enumerate() {
-                let line = lua.create_table().map_err(|e| e.to_string())?;
-                for (span, run) in runs.iter().enumerate() {
-                    // The style MUST round-trip. A decorator is handed the
-                    // tree and returns one, so anything dropped here is
-                    // dropped from the pane -- and a decorator that returns
-                    // its input untouched (the common case, when its query is
-                    // empty) would silently strip every colour the pane drew.
-                    // That is exactly what happened: the session list rendered
-                    // colourless because search decorates its slot.
-                    line.set(span + 1, run_to_lua(lua, run)?)
-                        .map_err(|e| e.to_string())?;
-                }
-                out.set(index + 1, line).map_err(|e| e.to_string())?;
-            }
-            table.set("text", out).map_err(|e| e.to_string())?;
+            // The style MUST round-trip. A decorator is handed the tree and
+            // returns one, so anything dropped here is dropped from the pane --
+            // and a decorator that returns its input untouched (the common
+            // case, when its query is empty) would silently strip every colour
+            // the pane drew. That is exactly what happened: the session list
+            // rendered colourless because search decorates its slot.
+            table
+                .set("text", lines_to_lua(lua, lines)?)
+                .map_err(|e| e.to_string())?;
             set("align", string_value(lua, align_name(*align))?)?;
             table.set("wrap", *wrap).map_err(|e| e.to_string())?;
             table.set("scroll", *scroll).map_err(|e| e.to_string())?;
@@ -1026,16 +951,7 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
             children,
             ..
         } => {
-            set(
-                "axis",
-                string_value(
-                    lua,
-                    match axis {
-                        Axis::Vertical => "vertical",
-                        Axis::Horizontal => "horizontal",
-                    },
-                )?,
-            )?;
+            set("axis", string_value(lua, axis_name(*axis))?)?;
             table.set("gap", *gap).map_err(|e| e.to_string())?;
             let out = lua.create_table().map_err(|e| e.to_string())?;
             for (index, child) in children.iter().enumerate() {
@@ -1066,32 +982,141 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
         }
         Node::Surface { source, scroll, .. } => {
             table.set("scroll", *scroll).map_err(|e| e.to_string())?;
-            match source {
-                SurfaceSource::Session(id) => table
-                    .set("session", id.clone())
-                    .map_err(|e| e.to_string())?,
-                // The resolved id, not the bare name the plugin wrote: the tree a
-                // decorator receives has to name the same surface the paint will.
-                SurfaceSource::Program(id) => table
-                    .set("program", id.clone())
-                    .map_err(|e| e.to_string())?,
-                SurfaceSource::Cells(lines) => {
-                    // Emitted as runs rather than flattened to one string per
-                    // line: a plugin-fed surface is where a review diff's syntax
-                    // colouring lives, and joining the text throws all of it away
-                    // the moment any decorator touches the pane.
-                    let out = lua.create_table().map_err(|e| e.to_string())?;
-                    for (index, runs) in lines.iter().enumerate() {
-                        out.set(index + 1, runs_to_lua(lua, runs)?)
-                            .map_err(|e| e.to_string())?;
-                    }
-                    table.set("cells", out).map_err(|e| e.to_string())?;
-                }
-            }
+            surface_source_to_lua(lua, &table, source)?;
         }
     }
 
     Ok(Value::Table(table))
+}
+
+fn size_to_lua(table: &Table, size: Size) -> Result<(), String> {
+    if let Some(len) = size.len {
+        table.set("len", len).map_err(|e| e.to_string())?;
+    }
+    if let Some(pct) = size.pct {
+        table.set("pct", pct).map_err(|e| e.to_string())?;
+    }
+    if let Some(fill) = size.fill {
+        table.set("fill", fill).map_err(|e| e.to_string())?;
+    }
+    // `min`/`max` round-trip for the same reason the styles do: a decorator
+    // handed the tree returns one, so a field dropped here is dropped from the
+    // pane -- and an identity decorator must leave the pane exactly as it was.
+    if let Some(min) = size.min {
+        table.set("min", min).map_err(|e| e.to_string())?;
+    }
+    if let Some(max) = size.max {
+        table.set("max", max).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn identity_to_lua(lua: &mlua::Lua, table: &Table, identity: &Identity) -> Result<(), String> {
+    if let Some(id) = &identity.id {
+        table
+            .set("id", string_value(lua, id)?)
+            .map_err(|e| e.to_string())?;
+    }
+    if !identity.classes.is_empty() {
+        table
+            .set("class", string_value(lua, &identity.classes.join(" "))?)
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(role) = &identity.role {
+        table
+            .set("role", string_value(lua, role)?)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn frame_to_lua(lua: &mlua::Lua, frame: &Frame) -> Result<Table, String> {
+    let spec = lua.create_table().map_err(|e| e.to_string())?;
+    if let Some(title) = &frame.title {
+        // The runs, not `title_text()`: a title carries styled runs (the
+        // session list's badge, the agent pane's status word) and
+        // flattening it here would hand every decorated pane a plain one.
+        spec.set("title", runs_to_lua(lua, title)?)
+            .map_err(|e| e.to_string())?;
+    }
+    spec.set("title_align", align_name(frame.title_align))
+        .map_err(|e| e.to_string())?;
+    spec.set(
+        "borders",
+        match frame.borders {
+            Borders::All => "all",
+            Borders::None => "none",
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    spec.set(
+        "border_type",
+        match frame.border_type {
+            BorderKind::Rounded => "rounded",
+            BorderKind::Square => "square",
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(overlay) = &frame.overlay {
+        spec.set("overlay", overlay_to_lua(lua, overlay)?)
+            .map_err(|e| e.to_string())?;
+    }
+    spec.set("padding", frame.padding)
+        .map_err(|e| e.to_string())?;
+    if let Some(style) = style_to_lua(lua, &frame.border_style)? {
+        spec.set("border_style", style).map_err(|e| e.to_string())?;
+    }
+    if let Some(style) = style_to_lua(lua, &frame.style)? {
+        spec.set("style", style).map_err(|e| e.to_string())?;
+    }
+    Ok(spec)
+}
+
+fn overlay_to_lua(lua: &mlua::Lua, overlay: &Overlay) -> Result<Table, String> {
+    let out = lua.create_table().map_err(|e| e.to_string())?;
+    for (key, runs) in [
+        ("top_left", &overlay.top_left),
+        ("top_right", &overlay.top_right),
+        ("bottom_left", &overlay.bottom_left),
+        ("bottom_right", &overlay.bottom_right),
+        ("right_column", &overlay.right_column),
+    ] {
+        if !runs.is_empty() {
+            out.set(key, runs_to_lua(lua, runs)?)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(out)
+}
+
+/// One table of styled runs per line: a text node's lines and a plugin-fed
+/// surface's cells are the same shape on the way out.
+fn lines_to_lua(lua: &mlua::Lua, lines: &[Vec<Run>]) -> Result<Table, String> {
+    let out = lua.create_table().map_err(|e| e.to_string())?;
+    for (index, runs) in lines.iter().enumerate() {
+        out.set(index + 1, runs_to_lua(lua, runs)?)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+fn surface_source_to_lua(
+    lua: &mlua::Lua,
+    table: &Table,
+    source: &SurfaceSource,
+) -> Result<(), String> {
+    match source {
+        SurfaceSource::Session(id) => table.set("session", id.clone()),
+        // The resolved id, not the bare name the plugin wrote: the tree a
+        // decorator receives has to name the same surface the paint will.
+        SurfaceSource::Program(id) => table.set("program", id.clone()),
+        // Emitted as runs rather than flattened to one string per line: a
+        // plugin-fed surface is where a review diff's syntax colouring lives,
+        // and joining the text throws all of it away the moment any decorator
+        // touches the pane.
+        SurfaceSource::Cells(lines) => table.set("cells", lines_to_lua(lua, lines)?),
+    }
+    .map_err(|e| e.to_string())
 }
 
 fn string_value(lua: &mlua::Lua, text: &str) -> Result<Value, String> {
@@ -1172,6 +1197,94 @@ mod tests {
         assert_eq!(identity.id.as_deref(), Some("row-1"));
         assert_eq!(identity.classes, vec!["session-row", "match"]);
         assert_eq!(identity.role.as_deref(), Some("row"));
+    }
+
+    /// What `to_lua` hands a decorator for the shapes the decoration round trip
+    /// cannot show: a program surface is re-resolved against its plugin on the
+    /// way back in, so these are read off the table itself.
+    #[test]
+    fn to_lua_spells_every_source_identity_and_frame_variant() {
+        let lua = Lua::new();
+        let table = |node: &Node| match to_lua(&lua, node).expect("to_lua") {
+            Value::Table(table) => table,
+            other => panic!("expected a table, got {}", type_name(&other)),
+        };
+        let get = |table: &Table, key: &str| table.get::<Option<String>>(key).unwrap();
+
+        let surface = |source| Node::Surface {
+            source,
+            scroll: 0,
+            frame: None,
+            size: Size::default(),
+            identity: Identity::default(),
+        };
+        let session = table(&surface(SurfaceSource::Session("s1".into())));
+        assert_eq!(get(&session, "type").as_deref(), Some("surface"));
+        assert_eq!(get(&session, "session").as_deref(), Some("s1"));
+        assert_eq!(get(&session, "program"), None);
+        assert_eq!(get(&session, "cells"), None);
+        let program = table(&surface(SurfaceSource::Program("program:x#watch".into())));
+        assert_eq!(get(&program, "program").as_deref(), Some("program:x#watch"));
+        assert_eq!(get(&program, "session"), None);
+
+        let node = Node::Box {
+            axis: Axis::Vertical,
+            gap: 2,
+            children: vec![Node::Text {
+                lines: vec![vec![Run::plain("left")]],
+                align: Align::Left,
+                wrap: false,
+                scroll: 0,
+                style: Style::default(),
+                frame: None,
+                size: Size::default(),
+                identity: Identity::default(),
+            }],
+            frame: Some(Frame {
+                title: Some(vec![Run::plain("T")]),
+                title_align: Align::Center,
+                borders: Borders::None,
+                border_type: BorderKind::Rounded,
+                border_style: Style::default(),
+                style: Style::default(),
+                padding: 0,
+                overlay: None,
+            }),
+            size: Size {
+                pct: Some(40.0),
+                ..Size::default()
+            },
+            identity: Identity {
+                id: Some("root".into()),
+                classes: vec!["a".into(), "b".into()],
+                role: Some("list".into()),
+            },
+        };
+        let root = table(&node);
+        assert_eq!(get(&root, "type").as_deref(), Some("box"));
+        assert_eq!(get(&root, "id").as_deref(), Some("root"));
+        assert_eq!(get(&root, "class").as_deref(), Some("a b"));
+        assert_eq!(get(&root, "role").as_deref(), Some("list"));
+        assert_eq!(get(&root, "axis").as_deref(), Some("vertical"));
+        assert_eq!(root.get::<f64>("pct").unwrap(), 40.0);
+        assert_eq!(root.get::<Option<u16>>("len").unwrap(), None);
+        assert_eq!(root.get::<u16>("gap").unwrap(), 2);
+        let frame: Table = root.get("frame").unwrap();
+        assert_eq!(get(&frame, "title_align").as_deref(), Some("center"));
+        assert_eq!(get(&frame, "borders").as_deref(), Some("none"));
+        assert_eq!(get(&frame, "border_type").as_deref(), Some("rounded"));
+        assert!(frame.get::<Option<Table>>("overlay").unwrap().is_none());
+        assert!(frame
+            .get::<Option<Table>>("border_style")
+            .unwrap()
+            .is_none());
+        let children: Table = root.get("children").unwrap();
+        let child: Table = children.get(1).unwrap();
+        assert_eq!(get(&child, "align").as_deref(), Some("left"));
+        assert!(child.get::<Option<Table>>("style").unwrap().is_none());
+        assert!(child.get::<Option<Table>>("frame").unwrap().is_none());
+        assert_eq!(get(&child, "id"), None);
+        assert_eq!(get(&child, "class"), None);
     }
 
     #[test]

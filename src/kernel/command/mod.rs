@@ -527,251 +527,260 @@ impl Command {
     /// Rejected rather than guessed: an unknown kind or a missing field is a
     /// plugin error, reported like any other.
     pub fn parse(kind: &str, args: Args) -> Result<Self, String> {
-        let Args {
-            session,
-            text,
-            delta,
-            force,
-            flag,
-            toggle,
-            number,
-            reset,
-            repo,
-            branch,
-            base,
-            worktree_path,
-            agent,
-            host,
-            status,
-            list,
-            file,
-            action,
-            extras,
-            owner,
-            argv,
-            keys,
-            payload,
-            level,
-        } = args;
-        // An event names nothing the kernel owns: the name is the subject, and
-        // every other field travels as the payload. Refused for a kernel name so
-        // a plugin cannot forge what only the kernel derives.
-        if kind == "emit" {
-            let Some(name) = text.filter(|t| !t.is_empty()) else {
-                return Err("command \"emit\" needs an event name in text".to_string());
-            };
-            let name = super::events::user_event_name(&name)?;
-            return Ok(Command::Emit {
-                owner,
-                name,
-                payload,
-            });
-        }
-        // Chrome a pane contributes to. Neither names a session: one names a
-        // verb the registry already knows, the other a sentence.
-        if kind == "action" {
-            let Some(action) = text.filter(|t| !t.is_empty()) else {
-                // Names the field, because the field is what goes wrong:
-                // `{ action = … }` is what this verb invites, and an option no
-                // verb reads is collected and ignored — so it would enqueue a
-                // no-op with nothing to report.
-                return Err("command \"action\" needs an action id in text".to_string());
-            };
-            return Ok(Command::Action { owner, action });
-        }
-        if kind == "message" {
-            let Some(text) = text.filter(|t| !t.is_empty()) else {
-                return Err("command \"message\" needs text".to_string());
-            };
-            let level = match level.as_deref() {
-                None => super::bands::Level::Info,
-                Some(name) => super::bands::Level::parse(name).ok_or_else(|| {
-                    format!(
-                        "command \"message\" got level {name:?} — try \"info\", \
-                         \"success\" or \"error\""
-                    )
-                })?,
-            };
-            return Ok(Command::Message { text, level });
-        }
-        // The interface's own files name no session, and the verb is explicit:
-        // removing a plugin is destructive, so it is never the default.
-        if kind == "plugin" {
-            let Some(file) = file.filter(|f| !f.is_empty()) else {
-                return Err("command \"plugin\" needs a file".to_string());
-            };
-            let edit = match action.as_deref() {
-                Some("restore") => PluginEdit::Restore,
-                Some("remove") => PluginEdit::Remove,
-                _ => {
-                    return Err(
-                        "command \"plugin\" needs action = \"restore\" or \"remove\"".to_string(),
-                    )
-                }
-            };
-            return Ok(Command::Plugin { file, edit });
-        }
-        // A setting names a `plugin.id`, not a session.
-        if kind == "set" {
-            let Some(key) = text.clone().filter(|t| !t.is_empty()) else {
-                return Err("command \"set\" needs a plugin.setting key".to_string());
-            };
-            let value = if reset {
-                None
-            } else if let Some(flag) = flag {
-                Some(SettingValue::Bool(flag))
-            } else if let Some(number) = number {
-                Some(SettingValue::Number(number))
-            } else {
-                return Err("command \"set\" needs a flag, a number, or reset = true".to_string());
-            };
-            return Ok(Command::Setting { key, value });
-        }
-        // Tasks and automations name a numeric id, not a session.
-        if kind == "task" {
-            let id = number.map(|n| n as i64);
-            if id.is_none() && text.is_none() {
-                return Err(
-                    "command \"task\" needs a title to create, or a number to change".to_string(),
-                );
-            }
-            return Ok(Command::Task {
-                id,
-                title: text,
-                status,
-                delete: reset,
-            });
-        }
-        if kind == "dispatch" {
-            let Some(task) = number.map(|n| n as i64) else {
-                return Err("command \"dispatch\" needs a task number".to_string());
-            };
-            return Ok(Command::DispatchTask {
-                task,
-                session: Some(session).filter(|s| !s.is_empty()),
-            });
-        }
-        if kind == "automation" {
-            let Some(id) = number.map(|n| n as i64) else {
-                return Err("command \"automation\" needs an id".to_string());
-            };
-            return Ok(Command::Automation {
-                id,
-                enabled: flag,
-                run_now: force,
-                delete: reset,
-            });
-        }
-        // Creation names a repository, not a session.
-        if kind == "create" {
-            let Some(repo) = repo.filter(|r| !r.is_empty()) else {
-                return Err("command \"create\" needs a repo".to_string());
-            };
-            return Ok(Command::Create {
-                name: text.unwrap_or_default(),
-                repo,
-                branch: branch.filter(|b| !b.is_empty()),
-                base: base.filter(|b| !b.is_empty()),
-                worktree_path: worktree_path.filter(|p| !p.is_empty()),
-                agent: agent.filter(|a| !a.is_empty()),
-                host: host.filter(|h| !h.is_empty()),
-                extras,
-            });
-        }
-        // Repository memory names a path and a host, not a session. The verb is
-        // explicit for the same reason the plugin command's is: forgetting is
-        // destructive, so it is never the default.
-        if kind == "bookmark" {
-            let Some(path) = repo
-                .map(|path| path.trim().to_string())
-                .filter(|p| !p.is_empty())
-            else {
-                return Err("command \"bookmark\" needs a repo path".to_string());
-            };
-            let edit = match action.as_deref() {
-                Some("add") => BookmarkEdit::Add,
-                Some("remove") => BookmarkEdit::Remove,
-                Some("parent") => BookmarkEdit::Parent,
-                _ => {
-                    return Err(
-                        "command \"bookmark\" needs action = \"add\", \"remove\" or \"parent\""
-                            .to_string(),
-                    )
-                }
-            };
-            return Ok(Command::Bookmark {
-                host: host.unwrap_or_default(),
-                path,
-                edit,
-            });
-        }
-        // Focus names a pane, not a session.
-        if kind == "focus" {
-            return match text.clone().filter(|t| !t.is_empty()) {
-                Some(plugin) => Ok(Command::Focus { plugin, toggle }),
+        match kind {
+            "emit" => Self::parse_emit(args),
+            // Chrome a pane contributes to. Neither names a session: one names a
+            // verb the registry already knows, the other a sentence.
+            "action" => Self::parse_action(args),
+            "message" => Self::parse_message(args),
+            "plugin" => Self::parse_plugin(args),
+            "set" => Self::parse_setting(args),
+            // Tasks and automations name a numeric id, not a session.
+            "task" => Self::parse_task(args),
+            "dispatch" => Self::parse_dispatch(args),
+            "automation" => Self::parse_automation(args),
+            // Creation names a repository, not a session.
+            "create" => Self::parse_create(args),
+            "bookmark" => Self::parse_bookmark(args),
+            // Focus names a pane, not a session.
+            "focus" => match args.text.filter(|t| !t.is_empty()) {
+                Some(plugin) => Ok(Command::Focus {
+                    plugin,
+                    toggle: args.toggle,
+                }),
                 None => Err("command \"focus\" needs a plugin name".to_string()),
-            };
-        }
-        // A link names a url, not a session.
-        if kind == "open" {
-            return match text.filter(|t| !t.is_empty()) {
+            },
+            // A link names a url, not a session.
+            "open" => match args.text.filter(|t| !t.is_empty()) {
                 Some(url) => Ok(Command::OpenLink { url }),
                 // Names the field, because the field is what goes wrong:
                 // `{ url = ... }` is what "needs a url" invites, and it parses
                 // to no text and so to no visible effect at all.
                 None => Err("command \"open\" needs a url in text".to_string()),
-            };
-        }
-        // Theme is global; every other command acts on one session.
-        if kind == "theme" {
-            return match text {
+            },
+            // Theme is global.
+            "theme" => match args.text {
                 Some(name) if !name.is_empty() => Ok(Command::Theme { name }),
                 _ => Err("command \"theme\" needs a name".to_string()),
-            };
-        }
-        // An explicit order names every session at once rather than one, so it
-        // is resolved before the single-session guard below.
-        if kind == "order" {
-            return if list.is_empty() {
-                Err("command \"order\" needs a list of session ids".to_string())
-            } else {
-                Ok(Command::Order { list })
-            };
-        }
-        // A plugin's program pane belongs to the plugin, not to a session, so it is
-        // resolved before the single-session guard below — the same reason `order`
-        // and `plugin` are.
-        if kind == "program" {
-            let name = text.unwrap_or_default();
-            super::terminal::validate_program_name(&name)?;
-            // The verb, spelled the way `plugin` and `bookmark` spell theirs.
-            let close = matches!(action.as_deref(), Some("close") | Some("stop"));
-            let program = repo.unwrap_or_default();
-            // Typing is checked before the program is required: `keys` alone
-            // names a pane that is already running, so asking for `repo` as well
-            // would be asking what to start something already started with. Both
-            // together are legal and mean "type, or start if it is not there".
-            let keys = keys.filter(|keys| !keys.is_empty());
-            if keys.is_some() && close {
-                return Err(
-                    "command \"program\" cannot type into a pane and close it at once".to_string(),
-                );
+            },
+            // An explicit order names every session at once rather than one.
+            "order" => {
+                if args.list.is_empty() {
+                    Err("command \"order\" needs a list of session ids".to_string())
+                } else {
+                    Ok(Command::Order { list: args.list })
+                }
             }
-            if keys.is_none() && !close && program.trim().is_empty() {
+            "program" => Self::parse_program(args),
+            // Every other command acts on one session.
+            _ => Self::parse_session_command(kind, args),
+        }
+    }
+
+    /// An event names nothing the kernel owns: the name is the subject, and
+    /// every other field travels as the payload. Refused for a kernel name so
+    /// a plugin cannot forge what only the kernel derives.
+    fn parse_emit(args: Args) -> Result<Self, String> {
+        let Some(name) = args.text.filter(|t| !t.is_empty()) else {
+            return Err("command \"emit\" needs an event name in text".to_string());
+        };
+        let name = super::events::user_event_name(&name)?;
+        Ok(Command::Emit {
+            owner: args.owner,
+            name,
+            payload: args.payload,
+        })
+    }
+
+    fn parse_action(args: Args) -> Result<Self, String> {
+        let Some(action) = args.text.filter(|t| !t.is_empty()) else {
+            // Names the field, because the field is what goes wrong:
+            // `{ action = … }` is what this verb invites, and an option no
+            // verb reads is collected and ignored — so it would enqueue a
+            // no-op with nothing to report.
+            return Err("command \"action\" needs an action id in text".to_string());
+        };
+        Ok(Command::Action {
+            owner: args.owner,
+            action,
+        })
+    }
+
+    fn parse_message(args: Args) -> Result<Self, String> {
+        let Some(text) = args.text.filter(|t| !t.is_empty()) else {
+            return Err("command \"message\" needs text".to_string());
+        };
+        let level = match args.level.as_deref() {
+            None => super::bands::Level::Info,
+            Some(name) => super::bands::Level::parse(name).ok_or_else(|| {
+                format!(
+                    "command \"message\" got level {name:?} — try \"info\", \
+                     \"success\" or \"error\""
+                )
+            })?,
+        };
+        Ok(Command::Message { text, level })
+    }
+
+    /// The interface's own files name no session, and the verb is explicit:
+    /// removing a plugin is destructive, so it is never the default.
+    fn parse_plugin(args: Args) -> Result<Self, String> {
+        let Some(file) = args.file.filter(|f| !f.is_empty()) else {
+            return Err("command \"plugin\" needs a file".to_string());
+        };
+        let edit = match args.action.as_deref() {
+            Some("restore") => PluginEdit::Restore,
+            Some("remove") => PluginEdit::Remove,
+            _ => {
                 return Err(
-                    "command \"program\" needs a program to run (or action = \"close\", or keys)"
+                    "command \"plugin\" needs action = \"restore\" or \"remove\"".to_string(),
+                )
+            }
+        };
+        Ok(Command::Plugin { file, edit })
+    }
+
+    /// A setting names a `plugin.id`, not a session.
+    fn parse_setting(args: Args) -> Result<Self, String> {
+        let Some(key) = args.text.filter(|t| !t.is_empty()) else {
+            return Err("command \"set\" needs a plugin.setting key".to_string());
+        };
+        let value = if args.reset {
+            None
+        } else if let Some(flag) = args.flag {
+            Some(SettingValue::Bool(flag))
+        } else if let Some(number) = args.number {
+            Some(SettingValue::Number(number))
+        } else {
+            return Err("command \"set\" needs a flag, a number, or reset = true".to_string());
+        };
+        Ok(Command::Setting { key, value })
+    }
+
+    fn parse_task(args: Args) -> Result<Self, String> {
+        let id = args.number.map(|n| n as i64);
+        if id.is_none() && args.text.is_none() {
+            return Err(
+                "command \"task\" needs a title to create, or a number to change".to_string(),
+            );
+        }
+        Ok(Command::Task {
+            id,
+            title: args.text,
+            status: args.status,
+            delete: args.reset,
+        })
+    }
+
+    fn parse_dispatch(args: Args) -> Result<Self, String> {
+        let Some(task) = args.number.map(|n| n as i64) else {
+            return Err("command \"dispatch\" needs a task number".to_string());
+        };
+        Ok(Command::DispatchTask {
+            task,
+            session: Some(args.session).filter(|s| !s.is_empty()),
+        })
+    }
+
+    fn parse_automation(args: Args) -> Result<Self, String> {
+        let Some(id) = args.number.map(|n| n as i64) else {
+            return Err("command \"automation\" needs an id".to_string());
+        };
+        Ok(Command::Automation {
+            id,
+            enabled: args.flag,
+            run_now: args.force,
+            delete: args.reset,
+        })
+    }
+
+    fn parse_create(args: Args) -> Result<Self, String> {
+        let Some(repo) = args.repo.filter(|r| !r.is_empty()) else {
+            return Err("command \"create\" needs a repo".to_string());
+        };
+        Ok(Command::Create {
+            name: args.text.unwrap_or_default(),
+            repo,
+            branch: args.branch.filter(|b| !b.is_empty()),
+            base: args.base.filter(|b| !b.is_empty()),
+            worktree_path: args.worktree_path.filter(|p| !p.is_empty()),
+            agent: args.agent.filter(|a| !a.is_empty()),
+            host: args.host.filter(|h| !h.is_empty()),
+            extras: args.extras,
+        })
+    }
+
+    /// Repository memory names a path and a host, not a session. The verb is
+    /// explicit for the same reason the plugin command's is: forgetting is
+    /// destructive, so it is never the default.
+    fn parse_bookmark(args: Args) -> Result<Self, String> {
+        let Some(path) = args
+            .repo
+            .map(|path| path.trim().to_string())
+            .filter(|p| !p.is_empty())
+        else {
+            return Err("command \"bookmark\" needs a repo path".to_string());
+        };
+        let edit = match args.action.as_deref() {
+            Some("add") => BookmarkEdit::Add,
+            Some("remove") => BookmarkEdit::Remove,
+            Some("parent") => BookmarkEdit::Parent,
+            _ => {
+                return Err(
+                    "command \"bookmark\" needs action = \"add\", \"remove\" or \"parent\""
                         .to_string(),
-                );
+                )
             }
-            return Ok(Command::Program {
-                owner,
-                name,
-                program,
-                argv,
-                close,
-                keys,
-            });
+        };
+        Ok(Command::Bookmark {
+            host: args.host.unwrap_or_default(),
+            path,
+            edit,
+        })
+    }
+
+    /// A plugin's program pane belongs to the plugin, not to a session.
+    fn parse_program(args: Args) -> Result<Self, String> {
+        let name = args.text.unwrap_or_default();
+        super::terminal::validate_program_name(&name)?;
+        // The verb, spelled the way `plugin` and `bookmark` spell theirs.
+        let close = matches!(args.action.as_deref(), Some("close") | Some("stop"));
+        let program = args.repo.unwrap_or_default();
+        // Typing is checked before the program is required: `keys` alone
+        // names a pane that is already running, so asking for `repo` as well
+        // would be asking what to start something already started with. Both
+        // together are legal and mean "type, or start if it is not there".
+        let keys = args.keys.filter(|keys| !keys.is_empty());
+        if keys.is_some() && close {
+            return Err(
+                "command \"program\" cannot type into a pane and close it at once".to_string(),
+            );
         }
+        if keys.is_none() && !close && program.trim().is_empty() {
+            return Err(
+                "command \"program\" needs a program to run (or action = \"close\", or keys)"
+                    .to_string(),
+            );
+        }
+        Ok(Command::Program {
+            owner: args.owner,
+            name,
+            program,
+            argv: args.argv,
+            close,
+            keys,
+        })
+    }
+
+    /// The commands that act on one session, which each must name.
+    fn parse_session_command(kind: &str, args: Args) -> Result<Self, String> {
+        let Args {
+            session,
+            text,
+            delta,
+            force,
+            ..
+        } = args;
         if session.is_empty() {
             return Err(format!("command {kind:?} needs a session"));
         }
@@ -981,6 +990,520 @@ mod tests {
             );
             assert_eq!(parsed.as_ref().map(Command::kind), Ok("rename"));
             assert_eq!(parsed.as_ref().map(Command::session), Ok("s1"));
+        }
+    }
+
+    /// Every kind against the fields it reads and the refusal each missing one
+    /// earns, compared whole: a plugin sees the message verbatim, so its wording
+    /// is part of what `parse` promises.
+    #[test]
+    fn each_kind_reads_its_own_fields_and_names_what_is_missing() {
+        fn text(value: &str) -> Option<String> {
+            Some(value.to_string())
+        }
+        let session = |s: &str| Args {
+            session: s.into(),
+            ..Args::default()
+        };
+        let err = |message: &str| Err(message.to_string());
+        let cases: Vec<(&str, Args, Result<Command, String>)> = vec![
+            (
+                "emit",
+                Args {
+                    text: text("deploy"),
+                    owner: "plugins/x.lua".into(),
+                    ..Args::default()
+                },
+                Ok(Command::Emit {
+                    owner: "plugins/x.lua".into(),
+                    name: "user.deploy".into(),
+                    payload: Vec::new(),
+                }),
+            ),
+            (
+                "emit",
+                Args {
+                    text: text(""),
+                    ..Args::default()
+                },
+                err("command \"emit\" needs an event name in text"),
+            ),
+            (
+                "emit",
+                Args {
+                    text: text("user.deploy"),
+                    ..Args::default()
+                },
+                err("command \"emit\": name \"user.deploy\" without the \"user.\" prefix — it is added for you"),
+            ),
+            (
+                "plugin",
+                Args {
+                    file: text("plugins/a.lua"),
+                    action: text("restore"),
+                    ..Args::default()
+                },
+                Ok(Command::Plugin {
+                    file: "plugins/a.lua".into(),
+                    edit: PluginEdit::Restore,
+                }),
+            ),
+            (
+                "plugin",
+                Args {
+                    file: text("plugins/a.lua"),
+                    action: text("remove"),
+                    ..Args::default()
+                },
+                Ok(Command::Plugin {
+                    file: "plugins/a.lua".into(),
+                    edit: PluginEdit::Remove,
+                }),
+            ),
+            (
+                "plugin",
+                Args {
+                    file: text(""),
+                    action: text("remove"),
+                    ..Args::default()
+                },
+                err("command \"plugin\" needs a file"),
+            ),
+            (
+                "plugin",
+                Args {
+                    file: text("plugins/a.lua"),
+                    ..Args::default()
+                },
+                err("command \"plugin\" needs action = \"restore\" or \"remove\""),
+            ),
+            (
+                "set",
+                Args {
+                    text: text("p.k"),
+                    reset: true,
+                    flag: Some(true),
+                    ..Args::default()
+                },
+                Ok(Command::Setting {
+                    key: "p.k".into(),
+                    value: None,
+                }),
+            ),
+            (
+                "set",
+                Args {
+                    text: text("p.k"),
+                    flag: Some(false),
+                    number: Some(2.0),
+                    ..Args::default()
+                },
+                Ok(Command::Setting {
+                    key: "p.k".into(),
+                    value: Some(SettingValue::Bool(false)),
+                }),
+            ),
+            (
+                "set",
+                Args {
+                    text: text("p.k"),
+                    number: Some(2.5),
+                    ..Args::default()
+                },
+                Ok(Command::Setting {
+                    key: "p.k".into(),
+                    value: Some(SettingValue::Number(2.5)),
+                }),
+            ),
+            (
+                "set",
+                Args {
+                    text: text("p.k"),
+                    ..Args::default()
+                },
+                err("command \"set\" needs a flag, a number, or reset = true"),
+            ),
+            (
+                "set",
+                Args {
+                    flag: Some(true),
+                    ..Args::default()
+                },
+                err("command \"set\" needs a plugin.setting key"),
+            ),
+            (
+                "task",
+                Args {
+                    number: Some(3.0),
+                    status: text("done"),
+                    ..Args::default()
+                },
+                Ok(Command::Task {
+                    id: Some(3),
+                    title: None,
+                    status: Some("done".into()),
+                    delete: false,
+                }),
+            ),
+            (
+                "task",
+                Args {
+                    text: text("write it"),
+                    reset: true,
+                    ..Args::default()
+                },
+                Ok(Command::Task {
+                    id: None,
+                    title: Some("write it".into()),
+                    status: None,
+                    delete: true,
+                }),
+            ),
+            (
+                "task",
+                Args::default(),
+                err("command \"task\" needs a title to create, or a number to change"),
+            ),
+            (
+                "dispatch",
+                Args {
+                    number: Some(4.0),
+                    session: "s1".into(),
+                    ..Args::default()
+                },
+                Ok(Command::DispatchTask {
+                    task: 4,
+                    session: Some("s1".into()),
+                }),
+            ),
+            (
+                "dispatch",
+                Args {
+                    number: Some(4.0),
+                    ..Args::default()
+                },
+                Ok(Command::DispatchTask {
+                    task: 4,
+                    session: None,
+                }),
+            ),
+            (
+                "dispatch",
+                Args::default(),
+                err("command \"dispatch\" needs a task number"),
+            ),
+            (
+                "automation",
+                Args {
+                    number: Some(5.0),
+                    flag: Some(false),
+                    force: true,
+                    reset: true,
+                    ..Args::default()
+                },
+                Ok(Command::Automation {
+                    id: 5,
+                    enabled: Some(false),
+                    run_now: true,
+                    delete: true,
+                }),
+            ),
+            (
+                "automation",
+                Args::default(),
+                err("command \"automation\" needs an id"),
+            ),
+            (
+                "create",
+                Args {
+                    repo: text("/srv/repo"),
+                    text: text("named"),
+                    branch: text(""),
+                    base: text("main"),
+                    agent: text(""),
+                    host: text("box"),
+                    ..Args::default()
+                },
+                Ok(Command::Create {
+                    name: "named".into(),
+                    repo: "/srv/repo".into(),
+                    branch: None,
+                    base: Some("main".into()),
+                    worktree_path: None,
+                    agent: None,
+                    host: Some("box".into()),
+                    extras: Vec::new(),
+                }),
+            ),
+            (
+                "create",
+                Args {
+                    repo: text(""),
+                    ..Args::default()
+                },
+                err("command \"create\" needs a repo"),
+            ),
+            (
+                "bookmark",
+                Args {
+                    repo: text("  /srv/repo  "),
+                    action: text("add"),
+                    ..Args::default()
+                },
+                Ok(Command::Bookmark {
+                    host: String::new(),
+                    path: "/srv/repo".into(),
+                    edit: BookmarkEdit::Add,
+                }),
+            ),
+            (
+                "bookmark",
+                Args {
+                    repo: text("/srv/repo"),
+                    host: text("box"),
+                    action: text("remove"),
+                    ..Args::default()
+                },
+                Ok(Command::Bookmark {
+                    host: "box".into(),
+                    path: "/srv/repo".into(),
+                    edit: BookmarkEdit::Remove,
+                }),
+            ),
+            (
+                "bookmark",
+                Args {
+                    repo: text("/srv/repo"),
+                    action: text("parent"),
+                    ..Args::default()
+                },
+                Ok(Command::Bookmark {
+                    host: String::new(),
+                    path: "/srv/repo".into(),
+                    edit: BookmarkEdit::Parent,
+                }),
+            ),
+            (
+                "bookmark",
+                Args {
+                    repo: text("   "),
+                    action: text("add"),
+                    ..Args::default()
+                },
+                err("command \"bookmark\" needs a repo path"),
+            ),
+            (
+                "bookmark",
+                Args {
+                    repo: text("/srv/repo"),
+                    action: text("forget"),
+                    ..Args::default()
+                },
+                err("command \"bookmark\" needs action = \"add\", \"remove\" or \"parent\""),
+            ),
+            (
+                "focus",
+                Args {
+                    text: text(""),
+                    ..Args::default()
+                },
+                err("command \"focus\" needs a plugin name"),
+            ),
+            (
+                "open",
+                Args {
+                    text: text("https://example.com"),
+                    ..Args::default()
+                },
+                Ok(Command::OpenLink {
+                    url: "https://example.com".into(),
+                }),
+            ),
+            (
+                "open",
+                Args::default(),
+                err("command \"open\" needs a url in text"),
+            ),
+            (
+                "theme",
+                Args {
+                    text: text("nord"),
+                    ..Args::default()
+                },
+                Ok(Command::Theme {
+                    name: "nord".into(),
+                }),
+            ),
+            (
+                "theme",
+                Args {
+                    text: text(""),
+                    ..Args::default()
+                },
+                err("command \"theme\" needs a name"),
+            ),
+            (
+                "theme",
+                Args::default(),
+                err("command \"theme\" needs a name"),
+            ),
+            (
+                "order",
+                Args {
+                    list: vec!["a".into(), "b".into()],
+                    ..Args::default()
+                },
+                Ok(Command::Order {
+                    list: vec!["a".into(), "b".into()],
+                }),
+            ),
+            (
+                "order",
+                Args::default(),
+                err("command \"order\" needs a list of session ids"),
+            ),
+            (
+                "program",
+                Args {
+                    text: text("watch"),
+                    repo: text("cargo"),
+                    argv: vec!["test".into()],
+                    keys: Some(Vec::new()),
+                    owner: "plugins/x.lua".into(),
+                    ..Args::default()
+                },
+                Ok(Command::Program {
+                    owner: "plugins/x.lua".into(),
+                    name: "watch".into(),
+                    program: "cargo".into(),
+                    argv: vec!["test".into()],
+                    close: false,
+                    keys: None,
+                }),
+            ),
+            (
+                "program",
+                Args {
+                    text: text("watch"),
+                    action: text("stop"),
+                    ..Args::default()
+                },
+                Ok(Command::Program {
+                    owner: String::new(),
+                    name: "watch".into(),
+                    program: String::new(),
+                    argv: Vec::new(),
+                    close: true,
+                    keys: None,
+                }),
+            ),
+            (
+                "program",
+                Args {
+                    text: text("watch"),
+                    action: text("close"),
+                    keys: Some(b"q".to_vec()),
+                    ..Args::default()
+                },
+                err("command \"program\" cannot type into a pane and close it at once"),
+            ),
+            (
+                "program",
+                Args {
+                    text: text("watch"),
+                    repo: text("  "),
+                    ..Args::default()
+                },
+                err("command \"program\" needs a program to run (or action = \"close\", or keys)"),
+            ),
+            (
+                "program",
+                Args::default(),
+                err("a program pane needs a name"),
+            ),
+            (
+                "restore",
+                Args {
+                    force: true,
+                    ..session("s1")
+                },
+                Ok(Command::Restore {
+                    session: "s1".into(),
+                    best_effort: true,
+                }),
+            ),
+            (
+                "restart",
+                session("s1"),
+                Ok(Command::Restart {
+                    session: "s1".into(),
+                    if_missing: false,
+                }),
+            ),
+            (
+                "fork",
+                session("s1"),
+                Ok(Command::Fork {
+                    session: "s1".into(),
+                    name: String::new(),
+                }),
+            ),
+            (
+                "sync",
+                session("s1"),
+                Ok(Command::Sync {
+                    session: "s1".into(),
+                }),
+            ),
+            (
+                "copy",
+                session("s1"),
+                Ok(Command::Copy {
+                    session: "s1".into(),
+                }),
+            ),
+            (
+                "shell",
+                session("s1"),
+                Ok(Command::Shell {
+                    session: "s1".into(),
+                }),
+            ),
+            (
+                "editor",
+                session("s1"),
+                Ok(Command::Editor {
+                    session: "s1".into(),
+                }),
+            ),
+            (
+                "delete",
+                Args {
+                    force: true,
+                    ..session("s1")
+                },
+                Ok(Command::Delete {
+                    session: "s1".into(),
+                    force: true,
+                }),
+            ),
+            ("send", session("s1"), err("command \"send\" needs text")),
+            (
+                "reorder",
+                Args {
+                    delta: Some(0),
+                    ..session("s1")
+                },
+                err("command \"reorder\" needs a non-zero delta"),
+            ),
+            ("sync", Args::default(), err("command \"sync\" needs a session")),
+        ];
+        for (kind, args, expected) in cases {
+            assert_eq!(
+                Command::parse(kind, args.clone()),
+                expected,
+                "{kind} {args:?}"
+            );
         }
     }
 

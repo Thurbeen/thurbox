@@ -507,16 +507,7 @@ pub fn divide(total: u16, children: &[Size], gap: u16) -> Vec<u16> {
     // Pass 1: what each sized child asks for.
     let mut lengths: Vec<u16> = children
         .iter()
-        .map(|size| {
-            if let Some(len) = size.len {
-                size.clamp(len)
-            } else if let Some(pct) = size.pct {
-                let raw = (f64::from(available) * pct / 100.0).round();
-                size.clamp(raw.clamp(0.0, f64::from(u16::MAX)) as u16)
-            } else {
-                0
-            }
-        })
+        .map(|size| requested_length(size, available))
         .collect();
 
     let fixed: u32 = children
@@ -529,78 +520,105 @@ pub fn divide(total: u16, children: &[Size], gap: u16) -> Vec<u16> {
     // Over-subscribed: scale the fixed requests to fit rather than emit a
     // negative length. Deterministic, and every child still gets >= 0.
     if fixed > u32::from(available) {
-        let scale = f64::from(available) / fixed as f64;
-        let mut used = 0u32;
-        for (size, len) in children.iter().zip(lengths.iter_mut()) {
-            if size.is_flexible() {
-                *len = 0;
-                continue;
-            }
-            let scaled = (f64::from(*len) * scale).floor() as u16;
-            *len = scaled;
-            used += u32::from(scaled);
-        }
-        // Hand the rounding remainder out a row at a time, in order, rather than
-        // all of it to the first child. It matters more than rounding usually
-        // does: N children of `len = 1` in N-1 rows scale to 0 apiece, so the
-        // remainder *is* the whole rect, and giving it to the first child paints
-        // one enormous row and loses every other one. Spread, the tail is clipped
-        // instead — which is what a list one row too long should look like, and
-        // the difference between a search strip that truncates and one that goes
-        // blank. One pass is enough: each dropped fraction is below 1, so the
-        // remainder is smaller than the number of fixed children.
-        let mut remainder = u32::from(available).saturating_sub(used);
-        for (size, len) in children.iter().zip(lengths.iter_mut()) {
-            if remainder == 0 {
-                break;
-            }
-            if size.is_flexible() {
-                continue;
-            }
-            *len = len.saturating_add(1);
-            remainder -= 1;
-        }
-        return lengths;
+        scale_fixed_to_fit(children, &mut lengths, available, fixed);
+    } else {
+        // Pass 2: flexible children share what is left, by their `fill` weight.
+        share_among_flexible(
+            children,
+            &mut lengths,
+            available.saturating_sub(fixed as u16),
+        );
     }
+    lengths
+}
 
-    // Pass 2: flexible children share what is left, by their `fill` weight.
-    let remainder = available.saturating_sub(fixed as u16);
+/// What one child asks for out of `available`: its exact length or its
+/// percentage, clamped — and nothing yet for a flexible child.
+fn requested_length(size: &Size, available: u16) -> u16 {
+    if let Some(len) = size.len {
+        size.clamp(len)
+    } else if let Some(pct) = size.pct {
+        let raw = (f64::from(available) * pct / 100.0).round();
+        size.clamp(raw.clamp(0.0, f64::from(u16::MAX)) as u16)
+    } else {
+        0
+    }
+}
+
+/// Shrink the fixed requests, which sum to `fixed`, into `available`; flexible
+/// children get nothing.
+fn scale_fixed_to_fit(children: &[Size], lengths: &mut [u16], available: u16, fixed: u32) {
+    let scale = f64::from(available) / fixed as f64;
+    let mut used = 0u32;
+    for (size, len) in children.iter().zip(lengths.iter_mut()) {
+        if size.is_flexible() {
+            *len = 0;
+            continue;
+        }
+        let scaled = (f64::from(*len) * scale).floor() as u16;
+        *len = scaled;
+        used += u32::from(scaled);
+    }
+    // Hand the rounding remainder out a row at a time, in order, rather than
+    // all of it to the first child. It matters more than rounding usually
+    // does: N children of `len = 1` in N-1 rows scale to 0 apiece, so the
+    // remainder *is* the whole rect, and giving it to the first child paints
+    // one enormous row and loses every other one. Spread, the tail is clipped
+    // instead — which is what a list one row too long should look like, and
+    // the difference between a search strip that truncates and one that goes
+    // blank. One pass is enough: each dropped fraction is below 1, so the
+    // remainder is smaller than the number of fixed children.
+    let mut remainder = u32::from(available).saturating_sub(used);
+    for (size, len) in children.iter().zip(lengths.iter_mut()) {
+        if remainder == 0 {
+            break;
+        }
+        if size.is_flexible() {
+            continue;
+        }
+        *len = len.saturating_add(1);
+        remainder -= 1;
+    }
+}
+
+/// Split `remainder` among the flexible children by their `fill` weight.
+fn share_among_flexible(children: &[Size], lengths: &mut [u16], remainder: u16) {
+    // Never NaN: every share is floored at zero, so this is "no weight at all".
     let total_share: f64 = children
         .iter()
         .filter(|size| size.is_flexible())
         .map(Size::share)
         .sum();
-
-    if total_share > 0.0 {
-        let mut handed_out = 0u16;
-        let flexible: Vec<usize> = children
-            .iter()
-            .enumerate()
-            .filter(|(_, size)| size.is_flexible())
-            .map(|(i, _)| i)
-            .collect();
-
-        for (nth, &index) in flexible.iter().enumerate() {
-            let size = &children[index];
-            let length = if nth + 1 == flexible.len() {
-                // Last flexible child absorbs the rounding drift, so the
-                // children always sum to exactly `available`.
-                remainder.saturating_sub(handed_out)
-            } else {
-                let raw = f64::from(remainder) * size.share() / total_share;
-                raw.floor() as u16
-            };
-            // `min` may ask for more than the share, but never for more than is
-            // left: two children with `min = 8` in a 10-row box would otherwise
-            // sum to 16, and `paint`/`divide_slot` would hand out rects that start
-            // and end outside their parent.
-            let clamped = size.clamp(length).min(remainder.saturating_sub(handed_out));
-            lengths[index] = clamped;
-            handed_out = handed_out.saturating_add(clamped);
-        }
+    if total_share <= 0.0 {
+        return;
     }
 
-    lengths
+    let mut handed_out = 0u16;
+    let flexible: Vec<usize> = children
+        .iter()
+        .enumerate()
+        .filter(|(_, size)| size.is_flexible())
+        .map(|(i, _)| i)
+        .collect();
+
+    for (nth, &index) in flexible.iter().enumerate() {
+        let size = &children[index];
+        let length = if nth + 1 == flexible.len() {
+            // Last flexible child absorbs the rounding drift, so the
+            // children always sum to exactly `available`.
+            remainder.saturating_sub(handed_out)
+        } else {
+            let raw = f64::from(remainder) * size.share() / total_share;
+            raw.floor() as u16
+        };
+        // `min` may ask for more than the share, but never for more than is
+        // left: two children with `min = 8` in a 10-row box would otherwise
+        // sum to 16, and `paint`/`divide_slot` would hand out rects that start
+        // and end outside their parent.
+        let clamped = size.clamp(length).min(remainder.saturating_sub(handed_out));
+        lengths[index] = clamped;
+        handed_out = handed_out.saturating_add(clamped);
+    }
 }
 
 /// Parse a colour written as a name, a `#rrggbb` hex string, or a palette index.
@@ -770,6 +788,44 @@ mod tests {
         ];
         let lengths = divide(20, &sizes, 0);
         assert_eq!(lengths[0], 4);
+    }
+
+    #[test]
+    fn oversubscription_hands_the_rounding_remainder_out_in_order() {
+        let one = size(Some(1), None, None);
+        // Three rows into two: each scales to zero, and the remainder is the rect.
+        assert_eq!(divide(2, &[one, one, one], 0), vec![1, 1, 0]);
+        // A flexible child gets nothing once the fixed ones overflow.
+        let ten = size(Some(10), None, None);
+        let fill = size(None, None, None);
+        assert_eq!(divide(10, &[ten, fill, ten], 0), vec![5, 0, 5]);
+        assert_eq!(divide(12, &[ten, ten, ten], 0), vec![4, 4, 4]);
+    }
+
+    #[test]
+    fn a_percentage_is_of_the_space_after_gaps() {
+        let sizes = [size(None, Some(50.0), None), size(None, None, None)];
+        assert_eq!(divide(21, &sizes, 1), vec![10, 10]);
+        let sizes = [size(None, Some(150.0), None)];
+        assert_eq!(divide(10, &sizes, 0), vec![10]);
+    }
+
+    #[test]
+    fn a_minimum_never_takes_more_than_is_left() {
+        let at_least_eight = Size {
+            min: Some(8),
+            ..Size::default()
+        };
+        assert_eq!(divide(10, &[at_least_eight, at_least_eight], 0), vec![8, 2]);
+        // No flexible child with any share: the remainder stays unassigned.
+        let nothing = Size {
+            fill: Some(0.0),
+            ..Size::default()
+        };
+        assert_eq!(
+            divide(10, &[size(Some(3), None, None), nothing], 0),
+            vec![3, 0]
+        );
     }
 
     #[test]

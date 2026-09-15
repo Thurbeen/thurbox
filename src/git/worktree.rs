@@ -319,10 +319,8 @@ pub(super) fn parse_worktree_list(stdout: &str) -> Vec<ExistingWorktree> {
     for line in stdout.lines().chain(std::iter::once("")) {
         if line.is_empty() {
             if let Some(p) = path.take() {
-                if usable && stanza > 0 {
-                    if let Some(b) = branch.take() {
-                        found.push(ExistingWorktree { path: p, branch: b });
-                    }
+                if let Some(worktree) = offered(p, branch.take(), usable, stanza) {
+                    found.push(worktree);
                 }
                 stanza += 1;
             }
@@ -340,6 +338,23 @@ pub(super) fn parse_worktree_list(stdout: &str) -> Vec<ExistingWorktree> {
     }
 
     found
+}
+
+/// The worktree a closed stanza offers: none for the first stanza (the main
+/// checkout), for an unusable one, or for one on no branch.
+fn offered(
+    path: PathBuf,
+    branch: Option<String>,
+    usable: bool,
+    stanza: usize,
+) -> Option<ExistingWorktree> {
+    if !usable || stanza == 0 {
+        return None;
+    }
+    Some(ExistingWorktree {
+        path,
+        branch: branch?,
+    })
 }
 
 /// Deterministic worktree directory path for a repo + branch.

@@ -1370,15 +1370,36 @@ impl LuaHost {
             let _ = self.lua.globals().set("run", Value::Nil);
             return;
         }
+        self.publish_runs(plugin);
+        self.publish_granted(plugin);
+        self.install_run(granted);
+    }
 
-        // This plugin's own answers, and nothing else's. Set per call rather
-        // than at publish because `thurbox` is one shared table: publishing
-        // every plugin's runs into it would let any pane read another's output.
-        //
-        // The read surface is created if it does not exist yet, so an answer is
-        // readable without depending on a publish having happened first.
+    /// This plugin's own answers, and nothing else's, as `thurbox.runs`. Set per
+    /// call rather than at publish because `thurbox` is one shared table:
+    /// publishing every plugin's runs into it would let any pane read another's
+    /// output.
+    ///
+    /// The read surface is created if it does not exist yet, so an answer is
+    /// readable without depending on a publish having happened first.
+    fn publish_runs(&self, plugin: &Plugin) {
+        let (Some(surface), Ok(table)) = (self.thurbox_table(), self.lua.create_table()) else {
+            return;
+        };
+        if let Some(answers) = self.run_answers.borrow().get(&plugin.path) {
+            for (key, run) in answers {
+                if let Ok(entry) = run_to_lua(&self.lua, run) {
+                    let _ = table.set(key.clone(), entry);
+                }
+            }
+        }
+        let _ = surface.set("runs", table);
+    }
+
+    /// The global `thurbox` table, created here when no publish has made it yet.
+    fn thurbox_table(&self) -> Option<Table> {
         let globals = self.lua.globals();
-        let surface = match globals.get::<Table>("thurbox") {
+        match globals.get::<Table>("thurbox") {
             Ok(table) => Some(table),
             // Not `Option::inspect`: that is stable since 1.76 and the MSRV is
             // 1.75.
@@ -1389,42 +1410,40 @@ impl LuaHost {
                 }
                 Err(_) => None,
             },
-        };
-        if let (Some(surface), Ok(table)) = (surface, self.lua.create_table()) {
-            if let Some(answers) = self.run_answers.borrow().get(&plugin.path) {
-                for (key, run) in answers {
-                    if let Ok(entry) = run_to_lua(&self.lua, run) {
-                        let _ = table.set(key.clone(), entry);
-                    }
-                }
-            }
-            let _ = surface.set("runs", table);
         }
+    }
 
-        // What this plugin has actually been granted, as `thurbox.granted.<name>`.
-        //
-        // Needed because not every capability can be withheld by absence. `run` is
-        // a global, so a plugin checks `if not run then` and draws an honest hint —
-        // that IS the absence. `program` is asked for through `command`, which
-        // every plugin has, so absence cannot express it and a pane would have no
-        // way to tell "not trusted" from "still starting". This is that answer, and
-        // it grants nothing: it is a boolean about a decision the user already made.
-        if let (Ok(surface), Ok(table)) = (
+    /// What this plugin has actually been granted, as `thurbox.granted.<name>`.
+    ///
+    /// Needed because not every capability can be withheld by absence. `run` is
+    /// a global, so a plugin checks `if not run then` and draws an honest hint —
+    /// that IS the absence. `program` is asked for through `command`, which
+    /// every plugin has, so absence cannot express it and a pane would have no
+    /// way to tell "not trusted" from "still starting". This is that answer, and
+    /// it grants nothing: it is a boolean about a decision the user already made.
+    fn publish_granted(&self, plugin: &Plugin) {
+        let (Ok(surface), Ok(table)) = (
             self.lua.globals().get::<Table>("thurbox"),
             self.lua.create_table(),
-        ) {
-            for capability in Capability::ALL {
-                if self.may(plugin, capability) {
-                    let _ = table.set(capability.as_str(), true);
-                }
+        ) else {
+            return;
+        };
+        for capability in Capability::ALL {
+            if self.may(plugin, capability) {
+                let _ = table.set(capability.as_str(), true);
             }
-            let _ = surface.set("granted", table);
         }
+        let _ = surface.set("granted", table);
+    }
 
-        // Resolved out of the VM rather than held in Rust, because a reload
-        // replaces the VM and a cached handle would outlive the state it came
-        // from. Out of the *registry* rather than globals, because globals is
-        // every plugin's `_ENV` — see `RUN_IMPL`.
+    /// Point the global `run` at the implementation when `granted`, and at
+    /// nothing otherwise.
+    ///
+    /// Resolved out of the VM rather than held in Rust, because a reload
+    /// replaces the VM and a cached handle would outlive the state it came
+    /// from. Out of the *registry* rather than globals, because globals is
+    /// every plugin's `_ENV` — see `RUN_IMPL`.
+    fn install_run(&self, granted: bool) {
         let globals = self.lua.globals();
         match granted
             .then(|| self.lua.named_registry_value::<Value>(RUN_IMPL))

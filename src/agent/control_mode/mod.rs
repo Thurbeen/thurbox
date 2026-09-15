@@ -529,27 +529,8 @@ fn is_octal(b: u8) -> bool {
 
 /// Parse a line from tmux control mode into a notification.
 pub fn parse_notification(line: &str) -> Notification {
-    if let Some(rest) = line.strip_prefix("%output ") {
-        // Format: %output %<pane_id> <octal-encoded data>
-        if let Some(space_idx) = rest.find(' ') {
-            let pane_id = rest[..space_idx].to_string();
-            let data = decode_octal(&rest[space_idx + 1..]);
-            return Notification::Output { pane_id, data };
-        }
-    }
-
-    if let Some(rest) = line.strip_prefix("%extended-output ") {
-        // Format: %extended-output %<pane_id> <age> : <octal-encoded data>
-        // The " : " separator divides metadata from payload.
-        if let Some(colon_idx) = rest.find(" : ") {
-            let meta = &rest[..colon_idx];
-            let data = decode_octal(&rest[colon_idx + 3..]);
-            // meta is "%<pane_id> <age>" — extract pane_id.
-            if let Some(space_idx) = meta.find(' ') {
-                let pane_id = meta[..space_idx].to_string();
-                return Notification::Output { pane_id, data };
-            }
-        }
+    if let Some(output) = parse_output(line) {
+        return output;
     }
 
     if line.starts_with("%begin ") {
@@ -564,18 +545,8 @@ pub fn parse_notification(line: &str) -> Notification {
         return Notification::Error;
     }
 
-    for prefix in ["%window-close ", "%unlinked-window-close "] {
-        if let Some(rest) = line.strip_prefix(prefix) {
-            let window_id = rest.trim();
-            // `%window-close` can carry a layout after the id in some tmux
-            // versions; the id is the first token either way.
-            let window_id = window_id.split_whitespace().next().unwrap_or(window_id);
-            if !window_id.is_empty() {
-                return Notification::WindowClose {
-                    window_id: window_id.to_string(),
-                };
-            }
-        }
+    if let Some(close) = parse_window_close(line) {
+        return close;
     }
 
     if let Some(rest) = line.strip_prefix("%pause ") {
@@ -590,6 +561,44 @@ pub fn parse_notification(line: &str) -> Notification {
     }
 
     Notification::Other(line.to_string())
+}
+
+/// `%output` and `%extended-output`: a pane's bytes.
+fn parse_output(line: &str) -> Option<Notification> {
+    if let Some(rest) = line.strip_prefix("%output ") {
+        // Format: %output %<pane_id> <octal-encoded data>
+        let (pane_id, data) = rest.split_once(' ')?;
+        return Some(Notification::Output {
+            pane_id: pane_id.to_string(),
+            data: decode_octal(data),
+        });
+    }
+    // Format: %extended-output %<pane_id> <age> : <octal-encoded data>
+    // The " : " separator divides metadata from payload.
+    let (meta, data) = line.strip_prefix("%extended-output ")?.split_once(" : ")?;
+    // meta is "%<pane_id> <age>" — extract pane_id.
+    let (pane_id, _) = meta.split_once(' ')?;
+    Some(Notification::Output {
+        pane_id: pane_id.to_string(),
+        data: decode_octal(data),
+    })
+}
+
+/// `%window-close` and `%unlinked-window-close`, naming the window that went.
+fn parse_window_close(line: &str) -> Option<Notification> {
+    let rest = line
+        .strip_prefix("%window-close ")
+        .or_else(|| line.strip_prefix("%unlinked-window-close "))?;
+    let window_id = rest.trim();
+    // `%window-close` can carry a layout after the id in some tmux
+    // versions; the id is the first token either way.
+    let window_id = window_id.split_whitespace().next().unwrap_or(window_id);
+    if window_id.is_empty() {
+        return None;
+    }
+    Some(Notification::WindowClose {
+        window_id: window_id.to_string(),
+    })
 }
 
 /// Parse a `%subscription-changed` notification (tmux >= 3.2 format

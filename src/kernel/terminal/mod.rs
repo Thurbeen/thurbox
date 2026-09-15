@@ -486,19 +486,33 @@ impl Terminals {
             self.refresh_discovery(&waiting);
         }
 
+        self.attach_unresolved(snapshot, rows, cols);
+
+        // Anything no longer in the snapshot has been deleted; dropping the
+        // Session detaches it without touching the pane. An attach still in
+        // flight is left to finish and discarded on arrival — a worker cannot
+        // be cancelled, and its result is matched against the live rows.
+        let present: std::collections::HashSet<&str> = snapshot
+            .sessions
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        self.live.retain(|id, _| present.contains(id.as_str()));
+        let failures = self.failed.len();
+        self.failed.retain(|id, _| present.contains(id.as_str()));
+        if self.failed.len() != failures {
+            self.mark_failures_changed();
+        }
+    }
+
+    /// Start an attach for every row that is neither live nor attaching, unless
+    /// the same attempt just failed or its backend is still being opened.
+    fn attach_unresolved(&mut self, snapshot: &Snapshot, rows: u16, cols: u16) {
         for row in &snapshot.sessions {
             if self.live.contains_key(&row.id) || self.attaching.contains_key(&row.id) {
                 continue;
             }
-            // The row's own pane id, unless a listing contradicts it: a
-            // contradicted one is worth less than the window name that produced
-            // it, and falling through to `None` here is also what lets
-            // [`Self::missing_agents`] relaunch a session whose window is gone for
-            // good.
-            let (candidate, via_name) = match row.backend_id.clone() {
-                Some(id) if !self.pane_is_stale(row, &id) => (Some(id), false),
-                _ => (self.pane_by_name(row), true),
-            };
+            let (candidate, via_name) = self.candidate_pane(row);
             // The same attempt would fail the same way; a different one is worth
             // making.
             if self.failed.get(&row.id).is_some_and(|failure| {
@@ -518,21 +532,18 @@ impl Terminals {
             }
             self.start_attach(row, backend_id, via_name, rows, cols);
         }
+    }
 
-        // Anything no longer in the snapshot has been deleted; dropping the
-        // Session detaches it without touching the pane. An attach still in
-        // flight is left to finish and discarded on arrival — a worker cannot
-        // be cancelled, and its result is matched against the live rows.
-        let present: std::collections::HashSet<&str> = snapshot
-            .sessions
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect();
-        self.live.retain(|id, _| present.contains(id.as_str()));
-        let failures = self.failed.len();
-        self.failed.retain(|id, _| present.contains(id.as_str()));
-        if self.failed.len() != failures {
-            self.mark_failures_changed();
+    /// The pane to attach `row` to, and whether it was found by window name.
+    ///
+    /// The row's own pane id, unless a listing contradicts it: a contradicted
+    /// one is worth less than the window name that produced it, and falling
+    /// through to `None` here is also what lets [`Self::missing_agents`]
+    /// relaunch a session whose window is gone for good.
+    fn candidate_pane(&self, row: &super::snapshot::SessionRow) -> (Option<String>, bool) {
+        match row.backend_id.clone() {
+            Some(id) if !self.pane_is_stale(row, &id) => (Some(id), false),
+            _ => (self.pane_by_name(row), true),
         }
     }
 

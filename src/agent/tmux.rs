@@ -3129,51 +3129,7 @@ pub fn spawn_window(
     } else {
         format!("{TMUX_SESSION}:{{end}}")
     };
-    let mut tmux = local_mux_command(&["new-window", "-d"]);
-    if !cfg!(windows) {
-        tmux.arg("-a");
-    }
-    tmux.args(["-t", &create_target, "-n", &window_name]);
-    if !cfg!(windows) {
-        tmux.args(["-P", "-F", "#{pane_id}"]);
-    }
-    if let Some(dir) = cwd {
-        tmux.args(["-c", &dir.to_string_lossy()]);
-    }
-    if cfg!(windows) {
-        // psmux (the local mux on Windows) ignores `-e`, so the env must be
-        // folded into the window command itself; delivered as a single argv
-        // token (see `psmux_window_powershell`).
-        tmux.arg(TmuxBackend::psmux_window_powershell(command, args, env));
-    } else {
-        for (k, v) in env {
-            tmux.args(["-e", &format!("{k}={v}")]);
-        }
-        // Pass the command + args as a single argv list. tmux treats trailing
-        // args as the command to run inside the window. Resolved here for the
-        // same reason the control-mode path resolves it (see
-        // `resolve_local_program`): this path happens to get thurbox's own
-        // `PATH` because its client is unattached, but a session must not
-        // launch differently depending on which of the two created it — a
-        // session created here and later restarted through control mode would
-        // otherwise resolve against two different environments.
-        tmux.arg(resolve_local_program(command));
-        for a in args {
-            tmux.arg(a);
-        }
-    }
-
-    // Chained into the same command list as the creation, not sent after it —
-    // `birth_options` has the measurement. This path passes `-d`, so the new
-    // window is not current and the bare form the control-mode path uses is not
-    // available; `{end}` names it instead, which is why the window is created
-    // there.
-    if !cfg!(windows) {
-        for (key, value) in birth_options(&window_name) {
-            tmux.args([";", "set-window-option", "-t", &create_target]);
-            tmux.args([key, value]);
-        }
-    }
+    let mut tmux = new_window_command(&window_name, &create_target, command, args, cwd, env);
 
     let output = tmux
         .output()
@@ -3201,6 +3157,76 @@ pub fn spawn_window(
     };
     stamp_local_window(&target, session_id, WindowRole::Agent);
     Ok(pane_id)
+}
+
+/// The `new-window` command list [`spawn_window`] runs: the window created
+/// detached at `create_target` running `command` — and, on tmux, its birth
+/// options chained into the same invocation.
+fn new_window_command(
+    window_name: &str,
+    create_target: &str,
+    command: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    env: &HashMap<String, String>,
+) -> Command {
+    let mut tmux = local_mux_command(&["new-window", "-d"]);
+    if !cfg!(windows) {
+        tmux.arg("-a");
+    }
+    tmux.args(["-t", create_target, "-n", window_name]);
+    if !cfg!(windows) {
+        tmux.args(["-P", "-F", "#{pane_id}"]);
+    }
+    if let Some(dir) = cwd {
+        tmux.args(["-c", &dir.to_string_lossy()]);
+    }
+    push_window_program(&mut tmux, command, args, env);
+
+    // Chained into the same command list as the creation, not sent after it —
+    // `birth_options` has the measurement. This path passes `-d`, so the new
+    // window is not current and the bare form the control-mode path uses is not
+    // available; `{end}` names it instead, which is why the window is created
+    // there.
+    if !cfg!(windows) {
+        for (key, value) in birth_options(window_name) {
+            tmux.args([";", "set-window-option", "-t", create_target]);
+            tmux.args([key, value]);
+        }
+    }
+    tmux
+}
+
+/// The window's environment and the program it runs, which close the
+/// `new-window` arguments.
+fn push_window_program(
+    tmux: &mut Command,
+    command: &str,
+    args: &[String],
+    env: &HashMap<String, String>,
+) {
+    if cfg!(windows) {
+        // psmux (the local mux on Windows) ignores `-e`, so the env must be
+        // folded into the window command itself; delivered as a single argv
+        // token (see `psmux_window_powershell`).
+        tmux.arg(TmuxBackend::psmux_window_powershell(command, args, env));
+        return;
+    }
+    for (k, v) in env {
+        tmux.args(["-e", &format!("{k}={v}")]);
+    }
+    // Pass the command + args as a single argv list. tmux treats trailing args
+    // as the command to run inside the window. Resolved here for the same
+    // reason the control-mode path resolves it (see `resolve_local_program`):
+    // this path happens to get thurbox's own `PATH` because its client is
+    // unattached, but a session must not launch differently depending on which
+    // of the two created it — a session created here and later restarted
+    // through control mode would otherwise resolve against two different
+    // environments.
+    tmux.arg(resolve_local_program(command));
+    for a in args {
+        tmux.arg(a);
+    }
 }
 
 /// Headless spawn of an agent window on a remote host over SSH.

@@ -136,6 +136,32 @@ impl App {
         self.trust_stale = true;
     }
 
+    /// Scan `id`'s screen for links, recording the stamp and instant it was
+    /// scanned at, and publish what it found if that differs.
+    fn scan_links(&mut self, id: &str, stamp: u64, now: Instant) {
+        self.link_stamps.insert(id.to_string(), stamp);
+        self.link_scans.insert(id.to_string(), now);
+        let found = self.terminals.links(id);
+        // Absent rather than empty when there are none, which is the shape a
+        // plugin reads: `thurbox.links[id]` is nil for a session with no links,
+        // not a table with nothing in it.
+        //
+        // Compared before storing: a printing agent moves its stamp every frame
+        // while the links on screen usually stay put, and treating a re-scan as
+        // a change would move the epoch every frame for nothing.
+        let changed = if found.is_empty() {
+            self.links.remove(id).is_some()
+        } else if self.links.get(id) == Some(&found) {
+            false
+        } else {
+            self.links.insert(id.to_string(), found);
+            true
+        };
+        if changed {
+            self.note_published_change();
+        }
+    }
+
     /// Rescan for the links on each session's screen, where that screen moved
     /// — and no more often than [`LINK_SCAN_INTERVAL`] while it keeps moving.
     ///
@@ -172,40 +198,11 @@ impl App {
                 }
                 continue;
             }
-            match self.terminals.output_stamp(id) {
-                // Unchanged since the last scan: the answer stands.
-                Some(stamp) if self.link_stamps.get(id) == Some(&stamp) => {}
-                // Moved, but scanned too recently to ask again. The stamp is
-                // deliberately NOT recorded here, so the next publish after the
-                // interval does the scan — a screen that has settled converges
-                // on the branch above and costs nothing again.
-                Some(_) if !link_scan_due(self.link_scans.get(id).copied(), now) => {}
-                Some(stamp) => {
-                    self.link_stamps.insert(id.clone(), stamp);
-                    self.link_scans.insert(id.clone(), now);
-                    let found = self.terminals.links(id);
-                    // Absent rather than empty when there are none, which is the
-                    // shape a plugin reads: `thurbox.links[id]` is nil for a
-                    // session with no links, not a table with nothing in it.
-                    //
-                    // Compared before storing: a printing agent moves its stamp
-                    // every frame while the links on screen usually stay put, and
-                    // treating a re-scan as a change would move the epoch every
-                    // frame for nothing.
-                    let changed = if found.is_empty() {
-                        self.links.remove(id).is_some()
-                    } else if self.links.get(id) == Some(&found) {
-                        false
-                    } else {
-                        self.links.insert(id.clone(), found);
-                        true
-                    };
-                    if changed {
-                        self.note_published_change();
-                    }
-                }
-                // No live pane, so no screen and no links.
-                None => {
+            let stamp = self.terminals.output_stamp(id);
+            match plan_link_scan(id, stamp, &self.link_stamps, &self.link_scans, now) {
+                LinkScan::Keep => {}
+                LinkScan::Scan(stamp) => self.scan_links(id, stamp, now),
+                LinkScan::Gone => {
                     self.link_stamps.remove(id);
                     self.link_scans.remove(id);
                     self.links.remove(id);
@@ -380,12 +377,83 @@ fn link_scan_due(last_scan: Option<Instant>, now: Instant) -> bool {
     last_scan.map_or(true, |at| now.duration_since(at) >= LINK_SCAN_INTERVAL)
 }
 
+/// What a publish owes the links of one surface that is on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkScan {
+    /// Unchanged since the last scan, or moved but scanned too recently: the
+    /// answer stands.
+    Keep,
+    /// Moved and due: scan, and record this stamp.
+    Scan(u64),
+    /// No live pane, so no screen and no links.
+    Gone,
+}
+
+/// Decide [`LinkScan`] for the on-screen surface `id`, whose output stamp is
+/// `stamp`, against the stamp and instant of its last scan.
+///
+/// A screen that moved but was scanned too recently does NOT record its stamp,
+/// so the next publish after the interval does the scan — a screen that has
+/// settled converges on `Keep` and costs nothing again.
+fn plan_link_scan(
+    id: &str,
+    stamp: Option<u64>,
+    scanned_stamps: &std::collections::HashMap<String, u64>,
+    scanned_at: &std::collections::HashMap<String, Instant>,
+    now: Instant,
+) -> LinkScan {
+    match stamp {
+        Some(stamp) if scanned_stamps.get(id) == Some(&stamp) => LinkScan::Keep,
+        Some(_) if !link_scan_due(scanned_at.get(id).copied(), now) => LinkScan::Keep,
+        Some(stamp) => LinkScan::Scan(stamp),
+        None => LinkScan::Gone,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
 
     use crate::{FORCE_REDRAW_INTERVAL, OUTPUT_FRAME_INTERVAL};
+
+    #[test]
+    fn a_screen_is_rescanned_only_once_it_moved_and_the_interval_allows() {
+        use std::collections::HashMap;
+        let now = Instant::now();
+        let later = now + LINK_SCAN_INTERVAL;
+        let stamps = HashMap::from([("s".to_string(), 7)]);
+        let scanned_now = HashMap::from([("s".to_string(), now)]);
+        let never: HashMap<String, Instant> = HashMap::new();
+
+        assert_eq!(
+            plan_link_scan("s", None, &stamps, &scanned_now, now),
+            LinkScan::Gone
+        );
+        // Unchanged: the answer stands however long ago it was scanned.
+        assert_eq!(
+            plan_link_scan("s", Some(7), &stamps, &never, later),
+            LinkScan::Keep
+        );
+        // Moved, but too soon to ask again.
+        assert_eq!(
+            plan_link_scan("s", Some(8), &stamps, &scanned_now, now),
+            LinkScan::Keep
+        );
+        // Moved, and the interval has passed — or it was never scanned.
+        assert_eq!(
+            plan_link_scan("s", Some(8), &stamps, &scanned_now, later),
+            LinkScan::Scan(8)
+        );
+        assert_eq!(
+            plan_link_scan("s", Some(8), &stamps, &never, now),
+            LinkScan::Scan(8)
+        );
+        assert_eq!(
+            plan_link_scan("new", Some(1), &stamps, &scanned_now, now),
+            LinkScan::Scan(1)
+        );
+    }
 
     #[test]
     fn a_surface_never_scanned_is_due_at_once() {

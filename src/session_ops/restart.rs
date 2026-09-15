@@ -315,51 +315,11 @@ pub fn restart_session_headless_with(
         .as_ref()
         .and_then(|h| super::host_cli::delegated(h).map(|cli| (h, cli)))
     {
-        let mut hook_ctx = super::lifecycle_hooks::context_for(&session);
-        super::fire_pre(crate::session::HookEvent::PreRestart, &hook_ctx)?;
-        let id = session_id.to_string();
-        let mut args = vec!["session", "restart", &id];
-        if if_missing {
-            args.push("--if-missing");
-        }
-        super::host_cli::run(host, &cli, &args)?;
-        if let Err(e) = super::mirror::mirror_host(db, host, &cli) {
-            tracing::warn!("mirror of '{}' after restart failed: {e}", host.name);
-        }
-        hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session_id);
-        let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);
-        return Ok(RestartReport { hook_failures });
+        return restart_delegated(db, &session, host, &cli, if_missing);
     }
 
-    if if_missing {
-        // "Relaunch what is missing" is what a peer asks after a reboot, and a
-        // parked session is missing on purpose. Only `session start` clears the
-        // mark, so this is the one place that has to check it — refusing here
-        // is what makes `stop` outlive the next sync tick.
-        // Read strictly: a failed read is not "not stopped". Falling open here
-        // relaunched a deliberately parked session under exactly the DB
-        // contention that caused the failure.
-        if db
-            .session_stopped_at(session_id)
-            .map_err(|e| format!("could not read the stopped mark of '{}': {e}", session.name))?
-            .is_some()
-        {
-            tracing::debug!("'{}' is stopped; not relaunching", session.name);
-            return Ok(RestartReport::default());
-        }
-        // Only a listing that positively says the window is *gone* relaunches.
-        // An ambiguous name — several windows, none stamped — reads as running
-        // here on purpose: launching another agent is the expensive mistake.
-        let alive = crate::agent::tmux::agent_window_alive(
-            host.as_ref(),
-            &session.id.to_string(),
-            &session.name,
-        )
-        .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
-        if alive {
-            tracing::debug!("'{}' is running; nothing to relaunch", session.name);
-            return Ok(RestartReport::default());
-        }
+    if if_missing && !relaunch_is_owed(db, &session, host.as_ref())? {
+        return Ok(RestartReport::default());
     }
 
     let hooks_enabled = super::hooks_enabled(db);
@@ -392,130 +352,8 @@ pub fn restart_session_headless_with(
     refuse_if_deleted(db, &session)?;
 
     match host.as_ref() {
-        None => {
-            // A window that is already gone is not an error — the same rule the
-            // remote branch follows. It is also what makes this the *respawn*
-            // path: a session whose tmux server died is restarted by asking for
-            // exactly this, and refusing because there was nothing to kill would
-            // make the one case that needs it the one case that fails.
-            // Killed by the window's own stamp: the window *name* is not
-            // unique, and killing by name with a duplicate around tears down an
-            // arbitrary one of them.
-            if let Err(e) =
-                crate::agent::tmux::kill_window(&session.id.to_string(), &plan.window_name)
-            {
-                tracing::debug!("no window to kill for '{}': {e:#}", plan.window_name);
-            }
-            // The companion shell goes with it: it was opened beside the agent
-            // this restart replaces, and the interface reopens one on demand.
-            if let Err(e) =
-                crate::agent::tmux::kill_shell_window(&session.id.to_string(), &plan.window_name)
-            {
-                tracing::debug!("no shell window to kill for '{}': {e:#}", plan.window_name);
-            }
-            let pane = crate::agent::tmux::spawn_window(
-                &session.id.to_string(),
-                &plan.window_name,
-                &plan.command,
-                &plan.args,
-                plan.cwd.as_deref(),
-                &plan.env,
-            )
-            .map_err(
-                |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                    // Already a sentence naming the binary, the search and the fix;
-                    // a prefix in front of it only pushes the fix off the row.
-                    true => format!("{e}"),
-                    false => format!("Failed to re-spawn tmux window: {e:#}"),
-                },
-            )?;
-
-            // The new pane is a different one, and the id is how every later
-            // read finds it — leaving the old one persisted would point the
-            // interface at a pane that no longer exists. (Empty on psmux, where
-            // the spawn can't report an id; the interface then resolves by
-            // window name as before.)
-            match record_pane(db, &session, &pane) {
-                Recorded::Stored => {}
-                Recorded::RowGone => {
-                    // The row lost the race (deleted between the load above and
-                    // here), so nothing will ever attach to this window — a
-                    // force-deleted row is never reaped. Kill what was just
-                    // spawned rather than leave it running forever.
-                    if let Err(kill_err) =
-                        crate::agent::tmux::kill_window(&session.id.to_string(), &plan.window_name)
-                    {
-                        tracing::warn!(
-                            "could not kill orphaned restart window for '{}': {kill_err:#}",
-                            session.name
-                        );
-                    }
-                    return Err(Recorded::deleted_mid_restart(&session.name));
-                }
-                // The agent is running; only the row lags. Reported, not killed.
-                Recorded::WriteFailed(e) => return Err(e),
-            }
-        }
-        Some(host) => {
-            // Before anything is killed or spawned: acting on a socket the host
-            // has not vouched for would tear down nothing and then put a second
-            // agent on a server of our own guessing.
-            crate::agent::tmux::known_host_socket(host)
-                .map_err(|e| format!("cannot restart '{}': {e:#}", session.name))?;
-            // By the window's own stamp, exactly as the local branch: the
-            // host's tmux server is shared with whatever else runs there, so a
-            // name is not ours to claim. A window that is already gone is not
-            // an error — the restart is what the caller wanted, and it can
-            // still happen.
-            if let Err(e) = crate::agent::tmux::kill_remote_windows(
-                host,
-                &session.id.to_string(),
-                &session.name,
-                session_panes(&session),
-            ) {
-                tracing::warn!(
-                    "could not kill the remote windows of '{}': {e:#}",
-                    session.name
-                );
-            }
-            let pane = crate::agent::tmux::spawn_window_remote(
-                host,
-                &session.id.to_string(),
-                &plan.window_name,
-                &plan.command,
-                &plan.args,
-                plan.cwd.as_deref(),
-                &plan.env,
-            )
-            .map_err(|e| format!("Failed to re-spawn window on '{}': {e:#}", host.name))?;
-
-            // The new pane is a different one, and the id is how every later
-            // read finds it — leaving the old one persisted would point the
-            // interface at a pane that no longer exists.
-            match record_pane(db, &session, &pane) {
-                Recorded::Stored => {}
-                Recorded::RowGone => {
-                    // Same race as the local branch: a force-deleted row is never
-                    // reaped, so the window this just spawned on the host has to
-                    // be killed here or it runs forever.
-                    if let Err(kill_err) = crate::agent::tmux::kill_remote_windows(
-                        host,
-                        &session.id.to_string(),
-                        &plan.window_name,
-                        crate::agent::tmux::SessionPanes::agent(&pane),
-                    ) {
-                        tracing::warn!(
-                            "could not kill orphaned restart window for '{}' on '{}': {kill_err:#}",
-                            session.name,
-                            host.name
-                        );
-                    }
-                    return Err(Recorded::deleted_mid_restart(&session.name));
-                }
-                // The agent is running on the host; only the row lags.
-                Recorded::WriteFailed(e) => return Err(e),
-            }
-        }
+        None => respawn_local(db, &session, &plan)?,
+        Some(host) => respawn_remote(db, &session, host, &plan)?,
     }
 
     // The agent was re-spawned fresh; clear any stale hook-driven status so it
@@ -533,6 +371,200 @@ pub fn restart_session_headless_with(
     let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);
 
     Ok(RestartReport { hook_failures })
+}
+
+/// Restart through the host's own CLI, then mirror the row back from it.
+fn restart_delegated(
+    db: &Database,
+    session: &SharedSession,
+    host: &crate::session::HostDef,
+    cli: &super::host_cli::CliInfo,
+    if_missing: bool,
+) -> Result<RestartReport, String> {
+    let mut hook_ctx = super::lifecycle_hooks::context_for(session);
+    super::fire_pre(crate::session::HookEvent::PreRestart, &hook_ctx)?;
+    let id = session.id.to_string();
+    let mut args = vec!["session", "restart", &id];
+    if if_missing {
+        args.push("--if-missing");
+    }
+    super::host_cli::run(host, cli, &args)?;
+    if let Err(e) = super::mirror::mirror_host(db, host, cli) {
+        tracing::warn!("mirror of '{}' after restart failed: {e}", host.name);
+    }
+    hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session.id);
+    let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);
+    Ok(RestartReport { hook_failures })
+}
+
+/// Whether a relaunch is owed: never for a parked session, and only when a
+/// listing positively says the window is gone.
+fn relaunch_is_owed(
+    db: &Database,
+    session: &SharedSession,
+    host: Option<&crate::session::HostDef>,
+) -> Result<bool, String> {
+    // "Relaunch what is missing" is what a peer asks after a reboot, and a
+    // parked session is missing on purpose. Only `session start` clears the
+    // mark, so this is the one place that has to check it — refusing here
+    // is what makes `stop` outlive the next sync tick.
+    // Read strictly: a failed read is not "not stopped". Falling open here
+    // relaunched a deliberately parked session under exactly the DB
+    // contention that caused the failure.
+    if db
+        .session_stopped_at(session.id)
+        .map_err(|e| format!("could not read the stopped mark of '{}': {e}", session.name))?
+        .is_some()
+    {
+        tracing::debug!("'{}' is stopped; not relaunching", session.name);
+        return Ok(false);
+    }
+    // Only a listing that positively says the window is *gone* relaunches.
+    // An ambiguous name — several windows, none stamped — reads as running
+    // here on purpose: launching another agent is the expensive mistake.
+    let alive =
+        crate::agent::tmux::agent_window_alive(host, &session.id.to_string(), &session.name)
+            .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
+    if alive {
+        tracing::debug!("'{}' is running; nothing to relaunch", session.name);
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Replace a local session's window with the plan's, and point the row at the
+/// new pane.
+fn respawn_local(db: &Database, session: &SharedSession, plan: &RestartPlan) -> Result<(), String> {
+    // A window that is already gone is not an error — the same rule the
+    // remote branch follows. It is also what makes this the *respawn*
+    // path: a session whose tmux server died is restarted by asking for
+    // exactly this, and refusing because there was nothing to kill would
+    // make the one case that needs it the one case that fails.
+    // Killed by the window's own stamp: the window *name* is not
+    // unique, and killing by name with a duplicate around tears down an
+    // arbitrary one of them.
+    if let Err(e) = crate::agent::tmux::kill_window(&session.id.to_string(), &plan.window_name) {
+        tracing::debug!("no window to kill for '{}': {e:#}", plan.window_name);
+    }
+    // The companion shell goes with it: it was opened beside the agent
+    // this restart replaces, and the interface reopens one on demand.
+    if let Err(e) =
+        crate::agent::tmux::kill_shell_window(&session.id.to_string(), &plan.window_name)
+    {
+        tracing::debug!("no shell window to kill for '{}': {e:#}", plan.window_name);
+    }
+    let pane = crate::agent::tmux::spawn_window(
+        &session.id.to_string(),
+        &plan.window_name,
+        &plan.command,
+        &plan.args,
+        plan.cwd.as_deref(),
+        &plan.env,
+    )
+    .map_err(
+        |e| match crate::agent::preflight::is_missing_dependency(&e) {
+            // Already a sentence naming the binary, the search and the fix;
+            // a prefix in front of it only pushes the fix off the row.
+            true => format!("{e}"),
+            false => format!("Failed to re-spawn tmux window: {e:#}"),
+        },
+    )?;
+
+    // The new pane is a different one, and the id is how every later
+    // read finds it — leaving the old one persisted would point the
+    // interface at a pane that no longer exists. (Empty on psmux, where
+    // the spawn can't report an id; the interface then resolves by
+    // window name as before.)
+    match record_pane(db, session, &pane) {
+        Recorded::Stored => {}
+        Recorded::RowGone => {
+            // The row lost the race (deleted between the load above and
+            // here), so nothing will ever attach to this window — a
+            // force-deleted row is never reaped. Kill what was just
+            // spawned rather than leave it running forever.
+            if let Err(kill_err) =
+                crate::agent::tmux::kill_window(&session.id.to_string(), &plan.window_name)
+            {
+                tracing::warn!(
+                    "could not kill orphaned restart window for '{}': {kill_err:#}",
+                    session.name
+                );
+            }
+            return Err(Recorded::deleted_mid_restart(&session.name));
+        }
+        // The agent is running; only the row lags. Reported, not killed.
+        Recorded::WriteFailed(e) => return Err(e),
+    }
+    Ok(())
+}
+
+/// Replace a remote session's window on its host with the plan's, and point
+/// the row at the new pane.
+fn respawn_remote(
+    db: &Database,
+    session: &SharedSession,
+    host: &crate::session::HostDef,
+    plan: &RestartPlan,
+) -> Result<(), String> {
+    // Before anything is killed or spawned: acting on a socket the host
+    // has not vouched for would tear down nothing and then put a second
+    // agent on a server of our own guessing.
+    crate::agent::tmux::known_host_socket(host)
+        .map_err(|e| format!("cannot restart '{}': {e:#}", session.name))?;
+    // By the window's own stamp, exactly as the local branch: the
+    // host's tmux server is shared with whatever else runs there, so a
+    // name is not ours to claim. A window that is already gone is not
+    // an error — the restart is what the caller wanted, and it can
+    // still happen.
+    if let Err(e) = crate::agent::tmux::kill_remote_windows(
+        host,
+        &session.id.to_string(),
+        &session.name,
+        session_panes(session),
+    ) {
+        tracing::warn!(
+            "could not kill the remote windows of '{}': {e:#}",
+            session.name
+        );
+    }
+    let pane = crate::agent::tmux::spawn_window_remote(
+        host,
+        &session.id.to_string(),
+        &plan.window_name,
+        &plan.command,
+        &plan.args,
+        plan.cwd.as_deref(),
+        &plan.env,
+    )
+    .map_err(|e| format!("Failed to re-spawn window on '{}': {e:#}", host.name))?;
+
+    // The new pane is a different one, and the id is how every later
+    // read finds it — leaving the old one persisted would point the
+    // interface at a pane that no longer exists.
+    match record_pane(db, session, &pane) {
+        Recorded::Stored => {}
+        Recorded::RowGone => {
+            // Same race as the local branch: a force-deleted row is never
+            // reaped, so the window this just spawned on the host has to
+            // be killed here or it runs forever.
+            if let Err(kill_err) = crate::agent::tmux::kill_remote_windows(
+                host,
+                &session.id.to_string(),
+                &plan.window_name,
+                crate::agent::tmux::SessionPanes::agent(&pane),
+            ) {
+                tracing::warn!(
+                    "could not kill orphaned restart window for '{}' on '{}': {kill_err:#}",
+                    session.name,
+                    host.name
+                );
+            }
+            return Err(Recorded::deleted_mid_restart(&session.name));
+        }
+        // The agent is running on the host; only the row lags.
+        Recorded::WriteFailed(e) => return Err(e),
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -271,45 +271,7 @@ pub fn materialize(dir: &Path) -> Report {
     let mut manifest = read_manifest(dir);
 
     for (relative, contents) in BUNDLED {
-        let path = dir.join(relative);
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                report.errors.push(format!("{}: {e}", parent.display()));
-                continue;
-            }
-        }
-
-        let existing = std::fs::read_to_string(&path).ok();
-        let action = decide(
-            existing.as_deref(),
-            manifest
-                .get(*relative)
-                .map_or(Delivered::Never, Record::delivered),
-            contents,
-        );
-
-        match action {
-            Action::Leave => {}
-            Action::Settle => {
-                manifest.insert((*relative).to_string(), Record::Written(digest(contents)));
-            }
-            Action::Tombstone => {
-                manifest.insert((*relative).to_string(), Record::tombstone());
-                report.removed.push((*relative).to_string());
-            }
-            Action::Preserve => report.preserved.push((*relative).to_string()),
-            Action::Write | Action::Update => match std::fs::write(&path, contents) {
-                Ok(()) => {
-                    manifest.insert((*relative).to_string(), Record::Written(digest(contents)));
-                    if action == Action::Write {
-                        report.written.push((*relative).to_string());
-                    } else {
-                        report.updated.push((*relative).to_string());
-                    }
-                }
-                Err(e) => report.errors.push(format!("{}: {e}", path.display())),
-            },
-        }
+        deliver(dir, relative, contents, &mut manifest, &mut report);
     }
 
     retire(dir, &mut manifest, &mut report);
@@ -318,6 +280,56 @@ pub fn materialize(dir: &Path) -> Report {
         report.errors.push(e);
     }
     report
+}
+
+/// Bring one bundled file in `dir` into line with what the manifest recorded
+/// delivering, and note what was done.
+fn deliver(
+    dir: &Path,
+    relative: &str,
+    contents: &str,
+    manifest: &mut BTreeMap<String, Record>,
+    report: &mut Report,
+) {
+    let path = dir.join(relative);
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            report.errors.push(format!("{}: {e}", parent.display()));
+            return;
+        }
+    }
+
+    let existing = std::fs::read_to_string(&path).ok();
+    let action = decide(
+        existing.as_deref(),
+        manifest
+            .get(relative)
+            .map_or(Delivered::Never, Record::delivered),
+        contents,
+    );
+
+    match action {
+        Action::Leave => {}
+        Action::Settle => {
+            manifest.insert(relative.to_string(), Record::Written(digest(contents)));
+        }
+        Action::Tombstone => {
+            manifest.insert(relative.to_string(), Record::tombstone());
+            report.removed.push(relative.to_string());
+        }
+        Action::Preserve => report.preserved.push(relative.to_string()),
+        Action::Write | Action::Update => match std::fs::write(&path, contents) {
+            Ok(()) => {
+                manifest.insert(relative.to_string(), Record::Written(digest(contents)));
+                if action == Action::Write {
+                    report.written.push(relative.to_string());
+                } else {
+                    report.updated.push(relative.to_string());
+                }
+            }
+            Err(e) => report.errors.push(format!("{}: {e}", path.display())),
+        },
+    }
 }
 
 /// Take back what we shipped and no longer ship.
@@ -431,48 +443,43 @@ fn lua_files(root: &Path, depth: usize) -> Vec<String> {
     out
 }
 
-/// Where each file of the interface in `dir` came from.
-///
-/// Keyed by path relative to `dir`. Covers the three places the interface lives
-/// — the arrangement, `lib/` and `plugins/` — plus every bundled file the user
-/// deleted, which by definition is not on disk to be found.
-pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
-    let bundled: BTreeMap<&str, &str> = BUNDLED.iter().copied().collect();
-    // A directory with no lock has nothing installed, and a malformed one must not
-    // make the inventory unavailable — the inventory is the recovery tool, so it
-    // degrades to "I do not know where this came from" rather than refusing.
-    let lock = super::packages::read_lock(dir).unwrap_or_default();
-    let spec = super::packages::read_spec(dir).unwrap_or_default();
-    let mut out = BTreeMap::new();
-
-    let mut classify = |relative: String, path: &Path| {
-        let Ok(current) = std::fs::read_to_string(path) else {
-            return;
-        };
-        let source = match bundled.get(relative.as_str()) {
-            Some(shipped) if *shipped == current => Source::Bundled,
-            Some(_) => Source::Edited,
-            // Shipped takes precedence deliberately: a package that delivered over
-            // a bundled path is still, to delivery, a shipped file that changed —
-            // and `install` refuses that destination anyway.
-            None => match lock.covering(&relative) {
-                Some(entry) => {
-                    let src = entry.src.clone();
-                    // A managed file whose contents are not the ones its version
-                    // delivered. Locally edited, or re-tagged upstream; the
-                    // inventory cannot tell which, and says only that they differ.
-                    if entry.digest(&relative) == Some(digest(&current).as_str()) {
-                        Source::Installed { src }
-                    } else {
-                        Source::InstalledEdited { src }
-                    }
+/// Where one file's `current` contents came from.
+fn source_of(
+    relative: &str,
+    current: &str,
+    bundled: &BTreeMap<&str, &str>,
+    lock: &crate::session::plugin_spec::PluginLock,
+) -> Source {
+    match bundled.get(relative) {
+        Some(shipped) if *shipped == current => Source::Bundled,
+        Some(_) => Source::Edited,
+        // Shipped takes precedence deliberately: a package that delivered over
+        // a bundled path is still, to delivery, a shipped file that changed —
+        // and `install` refuses that destination anyway.
+        None => match lock.covering(relative) {
+            Some(entry) => {
+                let src = entry.src.clone();
+                // A managed file whose contents are not the ones its version
+                // delivered. Locally edited, or re-tagged upstream; the
+                // inventory cannot tell which, and says only that they differ.
+                if entry.digest(relative) == Some(digest(current).as_str()) {
+                    Source::Installed { src }
+                } else {
+                    Source::InstalledEdited { src }
                 }
-                None => Source::User,
-            },
-        };
-        out.insert(relative, source);
-    };
+            }
+            None => Source::User,
+        },
+    }
+}
 
+/// Every file of the interface in `dir` that [`sources`] classifies from its
+/// contents, as `(relative, path)`, in the order it classifies them.
+fn interface_files(
+    dir: &Path,
+    spec: &crate::session::plugin_spec::PluginSpec,
+) -> Vec<(String, PathBuf)> {
+    let mut files = Vec::new();
     // Every top-level file we ship, not `layout.lua` by name: a shipped file the
     // inventory cannot see is one the Interface tab cannot restore, and the tab's
     // whole claim is that it lists every file.
@@ -482,7 +489,7 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
         }
         let path = dir.join(relative);
         if path.is_file() {
-            classify((*relative).to_string(), &path);
+            files.push(((*relative).to_string(), path));
         }
     }
     // `plugins/` flat, `lib/` deep. Not an inconsistency: `build` reads only the
@@ -492,10 +499,10 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
     // requirable and is where a package puts its own modules without colliding
     // with `lib/theme.lua`.
     for name in lua_files(&dir.join("plugins"), 1) {
-        classify(format!("plugins/{name}"), &dir.join("plugins").join(&name));
+        files.push((format!("plugins/{name}"), dir.join("plugins").join(&name)));
     }
     for name in lua_files(&dir.join("lib"), LIB_DEPTH) {
-        classify(format!("lib/{name}"), &dir.join("lib").join(&name));
+        files.push((format!("lib/{name}"), dir.join("lib").join(&name)));
     }
 
     // Panes the spec names outside `plugins/` — a plugin obtained as a repository
@@ -512,8 +519,32 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
         }
         let path = dir.join(&entry.file);
         if path.is_file() {
-            classify(entry.file.clone(), &path);
+            files.push((entry.file.clone(), path));
         }
+    }
+    files
+}
+
+/// Where each file of the interface in `dir` came from.
+///
+/// Keyed by path relative to `dir`. Covers the three places the interface lives
+/// — the arrangement, `lib/` and `plugins/` — plus every bundled file the user
+/// deleted, which by definition is not on disk to be found.
+pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
+    let bundled: BTreeMap<&str, &str> = BUNDLED.iter().copied().collect();
+    // A directory with no lock has nothing installed, and a malformed one must not
+    // make the inventory unavailable — the inventory is the recovery tool, so it
+    // degrades to "I do not know where this came from" rather than refusing.
+    let lock = super::packages::read_lock(dir).unwrap_or_default();
+    let spec = super::packages::read_spec(dir).unwrap_or_default();
+    let mut out = BTreeMap::new();
+
+    for (relative, path) in interface_files(dir, &spec) {
+        let Ok(current) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let source = source_of(&relative, &current, &bundled, &lock);
+        out.insert(relative, source);
     }
 
     // The spec, which is part of what the interface is made of and is the one file
