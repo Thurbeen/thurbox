@@ -51,8 +51,10 @@ impl App {
     ///
     /// The one exception is the mouse text selection: a drag mutates it mid-batch,
     /// and a chord queued behind the drag must read the finished selection, not
-    /// the one the batch published at its start. So a left drag re-publishes when
-    /// its text moves — see the mouse arm and `refresh_selection_text`.
+    /// the one the batch published at its start. So a left drag patches just the
+    /// published `selection` scalar when its text moves — not a full republish,
+    /// which would rerun per crossed cell. See the mouse arm,
+    /// `refresh_selection_text` and `LuaHost::set_published_selection`.
     pub(crate) fn drain_input(&mut self, input_failures: &mut u32) -> Result<(), Box<dyn Error>> {
         let mut published = false;
         let mut waited = false;
@@ -124,10 +126,14 @@ impl App {
                     // The drag builds the selection here, but `selected_text` is
                     // only recomputed at paint time — so a chord queued behind it
                     // in this same batch would read the pre-drag selection.
-                    // Refresh from the grid now and force the next event to
-                    // republish it. See `refresh_selection_text`.
+                    // Refresh from the grid now and patch just the published
+                    // scalar: a multi-cell drag reports once per crossed cell, so
+                    // forcing a full republish here would rerun terminal sync,
+                    // links, search, trust and inventory per cell. See
+                    // `refresh_selection_text` and `LuaHost::set_published_selection`.
                     if may_move_selection && self.refresh_selection_text() {
-                        published = false;
+                        self.host
+                            .set_published_selection(self.selected_text.as_deref().unwrap_or(""));
                     }
                     self.note_input();
                 }

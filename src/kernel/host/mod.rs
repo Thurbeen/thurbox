@@ -1302,6 +1302,23 @@ impl LuaHost {
         }
     }
 
+    /// Overwrite just `thurbox.selection` on the already-published snapshot.
+    ///
+    /// A drag mutates the selection mid input-batch, and a chord queued behind
+    /// it in the same batch must read the finished text — but rerunning the
+    /// whole republish per drag report is the expensive path (terminal sync,
+    /// links, search, trust, inventory), and none of that moved. This patches
+    /// the one scalar in place, exactly as a full publish writes it (`raw_set`,
+    /// so no `state_version` bump — a pure pane reading `selection` is
+    /// deliberately not invalidated, matching the field's last-painted
+    /// contract). A no-op before the first publish, when the global is still
+    /// absent.
+    pub fn set_published_selection(&self, selection: &str) {
+        if let Ok(table) = self.lua.globals().get::<Table>("thurbox") {
+            let _ = table.raw_set("selection", selection);
+        }
+    }
+
     /// Put a boolean into the shared `store`.
     ///
     /// The counterpart to [`Self::shared_bool`], and used for the same panel
