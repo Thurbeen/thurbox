@@ -1,6 +1,22 @@
 mod migrations;
 
-use migrations::*;
+use migrations::{
+    migrate_v10_containers, migrate_v11_containerfile, migrate_v12_scheduled_commands,
+    migrate_v13_roles, migrate_v14_mcp_servers, migrate_v15_nullable_project_id,
+    migrate_v16_drop_projects, migrate_v17_skills, migrate_v19_plugins, migrate_v20_profiles,
+    migrate_v21_drop_model, migrate_v22_drop_subsystems, migrate_v23_generic_agent,
+    migrate_v24_automations, migrate_v25_tasks, migrate_v26_task_description,
+    migrate_v27_repo_parent_bookmarks, migrate_v28_run_related_session,
+    migrate_v30_parent_session_id, migrate_v31_display_order, migrate_v32_session_messages,
+    migrate_v33_action_extra_repos, migrate_v34_hook_status, migrate_v35_tasks_external_index,
+    migrate_v36_action_command, migrate_v37_force_deleted, migrate_v38_code_review,
+    migrate_v39_bookmark_host, migrate_v3_additional_dirs, migrate_v40_bookmark_git_kind,
+    migrate_v41_joinable, migrate_v42_worktree_provenance, migrate_v43_session_events,
+    migrate_v44_reports_as, migrate_v45_host_updated_at, migrate_v46_teardown_owed,
+    migrate_v47_wsl_loopback_repair_owed, migrate_v4_project_mcp_servers,
+    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
+    migrate_v8_vms, migrate_v9_agent_session_id,
+};
 
 use rusqlite::Connection;
 

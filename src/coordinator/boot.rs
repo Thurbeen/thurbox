@@ -6,7 +6,27 @@
 //! the interface takes the terminal, the consent gate before the interface is
 //! even built.
 
-use super::*;
+use std::error::Error;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use ratatui::layout::Rect;
+
+use thurbox::kernel::command::CommandBus;
+use thurbox::kernel::diff::DiffStore;
+use thurbox::kernel::host::LuaHost;
+use thurbox::kernel::metrics::Metrics;
+use thurbox::kernel::modals::Modals;
+use thurbox::kernel::notify::Notifier;
+use thurbox::kernel::perf::Counters;
+use thurbox::kernel::registry::Registry;
+use thurbox::kernel::snapshot::SnapshotStore;
+use thurbox::kernel::terminal::Terminals;
+use thurbox::kernel::theme::Themes;
+use thurbox::kernel::watch::Watcher;
+
+use super::{enable_mouse_clicks, push_keyboard_enhancement, restore_terminal, snapshots_db};
+use crate::App;
 
 pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Put the terminal back before the panic message prints.

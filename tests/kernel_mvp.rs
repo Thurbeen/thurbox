@@ -1352,7 +1352,7 @@ fn hardcodes_colour(line: &str) -> bool {
     let bytes: Vec<char> = line.chars().collect();
     bytes
         .windows(8)
-        .any(|w| w[0] == '"' && w[1] == '#' && w[2..8].iter().all(|c| c.is_ascii_hexdigit()))
+        .any(|w| w[0] == '"' && w[1] == '#' && w[2..8].iter().all(char::is_ascii_hexdigit))
 }
 
 #[test]

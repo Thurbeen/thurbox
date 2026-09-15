@@ -15,7 +15,16 @@
 //! here** — each workaround has non-obvious quoting and tokenizing constraints,
 //! and delivery is probed by `scripts/dev/e2e/windows-vm.sh test`.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
+
+use anyhow::{Context, Result};
+
+use super::host_launcher;
+use crate::session::HostDef;
+use crate::shell::posix_quote;
 
 /// Cache of resolved host `$HOME` directories, keyed by the host's backend name
 /// (`ssh:<name>` / `wsl:<name>`), so we only pay one round-trip per host. A WSL

@@ -6,7 +6,12 @@
 //! not rebuilt at all (ADR-P16), and the three reads that touch a screen or the
 //! disk carry an age rather than a "we have an answer" flag (ADR-P14).
 
-use super::*;
+use std::time::Instant;
+
+use thurbox::kernel::metrics::Subject;
+
+use super::browser_available;
+use crate::{App, LINK_SCAN_INTERVAL};
 
 impl App {
     /// Rebuild everything a plugin can read.
@@ -378,6 +383,9 @@ fn link_scan_due(last_scan: Option<Instant>, now: Instant) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use crate::{FORCE_REDRAW_INTERVAL, OUTPUT_FRAME_INTERVAL};
 
     #[test]
     fn a_surface_never_scanned_is_due_at_once() {

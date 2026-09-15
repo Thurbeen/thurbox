@@ -5,7 +5,19 @@
 //! plugins, the one painted last — wins. Bands keep their own list: a click on
 //! one must not focus a pane, and there is no plugin index to record.
 
-use super::*;
+use std::time::{Duration, Instant};
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+
+use thurbox::kernel::bands;
+use thurbox::kernel::host::{Click, Scroll};
+use thurbox::kernel::modals::ModalKind;
+use thurbox::kernel::node::ClickVerb;
+use thurbox::kernel::selection::{PaneBounds, Selection, TermPos};
+
+use super::{key_event_from_chord, open_url};
+use crate::{App, ClickTarget, PointerGrab};
 
 impl App {
     pub(crate) fn on_mouse(&mut self, mouse: MouseEvent) {
@@ -807,6 +819,7 @@ impl WheelNotch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use thurbox::kernel::node::Identity;
 
     fn painted_by(plugin: usize) -> Option<ClickTarget> {
         Some(ClickTarget {

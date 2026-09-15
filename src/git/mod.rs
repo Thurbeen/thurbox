@@ -7,19 +7,6 @@
 //! `worktree` creates, syncs and removes the checkouts sessions live in.
 //! `git::*` is one flat surface; no caller names a submodule.
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
-
-use anyhow::{Context, Result};
-use tracing::warn;
-
-use crate::paths;
-use crate::session::HostDef;
-use crate::shell::posix_quote;
-
 mod command;
 mod diff;
 mod discovery;

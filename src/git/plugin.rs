@@ -6,7 +6,11 @@
 //! working copy keeps its `.git`, which is what makes `update` a fetch and lets
 //! git own "your edits are yours" — a dirty tree is never moved.
 
-use super::*;
+use std::path::Path;
+
+use anyhow::{Context, Result};
+
+use super::{git_command, git_program, non_interactive, reportable_stderr, run_git};
 
 /// Does this ref name a commit rather than a branch or a tag?
 ///

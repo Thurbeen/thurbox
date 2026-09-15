@@ -28,7 +28,18 @@ pub(crate) mod mouse;
 pub(crate) mod paste;
 mod publish;
 
-use super::*;
+use std::error::Error;
+use std::time::{Duration, Instant};
+
+use ratatui::DefaultTerminal;
+
+use thurbox::kernel::bands::Level;
+use thurbox::kernel::perf::Counters;
+
+use crate::{
+    App, DEBOUNCE, IDLE_TICK, PERF_PUBLISH_INTERVAL, PERF_WINDOW_TICKS, QUIESCENT_AFTER,
+    REAP_INTERVAL, TICK,
+};
 
 // The chrome helpers keep their bare names at every call site in this
 // directory, which is where all of them live.

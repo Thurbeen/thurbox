@@ -332,7 +332,7 @@ fn collect(mut collector: Box<sysinfo::System>, subjects: Vec<SampleInput>) -> S
         if let Some((backend, pane_id)) = pane {
             // Keyed by the Arc's address: backends carry no id of their own
             // here, and two subjects on one host share the same Arc.
-            let key = Arc::as_ptr(backend) as *const () as usize;
+            let key = Arc::as_ptr(backend).cast::<()>() as usize;
             by_backend
                 .entry(key)
                 .or_insert_with(|| (Arc::clone(backend), Vec::new()))

@@ -14,30 +14,22 @@
 mod coordinator;
 
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
-};
 use ratatui::layout::Rect;
-use ratatui::{DefaultTerminal, Frame};
 
-use thurbox::agent::input::key_to_bytes;
-use thurbox::kernel::bands::{self, Band, BandState, Level};
+use thurbox::kernel::bands::{Band, Level};
 use thurbox::kernel::command::CommandBus;
 use thurbox::kernel::diff::DiffStore;
-use thurbox::kernel::host::{Click, KeyPress, LuaHost, PluginError, RenderContext, Scroll};
-use thurbox::kernel::layout::{resolve, SlotMode};
-use thurbox::kernel::metrics::{Metrics, Subject};
-use thurbox::kernel::modals::{ModalKind, Modals};
-use thurbox::kernel::node::{Axis, ClickVerb, Identity};
+use thurbox::kernel::host::{LuaHost, PluginError};
+use thurbox::kernel::metrics::Metrics;
+use thurbox::kernel::modals::Modals;
+use thurbox::kernel::node::Identity;
 use thurbox::kernel::notify::Notifier;
-use thurbox::kernel::paint;
 use thurbox::kernel::perf::Counters;
-use thurbox::kernel::registry::{canonical_chord, is_ctrl_letter_chord, Registry};
-use thurbox::kernel::selection::{PaneBounds, Selection, TermPos};
+use thurbox::kernel::registry::Registry;
+use thurbox::kernel::selection::Selection;
 use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::kernel::terminal::Terminals;
 use thurbox::kernel::theme::Themes;

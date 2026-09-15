@@ -14,9 +14,21 @@
 //! `Cmd+C` on a Mac, which is the point of carrying the Command modifier at
 //! all.
 
-use super::paste::Input;
-use super::*;
+use std::error::Error;
+use std::time::Instant;
+
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+use thurbox::agent::input::key_to_bytes;
+use thurbox::kernel::bands::Level;
 use thurbox::kernel::clipboard;
+use thurbox::kernel::host::KeyPress;
+use thurbox::kernel::modals::ModalKind;
+use thurbox::kernel::registry::{canonical_chord, is_ctrl_letter_chord};
+
+use super::paste::Input;
+use super::{next_event, to_press};
+use crate::{App, INPUT_FAILURE_LIMIT};
 
 impl App {
     /// Drain EVERY pending event, not one per iteration, and dispatch each.

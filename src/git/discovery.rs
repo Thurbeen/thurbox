@@ -6,7 +6,19 @@
 //! separate from the scripts on purpose: they are the half worth unit-testing,
 //! and they are what the two script flavours have to agree on.
 
-use super::*;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Mutex;
+
+use anyhow::{Context, Result};
+
+use super::{
+    expand_remote_tilde, git_program, host_probe, powershell_quote, remote_output_or_stderr,
+};
+use crate::paths;
+use crate::session::HostDef;
+use crate::shell::posix_quote;
 
 /// Global cache for repo display names (path → name).
 pub(super) static REPO_NAME_CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, String>>> =
