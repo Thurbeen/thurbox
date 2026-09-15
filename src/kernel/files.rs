@@ -81,8 +81,8 @@ pub fn resolve(root: &Path, relative: &str) -> Result<PathBuf, String> {
 /// Entries directly under `relative`, sorted directories-first then by name.
 ///
 /// A symlink to a directory counts as a directory, so the flag agrees with what
-/// [`list`] and [`read`] do with that same path. A plugin has no filesystem of
-/// its own, so this flag is the only thing it can ask.
+/// listing through that path and [`read`] already do with it. A plugin has no
+/// filesystem of its own, so this flag is the only thing it can ask.
 pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
     let path = resolve(root, relative)?;
     let read = std::fs::read_dir(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -96,8 +96,9 @@ pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
         // `DirEntry::file_type` describes the link rather than its target, so a
         // link to a directory was handed to a plugin as a file while `list` and
         // `read` through that same path both treated it as the directory it
-        // points at. Only a link pays for the second syscall, which keeps a
-        // node_modules-sized listing at one call per entry.
+        // points at. Gating on the link keeps the cost where the question is:
+        // an ordinary entry in a node_modules-sized listing pays nothing it
+        // did not pay before.
         //
         // Asking the target's type is not following the link anywhere: `resolve`
         // runs on every path a caller names and still refuses one that lands
