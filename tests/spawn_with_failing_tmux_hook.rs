@@ -18,6 +18,14 @@
 //! **server-global**: borrowing another suite's socket would leave every spawn
 //! in it answering 127 for reasons of its own.
 //!
+//! Each test gets its own server, not a shared one: `cargo nextest` runs every
+//! test in its own process and each sets `TMUX_TMPDIR` to its own tempdir, so
+//! the socket *name* they share resolves to a different path per test — the
+//! same shape as `tests/window_remain_on_exit.rs`. Under plain `cargo test`
+//! that does not hold: one process, one `TMUX_TMPDIR`, and these tests will
+//! race each other's `kill-server`. Run them with nextest, which is what
+//! `.publish.yaml`, CI and the pre-commit hook all use.
+//!
 //! Skipped when tmux is absent: a missing multiplexer is an environment fact.
 
 #![cfg(unix)]
