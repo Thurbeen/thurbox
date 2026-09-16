@@ -594,7 +594,10 @@ winning — `merge-base --is-ancestor` (merge commit, fast-forward), `diff
 --quiet` against the default (an identical tree, whichever route the content
 took), `git cherry <default> HEAD <base>` with every line `-` (rebase-and-merge,
 GitLab semi-linear merge), and `git cherry` against the branch squared off onto
-its merge base by `commit-tree` (squash). Local refs only, so it is
+its merge base by `commit-tree` (squash) — written with a pinned identity and a
+zero date (`git::diff::PROBE_IDENT`), so that probe is a pure function of
+`(tree, parent)` and re-asking rewrites the one object instead of leaving a
+dangling commit per ask. Local refs only, so it is
 forge-agnostic; `nil` means unknown and keeps the question.
 The answer is cached against the **commit** it was computed for (`branch.oid`,
 already free from the same `status --porcelain=v2 --branch` run), never against

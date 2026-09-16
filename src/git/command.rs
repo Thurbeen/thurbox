@@ -105,7 +105,28 @@ pub(super) fn run_git_capture_on(
     args: &[&str],
     cwd: &Path,
 ) -> Option<String> {
-    let output = git_command(host, cwd, args)
+    capture(git_command(host, cwd, args))
+}
+
+/// [`run_git_capture`] with `env` set on the invocation.
+///
+/// Local only: the remote form hands its arguments to a login shell, which an
+/// environment would have to be quoted into as well, and the one caller —
+/// git's own `GIT_AUTHOR_*`/`GIT_COMMITTER_*` (see `git::diff::PROBE_IDENT`) —
+/// asks about the local worktree.
+pub(super) fn run_git_capture_env(
+    args: &[&str],
+    cwd: &Path,
+    env: &[(&str, &str)],
+) -> Option<String> {
+    let mut cmd = git_command(None, cwd, args);
+    cmd.envs(env.iter().copied());
+    capture(cmd)
+}
+
+/// Run `cmd`, returning its stdout on success and `None` on any failure.
+fn capture(mut cmd: Command) -> Option<String> {
+    let output = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()

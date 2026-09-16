@@ -1521,6 +1521,70 @@ fn an_unmerged_branch_reports_itself_unmerged() {
     assert_eq!(merged_into_default(&work), Some(false));
 }
 
+/// How many loose objects the repository at `dir` holds. `git count-objects`
+/// counts exactly those — the ones a probe commit adds and a pack never holds.
+fn loose_objects(dir: &Path) -> usize {
+    let out = run_git_capture(&["count-objects"], dir).expect("count-objects");
+    out.split_whitespace()
+        .next()
+        .and_then(|n| n.parse().ok())
+        .expect("count-objects prints the loose count first")
+}
+
+#[test]
+fn re_statting_an_unmerged_worktree_writes_no_further_objects() {
+    // The squash check squares the branch off with `commit-tree`, and this is
+    // the caller that re-asks: `worktree_stats` runs every five seconds for as
+    // long as a session sits on unmerged work, `merged: Some(false)` being the
+    // one answer never cached. So the probe commit has to hash the same every
+    // time, or the poll leaves a loose object every five seconds: 28k of them
+    // in one repository here, past the point where `git gc --auto` gives up and
+    // writes `.git/gc.log`.
+    //
+    // Deliberately `worktree_stats` rather than `merged_into_default`: the leak
+    // is a property of the polled path, and a future git call added to that
+    // path has to answer to this test too.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+    git_in(&work, &["checkout", "-q", "-b", "wip", "origin/main"]);
+    commit_file(&work, "wip.txt", "wip", "work in progress");
+
+    let stats = worktree_stats(&work, None).expect("a worktree");
+    assert_eq!(
+        stats.merged,
+        Some(false),
+        "the stat has to reach the squash check for this test to mean anything"
+    );
+    let settled = loose_objects(&work);
+
+    // Across a tick of the clock, and that is the whole test: a git commit
+    // timestamp is whole seconds, so a probe that inherits "now" hashes the
+    // same within one second and differently after it. Re-asking straight away
+    // writes one object either way and the bug hides.
+    sleep_past_the_second();
+    assert_eq!(
+        worktree_stats(&work, None).and_then(|s| s.merged),
+        Some(false)
+    );
+
+    assert_eq!(
+        loose_objects(&work),
+        settled,
+        "the same question must reuse the same probe commit"
+    );
+}
+
+/// Sleep just past the next whole second, so a git timestamp taken after this
+/// returns differs from one taken before it. Under half a second on average,
+/// rather than the flat second a fixed sleep would cost.
+fn sleep_past_the_second() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch");
+    let to_the_tick = Duration::from_secs(1) - Duration::from_nanos(now.subsec_nanos().into());
+    std::thread::sleep(to_the_tick + Duration::from_millis(20));
+}
+
 #[test]
 fn a_branch_already_on_the_default_reports_itself_merged() {
     // Nothing of its own: the fast path (`--is-ancestor`) answers before the
