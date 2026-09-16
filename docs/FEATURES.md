@@ -377,8 +377,9 @@ an uninstalled tmux plugin calls a script that is no longer on the disk,
 `/bin/sh` answers 127, and the client exits 127 although the window was created
 and its pane id already printed — with nothing on stderr to say so. So the
 answer to `-P` outranks the status: where there is a pane id the window exists
-and the session keeps it, with a warning naming the failing hook (unset it; the
-server holding it holds every live session too). Only a failure with no pane id
+and the session keeps it, with a warning that a hook failed and that
+`show-hooks -g` on that socket names which (unset it; the server holding it
+holds every live session too, so it is not one to kill). Only a failure with no pane id
 is a failure. This is also why the same server could refuse to create a session
 and serve everything else — a restart, a plugin program, the companion shell
 pane all go over control mode, whose reply block carries the `-P` answer alone
