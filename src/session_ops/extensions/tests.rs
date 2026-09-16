@@ -713,17 +713,18 @@ requires_dir = '{agent_dir}'
     assert_eq!(again.config_merges_skipped, [settings.to_string_lossy()]);
 }
 
-/// The install-time prune is scoped to what the payload merges, and this is
-/// why. `extensions/hooks/README.md` tells a user to wire an agent thurbox does
-/// not instrument by calling `session signal` themselves — and for a shared
-/// file like `~/.gemini/settings.json`, the obvious place to put that is the
-/// same file. A document-wide prune identifies our entries by that very command
-/// string, so it would delete theirs; and because install runs at startup and
-/// on every heartbeat tick, it would delete it again every time they put it
-/// back. Uninstall may take that trade once, on request. Install may not take
-/// it forever.
+/// Install identifies its own entries by the ownership stamp, and this is why.
+///
+/// `extensions/hooks/README.md` invites a user to wire an agent thurbox does
+/// not instrument by calling `session signal` themselves, in whichever file
+/// that agent reads — which for antigravity is the same shared
+/// `~/.gemini/settings.json` thurbox merges into. Identifying our entries by
+/// that command would delete theirs, and because install runs at startup and on
+/// every heartbeat tick it would delete it again every time they put it back.
+/// The stamp is ours alone, so theirs survives — including under an event our
+/// own payload also owns, which a prune scoped by event could not manage.
 #[test]
-fn json_config_merge_keeps_a_user_signal_hook_outside_what_it_merges() {
+fn json_config_merge_keeps_a_user_signal_hook_even_under_an_event_it_owns() {
     let temp = tempfile::TempDir::new().unwrap();
     let _guard = crate::paths::TestPathGuard::new(temp.path());
     let db = Database::open_in_memory().unwrap();
@@ -731,17 +732,27 @@ fn json_config_merge_keeps_a_user_signal_hook_outside_what_it_merges() {
     let agent_dir = temp.path().join("dotgemini");
     std::fs::create_dir_all(&agent_dir).unwrap();
     let settings = agent_dir.join("settings.json");
-    // Their own wiring, at an event our payload does not merge into, plus a
-    // setting that merely mentions the command in passing.
+    // Theirs, unstamped: one under an event we own, one under an event we do
+    // not, and a setting that merely mentions the command in passing.
     let users_own = serde_json::json!({
         "hooks": {
+            // Added after the first install, below: this is the hook a user
+            // writes on a thurbox that already owns the file.
+            "PreToolUse": [
+                {"hooks": [{"type": "command", "command": "thurbox-cli session signal --state working  # mine"}]}
+            ],
             "AfterAgent": [
                 {"hooks": [{"type": "command", "command": "thurbox-cli session signal --state done"}]}
             ]
         },
         "customCommands": {"status": "thurbox-cli session signal --state working"}
     });
-    std::fs::write(&settings, users_own.to_string()).unwrap();
+    let mut seeded = users_own.clone();
+    seeded["hooks"]
+        .as_object_mut()
+        .unwrap()
+        .remove("PreToolUse");
+    std::fs::write(&settings, seeded.to_string()).unwrap();
     let home = temp.path().join("hookshome");
 
     let src = tempfile::TempDir::new().unwrap();
@@ -764,38 +775,185 @@ requires_dir = '{agent_dir}'
     .unwrap();
     std::fs::write(
         src.path().join("gemini-hooks.json"),
-        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state working || true"}]}]}}"#,
+        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state working || true  # managed by thurbox `extension install`"}]}]}}"#,
     )
     .unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    // Twice: the second install is the heartbeat tick that a document-wide
-    // prune would use to delete their hook a second time.
+    // Establish our stamp first — after this the file is one thurbox has
+    // written, which is the state every install but the very first one sees.
+    install_extension(&db, &target, None, false).unwrap();
+
+    // Now they add a hook of their own, under the event we own.
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    let theirs = users_own["hooks"]["PreToolUse"][0].clone();
+    doc["hooks"]["PreToolUse"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, theirs.clone());
+    std::fs::write(&settings, doc.to_string()).unwrap();
+
+    // Twice: the second install is the heartbeat tick that would delete their
+    // hook a second time if ownership were decided by the command's content.
     for pass in 1..=2 {
         install_extension(&db, &target, None, false).unwrap();
         let doc: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let pre = doc["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(
+            pre.len(),
+            2,
+            "pass {pass}: theirs plus exactly one of ours: {doc:#}"
+        );
+        assert_eq!(
+            pre[0], theirs,
+            "pass {pass}: their hook under an event we own was pruned"
+        );
         assert_eq!(
             doc["hooks"]["AfterAgent"], users_own["hooks"]["AfterAgent"],
-            "pass {pass}: the user's own signal hook was pruned"
+            "pass {pass}: their hook under an event we do not own was pruned"
         );
         assert_eq!(
             doc["customCommands"], users_own["customCommands"],
             "pass {pass}: a setting that merely mentions the command was pruned"
         );
-        assert!(
-            doc["hooks"]["PreToolUse"].is_array(),
-            "pass {pass}: ours merged in"
-        );
     }
 
-    // Uninstall is the explicit, one-shot action, and it stays document-wide so
-    // no entry of ours is ever orphaned — their hook goes with it, which is the
-    // long-standing trade this test is not changing.
+    // Uninstall is the explicit, one-shot action and stays broad, so nothing of
+    // ours is orphaned — and it still takes theirs, which is unchanged.
     uninstall_extension(&db, "hooks", false).unwrap();
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
     assert!(doc.get("hooks").is_none(), "ours came back out: {doc}");
+}
+
+/// A payload that renames or drops an event must take its old entry with it.
+///
+/// The stale one is not inert: it holds the command the rename was fixing, and
+/// for codex that command is what fails the turn. A prune that followed only
+/// the new payload's own keys would never reach the old event, so the broken
+/// entry would sit beside the fixed one for good.
+#[test]
+fn json_config_merge_removes_our_entry_from_an_event_the_payload_dropped() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+
+    let agent_dir = temp.path().join("dotcodex");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let settings = agent_dir.join("hooks.json");
+    let home = temp.path().join("hookshome");
+
+    let src = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        src.path().join("extension.toml"),
+        format!(
+            r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{settings}'
+source = "codex-hooks.json"
+requires_dir = '{agent_dir}'
+"#,
+            home = home.display(),
+            settings = settings.display(),
+            agent_dir = agent_dir.display(),
+        ),
+    )
+    .unwrap();
+    let payload = |event: &str, state: &str| {
+        format!(
+            r#"{{"hooks":{{"{event}":[{{"hooks":[{{"type":"command","command":"thurbox-cli session signal --state {state} || true  # managed by thurbox `extension install`"}}]}}]}}}}"#
+        )
+    };
+    std::fs::write(
+        src.path().join("codex-hooks.json"),
+        payload("AgentStop", "done"),
+    )
+    .unwrap();
+    let target = src.path().to_string_lossy().to_string();
+    install_extension(&db, &target, None, false).unwrap();
+
+    // The next release learns the event is really called `Stop`.
+    std::fs::write(src.path().join("codex-hooks.json"), payload("Stop", "done")).unwrap();
+    install_extension(&db, &target, None, false).unwrap();
+
+    let updated = std::fs::read_to_string(&settings).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&updated).expect("still valid JSON");
+    assert!(
+        doc["hooks"].get("AgentStop").is_none(),
+        "the renamed-away event kept our entry: {updated}"
+    );
+    assert!(
+        doc["hooks"]["Stop"].is_array(),
+        "the new event was merged: {updated}"
+    );
+}
+
+/// The upgrade path: entries written before thurbox stamped ownership carry no
+/// stamp, and leaving one behind leaves its broken command firing beside the
+/// fixed one — which for codex is the bug this whole change exists to remove.
+#[test]
+fn json_config_merge_replaces_an_unstamped_entry_from_an_older_payload() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+
+    let agent_dir = temp.path().join("dotcodex");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let settings = agent_dir.join("hooks.json");
+    // What hooks < 1.10 left on disk: our command, no stamp.
+    std::fs::write(
+        &settings,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state done || true"}]}]}}"#,
+    )
+    .unwrap();
+    let home = temp.path().join("hookshome");
+
+    let src = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        src.path().join("extension.toml"),
+        format!(
+            r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{settings}'
+source = "codex-hooks.json"
+requires_dir = '{agent_dir}'
+"#,
+            home = home.display(),
+            settings = settings.display(),
+            agent_dir = agent_dir.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        src.path().join("codex-hooks.json"),
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state done >/dev/null 2>&1 || true; echo '{}'  # managed by thurbox `extension install`"}]}]}}"#,
+    )
+    .unwrap();
+
+    let target = src.path().to_string_lossy().to_string();
+    install_extension(&db, &target, None, false).unwrap();
+
+    let updated = std::fs::read_to_string(&settings).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&updated).expect("still valid JSON");
+    assert_eq!(
+        doc["hooks"]["Stop"].as_array().unwrap().len(),
+        1,
+        "the unstamped entry is still there, firing beside the fixed one: {updated}"
+    );
+    assert!(
+        updated.contains("echo"),
+        "the fixed command was merged: {updated}"
+    );
+
+    // And the sweep settles: nothing left to find, so no churn on every tick.
+    let again = install_extension(&db, &target, None, false).unwrap();
+    assert!(again.config_merges_applied.is_empty());
 }
 
 #[test]

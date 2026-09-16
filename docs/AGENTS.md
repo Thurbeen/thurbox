@@ -151,15 +151,26 @@ embedded hook assets live in
   payload that renamed an event or edited a command replaces the entry already on
   disk instead of stacking a second copy beside it — without that, a fixed hook
   stays broken, because the stale one is still there and still firing. How "ours"
-  is decided differs by format: TOML reads an ownership comment stamped on each
-  shipped entry, while JSON has no comments and matches the `session signal`
-  marker in an entry's content. That marker is a command a user may legitimately
-  have written themselves, so the JSON **install** prune is scoped to the events
-  the payload actually merges into — install runs at startup and on every
-  heartbeat tick, and a document-wide prune there would delete their hook again
-  every time they restored it. Uninstall stays document-wide in both formats,
-  because it must leave no entry of ours orphaned: a TOML one still passes over
-  a hook the user wrote, and a JSON one still takes it.
+  is decided is the same in both: an **ownership stamp** on each shipped entry.
+  TOML carries it as a comment above the entry; JSON has no comments, so it goes
+  in the command itself, as a trailing `# managed by thurbox …` a shell ignores.
+  Matching on the `session signal` command instead would delete a hook the user
+  wired themselves — which `extensions/hooks/README.md` invites — and install
+  runs at startup and on every heartbeat tick, so it would delete it again every
+  time they put it back.
+
+  One exception, once: a file written before thurbox stamped what it merges
+  (hooks < 1.10) has nothing to match but the command, so the first install to
+  find an unstamped file sweeps our old entries out of the events the payload
+  owns. Leaving them would leave their broken commands firing beside the fixed
+  ones. That sweep is gated on the file carrying no stamp at all, so it runs
+  exactly once — and what it costs is a hook the user had written under one of
+  those events *before* upgrading.
+
+  Uninstall matches both the stamp and the command, and stays document-wide: it
+  is explicit and one-shot, and must leave nothing of ours orphaned whatever
+  shape the payload had when it wrote it. It still takes a user hook that calls
+  `session signal` with it, in JSON; the TOML one passes over it.
   - `codex`: merged into `~/.codex/hooks.json` (SessionStart→idle,
     UserPromptSubmit/PreToolUse/PostToolUse→working, PermissionRequest→blocked,
     Stop→done). Its block edge is a **structured** approval event, like kimi's,

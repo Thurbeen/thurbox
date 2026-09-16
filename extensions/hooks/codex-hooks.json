@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state idle >/dev/null 2>&1 || true",
+            "command": "thurbox-cli session signal --state idle >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true",
+            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true",
+            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state blocked >/dev/null 2>&1 || true",
+            "command": "thurbox-cli session signal --state blocked >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true",
+            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state done >/dev/null 2>&1 || true; echo '{}'",
+            "command": "thurbox-cli session signal --state done >/dev/null 2>&1 || true; echo '{}'  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]

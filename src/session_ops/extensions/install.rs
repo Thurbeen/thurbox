@@ -310,6 +310,17 @@ fn install_external_file(
 /// rewritten form's [`crate::session::REMOTE_HOOK_STATE_OPTION`] marker.
 pub(crate) const HOOK_SIGNAL_MARKER: &str = "thurbox-cli session signal";
 
+/// Whether this document already carries an ownership stamp of ours — i.e.
+/// thurbox has merged into it since it began stamping what it writes.
+///
+/// The gate on the one-time legacy sweep in [`merged_config`]: a stamped file
+/// has nothing left that can only be identified by its command text.
+fn stamped(doc: &serde_json::Value) -> bool {
+    serde_json::to_string(doc)
+        .map(|s| s.contains(MANAGED_MARKER))
+        .unwrap_or(false)
+}
+
 /// Read the JSON config at `path` (or `{}` when it does not exist), parsed.
 ///
 /// Only a **missing** file is an empty document. A file that exists but cannot
@@ -404,18 +415,47 @@ fn merged_config(
             let to_merge: serde_json::Value = serde_json::from_str(source_text)
                 .map_err(|e| format!("parse merge source {source_name}: {e}"))?;
             let mut doc = read_json_or_empty(dest)?;
-            // Prune, then merge — for the reason the TOML arm does it below.
-            // Array merge is a union by deep equality, so a payload that edited
-            // a command produces a *new* value and the stale entry stays on
-            // disk, firing beside the new one. A fixed hook then stays broken:
-            // codex rejects a `Stop` hook whose stdout is not JSON, and the old
-            // command is still there to produce that stdout every turn.
+            // Asked before anything is pruned: the prune below takes every
+            // stamp out of the document, so reading it afterwards would say
+            // "never stamped" about a file thurbox has owned for months, and
+            // the one-time migration would run on every tick forever.
+            let was_stamped = stamped(&doc);
+            // Prune, then merge, for the reason the TOML arm does it below:
+            // array merge is a union by deep equality, so a payload that edited
+            // a command produces a *new* value and the stale entry would stay
+            // on disk firing beside the new one. That is how a fixed hook stays
+            // broken — codex rejects a `Stop` hook whose stdout is not JSON,
+            // and the old command is still there to produce that stdout.
             //
-            // Scoped to the shape of the payload, unlike the document-wide
-            // prune `revert_config_merge` uses: the marker here is a command
-            // string the user is invited to write themselves, and this runs
-            // every tick rather than once. See `json_merge::prune_marked_under`.
-            crate::agent::json_merge::prune_marked_under(&mut doc, &to_merge, HOOK_SIGNAL_MARKER);
+            // On the **ownership stamp**, exactly like TOML, and not on the
+            // `session signal` command: that command is one
+            // `extensions/hooks/README.md` invites the user to write themselves,
+            // and install runs at startup and on every heartbeat tick, so
+            // matching on it would delete their hook again every time they put
+            // it back. Document-wide, so an event a later payload renames or
+            // drops still has our entry taken out of it.
+            crate::agent::json_merge::prune_marked(&mut doc, MANAGED_MARKER);
+            // One-time migration. Entries written before thurbox stamped
+            // ownership (hooks extension < 1.10) carry no stamp, so the sweep
+            // above cannot see them — and leaving one behind leaves the broken
+            // command it holds firing beside the fixed one, which is the whole
+            // bug. They can only be found the old way, by the command they
+            // carry, and that cannot tell one of ours from one the user wrote.
+            //
+            // So it runs only while the file carries no stamp of ours at all,
+            // which is true exactly once: the merge below stamps it, and from
+            // then on ownership is decided by the stamp alone. A hook the user
+            // adds afterwards is never matched this way, however many ticks run
+            // over it. What this does cost is a hook they had written *before*
+            // the upgrade, under an event our payload owns — swept once, and
+            // named in `extensions/hooks/README.md`.
+            if !was_stamped {
+                crate::agent::json_merge::prune_marked_under(
+                    &mut doc,
+                    &to_merge,
+                    HOOK_SIGNAL_MARKER,
+                );
+            }
             crate::agent::json_merge::merge(&mut doc, &to_merge);
             serde_json::to_string_pretty(&doc)
                 .map_err(|e| format!("serialize {}: {e}", dest.display()))
@@ -449,6 +489,13 @@ fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> 
     let pruned = match m.format {
         crate::session::ConfigMergeFormat::Json => match read_json_or_empty(&dest) {
             Ok(mut doc) => {
+                // Both markers: the stamp identifies everything a current
+                // payload wrote, and the signal command catches entries from
+                // before the stamp existed. Uninstall is the one-shot, explicit
+                // action, so it errs towards leaving nothing of ours behind —
+                // and takes a hook the user wired to `session signal`
+                // themselves with it, as it always has.
+                crate::agent::json_merge::prune_marked(&mut doc, MANAGED_MARKER);
                 crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
                 serde_json::to_string_pretty(&doc)
                     .map_err(|e| format!("serialize {}: {e}", dest.display()))
