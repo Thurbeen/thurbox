@@ -67,9 +67,12 @@ requires_dir = "~/.config/opencode"
 
 # codex has a claude-shaped hooks.json loaded from ~/.codex/hooks.json —
 # strictly richer than the old `notify` (which only fired agent-turn-complete →
-# done). We JSON-merge our entries into that file (reversibly; uninstall prunes
-# exactly ours by the `session signal` marker, leaving the user's hooks intact),
-# guarded by requires_dir so it's a no-op when codex isn't installed. Events:
+# done). We JSON-merge our entries into that file, reversibly: install replaces
+# exactly the entries carrying our ownership stamp, so a hook the user wrote
+# themselves survives however often it re-merges, while uninstall is broader and
+# prunes every entry carrying either the stamp or the `session signal` command —
+# theirs with it. Guarded by requires_dir so it's a no-op when codex isn't
+# installed. Events:
 # SessionStart → idle, UserPromptSubmit/PreToolUse/PostToolUse → working,
 # PermissionRequest → blocked, Stop → done. Unlike claude/antigravity the block
 # edge is STRUCTURED — a real approval event, not a text match on a notification
@@ -168,9 +171,10 @@ requires_dir = "~/.copilot"
 
 # antigravity (the `agy` CLI, the Gemini CLI successor) loads hooks only from its
 # shared ~/.gemini/settings.json, which we must NOT clobber — so we JSON-merge our
-# entries in (reversibly; uninstall prunes exactly ours, leaving the user's
-# settings intact). Guarded by requires_dir so it's a no-op when antigravity isn't
-# installed.
+# entries in (reversibly, on the same ownership stamp codex's merge uses: the
+# rest of the file is never touched, and a hook the user wrote survives install,
+# though uninstall's broader prune takes it). Guarded by requires_dir so it's a
+# no-op when antigravity isn't installed.
 #
 # `agy` adopted Claude Code's hook schema (verified against agy 1.0.9): the event
 # names live in antigravity-hooks.json and map SessionStart→idle, PreToolUse→
@@ -216,7 +220,9 @@ requires_dir = "~/.grok"
 # the user's whole configuration, so a managed external_file would clobber it.
 # It is merged instead, exactly like codex/antigravity, with `format = "toml"`
 # selecting `agent::toml_merge` (toml_edit, so the user's comments and key order
-# survive); uninstall prunes exactly our entries by the `session signal` marker.
+# survive); our entries are identified by the ownership comment stamped above
+# each one, never by the `session signal` command, so a hook the user wired
+# themselves survives uninstall here — the one place it does.
 #
 # Events: SessionStart → idle, UserPromptSubmit/PreToolUse/PostToolUse →
 # working, PermissionRequest → blocked, PermissionResult → working, Stop → done.
