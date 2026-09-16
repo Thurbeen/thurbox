@@ -151,10 +151,15 @@ embedded hook assets live in
   payload that renamed an event or edited a command replaces the entry already on
   disk instead of stacking a second copy beside it — without that, a fixed hook
   stays broken, because the stale one is still there and still firing. How "ours"
-  is decided differs by format: JSON matches the `session signal` marker in an
-  entry's content, while TOML reads an ownership comment stamped on each shipped
-  entry — so a user hook that calls `session signal` itself survives a TOML
-  uninstall, and is absorbed by the JSON one.
+  is decided differs by format: TOML reads an ownership comment stamped on each
+  shipped entry, while JSON has no comments and matches the `session signal`
+  marker in an entry's content. That marker is a command a user may legitimately
+  have written themselves, so the JSON **install** prune is scoped to the events
+  the payload actually merges into — install runs at startup and on every
+  heartbeat tick, and a document-wide prune there would delete their hook again
+  every time they restored it. Uninstall stays document-wide in both formats,
+  because it must leave no entry of ours orphaned: a TOML one still passes over
+  a hook the user wrote, and a JSON one still takes it.
   - `codex`: merged into `~/.codex/hooks.json` (SessionStart→idle,
     UserPromptSubmit/PreToolUse/PostToolUse→working, PermissionRequest→blocked,
     Stop→done). Its block edge is a **structured** approval event, like kimi's,

@@ -713,6 +713,91 @@ requires_dir = '{agent_dir}'
     assert_eq!(again.config_merges_skipped, [settings.to_string_lossy()]);
 }
 
+/// The install-time prune is scoped to what the payload merges, and this is
+/// why. `extensions/hooks/README.md` tells a user to wire an agent thurbox does
+/// not instrument by calling `session signal` themselves — and for a shared
+/// file like `~/.gemini/settings.json`, the obvious place to put that is the
+/// same file. A document-wide prune identifies our entries by that very command
+/// string, so it would delete theirs; and because install runs at startup and
+/// on every heartbeat tick, it would delete it again every time they put it
+/// back. Uninstall may take that trade once, on request. Install may not take
+/// it forever.
+#[test]
+fn json_config_merge_keeps_a_user_signal_hook_outside_what_it_merges() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+
+    let agent_dir = temp.path().join("dotgemini");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let settings = agent_dir.join("settings.json");
+    // Their own wiring, at an event our payload does not merge into, plus a
+    // setting that merely mentions the command in passing.
+    let users_own = serde_json::json!({
+        "hooks": {
+            "AfterAgent": [
+                {"hooks": [{"type": "command", "command": "thurbox-cli session signal --state done"}]}
+            ]
+        },
+        "customCommands": {"status": "thurbox-cli session signal --state working"}
+    });
+    std::fs::write(&settings, users_own.to_string()).unwrap();
+    let home = temp.path().join("hookshome");
+
+    let src = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        src.path().join("extension.toml"),
+        format!(
+            r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{settings}'
+source = "gemini-hooks.json"
+requires_dir = '{agent_dir}'
+"#,
+            home = home.display(),
+            settings = settings.display(),
+            agent_dir = agent_dir.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        src.path().join("gemini-hooks.json"),
+        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state working || true"}]}]}}"#,
+    )
+    .unwrap();
+
+    let target = src.path().to_string_lossy().to_string();
+    // Twice: the second install is the heartbeat tick that a document-wide
+    // prune would use to delete their hook a second time.
+    for pass in 1..=2 {
+        install_extension(&db, &target, None, false).unwrap();
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            doc["hooks"]["AfterAgent"], users_own["hooks"]["AfterAgent"],
+            "pass {pass}: the user's own signal hook was pruned"
+        );
+        assert_eq!(
+            doc["customCommands"], users_own["customCommands"],
+            "pass {pass}: a setting that merely mentions the command was pruned"
+        );
+        assert!(
+            doc["hooks"]["PreToolUse"].is_array(),
+            "pass {pass}: ours merged in"
+        );
+    }
+
+    // Uninstall is the explicit, one-shot action, and it stays document-wide so
+    // no entry of ours is ever orphaned — their hook goes with it, which is the
+    // long-standing trade this test is not changing.
+    uninstall_extension(&db, "hooks", false).unwrap();
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert!(doc.get("hooks").is_none(), "ours came back out: {doc}");
+}
+
 #[test]
 fn config_merge_soft_skips_a_malformed_user_target() {
     let temp = tempfile::TempDir::new().unwrap();

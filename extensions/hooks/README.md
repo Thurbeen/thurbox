@@ -306,6 +306,14 @@ thurbox-cli session signal --state done >/dev/null 2>&1
 Keep the redirect: a hook's stdout is a pipe, so without it `thurbox-cli` answers
 in TOON straight into whatever your agent does with a hook's output.
 
+If you put that hook in a file thurbox also merges into — `~/.codex/hooks.json`,
+`~/.gemini/settings.json` — keep it under an event thurbox's own payload does not
+use. Install prunes its own entries out before merging them back in, so an update
+replaces them rather than stacking a second copy; that prune is scoped to the
+events in the payload, and yours is only safe outside them. Uninstall is not
+scoped: `extension deactivate hooks` prunes every entry in the file carrying the
+`session signal` command, yours included.
+
 Point your own agent's lifecycle hooks at that and the session reports exactly
 like a built-in. Failing even that, thurbox reads the pane: a session that never
 signalled but whose foreground process is an agent your `agents.toml` knows

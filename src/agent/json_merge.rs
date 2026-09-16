@@ -10,6 +10,9 @@
 //!   shipped entries carry (our hook commands all contain the `session signal`
 //!   marker). Marker-based — not value-based — so it stays correct even after the
 //!   shipped payload's schema changes across an extension update (no orphans).
+//! - [`prune_marked_under`]: the same, scoped to the arrays the source merges
+//!   into, for the install-time prune that makes an update replace rather than
+//!   stack.
 
 use serde_json::Value;
 
@@ -67,6 +70,40 @@ pub fn prune_marked(value: &mut Value, marker: &str) {
                 prune_marked(item, marker);
             }
         }
+        _ => {}
+    }
+}
+
+/// [`prune_marked`], scoped to the shape of `source`: only the arrays `source`
+/// itself merges into are walked, and the rest of `target` is left untouched.
+///
+/// This is the install-time half, and the scope is the whole point of it.
+/// `merge` unions arrays by deep equality, so an updated payload whose command
+/// text changed adds a second entry beside the stale one rather than replacing
+/// it — pruning ours first is what makes an update an update. But install runs
+/// at startup and on every heartbeat tick, and the marker is a command string
+/// the user is *invited* to write themselves (`extensions/hooks/README.md`
+/// tells them to, for an agent thurbox does not instrument). A document-wide
+/// prune would delete such a hook from the shared config file on every tick,
+/// with no way for them to keep it. Scoping to what we merge means we only ever
+/// reach into the events we own.
+///
+/// The trade runs the other way at uninstall, which stays [`prune_marked`]: a
+/// one-shot, explicit action that must leave no entry of ours orphaned, whatever
+/// shape the payload had when it wrote them.
+pub fn prune_marked_under(target: &mut Value, source: &Value, marker: &str) {
+    match (target, source) {
+        (Value::Object(t), Value::Object(s)) => {
+            for (key, sv) in s {
+                if let Some(tv) = t.get_mut(key) {
+                    prune_marked_under(tv, sv, marker);
+                }
+            }
+        }
+        // Where the source merges entries, ours come back out first. Anything
+        // the prune empties, the merge immediately refills, so no key is left
+        // behind as a bare `[]`.
+        (t @ Value::Array(_), Value::Array(_)) => prune_marked(t, marker),
         _ => {}
     }
 }

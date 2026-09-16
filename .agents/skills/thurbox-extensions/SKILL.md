@@ -98,6 +98,16 @@ content, TOML by an ownership comment on the entry itself — which is why the T
 payload stamps every entry with one, and why a user hook that calls `session
 signal` survives uninstall there but would not in JSON).
 
+Both formats **prune before they merge on install**, not only on uninstall: array
+merge is a union by deep equality, so an updated payload whose command text
+changed would otherwise stack a second entry beside the stale one and leave a
+fixed hook still broken. The JSON install prune is **scoped to the events the
+payload merges into** (`json_merge::prune_marked_under`), because its marker is a
+command a user may have written themselves and install runs at startup and on
+every heartbeat tick — a document-wide prune there would delete their hook again
+every time they put it back. Uninstall stays document-wide in both formats, so no
+entry of ours is ever orphaned.
+
 **Built-in extensions** (`session_ops::builtin`) — two of them, `hooks`
 (`extensions/hooks/`) and `ui-skill` (`extensions/ui-skill/`), which unlike user
 extensions ship **embedded** in the binary and are **auto-activated by default**

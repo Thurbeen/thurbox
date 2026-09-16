@@ -3,14 +3,16 @@
 //! `thurbox-cli` auto-detects its output format from stdout, and a hook's
 //! stdout is a pipe — so every `session signal` in a hook payload answers in
 //! TOON (`Format::resolve_with(.., stdout_is_tty: false)`), the agent-facing
-//! rendering. No agent asked for it, and two of them read it:
+//! rendering. No agent asked for it, and every agent here reads it, in one of
+//! two ways:
 //!
 //! - **codex** rejects a `Stop` hook whose stdout is not JSON outright —
 //!   *"hook returned invalid stop hook JSON output"*, every turn. `{}` is the
 //!   no-op decision it wants.
 //! - claude, codex, grok and antigravity fold a hook's plain-text stdout into
-//!   the model's context for their prompt/session events, so the signal's own
-//!   answer is billed to the user as developer context on every turn.
+//!   the model's context for their prompt/session events, and copilot reads it
+//!   for its own decision keys — so the signal's own answer is billed to the
+//!   user as developer context on every turn.
 //!
 //! Driven through the real binary against a real database: the format is
 //! chosen from the *process's* stdout, so nothing below `main` can observe it
@@ -285,7 +287,18 @@ fn status_hooks_say_nothing_on_stdout() {
                      the model's context:\n{}",
                     String::from_utf8_lossy(&out.stdout)
                 );
+                // Silence is the assertion above, and a command that is broken
+                // shell is silent too — so say what the quiet has to mean.
+                assert!(
+                    out.status.success(),
+                    "{file}/{event} exits non-zero:\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
             }
+            assert!(
+                hook_state(&env, id).is_some(),
+                "{file}/{event} wrote nothing and signalled nothing"
+            );
         }
     }
 }

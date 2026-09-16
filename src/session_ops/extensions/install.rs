@@ -411,11 +411,11 @@ fn merged_config(
             // codex rejects a `Stop` hook whose stdout is not JSON, and the old
             // command is still there to produce that stdout every turn.
             //
-            // Unlike TOML's ownership comment the marker here is the command
-            // itself, so this also absorbs a hook the user wired to `session
-            // signal` by hand — the same trade `revert_config_merge` has always
-            // made on the way out, now made consistently on the way in.
-            crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
+            // Scoped to the shape of the payload, unlike the document-wide
+            // prune `revert_config_merge` uses: the marker here is a command
+            // string the user is invited to write themselves, and this runs
+            // every tick rather than once. See `json_merge::prune_marked_under`.
+            crate::agent::json_merge::prune_marked_under(&mut doc, &to_merge, HOOK_SIGNAL_MARKER);
             crate::agent::json_merge::merge(&mut doc, &to_merge);
             serde_json::to_string_pretty(&doc)
                 .map_err(|e| format!("serialize {}: {e}", dest.display()))
