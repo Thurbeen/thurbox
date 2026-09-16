@@ -177,6 +177,21 @@ fish applies — so a server started from anything else never sees the agent, fo
 the life of that server, and the spawn fails with a shell's `command not found`
 (exit **127**; an `execvp` failure is exit 1).
 
+A 127 out of `tmux new-window` is **not** always about the agent, though, so
+thurbox does not read the exit status as the command's verdict. tmux hands a
+command-mode client the status of the last `run-shell` its command list
+triggered, and a *hook* counts: an `after-new-window` hook left behind by an
+uninstalled tmux plugin calls a script that is no longer on the disk, `/bin/sh`
+answers 127, and the client exits 127 although the window was created and its
+pane id already printed — with nothing on stderr to say so. The pane id is the
+answer to `-P`, so where there is one the window exists and the spawn keeps it,
+logging a warning that names the socket (a hook outlives the plugin that set it;
+`tmux -L thurbox kill-server` clears the server that holds it). Only a failure
+with no pane id to weigh is a failure. The control-mode path — a restart, a
+plugin program, the companion shell pane — never saw this: its reply block
+carries the `-P` answer alone and no exit status at all, which is why the same
+server could fail a create and serve everything else.
+
 Resolution is **best-effort and never a new way to fail**: a `command` that is
 already a path, that nothing on `PATH` matches (a shell function or alias, or a
 binary installed after thurbox started), or that runs on Windows is passed
