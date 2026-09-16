@@ -104,7 +104,7 @@ still broken. Pruning on the stamp rather than on the `session signal` command i
 what lets that run at startup and on every heartbeat tick without deleting a hook
 the user wired themselves. One exception, gated on the file carrying no stamp at
 all and so running exactly once: a file from before stamping existed
-(hooks < 1.10) can only be matched by the command, so the first install sweeps
+(hooks < 1.11) can only be matched by the command, so the first install sweeps
 our old entries out of the events the payload owns
 (`json_merge::prune_marked_under`). Uninstall matches stamp *and* command,
 document-wide, so nothing of ours is ever orphaned.

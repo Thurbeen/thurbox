@@ -311,7 +311,7 @@ You can put that hook in a file thurbox also merges into — `~/.codex/hooks.jso
 Thurbox recognises its own entries by a `# managed by thurbox …` stamp in the
 command, not by the `session signal` call, so yours is left alone however many
 times it re-merges. Two caveats: don't copy that stamp into your own command, and
-if you were already running thurbox before hooks 1.10, move your hook out of the
+if you were already running thurbox before hooks 1.11, move your hook out of the
 file once — the first install after upgrading sweeps unstamped entries out of the
 events it owns, because that is the only way to remove the broken commands older
 versions left there.

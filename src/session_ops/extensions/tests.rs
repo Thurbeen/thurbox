@@ -904,7 +904,7 @@ fn json_config_merge_replaces_an_unstamped_entry_from_an_older_payload() {
     let agent_dir = temp.path().join("dotcodex");
     std::fs::create_dir_all(&agent_dir).unwrap();
     let settings = agent_dir.join("hooks.json");
-    // What hooks < 1.10 left on disk: our command, no stamp.
+    // What hooks < 1.11 left on disk: our command, no stamp.
     std::fs::write(
         &settings,
         r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state done || true"}]}]}}"#,

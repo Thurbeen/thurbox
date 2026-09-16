@@ -436,7 +436,7 @@ fn merged_config(
             // drops still has our entry taken out of it.
             crate::agent::json_merge::prune_marked(&mut doc, MANAGED_MARKER);
             // One-time migration. Entries written before thurbox stamped
-            // ownership (hooks extension < 1.10) carry no stamp, so the sweep
+            // ownership (hooks extension < 1.11) carry no stamp, so the sweep
             // above cannot see them — and leaving one behind leaves the broken
             // command it holds firing beside the fixed one, which is the whole
             // bug. They can only be found the old way, by the command they
@@ -465,10 +465,12 @@ fn merged_config(
                 .parse()
                 .map_err(|e| format!("parse merge source {source_name}: {e}"))?;
             let mut doc = read_toml_or_empty(dest)?;
-            // Prune, then merge, as the JSON arm does — but on an ownership
-            // comment rather than on the command's content, so a hook the user
-            // wired to `session signal` themselves is left alone rather than
-            // absorbed.
+            // Prune, then merge, on the same ownership marker the JSON arm
+            // uses and for the same reason — a hook the user wired to `session
+            // signal` themselves is left alone. TOML has comments, so it can
+            // carry the marker above the entry rather than inside the command,
+            // and needs no equivalent of the JSON arm's one-time migration:
+            // every payload it has ever shipped was stamped.
             crate::agent::toml_merge::prune_owned(&mut doc, MANAGED_MARKER);
             crate::agent::toml_merge::merge(&mut doc, &to_merge);
             Ok(doc.to_string())

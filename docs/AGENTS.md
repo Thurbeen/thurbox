@@ -160,7 +160,7 @@ embedded hook assets live in
   time they put it back.
 
   One exception, once: a file written before thurbox stamped what it merges
-  (hooks < 1.10) has nothing to match but the command, so the first install to
+  (hooks < 1.11) has nothing to match but the command, so the first install to
   find an unstamped file sweeps our old entries out of the events the payload
   owns. Leaving them would leave their broken commands firing beside the fixed
   ones. That sweep is gated on the file carrying no stamp at all, so it runs

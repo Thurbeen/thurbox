@@ -11,8 +11,8 @@
 //!   marker). Marker-based — not value-based — so it stays correct even after the
 //!   shipped payload's schema changes across an extension update (no orphans).
 //! - [`prune_marked_under`]: the same, scoped to the arrays the source merges
-//!   into, for the install-time prune that makes an update replace rather than
-//!   stack.
+//!   into — the one-time sweep for entries written before thurbox stamped what
+//!   it merged, which have no stamp to match.
 
 use serde_json::Value;
 
@@ -77,20 +77,20 @@ pub fn prune_marked(value: &mut Value, marker: &str) {
 /// [`prune_marked`], scoped to the shape of `source`: only the arrays `source`
 /// itself merges into are walked, and the rest of `target` is left untouched.
 ///
-/// This is the install-time half, and the scope is the whole point of it.
-/// `merge` unions arrays by deep equality, so an updated payload whose command
-/// text changed adds a second entry beside the stale one rather than replacing
-/// it — pruning ours first is what makes an update an update. But install runs
-/// at startup and on every heartbeat tick, and the marker is a command string
-/// the user is *invited* to write themselves (`extensions/hooks/README.md`
-/// tells them to, for an agent thurbox does not instrument). A document-wide
-/// prune would delete such a hook from the shared config file on every tick,
-/// with no way for them to keep it. Scoping to what we merge means we only ever
-/// reach into the events we own.
+/// Ownership is normally decided by a stamp the payload writes into each entry,
+/// which [`prune_marked`] matches wherever it sits. This exists for the one case
+/// that has no stamp to match: a file written before thurbox stamped what it
+/// merged (hooks extension < 1.11). Those entries can only be recognised by the
+/// `session signal` command they carry — and so can a hook the user wrote
+/// themselves, which `extensions/hooks/README.md` invites. Confining the sweep
+/// to the arrays the payload merges into is what keeps it off the rest of a
+/// shared config file; its single caller additionally runs it only while the
+/// file carries no stamp at all, so it happens once rather than on every tick.
 ///
-/// The trade runs the other way at uninstall, which stays [`prune_marked`]: a
-/// one-shot, explicit action that must leave no entry of ours orphaned, whatever
-/// shape the payload had when it wrote them.
+/// The limit that comes with the scope: an unstamped entry under an event the
+/// *current* payload no longer declares is never reached, and stays. No shipped
+/// payload has dropped an event, so there is nothing stranded today — but a
+/// payload that drops one has to take its old entries with it some other way.
 pub fn prune_marked_under(target: &mut Value, source: &Value, marker: &str) {
     match (target, source) {
         (Value::Object(t), Value::Object(s)) => {
