@@ -13,41 +13,41 @@
 # managed by thurbox `extension install` — do not edit
 [[hooks]]
 event = "SessionStart"
-command = "thurbox-cli session signal --state idle || true"
+command = "thurbox-cli session signal --state idle >/dev/null 2>&1 || true"
 timeout = 10
 
 # managed by thurbox `extension install` — do not edit
 [[hooks]]
 event = "UserPromptSubmit"
-command = "thurbox-cli session signal --state working || true"
+command = "thurbox-cli session signal --state working >/dev/null 2>&1 || true"
 timeout = 10
 
 # managed by thurbox `extension install` — do not edit
 [[hooks]]
 event = "PreToolUse"
-command = "thurbox-cli session signal --state working || true"
+command = "thurbox-cli session signal --state working >/dev/null 2>&1 || true"
 timeout = 10
 
 # managed by thurbox `extension install` — do not edit
 [[hooks]]
 event = "PostToolUse"
-command = "thurbox-cli session signal --state working || true"
+command = "thurbox-cli session signal --state working >/dev/null 2>&1 || true"
 timeout = 10
 
 # managed by thurbox `extension install` — do not edit
 [[hooks]]
 event = "PermissionRequest"
-command = "thurbox-cli session signal --state blocked || true"
+command = "thurbox-cli session signal --state blocked >/dev/null 2>&1 || true"
 timeout = 10
 
 # managed by thurbox `extension install` — do not edit
 [[hooks]]
 event = "PermissionResult"
-command = "thurbox-cli session signal --state working || true"
+command = "thurbox-cli session signal --state working >/dev/null 2>&1 || true"
 timeout = 10
 
 # managed by thurbox `extension install` — do not edit
 [[hooks]]
 event = "Stop"
-command = "thurbox-cli session signal --state done || true"
+command = "thurbox-cli session signal --state done >/dev/null 2>&1 || true"
 timeout = 10

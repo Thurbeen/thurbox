@@ -147,13 +147,43 @@ embedded hook assets live in
   `format = "toml"` selects the TOML merge for an agent whose shared config is
   TOML (kimi). Either way the semantics match: objects/tables recurse, arrays
   union, a type conflict with the user's value is left alone, and uninstall
-  prunes exactly our entries. How "ours" is decided differs by format: JSON
-  matches the `session signal` marker in an entry's content, while TOML reads an
-  ownership comment stamped on each shipped entry — so a user hook that calls
-  `session signal` itself survives a TOML uninstall, and a payload that renames
-  an event replaces its old entry instead of stacking a second one beside it.
+  prunes exactly our entries. Install prunes first too, in both formats, so a
+  payload that renamed an event or edited a command replaces the entry already on
+  disk instead of stacking a second copy beside it — without that, a fixed hook
+  stays broken, because the stale one is still there and still firing. How "ours"
+  is decided is the same in both: an **ownership stamp** on each shipped entry.
+  TOML carries it as a comment above the entry; JSON has no comments, so it goes
+  in the command itself, as a trailing `# managed by thurbox …` a shell ignores.
+  Matching on the `session signal` command instead would delete a hook the user
+  wired themselves — which `extensions/hooks/README.md` invites — and install
+  runs at startup and on every heartbeat tick, so it would delete it again every
+  time they put it back.
+
+  One exception, once: a file written before thurbox stamped what it merges
+  (hooks < 1.11) has nothing to match but the command, so the first install to
+  find an unstamped file sweeps our old entries out of the events the payload
+  owns. Leaving them would leave their broken commands firing beside the fixed
+  ones. That sweep is gated on the file carrying no stamp at all, so it runs
+  exactly once — and what it costs is a hook the user had written under one of
+  those events *before* upgrading.
+
+  Uninstall matches both the stamp and the command, and stays document-wide: it
+  is explicit and one-shot, and must leave nothing of ours orphaned whatever
+  shape the payload had when it wrote it. It still takes a user hook that calls
+  `session signal` with it, in JSON; the TOML one passes over it.
   - `codex`: merged into `~/.codex/hooks.json` (SessionStart→idle,
-    UserPromptSubmit/PreToolUse→working, Stop→done; **no blocked**). *Experimental.*
+    UserPromptSubmit/PreToolUse/PostToolUse→working, PermissionRequest→blocked,
+    Stop→done). Its block edge is a **structured** approval event, like kimi's,
+    with PostToolUse as the edge back out. Two things are codex's alone: `Stop`
+    must write JSON to stdout on a zero exit (`echo '{}'` — its schema is
+    `deny_unknown_fields`, `decision`/`reason` plus the universal fields) or the
+    turn fails with *"hook returned invalid stop hook JSON output"*, and every
+    other event folds plain-text stdout into the model's context. Both are why
+    every shipped hook command redirects its own output away — see
+    `tests/hook_stdout_contract.rs`. Verified against codex-cli 0.154.0 over a
+    real turn: every event fires, and an approval prompt reports `blocked` and
+    returns to `working` when granted. `codex exec` pins its approval policy to
+    `never`, so that edge only shows in an interactive session.
   - `kimi` (Kimi Code CLI): merged into `~/.kimi-code/config.toml` — TOML, so
     the merge is `agent::toml_merge` (`format = "toml"` on the `[[config_merges]]`
     entry) rather than the JSON one; `toml_edit` keeps the user's comments and key

@@ -93,10 +93,21 @@ agents.toml, and `[[config_merges]]` deep-merges a shipped document into an
 agent's *shared* config file (`agent::json_merge`, or `agent::toml_merge` when
 the entry sets `format = "toml"` for a TOML config such as kimi's
 `~/.kimi-code/config.toml` — `toml_edit`, so the user's comments and key order
-survive; JSON prunes by the `thurbox-cli session signal` marker in an entry's
-content, TOML by an ownership comment on the entry itself — which is why the TOML
-payload stamps every entry with one, and why a user hook that calls `session
-signal` survives uninstall there but would not in JSON).
+survive). Both formats identify our entries by an **ownership stamp**: TOML as a
+comment above the entry, JSON — which has no comments — as a trailing
+`# managed by thurbox …` inside the command, which a shell ignores.
+
+Both **prune before they merge on install**, not only on uninstall: array merge
+is a union by deep equality, so an updated payload whose command text changed
+would otherwise stack a second entry beside the stale one and leave a fixed hook
+still broken. Pruning on the stamp rather than on the `session signal` command is
+what lets that run at startup and on every heartbeat tick without deleting a hook
+the user wired themselves. One exception, gated on the file carrying no stamp at
+all and so running exactly once: a file from before stamping existed
+(hooks < 1.11) can only be matched by the command, so the first install sweeps
+our old entries out of the events the payload owns
+(`json_merge::prune_marked_under`). Uninstall matches stamp *and* command,
+document-wide, so nothing of ours is ever orphaned.
 
 **Built-in extensions** (`session_ops::builtin`) — two of them, `hooks`
 (`extensions/hooks/`) and `ui-skill` (`extensions/ui-skill/`), which unlike user

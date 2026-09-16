@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state idle || true  # managed by thurbox `extension install` — do not edit",
+            "command": "thurbox-cli session signal --state idle >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working || true",
+            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true",
             "timeout": 10
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working || true",
+            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true",
             "timeout": 10
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working || true",
+            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true",
             "timeout": 10
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if cat | sed -n 's/.*\"message\":\"\\([^\"]*\\)\".*/\\1/p' | grep -qiE 'permission|approval|approve'; then thurbox-cli session signal --state blocked ; fi; true",
+            "command": "if cat | sed -n 's/.*\"message\":\"\\([^\"]*\\)\".*/\\1/p' | grep -qiE 'permission|approval|approve'; then thurbox-cli session signal --state blocked >/dev/null 2>&1 ; fi; true",
             "timeout": 10
           }
         ]
@@ -62,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state done || true",
+            "command": "thurbox-cli session signal --state done >/dev/null 2>&1 || true",
             "timeout": 10
           }
         ]

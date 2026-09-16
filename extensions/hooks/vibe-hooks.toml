@@ -25,9 +25,9 @@
 [[hooks]]
 name = "thurbox-pre-tool"
 type = "pre_tool"
-command = "thurbox-cli session signal --state working || true"
+command = "thurbox-cli session signal --state working >/dev/null 2>&1 || true"
 
 [[hooks]]
 name = "thurbox-post-agent"
 type = "post_agent"
-command = "thurbox-cli session signal --state done || true"
+command = "thurbox-cli session signal --state done >/dev/null 2>&1 || true"

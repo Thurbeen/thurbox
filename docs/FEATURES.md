@@ -124,9 +124,9 @@ roll up to their most-urgent member
 The hooks are wired automatically by the built-in **hooks** extension
 (auto-activated on first run; opt out with `thurbox-cli extension
 deactivate hooks`). How much each agent can report depends on the
-lifecycle surface its CLI exposes — claude, opencode, and antigravity
-report the full range, codex reports idle/working/done, aider reports
-blocked, and vibe is experimental. See the per-agent matrix in
+lifecycle surface its CLI exposes — claude, codex, opencode, and
+antigravity report the full range, aider reports blocked, and vibe
+reports everything but blocked. See the per-agent matrix in
 `extensions/hooks/README.md` (and the website's *Agent hooks* page).
 
 **Remote sessions report status too** (same per-agent range): at spawn
