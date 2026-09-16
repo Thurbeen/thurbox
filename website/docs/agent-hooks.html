@@ -267,7 +267,6 @@ breadcrumb: 'Agent hooks'
             </li>
             <li>
               <strong>codex</strong>
-              <em>(experimental)</em>
               &mdash; codex's claude-shaped
               <code>hooks.json</code>
               is JSON-merged into
@@ -278,10 +277,19 @@ breadcrumb: 'Agent hooks'
               <code>UserPromptSubmit</code>
               /
               <code>PreToolUse</code>
+              /
+              <code>PostToolUse</code>
               &rarr; working,
+              <code>PermissionRequest</code>
+              &rarr; blocked,
               <code>Stop</code>
-              &rarr; done. No blocked &mdash; codex's top-level hooks have no permission event. This
-              replaced the older
+              &rarr; done. The block edge is a real approval event rather than a text match, and
+              <code>PostToolUse</code>
+              is the edge back out. codex's
+              <code>Stop</code>
+              hook must print JSON on a zero exit, so that command ends in
+              <code>echo '{}'</code>
+              &mdash; the no-op decision. This replaced the older
               <code>notify</code>
               override (which reported done only).
             </li>

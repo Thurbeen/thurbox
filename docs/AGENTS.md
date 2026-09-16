@@ -147,13 +147,24 @@ embedded hook assets live in
   `format = "toml"` selects the TOML merge for an agent whose shared config is
   TOML (kimi). Either way the semantics match: objects/tables recurse, arrays
   union, a type conflict with the user's value is left alone, and uninstall
-  prunes exactly our entries. How "ours" is decided differs by format: JSON
-  matches the `session signal` marker in an entry's content, while TOML reads an
-  ownership comment stamped on each shipped entry — so a user hook that calls
-  `session signal` itself survives a TOML uninstall, and a payload that renames
-  an event replaces its old entry instead of stacking a second one beside it.
+  prunes exactly our entries. Install prunes first too, in both formats, so a
+  payload that renamed an event or edited a command replaces the entry already on
+  disk instead of stacking a second copy beside it — without that, a fixed hook
+  stays broken, because the stale one is still there and still firing. How "ours"
+  is decided differs by format: JSON matches the `session signal` marker in an
+  entry's content, while TOML reads an ownership comment stamped on each shipped
+  entry — so a user hook that calls `session signal` itself survives a TOML
+  uninstall, and is absorbed by the JSON one.
   - `codex`: merged into `~/.codex/hooks.json` (SessionStart→idle,
-    UserPromptSubmit/PreToolUse→working, Stop→done; **no blocked**). *Experimental.*
+    UserPromptSubmit/PreToolUse/PostToolUse→working, PermissionRequest→blocked,
+    Stop→done). Its block edge is a **structured** approval event, like kimi's,
+    with PostToolUse as the edge back out. Two things are codex's alone: `Stop`
+    must write JSON to stdout on a zero exit (`echo '{}'` — its schema is
+    `deny_unknown_fields`, `decision`/`reason` plus the universal fields) or the
+    turn fails with *"hook returned invalid stop hook JSON output"*, and every
+    other event folds plain-text stdout into the model's context. Both are why
+    every shipped hook command redirects its own output away — see
+    `tests/hook_stdout_contract.rs`.
   - `kimi` (Kimi Code CLI): merged into `~/.kimi-code/config.toml` — TOML, so
     the merge is `agent::toml_merge` (`format = "toml"` on the `[[config_merges]]`
     entry) rather than the JSON one; `toml_edit` keeps the user's comments and key

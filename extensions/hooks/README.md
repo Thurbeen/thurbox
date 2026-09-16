@@ -32,6 +32,16 @@ The hook command is always `thurbox-cli session signal --state <working|blocked|
 which identifies the calling session from the injected `$THURBOX_SESSION` (no ids
 passed by hand) and is suffixed `|| true` so it can never break the agent.
 
+Every command also **redirects its own output away** (`>/dev/null 2>&1`). A hook's
+stdout is a pipe, and down a pipe `thurbox-cli` answers in TOON — which the agent
+then reads as something it was told. claude, codex, grok and antigravity fold a
+hook's plain-text stdout into the model's context, so the signal's receipt was
+being billed to you on every prompt and every tool call; codex goes further and
+**fails** a `Stop` hook whose stdout is not JSON (*"hook returned invalid stop hook
+JSON output"*), which is why its `Stop` command ends in `echo '{}'` — the no-op
+decision. If you wire your own agent (see *Wiring an agent thurbox doesn't know*
+below), do the same.
+
 - **claude** — a managed settings file (under the extension home) is passed via
   `--settings` (an `[[agent_patches]]` that appends the flag to the built-in
   `claude` agent, reversibly). claude merges it with your own settings, so your
@@ -56,17 +66,19 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   working, `permission.asked` → blocked, `permission.replied` → working
   (allowed or denied, the turn is opencode's again — it is the only agent here
   with a real permission-reply event), `session.idle` → done.
-- **codex** *(experimental)* — codex's `hooks.json` is claude-shaped, loaded
-  from `~/.codex/hooks.json`. We **JSON-merge** our entries in (a
-  `[[config_merges]]`, guarded by `requires_dir`) so your own hooks are
-  preserved; uninstall prunes exactly ours back out. Events: `SessionStart` →
-  idle, `UserPromptSubmit`/`PreToolUse` → working, `Stop` → done. **No blocked**
-  — codex's top-level hooks have no permission/approval event (that lives only in
-  the legacy `notify`). This replaced the old `-c notify=…` override (which only
-  reported done); the trade is a reversible write into a separate
-  `~/.codex/hooks.json`, never your `config.toml`. **Caveat:** codex's hooks.json
-  is newer than its `notify`; the event names are assumed identical to claude's —
-  if they differ, edit `codex-hooks.json` (no code change).
+- **codex** — codex's `hooks.json` is claude-shaped, loaded from
+  `~/.codex/hooks.json`. We **JSON-merge** our entries in (a `[[config_merges]]`,
+  guarded by `requires_dir`) so your own hooks are preserved; uninstall prunes
+  exactly ours back out. Events: `SessionStart` → idle,
+  `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → working, `PermissionRequest` →
+  blocked, `Stop` → done. The block edge is **structured** — codex has a real
+  approval event, so unlike claude/antigravity nothing is inferred from the text
+  of a notification — and `PostToolUse` is the edge back out once the approved
+  tool runs. `Stop` must print JSON on a zero exit (`echo '{}'`, the no-op
+  decision; its schema is `deny_unknown_fields` and takes only `decision`/`reason`
+  plus the universal fields), or codex fails the turn. This replaced the old
+  `-c notify=…` override (which only reported done); the trade is a reversible
+  write into a separate `~/.codex/hooks.json`, never your `config.toml`.
 - **vibe** *(experimental)* — Mistral Vibe loads hooks from `~/.vibe/hooks.toml`.
   It's TOML, so we can't JSON-merge it — we drop a managed file in (an
   `[[external_files]]`, guarded by `requires_dir`, only when vibe is installed).
@@ -287,9 +299,12 @@ them. It can still report state, because `THURBOX_SESSION` is set on the pane
 and inherited by every process in it:
 
 ```bash
-thurbox-cli session signal --state working   # identity from $THURBOX_SESSION
-thurbox-cli session signal --state done
+thurbox-cli session signal --state working >/dev/null 2>&1   # identity from $THURBOX_SESSION
+thurbox-cli session signal --state done >/dev/null 2>&1
 ```
+
+Keep the redirect: a hook's stdout is a pipe, so without it `thurbox-cli` answers
+in TOON straight into whatever your agent does with a hook's output.
 
 Point your own agent's lifecycle hooks at that and the session reports exactly
 like a built-in. Failing even that, thurbox reads the pane: a session that never
