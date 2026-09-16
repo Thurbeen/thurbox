@@ -78,6 +78,12 @@ requires_dir = "~/.config/opencode"
 # edge is STRUCTURED — a real approval event, not a text match on a notification
 # body — and PostToolUse clears it when the tool the user approved runs.
 #
+# Verified against codex-cli 0.154.0, driving a real turn: all six events fire
+# and complete, and an approval prompt reports `blocked` and goes back to
+# `working` the moment it is granted. Note `codex exec` pins its approval policy
+# to `never`, so the block edge only appears in an interactive session — which
+# is the only kind thurbox runs.
+#
 # One thing about codex is nobody else's: silencing the Stop hook is not enough,
 # because `Stop` (and `Interrupt`) must write **JSON** to stdout on a zero exit
 # or codex fails the turn with "hook returned invalid stop hook JSON output".

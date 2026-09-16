@@ -180,7 +180,10 @@ embedded hook assets live in
     turn fails with *"hook returned invalid stop hook JSON output"*, and every
     other event folds plain-text stdout into the model's context. Both are why
     every shipped hook command redirects its own output away — see
-    `tests/hook_stdout_contract.rs`.
+    `tests/hook_stdout_contract.rs`. Verified against codex-cli 0.154.0 over a
+    real turn: every event fires, and an approval prompt reports `blocked` and
+    returns to `working` when granted. `codex exec` pins its approval policy to
+    `never`, so that edge only shows in an interactive session.
   - `kimi` (Kimi Code CLI): merged into `~/.kimi-code/config.toml` — TOML, so
     the merge is `agent::toml_merge` (`format = "toml"` on the `[[config_merges]]`
     entry) rather than the JSON one; `toml_edit` keeps the user's comments and key

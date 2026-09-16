@@ -76,9 +76,11 @@ below), do the same.
   of a notification — and `PostToolUse` is the edge back out once the approved
   tool runs. `Stop` must print JSON on a zero exit (`echo '{}'`, the no-op
   decision; its schema is `deny_unknown_fields` and takes only `decision`/`reason`
-  plus the universal fields), or codex fails the turn. This replaced the old
-  `-c notify=…` override (which only reported done); the trade is a reversible
-  write into a separate `~/.codex/hooks.json`, never your `config.toml`.
+  plus the universal fields), or codex fails the turn. Verified against
+  codex-cli 0.154.0 over a real turn, approval prompt included. This replaced the
+  old `-c notify=…` override (which only reported done); the trade is a
+  reversible write into a separate `~/.codex/hooks.json`, never your
+  `config.toml`.
 - **vibe** *(experimental)* — Mistral Vibe loads hooks from `~/.vibe/hooks.toml`.
   It's TOML, so we can't JSON-merge it — we drop a managed file in (an
   `[[external_files]]`, guarded by `requires_dir`, only when vibe is installed).
