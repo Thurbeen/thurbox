@@ -128,6 +128,16 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   local window command used to be left for the multiplexer to resolve, which
   sees the *server's* `PATH` (an attached client's is not copied in), not the
   one thurbox itself was launched with.
+- **`tests/spawn_with_failing_tmux_hook.rs`** (unix) — its own binary and its own
+  socket because it installs a **server-global** hook, which any suite sharing
+  the socket would then spawn into. Against a *real* tmux (skipped when tmux is
+  absent): a dead `after-new-window` hook, the shape an uninstalled tmux plugin
+  leaves behind. Pins that the one-shot `new-window` path believes the pane id
+  on stdout rather than the exit status — tmux hands the client the status of
+  the last `run-shell` its command list triggered, hooks included, so a window
+  that was created came back as `exit status: 127` and was torn down (#1154).
+  The second test pins the quieter half: the id kept must still resolve to that
+  window and carry its session stamp.
 - **`tests/path_resolution_absolute.rs`** (unix) — its own test binary because it
   moves the process working directory, which a sibling test in the same binary
   would see. Pins that `resolve_on_path` (`docs/CONFIG.md` → How `command` is
