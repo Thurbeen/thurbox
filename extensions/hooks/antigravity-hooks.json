@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state idle || true"
+            "command": "thurbox-cli session signal --state idle >/dev/null 2>&1 || true"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working || true"
+            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working || true"
+            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true"
           }
         ]
       }
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"$(cat | sed -n 's/.*\"message\":\"\\([^\"]*\\)\".*/\\1/p')\" in *permission*|*Permission*|*approval*|*approve*) thurbox-cli session signal --state blocked ;; esac; true"
+            "command": "case \"$(cat | sed -n 's/.*\"message\":\"\\([^\"]*\\)\".*/\\1/p')\" in *permission*|*Permission*|*approval*|*approve*) thurbox-cli session signal --state blocked >/dev/null 2>&1 ;; esac; true"
           }
         ]
       }
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state done || true"
+            "command": "thurbox-cli session signal --state done >/dev/null 2>&1 || true"
           }
         ]
       }

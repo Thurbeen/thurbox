@@ -206,11 +206,13 @@ mod tests {
                 "missing rewritten {state} command"
             );
         }
-        // The surrounding hook shape (`|| true`, the blocked `case`) survives
-        // the prefix replace, and the result is still valid JSON with all five
-        // hook events.
-        assert!(rewritten.contains("tmux set-option -p @thurbox_state idle || true"));
-        assert!(rewritten.contains("tmux set-option -p @thurbox_state blocked ;;"));
+        // The surrounding hook shape (the stdout redirect, `|| true`, the
+        // blocked `case`) survives the prefix replace, and the result is still
+        // valid JSON with all five hook events.
+        assert!(
+            rewritten.contains("tmux set-option -p @thurbox_state idle >/dev/null 2>&1 || true")
+        );
+        assert!(rewritten.contains("tmux set-option -p @thurbox_state blocked >/dev/null 2>&1 ;;"));
         let json: serde_json::Value = serde_json::from_str(&rewritten).expect("still valid JSON");
         let hooks = json.get("hooks").and_then(|h| h.as_object()).unwrap();
         for event in [
@@ -894,16 +896,20 @@ mod tests {
         r#""message":"Claude needs your permission","notification_type":"permission_prompt"}"#
     );
 
-    /// Run a payload's own `Notification` command against `stdin`, with the
-    /// signal call replaced by `echo` so the test observes the decision instead
-    /// of writing to a database.
+    /// Run a payload's own `Notification` command against `stdin`, resolving
+    /// its `thurbox-cli` to a stub that records the state word instead of
+    /// writing a database.
     ///
-    /// The shipped command, not a re-implementation of it: what is under test
-    /// is a shell glob against JSON, and the only honest way to check one is to
-    /// let a shell run it.
+    /// The shipped command **verbatim**, not a re-implementation of it: what is
+    /// under test is a shell glob against JSON, and the only honest way to
+    /// check one is to let a shell run it. A stub on `PATH` rather than an
+    /// `echo` substituted into the command text, because the command redirects
+    /// its own stdout away (see the manifest) — anything reporting by printing
+    /// would be silenced by the very thing it runs verbatim to test.
     #[cfg(unix)]
     fn signalled_state(payload: &str, kind: PayloadKind, stdin: &str) -> Option<String> {
         use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
 
         let doc: serde_json::Value = match kind {
             PayloadKind::Json => serde_json::from_str(payload).expect("valid JSON"),
@@ -912,12 +918,27 @@ mod tests {
         let command = json_hook_commands(&doc)
             .into_iter()
             .find(|c| c.contains("--state blocked"))
-            .expect("payload has a blocked command")
-            .replace(SIGNAL_MARKER, "echo ");
+            .expect("payload has a blocked command");
+
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let log = dir.path().join("state");
+        let bin = dir.path().join("thurbox-cli");
+        // `$4` is the state word of `… session signal --state <s>`.
+        std::fs::write(
+            &bin,
+            format!("#!/bin/sh\nprintf '%s' \"$4\" >> '{}'\n", log.display()),
+        )
+        .expect("write the stub");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let path = std::env::join_paths(std::iter::once(dir.path().to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ))
+        .expect("join PATH");
 
         let mut child = std::process::Command::new("sh")
             .arg("-c")
             .arg(&command)
+            .env("PATH", path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -928,9 +949,10 @@ mod tests {
             .expect("stdin")
             .write_all(stdin.as_bytes())
             .expect("write payload");
-        let out = child.wait_with_output().expect("run the hook command");
-        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (!printed.is_empty()).then_some(printed)
+        child.wait_with_output().expect("run the hook command");
+        let recorded = std::fs::read_to_string(&log).unwrap_or_default();
+        let recorded = recorded.trim().to_string();
+        (!recorded.is_empty()).then_some(recorded)
     }
 
     /// The regression: the matcher globbed the **whole payload**, so anything

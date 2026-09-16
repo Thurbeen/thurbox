@@ -622,6 +622,97 @@ format = "toml"
     assert_eq!(again.config_merges_skipped, [config.to_string_lossy()]);
 }
 
+/// The JSON twin of the TOML case above: an update that edits a command must
+/// replace our entry rather than stack a second copy beside it.
+///
+/// Array merge is a union by deep equality, so an edited command is a *new*
+/// value: the stale entry stays on disk and keeps firing. That is not cosmetic
+/// — it is how a fixed hook stays broken. codex rejects a `Stop` hook whose
+/// stdout is not JSON, so a user carrying the old `session signal` command
+/// alongside the fixed one still sees "hook returned invalid stop hook JSON
+/// output" every turn.
+#[test]
+fn json_config_merge_update_replaces_our_entry_instead_of_accumulating() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+
+    let agent_dir = temp.path().join("dotcodex");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let settings = agent_dir.join("hooks.json");
+    // The user's own Stop hook, which does not call `session signal` at all.
+    std::fs::write(
+        &settings,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"notify-send done"}]}]}}"#,
+    )
+    .unwrap();
+    let home = temp.path().join("hookshome");
+
+    let src = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        src.path().join("extension.toml"),
+        format!(
+            r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{settings}'
+source = "codex-hooks.json"
+requires_dir = '{agent_dir}'
+"#,
+            home = home.display(),
+            settings = settings.display(),
+            agent_dir = agent_dir.display(),
+        ),
+    )
+    .unwrap();
+    let payload = |command: &str| {
+        format!(
+            r#"{{"hooks":{{"Stop":[{{"hooks":[{{"type":"command","command":"{command}"}}]}}]}}}}"#
+        )
+    };
+    std::fs::write(
+        src.path().join("codex-hooks.json"),
+        payload("thurbox-cli session signal --state done || true"),
+    )
+    .unwrap();
+
+    let target = src.path().to_string_lossy().to_string();
+    install_extension(&db, &target, None, false).unwrap();
+
+    // A later version fixes the command.
+    std::fs::write(
+        src.path().join("codex-hooks.json"),
+        payload("thurbox-cli session signal --state done >/dev/null 2>&1 || true; echo '{}'"),
+    )
+    .unwrap();
+    let report = install_extension(&db, &target, None, false).unwrap();
+    assert_eq!(report.config_merges_applied, [settings.to_string_lossy()]);
+
+    let updated = std::fs::read_to_string(&settings).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&updated).expect("still valid JSON");
+    let stop = doc["hooks"]["Stop"].as_array().unwrap();
+    assert_eq!(
+        stop.len(),
+        2,
+        "the user's hook plus exactly one of ours: {updated}"
+    );
+    assert_eq!(
+        stop[0],
+        serde_json::json!({"hooks":[{"type":"command","command":"notify-send done"}]}),
+        "the user's own hook must survive verbatim: {updated}"
+    );
+    assert!(
+        !updated.contains("--state done || true"),
+        "the stale entry must be gone, not sitting beside the new one: {updated}"
+    );
+
+    // Re-installing the same payload writes nothing (no churn on every tick).
+    let again = install_extension(&db, &target, None, false).unwrap();
+    assert!(again.config_merges_applied.is_empty());
+    assert_eq!(again.config_merges_skipped, [settings.to_string_lossy()]);
+}
+
 #[test]
 fn config_merge_soft_skips_a_malformed_user_target() {
     let temp = tempfile::TempDir::new().unwrap();

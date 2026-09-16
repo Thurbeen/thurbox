@@ -404,6 +404,18 @@ fn merged_config(
             let to_merge: serde_json::Value = serde_json::from_str(source_text)
                 .map_err(|e| format!("parse merge source {source_name}: {e}"))?;
             let mut doc = read_json_or_empty(dest)?;
+            // Prune, then merge — for the reason the TOML arm does it below.
+            // Array merge is a union by deep equality, so a payload that edited
+            // a command produces a *new* value and the stale entry stays on
+            // disk, firing beside the new one. A fixed hook then stays broken:
+            // codex rejects a `Stop` hook whose stdout is not JSON, and the old
+            // command is still there to produce that stdout every turn.
+            //
+            // Unlike TOML's ownership comment the marker here is the command
+            // itself, so this also absorbs a hook the user wired to `session
+            // signal` by hand — the same trade `revert_config_merge` has always
+            // made on the way out, now made consistently on the way in.
+            crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
             crate::agent::json_merge::merge(&mut doc, &to_merge);
             serde_json::to_string_pretty(&doc)
                 .map_err(|e| format!("serialize {}: {e}", dest.display()))
@@ -413,12 +425,10 @@ fn merged_config(
                 .parse()
                 .map_err(|e| format!("parse merge source {source_name}: {e}"))?;
             let mut doc = read_toml_or_empty(dest)?;
-            // Prune, then merge. Our entries are identified by an ownership
-            // comment rather than by their content, so a payload that renamed an
-            // event or edited a command replaces the entry already on disk
-            // instead of stacking a second copy beside it. (The JSON sibling
-            // cannot do this: a content match would delete a user hook it never
-            // wrote and then not put it back.)
+            // Prune, then merge, as the JSON arm does — but on an ownership
+            // comment rather than on the command's content, so a hook the user
+            // wired to `session signal` themselves is left alone rather than
+            // absorbed.
             crate::agent::toml_merge::prune_owned(&mut doc, MANAGED_MARKER);
             crate::agent::toml_merge::merge(&mut doc, &to_merge);
             Ok(doc.to_string())

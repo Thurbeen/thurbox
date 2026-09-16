@@ -10,11 +10,19 @@
 # Identity is the injected $THURBOX_SESSION env var (no ids passed by hand), and
 # every hook command is `… || true` so a missing thurbox-cli or a hook firing
 # outside a thurbox session can never break the agent.
+#
+# Every command also redirects its own output away (`>/dev/null 2>&1`). A hook's
+# stdout is a pipe, and down a pipe `thurbox-cli` answers in TOON
+# (`output::Format::resolve`) — which the agents that read hook stdout then take
+# as something they were told. codex *fails* a `Stop` hook whose stdout is not
+# JSON; claude, codex, grok and antigravity fold plain-text stdout into the
+# model's context on their prompt/session events. Neither reading is one the
+# signal's receipt belongs in. Pinned by `tests/hook_stdout_contract.rs`.
 
 name = "hooks"
 description = "Report each agent's lifecycle state (working/blocked/done) to thurbox via agent hooks."
 config_version = 1
-version = "1.9.0"  # v1.9: claude/antigravity/grok match the *message* of a Notification rather than the whole payload — a checkout path carrying "permission" signalled a permanent `blocked` on the idle notification that ends every turn; v1.8: grok (global ~/.grok/hooks drop) + kimi (TOML merge into ~/.kimi-code/config.toml) status hooks; v1.7: omp (Oh My Pi) status extension (ask/ask_user_question → blocked); v1.6: vibe hooks rewritten to vibe 2.21.0's real schema (pre_tool/post_agent); v1.5: pi (pi.dev) status extension
+version = "1.10.0"  # v1.10: every hook command redirects its own stdout (a hook's stdout is a pipe, so `session signal` answered in TOON — codex refused every turn with "invalid stop hook JSON output", the rest billed the receipt to the model's context) + codex gains PostToolUse/PermissionRequest and a `{}` Stop decision; v1.9: claude/antigravity/grok match the *message* of a Notification rather than the whole payload — a checkout path carrying "permission" signalled a permanent `blocked` on the idle notification that ends every turn; v1.8: grok (global ~/.grok/hooks drop) + kimi (TOML merge into ~/.kimi-code/config.toml) status hooks; v1.7: omp (Oh My Pi) status extension (ask/ask_user_question → blocked); v1.6: vibe hooks rewritten to vibe 2.21.0's real schema (pre_tool/post_agent); v1.5: pi (pi.dev) status extension
 # Default home; the auto-activation path overrides this with *this build's*
 # resolved config dir (`~/.config/thurbox` or `~/.config/thurbox-dev`) so dev and
 # release installs stay isolated. See `session_ops::builtin_hooks::hooks_home`.
@@ -57,21 +65,26 @@ path = "~/.config/opencode/plugin/thurbox-status.js"
 source = "opencode-status.js"
 requires_dir = "~/.config/opencode"
 
-# codex now has a claude-shaped hooks.json (SessionStart/UserPromptSubmit/
-# PreToolUse/Stop) loaded from ~/.codex/hooks.json — strictly richer than the
-# old `notify` (which only fired agent-turn-complete → done). We JSON-merge our
-# entries into that file (reversibly; uninstall prunes exactly ours by the
-# `session signal` marker, leaving the user's hooks intact), guarded by
-# requires_dir so it's a no-op when codex isn't installed. Events: SessionStart
-# → idle, UserPromptSubmit/PreToolUse → working, Stop → done. No `blocked` —
-# codex's top-level hooks have no permission/approval event (that lives only in
-# the legacy `notify`).
+# codex has a claude-shaped hooks.json loaded from ~/.codex/hooks.json —
+# strictly richer than the old `notify` (which only fired agent-turn-complete →
+# done). We JSON-merge our entries into that file (reversibly; uninstall prunes
+# exactly ours by the `session signal` marker, leaving the user's hooks intact),
+# guarded by requires_dir so it's a no-op when codex isn't installed. Events:
+# SessionStart → idle, UserPromptSubmit/PreToolUse/PostToolUse → working,
+# PermissionRequest → blocked, Stop → done. Unlike claude/antigravity the block
+# edge is STRUCTURED — a real approval event, not a text match on a notification
+# body — and PostToolUse clears it when the tool the user approved runs.
 #
-# EXPERIMENTAL: codex's hooks.json is newer than its `notify`; the event names
-# here are assumed identical to claude's. If they differ on the live `codex`,
-# edit codex-hooks.json (no code change). Replaces the old `-c notify=…` patch
-# (avoiding a double-`done` signal); the trade is a reversible write into a
-# separate ~/.codex/hooks.json — never the user's config.toml.
+# One thing about codex is nobody else's: silencing the Stop hook is not enough,
+# because `Stop` (and `Interrupt`) must write **JSON** to stdout on a zero exit
+# or codex fails the turn with "hook returned invalid stop hook JSON output".
+# So that command ends in `echo '{}'` — the no-op decision. codex's Stop schema
+# is deny_unknown_fields and takes only `decision`/`reason` plus the universal
+# fields, so `{}` is the one answer that is always right.
+#
+# Replaces the old `-c notify=…` patch (avoiding a double-`done` signal); the
+# trade is a reversible write into a separate ~/.codex/hooks.json — never the
+# user's config.toml.
 [[config_merges]]
 path = "~/.codex/hooks.json"
 source = "codex-hooks.json"

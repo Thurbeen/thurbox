@@ -191,7 +191,7 @@ fn body(event: &str, message: &str) -> String {
 }
 
 /// Each JSON-payload agent's event names, in the order one turn fires them:
-/// prompt (claude and copilot only), tool call, permission prompt, the tool
+/// prompt (all but antigravity), tool call, permission prompt, the tool
 /// completing, end of turn.
 const TURNS: &[(&str, &str, [&str; 5])] = &[
     (
@@ -210,6 +210,19 @@ const TURNS: &[(&str, &str, [&str; 5])] = &[
         "antigravity",
         "antigravity-hooks.json",
         ["", "PreToolUse", "Notification", "PostToolUse", "Stop"],
+    ),
+    (
+        // codex has a real approval event, so the blocked hook needs no matcher
+        // and PostToolUse is the edge back out.
+        "codex",
+        "codex-hooks.json",
+        [
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PermissionRequest",
+            "PostToolUse",
+            "Stop",
+        ],
     ),
     (
         // copilot matches `permission_prompt` itself, so its notification hook
