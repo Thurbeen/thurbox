@@ -123,8 +123,9 @@ fn a_dead_plugin_hook_does_not_fail_a_window_that_was_created() {
              hook exited non-zero: {e:#}"
         ),
     };
+    let digits = pane.strip_prefix('%').unwrap_or_default();
     assert!(
-        pane.starts_with('%') && pane[1..].chars().all(|c| c.is_ascii_digit()),
+        !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()),
         "the spawn must keep the pane id tmux printed and not the hook's output \
          alongside it: {pane:?}"
     );

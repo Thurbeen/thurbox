@@ -3171,9 +3171,11 @@ pub fn spawn_window(
             );
         }
         warn!(
-            "tmux answered {} for window {} but created it ({}); a hook on the \
-             tmux server is failing — one left by an uninstalled plugin outlives \
-             the plugin, and `{} -L {} kill-server` clears it",
+            "tmux answered {} for window {} and created it anyway ({}): a hook \
+             on thurbox's own server failed, which is what an uninstalled \
+             plugin's leftover hook does for the life of that server. `{} -L {} \
+             show-hooks -g` names it. Unset the hook rather than killing that \
+             server — it holds every live session",
             output.status,
             window_name,
             pane_id,
