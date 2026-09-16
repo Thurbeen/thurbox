@@ -13,7 +13,9 @@ use std::process::Stdio;
 use anyhow::{Context, Result};
 use tracing::warn;
 
-use super::{git_command, reportable_stderr, resolve_base_ref, run_git_capture};
+use super::{
+    git_command, reportable_stderr, resolve_base_ref, run_git_capture, run_git_capture_env,
+};
 use crate::session::HostDef;
 
 /// List local branch names for a repo.
@@ -186,8 +188,11 @@ pub struct WorkingDiff {
 /// `git add -A`, `git diff --cached`) — is refused: it writes loose objects into
 /// the repository being reviewed, and for a pane refreshing every few seconds
 /// against a worktree an agent is editing, that is a reader mutating what it
-/// reads. Not destructive (blobs are content-addressed and gc prunes them), just
-/// not a reviewer's business.
+/// reads. Nor would the mess stay small: an unreachable blob is younger than
+/// `gc.pruneExpire` for a fortnight, so `git gc --auto` cannot remove it and
+/// eventually gives up into `.git/gc.log`, which then suppresses auto-gc
+/// repo-wide — the failure `PROBE_IDENT` records below, at one blob per changed
+/// file per refresh rather than one commit per poll.
 pub fn working_diff_on(host: Option<&HostDef>, worktree: &Path) -> Option<WorkingDiff> {
     let mut body = run_diff(host, worktree, &["diff", "--no-color", "HEAD"])?;
     let mut numstat_z = diff_numstat_on(host, worktree, None)?;
@@ -432,15 +437,47 @@ fn every_commit_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> 
     Some(lines.peek().is_some() && lines.all(|l| l.trim_start().starts_with('-')))
 }
 
+/// The identity and timestamp [`squashed_upstream`]'s probe commit is written
+/// with. Fixed values, and that is the whole point of them.
+///
+/// `commit-tree` hashes the author and committer lines along with the tree, so
+/// left to inherit the ambient identity and *now*, the same question hashes to
+/// a new object every time it is asked — and `worktree_stats` asks it every
+/// five seconds for as long as a session sits on unmerged work, the one answer
+/// it never caches. That wrote a dangling commit per poll: 28k loose objects in
+/// one repository here, well past `gc.auto`, at which point `git gc --auto`
+/// finds nothing it may prune (they are younger than `gc.pruneExpire`), gives
+/// up with "too many unreachable loose objects" into `.git/gc.log` — and that
+/// file then suppresses auto-gc repo-wide for a day and prints its warning on
+/// every command that would have run one.
+///
+/// Pinned, the probe is a pure function of `(tree, parent)`: the second ask
+/// rewrites the object it already wrote, so a repository accumulates one per
+/// commit a branch actually reaches rather than one per poll. `git cherry`
+/// compares patch ids, which carry neither identity nor date, so the answer is
+/// exactly the one an ambient identity gave. Pinning also frees the check from
+/// needing a configured `user.email`, which `commit-tree` would otherwise
+/// demand of a repository that has none.
+const PROBE_IDENT: [(&str, &str); 6] = [
+    ("GIT_AUTHOR_NAME", "thurbox"),
+    ("GIT_AUTHOR_EMAIL", "thurbox@invalid"),
+    ("GIT_AUTHOR_DATE", "@0 +0000"),
+    ("GIT_COMMITTER_NAME", "thurbox"),
+    ("GIT_COMMITTER_EMAIL", "thurbox@invalid"),
+    ("GIT_COMMITTER_DATE", "@0 +0000"),
+];
+
 /// Squash merge: the branch landed as one new commit, so none of its own
 /// commits is upstream — only the sum of them. `commit-tree` squares the
-/// branch off onto its merge base as a single dangling commit (nothing
-/// references it and no ref moves, so git's own gc prunes it), and `git
-/// cherry` asks whether the default branch already carries that one patch.
+/// branch off onto its merge base as a single dangling commit — no ref moves
+/// and nothing references it — and `git cherry` asks whether the default
+/// branch already carries that one patch. The commit is written with
+/// [`PROBE_IDENT`] so re-asking reuses it instead of writing another.
 fn squashed_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
-    let squashed = run_git_capture(
+    let squashed = run_git_capture_env(
         &["commit-tree", "HEAD^{tree}", "-p", base, "-m", "squash"],
         cwd,
+        &PROBE_IDENT,
     )?;
     let cherry = run_git_capture(&["cherry", default, squashed.trim()], cwd)?;
     Some(cherry.trim_start().starts_with('-'))
@@ -529,8 +566,8 @@ pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
 /// `merged_head` short-circuits the merge check: pass the commit a caller has
 /// already seen [`merged_into_default`] answer `Some(true)` for, and if HEAD is
 /// still that commit the answer is reused instead of re-running the handful of
-/// `git` subprocesses it costs — one of which writes a fresh dangling commit —
-/// every time a settled worktree is restatted.
+/// `git` subprocesses it costs — one of which writes a dangling commit — every
+/// time a settled worktree is restatted.
 ///
 /// The key is the **commit**, not the worktree, and that is the whole of its
 /// correctness. A landed squash never un-lands, but `merged` is a fact about
