@@ -369,6 +369,22 @@ whole question directly. See
 render, a keystroke or a list row) and for why a remote host or a relative
 `command` is reported as *unknown* rather than missing.
 
+**A spawn's verdict is the pane id, not the exit status.** The other thing that
+answers 127 is the multiplexer itself, and it is not about the agent at all:
+tmux hands a command-mode client the status of the last `run-shell` its command
+list triggered, and a *hook* counts. An `after-new-window` hook left behind by
+an uninstalled tmux plugin calls a script that is no longer on the disk,
+`/bin/sh` answers 127, and the client exits 127 although the window was created
+and its pane id already printed — with nothing on stderr to say so. So the
+answer to `-P` outranks the status: where there is a pane id the window exists
+and the session keeps it, with a warning that a hook failed and that
+`show-hooks -g` on that socket names which (unset it; the server holding it
+holds every live session too, so it is not one to kill). Only a failure with no pane id
+is a failure. This is also why the same server could refuse to create a session
+and serve everything else — a restart, a plugin program, the companion shell
+pane all go over control mode, whose reply block carries the `-P` answer alone
+and no exit status to misread.
+
 **Creating a session moves nothing — unless you ask it to.** By default the new
 row appears in the list and waits to be picked; the selection, the pane showing
 it and the keyboard all stay where they were. Creation is a command that

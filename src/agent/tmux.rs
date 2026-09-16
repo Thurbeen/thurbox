@@ -2628,7 +2628,11 @@ pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
     ])
     .output()
     .context("Failed to create automation heartbeat window")?;
-    if !out.status.success() {
+    // Asked again rather than believed: the status may be a failing user hook's
+    // and not this window's — see the same read in `spawn_window`. There is no
+    // `-P` answer to trust here, so the listing is what says whether the window
+    // exists.
+    if !out.status.success() && !automation_heartbeat_running() {
         bail!("tmux new-window (heartbeat) {}", mux_failure(&out));
     }
     debug!("Armed automation heartbeat keeper window");
@@ -3097,11 +3101,15 @@ pub(crate) fn resolve_local_program(command: &str) -> String {
 /// sessions can share a name), so the window is stamped with `session_id`
 /// before this returns and every later lookup resolves that (ADR-25).
 ///
+/// A pane id on stdout outranks a non-zero exit status, which on this path can
+/// belong to a user's tmux hook rather than to the window — see the read below.
+///
 /// On Windows the local mux is psmux, whose `new-window -P -F` support is
 /// unverified against the documented divergences (ADR-13) — there the id is
 /// not asked for and an empty string is returned, so the stamp is written
 /// against the window name instead (and is best-effort, like the psmux carve-
-/// outs elsewhere).
+/// outs elsewhere). With no id to weigh, a non-zero status is the whole answer
+/// there, exactly as before.
 pub fn spawn_window(
     session_id: &str,
     session_name: &str,
@@ -3134,22 +3142,47 @@ pub fn spawn_window(
     let output = tmux
         .output()
         .map_err(|e| local_launch_failure("Failed to run tmux new-window for headless spawn", e))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "tmux new-window exited {} for window {}: {}",
-            output.status,
-            window_name,
-            stderr.trim()
-        );
-    }
     // psmux reports no pane id, so the stamp goes on the window name — which is
     // the only handle that path has either way.
     let pane_id = if cfg!(windows) {
         String::new()
     } else {
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
+        new_window_pane_id(&output.stdout)
     };
+    if !output.status.success() {
+        // The exit status is not this command's verdict on its own. tmux hands
+        // a command-mode client the status of the last `run-shell` its command
+        // list triggered, and a *hook* counts: an `after-new-window` left
+        // behind by an uninstalled tmux plugin runs a script that is no longer
+        // there, `/bin/sh` answers 127, and the client exits 127 although
+        // `new-window` succeeded and already printed the pane id (measured,
+        // tmux 3.5a; stderr is empty, so the message named nothing either).
+        // The pane id is the answer to `-P`, so where there is one the window
+        // exists and refusing it tears down a session that started fine
+        // (issue #1154). The control-mode path never sees this: its reply block
+        // carries the `-P` answer alone and no exit status at all.
+        if !control_mode::is_valid_pane_id(&pane_id) {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "tmux new-window exited {} for window {}: {}",
+                output.status,
+                window_name,
+                stderr.trim()
+            );
+        }
+        warn!(
+            "tmux answered {} for window {} and created it anyway ({}): a hook \
+             on thurbox's own server failed, which is what an uninstalled \
+             plugin's leftover hook does for the life of that server. `{} -L {} \
+             show-hooks -g` names it. Unset the hook rather than killing that \
+             server — it holds every live session",
+            output.status,
+            window_name,
+            pane_id,
+            DEFAULT_MUX,
+            local_socket()
+        );
+    }
     let target = if pane_id.is_empty() {
         window_target(session_name)
     } else {
@@ -3157,6 +3190,21 @@ pub fn spawn_window(
     };
     stamp_local_window(&target, session_id, WindowRole::Agent);
     Ok(pane_id)
+}
+
+/// The pane id out of a one-shot `new-window -P -F '#{pane_id}'`'s stdout.
+///
+/// The **first** line, not the whole of it: anything a hook's `run-shell`
+/// prints is appended after the `-P` answer on the same stream, so trimming the
+/// lot yields an id with a shell's complaint stuck to it — which then fails
+/// validation and loses a window that exists.
+fn new_window_pane_id(stdout: &[u8]) -> String {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// The `new-window` command list [`spawn_window`] runs: the window created

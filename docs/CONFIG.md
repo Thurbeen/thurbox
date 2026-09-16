@@ -177,6 +177,11 @@ fish applies — so a server started from anything else never sees the agent, fo
 the life of that server, and the spawn fails with a shell's `command not found`
 (exit **127**; an `execvp` failure is exit 1).
 
+That is not the only thing a 127 there can mean, and thurbox does not read the
+exit status as the verdict at all — see
+[FEATURES.md](FEATURES.md#session-creation) for the hook that also produces
+one.
+
 Resolution is **best-effort and never a new way to fail**: a `command` that is
 already a path, that nothing on `PATH` matches (a shell function or alias, or a
 binary installed after thurbox started), or that runs on Windows is passed
