@@ -328,7 +328,22 @@ These are the ones that cost real time.
 - **A pane sharing a `switch` slot draws nothing until it is focused.** The quieter
   sibling of the above: the slot's first occupant is shown and yours waits. Nothing
   fails, so declare a `pills = { … }` entry and the action band will offer it —
-  `plugin check` warns when you have not.
+  `plugin check` warns when you have not. Give that `action` a key as well: the band
+  draws a pill only when a chord resolves for it, so a pill over a palette-only
+  `commands` entry is dropped as silently as one naming nothing. Its `priority` is
+  where the band puts it, highest first; **do not edit another plugin's number to
+  make room.** The `pills` section of `ui.json` beside this directory is where a
+  different order goes:
+
+  ```json
+  { "pills": { "fleetqueue.toggle": 75 } }
+  ```
+
+  Keyed by action, so only the buttons you moved are listed and deleting an entry
+  gives the plugin's own number back. It is read at startup, and it moves a pill
+  rather than making one: an entry naming an action no pill declares is ignored. A
+  value that is not a whole number is dropped, and `thurbox-cli config validate` is
+  what names it.
 - **Give that pane one key that both enters and leaves it**, with `toggle`:
 
   ```lua
@@ -379,7 +394,8 @@ spec; nothing edits the lock. Commit both and this interface reproduces elsewher
 ## Files here are yours, and recoverable
 
 `.bundled.json` records what delivery did; `ui.json` records what you decided
-(which files are off, which are trusted, and any rebindings). Editing a shipped
+(which files are off, which are trusted, any rebindings, and the action band's
+order). Editing a shipped
 file is fine — delivery stops overwriting it once you have. Deleting one is how
 you remove it, and the Interface tab (`Ctrl+,` → `]`) will `r` restore it from
 the binary. So no edit or deletion of a file thurbox ships is unrecoverable.

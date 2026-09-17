@@ -1422,9 +1422,27 @@ pills = { { action = "mine.open", label = "Mine", priority = 10 } },
 ```
 
 A low `priority` is right for anything optional: the band drops the least important
-entries first when it runs out of width. `plugin check` **warns** about a pane in this
-state, and `plugin install` says it at the moment you install one — but it does not fail
-either, because you may have meant it.
+entries first when it runs out of width, and orders left to right by the same number.
+`plugin check` **warns** about a pane in this state, and `plugin install` says it at the
+moment you install one — but it does not fail either, because you may have meant it.
+
+**The number you declare is a default, not the last word.** Whoever installs your pane
+can reorder the band from the `pills` section of their own `~/.config/thurbox/ui.json`,
+so they never have to edit a file you ship:
+
+```json
+{
+  "pills": { "mine.open": 75 }
+}
+```
+
+An entry is keyed by the pill's `action`, so a reader lists only the buttons they moved
+and every other pill keeps what its plugin declared; deleting the entry gives yours back.
+The section is read at startup, beside `bindings` and `settings`, and what it cannot do
+is invent a button — a priority names a pill that already exists and nothing else. That
+is the same standard the band holds your own declaration to: it draws a pill only when a
+**key** resolves for its action, so a pill pointing at a palette-only `commands` entry is
+dropped as silently as one naming nothing. Give the action a key as well.
 
 ## Panes that give a v1 surface back
 
