@@ -303,22 +303,55 @@ fn diagnose(
         findings.push(finding);
     }
 
-    findings.push(match cli_on_path {
+    findings.push(match hook_cli(session, remote, cli_on_path) {
         // A remote session's hooks are rewritten to `tmux set-option -p
         // @thurbox_state` and never invoke `thurbox-cli` at all; on a shared
         // host they run the *host's* CLI. Either way this machine's PATH says
         // nothing about them, so it must not decide the verdict.
-        _ if remote => Finding {
+        HookCli::Remote => Finding {
             key: "cli",
             level: Level::Warn,
             detail: "this session's hooks run on its own host, which cannot be checked from \
                      here — the local `thurbox-cli` is not what they resolve"
                 .into(),
         },
-        Some(path) => Finding {
+        HookCli::OnPanePath(path) => Finding {
             key: "cli",
             level: Level::Ok,
-            detail: format!("hook commands resolve `thurbox-cli` to {path}"),
+            detail: format!(
+                "hook commands resolve `thurbox-cli` to {path} on this pane's own PATH"
+            ),
+        },
+        // See the `Unread` arms below for why `hooks_expected` splits this in
+        // two: the binary is only this session's to need when something thurbox
+        // installed, or a driver of its own, actually runs it.
+        HookCli::NotOnPanePath if !hooks_expected => Finding {
+            key: "cli",
+            level: Level::Warn,
+            detail: "`thurbox-cli` is not on this pane's PATH — nothing thurbox installed for \
+                     this session runs it, but a driver calling `session signal` from the pane \
+                     needs it"
+                .into(),
+        },
+        HookCli::NotOnPanePath => Finding {
+            key: "cli",
+            level: Level::Fail,
+            detail: "`thurbox-cli` is not on this pane's PATH — every hook command is \
+                     `… || true`, so its signals fail silently. A session started before thurbox \
+                     put its CLI on a pane's PATH picks it up on restart"
+                .into(),
+        },
+        // The pane's own PATH was not readable, so what is reported is the
+        // PATH this command is running on — a different question with the same
+        // shape, and the detail says so rather than letting the answer read as
+        // one about the pane.
+        HookCli::Unread(Some(path)) => Finding {
+            key: "cli",
+            level: Level::Ok,
+            detail: format!(
+                "this machine's PATH resolves `thurbox-cli` to {path}; what this pane's own \
+                 PATH resolves cannot be read from here"
+            ),
         },
         // Nothing thurbox installed for this session invokes the binary, so
         // "every hook command fails silently" is not true of it, and the
@@ -328,14 +361,14 @@ fn diagnose(
         // signal` does need the binary. A session with an agent thurbox ships
         // no hooks for is the other way round — its driver's `session signal`
         // *is* the only route, so a missing binary there is a genuine failure.
-        None if !hooks_expected => Finding {
+        HookCli::Unread(None) if !hooks_expected => Finding {
             key: "cli",
             level: Level::Warn,
             detail: "`thurbox-cli` is not on PATH — nothing thurbox installed for this session \
                      runs it, but a driver calling `session signal` from the pane needs it"
                 .into(),
         },
-        None => Finding {
+        HookCli::Unread(None) => Finding {
             key: "cli",
             level: Level::Fail,
             detail: "`thurbox-cli` is not on PATH — every hook command is `… || true`, so its \
@@ -508,6 +541,41 @@ fn hook_file_path(hook: &Assessment) -> Option<std::path::PathBuf> {
     Some(crate::paths::expand_tilde(file))
 }
 
+/// What a hook running in this session's pane would resolve `thurbox-cli` to.
+enum HookCli {
+    /// The session runs on another machine, so no local answer applies.
+    Remote,
+    /// Read from the pane's own `PATH`: it resolves one, here.
+    OnPanePath(String),
+    /// Read from the pane's own `PATH`: it resolves none.
+    NotOnPanePath,
+    /// The pane's own `PATH` could not be read, so this is what the `PATH`
+    /// **this command** is running on resolves. A different question, and the
+    /// finding says which one it answered.
+    Unread(Option<String>),
+}
+
+/// Ask the pane first, and fall back to this process only when it cannot
+/// answer.
+///
+/// The order is the whole point. A hook resolves the binary on the pane's
+/// `PATH`, so a `doctor` that consulted its own was answering a different
+/// question — and answered `ok` for a shared-sessions host where no pane could
+/// find the binary and no session had ever reported a state.
+fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) -> HookCli {
+    if remote {
+        return HookCli::Remote;
+    }
+    let Some(path) = crate::agent::tmux::agent_pane_path(&session.id.to_string(), &session.name)
+    else {
+        return HookCli::Unread(cli_on_path.map(str::to_owned));
+    };
+    match resolve_cli_on(&path) {
+        Some(found) => HookCli::OnPanePath(found),
+        None => HookCli::NotOnPanePath,
+    }
+}
+
 /// The `thurbox-cli` a hook command would run, found the way the hook finds it:
 /// by name, on `PATH`.
 ///
@@ -516,13 +584,18 @@ fn hook_file_path(hook: &Assessment) -> Option<std::path::PathBuf> {
 /// and gets whatever `PATH` gives it, which is precisely the failure being
 /// looked for.
 fn thurbox_cli_on_path() -> Option<String> {
+    std::env::var_os("PATH").and_then(|path| resolve_cli_on(&path.to_string_lossy()))
+}
+
+/// `thurbox-cli` on `path`, spelled the way a `PATH` lookup spells it. Shared
+/// by the pane's `PATH` and this process's, so the two cannot disagree about
+/// what counts as finding one.
+fn resolve_cli_on(path: &str) -> Option<String> {
     let name = format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX);
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|dir| dir.join(&name))
-            .find(|candidate| candidate.is_file())
-            .map(|found| found.display().to_string())
-    })
+    std::env::split_paths(path)
+        .map(|dir| dir.join(&name))
+        .find(|candidate| candidate.is_file())
+        .map(|found| found.display().to_string())
 }
 
 #[cfg(test)]

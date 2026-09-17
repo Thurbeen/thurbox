@@ -955,6 +955,20 @@ these to prove its own identity without scraping panes or names:
 | `THURBOX_SOCKET` | the multiplexer socket that instance's sessions live on, so an in-session `thurbox-cli` reaches the same server instead of re-deriving one from the session's own environment |
 | `THURBOX_SOCKET_FOR` | the data dir that injected `THURBOX_SOCKET` belongs to. Read only to tell an inherited socket from one you exported: a child that points `THURBOX_DATA_DIR` somewhere else no longer matches, and derives its own socket instead of creating windows on the spawning instance's server |
 
+A pane's **`PATH`** is the `PATH` of the thurbox that spawned it, which tmux
+copies in by itself. thurbox adds one thing to it: the directory holding its own
+`thurbox-cli`, in front, prepended and never replacing what was there. Without
+it a session spawned by a `thurbox-cli` running over ssh — which on a
+shared-sessions host is every session, since the local TUI delegates
+`session create` to the host's CLI — inherits sshd's `PATH` for a
+non-interactive command (`/usr/local/bin:/usr/bin:/bin:/usr/games`), which has
+no `~/.local/bin` on it. The bare `thurbox-cli` the status hooks call then
+resolves to nothing and the `|| true` after it hides that. It arrives as an
+`env PATH=…` prefix on the window command rather than as one more injected
+variable, because `PATH` is the one tmux will not take that way: both
+`new-window -e PATH=…` and `set-environment -g PATH …` are ignored (verified
+against tmux 3.5a).
+
 `THURBOX_SESSION` is a **stable integration contract**, not an internal
 detail of the hooks extension. It is set on the pane, so every process
 started inside it inherits it — including an agent a driver of your own

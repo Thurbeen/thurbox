@@ -1879,7 +1879,21 @@ impl SessionBackend for TmuxBackend {
             self.remote_shell_pane_command()
         } else {
             let program = self.program_for_window(command);
-            self.login_wrap_for_remote(&Self::build_shell_command(&program, args))
+            let shell_cmd = Self::build_shell_command(&program, args);
+            // A remote pane's `PATH` is the host's, restored by the login
+            // wrap; a local one is inherited from this process, which need not
+            // have the CLI its hooks call on it (see `path_prefix_args`).
+            let shell_cmd = if self.transport.is_remote() {
+                shell_cmd
+            } else {
+                path_prefix_args()
+                    .iter()
+                    .map(|a| control_mode::shell_escape(a))
+                    .chain(std::iter::once(shell_cmd))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            self.login_wrap_for_remote(&shell_cmd)
         };
 
         // psmux's tokenizer can't read POSIX `'\''` escapes (see
@@ -2812,6 +2826,21 @@ const PANE_STATE_SEP: char = '\x1f';
 /// ubuntu-24.04, which CI runs on, still ships 3.4.
 const PANE_STATE_SEP_ESCAPED: &str = "\\037";
 
+/// One `display-message` answer with its trailing newline gone and the
+/// separator in whichever spelling this tmux used reduced to the raw byte.
+///
+/// Shared by every reader of a separated answer: a parser that knew only one
+/// spelling would see the whole line as a single field on the other, which
+/// reads as "tmux told us nothing" rather than as a parse it got wrong.
+fn normalized_pane_answer(raw: &str) -> Cow<'_, str> {
+    let trimmed = raw.trim_end_matches(['\n', '\r']);
+    if trimmed.contains(PANE_STATE_SEP_ESCAPED) {
+        Cow::Owned(trimmed.replace(PANE_STATE_SEP_ESCAPED, &PANE_STATE_SEP.to_string()))
+    } else {
+        Cow::Borrowed(trimmed)
+    }
+}
+
 /// tmux's `-u` — "assume the terminal supports UTF-8".
 ///
 /// tmux decides a client speaks UTF-8 from `LC_ALL`/`LC_CTYPE`/`LANG`, and
@@ -2876,18 +2905,78 @@ pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
     state
 }
 
+/// The `PATH` thurbox handed a local session's **agent pane**, read back off
+/// the pane's own start command.
+///
+/// A hook command names `thurbox-cli` bare (`thurbox-cli session signal --state
+/// <s> || true`), so the only `PATH` that decides whether it resolves is the
+/// pane's. Anything else — notably the `PATH` of whatever process is asking —
+/// is a different machine-state question that happens to have the same shape,
+/// and answering one with the other is how `session doctor` reported healthy
+/// wiring for panes that could not find the binary at all.
+///
+/// The evidence is the `env PATH=…` prefix a local spawn writes in front of the
+/// window's program, which tmux keeps verbatim in `#{pane_start_command}`. That is deliberately not
+/// `/proc/<pid>/environ`: reading another process's environment needs
+/// `PTRACE_MODE_READ`, which Debian and Ubuntu restrict to a tracer's own
+/// descendants by default (`kernel.yama.ptrace_scope = 1`) — so it would answer
+/// for a `doctor` run from the TUI and refuse the same question typed into a
+/// terminal, which is the way it is usually asked. tmux's own record has no
+/// such rule, and no platform gate either.
+///
+/// `None` when there is no such prefix to read — a pane spawned before thurbox
+/// put one there, a psmux window, or a `PATH` whose quoting tmux had to alter.
+/// The caller says which `PATH` it ended up answering about rather than
+/// guessing. Remote sessions are the caller's to exclude: this reads **this**
+/// machine's server.
+pub fn agent_pane_path(session_id: &str, session_name: &str) -> Option<String> {
+    let target = agent_target(session_id, session_name)?;
+    let format = format!("#{{pane_start_command}}{PANE_STATE_SEP}#{{window_name}}");
+    let mut argv = Vec::with_capacity(6);
+    if DEFAULT_MUX != "psmux" {
+        argv.push(PANE_STATE_UTF8_FLAG);
+    }
+    argv.extend(["display-message", "-p", "-t", &target, &format]);
+    let raw = local_mux_command(&argv)
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())?;
+    let line = normalized_pane_answer(&raw);
+    let mut fields = line.split(PANE_STATE_SEP);
+    let start_command = fields.next()?;
+    // `display-message` against a target it cannot resolve does **not** fail:
+    // it answers for the client's current pane and exits 0. That is the trap
+    // `pane_state` guards against too, and here it would hand back a stranger's
+    // `PATH` as this session's.
+    if fields.next()? != agent_window_name(session_name) {
+        return None;
+    }
+    path_from_prefix(start_command)
+}
+
+/// The `PATH` out of an `env PATH=… <program> …` window command, or `None` when
+/// the command does not open with one.
+///
+/// Anchored at the second token rather than searched for, because that is where
+/// [`path_prefix_args`] puts it (private, and the only writer of this shape): a `PATH=` appearing anywhere else is an
+/// argument of the agent's own, and reading it as the pane's environment would
+/// be a confident wrong answer. tmux quotes a token containing whitespace, so a
+/// `PATH` with a space in a component fails this and reads as unknown — the
+/// safe half of that choice.
+fn path_from_prefix(start_command: &str) -> Option<String> {
+    let mut tokens = start_command.split_ascii_whitespace();
+    tokens.next()?;
+    tokens.next()?.strip_prefix("PATH=").map(str::to_owned)
+}
+
 /// Split one `display-message` answer into a [`PaneState`], the pane's tty, and
 /// the name of the window it actually came from.
 ///
 /// An empty field is `None`, not an empty string: tmux prints nothing for a
 /// format it cannot expand, and "" would read downstream as a real answer.
 fn parse_pane_state(raw: &str) -> (PaneState, Option<String>, Option<String>) {
-    let trimmed = raw.trim_end_matches(['\n', '\r']);
-    let line = if trimmed.contains(PANE_STATE_SEP_ESCAPED) {
-        Cow::Owned(trimmed.replace(PANE_STATE_SEP_ESCAPED, &PANE_STATE_SEP.to_string()))
-    } else {
-        Cow::Borrowed(trimmed)
-    };
+    let line = normalized_pane_answer(raw);
     let mut fields = line.split(PANE_STATE_SEP);
     let mut next = || fields.next().filter(|f| !f.is_empty());
 
@@ -3263,6 +3352,11 @@ fn push_window_program(
     for (k, v) in env {
         tmux.args(["-e", &format!("{k}={v}")]);
     }
+    // `PATH` is the one variable `-e` cannot carry, so the CLI's directory
+    // rides in the command instead (see `path_prefix_args`).
+    for arg in path_prefix_args() {
+        tmux.arg(arg);
+    }
     // Pass the command + args as a single argv list. tmux treats trailing args
     // as the command to run inside the window. Resolved here for the same
     // reason the control-mode path resolves it (see `resolve_local_program`):
@@ -3275,6 +3369,94 @@ fn push_window_program(
     for a in args {
         tmux.arg(a);
     }
+}
+
+/// `env PATH=<…>` in front of a window's program, or nothing.
+///
+/// A pane runs with the `PATH` of the thurbox that spawned it — tmux replaces
+/// the session environment's from an **unattached** client, which both local
+/// spawn paths are. Usually that is the right answer and there is nothing to
+/// do. It is not the right answer when the spawning thurbox is a `thurbox-cli`
+/// invoked over ssh by a TUI delegating `session create` to this host
+/// (ADR-24): sshd hands a non-interactive command its own `PATH`
+/// (`/usr/local/bin:/usr/bin:/bin:/usr/games`), which has no `~/.local/bin` on
+/// it — where `thurbox-cli` installs. The status hooks are a **bare** name
+/// (`thurbox-cli session signal --state <s> || true`), so on such a host every
+/// one of them resolved nothing and the `|| true` swallowed it: the host's own
+/// rows never gained a `hook_state`, and every session on it read as
+/// statusless on the TUI mirroring them.
+///
+/// So the CLI's own directory goes in front ([`resolve_cli_binary`] — the
+/// process running knows where its sibling is even when `PATH` does not).
+/// Prepended, never replaced.
+///
+/// **Why it rides in the command rather than in `-e`.** `PATH` is the one
+/// variable tmux will not take that way: `new-window -e PATH=…` and
+/// `set-environment -g PATH …` are both ignored, and the client's wins
+/// (verified against tmux 3.5a — a sibling `-e FOO=bar` in the same command
+/// arrives). `env` `exec`s, so it leaves no process behind, and the program it
+/// is handed is already absolute ([`resolve_local_program`]) — the `PATH` is
+/// for what the pane runs *later*, not for reaching the agent.
+///
+/// Empty (no prefix at all) when there is no CLI directory to add or no `env`
+/// to add it with: an improvement where it succeeds, never a new way to fail.
+#[cfg(not(windows))]
+fn path_prefix_args() -> Vec<String> {
+    let (Some(path), Some(env_bin)) = (path_with_cli_directory(), posix_env_binary()) else {
+        return Vec::new();
+    };
+    vec![
+        env_bin.to_string_lossy().into_owned(),
+        format!("PATH={}", path.to_string_lossy()),
+    ]
+}
+
+/// This process's `PATH` with the directory holding this build's `thurbox-cli`
+/// in front. `None` when [`resolve_cli_binary`] fell back to a bare name —
+/// there is no directory to add, and pinning a `PATH` with nothing to add to it
+/// would only restate what the pane was going to inherit anyway.
+#[cfg(not(windows))]
+fn path_with_cli_directory() -> Option<std::ffi::OsString> {
+    let cli = resolve_cli_binary();
+    let dir = cli.parent().filter(|d| !d.as_os_str().is_empty())?;
+    path_led_by(dir, &std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// `inherited` with `dir` moved to the front: prepended if it was absent,
+/// promoted if it was already there. Never duplicated — a `PATH` that names one
+/// directory twice is a lookup the reader has to think about twice.
+///
+/// **Empty components are dropped**, for the reason
+/// [`crate::paths::resolve_on_path`] skips them: POSIX reads one as "the
+/// current directory", and the directory current in a pane is the session's
+/// worktree — the agent's own checkout, whose contents are the last thing that
+/// should shadow a binary. An unset `PATH` splits into exactly one of those, so
+/// this is also what makes the empty case answer with the directory alone.
+#[cfg(not(windows))]
+fn path_led_by(dir: &Path, inherited: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+    let dirs = std::iter::once(dir.to_path_buf())
+        .chain(std::env::split_paths(inherited).filter(|d| d != dir && !d.as_os_str().is_empty()))
+        .collect::<Vec<_>>();
+    std::env::join_paths(dirs).ok()
+}
+
+/// `env`, preferring what `PATH` resolves and falling back to the path POSIX
+/// gives it. `None` on a machine with neither, where the prefix is skipped
+/// rather than risked.
+#[cfg(not(windows))]
+fn posix_env_binary() -> Option<std::path::PathBuf> {
+    crate::paths::resolve_on_path("env").or_else(|| {
+        let posix = std::path::PathBuf::from("/usr/bin/env");
+        posix.is_file().then_some(posix)
+    })
+}
+
+/// Never on Windows: psmux runs its own command model and this path does not
+/// reach it — [`push_window_program`] folds the environment into a PowerShell
+/// token there instead.
+#[cfg(windows)]
+fn path_prefix_args() -> Vec<String> {
+    Vec::new()
 }
 
 /// Headless spawn of an agent window on a remote host over SSH.
@@ -3782,6 +3964,72 @@ mod tests {
     #[test]
     fn parse_tmux_version_rejects_garbage() {
         assert!(parse_tmux_version("not a version").is_err());
+    }
+
+    // --- path_led_by (the PATH a pane is handed) ---
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_cli_directory_leads_the_path_it_was_missing_from() {
+        let inherited = std::ffi::OsString::from("/usr/bin:/bin");
+        let led = path_led_by(Path::new("/opt/thurbox/bin"), &inherited).expect("joinable");
+        assert_eq!(
+            led,
+            std::ffi::OsString::from("/opt/thurbox/bin:/usr/bin:/bin")
+        );
+    }
+
+    /// Promoted rather than prepended again: the pane must not be handed a
+    /// `PATH` naming one directory twice.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_directory_already_on_the_path_is_moved_not_duplicated() {
+        let inherited = std::ffi::OsString::from("/usr/bin:/opt/thurbox/bin:/bin");
+        let led = path_led_by(Path::new("/opt/thurbox/bin"), &inherited).expect("joinable");
+        assert_eq!(
+            led,
+            std::ffi::OsString::from("/opt/thurbox/bin:/usr/bin:/bin")
+        );
+    }
+
+    /// An unset `PATH` is not an error: the directory alone is a better answer
+    /// than declining, and is exactly what the pane needs.
+    #[cfg(not(windows))]
+    #[test]
+    fn an_empty_path_becomes_the_cli_directory_alone() {
+        let led =
+            path_led_by(Path::new("/opt/thurbox/bin"), std::ffi::OsStr::new("")).expect("joinable");
+        assert_eq!(led, std::ffi::OsString::from("/opt/thurbox/bin"));
+    }
+
+    // --- path_from_prefix (reading a pane's PATH back) ---
+
+    #[test]
+    fn a_window_command_opening_with_env_yields_its_path() {
+        assert_eq!(
+            path_from_prefix("/usr/bin/env PATH=/opt/tbx:/usr/bin /usr/bin/sh -c \"sleep 30\""),
+            Some("/opt/tbx:/usr/bin".to_string())
+        );
+    }
+
+    /// Anchored at the second token: a `PATH=` further along is an argument of
+    /// the agent's own, and reading it as the pane's environment would be a
+    /// confident wrong answer.
+    #[test]
+    fn a_path_assignment_elsewhere_in_the_command_is_not_the_panes() {
+        assert_eq!(path_from_prefix("/usr/bin/claude --env PATH=/nope"), None);
+        assert_eq!(path_from_prefix("/usr/bin/claude"), None);
+        assert_eq!(path_from_prefix(""), None);
+    }
+
+    /// tmux quotes a token holding whitespace, so a `PATH` with a space in a
+    /// component reads as unknown rather than as a truncated answer.
+    #[test]
+    fn a_quoted_prefix_reads_as_unknown() {
+        assert_eq!(
+            path_from_prefix("/usr/bin/env \"PATH=/opt/my tools:/usr/bin\" /usr/bin/sh"),
+            None
+        );
     }
 
     // --- check_min_version (multiplexer version gate) ---

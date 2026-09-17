@@ -12,7 +12,7 @@
 //! our own beliefs about that rather than the behaviour. Those tests skip where
 //! tmux is not installed; the rest need no pane at all.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -178,6 +178,30 @@ impl Drop for PathGuard {
             None => std::env::remove_var("PATH"),
         }
     }
+}
+
+/// A directory `PathGuard::only` can be pointed at that still lets **thurbox**
+/// run `tmux`.
+///
+/// The guard replaces `PATH` wholesale, and the code under test resolves the
+/// multiplexer by bare name — so a guard holding only a `thurbox-cli` makes
+/// every window lookup fail, and the pane check then reports "could not read"
+/// for a reason that has nothing to do with what it is testing.
+#[cfg(unix)]
+fn doctor_bin_with_tmux(dir: &Path) -> PathBuf {
+    let bin = dir.join("doctor-bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let tmux_path = Command::new("sh")
+        .args(["-c", "command -v tmux"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .expect("tmux is on PATH");
+    let link = bin.join("tmux");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&tmux_path, &link).expect("symlink tmux");
+    bin
 }
 
 /// One session's doctor report.
@@ -769,5 +793,139 @@ fn a_parked_sessions_doctor_report_is_clean_not_a_warning() {
     assert!(
         after.failure.is_none(),
         "a parked session is not broken wiring: {after}"
+    );
+}
+
+/// A hook resolves `thurbox-cli` on the **pane's** `PATH`, so that is what the
+/// `cli` check has to answer about — not the `PATH` of whoever ran `doctor`.
+///
+/// The two came apart in the field. On a shared-sessions host every pane is
+/// spawned by a `thurbox-cli` the TUI invoked over ssh, which sshd hands a
+/// `PATH` with no `~/.local/bin` on it, so no hook could find the binary and no
+/// session ever reported a state. `doctor` answered `ok` throughout, because
+/// the shell the operator ran it from had one.
+///
+/// What makes the check sound is that the pane's `PATH` is readable at all: it
+/// is the `env PATH=…` prefix thurbox spawns the window with, which tmux keeps
+/// verbatim. A pane without one — spawned by an older build — reads as unknown,
+/// and the check then says which `PATH` it answered about instead of
+/// overclaiming.
+#[cfg(unix)]
+#[test]
+fn the_cli_check_answers_about_the_panes_path_not_the_doctors() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", home.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _config = isolated_config(dir.path());
+
+    // The pane's own PATH: one directory, with no `thurbox-cli` in it.
+    let pane_bin = dir.path().join("pane-bin");
+    std::fs::create_dir_all(&pane_bin).expect("mkdir");
+
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    tmux(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-blind-pane",
+        &format!(
+            // `/bin/sh` spelled out: `env` resolves the program against the
+            // PATH it is setting, and that PATH is the point of the fixture.
+            "/usr/bin/env PATH={} /bin/sh -c 'while :; do sleep 1; done'",
+            pane_bin.to_string_lossy()
+        ),
+    ]);
+
+    let db = Database::open_in_memory().expect("db");
+    let row = session_row("blind-pane", "claude", "local-tmux");
+    db.upsert_session(&row).expect("persist");
+
+    // …while the PATH `doctor` itself runs on does have one. Before this, that
+    // alone decided the answer.
+    let path = PathGuard::only(&doctor_bin_with_tmux(dir.path()), true);
+    let out = doctor(&db, row.id);
+    // Restored before the teardown: the guard leaves `tmux` itself unreachable.
+    drop(path);
+    tmux(&["kill-server"]);
+
+    let cli = check(&out, "cli");
+    assert_eq!(
+        cli["level"],
+        Value::String("fail".into()),
+        "the pane cannot find the binary its hooks name: {cli}"
+    );
+    assert!(
+        cli["detail"].as_str().is_some_and(|d| d.contains("pane")),
+        "the answer must say whose PATH it is about: {cli}"
+    );
+}
+
+/// The converse, and the half that proves the check really changed hands: a
+/// pane that *can* find the binary is healthy even when the shell `doctor` was
+/// run from cannot. Without it the test above would also pass on a check that
+/// had simply been hard-wired to fail.
+#[cfg(unix)]
+#[test]
+fn a_pane_that_can_find_the_cli_is_healthy_though_the_doctor_cannot() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", home.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _config = isolated_config(dir.path());
+
+    let pane_bin = dir.path().join("pane-bin");
+    std::fs::create_dir_all(&pane_bin).expect("mkdir");
+    let cli_file = pane_bin.join("thurbox-cli");
+    std::fs::write(&cli_file, "#!/bin/sh\nexit 0\n").expect("write");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli_file, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    tmux(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-seeing-pane",
+        &format!(
+            // `/bin/sh` spelled out: `env` resolves the program against the
+            // PATH it is setting, and that PATH is the point of the fixture.
+            "/usr/bin/env PATH={} /bin/sh -c 'while :; do sleep 1; done'",
+            pane_bin.to_string_lossy()
+        ),
+    ]);
+
+    let db = Database::open_in_memory().expect("db");
+    let row = session_row("seeing-pane", "claude", "local-tmux");
+    db.upsert_session(&row).expect("persist");
+
+    let path = PathGuard::only(&doctor_bin_with_tmux(dir.path()), false);
+    let out = doctor(&db, row.id);
+    drop(path);
+    tmux(&["kill-server"]);
+
+    let cli = check(&out, "cli");
+    assert_eq!(
+        cli["level"],
+        Value::String("ok".into()),
+        "the pane resolves the binary, whatever the doctor's own PATH holds: {cli}"
+    );
+    assert!(
+        cli["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains(&cli_file.to_string_lossy().into_owned())),
+        "the answer must name what the pane resolves: {cli}"
     );
 }

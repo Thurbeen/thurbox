@@ -137,7 +137,8 @@ own, which is the point.
   --help` says so.
   `session doctor` is the same picture as a verdict plus the wiring checks
   (extension active, payload on disk carrying the signal marker, `thurbox-cli`
-  resolvable on `PATH`), exiting non-zero when a session's wiring is broken —
+  resolvable on the pane's own `PATH` — see the bullet below it), exiting
+  non-zero when a session's wiring is broken —
   an agent thurbox ships no hooks for but which is *signalling anyway* warns
   rather than fails, since state is demonstrably arriving — the answer to
   "every hook ends in `|| true`, so how do I know it fired?"
@@ -205,6 +206,30 @@ own, which is the point.
   the materialized hook file sets a tmux pane user option instead, delivered
   over the control-mode subscription into the same hook columns (see the
   Remote-session-status bullet in the Remote SSH & WSL section).
+- **The pane has to be able to find the binary.** The callback is a **bare**
+  name, so it is only as good as the `PATH` of the thurbox that spawned the
+  pane — tmux copies that in by itself (the session environment is replaced
+  from an **unattached** client, which both local spawn paths are). Usually
+  right; not on a **shared-sessions host** (ADR-24), where the spawning thurbox
+  is a `thurbox-cli` the TUI invoked over ssh and sshd hands a non-interactive
+  command `/usr/local/bin:/usr/bin:/bin:/usr/games` — no `~/.local/bin`, which
+  is where `thurbox-cli` installs. Every hook then resolved nothing and its
+  `|| true` swallowed the failure: the host's rows never gained a `hook_state`
+  and every session on it read as statusless on the TUI mirroring them. Both
+  local spawn paths now put the CLI's own directory in front
+  (`agent::tmux::path_prefix_args` → `resolve_cli_binary`, empty components
+  dropped). It rides as an `env PATH=…` prefix on the window command because
+  `PATH` is the one variable tmux will not take in `-e`: `new-window -e PATH=…`
+  and `set-environment -g PATH …` are both ignored and the client's wins
+  (verified against tmux 3.5a). `session doctor`'s `cli` finding used to answer
+  from the *doctor's* `PATH`, which is why it read `ok` throughout; it now reads
+  the pane's own, out of the `env PATH=…` prefix tmux keeps verbatim in
+  `#{pane_start_command}` (`agent::tmux::agent_pane_path`). Not
+  `/proc/<pid>/environ`: that needs `PTRACE_MODE_READ`, which Debian and Ubuntu
+  restrict to a tracer's own descendants (`kernel.yama.ptrace_scope = 1`), so it
+  would answer for a `doctor` run from the TUI and refuse the same question
+  typed into a terminal. A pane with no prefix — spawned by an older build —
+  reads as unknown, and the finding then names which `PATH` it answered about.
 - **Persistence.** `sessions.hook_state` / `hook_state_at` / `seen_at`
   (schema **v34**), with targeted-UPDATE accessors `set_hook_state` /
   `mark_session_seen` / `load_hook_states` (`storage/sessions.rs`).
