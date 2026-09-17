@@ -17,7 +17,10 @@
 //! For the JSON payloads the hook commands are *run*, in order, with the event
 //! body the agent would pipe in on stdin — claude's `case "$(cat)"` matcher
 //! included, since whether a body reads as a permission prompt is half the
-//! behaviour. The `thurbox-cli` they call is a stub that records the state
+//! behaviour. A payload's own `matcher` key is the one thing here that is
+//! modelled rather than executed: it selects which groups run, because it is
+//! the agent and not the shell that applies it ([`matcher_applies`]). The
+//! `thurbox-cli` they call is a stub that records the state
 //! word. The script payloads (opencode, pi, omp) are run too, under Node's
 //! own (type-stripped for the two TypeScript ones) ESM loader: each is
 //! imported for real and driven through its actual `pi.on`/`ThurboxStatus`
@@ -134,10 +137,18 @@ fn commands_for(value: &serde_json::Value) -> Vec<String> {
 /// codex matches a `matcher` against the **whole** tool name, verified against
 /// codex-cli 0.154.0 by driving a turn with a `request_user` group registered
 /// alongside a `^request_user_input$` one: only the anchored full name fired.
-/// Anchors are therefore decoration codex neither needs nor rejects, and they
-/// are stripped here rather than given a regex engine of their own — the
-/// payloads ship literal tool names, and a matcher that grew real syntax would
-/// need this helper rewritten anyway.
+/// The anchors are therefore decoration codex neither needs nor rejects, and
+/// they are stripped rather than interpreted, because this is a literal
+/// comparison and not a regex engine.
+///
+/// Which is why anything left over that a *real* engine would read as syntax is
+/// a panic rather than a literal to compare. A matcher widened to
+/// `^request_user_input.*$` would otherwise pass
+/// [`an_async_question_is_not_a_block`] — this function would compare it to
+/// `request_user_input_async` and find them different — while codex matched it
+/// and reported `blocked` on a question it never waits on. Failing loudly here
+/// is the honest answer: the payloads ship literal tool names, and one that
+/// grows real syntax needs this helper replaced, not quietly believed.
 fn matcher_applies(group: &serde_json::Value, tool_name: &str) -> bool {
     let Some(matcher) = group.get("matcher").and_then(|m| m.as_str()) else {
         return true;
@@ -145,7 +156,13 @@ fn matcher_applies(group: &serde_json::Value, tool_name: &str) -> bool {
     if matcher.is_empty() || matcher == ".*" {
         return true;
     }
-    matcher.trim_start_matches('^').trim_end_matches('$') == tool_name
+    let literal = matcher.trim_start_matches('^').trim_end_matches('$');
+    assert!(
+        !literal.contains(|c| "\\.+*?()[]{}|^$".contains(c)),
+        "matcher {matcher:?} is a regex, which this literal comparison would \
+         silently get wrong — give it a real engine or keep the payloads literal"
+    );
+    literal == tool_name
 }
 
 /// Run every hook the payload registers for `event`, feeding it `body` on

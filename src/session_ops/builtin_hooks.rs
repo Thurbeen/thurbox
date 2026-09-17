@@ -583,9 +583,7 @@ mod tests {
         // codex's second block edge is the question tool, and it is the only
         // thing `PreToolUse` is used for: an unmatched group there would signal
         // on every tool call, and codex runs an event's hooks concurrently, so
-        // it would race this one rather than lose to it. The matcher is a whole
-        // tool name, which is what keeps the non-blocking
-        // `request_user_input_async` out — hence the anchors.
+        // it would race this one rather than lose to it.
         let pre_tool_use = codex_payload["hooks"]["PreToolUse"]
             .as_array()
             .expect("codex payload declares PreToolUse");
@@ -594,9 +592,16 @@ mod tests {
             1,
             "codex PreToolUse is one matched group"
         );
+        // codex matches a matcher against the whole tool name, so the anchors
+        // are what makes that explicit rather than what enforces it — and they
+        // are pinned because an unanchored codex would read the bare literal as
+        // a substring and start blocking on `request_user_input_async`, the
+        // question it poses without waiting. Dropping them is a deliberate
+        // decision, not a tidy-up.
         assert_eq!(
             pre_tool_use[0]["matcher"].as_str(),
-            Some("^request_user_input$")
+            Some("^request_user_input$"),
+            "codex's question-tool matcher"
         );
         assert!(pre_tool_use[0]["hooks"][0]["command"]
             .as_str()
