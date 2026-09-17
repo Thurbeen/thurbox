@@ -592,12 +592,12 @@ mod tests {
             1,
             "codex PreToolUse is one matched group"
         );
-        // codex matches a matcher against the whole tool name, so the anchors
-        // are what makes that explicit rather than what enforces it — and they
-        // are pinned because an unanchored codex would read the bare literal as
-        // a substring and start blocking on `request_user_input_async`, the
-        // question it poses without waiting. Dropping them is a deliberate
-        // decision, not a tidy-up.
+        // What excludes the non-blocking `request_user_input_async` is codex's
+        // rule rather than this string: a matcher is matched against the whole
+        // tool name, so the bare literal would exclude it just as well. The
+        // anchors are redundant under that rule and are there to say so out
+        // loud. Pinned exactly so that changing the matcher is a decision
+        // somebody made rather than a tidy-up somebody slipped in.
         assert_eq!(
             pre_tool_use[0]["matcher"].as_str(),
             Some("^request_user_input$"),
