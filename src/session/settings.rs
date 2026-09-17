@@ -35,6 +35,18 @@ pub struct Settings {
     /// startup).
     #[serde(default = "default_audit_retention_days")]
     pub audit_retention_days: u64,
+    /// How often each session's git working tree is re-examined, in seconds.
+    /// `0` turns the polling off: no diffstat, no ahead/behind, no `git`.
+    ///
+    /// The one number that governs how much `git` thurbox runs, because the
+    /// work is per session: every session costs a `git status` plus, while its
+    /// branch is ahead and unlanded, the merge check's handful of subprocesses,
+    /// all of it repeated on this interval. Worth raising on an instance
+    /// holding many sessions, and worth turning off where a subprocess is
+    /// expensive for reasons outside thurbox — an endpoint-protection agent
+    /// that scans every process launch (issue #1167).
+    #[serde(default = "default_git_poll_secs")]
+    pub git_poll_secs: u64,
     /// Per-feature on/off switches (`[features]` table). Absent table = all
     /// enabled.
     #[serde(default)]
@@ -299,11 +311,15 @@ fn default_three_panel_min_cols() -> u16 {
 fn default_audit_retention_days() -> u64 {
     90
 }
+fn default_git_poll_secs() -> u64 {
+    5
+}
 
 impl Settings {
     /// Whether any **restart-only** setting differs between `self` and `other`.
     ///
-    /// These are the values read once at startup (the scalars, every
+    /// These are the values read once at startup (the scalars — `git_poll_secs`
+    /// included, the git-stat cache being built with it — every
     /// `[notifications]` knob, and the feature flags whose effect is wired at
     /// launch — `automations`, `mouse`, `notifications`, `version_check`). The
     /// remaining feature flags gate UI panels read from `App.features` every
@@ -315,6 +331,7 @@ impl Settings {
             || self.two_panel_min_cols != other.two_panel_min_cols
             || self.three_panel_min_cols != other.three_panel_min_cols
             || self.audit_retention_days != other.audit_retention_days
+            || self.git_poll_secs != other.git_poll_secs
             || self.notifications != other.notifications
             || self.features.automations != other.features.automations
             || self.features.mouse != other.features.mouse
@@ -332,6 +349,7 @@ impl Default for Settings {
             two_panel_min_cols: default_two_panel_min_cols(),
             three_panel_min_cols: default_three_panel_min_cols(),
             audit_retention_days: default_audit_retention_days(),
+            git_poll_secs: default_git_poll_secs(),
             features: FeatureFlags::default(),
             notifications: NotificationSettings::default(),
             clipboard: ClipboardSettings::default(),
@@ -436,6 +454,34 @@ mod tests {
         assert!(s.notifications.sound);
         assert_eq!(s.notifications.min_interval_secs, 5);
         assert_eq!(s.notifications.backend, NotificationBackend::Auto);
+    }
+
+    #[test]
+    fn git_poll_secs_defaults_to_five_and_zero_turns_polling_off() {
+        // The one number that governs how much `git` an instance runs: every
+        // session is re-statted on this interval, so the cost is it, times the
+        // session count. `0` is off — the answer for a machine where an
+        // endpoint-protection agent scans every subprocess.
+        let s: Settings = toml::from_str("").unwrap();
+        assert_eq!(s.git_poll_secs, 5);
+
+        let s: Settings = toml::from_str("git_poll_secs = 30").unwrap();
+        assert_eq!(s.git_poll_secs, 30);
+
+        let s: Settings = toml::from_str("git_poll_secs = 0").unwrap();
+        assert_eq!(s.git_poll_secs, 0);
+    }
+
+    #[test]
+    fn git_poll_secs_takes_effect_on_the_next_launch() {
+        // Read once, where the cache is built, so the panel has to mark it
+        // restart-only rather than promise a change it cannot deliver.
+        let base = Settings::default();
+        let changed = Settings {
+            git_poll_secs: base.git_poll_secs + 1,
+            ..base.clone()
+        };
+        assert!(base.restart_only_differs(&changed));
     }
 
     #[test]

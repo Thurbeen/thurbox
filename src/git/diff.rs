@@ -512,6 +512,15 @@ pub(super) struct StatusV2 {
     /// Any changed, unmerged or untracked entry — the same "any output" rule
     /// the v1 porcelain gave, minus v2's `#` headers.
     pub dirty: bool,
+    /// Any `1`, `2` or `u` entry: a tracked file that differs from HEAD, in the
+    /// index or in the worktree.
+    ///
+    /// Distinct from [`Self::dirty`], which an untracked file sets too, and the
+    /// difference is worth a field: `git diff --numstat HEAD` can only report
+    /// on these, so with none of them its output is empty by construction and
+    /// [`worktree_stats`] skips the subprocess rather than paying for a
+    /// foregone conclusion.
+    pub tracked: bool,
     /// `?` entries: files a worktree removal would lose but that `diff HEAD`
     /// never reports.
     pub untracked: usize,
@@ -555,39 +564,72 @@ pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
             status.dirty = true;
         } else if line.starts_with('1') || line.starts_with('2') || line.starts_with('u') {
             status.dirty = true;
+            status.tracked = true;
         }
     }
     status
 }
 
+/// A [`merged_into_default`] answer a caller already holds, and the commit it
+/// was computed for.
+///
+/// The key is the **commit**, not the worktree, and that is the whole of its
+/// correctness. `merged` is a fact about HEAD, and HEAD moves: a session that
+/// keeps working after its PR merged is unmerged again on its next commit.
+/// Keyed on the worktree the first `true` would latch — fed back in, handed
+/// back out, forever — and `at_risk` would stop warning about commits that
+/// exist nowhere else.
+#[derive(Debug, Clone, Copy)]
+pub struct KnownMerge<'a> {
+    /// The commit [`Self::merged`] was computed for.
+    pub head: &'a str,
+    pub merged: bool,
+}
+
 /// Compute combined git stats (uncommitted diff + dirty + ahead/behind) for a
 /// worktree. Returns `None` when the path is not a usable git worktree.
 ///
-/// `merged_head` short-circuits the merge check: pass the commit a caller has
-/// already seen [`merged_into_default`] answer `Some(true)` for, and if HEAD is
-/// still that commit the answer is reused instead of re-running the handful of
-/// `git` subprocesses it costs — one of which writes a dangling commit — every
-/// time a settled worktree is restatted.
+/// `known` short-circuits the merge check: pass what [`merged_into_default`]
+/// last answered and the commit it answered for, and while HEAD is still that
+/// commit the answer is reused instead of re-running the handful of `git`
+/// subprocesses it costs — one of which writes a dangling commit — on every
+/// restat.
 ///
-/// The key is the **commit**, not the worktree, and that is the whole of its
-/// correctness. A landed squash never un-lands, but `merged` is a fact about
-/// HEAD, and HEAD moves: a session that keeps working after its PR merged is
-/// unmerged again on its next commit. Keyed on the worktree the first
-/// `Some(true)` would latch — fed back in, handed back out, forever — and
-/// `at_risk` would stop warning about commits that exist nowhere else.
+/// **Both answers are reusable, and neither is reusable for long in the same
+/// way.** A `true` is a fact about the commit: once a squash has landed it
+/// never un-lands, so it stands for as long as HEAD does. A `false` is a fact
+/// about the commit *and the moment* — the branch lands without the worktree
+/// moving — so the caller is the one that ages it (`snapshot`'s
+/// `MERGE_RECHECK`) and simply stops offering it. That asymmetry is why the
+/// staleness is the caller's to bound rather than this function's: here, a key
+/// that matches HEAD is honoured.
 ///
-/// Only `Some(true)` is ever cached, because only one direction of staleness
-/// is safe. A stale `true` hides work; a stale `false` merely asks a question
-/// it needn't, which is the bug this check exists to fix — so an unmerged
-/// answer is always recomputed.
-pub fn worktree_stats(cwd: &Path, merged_head: Option<&str>) -> Option<crate::session::GitStats> {
+/// Caching the `false` at all is the fix for issue #1167: it is the answer an
+/// open pull request gives, which is most of a session's life, and recomputing
+/// it every poll is seven subprocesses per session per interval. The exposure
+/// is bounded and one-directional — a stale `false` asks a question it needn't
+/// (`at_risk` warns about work that has in fact landed), where a stale `true`
+/// would hide work.
+pub fn worktree_stats(
+    cwd: &Path,
+    known: Option<KnownMerge<'_>>,
+) -> Option<crate::session::GitStats> {
     // One status call carries dirty, the untracked count AND — via the
     // `# branch.ab` header — ahead/behind, and doubles as the "is this a work
     // tree" probe: outside one it fails, exactly as a `rev-parse` would.
     let status = run_git_capture(&["status", "--porcelain=v2", "--branch"], cwd)?;
     let status = parse_status_v2(&status);
-    let numstat = run_git_capture(&["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
-    let (files_changed, insertions, deletions) = parse_numstat(&numstat);
+    // The second subprocess, and the status above already decides whether it
+    // can say anything: `diff HEAD` reports on tracked files, so with no
+    // tracked entry its output is empty and running it is a process spawn for a
+    // known answer. Worth skipping because this path is polled — see
+    // `StatusV2::tracked`.
+    let (files_changed, insertions, deletions) = if status.tracked {
+        let numstat = run_git_capture(&["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
+        parse_numstat(&numstat)
+    } else {
+        (0, 0, 0)
+    };
     // `branch.ab` counts against the configured upstream — the same ref the
     // probe chain would pick first. Only a branch without one (no upstream, or
     // its ref gone) pays for [`ahead_behind`]'s resolution (`origin/HEAD` →
@@ -595,14 +637,13 @@ pub fn worktree_stats(cwd: &Path, merged_head: Option<&str>) -> Option<crate::se
     let (ahead, behind) = status.ahead_behind.unwrap_or_else(|| ahead_behind(cwd));
     // Only a branch that *is* ahead has commits whose fate is in question, and
     // the check costs several `git` runs — so nothing ahead pays nothing, and
-    // reports `None` rather than an answer nobody asked for. A worktree
-    // still sitting on the commit a `true` was computed for skips it too: see
-    // `merged_head`.
-    let settled = merged_head.is_some() && merged_head == status.head.as_deref();
-    let merged = if settled {
-        Some(true)
-    } else {
-        (ahead > 0).then(|| merged_into_default(cwd)).flatten()
+    // reports `None` rather than an answer nobody asked for. A worktree still
+    // sitting on the commit an answer was computed for skips it either way:
+    // see `known`.
+    let settled = known.filter(|k| Some(k.head) == status.head.as_deref());
+    let merged = match settled {
+        Some(known) => Some(known.merged),
+        None => (ahead > 0).then(|| merged_into_default(cwd)).flatten(),
     };
     Some(crate::session::GitStats {
         files_changed,

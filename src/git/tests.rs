@@ -1848,7 +1848,14 @@ fn a_merged_answer_is_reused_only_for_the_commit_it_was_computed_for() {
     run(&["add", "-A"]);
     run(&["commit", "-qm", "follow-up work, merged nowhere"]);
 
-    let after = worktree_stats(&work, Some(&landed_head)).expect("stats");
+    let after = worktree_stats(
+        &work,
+        Some(KnownMerge {
+            head: &landed_head,
+            merged: true,
+        }),
+    )
+    .expect("stats");
     assert_ne!(
         after.head, landed.head,
         "the commit the cached answer belonged to is gone"
@@ -1885,10 +1892,122 @@ fn a_merged_answer_is_reused_when_head_has_not_moved() {
     assert_eq!(fresh.merged, Some(false), "genuinely unmerged");
 
     let head = fresh.head.clone().expect("head");
-    let cached = worktree_stats(&work, Some(&head)).expect("stats");
+    let cached = worktree_stats(
+        &work,
+        Some(KnownMerge {
+            head: &head,
+            merged: true,
+        }),
+    )
+    .expect("stats");
     assert_eq!(
         cached.merged,
         Some(true),
         "the key matches HEAD, so the stored answer is taken without re-asking"
+    );
+}
+
+#[test]
+fn an_unmerged_answer_is_reused_while_head_stands_still() {
+    // The polling cost issue #1167 measured. `merged: Some(false)` is what a
+    // session answers for as long as its pull request is open — most of its
+    // life — and reaching it costs seven subprocesses (`symbolic-ref`,
+    // `merge-base --is-ancestor`, `diff --quiet`, `merge-base`, two `cherry`s
+    // and a `commit-tree`) on top of the two the stat already pays. Remembered
+    // for `true` only, that ran per session every five seconds, forever.
+    //
+    // Proven the way the `true` half is: hand the key back after taking the
+    // repository's ability to answer the question away, so only the
+    // short-circuit can produce `Some(false)`.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+    git_in(&work, &["checkout", "-q", "-b", "wip", "origin/main"]);
+    commit_file(&work, "wip.txt", "wip", "work in progress");
+
+    let fresh = worktree_stats(&work, None).expect("stats");
+    assert_eq!(fresh.merged, Some(false), "genuinely unmerged");
+    let head = fresh.head.clone().expect("head");
+
+    // No remote, no default branch to measure against: the check can no longer
+    // reach an answer at all.
+    git_in(&work, &["remote", "remove", "origin"]);
+    assert_eq!(
+        worktree_stats(&work, None).and_then(|s| s.merged),
+        None,
+        "the control: recomputed, this worktree has no answer left to give"
+    );
+
+    let cached = worktree_stats(
+        &work,
+        Some(KnownMerge {
+            head: &head,
+            merged: false,
+        }),
+    )
+    .expect("stats");
+    assert_eq!(
+        cached.merged,
+        Some(false),
+        "the key matches HEAD, so the stored answer stands without re-asking"
+    );
+
+    // And it retires with the commit it belongs to, exactly as a `true` does:
+    // an answer about HEAD may not outlive HEAD.
+    commit_file(&work, "more.txt", "more", "more work");
+    assert_eq!(
+        worktree_stats(
+            &work,
+            Some(KnownMerge {
+                head: &head,
+                merged: false,
+            })
+        )
+        .and_then(|s| s.merged),
+        None,
+        "a stale key must force the recheck, not hand back the old answer"
+    );
+}
+
+#[test]
+fn an_untracked_only_status_needs_no_numstat() {
+    // `git diff --numstat HEAD` is the second subprocess every stat pays, and
+    // the status that precedes it already determines the answer: with no `1`,
+    // `2` or `u` record, no tracked file differs from HEAD and the diff is
+    // empty by construction. `tracked` is what lets the caller skip the run, so
+    // the parse has to tell an untracked-only tree from a changed one.
+    let untracked_only = "# branch.oid abc123\n# branch.head wip\n? new.txt\n";
+    let status = parse_status_v2(untracked_only);
+    assert!(status.dirty, "an untracked file still dirties the tree");
+    assert_eq!(status.untracked, 1);
+    assert!(
+        !status.tracked,
+        "nothing tracked differs from HEAD, so the diff is known to be empty"
+    );
+
+    let changed = "# branch.oid abc123\n1 .M N... 100644 100644 100644 aaa bbb one.txt\n";
+    assert!(
+        parse_status_v2(changed).tracked,
+        "a changed tracked file is exactly what the numstat is for"
+    );
+    let unmerged = "# branch.oid abc123\nu UU N... 100644 100644 100644 100644 a b c one.txt\n";
+    assert!(parse_status_v2(unmerged).tracked, "a conflict counts too");
+}
+
+#[test]
+fn an_untracked_file_reports_dirty_with_no_diff_of_its_own() {
+    // The skip above must not cost the answer: an untracked file moves
+    // `untracked`/`dirty` and nothing else, which is what `diff HEAD` would
+    // have said had it run.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = pr_repo(tmp.path());
+    std::fs::write(work.join("scratch.txt"), "not added").unwrap();
+
+    let stats = worktree_stats(&work, None).expect("stats");
+    assert!(stats.dirty);
+    assert_eq!(stats.untracked, 1);
+    assert_eq!(
+        (stats.files_changed, stats.insertions, stats.deletions),
+        (0, 0, 0),
+        "an untracked file is in no diff against HEAD"
     );
 }

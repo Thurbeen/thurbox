@@ -423,6 +423,7 @@ all commented so defaults still apply out of the box.
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
+| `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
 
 A complete `settings.toml` showing every knob at its default — copy
 this, uncomment what you want to change, and restart:
@@ -435,6 +436,7 @@ scrollback_lines      = 1000   # terminal scrollback kept per session
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
+git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]
 shell_pane    = true
@@ -452,6 +454,40 @@ suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
 ```
+
+### `git_poll_secs` — how much `git` thurbox runs
+
+The diffstat and the ahead/behind beside each session come from `git`, and
+they are *polled*: every session, every `git_poll_secs`. So this one number,
+times the session count, is thurbox's whole git load — and a session whose
+branch is ahead of the default and has not landed yet pays for the merge
+check as well, which is seven subprocesses rather than one.
+
+```text
+one poll of one session
+  git status --porcelain=v2 --branch     always
+  git diff --numstat HEAD                only when a tracked file differs
+  ┌ symbolic-ref origin/HEAD             ┐
+  │ merge-base --is-ancestor HEAD …      │  the merge check: only while the
+  │ diff --quiet origin/main HEAD        ├─ branch is ahead and unlanded, and
+  │ merge-base / cherry / commit-tree    │  at most once a minute per commit
+  └ cherry                               ┘
+```
+
+Two things keep that from scaling with the session list, and neither needs
+configuring: an answer that comes back **unchanged** stretches that session's
+own interval — doubling each time, up to 12× `git_poll_secs` — and the first
+change resets it, so a dormant session is re-statted a twelfth as often; and
+the merge check's answer is remembered against the commit it was computed for,
+rechecked at most once a minute.
+
+Raise `git_poll_secs` on an instance holding many sessions, and set it to `0`
+where a process launch is expensive for reasons outside thurbox — **Microsoft
+Defender / Intune on macOS, or Defender for Endpoint on Windows, scans every
+process as it is created**, which turns a poll into an antivirus workload. At
+`0` nothing is statted and the session list simply shows no diffstat; nothing
+else changes, and `thurbox-cli` is unaffected. Read once at startup, so a
+change applies on the next launch.
 
 ### `[features]` — whole-feature switches
 

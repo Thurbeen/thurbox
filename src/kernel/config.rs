@@ -192,6 +192,9 @@ impl Config {
             two_panel_min_cols: restart_only.two_panel_min_cols,
             three_panel_min_cols: restart_only.three_panel_min_cols,
             audit_retention_days: restart_only.audit_retention_days,
+            // Restart-only because the git-stat cache is built with it, and a
+            // cache that re-read it would also have to re-age every entry.
+            git_poll_secs: restart_only.git_poll_secs,
             config_version: fresh.config_version,
         };
         if needs_restart {

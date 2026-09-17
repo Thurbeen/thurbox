@@ -698,6 +698,14 @@ timeout_secs = 120</code></pre>
                 <td><code>90</code></td>
                 <td>audit + session-event history kept (pruned on startup)</td>
               </tr>
+              <tr>
+                <td><code>git_poll_secs</code></td>
+                <td><code>5</code></td>
+                <td>
+                  seconds between git stats of a session (the diffstat beside it);
+                  <code>0</code> turns the polling off
+                </td>
+              </tr>
             </tbody>
           </table>
           <p>
@@ -714,6 +722,7 @@ scrollback_lines      = 1000   # terminal scrollback kept per session
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # width unlocking the optional third column
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
+git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]
 tasks         = true
