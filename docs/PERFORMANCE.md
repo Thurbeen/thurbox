@@ -1721,8 +1721,8 @@ and has not landed* pays `merged_into_default`'s seven as well (`symbolic-ref`,
 `merge-base --is-ancestor`, `diff --quiet`, `merge-base`, `cherry`,
 `commit-tree`, `cherry`), because only a `Some(true)` was ever remembered. An
 open pull request is the state a worktree spends most of its life in, so the
-expensive case was the common one, and `worktree_stats` said so in its own
-doc-comment — *"the one answer it never caches"*. On a machine where an
+expensive case was the common one, and `worktree_stats` said so in the
+doc-comment it carried at the time — *"the one answer it never caches"*. On a machine where an
 endpoint-protection agent (Microsoft Defender / Intune on macOS, Defender for
 Endpoint on Windows) scans every process as it is created, that is not a
 background cost at all.
@@ -1743,12 +1743,25 @@ background cost at all.
    HEAD` reports on tracked files, so a `StatusV2` with no `1`/`2`/`u` record
    means an empty diff by construction.
 
-At the default, a settled unlanded session costs those nine subprocesses once a
-minute rather than once every five seconds — exactly a twelfth — and the
-16-session instance above falls from the ~10/s measured to ~2/s, or to nothing
-at `git_poll_secs = 0`. The base scales the rest of the way: at `30` the same
-session pays its nine every six minutes, because the merge recheck then fires on
-the poll rather than ahead of it.
+**Measured** by counting the processes rather than reasoning about them — a
+shim ahead of `git` on `PATH`, over one worktree in the shape a session spends
+most of its life in (ahead of the default, pushed, not landed), which is
+`git::tests::a_polled_stat_costs_nine_subprocesses_cold_and_two_warm` and is
+asserted rather than described, the counts being deterministic:
+
+| one poll of one session | `git` processes |
+| --- | --- |
+| nothing remembered — every poll, before | **9** |
+| the merge answer remembered, a tracked file changed | **2** |
+| the merge answer remembered, nothing tracked changed | **1** |
+
+Per session per minute, at the default and once the answer has settled: 9,
+against 108 before — exactly a twelfth, the remembered answer being re-asked
+once a minute and the stat itself twelve times less often. For the 16-session
+instance the issue measured at ~10/s that is ~2/s, and `git_poll_secs = 0` is
+none. The base scales the rest of the way: at `30` the same session pays its
+nine every six minutes, because the merge recheck then fires on the poll rather
+than ahead of it.
 
 **Rejected**:
 
@@ -1772,11 +1785,16 @@ the poll rather than ahead of it.
 `12 × git_poll_secs` old (a minute at the default) and a merged badge up to a
 minute; the first change anywhere in the answer puts that session back on the
 base cadence, so the session an agent is working in never leaves it. At
-`git_poll_secs = 0` the session list shows no diffstat at all, which is the
-trade an operator on a scanned machine is asking to make. The demanded diff
-(`kernel::diff`, `DIFF_TTL`) is deliberately untouched: it recomputes only while
-a pane is showing it, so it is bounded by the screen rather than by the session
-count. Pinned by `git::tests::an_unmerged_answer_is_reused_while_head_stands_still`
+`git_poll_secs = 0` the session list shows no diffstat at all and every delete
+asks for confirmation — `at_risk` reads the stat, and a state that could not be
+read is a reason to ask rather than an assumption of clean, which is the
+existing contract for a remote session. That is the trade an operator on a
+scanned machine is asking to make. The demanded diff
+(`kernel::diff`, `DIFF_TTL`) is deliberately untouched: the loop asks for it for
+the **selected** session alone, so one session's worth of it exists however long
+the session list is — which is the property this ADR is restoring for the stat.
+Pinned by the counts above, by
+`git::tests::an_unmerged_answer_is_reused_while_head_stands_still`
 (the control being a worktree whose remote is gone, so only the cache can
 answer), `kernel::snapshot::tests::a_session_whose_answer_stops_moving_is_asked_less_often`
 and `…::a_backed_off_session_is_not_asked_again_inside_its_interval`.

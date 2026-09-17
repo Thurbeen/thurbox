@@ -442,9 +442,10 @@ fn every_commit_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> 
 ///
 /// `commit-tree` hashes the author and committer lines along with the tree, so
 /// left to inherit the ambient identity and *now*, the same question hashes to
-/// a new object every time it is asked — and `worktree_stats` asks it every
-/// five seconds for as long as a session sits on unmerged work, the one answer
-/// it never caches. That wrote a dangling commit per poll: 28k loose objects in
+/// a new object every time it is asked — and it is asked again on every recheck
+/// of an unmerged answer, for as long as a session sits on unmerged work. Back
+/// when that was every poll and the answer was cached for no time at all, it
+/// wrote a dangling commit per poll: 28k loose objects in
 /// one repository here, well past `gc.auto`, at which point `git gc --auto`
 /// finds nothing it may prune (they are younger than `gc.pruneExpire`), gives
 /// up with "too many unreachable loose objects" into `.git/gc.log` — and that

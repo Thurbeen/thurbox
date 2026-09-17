@@ -496,10 +496,15 @@ impl GitStats {
             // An answer that did not move is one this session did not need, so
             // it is asked for less often until something changes. A miss is an
             // answer too — see `Stat::state` — and backs off the same way.
+            // Saturating because both operands are reachable from
+            // `settings.toml`: a `git_poll_secs` big enough to overflow a
+            // `Duration` would otherwise panic the loop on the first answer
+            // that came back, which is a config file crashing the interface.
             let interval = match &previous {
-                Some(prev) if prev.state == stats => {
-                    (prev.interval * 2).min(base * GIT_STAT_BACKOFF)
-                }
+                Some(prev) if prev.state == stats => prev
+                    .interval
+                    .saturating_mul(2)
+                    .min(base.saturating_mul(GIT_STAT_BACKOFF)),
                 _ => base,
             };
             let merge = match (previous.and_then(|prev| prev.merge), merge) {

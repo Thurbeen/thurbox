@@ -485,9 +485,12 @@ Raise `git_poll_secs` on an instance holding many sessions, and set it to `0`
 where a process launch is expensive for reasons outside thurbox — **Microsoft
 Defender / Intune on macOS, or Defender for Endpoint on Windows, scans every
 process as it is created**, which turns a poll into an antivirus workload. At
-`0` nothing is statted and the session list simply shows no diffstat; nothing
-else changes, and `thurbox-cli` is unaffected. Read once at startup, so a
-change applies on the next launch.
+`0` nothing is statted, so the session list shows no diffstat and **a delete
+always asks for confirmation** — the confirmation reads a session's git state to
+decide whether there is anything to lose, and "could not be read" is a reason to
+ask rather than an assumption that the checkout is clean. It is the same prompt
+a remote session already gets. `thurbox-cli` is unaffected. Read once at
+startup, so a change applies on the next launch.
 
 ### `[features]` — whole-feature switches
 

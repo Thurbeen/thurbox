@@ -1534,12 +1534,14 @@ fn loose_objects(dir: &Path) -> usize {
 #[test]
 fn re_statting_an_unmerged_worktree_writes_no_further_objects() {
     // The squash check squares the branch off with `commit-tree`, and this is
-    // the caller that re-asks: `worktree_stats` runs every five seconds for as
-    // long as a session sits on unmerged work, `merged: Some(false)` being the
-    // one answer never cached. So the probe commit has to hash the same every
-    // time, or the poll leaves a loose object every five seconds: 28k of them
-    // in one repository here, past the point where `git gc --auto` gives up and
-    // writes `.git/gc.log`.
+    // the caller that re-asks: for as long as a session sits on unmerged work,
+    // every recheck of that answer runs it again. So the probe commit has to
+    // hash the same every time, or each one leaves a loose object: 28k of them
+    // in one repository here — back when the recheck was every five seconds and
+    // the answer was cached for no time at all — past the point where `git gc
+    // --auto` gives up and writes `.git/gc.log`. The recheck is a minute apart
+    // now (`snapshot`'s `MERGE_RECHECK`), which makes the leak slower rather
+    // than bounded.
     //
     // Deliberately `worktree_stats` rather than `merged_into_default`: the leak
     // is a property of the polled path, and a future git call added to that
@@ -2010,4 +2012,106 @@ fn an_untracked_file_reports_dirty_with_no_diff_of_its_own() {
         (0, 0, 0),
         "an untracked file is in no diff against HEAD"
     );
+}
+
+/// Run `f` with a counting shim ahead of the real `git` on `PATH`, and report
+/// how many `git` processes it started.
+///
+/// The cost this path is judged on is a **process count** — that is what an
+/// endpoint-protection agent scans and what issue #1167 measured with `ps` —
+/// so it is counted directly rather than inferred from the code. The shim
+/// delegates to the real binary, so the answers under measurement are the real
+/// ones.
+#[cfg(unix)]
+fn count_git<T>(at: &Path, f: impl FnOnce() -> T) -> (T, usize) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let real = crate::paths::resolve_on_path("git").expect("git is on PATH");
+    let bin = at.join("shim");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = at.join("git-calls.log");
+    let _ = std::fs::remove_file(&log);
+    let shim = bin.join("git");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{log}\"\nexec \"{real}\" \"$@\"\n",
+            log = log.display(),
+            real = real.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Prepended rather than replacing: git resolves its own helpers through the
+    // environment it was started with.
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = crate::paths::with_path(path, f);
+    let count = std::fs::read_to_string(&log)
+        .map(|calls| calls.lines().count())
+        .unwrap_or(0);
+    (out, count)
+}
+
+#[test]
+#[cfg(unix)]
+fn a_polled_stat_costs_nine_subprocesses_cold_and_two_warm() {
+    // The measurement behind ADR-P25, and the regression gate on it: these
+    // counts are deterministic, so they are asserted rather than described.
+    //
+    // The worktree is the shape a session spends most of its life in — ahead of
+    // the default branch, pushed, not landed — with one staged change so the
+    // numstat has something to report. `set-head` gives `origin` the advertised
+    // HEAD a clone would have, without which the fixture pays one extra
+    // `rev-parse` that a real worktree does not.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+    git_in(&work, &["remote", "set-head", "origin", "main"]);
+    git_in(&work, &["checkout", "-q", "-b", "wip", "origin/main"]);
+    commit_file(&work, "wip.txt", "wip", "work in progress");
+    std::fs::write(work.join("wip.txt"), "wip, edited").unwrap();
+
+    let (cold, cold_calls) = count_git(tmp.path(), || worktree_stats(&work, None));
+    let cold = cold.expect("stats");
+    assert_eq!(cold.merged, Some(false), "the stat reached the merge check");
+    assert_eq!(
+        cold_calls, 9,
+        "status + numstat + the merge check's seven: the cost of every single \
+         poll before the answer could be remembered"
+    );
+
+    let head = cold.head.clone().expect("head");
+    let (warm, warm_calls) = count_git(tmp.path(), || {
+        worktree_stats(
+            &work,
+            Some(KnownMerge {
+                head: &head,
+                merged: false,
+            }),
+        )
+    });
+    assert_eq!(warm.expect("stats").merged, Some(false), "same answer");
+    assert_eq!(
+        warm_calls, 2,
+        "with the answer in hand a poll is the status and the numstat"
+    );
+
+    // And with nothing tracked changed, the numstat is a foregone conclusion.
+    git_in(&work, &["checkout", "-q", "--", "wip.txt"]);
+    let (clean, clean_calls) = count_git(tmp.path(), || {
+        worktree_stats(
+            &work,
+            Some(KnownMerge {
+                head: &head,
+                merged: false,
+            }),
+        )
+    });
+    let clean = clean.expect("stats");
+    assert!(!clean.dirty);
+    assert_eq!(clean_calls, 1, "one status, and it answered everything");
 }

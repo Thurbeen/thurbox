@@ -71,9 +71,10 @@ struct Computed {
 /// Five seconds, the same figure the git stat beside it starts from
 /// (`snapshot`'s `git_poll_interval`): both shell out to git about the same
 /// worktree. Fixed rather than settable, and not backed off, because this one
-/// is *demanded* — it recomputes only while a pane is showing the diff, so its
-/// cost is bounded by what is on screen rather than by the session count, which
-/// is the whole of what `git_poll_secs` exists to bound. This was the last
+/// is asked for **one session** — the selection, which is what the loop
+/// requests a diff for — where the stat is asked for every session there is.
+/// A cost bounded by the selection does not track the session list, which is
+/// the whole of what `git_poll_secs` exists to bound. This was the last
 /// cache without an age — once `Ready`, an entry stood for the life of the process
 /// unless something explicitly invalidated it, so a pane watching an agent that
 /// was still writing code showed the diff it first saw. A *failure* retries
