@@ -99,6 +99,11 @@ async fn a_session_whose_window_is_gone_is_reported_as_missing_its_agent() {
         thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
         "thurbox-life-test",
     );
+    // Cleared, not merely overridden: thurbox tags an injected socket with the
+    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
+    // tag naming the operator's instance, and `socket_for` then reads the
+    // override above as inherited and resolves somewhere nothing here kills.
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     let socket = ["-L", "thurbox-life-test"];
     let _ = std::process::Command::new("tmux")
@@ -147,6 +152,7 @@ async fn a_session_whose_window_exists_is_not_relaunched() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, "thurbox-life-ok");
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     let socket = ["-L", "thurbox-life-ok"];
     let _ = std::process::Command::new("tmux")
@@ -209,6 +215,7 @@ async fn a_session_created_after_the_last_survey_is_not_relaunched() {
         thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
         "thurbox-life-new",
     );
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     let socket = ["-L", "thurbox-life-new"];
     let idle = "sh -c 'while :; do sleep 1; done'";
@@ -382,6 +389,7 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
         thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
         "thurbox-forget-test",
     );
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
     let socket = ["-L", "thurbox-forget-test"];
     let window = |name: &str| {
         let _ = std::process::Command::new("tmux")
@@ -494,10 +502,13 @@ fn a_stopped_session_is_never_relaunched_as_a_missing_agent() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(
         thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
         "thurbox-stopped-test",
     );
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
     let socket = ["-L", "thurbox-stopped-test"];
     let _ = std::process::Command::new("tmux")
         .args(socket)

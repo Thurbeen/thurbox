@@ -1160,6 +1160,19 @@ impl Drop for ThrowawayServer {
         let _ = TmuxTransport::Local
             .tmux_command(&self.socket, &["kill-server"])
             .output();
+        // tmux does not unlink its socket when the server exits, so a killed
+        // server still leaves a dead socket file in the shared socket
+        // directory — one per test process, kept for good. The path is the
+        // rule tmux itself applies (`$TMUX_TMPDIR` or `/tmp`, then
+        // `tmux-<uid>/<name>`); this test cannot point `TMUX_TMPDIR`
+        // somewhere private instead, because the lib's unit tests share one
+        // process and the variable is process-wide.
+        let tmpdir = std::env::var_os("TMUX_TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        // SAFETY: `getuid` is always successful and takes no arguments.
+        let uid = unsafe { libc::getuid() };
+        let _ = std::fs::remove_file(tmpdir.join(format!("tmux-{uid}")).join(&self.socket));
     }
 }
 

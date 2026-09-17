@@ -48,7 +48,7 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let root = tempfile::TempDir::new().expect("tempdir");
-        for sub in ["home", "config", "data"] {
+        for sub in ["home", "config", "data", "tmux"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
         let agents = root.path().join("config").join("agents.toml");
@@ -78,6 +78,10 @@ impl Env {
         // nothing here may reach the operator's server even by accident.
         cmd.env("THURBOX_SOCKET", "thurbox-watch-test");
         cmd.env_remove("THURBOX_SOCKET_FOR");
+        // …in a socket directory of this instance's own, so a server started
+        // here by mistake is visibly this test's rather than a stray in the
+        // shared one everybody's tmux uses.
+        cmd.env("TMUX_TMPDIR", self.path("tmux"));
         cmd.env_remove("THURBOX_SESSION");
         cmd.env_remove("THURBOX_SESSION_ID");
         let mut child = cmd
@@ -358,6 +362,7 @@ fn the_stream_ends_when_the_reader_closes() {
     cmd.env("THURBOX_DATA_DIR", env.path("data"));
     cmd.env("THURBOX_SOCKET", "thurbox-watch-test");
     cmd.env_remove("THURBOX_SOCKET_FOR");
+    cmd.env("TMUX_TMPDIR", env.path("tmux"));
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

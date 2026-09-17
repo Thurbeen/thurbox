@@ -387,6 +387,12 @@ fn a_session_with_no_pane_of_its_own_is_told_apart_from_a_strangers() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    // Cleared, not merely overridden: thurbox tags an injected socket with the
+    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
+    // tag naming the operator's instance. `socket_for` then reads the override
+    // above as inherited and derives a socket from this test's own data dir —
+    // a server no `kill-server` here names, left running for good.
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());
 
@@ -434,6 +440,7 @@ fn a_working_state_over_a_bare_shell_is_reported_as_contradicted() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());
 
@@ -483,6 +490,7 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());
 

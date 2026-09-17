@@ -42,6 +42,7 @@ impl Env {
     fn new() -> Self {
         let root = tempfile::TempDir::new().expect("tempdir");
         std::fs::write(root.path().join("agents.toml"), AGENTS_TOML).expect("write agents.toml");
+        std::fs::create_dir_all(root.path().join("tmux")).expect("mkdir");
         Self { root }
     }
 
@@ -64,6 +65,10 @@ impl Env {
             // and nothing here may reach the operator's server by accident.
             .env("THURBOX_SOCKET", "thurbox-agreement-test")
             .env_remove("THURBOX_SOCKET_FOR")
+            // …in a socket directory of this instance's own, so a server
+            // started here by mistake is visibly this test's rather than a
+            // stray in the shared one everybody's tmux uses.
+            .env("TMUX_TMPDIR", self.base().join("tmux"))
             .env_remove("THURBOX_SESSION")
             .output()
             .expect("run thurbox-cli");

@@ -241,6 +241,12 @@ fn an_agent_a_driver_started_is_seen_and_named_by_the_interface() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, PROBE_SOCKET);
+    // Cleared, not merely overridden: thurbox tags an injected socket with the
+    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
+    // tag naming the operator's instance. `socket_for` then reads the override
+    // above as inherited and derives a socket from this test's own data dir —
+    // a server no `kill-server` here names, left running for good.
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
     let guard = thurbox::paths::TestPathGuard::new(home.path());
     let agents = thurbox::agent::agent_config::agents_config_path().expect("agents path");
     std::fs::create_dir_all(agents.parent().expect("config dir")).expect("mkdir");

@@ -126,6 +126,12 @@ fn capture_reports_the_panes_cursor_foreground_process_and_live_cwd() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    // Cleared, not merely overridden: thurbox tags an injected socket with the
+    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
+    // tag naming the operator's instance. `socket_for` then reads the override
+    // above as inherited and derives a socket from this test's own data dir —
+    // a server no `kill-server` here names, left running for good.
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     // The pane's directory is deliberately *not* the session's recorded `cwd`
     // (left `None` below): `foreground_cwd` has to come from the live pane, not
@@ -292,6 +298,7 @@ fn capture_reports_pane_state_under_a_non_utf8_locale() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     let workdir = tempfile::tempdir().expect("tempdir");
     let workdir_path = workdir.path().canonicalize().expect("canonicalize");
