@@ -32,7 +32,7 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/extensions/<name>.toml` | TOML | `thurbox-cli extension install` | startup + tick | extension manifests (self-healed resources) |
 | `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
-| `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings) |
+| `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
 
 `agents.toml` and `settings.toml` reload **live**: the TUI polls their
 mtime (~1/s) and applies edits with a confirmation toast — no restart.

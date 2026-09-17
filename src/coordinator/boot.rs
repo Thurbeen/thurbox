@@ -28,6 +28,10 @@ use thurbox::kernel::watch::Watcher;
 use super::{enable_mouse_clicks, push_keyboard_enhancement, restore_terminal, snapshots_db};
 use crate::App;
 
+/// Days of `thurbox.log.<date>` kept by the rolling appender. See where it is
+/// used in [`run`] for why a cap exists at all.
+const LOG_FILES_KEPT: usize = 30;
+
 pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Put the terminal back before the panic message prints.
     //
@@ -84,8 +88,18 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     tokio::task::spawn_blocking(move || std::fs::create_dir_all(create))
         .await
         .ok();
-    let (writer, guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::daily(log_dir, "thurbox.log"));
+    // Capped, because `rolling::daily` never deletes anything: the appender
+    // opens a new `thurbox.log.<date>` every day and leaves every earlier one
+    // in the data dir for good, which is an unbounded disk leak on a machine
+    // thurbox runs on daily. A month is long enough to still hold the log of
+    // whatever a user is reporting and short enough to stay a few megabytes.
+    let appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("thurbox.log")
+        .max_log_files(LOG_FILES_KEPT)
+        .build(log_dir)
+        .expect("a daily log appender in the data dir");
+    let (writer, guard) = tracing_appender::non_blocking(appender);
     Box::leak(Box::new(guard));
     tracing_subscriber::fmt()
         .with_env_filter(
