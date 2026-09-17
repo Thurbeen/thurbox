@@ -1061,3 +1061,16 @@ The SQLite schema migrates automatically (`schema_version` in
 `metadata`). The TOML files carry a `config_version = 1` marker so a
 future format change can migrate them too; current files are version 1
 and the field is optional.
+
+`schema_version` records what *ran*, which is not the same as what is *there*,
+and the two came apart: migrations were originally written as
+`let _ = conn.execute("ALTER …")`, which swallowed a real failure while the
+version advanced anyway. One database in the field reported the current version
+with none of v41's four columns on `sessions`, so every status signal failed
+with `no such column: stopped_at` and no session on that machine ever reported
+a state. The version gate could not repair it — the version was the thing that
+was wrong — so the **additive** steps — those that add a column or a table of
+their own if absent — are now re-asserted on **every open**, not only on an
+upgrade. A healthy database changes nothing and pays a handful of catalogue
+reads. Steps that rewrite or seed data stay gated on the version, because
+applying one twice does not mean what applying it once meant.

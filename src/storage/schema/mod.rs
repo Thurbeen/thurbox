@@ -77,8 +77,38 @@ use rusqlite::Connection;
 /// Gaps in the step table are fine (there is no v18 step either).
 pub const SCHEMA_VERSION: u32 = 47;
 
-/// A single migration step: applied when the stored version is below `target`.
-type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
+/// A single migration step: applied when the stored version is below `target`,
+/// and — for a [`Reapply::WhenMissing`] step — on every open besides.
+type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>, Reapply);
+
+/// Whether a step may be applied to a database whose recorded version already
+/// claims it.
+///
+/// The recorded version is a claim about what ran, not about what is there, and
+/// the two came apart in the field: a database reporting `schema_version = 47`
+/// with **none** of v41's four columns, so every `set_hook_state` failed with
+/// `no such column: stopped_at` and no session on that machine ever reported a
+/// status. The `let _ = conn.execute("ALTER …")` form these migrations were
+/// originally written in is how that happened (see the note above
+/// [`migrations::table_exists`]): it swallowed the failure while the version
+/// advanced anyway. That form is gone, but the databases it left behind are
+/// not, and no version gate can repair them — the version is the thing that is
+/// wrong.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reapply {
+    /// Version-gated only. The step rewrites or seeds **data**, so applying it
+    /// to a database that has already had it would not mean what applying it
+    /// once meant.
+    Never,
+    /// Re-applied on every open. The step adds a column or a table **of its
+    /// own** if absent, so a healthy database changes nothing and pays a
+    /// handful of catalogue reads — far below the cost of opening the file they
+    /// are read from. "Of its own" is the load-bearing part: an `IF NOT EXISTS`
+    /// that names something an *earlier* step created still fails when that
+    /// step did not run (v35 indexes `tasks(source, external_id)`), and out of
+    /// order is exactly the situation this exists for.
+    WhenMissing,
+}
 
 /// How long a connection waits on a locked database before erroring.
 /// The DB is shared by the TUI, thurbox-cli, and the automation heartbeat;
@@ -350,54 +380,65 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
     // Each migration step is gated on the stored version and applied in order.
     // Steps are extracted into helpers to keep this dispatcher flat.
+    //
+    // The third column is whether the step may also run on a database whose
+    // version already claims it (see `Reapply`). `WhenMissing` is spelled for
+    // the steps that add a **column or table of their own** if absent — a
+    // property a reader can check against the body in one glance — rather than
+    // for every step that happens to be idempotent. Two steps show why the line
+    // is there rather than further out: v39's rebuild guards itself and would
+    // be safe, but admitting it makes the column a judgement call per step; and
+    // v35 is `IF NOT EXISTS` yet indexes `tasks(source, external_id)`, columns
+    // an *earlier* step owns, so re-asserting it against a database that never
+    // ran that step fails outright.
     let steps: &[MigrationStep] = &[
-        (3, migrate_v3_additional_dirs),
-        (4, migrate_v4_project_mcp_servers),
-        (5, migrate_v5_session_commands),
-        (6, migrate_v6_worktrees_pk),
-        (7, migrate_v7_shell_backend_id),
-        (8, migrate_v8_vms),
-        (9, migrate_v9_agent_session_id),
-        (10, migrate_v10_containers),
-        (11, migrate_v11_containerfile),
-        (12, migrate_v12_scheduled_commands),
-        (13, migrate_v13_roles),
-        (14, migrate_v14_mcp_servers),
-        (15, migrate_v15_nullable_project_id),
-        (16, migrate_v16_drop_projects),
-        (17, migrate_v17_skills),
-        (19, migrate_v19_plugins),
-        (20, migrate_v20_profiles),
-        (21, migrate_v21_drop_model),
-        (22, migrate_v22_drop_subsystems),
-        (23, migrate_v23_generic_agent),
-        (24, migrate_v24_automations),
-        (25, migrate_v25_tasks),
-        (26, migrate_v26_task_description),
-        (27, migrate_v27_repo_parent_bookmarks),
-        (28, migrate_v28_run_related_session),
-        (30, migrate_v30_parent_session_id),
-        (31, migrate_v31_display_order),
-        (32, migrate_v32_session_messages),
-        (33, migrate_v33_action_extra_repos),
-        (34, migrate_v34_hook_status),
-        (35, migrate_v35_tasks_external_index),
-        (36, migrate_v36_action_command),
-        (37, migrate_v37_force_deleted),
-        (38, migrate_v38_code_review),
-        (39, migrate_v39_bookmark_host),
-        (40, migrate_v40_bookmark_git_kind),
-        (41, migrate_v41_joinable),
-        (42, migrate_v42_worktree_provenance),
-        (43, migrate_v43_session_events),
-        (44, migrate_v44_reports_as),
-        (45, migrate_v45_host_updated_at),
-        (46, migrate_v46_teardown_owed),
-        (47, migrate_v47_wsl_loopback_repair_owed),
+        (3, migrate_v3_additional_dirs, Reapply::Never),
+        (4, migrate_v4_project_mcp_servers, Reapply::Never),
+        (5, migrate_v5_session_commands, Reapply::Never),
+        (6, migrate_v6_worktrees_pk, Reapply::Never),
+        (7, migrate_v7_shell_backend_id, Reapply::Never),
+        (8, migrate_v8_vms, Reapply::Never),
+        (9, migrate_v9_agent_session_id, Reapply::Never),
+        (10, migrate_v10_containers, Reapply::Never),
+        (11, migrate_v11_containerfile, Reapply::Never),
+        (12, migrate_v12_scheduled_commands, Reapply::Never),
+        (13, migrate_v13_roles, Reapply::Never),
+        (14, migrate_v14_mcp_servers, Reapply::Never),
+        (15, migrate_v15_nullable_project_id, Reapply::Never),
+        (16, migrate_v16_drop_projects, Reapply::Never),
+        (17, migrate_v17_skills, Reapply::Never),
+        (19, migrate_v19_plugins, Reapply::Never),
+        (20, migrate_v20_profiles, Reapply::Never),
+        (21, migrate_v21_drop_model, Reapply::Never),
+        (22, migrate_v22_drop_subsystems, Reapply::Never),
+        (23, migrate_v23_generic_agent, Reapply::Never),
+        (24, migrate_v24_automations, Reapply::Never),
+        (25, migrate_v25_tasks, Reapply::Never),
+        (26, migrate_v26_task_description, Reapply::Never),
+        (27, migrate_v27_repo_parent_bookmarks, Reapply::Never),
+        (28, migrate_v28_run_related_session, Reapply::Never),
+        (30, migrate_v30_parent_session_id, Reapply::WhenMissing),
+        (31, migrate_v31_display_order, Reapply::WhenMissing),
+        (32, migrate_v32_session_messages, Reapply::WhenMissing),
+        (33, migrate_v33_action_extra_repos, Reapply::WhenMissing),
+        (34, migrate_v34_hook_status, Reapply::WhenMissing),
+        (35, migrate_v35_tasks_external_index, Reapply::Never),
+        (36, migrate_v36_action_command, Reapply::WhenMissing),
+        (37, migrate_v37_force_deleted, Reapply::WhenMissing),
+        (38, migrate_v38_code_review, Reapply::WhenMissing),
+        (39, migrate_v39_bookmark_host, Reapply::Never),
+        (40, migrate_v40_bookmark_git_kind, Reapply::WhenMissing),
+        (41, migrate_v41_joinable, Reapply::WhenMissing),
+        (42, migrate_v42_worktree_provenance, Reapply::WhenMissing),
+        (43, migrate_v43_session_events, Reapply::WhenMissing),
+        (44, migrate_v44_reports_as, Reapply::WhenMissing),
+        (45, migrate_v45_host_updated_at, Reapply::WhenMissing),
+        (46, migrate_v46_teardown_owed, Reapply::WhenMissing),
+        (47, migrate_v47_wsl_loopback_repair_owed, Reapply::Never),
     ];
 
-    for &(target, step) in steps {
-        if version < target {
+    for &(target, step, reapply) in steps {
+        if version < target || reapply == Reapply::WhenMissing {
             step(conn)?;
         }
     }
@@ -446,6 +487,15 @@ pub(super) fn column_exists(
 /// migration idempotent without swallowing errors; a genuine `ALTER` failure
 /// propagates. A missing table is a no-op — in a real upgrade path the table is
 /// always created by an earlier step, so this never hides a column we needed.
+///
+/// A failure is re-examined before it is reported, because the check and the
+/// `ALTER` are two statements and the database is shared: the TUI, every
+/// `thurbox-cli` a status hook runs, and the automation heartbeat all open it,
+/// and on a database the repair pass has something to do
+/// ([`Reapply::WhenMissing`]) several of them can reach this at once. The loser
+/// of that race gets a real error for a column that is now there. Asking the
+/// catalogue again answers that without matching SQLite's error text, which is
+/// version-dependent and the reason these helpers exist at all.
 pub(super) fn add_column_if_absent(
     conn: &Connection,
     table: &str,
@@ -455,11 +505,17 @@ pub(super) fn add_column_if_absent(
     if !table_exists(conn, table)? || column_exists(conn, table, column)? {
         return Ok(());
     }
-    conn.execute(
+    match conn.execute(
         &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
         [],
-    )?;
-    Ok(())
+    ) {
+        Ok(_) => Ok(()),
+        Err(e) if column_exists(conn, table, column).unwrap_or(false) => {
+            tracing::debug!("{table}.{column} was added by another process: {e}");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// `ALTER TABLE <table> DROP COLUMN <column>`, but only when both exist. Already
@@ -541,6 +597,98 @@ mod tests {
         assert!(!tables.contains(&"mcp_servers".to_string()));
         assert!(!tables.contains(&"skills".to_string()));
         assert!(!tables.contains(&"profiles".to_string()));
+    }
+
+    /// A database whose recorded version claims a step that never took must be
+    /// repaired, not believed.
+    ///
+    /// Seen in the field: `schema_version = 47` on a `sessions` table with none
+    /// of v41's four columns, so every `set_hook_state` failed with `no such
+    /// column: stopped_at` and no session on that machine ever reported a
+    /// status. The version gate cannot fix it — the version is the thing that
+    /// is wrong — so the additive steps are re-asserted on every open.
+    #[test]
+    fn a_version_that_claims_a_missing_column_is_repaired_on_open() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        // Exactly the field shape: the columns gone, the version left saying
+        // they are there.
+        for column in ["launch_command", "launch_args", "launch_env", "stopped_at"] {
+            conn.execute_batch(&format!("ALTER TABLE sessions DROP COLUMN {column};"))
+                .unwrap();
+            assert!(!column_exists(&conn, "sessions", column).unwrap());
+        }
+        assert_eq!(stored_version(&conn), SCHEMA_VERSION);
+
+        migrate(&conn).unwrap();
+
+        for column in ["launch_command", "launch_args", "launch_env", "stopped_at"] {
+            assert!(
+                column_exists(&conn, "sessions", column).unwrap(),
+                "{column} was not put back"
+            );
+        }
+    }
+
+    /// The repair is a no-op on a healthy database, and says so by leaving the
+    /// version alone: re-running the additive steps must not look like an
+    /// upgrade.
+    #[test]
+    fn re_asserting_the_additive_steps_changes_nothing_on_a_healthy_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        let before = table_columns(&conn, "sessions");
+
+        migrate(&conn).unwrap();
+
+        assert_eq!(table_columns(&conn, "sessions"), before);
+        assert_eq!(stored_version(&conn), SCHEMA_VERSION);
+    }
+
+    /// A step that seeds a value rather than a shape is never re-applied: v47
+    /// marks the WSL loopback repair owed, and an open that re-armed it would
+    /// make the mark mean "every start" instead of "once".
+    #[test]
+    fn a_seeding_step_is_not_re_applied() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute(
+            "DELETE FROM metadata WHERE key = ?1",
+            [crate::storage::wsl_repair::WSL_LOOPBACK_REPAIR_OWED_KEY],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let owed: Option<String> = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                [crate::storage::wsl_repair::WSL_LOOPBACK_REPAIR_OWED_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(owed, None, "the cleared mark was re-armed");
+    }
+
+    fn stored_version(conn: &Connection) -> u32 {
+        conn.query_row(
+            "SELECT value FROM metadata WHERE key = 'schema_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+        .parse()
+        .unwrap()
+    }
+
+    fn table_columns(conn: &Connection, table: &str) -> Vec<String> {
+        conn.prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
     }
 
     #[test]
