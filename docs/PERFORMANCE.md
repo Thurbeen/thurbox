@@ -1624,8 +1624,13 @@ is unmeasured".
 
 - **The resize is sent, not asked** (`ControlMode::send_command_detached`). Its
   answer was never an input to the frame: a resize tells the *agent* how to
-  wrap, which is a message to the host. The command still takes a place in the
-  waiter queue and drops the receiver, so `deliver_response` discards the answer
+  wrap, which is a message to the host. Both of its commands go as one list, so
+  they take the lock once and cannot be refused separately — a window resized
+  around a pane that was not is the wrong width made durable. The render path
+  memoizes the size it asked for, so it memoizes only what actually went out;
+  otherwise a refused resize would be remembered as done and nothing would ask
+  again. The command still takes a place in the waiter queue and drops the
+  receiver, so `deliver_response` discards the answer
   — that kept place is what distinguishes it from the pre-existing
   `send_command_nowait`, whose documented hazard is exactly its absence (with no
   place of its own, an answer is handed to the next waiter in line and every
@@ -1658,11 +1663,14 @@ is unmeasured".
 **Consequences**: pinned by two scenarios in `tests/tui_e2e.rs` driving the real
 binary against a real `TmuxTransport::Ssh`, with a stand-in `ssh` whose control
 connection runs through a pair of `cat` pumps that the test stops (`SIGSTOP`) —
-a link up and carrying nothing. Both press a chord whose answer comes from the
-kernel's own registry and require it inside 2 s; both fail by many seconds
-without this change. The relay has to be built rather than borrowed because a
-local tmux has none: `tmux -C attach-session` hands its stdin and stdout *file
-descriptors* to the server and then only shepherds, so stopping the client
+a link up and carrying nothing. One presses a chord and requires the palette —
+drawn from the kernel's own registry, owing the host nothing — inside
+`RESPONSIVE`; the other narrows the terminal and requires a whole frame painted
+at the new width, which a render thread blocked mid-paint never produces.
+Against the pre-fix source both run their budget out. The relay has to be built
+rather than borrowed because a local tmux has none: `tmux -C attach-session`
+hands its stdin and stdout *file descriptors* to the server and then only
+shepherds, so stopping the client
 changes nothing, while stopping `ssh` wedges the link exactly as a bad network
 does.
 

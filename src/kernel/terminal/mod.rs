@@ -1781,9 +1781,8 @@ impl SurfaceProvider for Terminals {
         // Matched to the rect on change only: a program told its size every frame
         // is a program sent a SIGWINCH every frame.
         let wanted = (area.height, area.width);
-        if slot.size.get() != wanted {
+        if slot.size.get() != wanted && slot.pane.resize(area.height, area.width) {
             slot.size.set(wanted);
-            slot.pane.resize(area.height, area.width);
         }
         let Ok(parser) = slot.pane.parser.lock() else {
             return super::paint::ProgramPaint::NotStarted;
@@ -1813,9 +1812,8 @@ impl SurfaceProvider for Terminals {
             live.rect.set(area);
             live.shell_visible.set(true);
             let wanted = (area.height, area.width);
-            if live.size.get() != wanted {
+            if live.size.get() != wanted && live.session.resize(area.height, area.width) {
                 live.size.set(wanted);
-                live.session.resize(area.height, area.width);
             }
             let Ok(mut parser) = shell.parser.lock() else {
                 return false;
@@ -1844,9 +1842,8 @@ impl SurfaceProvider for Terminals {
         live.rect.set(area);
         live.shell_visible.set(false);
         let wanted = (area.height, area.width);
-        if live.size.get() != wanted {
+        if live.size.get() != wanted && live.session.resize(area.height, area.width) {
             live.size.set(wanted);
-            live.session.resize(area.height, area.width);
         }
 
         let Ok(mut parser) = live.session.parser.lock() else {

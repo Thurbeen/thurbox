@@ -1405,8 +1405,22 @@ impl ControlMode {
     /// For a command whose *effect* is the point and whose answer nothing
     /// reads — a resize tells the agent how to wrap, and no frame is waiting on
     /// the confirmation.
-    pub(super) fn send_command_detached(&self, cmd: &str) -> Result<()> {
-        Self::enqueue_command_on(&self.stdin, &self.response_queue, cmd, 1).map(drop)
+    ///
+    /// Takes a list for the same reason [`Self::send_command_list`] does: tmux
+    /// runs a list without returning to its event loop in between, and one list
+    /// is one enqueue under one lock. Two calls could take the lock separately
+    /// and have the second refused, leaving the first applied on its own.
+    pub(super) fn send_command_detached(&self, cmds: &[&str]) -> Result<()> {
+        if cmds.is_empty() {
+            bail!("an empty command list has nothing to send");
+        }
+        Self::enqueue_command_on(
+            &self.stdin,
+            &self.response_queue,
+            &cmds.join(" ; "),
+            cmds.len(),
+        )
+        .map(drop)
     }
 
     /// Send a command without waiting for a response.

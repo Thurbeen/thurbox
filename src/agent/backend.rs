@@ -690,13 +690,18 @@ impl ProgramPane {
         })
     }
 
-    pub fn resize(&self, rows: u16, cols: u16) {
+    /// Whether the pane was resized. A caller that memoizes the size it asked
+    /// for reads this, so a refused resize is asked again on the next frame
+    /// rather than remembered as done — see [`Session::resize`].
+    pub fn resize(&self, rows: u16, cols: u16) -> bool {
         if let Err(e) = self.wired.resize(self.backend.as_ref(), rows, cols) {
             tracing::debug!(
                 "could not resize program pane {}: {e:#}",
                 self.wired.backend_id
             );
+            return false;
         }
+        true
     }
 
     /// End the program and take its window with it.
@@ -1120,7 +1125,14 @@ impl Session {
     /// Resize the session's pane and grid, and its companion shell's with it.
     /// (`send_input` / `has_exited` / `last_output_at` / `backend_id` come from
     /// the embedded [`WiredPane`].)
-    pub fn resize(&self, rows: u16, cols: u16) {
+    ///
+    /// Reports whether it reached the backend. The command is sent rather than
+    /// asked (see `TmuxBackend::resize`), so what can still fail is the sending
+    /// — a control lock held past the loop's budget. The render path memoizes
+    /// the size it asked for to keep a round trip off every frame, and a
+    /// memoized failure would leave the agent wrapping at the old width with
+    /// nothing to trigger another attempt, so it memoizes only on `true`.
+    pub fn resize(&self, rows: u16, cols: u16) -> bool {
         // A placeholder has no live pane; only resize its local notice buffer.
         // Talking to the (possibly-down) backend here would issue a blocking
         // ssh resize on the UI thread — the freeze we're avoiding. Floored for
@@ -1130,17 +1142,23 @@ impl Session {
             if let Ok(mut parser) = self.wired.parser.lock() {
                 parser.screen_mut().set_size(rows, cols);
             }
-            return;
+            // Nothing to reach, and nothing to ask again for.
+            return true;
         }
         if let Err(e) = self.wired.resize(self.backend.as_ref(), rows, cols) {
             tracing::warn!("Failed to resize session: {e}");
-            return;
+            return false;
         }
-        if let Some(shell) = &self.shell_pane {
-            if let Err(e) = shell.wired.resize(self.backend.as_ref(), rows, cols) {
-                tracing::warn!("Failed to resize shell pane: {e}");
-            }
+        let Some(shell) = &self.shell_pane else {
+            return true;
+        };
+        // The two panes take turns in one rect, so a shell left at the old size
+        // is the same wrong wrapping as an agent left at it.
+        if let Err(e) = shell.wired.resize(self.backend.as_ref(), rows, cols) {
+            tracing::warn!("Failed to resize shell pane: {e}");
+            return false;
         }
+        true
     }
 
     /// Force the session into the "process exited" state, for tests that need to

@@ -1609,9 +1609,9 @@ impl TmuxBackend {
     ///
     /// Bounded and reconnect-free for [`Self::ctrl_command_within`]'s reasons —
     /// the budget covers only the lock, there being no answer to wait for.
-    fn ctrl_command_detached(&self, cmd: &str) -> Result<()> {
+    fn ctrl_command_detached(&self, cmds: &[&str]) -> Result<()> {
         self.with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
-            ctrl.send_command_detached(cmd)
+            ctrl.send_command_detached(cmds)
         })
     }
 
@@ -2211,13 +2211,16 @@ impl SessionBackend for TmuxBackend {
         // inside the paint, and on a link that had gone bad that was the whole
         // interface frozen until the command timed out.
         //
-        // Still two commands, still in this order: a pane cannot exceed its
-        // window, and control mode answers a list in the order it was written,
-        // so the second lands after the first on the host regardless.
-        self.ctrl_command_detached(&format!(
-            "resize-window -t {backend_id} -x {cols} -y {rows}"
-        ))?;
-        self.ctrl_command_detached(&format!("resize-pane -t {backend_id} -x {cols} -y {rows}"))
+        // Still two commands and still in this order — a pane cannot exceed its
+        // window — but as one list, so they take the lock once and tmux runs
+        // them without returning to its event loop in between. Sent separately
+        // they could be refused separately, and a window resized around a pane
+        // that was not leaves the agent wrapping at the old width until some
+        // later rect change asks again.
+        self.ctrl_command_detached(&[
+            &format!("resize-window -t {backend_id} -x {cols} -y {rows}"),
+            &format!("resize-pane -t {backend_id} -x {cols} -y {rows}"),
+        ])
     }
 
     fn is_dead(&self, backend_id: &str) -> Result<bool> {
