@@ -314,15 +314,24 @@ const SPAWN_FORMAT: &str = "#{pane_id} #{window_id}";
 /// a `tbp-` program are windows an ownership question can be asked about too,
 /// and leaving them out of the listing is what made a name look unambiguous
 /// when it was not.
-fn parse_discovered(line: &str) -> Option<DiscoveredSession> {
+fn parse_discovered(line: &str, stamps: bool) -> Option<DiscoveredSession> {
     let mut parts = line.splitn(5, '|');
     let pane = parts.next()?;
     let name = parts.next()?;
     let dead = parts.next()?;
     // Trailing fields are absent rather than empty on a multiplexer that drops
     // them (ADR-13); an unstamped window is the same answer either way.
-    let session = parts.next().unwrap_or("");
-    let role = parts.next().unwrap_or("");
+    //
+    // Dropped outright when this multiplexer's `#{@...}` is not a *window's*
+    // option (`stamps`, and psmux is the one — ADR-13): there the answer is one
+    // global option handed back for every window, which is not a weaker claim
+    // about whose window this is but no claim at all. Believed, it makes one
+    // session's id every window's and loses every pane on the server; see
+    // `a_global_stamp_is_not_read_as_every_windows_identity`.
+    let (session, role) = match stamps {
+        true => (parts.next().unwrap_or(""), parts.next().unwrap_or("")),
+        false => ("", ""),
+    };
 
     // The name still decides what is ours, because an unstamped window has
     // nothing else — the stamp decides *whose*, which is a different question.
@@ -760,10 +769,17 @@ impl WindowIndex {
 ///
 /// `target` is the new window's pane id, or its `session:=window` target where
 /// the spawn could not report one. Best-effort by design, and so returns
-/// nothing to check: a multiplexer without window options (psmux, ADR-13)
-/// leaves the window unstamped, where the sole-namesake rule in
-/// [`WindowIndex`] carries it exactly as the name fallback did before.
+/// nothing to check — but **not attempted at all** on a multiplexer without
+/// window options (psmux, ADR-13), where the sole-namesake rule in
+/// [`WindowIndex`] carries the identity as the name fallback did before.
+/// Writing one there is not the harmless no-op it reads as: psmux keeps a
+/// server-global option under the name and answers `#{@...}` with it for every
+/// window, so a single stamp made every window look like one session's and
+/// cost the interface every pane it had (issue #1168).
 pub fn stamp_local_window(target: &str, session_id: &str, role: WindowRole) {
+    if local_mux_is_psmux() {
+        return;
+    }
     for (option, value) in [
         (WINDOW_SESSION_OPTION, session_id),
         (WINDOW_ROLE_OPTION, role.as_str()),
@@ -1085,6 +1101,18 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// Whether a `#{@...}` this multiplexer answers with is a **window's**
+    /// option.
+    ///
+    /// psmux's is not: `set-option -w -t <pane> @k v` stores one option for the
+    /// whole server and `#{@k}` expands to it on every window (measured against
+    /// psmux 3.3.6 — ADR-13). So a stamp read back from psmux identifies
+    /// nothing, and [`parse_discovered`] drops it rather than reading one
+    /// session's id as every window's.
+    fn stamps_are_per_window(&self) -> bool {
+        !self.transport.uses_psmux()
+    }
+
     /// One `list-windows`, with an empty answer only when the multiplexer
     /// itself said there is nothing to list.
     ///
@@ -1120,9 +1148,10 @@ impl TmuxBackend {
                 )
             })?;
         if output.status.success() {
+            let stamps = self.stamps_are_per_window();
             return Ok(String::from_utf8_lossy(&output.stdout)
                 .lines()
-                .filter_map(parse_discovered)
+                .filter_map(|line| parse_discovered(line, stamps))
                 .collect());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2181,12 +2210,25 @@ impl SessionBackend for TmuxBackend {
             self.tmux_output(&["list-windows", "-t", &self.session, "-F", DISCOVER_FORMAT])?
         };
 
-        Ok(result.lines().filter_map(parse_discovered).collect())
+        let stamps = self.stamps_are_per_window();
+        Ok(result
+            .lines()
+            .filter_map(|line| parse_discovered(line, stamps))
+            .collect())
     }
 
     fn stamp_window(&self, backend_id: &str, session_id: &str, role: WindowRole) -> Result<()> {
         if !control_mode::is_valid_pane_id(backend_id) {
             bail!("refusing to stamp an invalid pane id: {backend_id:?}");
+        }
+        // Nothing to write where an option is not a window's
+        // ([`Self::stamps_are_per_window`]): psmux would take this as a
+        // *global* one and hand it back as every window's identity. Ok rather
+        // than an error for the same reason `set_remain_on_exit` is — the
+        // caller is not being refused, there is simply no per-window option to
+        // set, and `WindowIndex` resolves by name there (ADR-25).
+        if !self.stamps_are_per_window() {
+            return Ok(());
         }
         // `-w`: the option belongs to the window, not the pane, so a pane that
         // is split or replaced inside it does not take the identity with it.
@@ -3401,8 +3443,10 @@ pub fn spawn_window(
             local_socket()
         );
     }
+    // `window_target` takes a window *name*: the session's is `tb-<name>`, and
+    // naming the session itself resolved to whatever window that picked out.
     let target = if pane_id.is_empty() {
-        window_target(session_name)
+        window_target(&window_name)
     } else {
         pane_id.clone()
     };
@@ -5176,11 +5220,12 @@ mod tests {
     /// is a session id is believed.
     #[test]
     fn only_a_session_id_counts_as_a_stamp() {
-        let parsed = parse_discovered("%1|tb-fleet|0|#{@thurbox_session}|agent").expect("parsed");
+        let parsed =
+            parse_discovered("%1|tb-fleet|0|#{@thurbox_session}|agent", true).expect("parsed");
         assert_eq!(parsed.session, "");
         assert_eq!(parsed.role, WindowRole::Agent);
         assert_eq!(
-            parse_discovered(&format!("%1|tb-fleet|0|{ONE}|agent"))
+            parse_discovered(&format!("%1|tb-fleet|0|{ONE}|agent"), true)
                 .unwrap()
                 .session,
             ONE
@@ -5192,12 +5237,83 @@ mod tests {
     /// what the window is.
     #[test]
     fn a_listing_without_the_stamp_fields_still_discovers_the_window() {
-        let parsed = parse_discovered("%1|tbs-fleet|0").expect("parsed");
+        let parsed = parse_discovered("%1|tbs-fleet|0", true).expect("parsed");
         assert_eq!(parsed.session, "");
         assert_eq!(parsed.role, WindowRole::Shell);
         assert!(parsed.is_alive);
-        assert!(parse_discovered("%1|someone-elses|0").is_none());
-        assert!(parse_discovered("not-a-pane|tb-fleet|0").is_none());
+        assert!(parse_discovered("%1|someone-elses|0", true).is_none());
+        assert!(parse_discovered("not-a-pane|tb-fleet|0", true).is_none());
+    }
+
+    /// psmux has **no per-window options**: `set-option -w -t <pane> @k v`
+    /// writes a *global* one, and `#{@k}` then expands to it on every window
+    /// (measured on a Windows host, psmux 3.3.6 — ADR-13). So the stamp thurbox
+    /// wrote for one session is handed back as every window's, and both readings
+    /// of that lose the pane: the session it names sees several windows claiming
+    /// it, and every *other* session sees its own window claiming somebody else.
+    /// Both end at "session has no pane yet", which is the whole of Windows
+    /// being unattachable from the second session on.
+    #[test]
+    fn a_global_stamp_is_not_read_as_every_windows_identity() {
+        let listing = |stamps: bool| {
+            WindowIndex::from_listing([
+                parse_discovered(&format!("%1|tb-first|0|{TWO}|agent"), stamps).expect("parsed"),
+                parse_discovered(&format!("%3|tb-second|0|{TWO}|agent"), stamps).expect("parsed"),
+            ])
+        };
+
+        // A multiplexer whose `#{@...}` is per-window is believed, so one id on
+        // two windows is the ambiguity it looks like.
+        let stamped = listing(true);
+        assert_eq!(stamped.agent_window(TWO, "second"), Located::Unknown);
+        assert_eq!(stamped.agent_window(ONE, "first"), Located::Absent);
+
+        // A multiplexer whose `#{@...}` is not per-window says nothing about
+        // whose window this is, so the name decides — the pre-ADR-25 shape
+        // `local_mux_is_psmux` already keeps for it everywhere else.
+        let unstamped = listing(false);
+        assert_eq!(
+            unstamped.agent_window(TWO, "second"),
+            Located::At("%3".into())
+        );
+        assert_eq!(
+            unstamped.agent_window(ONE, "first"),
+            Located::At("%1".into())
+        );
+    }
+
+    /// The role travels on the same global option, so it is dropped with it —
+    /// otherwise a session's companion shell reports `agent` and is indexed as
+    /// the agent window, which is the same pane confusion one layer down.
+    #[test]
+    fn a_global_role_never_makes_a_shell_window_an_agent() {
+        let shell =
+            parse_discovered(&format!("%5|tbs-fleet|0|{ONE}|agent"), false).expect("parsed");
+        assert_eq!(shell.role, WindowRole::Shell);
+        assert_eq!(shell.session, "");
+    }
+
+    /// Which multiplexers those two tests are about, asked where the listing is
+    /// read: psmux is the one whose `#{@...}` is not a window's.
+    #[test]
+    fn only_a_multiplexer_with_window_options_is_read_as_stamping_them() {
+        let psmux = crate::session::HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        };
+        let tmux = crate::session::HostDef {
+            multiplexer: None,
+            ..psmux.clone()
+        };
+        assert!(!TmuxBackend::from_host(&psmux).stamps_are_per_window());
+        assert!(TmuxBackend::from_host(&tmux).stamps_are_per_window());
+        assert_eq!(
+            TmuxBackend::local().stamps_are_per_window(),
+            !cfg!(windows),
+            "the local multiplexer is psmux on Windows and tmux elsewhere"
+        );
     }
 
     /// A program window is discovered but can never be adopted as a session's

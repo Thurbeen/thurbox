@@ -807,6 +807,32 @@ const SUB_EVENTS_CAP: usize = 256;
 /// status latency.
 const PSMUX_HOOK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 
+/// Whether this multiplexer answers the `attach-session` carried on argv with
+/// a `%begin`/`%end` block of its own.
+///
+/// tmux does, and [`ControlMode::drain_implicit_attach_response`] must consume
+/// it before any waiter exists. **psmux does not** (measured against psmux
+/// 3.3.6 — ADR-13): its command counter starts at 1 for the *client's* first
+/// command, so the attach is never numbered at all.
+///
+/// ```text
+/// $ printf 'display-message -p first\ndisplay-message -p second\n' \
+///     | psmux -L s -C attach-session -t thurbox
+/// %begin 1789657328 1 1     <- the first command sent, not the attach
+/// %begin 1789657328 2 1
+/// ```
+///
+/// Draining there waits on a `read_until` for a block that never comes, which
+/// is the whole of issue #1168's headline symptom: `ensure_ready` never
+/// returns, so the discovery worker never reports, `Terminals::discovered`
+/// stays empty, and **every** session renders "session has no pane yet" with
+/// nothing logged — the interface never attaches a single pane on Windows. The
+/// blocking read ends only when psmux closes the pipe, which is the other face
+/// of it ("control mode closed before sending its implicit attach response").
+fn sends_implicit_attach_response(transport: &TmuxTransport) -> bool {
+    !transport.uses_psmux()
+}
+
 impl ControlMode {
     /// Start a control mode connection to the thurbox tmux session over the
     /// given transport (local or ssh).
@@ -852,7 +878,9 @@ impl ControlMode {
         // connection's life. Draining here, before any waiter can exist,
         // makes that race impossible instead of merely unlikely.
         let mut reader = BufReader::new(stdout);
-        Self::drain_implicit_attach_response(&mut reader)?;
+        if sends_implicit_attach_response(transport) {
+            Self::drain_implicit_attach_response(&mut reader)?;
+        }
 
         let stdin = Arc::new(Mutex::new(stdin));
         let pane_senders: PaneSendersMapShared =
@@ -1018,10 +1046,7 @@ impl ControlMode {
     /// appear (e.g. in `%extended-output`). Replacing invalid sequences with
     /// U+FFFD is safe — the octal-encoded payload in `%output` lines is always
     /// valid ASCII.
-    fn next_control_line(
-        reader: &mut BufReader<std::process::ChildStdout>,
-        line_buf: &mut Vec<u8>,
-    ) -> Option<String> {
+    fn next_control_line(reader: &mut impl BufRead, line_buf: &mut Vec<u8>) -> Option<String> {
         line_buf.clear();
         match reader.read_until(b'\n', line_buf) {
             Ok(0) => return None,
@@ -1044,9 +1069,7 @@ impl ControlMode {
     /// lines ahead of the block (tmux has been observed to send `%output` /
     /// `%session-changed` first) are harmless to skip here: nothing is
     /// registered to receive them yet.
-    fn drain_implicit_attach_response(
-        reader: &mut BufReader<std::process::ChildStdout>,
-    ) -> Result<()> {
+    fn drain_implicit_attach_response(reader: &mut impl BufRead) -> Result<()> {
         let mut line_buf = Vec::new();
         while let Some(line) = Self::next_control_line(reader, &mut line_buf) {
             if !matches!(parse_notification(&line), Notification::Begin) {

@@ -84,11 +84,16 @@ binary name rather than forked (a remote SSH host can also pin
 control-mode protocol is byte-identical over either transport/binary, with
 **psmux divergences** (verified against psmux 3.3.6, each branched on
 `TmuxTransport::uses_psmux()`) — psmux lacks `send-keys -H`, does not join
-`new-window` trailing tokens or honour its `-e`, and implements no control-mode
-paste command. So thurbox re-encodes keystrokes from the primitives psmux does
-support (`send_keys_commands`), folds env + command into **one token** of
-PowerShell (`psmux_window_powershell`), and routes a bracketed paste out of band
-through the one-shot CLI `psmux send-paste` (`control_mode::PsmuxPaste`). Each
+`new-window` trailing tokens or honour its `-e`, implements no control-mode
+paste command, and has **no per-window options**. So thurbox re-encodes
+keystrokes from the primitives psmux does support (`send_keys_commands`), folds
+env + command into **one token** of PowerShell (`psmux_window_powershell`),
+routes a bracketed paste out of band through the one-shot CLI
+`psmux send-paste` (`control_mode::PsmuxPaste`), and neither writes nor reads
+the ADR-25 window stamp there (`stamp_window` / `stamp_local_window` /
+`stamps_are_per_window`) — `set-option -w` writes a *server-global* option that
+`#{@...}` then answers with for **every** window, which made one session's id
+every window's identity and cost Windows every pane it had (issue #1168). Each
 workaround has non-obvious quoting/tokenizing constraints — **read the psmux
 divergences subsection of ADR-13 in `docs/ARCHITECTURE.md` before touching this
 path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).

@@ -1237,3 +1237,72 @@ fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place()
     );
     assert_eq!(next, "next");
 }
+
+// --- the implicit attach response (ADR-13, issue #1168) ---
+
+/// tmux answers the `attach-session` carried on argv with a `%begin`/`%end`
+/// block of its own; psmux does not, and its command counter proves it —
+/// the client's first command is numbered 1, so the attach was never numbered.
+///
+/// Draining a block psmux will never send is a blocking `read_until` that
+/// returns only when psmux closes the pipe. `ensure_ready` therefore never
+/// succeeds, `kernel::terminal`'s discovery worker never reports, and every
+/// session on Windows renders "session has no pane yet" — with nothing logged,
+/// because nothing failed, it simply never came back.
+#[test]
+fn only_a_multiplexer_that_answers_the_attach_is_drained() {
+    let psmux = TmuxTransport::Ssh {
+        destination: "me@winbox".into(),
+        ssh_opts: Vec::new(),
+        mux: "psmux".into(),
+    };
+    let tmux = TmuxTransport::Ssh {
+        destination: "me@devbox".into(),
+        ssh_opts: Vec::new(),
+        mux: "tmux".into(),
+    };
+    assert!(!sends_implicit_attach_response(&psmux));
+    assert!(sends_implicit_attach_response(&tmux));
+    assert!(sends_implicit_attach_response(&TmuxTransport::Wsl {
+        distro: "Ubuntu".into(),
+        mux: "tmux".into(),
+    }));
+    assert_eq!(
+        sends_implicit_attach_response(&TmuxTransport::Local),
+        !cfg!(windows),
+        "the local multiplexer is psmux on Windows and tmux elsewhere"
+    );
+}
+
+/// The drain takes the implicit block and **only** it: the bytes after `%end`
+/// are the connection's, and eating them would lose the first notification.
+#[test]
+fn the_drain_stops_at_the_end_of_the_implicit_block() {
+    let stream = "\
+%begin 1789657328 1 1
+%end 1789657328 1 1
+%window-add @1
+";
+    let mut reader = std::io::Cursor::new(stream.as_bytes());
+    ControlMode::drain_implicit_attach_response(&mut reader).expect("the block is consumed");
+
+    let mut rest = String::new();
+    reader.read_line(&mut rest).expect("read");
+    assert_eq!(rest.trim_end(), "%window-add @1");
+}
+
+/// What psmux actually puts on the wire after an attach: a blank line, then
+/// nothing until something is sent. Against a real pipe this is where the
+/// drain blocks forever; a closed one is the same answer arriving as an error,
+/// which is the "control mode closed before sending its implicit attach
+/// response" seen on Windows. Either way it must not be asked of psmux.
+#[test]
+fn a_psmux_shaped_stream_never_satisfies_the_drain() {
+    let mut reader = std::io::Cursor::new(b"\n".as_slice());
+    let err = ControlMode::drain_implicit_attach_response(&mut reader)
+        .expect_err("psmux sends no implicit block");
+    assert!(
+        format!("{err:#}").contains("before sending its implicit attach response"),
+        "{err:#}"
+    );
+}
