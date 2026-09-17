@@ -487,7 +487,9 @@ pub const UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 /// than this machine's: a session soft-deleted on a host has no interface there
 /// to collect it, and leaving it was how every headless delete of a remote
 /// session leaked its `tb-`/`tbs-` pair for good. That costs one
-/// `list-windows` per host, and only for a host with a row actually overdue.
+/// `list-windows` per host, and only for a host with a row actually overdue —
+/// and a host that cannot answer is then backed off rather than re-asked every
+/// pass (`window_index_on`).
 ///
 /// Window ownership is the whole gate, so a row that owns none is skipped
 /// entirely and its metrics file and symlink workspace are left in place —
@@ -526,16 +528,84 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
 /// Every thurbox window on the server `backend_type` names. An empty index for
 /// a host that is unconfigured or unreachable, which reads as "owns nothing" —
 /// the conservative answer a teardown gate wants.
+///
+/// A host that could not be listed is then left alone for a while
+/// ([`may_list`]) instead of being asked again on the next pass. The sweep runs
+/// every five seconds, and a row whose host cannot be resolved is never reaped,
+/// so without this one such row re-probed its host at that rate for the life of
+/// the process — spawning `wsl.exe` from the interface's own loop and writing
+/// 3.9 MB of log in a day (issue #1182).
 fn window_index_on(backend_type: &str) -> crate::agent::tmux::WindowIndex {
     if !crate::session::is_remote_backend(backend_type) {
         return crate::agent::tmux::local_window_index().unwrap_or_default();
     }
-    match super::resolve_host(backend_type).flatten() {
-        Some(host) => crate::agent::tmux::remote_window_index(&host).unwrap_or_else(|e| {
+    let now = std::time::Instant::now();
+    if !may_list(backend_type, now) {
+        return crate::agent::tmux::WindowIndex::default();
+    }
+    let Some(host) = super::resolve_host(backend_type).flatten() else {
+        listing_failed(backend_type, now);
+        return crate::agent::tmux::WindowIndex::default();
+    };
+    match crate::agent::tmux::remote_window_index(&host) {
+        Ok(index) => {
+            listing_succeeded(backend_type);
+            index
+        }
+        Err(e) => {
             tracing::debug!("could not list the windows of '{}': {e:#}", host.name);
+            listing_failed(backend_type, now);
             crate::agent::tmux::WindowIndex::default()
-        }),
-        None => crate::agent::tmux::WindowIndex::default(),
+        }
+    }
+}
+
+/// When each host was last asked for its windows and failed, and how many times
+/// in a row — the sweep's own backoff, keyed by backend type.
+///
+/// Process-wide, like the host-usability probe's verdict cache it borrows its
+/// curve from: the sweep has no state of its own between passes.
+fn unlistable_hosts(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>> {
+    static HOSTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+    > = std::sync::OnceLock::new();
+    HOSTS.get_or_init(Default::default)
+}
+
+/// Whether the sweep may ask `backend_type` for its windows at `now`.
+///
+/// The interval after a failure is
+/// [`host_cli::retry_after`](super::host_cli) — one minute, doubling towards
+/// fifteen — so an unreachable host costs the sweep the same as it costs the
+/// usability probe beside it. A poisoned lock asks: the gate exists to spare
+/// work, and skipping a teardown because of it would be the worse failure.
+fn may_list(backend_type: &str, now: std::time::Instant) -> bool {
+    let Ok(cache) = unlistable_hosts().lock() else {
+        return true;
+    };
+    match cache.get(backend_type) {
+        Some((at, failures)) => {
+            now.saturating_duration_since(*at) >= super::host_cli::retry_after(*failures)
+        }
+        None => true,
+    }
+}
+
+/// Record that `backend_type` could not be listed at `now`, spacing the next
+/// attempt further out than the last.
+fn listing_failed(backend_type: &str, now: std::time::Instant) {
+    if let Ok(mut cache) = unlistable_hosts().lock() {
+        let entry = cache.entry(backend_type.to_string()).or_insert((now, 0));
+        *entry = (now, entry.1.saturating_add(1));
+    }
+}
+
+/// Record that `backend_type` answered, so a host that comes back is asked at
+/// the base cadence again rather than at the interval its outage earned.
+fn listing_succeeded(backend_type: &str) {
+    if let Ok(mut cache) = unlistable_hosts().lock() {
+        cache.remove(backend_type);
     }
 }
 
@@ -852,6 +922,44 @@ mod tests {
     use super::*;
     use crate::session::SessionId;
     use crate::sync::SharedSession;
+    use std::time::{Duration, Instant};
+
+    /// The sweep runs every five seconds, and a row on a host it cannot resolve
+    /// is never reaped — so without a backoff that host is re-probed at exactly
+    /// that rate forever, which is what held the interface and wrote 3.9 MB of
+    /// log in a day (issue #1182). The clock is carried forward here rather
+    /// than slept through.
+    #[test]
+    fn a_host_that_cannot_be_listed_is_not_re_asked_on_the_sweep_cadence() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        // No `hosts.toml` names this backend, so resolving it is the failure
+        // under test. The name is unique so no sibling test shares its entry in
+        // the process-wide backoff.
+        let backend = "ssh:no-such-host-for-the-sweep-backoff-test";
+
+        let asked_at = Instant::now();
+        assert!(may_list(backend, asked_at), "the first pass must ask");
+        window_index_on(backend);
+
+        // The sweep's own cadence, and every pass short of the first retry.
+        assert!(!may_list(backend, asked_at + Duration::from_secs(5)));
+        assert!(!may_list(backend, asked_at + Duration::from_secs(59)));
+        // Past it, the host is asked again — a machine that comes back is still
+        // picked up within the minute.
+        assert!(may_list(backend, asked_at + Duration::from_secs(61)));
+
+        // And a host that keeps failing is spaced out further still, on the
+        // same curve the usability probe beside it climbs.
+        let failed_again = Instant::now();
+        listing_failed(backend, failed_again);
+        assert!(!may_list(backend, failed_again + Duration::from_secs(61)));
+        assert!(may_list(backend, failed_again + Duration::from_secs(121)));
+
+        // An answer clears it, so the next outage starts over at one minute.
+        listing_succeeded(backend);
+        assert!(may_list(backend, failed_again));
+    }
 
     fn insert_session(db: &Database, name: &str) -> SessionId {
         insert_session_on(db, name, "local-tmux", "")

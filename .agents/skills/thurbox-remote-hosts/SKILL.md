@@ -330,6 +330,17 @@ session), never on the loop, ADR-P12).
   timeout rather than one per orphan. Force-deleted rows only: a soft-deleted
   one is restorable and its windows are the reaper's at the end of the undo
   window — ADR-24, ADR-26.
+- **A host the reap sweep cannot list is backed off, not re-asked.**
+  `reap_overdue_soft_deletes` gates every row on window ownership, and
+  `window_index_on` reads an unresolvable or unreachable host as "owns
+  nothing" — correct for one pass, but the row is then never reaped, so the
+  host was re-probed on the sweep's own five-second cadence for the life of
+  the process. `window_index_on` now records the failure and leaves the host
+  alone for `host_cli::retry_after` its consecutive failure count, the same
+  minute-doubling-to-fifteen curve the usability probe climbs; an answer
+  clears the count. Issue #1182 is what that cost on native Windows: one WSL
+  row, `wsl.exe` spawned from the interface's own `Command::Reap` every five
+  seconds, and 3.9 MB of log in a day.
 - **"The host holds nothing" and "the host did not answer" are different
   answers**, and the teardown is where confusing them costs the most.
   `discover` gates on `has-session` and reads its failure as an empty server,

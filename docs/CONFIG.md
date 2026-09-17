@@ -580,7 +580,9 @@ launch (it does **not** reuse the `version_check` badge's 24 h cache — sharing
 that gate let the badge keep the cache "fresh" and starve the updater) it
 fetches the latest release tag; if a newer release exists it downloads that
 release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
-dependency), verifies the SHA256 (`sha256sum`/`shasum`), extracts it
+dependency), verifies the SHA256 **in process** (`sha2`, so the check does not
+depend on the local `PATH` — shelling out to `sha256sum`/`shasum` made it
+impossible on native Windows, issue #1182), extracts it
 (`tar`), and atomically replaces the installed `thurbox`/`thurbox-cli`
 binaries in place — mirroring `scripts/install.sh`. The download is verified
 **before** any installed file is touched, so a failed/corrupt download leaves
