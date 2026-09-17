@@ -195,6 +195,92 @@ impl Database {
 mod tests {
     use super::*;
 
+    /// Two folders rescanning at once must not drop one of the two answers.
+    ///
+    /// Concurrent callers are new here: this used to run only from the `Alt+P`
+    /// import, one keypress at a time, and now also runs from every remote
+    /// folder's rescan — so two folder bookmarks on one host come due together
+    /// and write from two workers on two connections. What makes that safe is
+    /// that the transaction's *first* statement is the DELETE, so it takes the
+    /// write lock up front and waits out a peer on `busy_timeout` instead of
+    /// upgrading a read snapshot the peer has superseded, which is the
+    /// interleaving WAL refuses outright (`storage::mod`'s twin of this test
+    /// carries that rule and the defect that wrote it). Reordering a read in
+    /// front of that DELETE would break this.
+    ///
+    /// Staged rather than raced, for the reason that twin gives: the peer takes
+    /// the lock before the write starts and commits only once the call is
+    /// proven to be in flight, so there is no interleaving to get lucky about.
+    #[test]
+    fn replacing_a_folder_s_members_waits_out_a_peer_that_commits_underneath_it() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("thurbox.db");
+        let db = Database::open(&path).unwrap();
+        db.upsert_repo_bookmark_kind("ssh:box", Path::new("/srv/a"), true)
+            .unwrap();
+        db.upsert_repo_bookmark_kind("ssh:box", Path::new("/srv/b"), true)
+            .unwrap();
+
+        // The peer — the other folder's rescan — holds the write lock and has
+        // not committed yet.
+        let peer = rusqlite::Connection::open(&path).unwrap();
+        peer.busy_timeout(crate::storage::schema::BUSY_TIMEOUT)
+            .unwrap();
+        peer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let (started, call_started) = mpsc::channel();
+        let (done, call_done) = mpsc::channel();
+        let write_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            let db = Database::open_existing(&write_path).unwrap();
+            started.send(()).unwrap();
+            let outcome = db.replace_parent_children(
+                "ssh:box",
+                Path::new("/srv/a"),
+                &[PathBuf::from("/srv/a/one")],
+            );
+            let _ = done.send(());
+            outcome
+        });
+
+        call_started.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            assert!(
+                call_done.try_recv().is_err(),
+                "the write returned while the peer held the lock, so it never blocked"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        peer.execute(
+            "UPDATE repo_bookmarks SET use_count = 2 WHERE repo_path = ?1",
+            params!["/srv/b"],
+        )
+        .unwrap();
+        peer.execute_batch("COMMIT").unwrap();
+
+        writer
+            .join()
+            .unwrap()
+            .expect("a peer's commit must not fail this rescan");
+        let members: Vec<PathBuf> = db
+            .list_repo_bookmarks("ssh:box")
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.parent_path.as_deref() == Some(Path::new("/srv/a")))
+            .map(|row| row.repo_path)
+            .collect();
+        assert_eq!(
+            members,
+            [PathBuf::from("/srv/a/one")],
+            "what the scan found is what the folder ends up offering"
+        );
+    }
+
     #[test]
     fn list_repo_bookmarks_empty() {
         let db = Database::open_in_memory().unwrap();

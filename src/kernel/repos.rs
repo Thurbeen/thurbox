@@ -222,11 +222,19 @@ const BRANCHES_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
 struct Remembered {
     at: std::time::Instant,
     rows: Vec<BookmarkRow>,
+    /// Set when something rewrote this host's memory underneath these rows.
+    ///
+    /// They keep being published — a *background* refresh must never blank a
+    /// list that is on screen, and dropping them does exactly that: the flow
+    /// reads absent rows as `loading`, so a rescan finding one new repository
+    /// would empty the picker and reset the cursor before the rows came back.
+    /// The next request re-reads instead.
+    superseded: bool,
 }
 
 impl Remembered {
     fn stale(&self) -> bool {
-        self.at.elapsed() >= BOOKMARKS_TTL
+        self.superseded || self.at.elapsed() >= BOOKMARKS_TTL
     }
 }
 
@@ -592,6 +600,7 @@ impl RepoStore {
                         Remembered {
                             at: std::time::Instant::now(),
                             rows,
+                            superseded: false,
                         },
                     );
                     // The rows name the folders, so this is the first moment a
@@ -612,12 +621,22 @@ impl RepoStore {
                     self.rescans.insert(key.clone(), std::time::Instant::now());
                     if rewrote {
                         // The memory this host's rows were built from has just
-                        // been rewritten underneath them; drop them so the next
-                        // request reads what the scan found. Only this host's —
-                        // another one's rows are untouched and re-reading them
-                        // would be a query for nothing.
-                        self.bookmarks.remove(&key.0);
+                        // been rewritten underneath them, so they are the
+                        // previous answer; the next request re-reads. Only this
+                        // host's — another one's rows are untouched and
+                        // re-reading them would be a query for nothing.
+                        if let Some(held) = self.bookmarks.get_mut(&key.0) {
+                            held.superseded = true;
+                        }
                     }
+                    // Deliberately NOT a change: nothing a reader can see has
+                    // moved yet — the rows on screen are still the rows on
+                    // screen, and the re-read reports its own arrival. Saying
+                    // otherwise would advance the data epoch every interval per
+                    // remote folder, rebuilding every published group and
+                    // dropping every pure pane's cached tree for a scan that
+                    // usually finds nothing.
+                    continue;
                 }
             }
             changed = true;
@@ -655,6 +674,7 @@ impl RepoStore {
             Remembered {
                 at: std::time::Instant::now(),
                 rows,
+                superseded: false,
             },
         );
     }
@@ -1154,6 +1174,76 @@ mod tests {
         assert!(store.bookmarks_inflight.contains(""));
         store.request_bookmarks("");
         assert_eq!(store.bookmarks_inflight.len(), 1);
+    }
+
+    #[test]
+    fn a_rescan_that_finds_nothing_does_not_move_the_data_epoch() {
+        // The loop repaints on `poll`, and a repaint advances the epoch: every
+        // published group is rebuilt and every pure pane's cached tree dropped.
+        // A folder that has not changed must not cost that every interval.
+        let mut store = RepoStore::with_hosts(HostRegistry::default());
+        store
+            .tx
+            .send(Done::Rescan {
+                key: ("ssh:box".into(), "/srv".into()),
+                rewrote: false,
+            })
+            .expect("send");
+        assert!(!store.poll(), "nothing a reader can see has moved");
+    }
+
+    #[test]
+    fn a_rescan_that_found_something_leaves_the_rows_on_screen() {
+        // Dropping them would blank the picker: the flow reads absent rows as
+        // `loading`, so a background scan finding one new repository would empty
+        // a list the user is looking at until the re-read landed.
+        let mut store = RepoStore::with_hosts(HostRegistry::default());
+        store.set_bookmarks_for_test(
+            "ssh:box",
+            vec![row(Path::new("/srv/one"), None, false, None)],
+        );
+        store
+            .tx
+            .send(Done::Rescan {
+                key: ("ssh:box".into(), "/srv".into()),
+                rewrote: true,
+            })
+            .expect("send");
+        store.poll();
+
+        let held = store.bookmarks.get("ssh:box").expect("the rows are kept");
+        assert_eq!(held.rows.len(), 1, "and are still published");
+        assert!(held.stale(), "but the next request re-reads them");
+    }
+
+    #[test]
+    fn a_folder_is_not_rescanned_again_while_one_is_in_flight() {
+        // Bookmarks are re-read every BOOKMARKS_TTL while the flow is open, and
+        // each read asks for a rescan; without the guard a slow ssh host would
+        // collect a connection per read.
+        let mut store = RepoStore::with_hosts(HostRegistry {
+            hosts: vec![HostDef {
+                name: "box".into(),
+                destination: "nowhere.invalid".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let folder = row(Path::new("/srv"), None, true, None);
+        store.set_bookmarks_for_test("ssh:box", vec![folder]);
+        store.rescan_folders("ssh:box");
+        assert_eq!(store.rescans_inflight.len(), 1);
+        store.rescan_folders("ssh:box");
+        assert_eq!(store.rescans_inflight.len(), 1, "not one per read");
+    }
+
+    #[test]
+    fn a_local_folder_is_never_rescanned_over_a_transport() {
+        // It has no host to ask: `read_bookmarks` scans it on every read.
+        let mut store = RepoStore::with_hosts(HostRegistry::default());
+        store.set_bookmarks_for_test("", vec![row(Path::new("/src"), None, true, None)]);
+        store.rescan_folders("");
+        assert!(store.rescans_inflight.is_empty());
     }
 
     #[test]
