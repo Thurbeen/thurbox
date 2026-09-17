@@ -18,12 +18,12 @@
 //!
 //! Two things it owns deliberately:
 //!
-//! - **The socket directory.** It is the guard's, not the harness's, so the
-//!   kill cannot race the directory's removal: `Drop::drop` runs to completion
-//!   before any field of the struct is dropped, so the server is already dead
-//!   by the time the directory goes. A harness that kept `TMUX_TMPDIR` in its
-//!   own tempdir was one field reordering away from killing a server whose
-//!   socket had just been deleted.
+//! - **The socket directory.** It is the guard's own `tempfile::TempDir`, not
+//!   the harness's, so the kill cannot race its removal: `Drop::drop` runs to
+//!   completion before any field of the struct is dropped, so the server is
+//!   already dead by the time the directory goes. A harness that kept
+//!   `TMUX_TMPDIR` in a tempdir of its own was one reordered local away from
+//!   killing a server whose socket had just been deleted.
 //! - **Every socket in that directory**, not just the pinned name. A run that
 //!   landed on a name it did not choose — the failure
 //!   `tests/tmux_server_leak.rs` exists to catch — started a server too, and
@@ -42,10 +42,13 @@ use std::process::{Command, Output};
 /// both are gone when this value is.
 pub struct TmuxServer {
     socket: String,
-    /// `TMUX_TMPDIR`. A plain `PathBuf` rather than a `tempfile::TempDir`
-    /// because the removal has to happen *after* the kill, which is what
-    /// [`Drop::drop`] spells out.
-    tmpdir: PathBuf,
+    /// `TMUX_TMPDIR`, exclusively created and owned here — a test that makes a
+    /// directory owns its removal.
+    ///
+    /// Held as a field rather than removed by hand in [`Drop::drop`] precisely
+    /// because the order is then the language's: the destructor body runs to
+    /// completion, reaping, and the directory goes afterwards.
+    tmpdir: tempfile::TempDir,
 }
 
 impl TmuxServer {
@@ -57,7 +60,7 @@ impl TmuxServer {
     /// them fight over the same three variables. Hold one.
     pub fn pin(socket: &str) -> Self {
         let server = Self::private(socket);
-        std::env::set_var("TMUX_TMPDIR", &server.tmpdir);
+        std::env::set_var("TMUX_TMPDIR", server.tmpdir());
         std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, &server.socket);
         // Cleared, not merely overridden: thurbox tags an injected socket with
         // the data dir it belongs to, so a suite run inside a thurbox pane
@@ -71,20 +74,21 @@ impl TmuxServer {
     /// The same server, leaving this process's environment alone — for a
     /// harness that scopes each child command with [`Self::scope`] instead.
     pub fn private(socket: &str) -> Self {
-        // Per guard, not per process: a harness that builds two must not have
-        // the second take the first's socket directory out from under it.
-        static NTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let nth = NTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // An AF_UNIX path is limited to ~104 bytes and tmux spends ten of them
-        // on its own `tmux-<uid>/` level, so this is a short directory next to
-        // the runtime dir rather than one nested under a tempdir whose prefix
-        // is not ours to keep short.
-        let tmpdir = std::env::var_os("XDG_RUNTIME_DIR")
+        // on its own `tmux-<uid>/` level, so this sits next to the runtime dir
+        // under a short prefix rather than nested under a `TMPDIR` whose length
+        // is not ours to choose.
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|dir| dir.is_dir())
-            .unwrap_or_else(std::env::temp_dir)
-            .join(format!("tbx-{}-{nth}", std::process::id()));
-        std::fs::create_dir_all(&tmpdir).expect("mkdir socket dir");
+            .unwrap_or_else(std::env::temp_dir);
+        // Created exclusively, so two guards in one process — or two runs on
+        // one machine — can never be handed the same directory and reap each
+        // other's server.
+        let tmpdir = tempfile::Builder::new()
+            .prefix("tbx-")
+            .tempdir_in(base)
+            .expect("socket dir");
         Self {
             socket: socket.to_string(),
             tmpdir,
@@ -98,13 +102,13 @@ impl TmuxServer {
 
     /// The private `TMUX_TMPDIR` this server's sockets live in.
     pub fn tmpdir(&self) -> &Path {
-        &self.tmpdir
+        self.tmpdir.path()
     }
 
     /// Point `cmd` at this server the way a harness must: pinned socket,
     /// cleared owner tag, private socket directory.
     pub fn scope<'c>(&self, cmd: &'c mut Command) -> &'c mut Command {
-        cmd.env("TMUX_TMPDIR", &self.tmpdir);
+        cmd.env("TMUX_TMPDIR", self.tmpdir());
         cmd.env(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, &self.socket);
         cmd.env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV)
     }
@@ -112,7 +116,7 @@ impl TmuxServer {
     /// `tmux <args>` on this server.
     pub fn tmux(&self, args: &[&str]) -> Output {
         Command::new("tmux")
-            .env("TMUX_TMPDIR", &self.tmpdir)
+            .env("TMUX_TMPDIR", self.tmpdir())
             // A suite run inside a tmux pane inherits `TMUX`, and a command
             // that reads it resolves against the operator's server rather than
             // this one however the socket is spelled.
@@ -143,7 +147,7 @@ impl TmuxServer {
             }
         }
         let mut found = Vec::new();
-        walk(&self.tmpdir, &mut found);
+        walk(self.tmpdir(), &mut found);
         found.sort();
         found
     }
@@ -154,7 +158,7 @@ impl TmuxServer {
             .into_iter()
             .filter(|socket| {
                 Command::new("tmux")
-                    .env("TMUX_TMPDIR", &self.tmpdir)
+                    .env("TMUX_TMPDIR", self.tmpdir())
                     .args(["-L", socket, "list-sessions"])
                     .output()
                     .is_ok_and(|out| out.status.success())
@@ -171,7 +175,7 @@ impl TmuxServer {
         // that started on a derived name still has its file here.
         for socket in std::iter::once(self.socket.clone()).chain(self.sockets()) {
             let _ = Command::new("tmux")
-                .env("TMUX_TMPDIR", &self.tmpdir)
+                .env("TMUX_TMPDIR", self.tmpdir())
                 .args(["-L", &socket, "kill-server"])
                 .output();
         }
@@ -180,10 +184,10 @@ impl TmuxServer {
 
 impl Drop for TmuxServer {
     fn drop(&mut self) {
-        // Order, spelled out rather than left to field declaration order: the
-        // socket file has to still be there when the kill goes out, or there
-        // is nothing left to connect to and the server runs forever.
+        // The socket file has to still be there when the kill goes out, or
+        // there is nothing left to connect to and the server runs forever.
+        // This body is what guarantees that: it runs to completion before
+        // `tmpdir` — and with it the socket — is dropped.
         self.reap();
-        let _ = std::fs::remove_dir_all(&self.tmpdir);
     }
 }

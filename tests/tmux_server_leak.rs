@@ -207,9 +207,14 @@ fn a_scoped_run_leaves_no_tmux_server_behind() {
 /// Where the probe below writes the socket it started a server on. Read out of
 /// the environment rather than fixed, so the probe can only run when the test
 /// that drives it asked for it.
+///
+/// `cfg(unix)` with the pair of tests that use it: the process table is read
+/// through `ps`, and a constant nothing reads is `dead_code` on Windows.
+#[cfg(unix)]
 const PROBE_REPORT_ENV: &str = "THURBOX_PANIC_PROBE_REPORT";
 
 /// The probe test's name, as the libtest harness spells it.
+#[cfg(unix)]
 const PROBE: &str = "a_harness_that_panics_after_starting_a_server";
 
 /// Whether any tmux **server** process is still running on `socket`.
@@ -537,7 +542,7 @@ fn no_harness_pins_a_socket_outside_the_guard() {
             ));
         }
         for (i, line) in lines.iter().enumerate() {
-            let held = held_guard(line);
+            let held = held_guard(line, lines.get(i + 1).unwrap_or(&""));
             guards += usize::from(held == Some(true));
             if held == Some(false) {
                 offenders.push(format!(
@@ -565,15 +570,55 @@ fn no_harness_pins_a_socket_outside_the_guard() {
 
 /// Whether `line` builds a guard and, if it does, whether it keeps it.
 ///
-/// A guard reaps when it is *dropped*, so building one and not binding it —
-/// `TmuxServer::pin(SOCKET);` as a statement, or `let _ = …`, both of which
-/// drop at the end of that statement — kills the server before the test has
-/// started one. Neither is a compile error and neither fails an assertion; the
-/// test simply runs unscoped, which is the state this whole file is about.
-fn held_guard(line: &str) -> Option<bool> {
+/// A guard reaps when it is *dropped*, so building one the compiler may drop at
+/// the end of that very statement leaves the test running unscoped — and that
+/// is neither a compile error nor a failed assertion, which is the state this
+/// whole file is about. Three shapes do it: a bare `TmuxServer::pin(SOCKET);`
+/// statement, a `let _ = …` (`_` alone is not a binding), and a temporary used
+/// for one of its methods, `TmuxServer::private(SOCKET).socket().to_owned()`.
+///
+/// So the value has to be bound — to a named local, a struct field or a
+/// position in a tuple — and it has to *be* the value rather than the receiver
+/// of a chain.
+fn held_guard(line: &str, next: &str) -> Option<bool> {
+    let ctor = format!("{GUARD_TYPE}::");
     let line = line.trim_start();
-    if line.starts_with("//") || !line.contains(&format!("{GUARD_TYPE}::")) {
-        return None;
+    let at = line.find(&ctor)?;
+    let before = line[..at].trim_end();
+    let bound = (before.ends_with('=') && !before.starts_with("let _ ="))
+        || before.ends_with(':')
+        || before.ends_with('(')
+        || before.ends_with(',');
+    // `next` because rustfmt breaks a method chain across lines, and a chain
+    // whose first link sits on the following line is the same temporary.
+    let rest = after_call(&line[at + ctor.len()..]);
+    let rest = if rest.is_empty() {
+        next.trim_start()
+    } else {
+        rest
+    };
+    Some(bound && !rest.starts_with('.'))
+}
+
+/// What follows the call `after` opens — `after` starting just past
+/// `TmuxServer::` — or nothing when it opens no call or never closes one.
+///
+/// Balanced rather than "up to the next `)`": every constructor here is
+/// handed a `format!` or a `&[…]`, so the first close paren is usually not the
+/// one that ends the call.
+fn after_call(after: &str) -> &str {
+    let mut depth = 0usize;
+    for (at, c) in after.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return after[at + 1..].trim_start();
+                }
+            }
+            _ => {}
+        }
     }
-    Some(!(line.starts_with(&format!("{GUARD_TYPE}::")) || line.starts_with("let _ =")))
+    ""
 }

@@ -132,7 +132,10 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
     // killed from outside — which is what an editor being quit looks like to
     // tmux, minus the window closing.
     let _ = tmux(&["set-window-option", "-t", &window, "remain-on-exit", "on"]);
-    let _ = Command::new("kill").arg(&pid).output();
+    let _ = tokio::process::Command::new("kill")
+        .arg(&pid)
+        .output()
+        .await;
 
     let deadline = Instant::now() + DEADLINE;
     let mut corpse = false;
@@ -143,7 +146,7 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
                 break;
             }
         }
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     if !corpse {
         eprintln!("skipping: this tmux does not keep a dead pane's frame");
