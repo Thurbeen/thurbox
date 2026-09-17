@@ -2988,12 +2988,21 @@ pub enum PanePath {
 /// The `PATH` out of an `env PATH=… <program> …` window command, or `None` when
 /// the command does not open with one.
 ///
-/// Anchored at the second token rather than searched for, because that is where
-/// [`path_prefix_args`] puts it (private, and the only writer of this shape): a `PATH=` appearing anywhere else is an
-/// argument of the agent's own, and reading it as the pane's environment would
-/// be a confident wrong answer. tmux quotes a token containing whitespace, so a
-/// `PATH` with a space in a component fails this and reads as unknown — the
-/// safe half of that choice.
+/// Anchored at the second token rather than searched for, because that is
+/// where the prefix puts it (and nothing else writes this shape): a `PATH=`
+/// appearing anywhere else is an argument of the agent's own, and reading it
+/// as the pane's environment would be a confident wrong answer.
+///
+/// **A command session's whole window command is one token, and tmux hands it
+/// back quoted** — `"…/env PATH=… sh -c 'sleep 300'"`. That still parses, and
+/// not by luck this has to be careful about: the opening quote belongs to the
+/// *first* token, which is the program, and this reads the second. The closing
+/// one is on the last token, which it never looks at.
+///
+/// tmux also quotes an individual token holding whitespace, so a `PATH` with a
+/// space in a component fails this and reads as unknown. Both failure
+/// directions are the safe one — a `PATH` this cannot read is reported as
+/// unverifiable, never as a working one.
 fn path_from_prefix(start_command: &str) -> Option<String> {
     let mut tokens = start_command.split_ascii_whitespace();
     tokens.next()?;
@@ -4104,6 +4113,17 @@ mod tests {
         assert_eq!(path_from_prefix("/usr/bin/claude --env PATH=/nope"), None);
         assert_eq!(path_from_prefix("/usr/bin/claude"), None);
         assert_eq!(path_from_prefix(""), None);
+    }
+
+    /// The shape a **command session** produces, copied from a real
+    /// `#{pane_start_command}`: one token for the whole command, quoted by
+    /// tmux. The opening quote rides on the program, which this discards.
+    #[test]
+    fn a_quoted_single_token_command_still_yields_its_path() {
+        assert_eq!(
+            path_from_prefix("\"/usr/bin/env PATH=/opt/tbx:/usr/bin sh -c 'sleep 300'\""),
+            Some("/opt/tbx:/usr/bin".to_string())
+        );
     }
 
     /// tmux quotes a token holding whitespace, so a `PATH` with a space in a
