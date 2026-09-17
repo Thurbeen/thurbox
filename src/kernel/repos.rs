@@ -198,6 +198,17 @@ impl Listed {
 /// parent folder's children, back to back, for the whole life of the flow.
 const BOOKMARKS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long a **remote** folder bookmark's members are trusted before the host
+/// is asked what is in it now.
+///
+/// A local folder is a `readdir`, so it is scanned on every bookmark read and
+/// needs no interval of its own. A remote one is a connection per folder, which
+/// is why it was originally scanned only at import — and why a folder on a host
+/// stayed frozen at whatever it held that day. This is the compromise: long
+/// enough that typing in the flow never pays for a scan, short enough that a
+/// repository cloned on the host appears while you are still looking for it.
+const REMOTE_RESCAN_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// How long a branch list is trusted, and how soon a failed fetch is retried.
 ///
 /// A settled list expires so reopening the flow sees a branch someone pushed
@@ -211,11 +222,19 @@ const BRANCHES_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
 struct Remembered {
     at: std::time::Instant,
     rows: Vec<BookmarkRow>,
+    /// Set when something rewrote this host's memory underneath these rows.
+    ///
+    /// They keep being published — a *background* refresh must never blank a
+    /// list that is on screen, and dropping them does exactly that: the flow
+    /// reads absent rows as `loading`, so a rescan finding one new repository
+    /// would empty the picker and reset the cursor before the rows came back.
+    /// The next request re-reads instead.
+    superseded: bool,
 }
 
 impl Remembered {
     fn stale(&self) -> bool {
-        self.at.elapsed() >= BOOKMARKS_TTL
+        self.superseded || self.at.elapsed() >= BOOKMARKS_TTL
     }
 }
 
@@ -270,6 +289,13 @@ enum Done {
         key: PathKey,
         worktrees: Worktrees,
     },
+    /// A remote folder was scanned on its host. `rewrote` says whether what it
+    /// found differed from what was remembered, and so whether the database
+    /// underneath the rows has just changed.
+    Rescan {
+        key: PathKey,
+        rewrote: bool,
+    },
 }
 
 /// Serves the creation flow's four reads, caching each under its request.
@@ -282,6 +308,12 @@ pub struct RepoStore {
     listings: HashMap<PathKey, Listed>,
     branches: HashMap<PathKey, Fetched>,
     worktrees: HashMap<PathKey, Checked>,
+    /// When each remote folder bookmark was last scanned on its host, so
+    /// [`REMOTE_RESCAN_TTL`] can decide whether to ask again.
+    rescans: HashMap<PathKey, std::time::Instant>,
+    /// Remote folders being scanned right now, so a bookmark read landing while
+    /// one is in flight does not start a second connection for it.
+    rescans_inflight: std::collections::HashSet<PathKey>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
 }
@@ -304,6 +336,8 @@ impl RepoStore {
             listings: HashMap::new(),
             branches: HashMap::new(),
             worktrees: HashMap::new(),
+            rescans: HashMap::new(),
+            rescans_inflight: std::collections::HashSet::new(),
             tx,
             rx,
         }
@@ -325,6 +359,10 @@ impl RepoStore {
     /// these, and a clock that moved only for in-flight *commands* would freeze
     /// them mid-spin — the flow is a pure pane, so its tree is reused until the
     /// epoch moves.
+    ///
+    /// A folder rescan is deliberately **not** one of them: the rows it might
+    /// change are already on screen, so it is a refresh behind a complete
+    /// answer, and spinning over them would say the list is not ready yet.
     pub fn in_flight(&self) -> bool {
         !self.bookmarks_inflight.is_empty()
             || self
@@ -387,6 +425,52 @@ impl RepoStore {
     /// them.
     pub fn invalidate_bookmarks(&mut self) {
         self.bookmarks.clear();
+    }
+
+    /// Ask a **remote** host what each of its folder bookmarks holds now.
+    ///
+    /// Nothing to do for the local machine: [`scan_parents`] scans a local
+    /// folder on every bookmark read, because a `readdir` costs nothing. A
+    /// remote folder costs a connection, so it is asked on
+    /// [`REMOTE_RESCAN_TTL`] and its answer is written back to the database —
+    /// which is both what survives a restart and what a folder keeps showing
+    /// while its host is unreachable.
+    fn rescan_folders(&mut self, host: &str) {
+        let Some(remote) = self.host_for(host).cloned() else {
+            return;
+        };
+        let Some(held) = self.bookmarks.get(host) else {
+            return;
+        };
+        // Collected before anything is spawned: the rows are borrowed from
+        // `self`, and each request takes `&mut self`.
+        let folders: Vec<(String, Vec<PathBuf>)> = held
+            .rows
+            .iter()
+            .filter(|row| row.is_parent)
+            .map(|folder| (folder.path.clone(), members_of(&held.rows, &folder.path)))
+            .collect();
+
+        for (folder, known) in folders {
+            let key = (host.to_string(), folder);
+            if self.rescans_inflight.contains(&key) {
+                continue;
+            }
+            if self
+                .rescans
+                .get(&key)
+                .is_some_and(|at| at.elapsed() < REMOTE_RESCAN_TTL)
+            {
+                continue;
+            }
+            self.rescans_inflight.insert(key.clone());
+            let remote = remote.clone();
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let rewrote = rescan_folder(&remote, &key.0, &key.1, known);
+                let _ = tx.send(Done::Rescan { key, rewrote });
+            });
+        }
     }
 
     /// Ask what is in `dir` on `host`, unless a fresh answer is already held or
@@ -512,12 +596,16 @@ impl RepoStore {
                 Done::Bookmarks { host, rows } => {
                     self.bookmarks_inflight.remove(&host);
                     self.bookmarks.insert(
-                        host,
+                        host.clone(),
                         Remembered {
                             at: std::time::Instant::now(),
                             rows,
+                            superseded: false,
                         },
                     );
+                    // The rows name the folders, so this is the first moment a
+                    // scan of them can be asked for.
+                    self.rescan_folders(&host);
                 }
                 Done::Listing { key, listing } => {
                     self.remember_listing(key, listing);
@@ -527,6 +615,28 @@ impl RepoStore {
                 }
                 Done::Worktrees { key, worktrees } => {
                     self.remember_worktrees(key, worktrees);
+                }
+                Done::Rescan { key, rewrote } => {
+                    self.rescans_inflight.remove(&key);
+                    self.rescans.insert(key.clone(), std::time::Instant::now());
+                    if rewrote {
+                        // The memory this host's rows were built from has just
+                        // been rewritten underneath them, so they are the
+                        // previous answer; the next request re-reads. Only this
+                        // host's — another one's rows are untouched and
+                        // re-reading them would be a query for nothing.
+                        if let Some(held) = self.bookmarks.get_mut(&key.0) {
+                            held.superseded = true;
+                        }
+                    }
+                    // Deliberately NOT a change: nothing a reader can see has
+                    // moved yet — the rows on screen are still the rows on
+                    // screen, and the re-read reports its own arrival. Saying
+                    // otherwise would advance the data epoch every interval per
+                    // remote folder, rebuilding every published group and
+                    // dropping every pure pane's cached tree for a scan that
+                    // usually finds nothing.
+                    continue;
                 }
             }
             changed = true;
@@ -564,6 +674,7 @@ impl RepoStore {
             Remembered {
                 at: std::time::Instant::now(),
                 rows,
+                superseded: false,
             },
         );
     }
@@ -600,11 +711,13 @@ type Bookmark = crate::storage::repo_bookmarks::RepoBookmark;
 
 /// Read a host's bookmarks and flatten them into rows. Called on a worker.
 ///
-/// v1's `rebuild_repo_picker_rows`, with its asymmetry intact: a **local**
-/// parent's children are scanned live (instant, always current, never
-/// persisted), a **remote** parent's come from the rows written at import time
-/// (a live re-scan would be an ssh round trip every time the flow opened). What
-/// changes is that both arrive as the same row shape.
+/// v1's `rebuild_repo_picker_rows`. Its asymmetry survives, but only as *when* a
+/// folder is scanned, never whether: a **local** folder is scanned right here,
+/// every time, because a `readdir` is free; a **remote** one is scanned by
+/// [`RepoStore::rescan_folders`] on [`REMOTE_RESCAN_TTL`] and persisted, so by
+/// the time it reaches here it is an ordinary remembered member. Either way the
+/// rows are what the folder holds now rather than what it held at import, and
+/// either way they arrive as the same row shape.
 fn read_bookmarks(host: &str, remote: Option<&HostDef>) -> Vec<BookmarkRow> {
     let Some(path) = crate::paths::database_file() else {
         return Vec::new();
@@ -623,7 +736,14 @@ fn read_bookmarks(host: &str, remote: Option<&HostDef>) -> Vec<BookmarkRow> {
             return Vec::new();
         }
     };
-    let mut rows = flatten(&bookmarks, remote.is_none());
+    // Local only. A remote folder is scanned on its own interval by
+    // `rescan_folders`, which writes what it finds back to the database — so by
+    // the time it reaches here it is already a persisted member.
+    let scanned = match remote {
+        None => scan_parents(&bookmarks),
+        Some(_) => HashMap::new(),
+    };
+    let mut rows = flatten(&bookmarks, &scanned);
     if remote.is_none() {
         offer_interface_dir(&mut rows);
     }
@@ -673,12 +793,7 @@ fn offer_interface_dir(rows: &mut Vec<BookmarkRow>) {
 ///
 /// Separated from the read so the shape — headers, their members, and what is
 /// suppressed as already covered — is testable without a database.
-fn flatten(bookmarks: &[Bookmark], local: bool) -> Vec<BookmarkRow> {
-    let scanned = if local {
-        scan_parents(bookmarks)
-    } else {
-        HashMap::new()
-    };
+fn flatten(bookmarks: &[Bookmark], scanned: &HashMap<PathBuf, Vec<PathBuf>>) -> Vec<BookmarkRow> {
     let persisted = group_persisted(bookmarks);
 
     // A path a parent already covers is emitted under that parent, not twice.
@@ -694,7 +809,7 @@ fn flatten(bookmarks: &[Bookmark], local: bool) -> Vec<BookmarkRow> {
     let mut emitted: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     for bookmark in bookmarks {
         if bookmark.is_parent {
-            push_folder(&mut rows, &mut emitted, bookmark, &scanned, &persisted);
+            push_folder(&mut rows, &mut emitted, bookmark, scanned, &persisted);
         } else if !covered.contains(&bookmark.repo_path) {
             push_standalone(&mut rows, &mut emitted, bookmark);
         }
@@ -716,7 +831,7 @@ fn push_standalone(
     rows.push(it);
 }
 
-/// A folder header followed by its members, live-scanned ones first.
+/// A folder header followed by its members.
 fn push_folder(
     rows: &mut Vec<BookmarkRow>,
     emitted: &mut std::collections::HashSet<PathBuf>,
@@ -731,19 +846,21 @@ fn push_folder(
     header.label = bookmark.label.clone();
     rows.push(header);
     let parent = display(&bookmark.repo_path);
-    // Live-scanned members are repositories by construction; persisted ones
-    // carry whatever was established when they were imported.
-    let scanned_members = scanned
-        .get(&bookmark.repo_path)
-        .into_iter()
-        .flatten()
-        .map(|path| (path, Some(true)));
-    let persisted_members = persisted
-        .get(&bookmark.repo_path)
-        .into_iter()
-        .flatten()
-        .map(|child| (&child.repo_path, child.is_git));
-    for (path, is_git) in scanned_members.chain(persisted_members) {
+    // A scan is the truth about a folder, and what was written at import time is
+    // only the last scan that succeeded: chaining the two would keep offering a
+    // repository that has since been deleted, which is what it used to do.
+    // Scanned members are repositories by construction; persisted ones carry
+    // whatever was established when they were imported.
+    let members: Vec<(&PathBuf, Option<bool>)> = match scanned.get(&bookmark.repo_path) {
+        Some(children) => children.iter().map(|path| (path, Some(true))).collect(),
+        None => persisted
+            .get(&bookmark.repo_path)
+            .into_iter()
+            .flatten()
+            .map(|child| (&child.repo_path, child.is_git))
+            .collect(),
+    };
+    for (path, is_git) in members {
         if emitted.insert(path.clone()) {
             rows.push(row(path, Some(parent.clone()), false, is_git));
         }
@@ -751,10 +868,29 @@ fn push_folder(
 }
 
 /// The git repositories directly under each folder bookmark, scanned now.
+///
+/// A folder that cannot be **read** — deleted, permission denied, a path that is
+/// not a directory — is left out rather than reported empty, and the difference
+/// is the whole contract of the map: a key means a scan succeeded and is
+/// authoritative, its absence means there is no scan and what was persisted
+/// stands in.
+///
+/// A folder that reads as empty is empty, and that is deliberate — it is the
+/// same answer as "you deleted the last repository in it", which is half of what
+/// a rescan is for. The consequence is worth knowing: a mount point whose drive
+/// is not mounted is usually a readable empty directory, so a folder imported
+/// from one goes empty until it is mounted again, rather than holding its last
+/// contents. Nothing in a directory listing distinguishes the two, and guessing
+/// from "it used to have members" would keep a folder you really did empty.
 fn scan_parents(bookmarks: &[Bookmark]) -> HashMap<PathBuf, Vec<PathBuf>> {
     bookmarks
         .iter()
         .filter(|bookmark| bookmark.is_parent)
+        // `read_dir` rather than `is_dir`, because the question is whether the
+        // scan can be *trusted*: `scan_child_repos` answers a directory it
+        // cannot open with an empty list, which is indistinguishable from a
+        // folder holding nothing.
+        .filter(|bookmark| std::fs::read_dir(&bookmark.repo_path).is_ok())
         .map(|bookmark| {
             (
                 bookmark.repo_path.clone(),
@@ -762,6 +898,52 @@ fn scan_parents(bookmarks: &[Bookmark]) -> HashMap<PathBuf, Vec<PathBuf>> {
             )
         })
         .collect()
+}
+
+/// The members a row list already offers under `folder`, sorted — what a rescan
+/// compares its answer against to decide whether anything has changed.
+fn members_of(rows: &[BookmarkRow], folder: &str) -> Vec<PathBuf> {
+    let mut known: Vec<PathBuf> = rows
+        .iter()
+        .filter(|row| row.parent.as_deref() == Some(folder))
+        .map(|row| PathBuf::from(&row.path))
+        .collect();
+    known.sort();
+    known
+}
+
+/// Scan one remote folder on its host and, when what it holds has changed, write
+/// the members back. Called on a worker; true when the database was rewritten.
+///
+/// A failed scan changes **nothing**. An unreachable host, a folder the user has
+/// not mounted yet, a connection that timed out — each must leave the folder
+/// offering what it last held rather than emptying it, which is also what makes
+/// the rows usable with no network at all.
+fn rescan_folder(host: &HostDef, host_key: &str, folder: &str, known: Vec<PathBuf>) -> bool {
+    let children = match crate::git::scan_child_repos_on(host, folder) {
+        Ok(children) => children,
+        Err(e) => {
+            tracing::warn!("could not rescan {folder} on {}: {e:#}", host.name);
+            return false;
+        }
+    };
+    // Both sides are sorted absolute paths, so this is the whole question — and
+    // asking it is what keeps a folder that has not changed from invalidating
+    // the rows, and repainting the flow, every half minute.
+    if children == known {
+        return false;
+    }
+    let Some(path) = crate::paths::database_file() else {
+        return false;
+    };
+    let Ok(db) = Database::open_existing(&path) else {
+        return false;
+    };
+    if let Err(e) = db.replace_parent_children(host_key, Path::new(folder), &children) {
+        tracing::warn!("could not record the rescan of {folder}: {e}");
+        return false;
+    }
+    true
 }
 
 /// Members grouped under the folder they were imported into. A member whose
@@ -1002,6 +1184,76 @@ mod tests {
     }
 
     #[test]
+    fn a_rescan_that_finds_nothing_does_not_move_the_data_epoch() {
+        // The loop repaints on `poll`, and a repaint advances the epoch: every
+        // published group is rebuilt and every pure pane's cached tree dropped.
+        // A folder that has not changed must not cost that every interval.
+        let mut store = RepoStore::with_hosts(HostRegistry::default());
+        store
+            .tx
+            .send(Done::Rescan {
+                key: ("ssh:box".into(), "/srv".into()),
+                rewrote: false,
+            })
+            .expect("send");
+        assert!(!store.poll(), "nothing a reader can see has moved");
+    }
+
+    #[test]
+    fn a_rescan_that_found_something_leaves_the_rows_on_screen() {
+        // Dropping them would blank the picker: the flow reads absent rows as
+        // `loading`, so a background scan finding one new repository would empty
+        // a list the user is looking at until the re-read landed.
+        let mut store = RepoStore::with_hosts(HostRegistry::default());
+        store.set_bookmarks_for_test(
+            "ssh:box",
+            vec![row(Path::new("/srv/one"), None, false, None)],
+        );
+        store
+            .tx
+            .send(Done::Rescan {
+                key: ("ssh:box".into(), "/srv".into()),
+                rewrote: true,
+            })
+            .expect("send");
+        store.poll();
+
+        let held = store.bookmarks.get("ssh:box").expect("the rows are kept");
+        assert_eq!(held.rows.len(), 1, "and are still published");
+        assert!(held.stale(), "but the next request re-reads them");
+    }
+
+    #[test]
+    fn a_folder_is_not_rescanned_again_while_one_is_in_flight() {
+        // Bookmarks are re-read every BOOKMARKS_TTL while the flow is open, and
+        // each read asks for a rescan; without the guard a slow ssh host would
+        // collect a connection per read.
+        let mut store = RepoStore::with_hosts(HostRegistry {
+            hosts: vec![HostDef {
+                name: "box".into(),
+                destination: "nowhere.invalid".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let folder = row(Path::new("/srv"), None, true, None);
+        store.set_bookmarks_for_test("ssh:box", vec![folder]);
+        store.rescan_folders("ssh:box");
+        assert_eq!(store.rescans_inflight.len(), 1);
+        store.rescan_folders("ssh:box");
+        assert_eq!(store.rescans_inflight.len(), 1, "not one per read");
+    }
+
+    #[test]
+    fn a_local_folder_is_never_rescanned_over_a_transport() {
+        // It has no host to ask: `read_bookmarks` scans it on every read.
+        let mut store = RepoStore::with_hosts(HostRegistry::default());
+        store.set_bookmarks_for_test("", vec![row(Path::new("/src"), None, true, None)]);
+        store.rescan_folders("");
+        assert!(store.rescans_inflight.is_empty());
+    }
+
+    #[test]
     fn invalidating_bookmarks_drops_what_was_read() {
         let mut store = RepoStore::with_hosts(HostRegistry::default());
         store.set_bookmarks_for_test(
@@ -1025,6 +1277,20 @@ mod tests {
         }
     }
 
+    /// No folder was scanned — the shape a remote host's rows are built in, and
+    /// a local one's whenever the folder could not be read.
+    fn no_scan() -> HashMap<PathBuf, Vec<PathBuf>> {
+        HashMap::new()
+    }
+
+    /// A folder scanned successfully, holding exactly `children`.
+    fn scanned(folder: &str, children: &[&str]) -> HashMap<PathBuf, Vec<PathBuf>> {
+        HashMap::from([(
+            PathBuf::from(folder),
+            children.iter().map(PathBuf::from).collect(),
+        )])
+    }
+
     /// `(path, parent, is_parent)` per row, which is the shape a flow renders
     /// headers and indentation from.
     fn shape(rows: &[BookmarkRow]) -> Vec<(&str, Option<&str>, bool)> {
@@ -1035,7 +1301,7 @@ mod tests {
 
     #[test]
     fn a_standalone_bookmark_is_one_row() {
-        let rows = flatten(&[saved("/src/thing", false, None)], true);
+        let rows = flatten(&[saved("/src/thing", false, None)], &no_scan());
         assert_eq!(shape(&rows), [("/src/thing", None, false)]);
     }
 
@@ -1049,9 +1315,9 @@ mod tests {
                 saved("/src/one", false, Some("/src")),
                 saved("/src/two", false, Some("/src")),
             ],
-            // Not local: the members come from what was persisted at import time
-            // rather than from a scan of this machine.
-            false,
+            // Nothing scanned: the members are what was persisted at import time,
+            // which is what a remote folder shows until its next rescan lands.
+            &no_scan(),
         );
         assert_eq!(
             shape(&rows),
@@ -1060,6 +1326,87 @@ mod tests {
                 ("/src/one", Some("/src"), false),
                 ("/src/two", Some("/src"), false),
             ]
+        );
+    }
+
+    #[test]
+    fn a_scan_replaces_what_the_import_remembered() {
+        // The rule the whole rescan rests on. `two` was cloned after the import
+        // and `gone` has been deleted since; a folder that chained the scan onto
+        // its memory offered all three.
+        let rows = flatten(
+            &[
+                saved("/src", true, None),
+                saved("/src/one", false, Some("/src")),
+                saved("/src/gone", false, Some("/src")),
+            ],
+            &scanned("/src", &["/src/one", "/src/two"]),
+        );
+        assert_eq!(
+            shape(&rows),
+            [
+                ("/src", None, true),
+                ("/src/one", Some("/src"), false),
+                ("/src/two", Some("/src"), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_deleted_member_does_not_come_back_as_a_row_of_its_own() {
+        // The other half: a member the scan dropped is still *covered* by its
+        // folder, so it does not fall out of the group and stand alone — which
+        // would be the same wrong row in a different place.
+        let rows = flatten(
+            &[
+                saved("/src", true, None),
+                saved("/src/gone", false, Some("/src")),
+            ],
+            &scanned("/src", &[]),
+        );
+        assert_eq!(shape(&rows), [("/src", None, true)]);
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_read_keeps_what_it_last_held() {
+        // A local folder on an unmounted drive: `scan_parents` leaves it out of
+        // the map entirely rather than reporting it empty, and memory stands in.
+        let bookmarks = [
+            saved("/mnt/src", true, None),
+            saved("/mnt/src/one", false, Some("/mnt/src")),
+        ];
+        assert!(
+            scan_parents(&bookmarks).is_empty(),
+            "a folder that is not there is not a scan of nothing"
+        );
+        assert_eq!(
+            shape(&flatten(&bookmarks, &scan_parents(&bookmarks))),
+            [
+                ("/mnt/src", None, true),
+                ("/mnt/src/one", Some("/mnt/src"), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rescan_compares_against_the_members_already_on_offer() {
+        // Sorted, because the scan is: the comparison is what stops an unchanged
+        // folder rewriting the database and repainting the flow every interval.
+        let rows = flatten(
+            &[
+                saved("/src", true, None),
+                saved("/src/two", false, Some("/src")),
+                saved("/src/one", false, Some("/src")),
+            ],
+            &no_scan(),
+        );
+        assert_eq!(
+            members_of(&rows, "/src"),
+            [PathBuf::from("/src/one"), PathBuf::from("/src/two")]
+        );
+        assert!(
+            members_of(&rows, "/elsewhere").is_empty(),
+            "and it answers about one folder, not every row that has a parent"
         );
     }
 
@@ -1073,7 +1420,7 @@ mod tests {
                 saved("/src", true, None),
                 saved("/src/one", false, Some("/src")),
             ],
-            false,
+            &no_scan(),
         );
         assert_eq!(
             shape(&rows),
@@ -1087,7 +1434,7 @@ mod tests {
         // Forgetting a folder should take its members with it, but a row left
         // behind by an older version — or a half-finished delete — must still be
         // offered rather than silently dropped.
-        let rows = flatten(&[saved("/src/one", false, Some("/src"))], false);
+        let rows = flatten(&[saved("/src/one", false, Some("/src"))], &no_scan());
         assert_eq!(shape(&rows), [("/src/one", None, false)]);
     }
 
@@ -1098,7 +1445,7 @@ mod tests {
                 saved("/src/one", false, None),
                 saved("/src/one", false, None),
             ],
-            false,
+            &no_scan(),
         );
         assert_eq!(shape(&rows), [("/src/one", None, false)]);
     }
@@ -1107,7 +1454,7 @@ mod tests {
     fn a_folder_row_is_never_offered_as_a_repository() {
         // It is a header: selecting it would create a session against a directory
         // of repositories rather than a repository.
-        let rows = flatten(&[saved("/src", true, None)], false);
+        let rows = flatten(&[saved("/src", true, None)], &no_scan());
         assert_eq!(rows.len(), 1);
         assert!(rows[0].is_parent);
         assert_eq!(
@@ -1269,13 +1616,13 @@ mod tests {
         // the offered interface row uses.
         let mut saved = saved("/src/thurbox", false, None);
         saved.label = Some("the orchestrator".into());
-        let rows = flatten(&[saved], true);
+        let rows = flatten(&[saved], &no_scan());
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].label.as_deref(), Some("the orchestrator"));
 
         // Unlabelled stays unlabelled: a path the user chose is how they think of
         // it, and inventing a name for it would be worse than none.
-        let plain = flatten(&[saved_plain("/src/other")], true);
+        let plain = flatten(&[saved_plain("/src/other")], &no_scan());
         assert_eq!(plain[0].label, None);
     }
 

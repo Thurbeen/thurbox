@@ -15,15 +15,21 @@ pub struct RepoBookmark {
     pub label: Option<String>,
     pub last_used_at: u64,
     pub use_count: u64,
-    /// When true, `repo_path` is a *parent* folder: the repo picker re-scans its
-    /// immediate git sub-directories on each open instead of using the path
-    /// itself as a repo.
+    /// When true, `repo_path` is a *parent* folder: the repo picker offers its
+    /// immediate git sub-directories, re-scanned rather than remembered, instead
+    /// of using the path itself as a repo.
     pub is_parent: bool,
     /// Whether the path is a git repo (`None` = never checked). Gates the
     /// picker's worktree toggle; learned opportunistically for remote rows.
     pub is_git: Option<bool>,
-    /// Set on a *persisted child* of a remote parent bookmark: the parent
-    /// folder it was imported under. Local parents scan live instead.
+    /// Set on a *persisted child* of a remote parent bookmark: the parent folder
+    /// it was imported under.
+    ///
+    /// Remote only, because the two sides persist differently rather than
+    /// refresh differently: a local folder is scanned on every read, so there is
+    /// nothing worth writing down, while a remote one is scanned on an interval
+    /// (`kernel::repos::REMOTE_RESCAN_TTL`) and each scan is written back here —
+    /// which is what the folder still shows when the host cannot be reached.
     pub parent_path: Option<PathBuf>,
 }
 
@@ -129,6 +135,17 @@ impl Database {
     /// Replace the persisted children of a remote parent bookmark: delete every
     /// row filed under `parent`, then insert `children` as git repos tagged with
     /// it. Transactional so a failed insert never leaves the parent half-empty.
+    ///
+    /// Replace rather than merge, and that is the point: this is called with the
+    /// result of a scan, at import and on every re-scan, so a repository deleted
+    /// on the host stops being offered instead of outliving it.
+    ///
+    /// A parent that is **no longer remembered** takes no children: a rescan is
+    /// an ssh round trip, so the folder can be forgotten while one is in flight,
+    /// and inserting then would file children under a header that no longer
+    /// exists — which `flatten` offers as standalone bookmarks, one loose row
+    /// per repository the user just forgot. The check is inside the transaction
+    /// so a delete committing between it and the insert cannot slip through.
     pub fn replace_parent_children(
         &self,
         host: &str,
@@ -137,31 +154,41 @@ impl Database {
     ) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let parent_str = parent.to_string_lossy().to_string();
-        self.conn.execute_batch("BEGIN")?;
-        let result = (|| {
-            self.conn.execute(
-                "DELETE FROM repo_bookmarks WHERE host = ?1 AND parent_path = ?2",
-                params![host, parent_str],
-            )?;
-            for child in children {
-                let child_str = child.to_string_lossy().to_string();
-                self.conn.execute(
-                    "INSERT INTO repo_bookmarks \
-                         (host, repo_path, last_used_at, use_count, is_git, parent_path) \
-                     VALUES (?1, ?2, ?3, 1, 1, ?4) \
-                     ON CONFLICT(host, repo_path) DO UPDATE SET \
-                         is_git = 1, \
-                         parent_path = excluded.parent_path",
-                    params![host, child_str, now, parent_str],
-                )?;
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => self.conn.execute_batch("COMMIT")?,
-            Err(_) => self.conn.execute_batch("ROLLBACK")?,
+        // `BEGIN IMMEDIATE` (see `Database::write_transaction`): this reads
+        // before it writes, and a deferred transaction that upgrades mid-flight
+        // fails with `SQLITE_BUSY` without consulting `busy_timeout`.
+        let tx = self.write_transaction()?;
+        let remembered = tx.query_row(
+            "SELECT 1 FROM repo_bookmarks \
+             WHERE host = ?1 AND repo_path = ?2 AND is_parent = 1",
+            params![host, parent_str],
+            |_| Ok(()),
+        );
+        match remembered {
+            Ok(()) => {}
+            // Forgotten while this scan was on its way. Its members went with it
+            // (`delete_repo_bookmark` takes them), so there is nothing to clean
+            // up and nothing to write.
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(e) => return Err(e),
         }
-        result
+        tx.execute(
+            "DELETE FROM repo_bookmarks WHERE host = ?1 AND parent_path = ?2",
+            params![host, parent_str],
+        )?;
+        for child in children {
+            let child_str = child.to_string_lossy().to_string();
+            tx.execute(
+                "INSERT INTO repo_bookmarks \
+                     (host, repo_path, last_used_at, use_count, is_git, parent_path) \
+                 VALUES (?1, ?2, ?3, 1, 1, ?4) \
+                 ON CONFLICT(host, repo_path) DO UPDATE SET \
+                     is_git = 1, \
+                     parent_path = excluded.parent_path",
+                params![host, child_str, now, parent_str],
+            )?;
+        }
+        tx.commit()
     }
 
     /// Delete a host's repo bookmark. Returns true if it existed. Deleting a
@@ -169,14 +196,22 @@ impl Database {
     /// `parent_path`) so a remote parent group disappears as one unit.
     pub fn delete_repo_bookmark(&self, host: &str, repo_path: &Path) -> rusqlite::Result<bool> {
         let path_str = repo_path.to_string_lossy().to_string();
-        self.conn.execute(
+        // One transaction, because the gap between the two statements is a state
+        // no other writer may see: with the members gone and the folder still
+        // there, a rescan committing in it passes
+        // `replace_parent_children`'s parent check, reinserts its children, and
+        // the second DELETE takes only the folder — leaving every member as a
+        // bookmark of its own.
+        let tx = self.write_transaction()?;
+        tx.execute(
             "DELETE FROM repo_bookmarks WHERE host = ?1 AND parent_path = ?2",
             params![host, path_str],
         )?;
-        let count = self.conn.execute(
+        let count = tx.execute(
             "DELETE FROM repo_bookmarks WHERE host = ?1 AND repo_path = ?2",
             params![host, path_str],
         )?;
+        tx.commit()?;
         Ok(count > 0)
     }
 }
@@ -184,6 +219,181 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Forgetting a folder must never leave its members behind as loose rows.
+    ///
+    /// The rescan side of this is staged below; this is the delete side, and it
+    /// needs the load shape because the window is *inside* `delete_repo_bookmark`
+    /// — between the DELETE of the members and the DELETE of the folder itself.
+    /// A rescan committing in that window passes the parent-still-remembered
+    /// check, reinserts its children, and the second DELETE takes only the
+    /// folder: the members survive with a `parent_path` pointing at nothing, and
+    /// `flatten` offers each as a bookmark of its own. Both statements therefore
+    /// go in one transaction.
+    ///
+    /// Weaker than a staged test by design — it can only under-report, since a
+    /// scheduler that never interleaves the two simply finds nothing — which is
+    /// the same trade `storage::mod`'s continuous-peer test makes, and for the
+    /// same reason: there is no hook inside the call to stage against.
+    #[test]
+    fn forgetting_a_folder_racing_its_rescan_leaves_no_orphans() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("thurbox.db");
+        let db = Database::open(&path).unwrap();
+        let children: Vec<PathBuf> = (0..8)
+            .map(|n| PathBuf::from(format!("/srv/r{n}")))
+            .collect();
+
+        for round in 0..200 {
+            let folder = PathBuf::from(format!("/srv/f{round}"));
+            db.upsert_repo_bookmark_kind("ssh:box", &folder, true)
+                .unwrap();
+            db.replace_parent_children("ssh:box", &folder, &children)
+                .unwrap();
+
+            // The rescan worker and the keypress, on their own connections.
+            let scan_path = path.clone();
+            let scan_folder = folder.clone();
+            let scan_children = children.clone();
+            let scan = std::thread::spawn(move || {
+                let db = Database::open_existing(&scan_path).unwrap();
+                db.replace_parent_children("ssh:box", &scan_folder, &scan_children)
+            });
+            let forget_path = path.clone();
+            let forget_folder = folder.clone();
+            let forget = std::thread::spawn(move || {
+                let db = Database::open_existing(&forget_path).unwrap();
+                db.delete_repo_bookmark("ssh:box", &forget_folder)
+            });
+            scan.join().unwrap().unwrap();
+            forget.join().unwrap().unwrap();
+
+            let left = db.list_repo_bookmarks("ssh:box").unwrap();
+            assert!(
+                left.is_empty(),
+                "round {round}: forgetting the folder left {:?}",
+                left.iter().map(|row| &row.repo_path).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A rescan that lands after its folder was forgotten must write nothing.
+    ///
+    /// Reachable since a remote folder is rescanned in the background: the scan
+    /// is an ssh round trip, and `d` on the folder header during it deletes the
+    /// parent and its members. The worker then wrote its children back anyway —
+    /// and with no parent row left to file them under, `flatten` offers each one
+    /// as a standalone bookmark, so forgetting a folder of eight repositories
+    /// left eight loose rows to delete by hand.
+    #[test]
+    fn a_rescan_that_lands_after_its_folder_was_forgotten_writes_nothing() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_repo_bookmark_kind("ssh:box", Path::new("/srv"), true)
+            .unwrap();
+        db.replace_parent_children("ssh:box", Path::new("/srv"), &[PathBuf::from("/srv/one")])
+            .unwrap();
+
+        assert!(db
+            .delete_repo_bookmark("ssh:box", Path::new("/srv"))
+            .unwrap());
+        db.replace_parent_children(
+            "ssh:box",
+            Path::new("/srv"),
+            &[PathBuf::from("/srv/one"), PathBuf::from("/srv/two")],
+        )
+        .unwrap();
+
+        assert!(
+            db.list_repo_bookmarks("ssh:box").unwrap().is_empty(),
+            "a forgotten folder's members must not come back as rows of their own"
+        );
+    }
+
+    /// Two folders rescanning at once must not drop one of the two answers.
+    ///
+    /// Concurrent callers are new here: this used to run only from the `Alt+P`
+    /// import, one keypress at a time, and now also runs from every remote
+    /// folder's rescan — so two folder bookmarks on one host come due together
+    /// and write from two workers on two connections. What makes that safe is
+    /// that the write takes the lock at `BEGIN IMMEDIATE` and so waits out a
+    /// peer on `busy_timeout`, instead of upgrading a read snapshot the peer has
+    /// superseded — the interleaving WAL refuses outright, whatever the timeout
+    /// says (`storage::mod`'s twin of this test carries that rule and the defect
+    /// that wrote it). It matters here because the parent-still-remembered check
+    /// reads before the DELETE writes.
+    ///
+    /// Staged rather than raced, for the reason that twin gives: the peer takes
+    /// the lock before the write starts and commits only once the call is
+    /// proven to be in flight, so there is no interleaving to get lucky about.
+    #[test]
+    fn replacing_a_folder_s_members_waits_out_a_peer_that_commits_underneath_it() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("thurbox.db");
+        let db = Database::open(&path).unwrap();
+        db.upsert_repo_bookmark_kind("ssh:box", Path::new("/srv/a"), true)
+            .unwrap();
+        db.upsert_repo_bookmark_kind("ssh:box", Path::new("/srv/b"), true)
+            .unwrap();
+
+        // The peer — the other folder's rescan — holds the write lock and has
+        // not committed yet.
+        let peer = rusqlite::Connection::open(&path).unwrap();
+        peer.busy_timeout(crate::storage::schema::BUSY_TIMEOUT)
+            .unwrap();
+        peer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let (started, call_started) = mpsc::channel();
+        let (done, call_done) = mpsc::channel();
+        let write_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            let db = Database::open_existing(&write_path).unwrap();
+            started.send(()).unwrap();
+            let outcome = db.replace_parent_children(
+                "ssh:box",
+                Path::new("/srv/a"),
+                &[PathBuf::from("/srv/a/one")],
+            );
+            let _ = done.send(());
+            outcome
+        });
+
+        call_started.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            assert!(
+                call_done.try_recv().is_err(),
+                "the write returned while the peer held the lock, so it never blocked"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        peer.execute(
+            "UPDATE repo_bookmarks SET use_count = 2 WHERE repo_path = ?1",
+            params!["/srv/b"],
+        )
+        .unwrap();
+        peer.execute_batch("COMMIT").unwrap();
+
+        writer
+            .join()
+            .unwrap()
+            .expect("a peer's commit must not fail this rescan");
+        let members: Vec<PathBuf> = db
+            .list_repo_bookmarks("ssh:box")
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.parent_path.as_deref() == Some(Path::new("/srv/a")))
+            .map(|row| row.repo_path)
+            .collect();
+        assert_eq!(
+            members,
+            [PathBuf::from("/srv/a/one")],
+            "what the scan found is what the folder ends up offering"
+        );
+    }
 
     #[test]
     fn list_repo_bookmarks_empty() {

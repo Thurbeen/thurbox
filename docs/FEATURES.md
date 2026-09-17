@@ -308,9 +308,9 @@ not applicable.
    a remote host the repo picker shows the repos previously used *on
    that host* (bookmarks are host-scoped, schema v39) and every remote
    filesystem touch — the path browser's listings, Enter validation,
-   `Alt+P` parent scans — runs on a worker, never blocking the UI on
-   an ssh round trip; the worktree + tmux window are created on that
-   host over SSH.
+   `Alt+P` parent scans and their periodic re-scan — runs on a worker,
+   never blocking the UI on an ssh round trip; the worktree + tmux
+   window are created on that host over SSH.
 2. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` toggles selection, `w` marks the selected repo
    as a worktree base (refused on a known non-git dir, which is
@@ -327,6 +327,23 @@ not applicable.
    v40) so it's learned once. The first selected repo becomes the
    session's `cwd`; the rest may be exposed to the agent depending
    on the agent's own flags.
+
+   **A folder imported with `Alt+P` is a scan, not a snapshot.** Its
+   members are whatever it holds *now*, so a repository cloned into
+   it appears and one deleted from it stops being offered, with no
+   re-import. A **local** folder is scanned on every bookmark read
+   (a `readdir`, so free). A **remote** one is scanned on its host
+   every 30 s while the picker is open, on a worker, and what it
+   finds is written back to the bookmark rows — which is what the
+   folder still shows across a restart and while the host is
+   unreachable. A scan that *fails* changes nothing: an unreachable
+   host, or a folder that can't be read, leaves it holding what it
+   last held rather than emptying it. A folder that reads as *empty*
+   is empty — the same answer as deleting the last repository in it,
+   which is half of what the rescan is for. So a folder imported from
+   a mount point goes empty while its drive is unmounted (an unmounted
+   mount point is a readable empty directory) and refills when it
+   comes back.
 
    **Worktrees the repo already has** appear as `↳` child rows under
    whichever repo the cursor is resting on, each showing its directory
