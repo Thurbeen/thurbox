@@ -15,14 +15,31 @@
 //! per test run, forever. That is how a developer's machine came to hold a
 //! hundred of them.
 //!
-//! `tests/cli_socket_isolation.rs` owns that resolution and pins it. What is
-//! here is its consequence for a test harness: the recipe that avoids the leak,
-//! driven end to end, and a gate holding every other harness in this directory
-//! to the same recipe — because the leak is silent, and a run that leaks still
-//! passes every assertion it makes.
+//! Being *reachable* is only half of it. A harness that pinned a socket
+//! correctly and then panicked before its `cleanup()` left the server running
+//! and took its socket file away with the tempdir, so nothing could connect to
+//! reap it either — 400 of them on one machine, 4 sockets between 433 servers
+//! (issue #1175). Reaching teardown was never something a test could promise:
+//! a failed assertion, a `.expect()` on a racing tmux and a nextest
+//! `slow-timeout` termination all skip it.
+//!
+//! `tests/cli_socket_isolation.rs` owns the resolution and pins it. What is
+//! here is its consequence for a test harness, in four tests: the recipe that
+//! avoids the leak driven end to end, a harness panicked on purpose to show
+//! the reap survives it, and two gates — one holding
+//! `tests/support/tmux_server.rs` to the recipe, one holding every harness in
+//! this directory to the guard. Read off the sources rather than by running
+//! them, because the leak is silent: a run that leaks still passes every
+//! assertion it makes.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// The guard every harness in this directory reaps through.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
 
 /// The `GIT_*` location variables git exports to hook processes, scrubbed so a
 /// suite running under this repository's own pre-commit hook does not point the
@@ -75,10 +92,8 @@ fn repo(under: &Path) -> PathBuf {
 /// by looking at one directory nothing else writes to.
 struct Profile {
     root: tempfile::TempDir,
-    /// `TMUX_TMPDIR`. An AF_UNIX path is limited to ~104 bytes, so this is a
-    /// short directory of its own rather than one under the tempdir.
-    sockets: PathBuf,
-    socket: String,
+    /// The instance's own server — and, being a guard, its reaper.
+    server: TmuxServer,
 }
 
 impl Profile {
@@ -87,20 +102,6 @@ impl Profile {
         for sub in ["home", "config", "data"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
-        // Per *profile*, not per process, so a second test added to this file
-        // cannot take this one's socket directory out from under it when its
-        // `Drop` runs. nextest gives each test a process of its own, so only a
-        // plain `cargo test` would ever notice — which is the run that would
-        // notice it as a mystery.
-        static NTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let nth = NTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let socket = format!("thurbox-leak-{}-{nth}", std::process::id());
-        let sockets = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_dir())
-            .unwrap_or_else(std::env::temp_dir)
-            .join(&socket);
-        std::fs::create_dir_all(&sockets).expect("mkdir sockets");
         // No network and no heartbeat keeper: what is counted below is the
         // server this test asked for, not one a background feature armed.
         std::fs::write(
@@ -115,8 +116,7 @@ impl Profile {
         .expect("seed agents");
         Self {
             root,
-            sockets,
-            socket,
+            server: TmuxServer::private(&format!("thurbox-leak-{}", std::process::id())),
         }
     }
 
@@ -134,12 +134,11 @@ impl Profile {
         cmd.env("USERPROFILE", self.path("home"));
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
-        cmd.env("TMUX_TMPDIR", &self.sockets);
-        cmd.env(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, &self.socket);
-        // The tag a suite run inside a thurbox pane inherits. Left in place it
-        // would rule the pin above inherited — `cli_socket_isolation` owns that
+        // Pinned socket, cleared owner tag, private socket directory. The tag
+        // is the one a suite run inside a thurbox pane inherits: left in place
+        // it would rule the pin inherited — `cli_socket_isolation` owns that
         // resolution and pins it; here it simply has to be gone.
-        cmd.env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+        self.server.scope(&mut cmd);
         cmd.env_remove("TMUX");
         cmd.env_remove("THURBOX_SESSION");
         cmd.env_remove("THURBOX_SESSION_ID");
@@ -147,67 +146,6 @@ impl Profile {
             cmd.env_remove(var);
         }
         cmd.output().expect("run thurbox-cli")
-    }
-
-    /// Every socket file under this profile's private `TMUX_TMPDIR`. tmux nests
-    /// them one level down (`tmux-<uid>/<name>`), so this walks rather than
-    /// lists — and the directory is this instance's alone, so every name here
-    /// is a server this run asked for.
-    ///
-    /// A *file*, not a server: tmux never unlinks a socket, so one outlives the
-    /// server that made it. That is why a private socket directory is part of
-    /// the recipe rather than a nicety — a harness on the shared one leaves a
-    /// dead socket behind on every run however carefully it kills its server.
-    /// [`Self::servers`] is the liveness question.
-    fn sockets(&self) -> Vec<String> {
-        fn walk(dir: &Path, found: &mut Vec<String>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, found);
-                } else {
-                    found.push(entry.file_name().to_string_lossy().into_owned());
-                }
-            }
-        }
-        let mut found = Vec::new();
-        walk(&self.sockets, &mut found);
-        found.sort();
-        found
-    }
-
-    /// The sockets in this profile that a tmux server still answers on.
-    fn servers(&self) -> Vec<String> {
-        self.sockets()
-            .into_iter()
-            .filter(|socket| {
-                Command::new("tmux")
-                    .env("TMUX_TMPDIR", &self.sockets)
-                    .args(["-L", socket, "list-sessions"])
-                    .output()
-                    .is_ok_and(|out| out.status.success())
-            })
-            .collect()
-    }
-}
-
-impl Drop for Profile {
-    fn drop(&mut self) {
-        // Every socket that turned up, not just the pinned one. The failure
-        // this file exists to catch is a run landing on a name it did not
-        // choose, and a test that fails that way has started a server too —
-        // reaping only the pinned name would leak exactly the thing under
-        // test, on the one run where it went wrong.
-        for socket in self.sockets() {
-            let _ = Command::new("tmux")
-                .env("TMUX_TMPDIR", &self.sockets)
-                .args(["-L", &socket, "kill-server"])
-                .output();
-        }
-        let _ = std::fs::remove_dir_all(&self.sockets);
     }
 }
 
@@ -244,17 +182,13 @@ fn a_scoped_run_leaves_no_tmux_server_behind() {
     );
 
     assert_eq!(
-        profile.sockets(),
-        vec![profile.socket.clone()],
+        profile.server.sockets(),
+        vec![profile.server.socket().to_string()],
         "the run put its windows on a socket it did not pin — its teardown \
          would kill a name nothing created and leave a server running"
     );
 
-    let killed = Command::new("tmux")
-        .env("TMUX_TMPDIR", &profile.sockets)
-        .args(["-L", &profile.socket, "kill-server"])
-        .output()
-        .expect("run tmux");
+    let killed = profile.server.tmux(&["kill-server"]);
     assert!(
         killed.status.success(),
         "kill-server failed: {}",
@@ -262,10 +196,126 @@ fn a_scoped_run_leaves_no_tmux_server_behind() {
     );
 
     assert!(
-        profile.servers().is_empty(),
+        profile.server.alive().is_empty(),
         "a tmux server outlived the run: {:?}",
-        profile.servers()
+        profile.server.alive()
     );
+}
+
+// --- the panic that used to leak ------------------------------------------
+
+/// Where the probe below writes the socket it started a server on. Read out of
+/// the environment rather than fixed, so the probe can only run when the test
+/// that drives it asked for it.
+const PROBE_REPORT_ENV: &str = "THURBOX_PANIC_PROBE_REPORT";
+
+/// The probe test's name, as the libtest harness spells it.
+const PROBE: &str = "a_harness_that_panics_after_starting_a_server";
+
+/// Whether any tmux **server** process is still running on `socket`.
+///
+/// Asked of the process table rather than of tmux, because the whole failure
+/// is a server with no socket file: the file lived in the harness's own
+/// directory and went away with it, so `tmux -L <name> list-sessions` answers
+/// "no server" for a server that is very much alive, spinning on a CPU. That
+/// is how a machine came to hold 433 of them with only 4 reachable.
+#[cfg(unix)]
+fn server_processes(socket: &str) -> Vec<String> {
+    let out = Command::new("ps")
+        .args(["-eo", "pid=,args="])
+        .output()
+        .expect("run ps");
+    let needle = format!("-L {socket}");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| line.contains(&needle))
+        .map(str::trim)
+        .map(str::to_string)
+        .collect()
+}
+
+/// A harness that panics between starting its server and its teardown leaves
+/// no tmux server behind.
+///
+/// The panic is the point. Teardown spelled as a `cleanup()` call at each exit
+/// point is reached by the paths that return; it is not reached by the one
+/// that unwinds, and an unwind is what a failed assertion, a `.expect()` on a
+/// racing tmux, or a nextest `slow-timeout` termination all look like. So this
+/// runs a real harness — a child copy of this very test binary, the way
+/// `paths::tests::no_unit_test_temp_dir_outlives_the_test_process` does —
+/// panics it on purpose, and then asks the process table what survived.
+#[test]
+#[cfg(unix)]
+fn a_panicking_harness_still_reaps_its_tmux_server() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let report_dir = tempfile::tempdir().expect("tempdir");
+    let report = report_dir.path().join("socket");
+    let exe = std::env::current_exe().expect("this test binary");
+    let out = Command::new(&exe)
+        .args(["--exact", "--nocapture", PROBE])
+        .env(PROBE_REPORT_ENV, &report)
+        .output()
+        .expect("run a child copy of the test binary");
+
+    assert!(
+        !out.status.success(),
+        "the probe was supposed to panic, and did not:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // An empty report means the probe never got a server started, and there is
+    // nothing for the assertion below to be about: passing it then would be
+    // passing for the wrong reason.
+    let socket = std::fs::read_to_string(&report).unwrap_or_default();
+    let socket = socket.trim();
+    if socket.is_empty() {
+        eprintln!("skipping: the probe could not start a tmux server");
+        return;
+    }
+
+    let survivors = server_processes(socket);
+    assert!(
+        survivors.is_empty(),
+        "a harness panicked and left its tmux server running — and with its \
+         socket directory gone with it, nothing can connect to reap it:\n  {}",
+        survivors.join("\n  ")
+    );
+}
+
+/// The probe [`a_panicking_harness_still_reaps_its_tmux_server`] drives: start
+/// a server with a pane that outlives the test, say where it is, then panic
+/// the way a failed assertion does.
+///
+/// Inert unless that test asked for it — it is the only caller, and it names
+/// this one by [`PROBE`] rather than discovering it, so a rename fails the run
+/// instead of passing vacuously.
+#[test]
+#[cfg(unix)]
+fn a_harness_that_panics_after_starting_a_server() {
+    let Some(report) = std::env::var_os(PROBE_REPORT_ENV) else {
+        return;
+    };
+    if !have_tmux() {
+        return;
+    }
+
+    let server = TmuxServer::pin(&format!("thurbox-panic-probe-{}", std::process::id()));
+    // A pane that outlives the test: one that exits takes the server with it
+    // and would turn this probe into a test of tmux's own idle shutdown.
+    let started = server.tmux(&["new-session", "-d", "-s", "probe", "sleep", "300"]);
+    // The report is what says a server exists to leak; the panic happens
+    // either way, so the caller reads one failing child rather than having to
+    // tell "could not start a server" from "did not panic".
+    if started.status.success() {
+        std::fs::write(&report, server.socket()).expect("report the socket");
+    }
+
+    panic!("the probe panics here, as a failed assertion would");
 }
 
 /// `src` with its line comments removed, so a rule below is answered by code
@@ -283,9 +333,9 @@ fn code_of(src: &str) -> String {
         .join("\n")
 }
 
-/// How far from a pin the clear and the socket directory may sit. The widest
-/// real gap is nine lines, so this is headroom rather than latitude: the point
-/// is that they are part of the same setup, not somewhere else in the file.
+/// How far from a pin the clear and the socket directory may sit. The real
+/// gaps are a handful of lines, so this is headroom rather than latitude: the
+/// point is that the three are one piece of setup, not three places in a file.
 const WINDOW: usize = 15;
 
 /// Verbs that *set* an environment variable, and verbs that *clear* one.
@@ -399,49 +449,131 @@ fn scope_failures(src: &str) -> (usize, Vec<String>) {
     (pinned.len(), failures)
 }
 
-/// Every *place* a harness pins a tmux socket also clears the inherited owner
-/// tag and points `TMUX_TMPDIR` somewhere of its own.
+/// The guard's own file: the one place a socket is pinned, and the one place
+/// that has to spell the whole recipe out.
+const GUARD: &str = "support/tmux_server.rs";
+
+/// The guard type, as the harnesses spell it.
+const GUARD_TYPE: &str = "TmuxServer";
+
+/// Every pin the guard makes clears the inherited owner tag and points
+/// `TMUX_TMPDIR` somewhere of its own.
 ///
-/// Per pin site, not per file. A file-wide check is satisfied by one correctly
-/// scoped test while a sibling beside it leaks: `attach_by_name` scopes five
-/// times, and a sixth test that pinned a socket and forgot the rest would sit
-/// behind the other five and leak a server on every run.
+/// The rule used to be read off every harness, because every harness spelled it
+/// out. They now route through [`GUARD`] instead, which is a better place for
+/// it to be right and a worse place for it to be wrong: one mistake here is
+/// every harness's mistake. So the rule did not go away, it moved.
 ///
-/// Read off the sources rather than by running them: the leak only shows up on
-/// a machine where the suite runs inside a thurbox pane, and a run that does
-/// leak still passes every assertion it makes. Comments are stripped first, the
-/// way `tests/architecture_rules.rs` strips them before extracting references —
-/// a rule read off raw text is satisfied by prose, and a harness whose comment
-/// merely *mentions* the owner tag would pass while leaking.
+/// Read off the source rather than by running it: the leak only shows up on a
+/// machine where the suite runs inside a thurbox pane, and a run that does leak
+/// still passes every assertion it makes. Comments are stripped first, the way
+/// `tests/architecture_rules.rs` strips them before extracting references — a
+/// rule read off raw text is satisfied by prose.
 #[test]
-fn every_socket_a_harness_pins_is_scoped_where_it_is_pinned() {
+fn the_guard_scopes_every_socket_it_pins() {
+    let src = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join(GUARD),
+    )
+    .expect("read the guard");
+    let (pins, failures) = scope_failures(&src);
+    assert!(
+        pins > 0,
+        "{GUARD} pins no socket — this gate has stopped looking at anything"
+    );
+    assert!(
+        failures.is_empty(),
+        "these pins in {GUARD} leak a tmux server when the suite runs inside a \
+         thurbox pane:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// No harness pins a tmux socket by hand: every one of them goes through the
+/// guard, whose `Drop` reaps whatever the pin started.
+///
+/// Per pin *site*, not per file — and that distinction is the whole reason this
+/// is worth reading off the sources. A file-wide check is satisfied by one
+/// correctly written test while a sibling beside it leaks: `attach_by_name`
+/// scopes five times, and a sixth test that pinned a socket of its own would
+/// sit behind the other five. The previous version of this gate asked each pin
+/// for a cleared owner tag and a private socket directory, which is what makes
+/// a server reachable; it did not ask who kills it. Nobody did, on any path
+/// that panicked or timed out, and a machine ended up holding 433 servers with
+/// 4 sockets between them (issue #1175).
+///
+/// So the question here is narrower and stronger: a harness may not pin at all.
+/// `TmuxServer::pin` and `TmuxServer::private` are the only two pins in this
+/// directory, `the_guard_scopes_every_socket_it_pins` holds them to the recipe,
+/// and holding one is what reaps.
+#[test]
+fn no_harness_pins_a_socket_outside_the_guard() {
     // The one file that is *about* the resolution, sets the pair on purpose,
     // and never starts a multiplexer.
     const EXEMPT: [&str; 1] = ["cli_socket_isolation.rs"];
 
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut offenders = Vec::new();
-    let mut pins = 0usize;
+    let mut guards = 0usize;
     for entry in std::fs::read_dir(&dir).expect("read tests/").flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.ends_with(".rs") || EXEMPT.contains(&name.as_str()) {
             continue;
         }
         let src = std::fs::read_to_string(entry.path()).expect("read test source");
-        let (found, failures) = scope_failures(&src);
-        pins += found;
-        offenders.extend(failures.into_iter().map(|f| format!("{name}:{f}")));
+        let code = code_of(&src);
+        let lines: Vec<&str> = code.lines().map(str::trim_end).collect();
+        for at in marks(
+            &lines,
+            Some("SOCKET_OVERRIDE_ENV"),
+            "\"THURBOX_SOCKET\"",
+            &SET,
+        ) {
+            offenders.push(format!(
+                "{name}:{} pins a socket by hand — pin it with {GUARD_TYPE} \
+                 ({GUARD}), which reaps the server when it is dropped",
+                at + 1
+            ));
+        }
+        for (i, line) in lines.iter().enumerate() {
+            let held = held_guard(line);
+            guards += usize::from(held == Some(true));
+            if held == Some(false) {
+                offenders.push(format!(
+                    "{name}:{} drops its guard where it builds it — the server \
+                     is reaped before the test has started",
+                    i + 1
+                ));
+            }
+        }
     }
 
     assert!(
-        pins > 0,
-        "no harness pins a socket — this gate has stopped looking at anything"
+        guards > 0,
+        "no harness holds a {GUARD_TYPE} — this gate has stopped looking at \
+         anything"
     );
     offenders.sort();
     assert!(
         offenders.is_empty(),
-        "these pins leak a tmux server when the suite runs inside a thurbox \
-         pane:\n  {}",
+        "these leak a tmux server whenever the test does not reach its own \
+         teardown:\n  {}",
         offenders.join("\n  ")
     );
+}
+
+/// Whether `line` builds a guard and, if it does, whether it keeps it.
+///
+/// A guard reaps when it is *dropped*, so building one and not binding it —
+/// `TmuxServer::pin(SOCKET);` as a statement, or `let _ = …`, both of which
+/// drop at the end of that statement — kills the server before the test has
+/// started one. Neither is a compile error and neither fails an assertion; the
+/// test simply runs unscoped, which is the state this whole file is about.
+fn held_guard(line: &str) -> Option<bool> {
+    let line = line.trim_start();
+    if line.starts_with("//") || !line.contains(&format!("{GUARD_TYPE}::")) {
+        return None;
+    }
+    Some(!(line.starts_with(&format!("{GUARD_TYPE}::")) || line.starts_with("let _ =")))
 }

@@ -22,6 +22,12 @@ use std::time::{Duration, Instant};
 
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 const SOCKET: &str = "thurbox-program-corpse-e2e";
 const OWNER: &str = "plugins/90_files.lua";
 const PANE: &str = "editor_corpse";
@@ -41,10 +47,6 @@ fn tmux(args: &[&str]) -> std::process::Output {
         .args(args)
         .output()
         .expect("run tmux")
-}
-
-fn cleanup() {
-    let _ = tmux(&["kill-server"]);
 }
 
 /// Every program window on the server: `(window_id, pane_id, pane_pid,
@@ -89,12 +91,9 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    cleanup();
     let started = tmux(&[
         "new-session",
         "-d",
@@ -106,7 +105,6 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
         "24",
     ]);
     if !started.status.success() {
-        cleanup();
         eprintln!(
             "skipping: tmux would not start a server: {}",
             String::from_utf8_lossy(&started.stderr).trim()
@@ -124,7 +122,6 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
         24,
         80,
     ) {
-        cleanup();
         // Not a skip: tmux is installed, so a pane that would not start is this
         // path being broken rather than a machine without a multiplexer.
         panic!("the program pane could not be started: {e}");
@@ -149,7 +146,6 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
         std::thread::sleep(Duration::from_millis(50));
     }
     if !corpse {
-        cleanup();
         eprintln!("skipping: this tmux does not keep a dead pane's frame");
         return;
     }
@@ -171,7 +167,6 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
         .program_state(&key)
         .map(|(p, exited)| (p.to_string(), exited));
     let windows_now = program_windows();
-    cleanup();
 
     started_again.expect("starting over a corpse must work");
     let (_, exited) = state.expect("the interface should hold a program pane");

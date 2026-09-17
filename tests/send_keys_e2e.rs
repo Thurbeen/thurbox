@@ -16,6 +16,12 @@ use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// A throwaway tmux socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-send-keys-e2e";
 
@@ -45,27 +51,6 @@ fn tmux(args: &[&str]) -> std::process::Output {
         .args(args)
         .output()
         .expect("run tmux")
-}
-
-/// Point the CLI's one-shot helpers at a private socket in a private directory
-/// so they can never see — or race — the shared dev server. nextest runs one
-/// process per test, so the env mutation is safe. Returns the tempdir so it
-/// outlives the test.
-fn isolate_tmux() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared, not merely overridden: thurbox tags an injected socket with the
-    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
-    // tag naming the operator's instance. `socket_for` then reads the override
-    // above as inherited and derives a socket from this test's own data dir —
-    // a server no `kill-server` here names, left running for good.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
-    dir
-}
-
-fn cleanup() {
-    let _ = tmux(&["kill-server"]);
 }
 
 /// A session row pointing at a live `tb-probe` pane, or `None` when tmux would
@@ -146,7 +131,7 @@ fn no_enter_types_without_submitting_and_key_enter_submits() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let db = Database::open_in_memory().expect("db");
     let Some(session) = live_session(&db) else {
         eprintln!("skipping: tmux would not spawn a window");
@@ -191,8 +176,6 @@ fn no_enter_types_without_submitting_and_key_enter_submits() {
         2,
         "`key enter` should have submitted the line; shows:\n{sent}"
     );
-
-    cleanup();
 }
 
 #[test]
@@ -201,7 +184,7 @@ fn text_arrives_literally_whatever_it_starts_with() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let db = Database::open_in_memory().expect("db");
     let Some(session) = live_session(&db) else {
         eprintln!("skipping: tmux would not spawn a window");
@@ -228,8 +211,6 @@ fn text_arrives_literally_whatever_it_starts_with() {
         screen.contains(text),
         "the text should arrive intact; pane shows:\n{screen}"
     );
-
-    cleanup();
 }
 
 #[test]
@@ -238,7 +219,7 @@ fn a_named_key_arrives_as_a_key_not_as_its_name() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let db = Database::open_in_memory().expect("db");
     let Some(session) = live_session(&db) else {
         eprintln!("skipping: tmux would not spawn a window");
@@ -284,8 +265,6 @@ fn a_named_key_arrives_as_a_key_not_as_its_name() {
         !screen.contains("DISCARD_ME"),
         "ctrl-u should have killed the typed line; shows:\n{screen}"
     );
-
-    cleanup();
 }
 
 #[test]
@@ -294,7 +273,7 @@ fn an_unknown_key_is_refused_before_anything_reaches_the_pane() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let db = Database::open_in_memory().expect("db");
     let Some(session) = live_session(&db) else {
         eprintln!("skipping: tmux would not spawn a window");
@@ -315,6 +294,4 @@ fn an_unknown_key_is_refused_before_anything_reaches_the_pane() {
         !screen.contains("Escpe"),
         "a refused key must not have been typed into the pane; shows:\n{screen}"
     );
-
-    cleanup();
 }

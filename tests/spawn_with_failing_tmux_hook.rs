@@ -19,12 +19,13 @@
 //! in it answering 127 for reasons of its own.
 //!
 //! Each test gets its own server, not a shared one: `cargo nextest` runs every
-//! test in its own process and each sets `TMUX_TMPDIR` to its own tempdir, so
-//! the socket *name* they share resolves to a different path per test — the
-//! same shape as `tests/window_remain_on_exit.rs`. Under plain `cargo test`
-//! that does not hold: one process, one `TMUX_TMPDIR`, and these tests will
-//! race each other's `kill-server`. Run them with nextest, which is what
-//! `.publish.yaml`, CI and the pre-commit hook all use.
+//! test in its own process and each `TmuxServer` guard gives it a socket
+//! directory of its own, so the socket *name* they share resolves to a
+//! different path per test — the same shape as
+//! `tests/window_remain_on_exit.rs`. Under plain `cargo test` that does not
+//! hold: one process, one `TMUX_TMPDIR`, and these tests will reap each
+//! other's server. Run them with nextest, which is what `.publish.yaml`, CI
+//! and the pre-commit hook all use.
 //!
 //! Skipped when tmux is absent: a missing multiplexer is an environment fact.
 
@@ -32,6 +33,12 @@
 
 use std::collections::HashMap;
 use std::process::Command;
+
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-failing-hook-e2e";
 const SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -54,10 +61,6 @@ fn tmux(args: &[&str]) -> std::process::Output {
         .args(args)
         .output()
         .expect("run tmux")
-}
-
-fn cleanup() {
-    let _ = tmux(&["kill-server"]);
 }
 
 /// What `option` says for the window holding `pane`, or `"<unset>"` when the
@@ -96,19 +99,15 @@ fn spawn(name: &str, cwd: &std::path::Path) -> anyhow::Result<String> {
 /// spawn succeeds on that server without it, so a failure below is the hook and
 /// nothing else. (The server has to exist before a hook can be set on it, and
 /// the first spawn is what creates it.)
-fn server_with_a_dead_hook(dir: &std::path::Path) {
-    std::env::set_var("TMUX_TMPDIR", dir);
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+fn server_with_a_dead_hook(dir: &std::path::Path) -> TmuxServer {
+    let server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir);
 
-    cleanup();
-
     if let Err(e) = spawn("clean", dir) {
-        cleanup();
         panic!("the control window could not be spawned on a clean server: {e:#}");
     }
     tmux(&["set-hook", "-g", "after-new-window", DEAD_HOOK]);
+    server
 }
 
 #[test]
@@ -119,11 +118,10 @@ fn a_dead_plugin_hook_does_not_fail_a_window_that_was_created() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    server_with_a_dead_hook(dir.path());
+    let _server = server_with_a_dead_hook(dir.path());
 
     let spawned = spawn("hostile", dir.path());
     let names = window_names();
-    cleanup();
 
     let pane = match spawned {
         Ok(pane) => pane,
@@ -158,7 +156,7 @@ fn the_id_kept_from_a_hooked_spawn_still_names_the_window() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    server_with_a_dead_hook(dir.path());
+    let _server = server_with_a_dead_hook(dir.path());
 
     let spawned = spawn("stamped", dir.path());
     let found = spawned.as_ref().ok().map(|pane| {
@@ -167,7 +165,6 @@ fn the_id_kept_from_a_hooked_spawn_still_names_the_window() {
         let stamp = window_option(pane, thurbox::agent::tmux::WINDOW_SESSION_OPTION);
         (name, stamp)
     });
-    cleanup();
 
     if let Err(e) = &spawned {
         panic!("the spawn the hook could not stop failed anyway: {e:#}");
@@ -199,14 +196,13 @@ fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    server_with_a_dead_hook(dir.path());
+    let _server = server_with_a_dead_hook(dir.path());
 
     // The keeper runs `<cli> automation tick` in a shell loop, so the loop —
     // and the window holding it — exists whether or not the path resolves.
     let armed = thurbox::agent::tmux::ensure_automation_heartbeat(&dir.path().join("thurbox-cli"));
     let names = window_names();
     let running = thurbox::agent::tmux::automation_heartbeat_running();
-    cleanup();
 
     if let Err(e) = armed {
         panic!("a heartbeat window tmux created was reported as a failure because a user hook exited non-zero: {e:#}");

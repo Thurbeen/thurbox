@@ -55,9 +55,29 @@ runs — `selene`, `stylua` and `lua-language-server`. Run `npm ci` once, or
 | `just arch` | architecture-rule + rustdoc checks |
 | `just hooks-install` | `prek install` |
 | `just smoke` | black-box TUI test: the real binary on a pty (`tests/tui_e2e.rs`) |
+| `just reap-tmux` | reap orphaned *test* tmux servers a signal left behind (below) |
 | `just bench` | what a frame costs, piece by piece (`benches/frame_cost.rs`) |
 | `just perf` | what the whole binary costs under load (`scripts/dev/perf-run.sh`) |
 | `just sandbox*` | dev runtime sandbox (below) |
+
+### `just reap-tmux` — the servers a guard could not reap
+
+Every harness that starts a tmux server holds a `TmuxServer`
+(`tests/support/tmux_server.rs`), whose `Drop` kills it. That covers every way
+a test ends in-process, a panic included, which is what teardown spelled as a
+`cleanup()` call at each exit point did not: the socket file lives in a
+directory the run owns, so a test that skipped its teardown left a server with
+no socket, unreachable by the very command that would have killed it. One
+machine reached 400 of those, with 4 sockets between 433 servers.
+
+A destructor cannot run for a signal, though — a nextest `slow-timeout`
+termination, `kill -9`, an OOM kill — so that one case still leaks, and
+`just reap-tmux` is the sweep for it. It kills only processes that are both a
+tmux **server** of yours on one of the suite's own socket names and unreachable
+(no socket file), which is why it can never touch `thurbox`, `thurbox-dev` or
+anything you are attached to. `just reap-tmux --dry-run` lists without killing.
+Linux only: the socket directory is read from `/proc/<pid>/environ`, and there
+is no portable equivalent.
 
 `just bench` and `just perf` are the two measuring instruments, and they answer
 different questions: the bench times the *pieces* of a frame against the real

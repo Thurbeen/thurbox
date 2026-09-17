@@ -17,6 +17,12 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::terminal::Terminals;
 use thurbox::session::SessionState;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 fn row(id: &str, name: &str, backend: &str, pane: Option<&str>) -> SessionRow {
     SessionRow {
         id: id.into(),
@@ -94,17 +100,7 @@ async fn a_session_whose_window_is_gone_is_reported_as_missing_its_agent() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(
-        thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
-        "thurbox-life-test",
-    );
-    // Cleared, not merely overridden: thurbox tags an injected socket with the
-    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
-    // tag naming the operator's instance, and `socket_for` then reads the
-    // override above as inherited and resolves somewhere nothing here kills.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin("thurbox-life-test");
 
     let socket = ["-L", "thurbox-life-test"];
     let _ = tokio::process::Command::new("tmux")
@@ -153,10 +149,7 @@ async fn a_session_whose_window_exists_is_not_relaunched() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, "thurbox-life-ok");
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin("thurbox-life-ok");
 
     let socket = ["-L", "thurbox-life-ok"];
     let _ = tokio::process::Command::new("tmux")
@@ -217,13 +210,7 @@ async fn a_session_created_after_the_last_survey_is_not_relaunched() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(
-        thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
-        "thurbox-life-new",
-    );
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin("thurbox-life-new");
 
     let socket = ["-L", "thurbox-life-new"];
     let idle = "sh -c 'while :; do sleep 1; done'";
@@ -396,13 +383,7 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(
-        thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
-        "thurbox-forget-test",
-    );
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin("thurbox-forget-test");
     let socket = ["-L", "thurbox-forget-test"];
     // An `async fn` rather than a closure: it awaits, and a closure body is not
     // an async context.
@@ -521,13 +502,7 @@ fn a_stopped_session_is_never_relaunched_as_a_missing_agent() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(
-        thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
-        "thurbox-stopped-test",
-    );
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin("thurbox-stopped-test");
     let socket = ["-L", "thurbox-stopped-test"];
     let _ = std::process::Command::new("tmux")
         .args(socket)

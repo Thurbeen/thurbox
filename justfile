@@ -122,6 +122,13 @@ sandbox-clean PROFILE="default":
 smoke:
     cargo nextest run --test tui_e2e
 
+# Reap orphaned *test* tmux servers (Linux). A harness's own guard covers every
+# in-process exit; this is for the ones a signal killed, which run on with no
+# socket file and nothing able to connect to them. Never touches `thurbox` or
+# `thurbox-dev`. `just reap-tmux --dry-run` lists without killing.
+reap-tmux *ARGS:
+    scripts/dev/reap-tmux-servers.sh {{ARGS}}
+
 # Sweep with THURBOX_BENCH_SESSIONS / _WIDTH / _HEIGHT.
 # What a frame costs, piece by piece, against the real interface.
 bench:

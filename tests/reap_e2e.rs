@@ -24,6 +24,12 @@
 use std::path::Path;
 use std::process::Command;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// A throwaway tmux socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-reap-e2e";
 
@@ -135,22 +141,6 @@ fn repo() -> tempfile::TempDir {
     dir
 }
 
-/// Point the spawn at a private socket in a private directory, so it can never
-/// see — or race — a real server. nextest runs one process per test, so env
-/// mutation is safe. Returns the tempdir so it outlives the test.
-fn isolate_tmux() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared, not merely overridden: thurbox tags an injected socket with the
-    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
-    // tag naming the operator's instance. `socket_for` then reads the override
-    // above as inherited and derives a socket from this test's own data dir —
-    // a server no `kill-server` here names, left running for good.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
-    dir
-}
-
 /// A shell rather than a real agent: the reap path is what is under test, and
 /// launching a coding agent would want credentials and a network.
 fn isolate_paths(home: &Path) {
@@ -166,10 +156,6 @@ fn isolate_paths(home: &Path) {
         "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
     )
     .expect("write agents.toml");
-}
-
-fn cleanup() {
-    let _ = tmux(&["kill-server"]);
 }
 
 fn spawn(
@@ -203,7 +189,6 @@ fn spawn(
     match result {
         Ok(spawned) => Some(spawned),
         Err(e) => {
-            cleanup();
             // A tmux server that will not start is an environment problem.
             assert!(e.contains("tmux"), "spawn failed: {e}");
             eprintln!("skipping: tmux would not spawn a window: {e}");
@@ -221,7 +206,7 @@ fn reaping_a_stale_row_spares_the_live_window_of_the_same_name() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -262,7 +247,6 @@ fn reaping_a_stale_row_spares_the_live_window_of_the_same_name() {
     // for the name — the replacement is the only `tb-fleet` there is.
     let survived = pane_alive(&live.backend_id);
     let windows_after = windows();
-    cleanup();
 
     assert!(
         survived,
@@ -292,7 +276,7 @@ fn reaping_still_kills_the_row_its_own_window() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -310,7 +294,6 @@ fn reaping_still_kills_the_row_its_own_window() {
     // is exactly what the reap should collect.
     let reaped = thurbox::session_ops::reap_soft_deleted(&db, session.session_id).expect("reap");
     let still_there = pane_alive(&session.backend_id);
-    cleanup();
 
     assert!(reaped, "a soft-deleted row with a live pane must be reaped");
     assert!(
@@ -336,7 +319,7 @@ fn reaping_collects_its_window_when_the_pane_id_resolves_to_nothing() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -354,7 +337,6 @@ fn reaping_collects_its_window_when_the_pane_id_resolves_to_nothing() {
     let reaped = thurbox::session_ops::reap_soft_deleted(&db, session.session_id).expect("reap");
     let still_there = pane_alive(&session.backend_id);
     let windows_after = windows();
-    cleanup();
 
     assert!(
         reaped,
@@ -385,7 +367,7 @@ fn reaping_spares_a_namesakes_pane_the_stale_row_remembers() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -416,7 +398,6 @@ fn reaping_spares_a_namesakes_pane_the_stale_row_remembers() {
     let reaped = thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap");
     let survived = pane_alive(&live.backend_id);
     let windows_after = windows();
-    cleanup();
 
     assert!(
         survived,
@@ -441,7 +422,7 @@ fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -472,7 +453,6 @@ fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
         thurbox::session_ops::reap_soft_deleted(&db, undoable.session_id).expect("reap own");
     let released = !pane_alive(&undoable.backend_id);
     let windows_after = windows();
-    cleanup();
 
     assert!(
         survived,
@@ -506,7 +486,7 @@ fn reaping_spares_a_live_window_whose_name_only_collides_once_sanitized() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -535,7 +515,6 @@ fn reaping_spares_a_live_window_whose_name_only_collides_once_sanitized() {
     let reaped = thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap");
     let survived = pane_alive(&live.backend_id);
     let windows_after = windows();
-    cleanup();
 
     assert!(
         survived,
@@ -563,7 +542,7 @@ fn force_delete_stop_and_restart_all_spare_a_live_namesakes_window() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -594,7 +573,6 @@ fn force_delete_stop_and_restart_all_spare_a_live_namesakes_window() {
     let after_restart = pane_alive(&cases[2].1.backend_id);
 
     let windows_after = windows();
-    cleanup();
 
     assert!(forced.is_ok(), "force delete: {forced:?}");
     assert!(stopped.is_ok(), "stop: {stopped:?}");
@@ -621,7 +599,7 @@ fn force_delete_still_kills_the_rows_own_window() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -631,7 +609,6 @@ fn force_delete_still_kills_the_rows_own_window() {
     let report = thurbox::session_ops::delete_session_headless(&db, session.session_id, true)
         .expect("force delete");
     let still_there = pane_alive(&session.backend_id);
-    cleanup();
 
     assert!(report.killed_window, "the force delete reported no kill");
     assert!(
@@ -654,7 +631,7 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -667,7 +644,6 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
     let located =
         thurbox::agent::tmux::agent_window(None, &session.session_id.to_string(), "stamped");
     let outcome = located.map(|l| l.pane());
-    cleanup();
 
     assert_eq!(
         outcome.expect("list windows"),
@@ -693,7 +669,7 @@ fn restoring_a_session_never_adopts_a_live_namesakes_window() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -715,7 +691,6 @@ fn restoring_a_session_never_adopts_a_live_namesakes_window() {
         .map(|row| row.backend_id);
     let survived = pane_alive(&live.backend_id);
     let windows_after = windows();
-    cleanup();
 
     assert!(restored.is_ok(), "restore: {restored:?}");
     assert!(survived, "the live namesake's pane must still be running");
@@ -747,7 +722,7 @@ fn force_delete_and_reap_both_collect_the_companion_shell() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -767,7 +742,6 @@ fn force_delete_and_reap_both_collect_the_companion_shell() {
     thurbox::session_ops::reap_soft_deleted(&db, reaped.session_id).expect("reap");
     let reaped_shell_alive = pane_alive(&reaped_shell);
     let windows_after = windows();
-    cleanup();
 
     assert!(
         !forced_shell_alive,
@@ -791,7 +765,7 @@ fn a_teardown_spares_a_live_namesakes_companion_shell() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -810,7 +784,6 @@ fn a_teardown_spares_a_live_namesakes_companion_shell() {
     thurbox::session_ops::delete_session_headless(&db, stale.session_id, true).expect("delete");
     let survived = pane_alive(&live_shell);
     let windows_after = windows();
-    cleanup();
 
     assert!(
         survived,
@@ -835,7 +808,7 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
     }
 
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
     // Nothing was spawned, so there is no server on this socket.
@@ -847,7 +820,6 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
     let _ = thurbox::session_ops::reap_soft_deleted(&db, id);
 
     let started = tmux(&["has-session"]).status.success();
-    cleanup();
     assert!(!started, "a teardown started a tmux server on the socket");
 }
 
@@ -865,7 +837,7 @@ fn the_sweep_collects_a_row_deleted_while_nothing_was_watching() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     isolate_paths(home.path());
 
@@ -893,7 +865,6 @@ fn the_sweep_collects_a_row_deleted_while_nothing_was_watching() {
     // Idempotent: the row owns nothing on the next pass, so it is not reported
     // again on every tick for as long as it stays deleted.
     let second = thurbox::session_ops::reap_overdue_soft_deletes(&db);
-    cleanup();
 
     assert!(untouched, "the agent runs on until the undo window closes");
     assert_eq!(

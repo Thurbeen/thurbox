@@ -35,7 +35,13 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use thurbox::agent::backend::{ProgramPane, SessionBackend};
-use thurbox::agent::tmux::{TmuxBackend, SOCKET_OVERRIDE_ENV, SOCKET_OWNER_ENV};
+use thurbox::agent::tmux::TmuxBackend;
+
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
 
 /// A throwaway socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-program-exit-e2e";
@@ -52,45 +58,12 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-fn cleanup() {
-    let _ = Command::new("tmux")
-        .args(["-L", SOCKET, "kill-server"])
-        .output();
-}
-
 // The blocking `Command::output` calls are safe here because this test uses
 // `#[tokio::test(flavor = "multi_thread")]`: the body runs on its own thread
 // (`block_on(body)`), while spawned tasks run on worker threads.
-fn start_session(dir: &std::path::Path) -> std::process::Output {
-    let started = Command::new("tmux")
-        .args([
-            "-L",
-            SOCKET,
-            "new-session",
-            "-d",
-            "-s",
-            "thurbox",
-            "-x",
-            "80",
-            "-y",
-            "24",
-        ])
-        .env("TMUX_TMPDIR", dir)
-        .output()
-        .expect("run tmux");
-    let _ = Command::new("tmux")
-        .args([
-            "-L",
-            SOCKET,
-            "set-option",
-            "-t",
-            "thurbox",
-            "remain-on-exit",
-            "on",
-        ])
-        .env("TMUX_TMPDIR", dir)
-        .output()
-        .expect("run tmux");
+fn start_session(server: &TmuxServer) -> std::process::Output {
+    let started = server.tmux(&["new-session", "-d", "-s", "thurbox", "-x", "80", "-y", "24"]);
+    let _ = server.tmux(&["set-option", "-t", "thurbox", "remain-on-exit", "on"]);
     started
 }
 
@@ -104,18 +77,11 @@ async fn a_program_that_ends_reports_that_it_ended() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    // nextest runs one process per test, so process-wide env is safe here.
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(SOCKET_OVERRIDE_ENV, SOCKET);
-    // The override is dropped when it was injected for someone else's data dir
-    // (see `socket_for`); this test *is* somebody typing it.
-    std::env::remove_var(SOCKET_OWNER_ENV);
+    let server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    cleanup();
-    let started = start_session(dir.path());
+    let started = start_session(&server);
     if !started.status.success() {
-        cleanup();
         eprintln!(
             "skipping: tmux would not start a server: {}",
             String::from_utf8_lossy(&started.stderr).trim()
@@ -125,7 +91,6 @@ async fn a_program_that_ends_reports_that_it_ended() {
 
     let backend = std::sync::Arc::new(TmuxBackend::local());
     if let Err(e) = backend.ensure_ready() {
-        cleanup();
         panic!("tmux control mode would not start: {e:#}");
     }
 
@@ -156,7 +121,6 @@ async fn a_program_that_ends_reports_that_it_ended() {
     let pane = match pane {
         Ok(pane) => pane,
         Err(e) => {
-            cleanup();
             // Not a skip. The header already records what a skip here cost
             // once: a spawn failing because the pane died too fast was read as
             // a missing environment and passed, proving nothing at all.
@@ -169,7 +133,6 @@ async fn a_program_that_ends_reports_that_it_ended() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let exited = pane.has_exited();
-    cleanup();
     assert!(
         exited,
         "a program pane whose program exited still reports itself running; \

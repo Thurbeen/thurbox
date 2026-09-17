@@ -24,6 +24,12 @@ use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// How long a test waits for a line that should already be on its way.
 const WAIT: Duration = Duration::from_secs(15);
 
@@ -43,17 +49,24 @@ command = "claude"
 /// socket, so nothing here reads or writes the operator's.
 struct Env {
     root: tempfile::TempDir,
+    /// Named outright and reaped structurally: a relocated data dir derives a
+    /// socket of its own, nothing here may reach the operator's server even by
+    /// accident, and a server started here by mistake goes with this `Env`.
+    server: TmuxServer,
 }
 
 impl Env {
     fn new() -> Self {
         let root = tempfile::TempDir::new().expect("tempdir");
-        for sub in ["home", "config", "data", "tmux"] {
+        for sub in ["home", "config", "data"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
         let agents = root.path().join("config").join("agents.toml");
         std::fs::write(agents, AGENTS_TOML).expect("write agents.toml");
-        Self { root }
+        Self {
+            root,
+            server: TmuxServer::private("thurbox-watch-test"),
+        }
     }
 
     fn path(&self, sub: &str) -> PathBuf {
@@ -74,14 +87,7 @@ impl Env {
         cmd.env("XDG_CONFIG_HOME", self.path("home").join("xdg-config"));
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
-        // Named outright: a relocated data dir derives a socket of its own, and
-        // nothing here may reach the operator's server even by accident.
-        cmd.env("THURBOX_SOCKET", "thurbox-watch-test");
-        cmd.env_remove("THURBOX_SOCKET_FOR");
-        // …in a socket directory of this instance's own, so a server started
-        // here by mistake is visibly this test's rather than a stray in the
-        // shared one everybody's tmux uses.
-        cmd.env("TMUX_TMPDIR", self.path("tmux"));
+        self.server.scope(&mut cmd);
         cmd.env_remove("THURBOX_SESSION");
         cmd.env_remove("THURBOX_SESSION_ID");
         let mut child = cmd
@@ -360,9 +366,7 @@ fn the_stream_ends_when_the_reader_closes() {
     cmd.env("XDG_CONFIG_HOME", env.path("home").join("xdg-config"));
     cmd.env("THURBOX_CONFIG_DIR", env.path("config"));
     cmd.env("THURBOX_DATA_DIR", env.path("data"));
-    cmd.env("THURBOX_SOCKET", "thurbox-watch-test");
-    cmd.env_remove("THURBOX_SOCKET_FOR");
-    cmd.env("TMUX_TMPDIR", env.path("tmux"));
+    env.server.scope(&mut cmd);
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

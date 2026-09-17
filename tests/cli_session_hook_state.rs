@@ -21,6 +21,12 @@ use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// A socket of this test's own, so it can never see — or kill — a real session.
 const SOCKET: &str = "thurbox-hookstate-test";
 
@@ -384,15 +390,7 @@ fn a_session_with_no_pane_of_its_own_is_told_apart_from_a_strangers() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared, not merely overridden: thurbox tags an injected socket with the
-    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
-    // tag naming the operator's instance. `socket_for` then reads the override
-    // above as inherited and derives a socket from this test's own data dir —
-    // a server no `kill-server` here names, left running for good.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());
 
@@ -416,7 +414,6 @@ fn a_session_with_no_pane_of_its_own_is_told_apart_from_a_strangers() {
     db.set_hook_state(row.id, "working").expect("signal");
 
     let out = get(&db, row.id, true);
-    tmux(&["kill-server"]);
 
     assert_eq!(
         out["hook_corroboration"],
@@ -437,10 +434,7 @@ fn a_working_state_over_a_bare_shell_is_reported_as_contradicted() {
         eprintln!("skipping: needs tmux and a ps that knows tpgid");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());
 
@@ -462,7 +456,6 @@ fn a_working_state_over_a_bare_shell_is_reported_as_contradicted() {
     db.set_hook_state(row.id, "working").expect("signal");
 
     let out = get_when_pane_settles(&db, row.id, "shell");
-    tmux(&["kill-server"]);
 
     assert_eq!(
         out["hook_corroboration"],
@@ -487,10 +480,7 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
         eprintln!("skipping: needs tmux and a ps that knows tpgid");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());
 
@@ -523,7 +513,6 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
     db.upsert_session(&row).expect("persist");
 
     let out = get_when_pane_settles(&db, row.id, "foreign-agent");
-    tmux(&["kill-server"]);
 
     assert_eq!(
         out["hook_corroboration"],
@@ -825,13 +814,7 @@ fn the_cli_check_answers_about_the_panes_path_not_the_doctors() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared for the reason the first of these says: an inherited tag
-    // makes the pin above read as inherited, and the server lands where
-    // no `kill-server` here names it.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let _config = isolated_config(dir.path());
 
@@ -864,7 +847,6 @@ fn the_cli_check_answers_about_the_panes_path_not_the_doctors() {
     let out = doctor(&db, row.id);
     // Restored before the teardown: the guard leaves `tmux` itself unreachable.
     drop(path);
-    tmux(&["kill-server"]);
 
     let cli = check(&out, "cli");
     assert_eq!(
@@ -889,13 +871,7 @@ fn a_pane_that_can_find_the_cli_is_healthy_though_the_doctor_cannot() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared for the reason the first of these says: an inherited tag
-    // makes the pin above read as inherited, and the server lands where
-    // no `kill-server` here names it.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let _config = isolated_config(dir.path());
 
@@ -930,7 +906,6 @@ fn a_pane_that_can_find_the_cli_is_healthy_though_the_doctor_cannot() {
     let path = PathGuard::only(&doctor_bin_with_tmux(dir.path()), false);
     let out = doctor(&db, row.id);
     drop(path);
-    tmux(&["kill-server"]);
 
     let cli = check(&out, "cli");
     assert_eq!(
@@ -961,13 +936,7 @@ fn a_pane_thurbox_did_not_hand_a_path_is_unverifiable_not_healthy() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared for the reason the first of these says: an inherited tag
-    // makes the pin above read as inherited, and the server lands where
-    // no `kill-server` here names it.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let _config = isolated_config(dir.path());
 
@@ -989,7 +958,6 @@ fn a_pane_thurbox_did_not_hand_a_path_is_unverifiable_not_healthy() {
     let path = PathGuard::only(&doctor_bin_with_tmux(dir.path()), true);
     let out = doctor(&db, row.id);
     drop(path);
-    tmux(&["kill-server"]);
 
     let cli = check(&out, "cli");
     assert_eq!(

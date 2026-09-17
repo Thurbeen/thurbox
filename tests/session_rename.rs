@@ -14,6 +14,12 @@ use serde_json::Value;
 use thurbox::session::SessionId;
 use thurbox::sync::SharedSession;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// The `GIT_*` location variables git exports to hook processes. A suite run
 /// under this repository's own pre-commit hook inherits them, and they would
 /// point the test repository's git at the real one.
@@ -31,10 +37,8 @@ fn have_tmux() -> bool {
 /// nothing here reads or writes the operator's.
 struct Env {
     root: tempfile::TempDir,
-    /// `TMUX_TMPDIR`, its own short directory: an AF_UNIX socket path is limited
-    /// to ~104 bytes, which a tempdir under a long `TMPDIR` blows through.
-    sockets: PathBuf,
-    socket: String,
+    /// The instance's own multiplexer server, reaped when this `Env` goes.
+    server: TmuxServer,
 }
 
 impl Env {
@@ -54,18 +58,8 @@ impl Env {
             "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
         )
         .expect("seed agents");
-        let socket = format!("thurbox-rename-{}", std::process::id());
-        let sockets = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_dir())
-            .unwrap_or_else(std::env::temp_dir)
-            .join(&socket);
-        std::fs::create_dir_all(&sockets).expect("mkdir sockets");
-        Self {
-            root,
-            sockets,
-            socket,
-        }
+        let server = TmuxServer::private(&format!("thurbox-rename-{}", std::process::id()));
+        Self { root, server }
     }
 
     fn path(&self, sub: &str) -> PathBuf {
@@ -85,18 +79,15 @@ impl Env {
             .env("USERPROFILE", self.path("home"))
             .env("THURBOX_CONFIG_DIR", self.path("config"))
             .env("THURBOX_DATA_DIR", self.path("data"))
-            .env("TMUX_TMPDIR", &self.sockets)
-            .env(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, &self.socket)
-            // Run from inside a thurbox pane, the owner names that instance's
-            // data dir, the override reads as inherited and is dropped, and the
-            // windows land on a derived socket this test never looks at.
-            .env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV)
             .env_remove("TMUX")
             .env_remove("THURBOX_SESSION")
             .env_remove("THURBOX_SESSION_ID");
         for var in GIT_LOCATION_ENV {
             cmd.env_remove(var);
         }
+        // Pinned socket, cleared owner tag, private socket directory — and the
+        // guard that reaps whatever this run starts on it.
+        self.server.scope(&mut cmd);
         cmd.output().expect("run thurbox-cli")
     }
 
@@ -134,13 +125,7 @@ impl Env {
     /// an unused helper as dead code and fails the build.
     #[cfg(unix)]
     fn tmux(&self, args: &[&str]) -> Output {
-        Command::new("tmux")
-            .env("TMUX_TMPDIR", &self.sockets)
-            .env_remove("TMUX")
-            .args(["-L", &self.socket])
-            .args(args)
-            .output()
-            .expect("run tmux")
+        self.server.tmux(args)
     }
 
     /// Every window name on this instance's private server.
@@ -183,16 +168,6 @@ impl Env {
         ] {
             self.tmux(&["set-option", "-w", "-t", &pane, option, value]);
         }
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .env("TMUX_TMPDIR", &self.sockets)
-            .args(["-L", &self.socket, "kill-server"])
-            .output();
-        let _ = std::fs::remove_dir_all(&self.sockets);
     }
 }
 
